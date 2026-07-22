@@ -266,12 +266,21 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Create: `src/adapter/AgentAdapter.kt`, `src/adapter/LaunchSpec.kt`
 - Create: `test/adapter/FakeAdapter.kt`, `test/adapter/AdapterContractTest.kt`
 
-- [ ] write тесты: `FakeAdapter` эмитит `AgentEvent`, редьюсер сворачивает в ожидаемые состояния (контракт «адаптер→события→редьюсер»)
-- [ ] `AgentAdapter.kt`: `buildLaunchSpec(mode: New|Resume)` + `events: Flow<AgentEvent>`
-- [ ] `LaunchSpec.kt`: `command: List<String>`, `env`, `cwd`, `preallocatedSessionId?`
-- [ ] (capability-интерфейсы — бэклог, в срезе НЕ вводим)
-- [ ] write тест: контракт-прогон покрывает все v1-события
-- [ ] run `./kotlin test` — контракт зелёный перед Task 11
+- [x] write тесты: `FakeAdapter` эмитит `AgentEvent`, редьюсер сворачивает в ожидаемые состояния (контракт «адаптер→события→редьюсер»)
+- [x] `AgentAdapter.kt`: `buildLaunchSpec(mode: New|Resume)` + `events: Flow<AgentEvent>`
+- [x] `LaunchSpec.kt`: `command: List<String>`, `env`, `cwd`, `preallocatedSessionId?`
+- [x] (capability-интерфейсы — бэклог, в срезе НЕ вводим)
+- [x] write тест: контракт-прогон покрывает все v1-события
+- [x] run `./kotlin test` — контракт зелёный перед Task 11
+
+**✅ Реализовано — host-free `AgentAdapter`-контракт + `FakeAdapter` (4 AdapterContractTest зелёные, чистый Kotlin без cinterop → исполняются в test-бинаре; suite 73 ran / 68 passed / 5 skipped [4 PtyTest + 1 real-Pty e2e]; `./kotlin build`+`test` exit 0):**
+- `LaunchSpec.kt` — `LaunchSpec(command, env, cwd, preallocatedSessionId?)` (pure data, argv-модель без shell) + `sealed interface LaunchMode { New | Resume(providerSessionId) }`. Асимметрия намеренна: `New` заставляет адаптер преаллоцировать provider-id (→ `preallocatedSessionId`), `Resume` несёт уже существующий id (нужен для `--resume`). `LaunchMode` живёт рядом с `LaunchSpec` (оба — launch-value-типы), контракт-интерфейс держится минимальным.
+- `AgentAdapter.kt` — минимальный контракт: `fun buildLaunchSpec(mode: LaunchMode): LaunchSpec` + `val events: Flow<AgentEvent>` (нормализованный поток; downstream — reducer/store/transport — видит только `AgentEvent`, не провайдера → `state == replay(adapter.events)`). Capability-интерфейсы (`SupportsApprovalResolution`/`SupportsStructuredTranscript`) НЕ введены (бэклог) — будущий opt-in отдельным интерфейсом, ядро не трогая.
+- `test/adapter/FakeAdapter.kt` — pure-Kotlin `AgentAdapter`: `events` за UNLIMITED `Channel` через `receiveAsFlow()` (тест драйвит `emit`/`emitAll`/`close`; `close` завершает поток как реальный провайдер после `Exited`); `buildLaunchSpec` отдаёт canned Claude-shaped спеку и пишет `launchModes`.
+- `test/adapter/AdapterContractTest.kt` — 4 теста: (1) сворачивание live-потока адаптера редьюсером даёт ожидаемую траекторию состояний + финальную проекцию (`stopped`, provider bound, seq==#events) И `== replay(collected)` (сквозной контракт адаптер→события→редьюсер); (2) контракт-прогон покрывает все 7 v1-типов (`simpleName`-множество, т.к. в K/N нет `sealedSubclasses`) + lossless-порядок; (3) edge: пустой поток → `Projection.EMPTY` (running); (4) `buildLaunchSpec(New)` (`--session-id <uuid>` + `preallocatedSessionId`) vs `Resume` (`--resume <id>`, no prealloc). Все Flow-коллекции обёрнуты `withTimeout` (анти-хэнг).
+- **[decision] `LaunchMode` в `LaunchSpec.kt`, не в `AgentAdapter.kt`:** и `LaunchSpec`, и `LaunchMode` — value-типы вокруг launch'а; держим `AgentAdapter.kt` = только интерфейс (минимальный контракт).
+- **[decision] `Channel`-backed `events` (не `MutableSharedFlow`):** план допускал оба; Channel даёт естественное завершение по `close()` — точно ложится на `toList()`/`collect{}` + `withTimeout`, без `take(n)` над горячим потоком.
+- **[decision] canned спека адаптера повторяет Claude-argv Task 11** (`--session-id` для New, `--resume` для Resume), чтобы контракт-shape-ассерты были осмысленными до появления реального `ClaudeAdapter`.
 
 ### Task 11: ClaudeAdapter — launch/resume, hook-config, session-id preallocation
 
