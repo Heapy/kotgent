@@ -1,3 +1,9 @@
 modules:
   - .
   - ./sysnative
+  # The codegen plugin is also a normal (jvm/amper-plugin) module and must be listed here.
+  - ./plugins/sqldelight-gen
+
+plugins:
+  # Register the SQLDelight codegen plugin so modules can enable it (root module.yaml).
+  - ./plugins/sqldelight-gen

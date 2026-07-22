@@ -1,0 +1,24 @@
+# sqldelight-gen — a custom Kotlin Toolchain build plugin (jvm/amper-plugin) that runs
+# SQLDelight's code generation. SQLDelight ships only a Gradle plugin; the Kotlin Toolchain
+# has no Gradle plugins, so we invoke SQLDelight's compiler programmatically from our own
+# @TaskAction (Generate.kt) using a vendored, Gradle-free SqlDelightEnvironment (see that file),
+# and contribute the generated Kotlin via `generated.sources` (see plugin.yaml).
+#
+# This is a JVM module: it runs at BUILD time on the JVM (not linked into the native app), so
+# it can freely depend on SQLDelight's heavy JVM compiler artifacts.
+product: jvm/amper-plugin
+
+dependencies:
+  # SQLDelight compiler: SqlDelightCompiler + the model interfaces (SqlDelightDatabaseProperties,
+  # SqlDelightCompilationUnit, ...) + SqlDelightProjectService/FileIndex that the vendored
+  # SqlDelightEnvironment implements.
+  - app.cash.sqldelight:core:2.3.2
+  # Concrete SQLite dialect — registered via ServiceLoader (SqlDelightEnvironment loads the first
+  # SqlDelightDialect on the classpath). Pulls dialect-api (SqlDelightDialect) + kotlinpoet.
+  - app.cash.sqldelight:sqlite-3-38-dialect:2.3.2
+  # com.alecstrong.sql.psi.core.SqlCoreEnvironment — the PSI environment SqlDelightEnvironment extends.
+  - app.cash.sql-psi:environment:0.7.3
+  # The (shaded, un-relocated) IntelliJ platform SqlCoreEnvironment/CoreApplicationEnvironment need.
+  # 48MB fat jar; build-time only. Its plain runtimeElements variant bundles com.intellij.* so
+  # nothing extra needs resolving from the JetBrains repo.
+  - app.cash.sqldelight:compiler-env:2.3.2
