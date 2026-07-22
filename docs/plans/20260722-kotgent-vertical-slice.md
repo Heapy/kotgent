@@ -100,12 +100,17 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Create: `src/pty/Pty.kt`
 - Create: `test/pty/PtyTest.kt`
 
-- [ ] write интеграционный тест (bounded read + timeout — анти-флаки): открыть PTY, заспавнить `/bin/cat`, записать в мастер, прочитать эхо, задать winsize — ASSERT round-trip
-- [ ] `cinterop/pty.def` (без YAML) с `#include <util.h> <sys/ioctl.h> <termios.h> <spawn.h>`, экспорт `openpty`/`ioctl`/`TIOCSWINSZ`/`winsize`/`posix_spawn`/`posix_spawnattr_*`/`POSIX_SPAWN_SETSID`
-- [ ] `Pty.kt`: `open(...)` через **`openpty`+`posix_spawn(POSIX_SPAWN_SETSID)`** (НЕ `forkpty` — fork-без-exec небезопасен для рантайма K/N; C-строки маршалятся ДО спавна); мастер-fd в родителе; `read()`/`write()`/`resize()`(`TIOCSWINSZ`)/`close()`
-- [ ] модель чтения: **выделенный reader-thread** (`newSingleThreadContext`/Worker) с блокирующим `read()` → `Channel` (на native нет `Dispatchers.IO`)
-- [ ] write тесты: exit-код, resize, ошибка спавна несуществующей команды
-- [ ] run `./kotlin test` — PTY round-trip зелёный перед Task 3
+- [x] write интеграционный тест (bounded read + timeout — анти-флаки): открыть PTY, заспавнить `/bin/cat`, записать в мастер, прочитать эхо, задать winsize — ASSERT round-trip
+- [x] `cinterop/pty.def` (без YAML) с `#include <util.h> <sys/ioctl.h> <termios.h> <spawn.h>`, экспорт `openpty`/`ioctl`/`TIOCSWINSZ`/`winsize`/`posix_spawn`/`posix_spawnattr_*`/`POSIX_SPAWN_SETSID`
+- [x] `Pty.kt`: `open(...)` через **`openpty`+`posix_spawn(POSIX_SPAWN_SETSID)`** (НЕ `forkpty` — fork-без-exec небезопасен для рантайма K/N; C-строки маршалятся ДО спавна); мастер-fd в родителе; `read()`/`write()`/`resize()`(`TIOCSWINSZ`)/`close()`
+- [x] модель чтения: **выделенный reader-thread** (`newSingleThreadContext`/Worker) с блокирующим `read()` → `Channel` (на native нет `Dispatchers.IO`)
+- [x] write тесты: exit-код, resize, ошибка спавна несуществующей команды
+- [x] run `./kotlin test` — PTY round-trip зелёный перед Task 3 (5/5 зелёные)
+
+**⚠️ Toolchain-находка (спайк подтвердил PTY, но вскрыл баг тулчейна):**
+- **Реализация рабочая, доказана:** `openpty`+`posix_spawn(POSIX_SPAWN_SETSID)` даёт `/bin/cat` round-trip, resize (`TIOCSWINSZ`), exit-код, spawn-error — все 4 PTY-теста + smoke зелёные.
+- **cinterop header-scan:** тулчейн НЕ сканирует `util.h`/`sys/ioctl.h`/`termios.h` из `headers=` (в klib-манифест попал только `spawn.h`). `openpty` и установка winsize вынесены в C-хелперы (`kotgent_openpty`/`kotgent_set_winsize`) в `---`-теле `.def` — тело компилируется против этих заголовков, поэтому символы резолвятся. `posix_spawn*`/`POSIX_SPAWN_SETSID` берутся из `spawn.h` штатно.
+- **⚠️ Баг (0.11.0 И 0.11.1=latest):** авто-cinterop klib линкуется в **main**-бинарь, но НЕ в **test**-бинарь (`linkMacosArm64TestDebug` не получает `-library=pty.klib`) → partial-linkage заглушает cinterop → `IrLinkageError` в рантайме тестов (в test-`.kexe` ноль `cinterop_pty`-символов). **Обход:** `test-settings.kotlin.freeCompilerArgs: -library=<АБСОЛЮТНЫЙ путь к build/.../pty.klib>` в `module.yaml` (konanc не резолвит относительные `-library`, в module.yaml нет подстановки переменных → путь захардкожен абсолютным, обновить при переносе проекта). Кандидаты на постоянный фикс (для оркестратора): апгрейд тулчейна, когда починят; вынос cinterop в отдельный dependency-модуль; build-хук. `./kotlin build` (без тестов) обхода не требует.
 
 ### Task 3: Ktor CIO HTTP+WS-спайк на native (РИСК)
 

@@ -1,0 +1,46 @@
+# Kotlin/Native C interop for the PTY primitive (Task 2 spike).
+#
+# The Kotlin Toolchain auto-discovers cinterop/*.def (no YAML wiring). The generated
+# bindings are importable from the package set below.
+#
+# Symbols exported for Pty.kt:
+#   - openpty            (<util.h>)                -> allocate a master/slave pty pair
+#   - posix_spawn + posix_spawn_file_actions_* + posix_spawnattr_* + POSIX_SPAWN_SETSID (<spawn.h>)
+#   - ioctl / TIOCSWINSZ / struct winsize         (<sys/ioctl.h> -> <sys/ttycom.h>)
+#   - termios                                     (<termios.h>)
+#
+# On macOS these all resolve via libSystem, so no extra linkerOpts are needed
+# (openpty lives in libutil, which is part of libSystem). If linking ever fails,
+# add:  linkerOpts = -lutil
+
+package = io.kotgent.cinterop.pty
+headers = util.h sys/ioctl.h termios.h spawn.h
+
+---
+
+#include <util.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <spawn.h>
+
+// openpty() lives in <util.h>. cinterop's header scan does not pick up util.h's
+// declarations here (only spawn.h/ioctl.h/termios.h symbols come through), so we expose
+// openpty through a compiled helper in this body instead -- the body IS compiled against
+// util.h, so the call resolves even though the scan skipped it. Allocates a master/slave
+// pty pair with default termios and window size. Returns 0 on success, -1 on error.
+static int kotgent_openpty(int *amaster, int *aslave) {
+    return openpty(amaster, aslave, (char *)0, (struct termios *)0, (struct winsize *)0);
+}
+
+// Set the window size on a pty master fd. This wraps the ioctl(TIOCSWINSZ) call and
+// the struct winsize construction so Kotlin never has to deal with the variadic ioctl
+// signature or the _IOW()-expanded TIOCSWINSZ macro. Returns 0 on success, -1 on error
+// (errno set). Used by both Pty.open() (initial size) and Pty.resize().
+static int kotgent_set_winsize(int fd, unsigned short rows, unsigned short cols) {
+    struct winsize ws;
+    ws.ws_row = rows;
+    ws.ws_col = cols;
+    ws.ws_xpixel = 0;
+    ws.ws_ypixel = 0;
+    return ioctl(fd, TIOCSWINSZ, &ws);
+}
