@@ -123,12 +123,19 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Create: `src/transport/SpikeServer.kt`
 - Create: `test/transport/WsSpikeTest.kt`
 
-- [ ] write интеграционный тест: поднять сервер на `127.0.0.1:0`, Ktor-client'ом HTTP GET round-trip + WS echo (текст и **binary**-фрейм) — ASSERT
-- [ ] `module.yaml`: `settings.ktor: enabled` + deps `ktor-server-cio`, `ktor-server-websockets`; `test-dependencies`: `ktor-client-cio` (+ websockets)
-- [ ] `SpikeServer.kt`: `embeddedServer(CIO)` с HTTP-роутом, WS-echo, отдачей статического файла
-- [ ] ⚠️ если WS-плагин CIO на native не покрывает нужное — зафиксировать блокер и эскалировать (меняет транспортное решение)
-- [ ] write тест: бинарный WS-фрейм round-trip (нужен для terminal-канала)
-- [ ] run `./kotlin test` — WS зелёный перед Task 4
+- [x] write интеграционный тест: поднять сервер на `127.0.0.1:0`, Ktor-client'ом HTTP GET round-trip + WS echo (текст и **binary**-фрейм) — ASSERT
+- [x] `module.yaml`: `settings.ktor: enabled` + deps `ktor-server-cio`, `ktor-server-websockets`; `test-dependencies`: `ktor-client-cio` (+ websockets)
+- [x] `SpikeServer.kt`: `embeddedServer(CIO)` с HTTP-роутом, WS-echo, отдачей статического файла
+- [x] ⚠️→✅ WS-плагин CIO на native ПОКРЫВАЕТ нужное (text+binary echo round-trip зелёный) — блокер НЕ сработал, эскалация не требуется
+- [x] write тест: бинарный WS-фрейм round-trip (нужен для terminal-канала)
+- [x] run `./kotlin test` — WS зелёный перед Task 4 (5 passed: SmokeTest + 4 WsSpikeTest; 4 PtyTest @Ignore; exit 0)
+
+**✅ Спайк подтверждён — Ktor CIO HTTP+WS работает на macosArm64 native:**
+- **Что доказано:** `embeddedServer(CIO, port=0)` + `install(WebSockets)` поднимается на эфемерном порту (`resolvedConnectors().first().port` отдаёт реальный порт); `GET /hello` round-trip; WS `/echo` эхо **TEXT** и **BINARY**-фреймов (binary — байт-в-байт, нужен для terminal-канала); отдача реального файла с диска через `GET /static`. Ktor CIO-клиент (`ktor-client-cio` + `ktor-client-websockets`) в тестах гоняет все 4 round-trip'а. Все 4 WS-теста зелёные, `./kotlin build`/`./kotlin test` = exit 0.
+- **Версии:** `settings.ktor: enabled` даёт BOM/каталог (дефолт 3.4.1); ktor-артефакты объявлены БЕЗ версий — резолвятся из BOM. Native-артефакты (`ktor-server-cio`/`-server-websockets`/`-client-cio`/`-client-websockets`) для macosArm64 разрешились штатно.
+- **✅ KT-78062 probe — ГЛАВНЫЙ вывод:** Ktor — сторонний klib, чьи native-артефакты содержат внутренний cinterop; тем не менее он **линкуется в TEST-бинарь чисто** (`linkMacosArm64TestDebug` = success, никаких `IrLinkageError`/unresolved-symbol) и WS/HTTP реально исполняются в рантайме тестов. Это ожидаемый ХОРОШИЙ исход: **KT-78062 бьёт ТОЛЬКО по нашему собственному raw-cinterop `.def` (Task 2 PTY), а НЕ по dependency-klib'ам** типа Ktor. Транспорт (Task 14) тестируется полноценно.
+- **[decision] static-file через posix-I/O:** Ktor'овские `staticFiles`/`staticResources` завязаны на `java.io.File`/classloader (JVM-only) → на native недоступны. Статика отдаётся чтением реального файла с диска через `platform.posix` (`fopen`/`fread`, без кастомного cinterop — `platform.posix` штатная K/N platform-либа). Файл пишется в `$TMPDIR/kotgent-ws-spike-static-<pid>.txt` на `start()`. Для Web UI (Task 17) это тот же путь — отдача статики из `resources/webui` реализуется своим file-reader'ом, не JVM-хелперами Ktor.
+- **Примечание:** линковка печатает безвредные `'+zcm' is not a recognized feature` (LLVM/Apple-target warning, лейбл ERROR от форматтера лога) — на результат не влияет, `Build successful`.
 
 ### Task 4: SQLDelight через свой Kotlin Toolchain-плагин — спайк (РИСК, фолбэк JSONL)
 

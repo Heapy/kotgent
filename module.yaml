@@ -10,6 +10,15 @@ dependencies:
   # binary (KT-78062), so the PTY integration tests are @Ignore'd (see plan Task 2 blocker).
   - ./sysnative
   - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0
+  # Ktor CIO server + WebSockets — transport foundation (Task 3 spike, real Server in Task 14).
+  # Versions come from the BOM/catalog that `settings.ktor: enabled` provides (default 3.4.1).
+  - io.ktor:ktor-server-cio
+  - io.ktor:ktor-server-websockets
+
+test-dependencies:
+  # Ktor CIO client (+ client WebSockets) drives the SpikeServer round-trips in WsSpikeTest.
+  - io.ktor:ktor-client-cio
+  - io.ktor:ktor-client-websockets
 
 settings:
   kotlin:
@@ -17,3 +26,4 @@ settings:
     serialization: json
   native:
     entryPoint: io.kotgent.main
+  ktor: enabled
