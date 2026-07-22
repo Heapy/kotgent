@@ -168,12 +168,12 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Create: `src/core/AgentEvent.kt`, `src/core/SessionState.kt`, `src/core/SessionMeta.kt`, `src/core/Ids.kt`
 - Create: `test/core/DomainTest.kt`
 
-- [ ] write тесты: `@Serializable` round-trip каждого v1-`AgentEvent`-подтипа; инварианты value-class id
-- [ ] `Ids.kt`: value-class'ы `SessionId`, `Seq`, `ProviderSessionId`, `PaneId`
-- [ ] `AgentEvent.kt`: sealed-иерархия v1 (`TurnStarted/TurnCompleted/ApprovalRequested/ApprovalResolved/ToolCall/Exited/SessionBound`) + `EventSource`
-- [ ] `SessionState.kt`: enum 7 состояний + живые/мёртвые + `needsAttention`; `needs_answer` — forward-modeled
-- [ ] `SessionMeta.kt`: data class полей сессии
-- [ ] run `./kotlin test` — домен зелёный перед Task 6
+- [x] write тесты: `@Serializable` round-trip каждого v1-`AgentEvent`-подтипа; инварианты value-class id
+- [x] `Ids.kt`: value-class'ы `SessionId`, `Seq`, `ProviderSessionId`, `PaneId`
+- [x] `AgentEvent.kt`: sealed-иерархия v1 (`TurnStarted/TurnCompleted/ApprovalRequested/ApprovalResolved/ToolCall/Exited/SessionBound`) + `EventSource`
+- [x] `SessionState.kt`: enum 7 состояний + живые/мёртвые + `needsAttention`; `needs_answer` — forward-modeled
+- [x] `SessionMeta.kt`: data class полей сессии
+- [x] run `./kotlin test` — домен зелёный перед Task 6 (12 DomainTest зелёные; 19 passed / 4 PtyTest skipped; SmokeTest+WsSpikeTest+SqlDelightSpikeTest не сломаны)
 
 ### Task 6: Редьюсер — лог → проекция (host-free, ядро TDD)
 
