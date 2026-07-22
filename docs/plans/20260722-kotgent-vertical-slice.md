@@ -223,12 +223,20 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Create: `src/tmux/Tmux.kt`, `src/tmux/ProcessRunner.kt`
 - Create: `test/tmux/TmuxTest.kt`
 
-- [ ] write интеграционные тесты против `tmux -L kotgent-test` (skip-guard): `newSession`→`pane_id`; `listSessions`/`listPanes` парсятся; `capturePane`; `killSession`
-- [ ] `ProcessRunner.kt`: запуск процесса через `posix_spawn`, сбор stdout/stderr/exit
-- [ ] `Tmux.kt`: `ensureServer()`, `newSession(id,cwd,cmd,cols,rows)→PaneId`, `listSessions()`, `listPanes()`, `capturePane(id)`, `killSession(id)`, `sendKeys(id,bytes)`, `paneAlive`/`panePid`
-- [ ] экранирование аргументов; парсинг `-F` форматов
-- [ ] write тесты: несуществующая сессия, двойной `killSession`
-- [ ] run `./kotlin test` — обёртка зелёная перед Task 9
+- [x] write интеграционные тесты против `tmux -L kotgent-test` (skip-guard): `newSession`→`pane_id`; `listSessions`/`listPanes` парсятся; `capturePane`; `killSession`
+- [x] `ProcessRunner.kt`: запуск процесса через **`popen`/`pclose`** (НЕ `posix_spawn` — его нет в `platform.posix`, см. блок ниже), сбор stdout/stderr/exit
+- [x] `Tmux.kt`: `ensureServer()`, `newSession(id,cwd,cmd,cols,rows)→PaneId`, `listSessions()`, `listPanes()`, `capturePane(id)`, `killSession(id)`, `sendKeys(id,bytes)`, `paneAlive`/`panePid`
+- [x] экранирование аргументов; парсинг `-F` форматов
+- [x] write тесты: несуществующая сессия, двойной `killSession`
+- [x] run `./kotlin test` — обёртка зелёная перед Task 9
+
+**✅ Реализовано — тонкая обёртка `tmux -L <socket>` на стоковом `platform.posix` (8 TmuxTest зелёные против РЕАЛЬНОГО tmux 3.7b из test-бинаря; suite 60 ran / 56 passed / 4 PtyTest @Ignore; `./kotlin build`+`test` exit 0):**
+- `ProcessRunner.kt` — `run(argv, env)` → `ProcessResult(exitCode, stdoutBytes, stderrBytes)`; non-zero exit НЕ бросает (это результат, `tmux` так репортит «can't find session»); бросает `ProcessException` только на runner-фейле (`popen`/`mkstemp`). stderr редиректится в per-call temp-файл (`mkstemp`, атомарно), stdout полностью дренится одним блокирующим `fread`-циклом → **дедлок пайпа структурно невозможен** (единственный пайп, всегда до EOF; болтливый процесс не переполнит непрочитанный буфер) И stdout не загрязнён stderr (важно для `capture-pane`). Аргументы жёстко квотятся POSIX single-quote (`shQuote`), так что `/bin/sh -c` не может пере-split'нуть/расширить их (форматы `#{pane_id}`, TAB-разделители — литеральны).
+- `Tmux.kt` — `ensureServer`/`newSession→PaneId`/`listSessions`/`listPanes`/`capturePane`/`killSession→Boolean`/`sendKeys(-H hex, байт-точно)`/`paneAlive`/`panePid`. Адресация: логический short-id → имя `kt-<id>`; рантайм-корреляция — `PaneId` (`#{pane_id}`). `-F` парсится по TAB-разделителю. Soft-фейлы нормализованы (нет сервера / нет сессии / нет пейна → пустой список / `false` / `null`), а не бросаются; `killSession` идемпотентен (двойной kill и несуществующая сессия → `false`). `-e KOTGENT_SESSION_ID=<id>` — только debug-лейбл.
+- **[deviation] `popen`/`pclose` вместо `posix_spawn`:** `posix_spawn`/`posix_spawn_file_actions_*`/`posix_spawnattr_*` живут в `<spawn.h>`, которого **НЕТ** в header-сете `platform.posix` для macos_arm64 (проверено: `spawn.h` отсутствует в `konan/platformDef/macos_arm64/posix.def` — именно поэтому `Pty` завёл свой `pty.def` cinterop под них). Свой cinterop НЕ линкуется в test-бинари (KT-78062), а эти tmux-команды ОБЯЗАНЫ спавниться из test-бинаря. Ручной `fork()`+`execvp()` в K/N небезопасен (между fork и exec допустима только async-signal-safe работа; любая Kotlin-аллокация/GC-safepoint в форкнутом ребёнке рискует дедлоком — та же причина, по которой `Pty` выбрал `posix_spawn` вместо `forkpty`). `popen` снимает обе проблемы: `fork`+`exec` идёт **внутри libc** (K/N-код в ребёнке не исполняется вообще), а `popen`/`pclose` — стоковый `platform.posix` (`stdio.h`), поэтому линкуются и исполняются в test-бинаре штатно (как `fopen`/`fread` в Task 3). Задача явно санкционировала `popen/pclose` как альтернативу; single-quote-квотинг закрывает риск shell-инъекции, ради которого предпочитался argv-путь.
+- **[decision] раздельные stdout/stderr через temp-файл (не merge `2>&1`):** `capture-pane` должен вернуть РОВНО контент пейна; случайный tmux-warning в stderr при merge загрязнил бы захват. Temp-файл (`mkstemp` в `$TMPDIR`, `unlink` в `finally`) даёт чистый stdout + настоящий stderr для сообщений об ошибках, ценой одного короткоживущего файла на вызов.
+- **[decision] `send-keys -H` (hex) для `sendKeys(bytes)`:** байт-точная передача произвольного терминального ввода (control-символы/UTF-8) без интерпретации имён клавиш — то, что нужно terminal-passthrough (Task 9/14).
+- **Находка тулчейна (подтверждает вывод Task 3):** `linkMacosArm64TestDebug` слинковал ProcessRunner чисто и все 8 TmuxTest реально спавнят `tmux` в рантайме тестов — KT-78062 бьёт ТОЛЬКО по нашему собственному raw-cinterop (Task 2 PTY), а стоковый `platform.posix` линкуется в test-бинарь без проблем. Нового `@Ignore` НЕ потребовалось.
 
 ### Task 9: PTY fan-out — lazy upstream-мост + broadcaster + capture-pane сид
 
