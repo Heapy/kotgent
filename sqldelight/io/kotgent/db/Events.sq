@@ -1,0 +1,40 @@
+-- The append-only event log (Task 7) — the event-sourcing spine. One row per canonical
+-- io.kotgent.core.AgentEvent, keyed by (session_id, seq) so seq is a per-session, contiguous,
+-- monotonic sequence number (1, 2, 3, ...). `type` is the event's kotlinx-serialization
+-- discriminator (e.g. "turn_started") mirrored out of `payload` for queryability; `payload` is
+-- the full JSON-serialized AgentEvent (the source of truth for round-trip); `source` is the
+-- io.kotgent.core.EventSource name that produced the event; `ts` is an epoch-millis timestamp.
+CREATE TABLE events (
+  session_id TEXT NOT NULL,
+  seq        INTEGER NOT NULL,
+  ts         INTEGER NOT NULL,
+  type       TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+
+-- Read/subscribe scan path (WHERE session_id = ? AND seq >= ? ORDER BY seq). The composite PK
+-- already indexes (session_id, seq); this explicit index is declared per the plan's schema
+-- ("+ index") and is a harmless belt-and-suspenders over the same access pattern.
+CREATE INDEX events_session_seq ON events(session_id, seq);
+
+insert:
+INSERT INTO events(session_id, seq, ts, type, source, payload)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- Next monotonic per-session seq: MAX(seq) + 1, or 1 for a session with no events yet
+-- (coalesce with the non-null literal 0 keeps the result non-null).
+nextSeq:
+SELECT coalesce(MAX(seq), 0) + 1
+FROM events
+WHERE session_id = ?;
+
+-- Read a contiguous run of a session's events from a cursor onward, in seq order. Used by both
+-- read(fromSeq) and the initial snapshot of subscribe(fromSeq), and (with fromSeq = 0) to
+-- reconstruct a session's projection by replay on a cold cache.
+selectFromSeq:
+SELECT session_id, seq, ts, type, source, payload
+FROM events
+WHERE session_id = ? AND seq >= ?
+ORDER BY seq;

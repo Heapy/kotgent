@@ -196,15 +196,26 @@ Kotgent — local-first диспетчер агентских сессий: пр
 
 **Files:**
 - Create: `src/store/EventStore.kt`
-- Create: `src/store/EventStoreImpl.kt` (SQLDelight) ИЛИ `src/store/JsonlEventStore.kt` (фолбэк)
-- Create: `sqldelight/io/kotgent/db/Events.sq`, `sqldelight/io/kotgent/db/Sessions.sq` (если SQLDelight)
+- Create: `src/store/SqliteEventStore.kt` (SQLDelight — фолбэк JSONL НЕ реализован, см. Task 4)
+- Create: `sqldelight/io/kotgent/db/Events.sq`, `sqldelight/io/kotgent/db/Sessions.sq`
 - Create: `test/store/EventStoreTest.kt`
+- Remove: `sqldelight/io/kotgent/db/Spike.sq`, `test/store/SqlDelightSpikeTest.kt` (Task 4 spike — real EventStore tests cover the same `.sq`→codegen→native-driver ground)
 
-- [ ] write тесты (против интерфейса): `append`→`read(fromSeq)` round-trip; `seq` монотонный per-session; append+обновление кэша атомарны; `replay` восстанавливает состояние; `subscribe(fromSeq)` эмитит новые; протухший курсор → ошибка
-- [ ] `EventStore.kt`: интерфейс `append(sessionId,event)→seq`, `read(sessionId,fromSeq)`, `subscribe(fromSeq)`
-- [ ] реализация по итогу Task 4: **SQLDelight** (`.sq` схема events/sessions, `native-driver`, single-writer, WAL, транзакция) ЛИБО **JSONL** (append-only на сессию + in-memory read-model, fsync, игнор частичной последней строки при replay)
-- [ ] write тесты: конкурентные читатели не блокируют писателя (SQLDelight WAL) / потокобезопасность in-memory (JSONL)
-- [ ] run `./kotlin test` — стор зелёный перед Task 8
+- [x] write тесты (против интерфейса): `append`→`read(fromSeq)` round-trip; `seq` монотонный per-session; append+обновление кэша атомарны; `replay` восстанавливает состояние; `subscribe(fromSeq)` эмитит новые; протухший курсор → ошибка
+- [x] `EventStore.kt`: интерфейс `append(sessionId,event,source)→seq`, `read(sessionId,fromSeq)`, `subscribe(sessionId,fromSeq)` (+ `upsertSession`/`getSession`/`listSessions`/`projectionOf`)
+- [x] реализация по итогу Task 4: **SQLDelight** (`.sq` схема events/sessions, `native-driver`, single-writer `Mutex`, WAL, append+кэш в одной транзакции)
+- [x] write тесты: конкурентные аппенды сериализуются в непрерывный лог; конкурентные читатели видят только закоммиченный непрерывный префикс (SQLDelight WAL)
+- [x] run `./kotlin test` — стор зелёный перед Task 8 (48 passed / 4 PtyTest skipped / exit 0)
+
+**✅ Реализовано — SQLDelight-backed EventStore (9 EventStoreTest зелёные; suite 52 ran / 48 passed / 4 PtyTest @Ignore; `./kotlin build`+`test` exit 0):**
+- `Events.sq` — append-only лог `events(session_id, seq, ts, type, source, payload)` PK `(session_id, seq)` + index; запросы `insert` / `nextSeq` (`coalesce(MAX(seq),0)+1`) / `selectFromSeq` (`WHERE session_id=? AND seq>=? ORDER BY seq`). `Sessions.sq` — read-model кэш (полный `SessionMeta` в порядке колонок); `upsert` (сохраняет `created_at`), `updateCache` (только reducer-производные поля), `get`, `list`.
+- `EventStore.kt` — storage-agnostic интерфейс (`StoredEvent` = sessionId+seq+ts+source+event; `StaleCursorException`). `SqliteEventStore.kt` — single-writer через `Mutex`; каждый `append` в ОДНОЙ транзакции вставляет событие по `MAX(seq)+1` И двигает `sessions`-кэш через `reduce(priorProjection, event)` (проекция кэшируется в памяти, на холодную реконструируется `replay` из лога — restart-safe; крос-чек `reducer.lastSeq == db.nextSeq`). Payload = kotlinx JSON, `type` = класс-дискриминатор (== `@SerialName`), вытащенный из payload для queryability.
+- `subscribe(sessionId, fromSeq)` — snapshot `read(fromSeq)` + live relay через `channelFlow`+`Channel`, зарегистрированный под тем же writer-`Mutex` (нет гонки на границе snapshot/live; контроль непрерывности); `fromSeq > lastSeq+1` → `StaleCursorException` (hard error, restart-safe курсор).
+- **[decision] `subscribe(sessionId, fromSeq)` — per-session** (план писал `subscribe(fromSeq)`): `seq` — per-session, поэтому detection протухшего/gap-курсора когерентен только per-session; глобальный events-WS (Task 14) собирается merge'ем per-session потоков.
+- **[decision] session-CRUD (`upsertSession`/`get`/`list`) на `EventStore`:** атомарный append+кэш делает обе таблицы одним storage-concern; daemon владеет метаданными строки, `append` двигает только кэш-поля существующей строки.
+- **[deviation] `PRAGMA journal_mode=WAL` через `executeQuery`, не `execute`:** PRAGMA возвращает строку → sqliter `execute()` кидает «Queries ... query/rawQuery only». На `:memory:` WAL — no-op (возвращает `memory`), но выполняется без ошибки; реально включает WAL на file-backed БД daemon'а.
+- **[deviation] дефолт-часы = `kotlin.time.Clock.System.now().toEpochMilliseconds()`:** `kotlin.system.getTimeMillis()` — ERROR-level deprecated в 2.4.10. Инжектируемо (`now: () -> Long`) → тесты детерминированы.
+- **[decision] index `events_session_seq(session_id, seq)` избыточен с композитным PK** (SQLite уже индексирует PK) — добавлен буквально по схеме плана «+ index», безвреден.
 
 ### Task 8: Обёртка над tmux (`tmux -L kotgent`)
 

@@ -1,0 +1,75 @@
+-- The sessions read-model cache (Task 7) — one row per session, mirroring io.kotgent.core.SessionMeta
+-- in `sessions`-column order. Identity + launch/tmux/repo context is owned by the daemon (upsert),
+-- while the reducer-derived cache fields (state, state_source, last_seq, provider_session_id,
+-- updated_at) are advanced by EventStore.append IN THE SAME transaction as the event insert, so the
+-- cache is always consistent with the log. `tags` is a JSON array of strings; nullable columns stay
+-- null until discovered (provider_session_id after SessionBound, pane_id after tmux new-session, ...).
+CREATE TABLE sessions (
+  id                  TEXT NOT NULL PRIMARY KEY,
+  name                TEXT NOT NULL,
+  tags                TEXT NOT NULL,
+  agent               TEXT NOT NULL,
+  provider_session_id TEXT,
+  model               TEXT,
+  cli_version         TEXT,
+  cli_path            TEXT,
+  cwd                 TEXT NOT NULL,
+  repository          TEXT,
+  worktree            TEXT,
+  branch              TEXT,
+  tmux_session        TEXT NOT NULL,
+  pane_id             TEXT,
+  state               TEXT NOT NULL,
+  state_source        TEXT,
+  last_seq            INTEGER NOT NULL,
+  read_cursor         INTEGER NOT NULL,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL
+);
+
+-- Full-row upsert (daemon-owned session metadata). On conflict, every field is refreshed from the
+-- new row EXCEPT created_at, which is preserved from the existing row.
+upsert:
+INSERT INTO sessions(
+  id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
+  worktree, branch, tmux_session, pane_id, state, state_source, last_seq, read_cursor,
+  created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+  name                = excluded.name,
+  tags                = excluded.tags,
+  agent               = excluded.agent,
+  provider_session_id = excluded.provider_session_id,
+  model               = excluded.model,
+  cli_version         = excluded.cli_version,
+  cli_path            = excluded.cli_path,
+  cwd                 = excluded.cwd,
+  repository          = excluded.repository,
+  worktree            = excluded.worktree,
+  branch              = excluded.branch,
+  tmux_session        = excluded.tmux_session,
+  pane_id             = excluded.pane_id,
+  state               = excluded.state,
+  state_source        = excluded.state_source,
+  last_seq            = excluded.last_seq,
+  read_cursor         = excluded.read_cursor,
+  created_at          = sessions.created_at,
+  updated_at          = excluded.updated_at;
+
+-- Advance ONLY the reducer-derived cache fields; called inside EventStore.append's transaction
+-- (leaves identity/launch context and read_cursor untouched).
+updateCache:
+UPDATE sessions
+SET state = ?, state_source = ?, last_seq = ?, provider_session_id = ?, updated_at = ?
+WHERE id = ?;
+
+get:
+SELECT *
+FROM sessions
+WHERE id = ?;
+
+list:
+SELECT *
+FROM sessions
+ORDER BY created_at, id;
