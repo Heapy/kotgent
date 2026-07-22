@@ -10,325 +10,329 @@ Kotgent — local-first диспетчер агентских сессий: пр
 
 Всё на **local-only** (`127.0.0.1` + токен). Codex, PWA, cloudflared-туннель, Web Push, diff viewer — в бэклоге.
 
-Архитектура целиком проработана в брейншторме (6 слоёв, event-sourcing спина, adapter-шов). Дизайн заимствует паттерны из `umputun/agterm` (push-статус через хуки агента, host-free ядро) и JetBrains `agent-workbench` (event-sourcing: `Flow<событий>` → чистый редьюсер → состояние; `RuntimeInput`/`StopMode`; capability-by-type).
+Сборка — **JetBrains Kotlin Toolchain** (декларативный `module.yaml`, CLI `./kotlin`), НЕ Gradle. Архитектура (6 слоёв, event-sourcing спина, adapter-шов) заимствует паттерны из `umputun/agterm` и JetBrains `agent-workbench`.
 
 ## Context (from discovery)
 
-- **Проект:** greenfield, только `idea.md`, не git-репозиторий. Язык — **Kotlin/Native** (единый нативный бинарь, macOS arm64).
-- **idea.md устарел в 2 местах:** там `pty4j` (JVM — НЕ применимо на K/N, идём в POSIX cinterop) и «свой relay» (заменён на cloudflared, в бэклоге).
-- **Память `kotlin-native-stack`:** pty4j/JDBC/JVM-only библиотеки исключены.
-- **Стек:** POSIX cinterop (`forkpty`/`openpty` из `<util.h>`, `ioctl(TIOCSWINSZ)`, `termios`); SQLDelight native-driver; Ktor CIO (HTTP+WS); kotlinx.coroutines + serialization; xterm.js (Web UI).
-- **Reference-реализации изучены** (паттерны заимствованы, не код): agterm, agent-workbench.
+- **Проект:** Kotlin/Native, единый нативный бинарь (macOS arm64), собирается **Kotlin Toolchain**. Scaffold уже инициализирован пользователем (`./kotlin init`): `module.yaml` (`product: macos/app` / `macosArm64`, Kotlin 2.4.10, `entryPoint: io.kotgent.main`), `src/main.kt` (`versionLine()`+`main()`), `test/SmokeTest.kt`, `.gitignore`, `./kotlin` wrapper. Git инициализирован; план закоммичен.
+- **idea.md устарел:** `pty4j` (JVM — идём в POSIX cinterop) и «свой relay» (заменён на cloudflared, бэклог).
+- **Layout `amper`:** исходники в `src/`, тесты в `test/` (НЕ `src/nativeMain/kotlin/…`). Пакеты `io.kotgent.*`; директории под пакеты не обязаны совпадать, но организуем по областям (`src/core/…` = `package io.kotgent.core`).
+- **cinterop:** `.def` кладутся в `cinterop/` **без YAML** (Kotlin Toolchain сам их подхватывает).
+- **Хранилище:** SQLDelight — Gradle-плагин, на Toolchain недоступен напрямую → обходим **своим `jvm/amper-plugin`**, вызывающим компилятор SQLDelight для codegen (спайк Task 4, фолбэк JSONL).
+- **Тулчейн подтверждён:** JDK 25, Xcode, tmux 3.7b, claude 2.1.217, codex, Maven Central доступен.
 
 ## Development Approach
 
-- **Testing approach: TDD (тесты сначала).** Для host-free ядра (домен, редьюсер, event store, нормализация адаптера, генерация launch-спеки/plist) — полноценный TDD с плотными юнит-тестами. Для краёв (forkpty/PTY, tmux, Ktor-WS, tty-raw в `attach`) TDD адаптируется: сначала пишем интеграционный/smoke-тест, фиксирующий контракт (IO, внешние процессы), затем реализацию.
-- complete each task fully before moving to the next; small, focused changes.
-- **CRITICAL: каждая задача включает новые/обновлённые тесты** (отдельными пунктами чеклиста, success + error/edge).
-- **CRITICAL: все тесты зелёные перед следующей задачей.**
-- **CRITICAL: обновлять этот файл при изменении scope.**
-- run tests after each change.
+- **Testing approach: TDD.** host-free ядро (домен, редьюсер, event store поверх интерфейса, нормализация адаптера, генерация launch-спеки/plist) — полноценный TDD. Края (cinterop/PTY, tmux, Ktor-WS, tty-raw, custom-plugin codegen) — сначала интеграционный/smoke-тест контракта, затем реализация.
+- **CRITICAL:** каждая задача включает новые/обновлённые тесты (отдельными пунктами, success + error), все зелёные перед следующей задачей; обновлять этот файл при изменении scope.
+- Команды: тесты `./kotlin test`; сборка `./kotlin build`; запуск `./kotlin run`.
 
 ## Testing Strategy
 
-- **unit-тесты (обязательны каждую задачу):** host-free ядро — редьюсер (переходы v1, правило «вход в running сбрасывает pendingApprovals», interrupt-reset, replay-детерминизм), сериализация событий, генерация команд/конфигов/plist, event store (append/read/seq/транзакция).
-- **интеграционные тесты (края):** forkpty round-trip; Ktor WS echo; tmux-обёртка против реального `tmux -L kotgent-test` (skip-guard, если tmux отсутствует); PTY fan-out (несколько подписчиков одного upstream); transport endpoints.
-- **e2e/manual:** браузерный сквозной проход (срез) — в v1 нет e2e-фреймворка (Playwright — бэклог); проверяется вручную в Task 17. Юнит-тестируем то, что тестируемо в Web UI (парсинг токена из URL-фрагмента, API-клиент).
-- Команды: тесты `./gradlew macosArm64Test`; сборка `./gradlew build` / линк `./gradlew linkDebugExecutableMacosArm64`.
+- **unit (host-free, каждую задачу):** редьюсер (переходы v1, правило «вход в running сбрасывает pendingApprovals», interrupt-reset, replay-детерминизм), сериализация событий, генерация команд/конфигов/plist, EventStore-контракт.
+- **интеграционные (края):** PTY round-trip (`openpty`+`posix_spawn`); Ktor WS echo (native); SQLDelight-plugin codegen round-trip; tmux против реального `tmux -L kotgent-test` (skip-guard); PTY fan-out; transport endpoints.
+- **e2e/manual:** браузерный сквозной проход — v1 без e2e-фреймворка (Playwright бэклог), проверяется вручную (Task 18). Юнит-тестируем тестируемое в Web UI.
+- Команды: `./kotlin test`, `./kotlin build`.
 
 ## Progress Tracking
 
-- отмечать `[x]` сразу по завершении; новые задачи — с префиксом ➕; блокеры — с ⚠️; синхронизировать план с фактом.
+- `[x]` сразу по завершении; новые задачи — `➕`; блокеры — `⚠️`; синхронизировать с фактом.
 
 ## Solution Overview
 
-**Слои (packages под `io.kotgent`):**
+**Модули / layout:**
+- Корневой модуль (`macos/app`): `src/` (пакеты `io.kotgent.*`), `test/`, `cinterop/` (`.def`), `sqldelight/` (`.sq`), `resources/webui/` (SPA).
+- `plugins/sqldelight-gen/` (`jvm/amper-plugin`): codegen SQLDelight. `project.yaml` перечисляет модуль + плагин; корневой `module.yaml` — `plugins: { sqldelight-gen: enabled }`.
+
+**Packages (host-free ↔ края):**
 - `core/` — **host-free**: `AgentEvent`, `SessionState`, `SessionMeta`, `Reducer` (лог → проекция). Без IO, максимум тестов.
-- `store/` — `EventStore` интерфейс + SQLDelight/SQLite реализация (single-writer, WAL, `seq` монотонный per-session; append события + обновление кэша `sessions` в одной транзакции).
-- `pty/` — PTY-примитив (`openpty`+`posix_spawn`) + fan-out. **Lazy lifecycle:** upstream `tmux attach` на сессию поднимается при ПЕРВОМ подписчике и гаснет при уходе последнего (Claude живёт в tmux независимо от моста). Это даёт Detach-семантику И снимает respawn после рестарта daemon (мост пере-поднимется на первый terminal-WS-коннект). Broadcast байтов; resize `TIOCSWINSZ`; сид новых подписчиков `capture-pane -e`.
+- `store/` — `EventStore` интерфейс + реализация: **SQLDelight** (через плагин + `native-driver`) ИЛИ фолбэк JSONL. Интерфейс изолирует downstream от выбора.
+- `pty/` — PTY-примитив (`openpty`+`posix_spawn`) + fan-out. **Lazy lifecycle:** upstream `tmux attach` поднимается при первом подписчике, гаснет при последнем (Claude живёт в tmux независимо; даёт Detach И снимает respawn после рестарта daemon).
 - `tmux/` — обёртка над `tmux -L kotgent`.
-- `adapter/` — `AgentAdapter` контракт (launch/resume-спека + `events: Flow<AgentEvent>`) + `ClaudeAdapter` (launch/resume, hook-config, session-id preallocation) + нормализация хук-событий. Capability-интерфейсы — в бэклоге (нужны со 2-м адаптером).
+- `adapter/` — `AgentAdapter` контракт (launch/resume + `events: Flow<AgentEvent>`) + `ClaudeAdapter` + нормализация. Capability-интерфейсы — бэклог.
 - `daemon/` — session manager, reconciliation, provider-id capture, StopMode.
-- `transport/` — Ktor: control REST, events WS, terminal WS, токен-auth, hook ingress, статика Web UI.
+- `transport/` — Ktor CIO: control REST, events WS, terminal WS, токен-auth, hook ingress, статика Web UI.
 - `cli/` — субкоманды + `attach` raw-passthrough.
 - `launchd/` — генерация plist + install.
 
-**Ключевое решение — event-sourcing:** состояние сессии не хранится как поле, а **выводится чистым редьюсером** из append-only лога `events`. Любой адаптер лишь нормализует свои сигналы в канонический `AgentEvent` — редьюсер и состояния неизменны (это и есть adapter-шов). Restart-safety = `replay` лога.
+**Event-sourcing:** состояние — проекция чистого редьюсера над append-only логом `events`. Адаптер лишь нормализует свои сигналы в канонический `AgentEvent`; редьюсер/состояния неизменны. Restart-safety = `replay`.
 
-**Risk-first порядок:** первыми идут спайки самых рисковых мест на K/N — forkpty-cinterop (Task 2) и Ktor-CIO-WS (Task 3). Если платформа их не тянет — узнаём сразу, до вложений в ядро.
+**Risk-first порядок:** первыми — спайки самых хрупких мест на Kotlin Toolchain/K/N: PTY-cinterop (Task 2), Ktor-CIO-WS (Task 3), SQLDelight-via-custom-plugin (Task 4). Проваленный спайк узнаём сразу; storage-спайк имеет фолбэк.
 
 ## Technical Details
 
-- **Идентичность сессии:** логический ключ — имя tmux-сессии `kt-<shortid>`; рантайм-корреляция — `pane_id` (из `new-session -P -F '#{pane_id}'`, пересбор через `list-panes` на старте daemon). Хуки сообщают `$TMUX_PANE` (tmux выставляет корректно per-pane). `KOTGENT_SESSION_ID` — только debug-лейбл, маршрутизации НЕ доверяем (грабля env-poisoning tmux).
-- **Состояния (7):** живые `running / needs_approval / needs_answer / ready`; мёртвые `stopped / crashed / resumable`. В Claude-срезе `needs_answer` **forward-modeled** — интерактивный Claude не даёт сигнала «задал вопрос и ждёт» (и вопрос, и конец хода → `Stop`→`ready`); ни один v1-адаптер его не производит.
-- **`AgentEvent` (v1-словарь):** `TurnStarted`, `TurnCompleted`, `ApprovalRequested`, `ApprovalResolved`, `ToolCall`, `Exited(code)`, `SessionBound(providerSessionId)`. `QuestionAsked/QuestionAnswered` — в бэклог (не производятся Claude; про будущий Codex structured-протокол).
-- **Claude hook-маппинг:** `UserPromptSubmit`/`PostToolUse`→running, `Stop`→ready, `Notification`→needs_approval, `SessionStart`→`SessionBound`. ⚠️ Реальные `Notification`-пейлоады Claude НЕ подтверждены (в дефолтном `settings.json` хука `Notification` нет; он же срабатывает на idle-60с). Для среза — спайк реальных пейлоадов (Task 10) + **грубый маппинг любого `Notification`→needs_attention** (точное approval-vs-idle — в бэклог). У Claude НЕТ «permission answered» → **вход в `running` (`UserPromptSubmit`/`PostToolUse`) сбрасывает `pendingApprovals=0`** (правило редьюсера, Task 5).
-- **Ввод (срез):** только `TerminalInput(bytes)` — браузер продолжает и аппрувит через terminal-passthrough (xterm.js). `UserMessage`/`ApprovalResolved` — backlog-seam (structured-ввод нужен со structured-адаптером), в v1 не реализуются.
-- **Остановка:** `StopMode { Detach, Interrupt, Graceful, Terminate, Kill }` (`Detach`≠`Kill` = долговечность №1; `Interrupt` = сброс залипшего `running`).
-- **Схема БД:** `events(session_id, seq, ts, type, source, payload)` PK `(session_id,seq)`, индекс `(session_id,seq)`; `sessions(id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository, worktree, branch, tmux_session, pane_id, state, state_source, last_seq, read_cursor, created_at, updated_at)`.
-- **Provider-id capture:** preallocate UUID → `claude --session-id <uuid>` (version-gated; fallback — из `SessionStart`-хука); `SessionBound` пишет `provider_session_id`. Гарантия: буксует → retry + пометка «id pending» (resume недоступен, пока не привязан), не терять молча.
-- **Transport:** `127.0.0.1:PORT`, control REST + events WS (`?from=<seq>`, restart-safe курсор) + terminal WS (binary fan-out, `capture-pane -e` сид + resize). Токен в `~/.kotgent/token` (0600); CLI читает файл; Web UI — из URL-фрагмента `#token=`. Один токен на всё (bearer + hook); отдельный hook-токен — бэклог-харденинг.
-- **`kotgent attach`** = raw-passthrough на terminal-WS (локальный tty в raw через `termios`, stdin→WS, WS→stdout, `SIGWINCH`→resize), НЕ прямой `tmux attach` (держим инвариант «один upstream tmux-клиент на сессию, размер решает daemon»).
+- **Сборка:** `module.yaml` — `settings.ktor: enabled` + deps `io.ktor:ktor-server-cio`/`ktor-server-websockets` (+ `ktor-client-cio` в `test-dependencies`); `settings.kotlin.serialization: json`; dep `org.jetbrains.kotlinx:kotlinx-coroutines-core`; CLI-либа (`kotlinx-cli` или clikt native). Рантайм-БД: dep `app.cash.sqldelight:native-driver`.
+- **Идентичность сессии:** логический ключ — имя tmux-сессии `kt-<shortid>`; рантайм-корреляция — `pane_id` (`new-session -P -F '#{pane_id}'`, пересбор `list-panes` на старте daemon). Хуки шлют `$TMUX_PANE`. `KOTGENT_SESSION_ID` — только debug-лейбл (env-poisoning не доверяем).
+- **Состояния (7):** живые `running / needs_approval / needs_answer / ready`; мёртвые `stopped / crashed / resumable`. `needs_answer` в Claude-срезе **forward-modeled** (интерактивный Claude не даёт «задал вопрос и ждёт»).
+- **`AgentEvent` (v1):** `TurnStarted`, `TurnCompleted`, `ApprovalRequested`, `ApprovalResolved`, `ToolCall`, `Exited(code)`, `SessionBound(providerSessionId)`. `Question*` — бэклог.
+- **Claude hook-маппинг:** `UserPromptSubmit`/`PostToolUse`→running, `Stop`→ready, `Notification`→needs_approval, `SessionStart`→`SessionBound`. ⚠️ Реальные `Notification`-пейлоады НЕ подтверждены → спайк (Task 11) + грубый любой `Notification`→needs_attention. Нет «permission answered» → **вход в running сбрасывает `pendingApprovals=0`** (Task 6).
+- **Ввод (срез):** только `TerminalInput(bytes)` (браузер аппрувит через terminal-passthrough). `UserMessage`/`ApprovalResolved` — backlog-seam.
+- **Остановка:** `StopMode { Detach, Interrupt, Graceful, Terminate, Kill }` (`Detach`≠`Kill`; `Interrupt`=сброс залипшего running).
+- **Схема БД:** `events(session_id, seq, ts, type, source, payload)` PK `(session_id,seq)`; `sessions(id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository, worktree, branch, tmux_session, pane_id, state, state_source, last_seq, read_cursor, created_at, updated_at)`. Через `.sq` (SQLDelight) либо эквивалент на JSONL (фолбэк).
+- **Хранилище:** SQLDelight через `jvm/amper-plugin` (codegen) + `native-driver` (single-writer, WAL, append+кэш в одной транзакции). Фолбэк: JSONL append-only лог на сессию + read-model в памяти (перестраивается replay'ем; «needs attention» = фильтр в памяти). `EventStore.{append,read,subscribe}` изолирует выбор.
+- **Provider-id capture:** preallocate UUID → `claude --session-id <uuid>` (version-gated; fallback `SessionStart`-хук) → `SessionBound`. Гарантия: буксует → retry + «id pending» (resume заблокирован), не терять молча.
+- **Transport:** `127.0.0.1:PORT` (Ktor CIO), control REST + events WS (`?from=<seq>`, restart-safe курсор) + terminal WS (binary fan-out, `capture-pane -e` сид + resize). Токен `~/.kotgent/token` (0600); Web UI — URL-фрагмент `#token=`; один токен на всё.
+- **`kotgent attach`** = raw-passthrough на terminal-WS (tty raw через `termios`, stdin→WS, WS→stdout, `SIGWINCH`→resize), НЕ прямой `tmux attach`.
 
 ## What Goes Where
 
-- **Implementation Steps** (`[ ]`): весь код, тесты, схема, скрипты сборки в этом репозитории.
-- **Post-Completion** (без чекбоксов): ручной браузерный проход, установка/проверка launchd на реальной машине, настройка Playwright-e2e (бэклог), проверка на конкретных версиях `claude`/`tmux`.
+- **Implementation Steps** (`[ ]`): код, тесты, `.sq`, плагин, `module.yaml`/`project.yaml`, статика.
+- **Post-Completion** (без чекбоксов): ручной браузерный проход, launchd на реальной машине, Playwright (бэклог), проверка версий `claude`/`tmux`.
 
 ## Implementation Steps
 
-### Task 1: Каркас проекта и Gradle KMP-сборка
+### Task 1: Принять Kotlin Toolchain scaffold + базовые зависимости
 
 **Files:**
-- Create: `settings.gradle.kts`, `build.gradle.kts`, `gradle/libs.versions.toml`
-- Create: `src/nativeMain/kotlin/io/kotgent/Main.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/SmokeTest.kt`
-- Create: `.gitignore`
+- Modify: `module.yaml`
+- Verify: `src/main.kt`, `test/SmokeTest.kt`, `.gitignore`, `./kotlin`
 
-- [ ] настроить KMP-плагин, target `macosArm64 { binaries { executable { entryPoint = "io.kotgent.main" } } }`
-- [ ] подключить и **запинить проверенные версии** в `libs.versions.toml` (риск WS-на-native завязан на версию Ktor): Ktor 3.x CIO server + websockets, SQLDelight native-driver + gradle-plugin, kotlinx-coroutines-core, kotlinx-serialization-json, CLI-либа (kotlinx-cli/clikt native), kotlin-test
-- [ ] `Main.kt` с `main()`, печатающим версию (заглушка `kotgent --version`)
-- [ ] `.gitignore` (`.gradle`, `build/`, `*.klib`) — git уже инициализирован при коммите плана
-- [ ] write smoke-тест, проверяющий запуск `nativeTest` на K/N
-- [ ] run `./gradlew build && ./gradlew macosArm64Test` — должно пройти до Task 2
+- [ ] проверить существующий scaffold: `./kotlin build` и `./kotlin test` зелёные (macosArm64)
+- [ ] в `module.yaml` включить базовые зависимости, нужные далее: `settings.kotlin.serialization: json`, dep `kotlinx-coroutines-core` (пин версий, совместимых с Kotlin 2.4.10)
+- [ ] убедиться, что `SmokeTest` проходит после добавления зависимостей (`./kotlin test`)
+- [ ] закоммитить scaffold + правки (`stage-and-commit.sh`)
+- [ ] (Ktor/SQLDelight-зависимости добавляются в своих спайках Task 3/4)
 
 ### Task 2: cinterop-спайк — PTY-примитив через openpty + posix_spawn (РИСК)
 
 **Files:**
-- Create: `src/nativeInterop/cinterop/pty.def`
-- Create: `src/nativeMain/kotlin/io/kotgent/pty/Pty.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/pty/PtyTest.kt`
+- Create: `cinterop/pty.def`
+- Create: `src/pty/Pty.kt`
+- Create: `test/pty/PtyTest.kt`
 
-- [ ] write интеграционный тест (контракт, **bounded read + timeout** — анти-флаки): открыть PTY, заспавнить `/bin/cat`, записать в мастер строку, прочитать её эхо, задать winsize — ASSERT round-trip
-- [ ] `pty.def` с `#include <util.h> <sys/ioctl.h> <termios.h> <spawn.h>`, экспорт `openpty`/`ioctl`/`TIOCSWINSZ`/`winsize`/`posix_spawn`/`posix_spawnattr_*`/`POSIX_SPAWN_SETSID`
-- [ ] `Pty.kt`: `open(...)` через **`openpty` + `posix_spawn(POSIX_SPAWN_SETSID)`**, НЕ `forkpty` — fork-без-exec небезопасен для рантайма K/N (GC/аллокации в пост-fork ребёнке); все C-строки argv/envp/cwd маршалятся ДО спавна. Мастер-fd в родителе; `read()`/`write()`; `resize()` через `ioctl(TIOCSWINSZ)`; `close()`
-- [ ] модель чтения: **выделенный reader-thread** (`newSingleThreadContext`/Worker) с блокирующим `read()` → `Channel` (на native нет `Dispatchers.IO`; kqueue для горстки сессий преждевременно — YAGNI)
-- [ ] write тесты: exit-код ребёнка, resize, ошибка спавна несуществующей команды
-- [ ] run tests — PTY round-trip зелёный перед Task 3
+- [ ] write интеграционный тест (bounded read + timeout — анти-флаки): открыть PTY, заспавнить `/bin/cat`, записать в мастер, прочитать эхо, задать winsize — ASSERT round-trip
+- [ ] `cinterop/pty.def` (без YAML) с `#include <util.h> <sys/ioctl.h> <termios.h> <spawn.h>`, экспорт `openpty`/`ioctl`/`TIOCSWINSZ`/`winsize`/`posix_spawn`/`posix_spawnattr_*`/`POSIX_SPAWN_SETSID`
+- [ ] `Pty.kt`: `open(...)` через **`openpty`+`posix_spawn(POSIX_SPAWN_SETSID)`** (НЕ `forkpty` — fork-без-exec небезопасен для рантайма K/N; C-строки маршалятся ДО спавна); мастер-fd в родителе; `read()`/`write()`/`resize()`(`TIOCSWINSZ`)/`close()`
+- [ ] модель чтения: **выделенный reader-thread** (`newSingleThreadContext`/Worker) с блокирующим `read()` → `Channel` (на native нет `Dispatchers.IO`)
+- [ ] write тесты: exit-код, resize, ошибка спавна несуществующей команды
+- [ ] run `./kotlin test` — PTY round-trip зелёный перед Task 3
 
 ### Task 3: Ktor CIO HTTP+WS-спайк на native (РИСК)
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/transport/SpikeServer.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/transport/WsSpikeTest.kt`
+- Modify: `module.yaml`
+- Create: `src/transport/SpikeServer.kt`
+- Create: `test/transport/WsSpikeTest.kt`
 
-- [ ] write интеграционный тест: поднять сервер на `127.0.0.1:0`, подключиться Ktor-client'ом, HTTP GET round-trip + WS echo round-trip — ASSERT
-- [ ] `SpikeServer.kt`: `embeddedServer(CIO)` с одним HTTP-роутом и одним WS-echo-роутом; проверить установку `WebSockets` плагина на native
-- [ ] проверить бинарный WS-фрейм (Frame.Binary) — нужен для terminal-канала
-- [ ] ⚠️ если WS-плагин CIO на native не покрывает нужное — зафиксировать блокер и эскалировать (это меняет транспортное решение)
-- [ ] write тест: сервер отдаёт статический файл (для будущей Web UI)
-- [ ] run tests — WS зелёный перед Task 4
+- [ ] write интеграционный тест: поднять сервер на `127.0.0.1:0`, Ktor-client'ом HTTP GET round-trip + WS echo (текст и **binary**-фрейм) — ASSERT
+- [ ] `module.yaml`: `settings.ktor: enabled` + deps `ktor-server-cio`, `ktor-server-websockets`; `test-dependencies`: `ktor-client-cio` (+ websockets)
+- [ ] `SpikeServer.kt`: `embeddedServer(CIO)` с HTTP-роутом, WS-echo, отдачей статического файла
+- [ ] ⚠️ если WS-плагин CIO на native не покрывает нужное — зафиксировать блокер и эскалировать (меняет транспортное решение)
+- [ ] write тест: бинарный WS-фрейм round-trip (нужен для terminal-канала)
+- [ ] run `./kotlin test` — WS зелёный перед Task 4
 
-### Task 4: Домен — AgentEvent, SessionState, модель сессии (host-free)
+### Task 4: SQLDelight через свой Kotlin Toolchain-плагин — спайк (РИСК, фолбэк JSONL)
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/core/AgentEvent.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/core/SessionState.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/core/SessionMeta.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/core/Ids.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/core/DomainTest.kt`
+- Create: `project.yaml`
+- Create: `plugins/sqldelight-gen/module.yaml`, `plugins/sqldelight-gen/plugin.yaml`, `plugins/sqldelight-gen/src/Generate.kt`
+- Create: `sqldelight/io/kotgent/db/Spike.sq`
+- Modify: `module.yaml`
+- Create: `test/store/SqlDelightSpikeTest.kt`
 
-- [ ] write тесты: `@Serializable` round-trip каждого v1-`AgentEvent`-подтипа; инварианты value-class id (`SessionId`, регекс провайдера)
+- [ ] write интеграционный тест round-trip: тривиальная `.sq` (одна таблица + insert/select-запрос) → сгенерённый код компилируется в `macosArm64` → runtime insert/select через `native-driver` возвращает вставленное
+- [ ] `plugins/sqldelight-gen` (`product: jvm/amper-plugin`): `@TaskAction`, вызывающий компиляторный API SQLDelight (`SqlDelightCompiler`/env) для генерации Kotlin из `sqldelight/` в `${taskOutputDir}`; исследовать реальные точки входа по артефактам SQLDelight
+- [ ] `plugin.yaml`: регистрация task + `generated.sources: [{language: kotlin, directory: …}]`; `project.yaml`: `modules: [.]`, `plugins: [./plugins/sqldelight-gen]`; корневой `module.yaml`: `plugins: { sqldelight-gen: enabled }` + dep `app.cash.sqldelight:native-driver`
+- [ ] ⚠️ **фолбэк:** если компиляторный API SQLDelight не поддаётся в разумных пределах ИЛИ `native-driver` не линкуется на macosArm64 — НЕ тонуть: пометить `[deviation]`, задокументировать в этом файле переход на JSONL-хранилище (Task 6 реализует `EventStore` поверх JSONL), спайк закрыть как «SQLDelight отклонён, идём на JSONL»
+- [ ] write тест: подтвердить рабочий путь (SQLDelight round-trip ЛИБО, при фолбэке, JSONL append/read round-trip)
+- [ ] run `./kotlin test` — выбранный путь хранилища зелёный перед Task 5
+
+### Task 5: Домен — AgentEvent, SessionState, модель сессии (host-free)
+
+**Files:**
+- Create: `src/core/AgentEvent.kt`, `src/core/SessionState.kt`, `src/core/SessionMeta.kt`, `src/core/Ids.kt`
+- Create: `test/core/DomainTest.kt`
+
+- [ ] write тесты: `@Serializable` round-trip каждого v1-`AgentEvent`-подтипа; инварианты value-class id
 - [ ] `Ids.kt`: value-class'ы `SessionId`, `Seq`, `ProviderSessionId`, `PaneId`
-- [ ] `AgentEvent.kt`: sealed-иерархия v1-словаря (`TurnStarted/TurnCompleted/ApprovalRequested/ApprovalResolved/ToolCall/Exited/SessionBound`) + `EventSource` (`Question*` — бэклог)
-- [ ] `SessionState.kt`: enum 7 состояний + группировка живые/мёртвые + `needsAttention`; `needs_answer` помечен forward-modeled (не производится v1-адаптером)
-- [ ] `SessionMeta.kt`: data class с полями сессии (агент, cwd/worktree/branch, cli-версия/путь, model, tmux/pane, tags)
-- [ ] run tests — домен зелёный перед Task 5
+- [ ] `AgentEvent.kt`: sealed-иерархия v1 (`TurnStarted/TurnCompleted/ApprovalRequested/ApprovalResolved/ToolCall/Exited/SessionBound`) + `EventSource`
+- [ ] `SessionState.kt`: enum 7 состояний + живые/мёртвые + `needsAttention`; `needs_answer` — forward-modeled
+- [ ] `SessionMeta.kt`: data class полей сессии
+- [ ] run `./kotlin test` — домен зелёный перед Task 6
 
-### Task 5: Редьюсер — лог событий → проекция состояния (host-free, ядро TDD)
+### Task 6: Редьюсер — лог → проекция (host-free, ядро TDD)
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/core/Reducer.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/core/Projection.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/core/ReducerTest.kt`
+- Create: `src/core/Reducer.kt`, `src/core/Projection.kt`
+- Create: `test/core/ReducerTest.kt`
 
 - [ ] write тесты переходов v1: start→running; ApprovalRequested→needs_approval; TurnCompleted/Stop→ready; ответ→running; Exited(0)→stopped vs Exited(≠0)→crashed; SessionBound пишет provider-id
-- [ ] write тест правила разрешения approval у Claude (нет «permission answered»): **вход в `running` (`UserPromptSubmit`/`PostToolUse`) сбрасывает `pendingApprovals=0`** → цепочка `Notification→PostToolUse→running` гасит `needs_approval`
-- [ ] write тесты: `Interrupt` сбрасывает залипший `running`; `Detach` — НЕ меняет состояние; `replay(events)` детерминирован (property: fold-с-нуля == инкрементальный)
-- [ ] `Reducer.kt`: чистая `reduce(projection, event): Projection`; `Projection.kt`: read-model (state, pendingApprovals, last_seq, unread). Waiting-логика v1 — approval-only (`needs_answer` в срезе не достижим)
-- [ ] run tests — редьюсер зелёный перед Task 6
+- [ ] write тест правила разрешения approval (нет «permission answered»): **вход в running сбрасывает `pendingApprovals=0`** → цепочка `Notification→PostToolUse→running` гасит `needs_approval`
+- [ ] write тесты: `Interrupt` сбрасывает залипший running; `Detach` не меняет состояние; `replay` детерминирован (property: fold-с-нуля == инкрементальный)
+- [ ] `Reducer.kt`: чистая `reduce(projection, event)`; `Projection.kt`: read-model (state, pendingApprovals, last_seq, unread). Waiting-логика v1 — approval-only
+- [ ] run `./kotlin test` — редьюсер зелёный перед Task 7
 
-### Task 6: EventStore — SQLDelight-схема и SQLite-реализация
-
-**Files:**
-- Create: `src/nativeMain/sqldelight/io/kotgent/db/Events.sq`, `src/nativeMain/sqldelight/io/kotgent/db/Sessions.sq`
-- Create: `src/nativeMain/kotlin/io/kotgent/store/EventStore.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/store/SqliteEventStore.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/store/EventStoreTest.kt`
-
-- [ ] write тесты: `append`→`read(fromSeq)` round-trip; `seq` монотонный per-session; append+обновление кэша `sessions` атомарны (одна транзакция); `replay` из стора восстанавливает состояние; `subscribe(fromSeq)` эмитит новые события
-- [ ] `.sq`: таблицы `events`/`sessions` (из Technical Details) + PRAGMA WAL + индексы + запросы (insert-event, next-seq, upsert-session, list-sessions, read-from-seq)
-- [ ] `EventStore.kt`: интерфейс `append/read/subscribe`; `SqliteEventStore.kt`: реализация, single-writer (сериализующий mutex/actor), WAL
-- [ ] write тесты: конкурентные читатели не блокируют писателя; протухший курсор в `subscribe`
-- [ ] run tests — стор зелёный перед Task 7
-
-### Task 7: Обёртка над tmux (`tmux -L kotgent`)
+### Task 7: EventStore — интерфейс + реализация (SQLDelight или JSONL)
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/tmux/Tmux.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/tmux/ProcessRunner.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/tmux/TmuxTest.kt`
+- Create: `src/store/EventStore.kt`
+- Create: `src/store/EventStoreImpl.kt` (SQLDelight) ИЛИ `src/store/JsonlEventStore.kt` (фолбэк)
+- Create: `sqldelight/io/kotgent/db/Events.sq`, `sqldelight/io/kotgent/db/Sessions.sq` (если SQLDelight)
+- Create: `test/store/EventStoreTest.kt`
 
-- [ ] write интеграционные тесты против `tmux -L kotgent-test` (skip-guard если tmux не в PATH): `newSession` возвращает `pane_id`; `listSessions`/`listPanes` парсятся; `capturePane` отдаёт содержимое; `killSession`
+- [ ] write тесты (против интерфейса): `append`→`read(fromSeq)` round-trip; `seq` монотонный per-session; append+обновление кэша атомарны; `replay` восстанавливает состояние; `subscribe(fromSeq)` эмитит новые; протухший курсор → ошибка
+- [ ] `EventStore.kt`: интерфейс `append(sessionId,event)→seq`, `read(sessionId,fromSeq)`, `subscribe(fromSeq)`
+- [ ] реализация по итогу Task 4: **SQLDelight** (`.sq` схема events/sessions, `native-driver`, single-writer, WAL, транзакция) ЛИБО **JSONL** (append-only на сессию + in-memory read-model, fsync, игнор частичной последней строки при replay)
+- [ ] write тесты: конкурентные читатели не блокируют писателя (SQLDelight WAL) / потокобезопасность in-memory (JSONL)
+- [ ] run `./kotlin test` — стор зелёный перед Task 8
+
+### Task 8: Обёртка над tmux (`tmux -L kotgent`)
+
+**Files:**
+- Create: `src/tmux/Tmux.kt`, `src/tmux/ProcessRunner.kt`
+- Create: `test/tmux/TmuxTest.kt`
+
+- [ ] write интеграционные тесты против `tmux -L kotgent-test` (skip-guard): `newSession`→`pane_id`; `listSessions`/`listPanes` парсятся; `capturePane`; `killSession`
 - [ ] `ProcessRunner.kt`: запуск процесса через `posix_spawn`, сбор stdout/stderr/exit
-- [ ] `Tmux.kt`: `ensureServer()`, `newSession(id,cwd,cmd,cols,rows)→PaneId`, `listSessions()`, `listPanes()`, `capturePane(id)`, `killSession(id)`, `sendKeys(id, bytes)` (для Interrupt), `paneAlive(id)`/`panePid(id)`
-- [ ] аккуратный парсинг `-F` форматов; экранирование аргументов
+- [ ] `Tmux.kt`: `ensureServer()`, `newSession(id,cwd,cmd,cols,rows)→PaneId`, `listSessions()`, `listPanes()`, `capturePane(id)`, `killSession(id)`, `sendKeys(id,bytes)`, `paneAlive`/`panePid`
+- [ ] экранирование аргументов; парсинг `-F` форматов
 - [ ] write тесты: несуществующая сессия, двойной `killSession`
-- [ ] run tests — обёртка зелёная перед Task 8
+- [ ] run `./kotlin test` — обёртка зелёная перед Task 9
 
-### Task 8: PTY fan-out — lazy upstream-мост + broadcaster + capture-pane сид
-
-**Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/pty/TerminalBridge.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/pty/Broadcaster.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/pty/TerminalBridgeTest.kt`
-
-- [ ] write интеграционный тест: первый подписчик поднимает upstream `tmux attach` к сессии с `cat`; два подписчика оба получают вывод; ввод любого доходит до ребёнка; resize пробрасывается; новый подписчик получает `capture-pane -e` сид (fails until Task 7)
-- [ ] write тест **lazy lifecycle**: уход ПОСЛЕДНЕГО подписчика гасит upstream-мост, но tmux-сессия/Claude живут (Detach); НОВЫЙ подписчик заново поднимает мост — это же снимает respawn после рестарта daemon
-- [ ] `TerminalBridge.kt`: на сессию — **lazy** `Pty.open("tmux -L kotgent attach -t kt-<id>")` при первом подписчике, reader-loop → `Broadcaster`, close при уходе последнего
-- [ ] `Broadcaster.kt`: набор подписчиков (WS-каналы), fan-out байтов; вход любого → запись в upstream; политика размера «последний активный» → `resize()`. ⚠️ `window-size` по умолчанию `latest`: `capture-pane`-сид новому xterm иного размера даст reflow — косметика, не баг
-- [ ] сид нового подписчика: `capturePane(-e)` → стартовая отрисовка, дальше живые дельты
-- [ ] run tests — fan-out зелёный перед Task 9
-
-### Task 9: Контракт AgentAdapter (+ FakeAdapter)
+### Task 9: PTY fan-out — lazy upstream-мост + broadcaster + capture-pane сид
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/adapter/AgentAdapter.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/adapter/LaunchSpec.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/adapter/FakeAdapter.kt`, `src/nativeTest/kotlin/io/kotgent/adapter/AdapterContractTest.kt`
+- Create: `src/pty/TerminalBridge.kt`, `src/pty/Broadcaster.kt`
+- Create: `test/pty/TerminalBridgeTest.kt`
 
-- [ ] write тесты: `FakeAdapter` эмитит поток `AgentEvent`, редьюсер сворачивает его в ожидаемые состояния (контракт «адаптер → события → редьюсер»)
-- [ ] `AgentAdapter.kt`: ядро — `buildLaunchSpec(mode: New|Resume)` + `events: Flow<AgentEvent>`
+- [ ] write интеграционный тест: первый подписчик поднимает upstream `tmux attach` к сессии с `cat`; два подписчика получают вывод; ввод любого доходит; resize пробрасывается; новый подписчик получает `capture-pane -e` сид (fails until Task 8)
+- [ ] write тест **lazy lifecycle**: уход последнего подписчика гасит мост, tmux/Claude живут (Detach); новый подписчик заново поднимает мост (снимает respawn после рестарта)
+- [ ] `TerminalBridge.kt`: **lazy** `Pty.open("tmux -L kotgent attach -t kt-<id>")` при первом подписчике, reader-loop → `Broadcaster`, close при последнем
+- [ ] `Broadcaster.kt`: подписчики, fan-out; ввод любого → upstream; размер «последний активный» → `resize()`. ⚠️ `window-size` по умолчанию `latest`: сид иного размера даст reflow — косметика
+- [ ] run `./kotlin test` — fan-out зелёный перед Task 10
+
+### Task 10: Контракт AgentAdapter (+ FakeAdapter)
+
+**Files:**
+- Create: `src/adapter/AgentAdapter.kt`, `src/adapter/LaunchSpec.kt`
+- Create: `test/adapter/FakeAdapter.kt`, `test/adapter/AdapterContractTest.kt`
+
+- [ ] write тесты: `FakeAdapter` эмитит `AgentEvent`, редьюсер сворачивает в ожидаемые состояния (контракт «адаптер→события→редьюсер»)
+- [ ] `AgentAdapter.kt`: `buildLaunchSpec(mode: New|Resume)` + `events: Flow<AgentEvent>`
 - [ ] `LaunchSpec.kt`: `command: List<String>`, `env`, `cwd`, `preallocatedSessionId?`
-- [ ] (capability-интерфейсы `SupportsApprovalResolution`/… — **бэклог**, нужны со 2-м адаптером; в срезе НЕ вводим — YAGNI)
-- [ ] write тест: контракт-прогон через `FakeAdapter` покрывает все v1-события
-- [ ] run tests — контракт зелёный перед Task 10
+- [ ] (capability-интерфейсы — бэклог, в срезе НЕ вводим)
+- [ ] write тест: контракт-прогон покрывает все v1-события
+- [ ] run `./kotlin test` — контракт зелёный перед Task 11
 
-### Task 10: ClaudeAdapter — launch/resume-спека, hook-config, session-id preallocation
+### Task 11: ClaudeAdapter — launch/resume, hook-config, session-id preallocation
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/adapter/claude/ClaudeAdapter.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/adapter/claude/ClaudeHookConfig.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/adapter/claude/ClaudeCli.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/adapter/claude/ClaudeAdapterTest.kt`
+- Create: `src/adapter/claude/ClaudeAdapter.kt`, `src/adapter/claude/ClaudeHookConfig.kt`, `src/adapter/claude/ClaudeCli.kt`
+- Create: `test/adapter/claude/ClaudeAdapterTest.kt`
 
-- [ ] **спайк (перед маппингом): вживую вызвать у Claude permission-prompt и залогировать реальные `Notification`-пейлоады**; зафиксировать дискриминатор permission-vs-idle (или подтвердить, что для среза берём любой `Notification`→needs_attention)
-- [ ] write тесты: `buildLaunchSpec(New)` содержит преаллоцированный `--session-id <uuid>` (version-gated) + `--settings <hook-config>`; `buildLaunchSpec(Resume)` → `claude --resume <id>`; генерация hook-config (токен + daemon-URL) корректна
-- [ ] `ClaudeCli.kt`: путь/версия `claude`; version-gating `--session-id` (подтверждено: есть в 2.1.217 без ограничения `--print`; fallback — capture из `SessionStart`)
+- [ ] **спайк (перед маппингом): вживую вызвать у Claude permission-prompt и залогировать реальные `Notification`-пейлоады**; зафиксировать дискриминатор permission-vs-idle (или подтвердить любой `Notification`→needs_attention)
+- [ ] write тесты: `buildLaunchSpec(New)` содержит `--session-id <uuid>` (version-gated) + `--settings <hook-config>`; `buildLaunchSpec(Resume)` → `claude --resume <id>`; hook-config корректен
+- [ ] `ClaudeCli.kt`: путь/версия `claude`; version-gating `--session-id` (подтверждено в 2.1.217; fallback `SessionStart`)
 - [ ] `ClaudeHookConfig.kt`: settings-файл с хуками (`UserPromptSubmit`/`PostToolUse`/`Stop`/`Notification`/`SessionStart`), курлящими `POST /hooks/claude` с токеном и `$TMUX_PANE`
-- [ ] `ClaudeAdapter.kt`: реализация контракта (транскрипт-вотч `~/.claude/*.jsonl` — **бэклог**, в срезе НЕ вводим)
-- [ ] write тесты: version-gating (старый CLI без `--session-id` → fallback-путь), корректность resume-спеки
-- [ ] run tests — адаптер зелёный перед Task 11
+- [ ] `ClaudeAdapter.kt`: реализация контракта (транскрипт-вотч — бэклог)
+- [ ] write тесты: version-gating, resume-спека
+- [ ] run `./kotlin test` — адаптер зелёный перед Task 12
 
-### Task 11: Hook ingress + нормализация Claude-событий
-
-**Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/adapter/claude/ClaudeHookNormalizer.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/transport/HookRoutes.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/adapter/claude/HookNormalizerTest.kt`
-
-- [ ] write тесты (нормализатор — чистая функция, тестируется здесь полноценно): пейлоады → ожидаемый `AgentEvent` (`Notification`→ApprovalRequested/needs_attention; `Stop`→TurnCompleted/ready; `PostToolUse`→running-событие, сбрасывающее pendingApprovals; `SessionStart`→SessionBound)
-- [ ] `ClaudeHookNormalizer.kt`: чистая `(hookPayload, paneId) → AgentEvent`; для среза любой `Notification`→needs_attention (грубо, надёжно)
-- [ ] `HookRoutes.kt`: `POST /hooks/claude` — валидация токена, чтение `$TMUX_PANE`+пейлоада, мапинг pane→сессия (**partial-dep:** `pane_id` пишет Task 12 → тест через засиженный store), нормализация, `append`
-- [ ] обработать «нет permission-answered у Claude» → вход в running (`PostToolUse`) обнуляет pendingApprovals (правило редьюсера Task 5)
-- [ ] write тесты: неизвестный pane → корректная ошибка; `[x] невалидный токен → 401 (route-level, fails until Task 13-харнесс)`
-- [ ] run tests — нормализатор зелёный перед Task 12 (route-level — с Task 13)
-
-### Task 12: Session manager + reconciliation + provider-id capture
+### Task 12: Hook ingress + нормализация Claude-событий
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/daemon/SessionManager.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/daemon/Reconciler.kt`
-- Create: `src/nativeMain/kotlin/io/kotgent/daemon/ProviderIdCapture.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/daemon/ReconcilerTest.kt`, `.../SessionManagerTest.kt`
+- Create: `src/adapter/claude/ClaudeHookNormalizer.kt`, `src/transport/HookRoutes.kt`
+- Create: `test/adapter/claude/HookNormalizerTest.kt`
 
-- [ ] write тесты reconciliation: (строки `sessions` × состояние tmux × наличие vendor-файла) → классификация running/resumable/crashed/stopped (табличные, host-free через фейковые Tmux/Store)
-- [ ] write тесты provider-id capture: preallocated → мгновенно `SessionBound`; discovery буксует → «id pending» + retry, resume заблокирован пока не привязан
-- [ ] `SessionManager.kt`: `start` (tmux new-session → pane_id → upsert sessions → запустить capture; **мост НЕ спавнится здесь — он lazy на первый terminal-WS-подписчик**) / `stop`/`resume`/`interrupt`/`detach` по `StopMode`
-- [ ] `Reconciler.kt`: старт daemon — `list-sessions`/`list-panes` + vendor-store → пересбор `pane_id`, классификация. **Мосты не пере-поднимаем** (lazy восстановит на первый коннект); восстанавливаем только реестр/состояние. `ProviderIdCapture.kt`: гарантия сохранения id
-- [ ] write интеграционный тест: `start` создаёт tmux-сессию и захватывает `pane_id`; после «рестарта» (новый Reconciler над теми же tmux+store) состояние живой сессии восстановлено, а terminal-WS-подписка заново поднимает мост
-- [ ] run tests — daemon-ядро зелёное перед Task 13
+- [ ] write тесты (нормализатор — чистая функция): пейлоады → `AgentEvent` (`Notification`→ApprovalRequested/needs_attention; `Stop`→TurnCompleted/ready; `PostToolUse`→running-событие, сбрасывающее pendingApprovals; `SessionStart`→SessionBound)
+- [ ] `ClaudeHookNormalizer.kt`: чистая `(hookPayload, paneId) → AgentEvent`; любой `Notification`→needs_attention
+- [ ] `HookRoutes.kt`: `POST /hooks/claude` — валидация токена, чтение `$TMUX_PANE`+пейлоада, мапинг pane→сессия (**partial-dep:** `pane_id` пишет Task 13 → тест через засиженный store), нормализация, `append`
+- [ ] обработать «нет permission-answered» → вход в running (`PostToolUse`) обнуляет pendingApprovals
+- [ ] write тесты: неизвестный pane → ошибка; `[x] невалидный токен → 401 (route-level, fails until Task 14-харнесс)`
+- [ ] run `./kotlin test` — нормализатор зелёный перед Task 13
 
-### Task 13: Transport — control REST + events WS + terminal WS + токен-auth
+### Task 13: Session manager + reconciliation + provider-id capture
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/transport/Server.kt`, `.../ControlRoutes.kt`, `.../EventsWs.kt`, `.../TerminalWs.kt`, `.../Auth.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/transport/TransportTest.kt`
+- Create: `src/daemon/SessionManager.kt`, `src/daemon/Reconciler.kt`, `src/daemon/ProviderIdCapture.kt`
+- Create: `test/daemon/ReconcilerTest.kt`, `test/daemon/SessionManagerTest.kt`
 
-- [ ] write интеграционные тесты: `POST /sessions` → сессия в `GET /sessions`; events-WS получает смену состояния; terminal-WS стримит байты и принимает ввод; отсутствие токена → 401
-- [ ] `Auth.kt`: чтение/генерация токена `~/.kotgent/token` (0600); один bearer-токен на всё (отдельный hook-токен — бэклог)
-- [ ] `ControlRoutes.kt`: `GET /sessions`, `GET /sessions/{id}`, `POST /sessions`, `POST /sessions/{id}/{stop|resume|interrupt|detach}`, `POST /sessions/{id}/input` (в срезе — только `TerminalInput`). `PATCH /sessions/{id}` (rename/tags) — **бэклог**
-- [ ] `EventsWs.kt`: `GET /events?from=<seq>` — `store.subscribe`, restart-safe курсор (протухший→hard-error+ресинк); `TerminalWs.kt`: мост к **lazy** `Broadcaster` (первый коннект поднимает upstream) + `capture-pane` сид + resize-фреймы; статика Web UI на `/`
-- [ ] write тесты: restart-safe курсор (from за пределами → ошибка), resize-фрейм → `TIOCSWINSZ`
-- [ ] run tests — transport зелёный перед Task 14
+- [ ] write тесты reconciliation: (строки `sessions` × состояние tmux × наличие vendor-файла) → running/resumable/crashed/stopped (табличные, host-free через фейковые Tmux/Store)
+- [ ] write тесты provider-id capture: preallocated → мгновенно `SessionBound`; discovery буксует → «id pending» + retry, resume заблокирован
+- [ ] `SessionManager.kt`: `start` (tmux new-session → pane_id → upsert sessions → capture; **мост НЕ спавнится — lazy на первый terminal-WS-подписчик**) / `stop`/`resume`/`interrupt`/`detach` по `StopMode`
+- [ ] `Reconciler.kt`: старт daemon — `list-sessions`/`list-panes` + vendor-store → пересбор `pane_id`, классификация. **Мосты не пере-поднимаем.** `ProviderIdCapture.kt`: гарантия id
+- [ ] write интеграционный тест: `start` создаёт tmux-сессию и захватывает `pane_id`; после «рестарта» (новый Reconciler) состояние восстановлено, terminal-WS-подписка заново поднимает мост
+- [ ] run `./kotlin test` — daemon-ядро зелёное перед Task 14
 
-### Task 14: CLI-субкоманды + `attach` raw-passthrough
-
-**Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/cli/Cli.kt`, `.../Commands.kt`, `.../AttachClient.kt`, `.../ApiClient.kt`
-- Modify: `src/nativeMain/kotlin/io/kotgent/Main.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/cli/CliTest.kt`
-
-- [ ] write тесты: парсинг субкоманд; `ApiClient` шлёт корректные HTTP-запросы (против stub-сервера), читая токен из файла
-- [ ] `Commands.kt`: `daemon` (запуск сервера), `start/list/stop/resume` (HTTP), `install`/`uninstall` (Task 15)
-- [ ] `AttachClient.kt`: raw-passthrough — локальный tty в raw (`termios`), stdin→terminal-WS, WS→stdout, `SIGWINCH`→resize, восстановление tty на выходе
-- [ ] `Main.kt`: диспатч субкоманд
-- [ ] write тесты: `list` рендерит ответ API; аргументы `start` (cwd/agent) валидируются; `attach` passthrough — smoke (tty-raw помечен manual в Post-Completion)
-- [ ] run tests — CLI зелёный перед Task 15
-
-### Task 15: launchd LaunchAgent install
+### Task 14: Transport — control REST + events WS + terminal WS + токен-auth
 
 **Files:**
-- Create: `src/nativeMain/kotlin/io/kotgent/launchd/Plist.kt`, `.../Install.kt`
-- Create: `src/nativeTest/kotlin/io/kotgent/launchd/PlistTest.kt`
+- Create: `src/transport/Server.kt`, `src/transport/ControlRoutes.kt`, `src/transport/EventsWs.kt`, `src/transport/TerminalWs.kt`, `src/transport/Auth.kt`
+- Create: `test/transport/TransportTest.kt`
 
-- [ ] write тесты: генерация plist содержит `Label`, `ProgramArguments`=[бинарь, `daemon`], `RunAtLoad`, `KeepAlive`, `ThrottleInterval`, `EnvironmentVariables.PATH` (с `/opt/homebrew/bin`), `StandardOut/ErrorPath`
-- [ ] `Plist.kt`: чистая генерация XML-plist (тестируется напрямую)
-- [ ] `Install.kt`: `install` пишет `~/Library/LaunchAgents/io.kotgent.daemon.plist` + `launchctl bootstrap`; `uninstall` — `bootout` + удаление
-- [ ] обработать существующий plist (перезапись/идемпотентность)
-- [ ] write тесты: путь plist, идемпотентность install
-- [ ] run tests — launchd зелёный перед Task 16
+- [ ] write интеграционные тесты: `POST /sessions` → сессия в `GET /sessions`; events-WS получает смену состояния; terminal-WS стримит байты и принимает ввод; нет токена → 401
+- [ ] `Auth.kt`: токен `~/.kotgent/token` (0600); один bearer на всё (hook-токен — бэклог)
+- [ ] `ControlRoutes.kt`: `GET /sessions`, `GET /sessions/{id}`, `POST /sessions`, `POST /sessions/{id}/{stop|resume|interrupt|detach}`, `POST /sessions/{id}/input` (только `TerminalInput`). `PATCH` — бэклог
+- [ ] `EventsWs.kt`: `GET /events?from=<seq>` — `subscribe`, restart-safe курсор; `TerminalWs.kt`: мост к lazy `Broadcaster` + `capture-pane` сид + resize; статика Web UI на `/`
+- [ ] write тесты: restart-safe курсор, resize-фрейм → `TIOCSWINSZ`
+- [ ] run `./kotlin test` — transport зелёный перед Task 15
 
-### Task 16: Минимальный Web UI (статический SPA + xterm.js)
+### Task 15: CLI-субкоманды + `attach` raw-passthrough
 
 **Files:**
-- Create: `src/webui/index.html`, `src/webui/app.js`, `src/webui/style.css`, `src/webui/vendor/xterm.js` (vendored)
-- Create: `src/webui/app.test.js` (или node-based unit для парсинга токена/API)
+- Create: `src/cli/Cli.kt`, `src/cli/Commands.kt`, `src/cli/AttachClient.kt`, `src/cli/ApiClient.kt`
+- Modify: `src/main.kt`
+- Create: `test/cli/CliTest.kt`
 
-- [ ] write юнит-тест тестируемой логики: парсинг токена из URL-фрагмента `#token=`, формирование запросов API-клиента
-- [ ] `index.html`+`app.js`: список сессий (`GET /sessions`), живость через events-WS (бейджи состояний, очередь «needs attention»)
-- [ ] xterm.js на terminal-WS: рендер сырых байтов, отправка ввода, `resize`-фреймы
-- [ ] daemon отдаёт статику на `/`; токен из фрагмента подставляется в API/WS
-- [ ] write тест: рендер строки сессии по состоянию (needs_approval → индикатор внимания)
-- [ ] run unit-тесты; браузерный сквозной проход — Task 17 (manual)
+- [ ] write тесты: парсинг субкоманд; `ApiClient` шлёт корректные HTTP (против stub-сервера), читая токен из файла
+- [ ] `Commands.kt`: `daemon`, `start/list/stop/resume` (HTTP), `install`/`uninstall` (Task 16)
+- [ ] `AttachClient.kt`: raw-passthrough — tty raw (`termios`), stdin→WS, WS→stdout, `SIGWINCH`→resize, восстановление tty на выходе
+- [ ] `main.kt`: диспатч субкоманд (сохранить `versionLine()`/`--version`)
+- [ ] write тесты: `list` рендерит ответ; `start` валидирует cwd/agent; `attach` — smoke (tty-raw → manual)
+- [ ] run `./kotlin test` — CLI зелёный перед Task 16
 
-### Task 17: Проверка acceptance-критериев (сквозной срез)
+### Task 16: launchd LaunchAgent install
 
-- [ ] verify требования из Overview: `kotgent start` Claude запускает сессию; закрытие `attach` (Detach) оставляет сессию живой; браузер продолжает ту же сессию; `needs attention` виден при approval
-- [ ] verify reconciliation: рестарт daemon (`launchctl kickstart`) — живые сессии переклассифицируются, а terminal-WS в браузере ЗАНОВО поднимает lazy-мост (upstream пере-attach); убитая сессия → `crashed`; после «ребута» (kill tmux-сервера) → `resumable`, `resume` восстанавливает разговор
+**Files:**
+- Create: `src/launchd/Plist.kt`, `src/launchd/Install.kt`
+- Create: `test/launchd/PlistTest.kt`
+
+- [ ] write тесты: plist содержит `Label`, `ProgramArguments`=[бинарь, `daemon`], `RunAtLoad`, `KeepAlive`, `ThrottleInterval`, `EnvironmentVariables.PATH` (`/opt/homebrew/bin`), `StandardOut/ErrorPath`
+- [ ] `Plist.kt`: чистая генерация XML-plist
+- [ ] `Install.kt`: `install` пишет `~/Library/LaunchAgents/io.kotgent.daemon.plist` + `launchctl bootstrap`; `uninstall` — `bootout`+удаление; путь бинаря — из build-выхода `macos/app`
+- [ ] обработать существующий plist (идемпотентность)
+- [ ] write тесты: путь plist, идемпотентность
+- [ ] run `./kotlin test` — launchd зелёный перед Task 17
+
+### Task 17: Минимальный Web UI (статика + xterm.js)
+
+**Files:**
+- Create: `resources/webui/index.html`, `resources/webui/app.js`, `resources/webui/style.css`, `resources/webui/vendor/xterm.js` (vendored)
+- Create: `test/webui/AppLogicTest.kt` (или node-based unit для парсинга токена/API)
+
+- [ ] write юнит-тест тестируемой логики: парсинг токена из `#token=`, формирование запросов API-клиента
+- [ ] `index.html`+`app.js`: список сессий (`GET /sessions`), живость через events-WS (бейджи, очередь «needs attention»)
+- [ ] xterm.js на terminal-WS: рендер байтов, отправка ввода, `resize`-фреймы
+- [ ] daemon отдаёт статику из `resources/webui` на `/`; токен из фрагмента → API/WS
+- [ ] write тест: рендер строки сессии по состоянию (needs_approval → индикатор)
+- [ ] run `./kotlin test`; браузерный проход — Task 18 (manual)
+
+### Task 18: Проверка acceptance-критериев (сквозной срез)
+
+- [ ] verify: `kotgent start` Claude запускает сессию; закрытие `attach` (Detach) оставляет живой; браузер продолжает ту же сессию; `needs attention` виден при approval
+- [ ] verify reconciliation: рестарт daemon (`launchctl kickstart`) — живые сессии переклассифицируются, terminal-WS в браузере заново поднимает lazy-мост; убитая → `crashed`; после kill tmux-сервера → `resumable`, `resume` восстанавливает разговор
 - [ ] verify provider-id capture: у каждой запущенной сессии сохранён `provider_session_id`; «id pending» блокирует resume честно
-- [ ] run full test suite: `./gradlew macosArm64Test`
-- [ ] manual: браузерный проход среза (start → Detach → браузер → needs attention) + запись GIF для README
+- [ ] run full suite: `./kotlin test`
+- [ ] manual: браузерный проход среза (start → Detach → браузер → needs attention) + GIF для README
 
-### Task 18: Документация
+### Task 19: Документация
 
-- [ ] создать `README.md` (сборка, `kotgent daemon`/`install`/`start`/`attach`, требования: tmux, claude)
-- [ ] создать `CLAUDE.md` (паттерны: host-free ядро, event-sourcing + редьюсер, cinterop-модель PTY, инвариант single upstream-клиента, идентичность по pane_id)
-- [ ] обновить `idea.md`-ссылку/статус (что реализовано в срезе)
-- [ ] переместить этот план в `docs/plans/completed/`
+- [ ] `README.md` (требования: Kotlin Toolchain/`./kotlin`, tmux, claude; сборка/`daemon`/`install`/`start`/`attach`)
+- [ ] `CLAUDE.md` (паттерны: Kotlin Toolchain layout, host-free ядро, event-sourcing+редьюсер, cinterop-модель PTY, single-upstream инвариант, идентичность по pane_id, storage-путь SQLDelight-плагин/JSONL)
+- [ ] обновить статус в `idea.md` (что реализовано)
+- [ ] переместить план в `docs/plans/completed/`
 
 ## Post-Completion
 
-*Требуют ручного вмешательства/внешних систем — без чекбоксов.*
+*Ручное вмешательство/внешние системы — без чекбоксов.*
 
 **Manual verification:**
-- сквозной браузерный проход среза на реальной машine (Task 17 GIF).
-- `kotgent attach` в raw-tty — интерактивная проверка (ввод/ресайз/восстановление терминала) в реальном IDEA/iTerm.
-- проверка launchd на реальном логине/ребуте (RunAtLoad + KeepAlive + reconciliation после старта).
-- проверка на конкретных версиях `claude` (наличие/поведение `--session-id`) и `tmux`.
+- сквозной браузерный проход среза (Task 18 GIF).
+- `kotgent attach` в raw-tty — интерактивно (ввод/ресайз/восстановление терминала).
+- launchd на реальном логине/ребуте (RunAtLoad + KeepAlive + reconciliation).
+- версии `claude` (`--session-id`) и `tmux`.
+- при фолбэке хранилища на JSONL — зафиксировать решение в этом файле и `CLAUDE.md`.
 
-**External / backlog (следующие итерации):**
-- Codex-адаптер: rollout-JSONL watch → app-server (за тем же контрактом).
-- PWA + cloudflared-туннель + Cloudflare Access + Web Push (seams готовы: localhost-listener + токен).
-- diff viewer (независимый git-запрос), импорт внешне-стартованных сессий (те же вотчеры), снапшоты проекции при росте логов.
-- e2e-фреймворк (Playwright) для браузерного среза.
+**External / backlog:**
+- Codex-адаптер (rollout-JSONL → app-server); PWA + cloudflared + Access + Web Push; diff viewer; импорт внешних сессий; снапшоты; e2e (Playwright).
+- если SQLDelight-плагин взлетел — вынести в переиспользуемый Kotlin Toolchain-плагин; иначе — дозреть JSONL-стор (ротация/снапшоты).
