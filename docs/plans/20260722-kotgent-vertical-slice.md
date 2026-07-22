@@ -181,11 +181,16 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Create: `src/core/Reducer.kt`, `src/core/Projection.kt`
 - Create: `test/core/ReducerTest.kt`
 
-- [ ] write тесты переходов v1: start→running; ApprovalRequested→needs_approval; TurnCompleted/Stop→ready; ответ→running; Exited(0)→stopped vs Exited(≠0)→crashed; SessionBound пишет provider-id
-- [ ] write тест правила разрешения approval (нет «permission answered»): **вход в running сбрасывает `pendingApprovals=0`** → цепочка `Notification→PostToolUse→running` гасит `needs_approval`
-- [ ] write тесты: `Interrupt` сбрасывает залипший running; `Detach` не меняет состояние; `replay` детерминирован (property: fold-с-нуля == инкрементальный)
-- [ ] `Reducer.kt`: чистая `reduce(projection, event)`; `Projection.kt`: read-model (state, pendingApprovals, last_seq, unread). Waiting-логика v1 — approval-only
-- [ ] run `./kotlin test` — редьюсер зелёный перед Task 7
+- [x] write тесты переходов v1: start→running; ApprovalRequested→needs_approval; TurnCompleted/Stop→ready; ответ→running; Exited(0)→stopped vs Exited(≠0)→crashed; SessionBound пишет provider-id
+- [x] write тест правила разрешения approval (нет «permission answered»): **вход в running сбрасывает `pendingApprovals=0`** → цепочка `Notification→PostToolUse→running` гасит `needs_approval`
+- [x] write тесты: `Interrupt` сбрасывает залипший running; `Detach` не меняет состояние; `replay` детерминирован (property: fold-с-нуля == инкрементальный)
+- [x] `Reducer.kt`: чистая `reduce(projection, event)`; `Projection.kt`: read-model (state, pendingApprovals, last_seq, unread). Waiting-логика v1 — approval-only
+- [x] run `./kotlin test` — редьюсер зелёный перед Task 7
+
+**✅ Реализовано — чистый host-free редьюсер (22 ReducerTest зелёные; suite 45 ran / 41 passed / 4 PtyTest @Ignore):**
+- `Projection.kt` — immutable data-class read-model: `state`, `pendingApprovals`, `lastSeq`, `providerSessionId?`, `stopRequested`; `unread(readCursor)`/`hasUnread(readCursor)` деривят непрочитанное; `Projection.EMPTY` (seed для replay) = `running`. Инвариант `pendingApprovals>0 ⟺ needs_approval` (проверяется meta-property-тестом после каждого события).
+- `Reducer.kt` — чистые `reduce(projection, event: AgentEvent)` (тотальна по 7 типам, +1 к lastSeq) и `replay(events): Projection` (fold из EMPTY, детерминизм + ассоциативность по всем split-точкам). Running-producers = `TurnStarted`+`ToolCall` (сбрасывают pendingApprovals=0). `ApprovalResolved` — forward-modeled (декремент, назад в running при обнулении). `needs_answer`/`resumable` редьюсером НЕ производятся (KDoc).
+- **[decision] `ControlSignal` (sealed `Interrupt`/`Stop`/`Resume`/`Detach`) — ОТДЕЛЬНЫЙ вход редьюсера** через overload `reduce(projection, signal)`; persisted `AgentEvent`-словарь (7 типов) НЕ тронут; control-signals НЕ двигают `lastSeq`. `Interrupt`→ready+сброс approvals (залипший running); `Stop`→арм `stopRequested` (не-нулевой `Exited` тогда = `stopped`, не `crashed` — так Task 13/SessionManager различает интент-стоп от краха); `Resume`→оживляет мёртвую в ready; `Detach`→identity (клиент-дисконнект; в реале — transport-level, редьюсер его не видит).
 
 ### Task 7: EventStore — интерфейс + реализация (SQLDelight или JSONL)
 
