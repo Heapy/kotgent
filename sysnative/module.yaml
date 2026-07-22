@@ -1,0 +1,27 @@
+# sysnative — dedicated native library module owning ALL low-level POSIX/cinterop
+# bindings and their thin Kotlin wrappers for kotgent (PTY today; ProcessRunner/tmux
+# and any sqlite cinterop land here in later tasks). The app depends on this module, so
+# the auto-discovered cinterop klib (cinterop/*.def) links into the app's MAIN binary as
+# a normal module dependency — no machine-specific -library path (the removed Task 2 hack).
+#
+# KNOWN TOOLCHAIN BLOCKER (0.11.0): cinterop klibs are NOT linked into the TEST binary of
+# any module — transitive (consumer) OR same-module — so cinterop-touching tests throw
+# IrLinkageError and are @Ignore'd pending an upstream fix (KT-78062). Not a code defect;
+# the cinterop works in MAIN binaries. See the plan's Task 2 ⚠️ blocker note.
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+dependencies:
+  # Pty.output is a Channel<ByteArray>, so coroutines types are part of this module's
+  # public API -> exported so consumers see them without re-declaring the dependency.
+  - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0:
+      exported: true
+
+settings:
+  kotlin:
+    version: 2.4.10
+
+# cinterop/pty.def is auto-discovered by the toolchain (no YAML wiring). It applies to
+# the single native platform (macosArm64). See its header for the openpty/winsize
+# C-helper rationale.

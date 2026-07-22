@@ -3,6 +3,12 @@ product:
   platforms: [macosArm64]
 
 dependencies:
+  # sysnative owns the PTY cinterop (and future POSIX/tmux/sqlite bindings). Depending on
+  # it links sysnative's auto-discovered cinterop klib into this app's MAIN binary as a
+  # normal module dependency — the old machine-specific absolute -library test workaround
+  # is gone. KNOWN BLOCKER: Kotlin Toolchain 0.11.0 does NOT link cinterop into any TEST
+  # binary (KT-78062), so the PTY integration tests are @Ignore'd (see plan Task 2 blocker).
+  - ./sysnative
   - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0
 
 settings:
@@ -11,22 +17,3 @@ settings:
     serialization: json
   native:
     entryPoint: io.kotgent.main
-
-# WORKAROUND (Kotlin Toolchain 0.11.0 AND 0.11.1 == current latest) -- Task 2 spike finding:
-# Auto-discovered cinterop klibs (cinterop/pty.def -> build .../pty.klib) are linked into the
-# MAIN executable (linkMacosArm64Debug depends on cinteropMacosArm64) but NOT into the TEST
-# executable: linkMacosArm64TestDebug never receives `-library=...pty.klib`, so kotgent.klib's
-# transitive `pty` dependency is unresolved and partial linkage stubs every cinterop function,
-# throwing IrLinkageError at runtime (proven: the test .kexe contains zero cinterop_pty symbols).
-# `./kotlin build` alone is fine; only `./kotlin test` needs this. We re-add the generated klib
-# explicitly to the test compilation/link.
-#
-# The path MUST be absolute: konanc resolves a non-absolute `-library` value as a repo NAME
-# (searched only in the konan distribution dirs), not as a project-relative file, and module.yaml
-# has no variable substitution -- so a portable relative form is not possible here. Update this
-# path if the project is moved, or remove the whole block if a future toolchain wires
-# auto-cinterop into tests (or if the cinterop is split into a dedicated dependency module).
-test-settings:
-  kotlin:
-    freeCompilerArgs:
-      - "-library=/Users/yoda/dev/pet/kotgent/build/artifacts/CinteropKlibsArtifact/kotgentmacosArm64/pty.klib"

@@ -17,7 +17,7 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - **Проект:** Kotlin/Native, единый нативный бинарь (macOS arm64), собирается **Kotlin Toolchain**. Scaffold уже инициализирован пользователем (`./kotlin init`): `module.yaml` (`product: macos/app` / `macosArm64`, Kotlin 2.4.10, `entryPoint: io.kotgent.main`), `src/main.kt` (`versionLine()`+`main()`), `test/SmokeTest.kt`, `.gitignore`, `./kotlin` wrapper. Git инициализирован; план закоммичен.
 - **idea.md устарел:** `pty4j` (JVM — идём в POSIX cinterop) и «свой relay» (заменён на cloudflared, бэклог).
 - **Layout `amper`:** исходники в `src/`, тесты в `test/` (НЕ `src/nativeMain/kotlin/…`). Пакеты `io.kotgent.*`; директории под пакеты не обязаны совпадать, но организуем по областям (`src/core/…` = `package io.kotgent.core`).
-- **cinterop:** `.def` кладутся в `cinterop/` **без YAML** (Kotlin Toolchain сам их подхватывает).
+- **cinterop:** `.def` кладутся в `cinterop/` **без YAML** (Kotlin Toolchain сам их подхватывает). **ВСЕ cinterop `.def` + тонкие нативные wrapper'ы живут в выделенном модуле `sysnative` (`kmp/lib`, `macosArm64`)**, от которого зависит app (`dependencies: ./sysnative`); будущие биндинги (ProcessRunner/tmux, sqlite cinterop) кладутся туда же. ⚠️ Тулчейн 0.11.0 не линкует cinterop в **test**-бинари (см. блокер Task 2) — cinterop-тесты `@Ignore`.
 - **Хранилище:** SQLDelight — Gradle-плагин, на Toolchain недоступен напрямую → обходим **своим `jvm/amper-plugin`**, вызывающим компилятор SQLDelight для codegen (спайк Task 4, фолбэк JSONL).
 - **Тулчейн подтверждён:** JDK 25, Xcode, tmux 3.7b, claude 2.1.217, codex, Maven Central доступен.
 
@@ -41,13 +41,15 @@ Kotgent — local-first диспетчер агентских сессий: пр
 ## Solution Overview
 
 **Модули / layout:**
-- Корневой модуль (`macos/app`): `src/` (пакеты `io.kotgent.*`), `test/`, `cinterop/` (`.def`), `sqldelight/` (`.sq`), `resources/webui/` (SPA).
+- Корневой модуль (`macos/app`): `src/` (пакеты `io.kotgent.*`), `test/`, `sqldelight/` (`.sq`), `resources/webui/` (SPA). Зависит от `./sysnative`.
+- **`sysnative/` (`kmp/lib`, `macosArm64`): владеет ВСЕМИ низкоуровневыми POSIX/cinterop-биндингами + тонкими нативными wrapper'ами.** `sysnative/cinterop/*.def` (PTY сейчас; ProcessRunner/tmux, sqlite cinterop — позже сюда же) + `sysnative/src/` (напр. `Pty`, пакет `io.kotgent.pty`). app зависит от `./sysnative` → cinterop klib линкуется в **main**-бинарь app'а как обычная модульная зависимость (без машинно-зависимого `-library`-пути). ⚠️ Тулчейн 0.11.0 НЕ линкует cinterop в **test**-бинари (Task 2-блокер) → cinterop-тесты `@Ignore`.
+- `project.yaml`: `modules: [., ./sysnative]`.
 - `plugins/sqldelight-gen/` (`jvm/amper-plugin`): codegen SQLDelight. `project.yaml` перечисляет модуль + плагин; корневой `module.yaml` — `plugins: { sqldelight-gen: enabled }`.
 
 **Packages (host-free ↔ края):**
 - `core/` — **host-free**: `AgentEvent`, `SessionState`, `SessionMeta`, `Reducer` (лог → проекция). Без IO, максимум тестов.
 - `store/` — `EventStore` интерфейс + реализация: **SQLDelight** (через плагин + `native-driver`) ИЛИ фолбэк JSONL. Интерфейс изолирует downstream от выбора.
-- `pty/` — PTY-примитив (`openpty`+`posix_spawn`) + fan-out. **Lazy lifecycle:** upstream `tmux attach` поднимается при первом подписчике, гаснет при последнем (Claude живёт в tmux независимо; даёт Detach И снимает respawn после рестарта daemon).
+- `pty/` — PTY-примитив (`openpty`+`posix_spawn`, **низкоуровневая часть — в модуле `sysnative`**) + fan-out (`TerminalBridge`/`Broadcaster` — в app). **Lazy lifecycle:** upstream `tmux attach` поднимается при первом подписчике, гаснет при последнем (Claude живёт в tmux независимо; даёт Detach И снимает respawn после рестарта daemon).
 - `tmux/` — обёртка над `tmux -L kotgent`.
 - `adapter/` — `AgentAdapter` контракт (launch/resume + `events: Flow<AgentEvent>`) + `ClaudeAdapter` + нормализация. Capability-интерфейсы — бэклог.
 - `daemon/` — session manager, reconciliation, provider-id capture, StopMode.
@@ -108,9 +110,11 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - [x] run `./kotlin test` — PTY round-trip зелёный перед Task 3 (5/5 зелёные)
 
 **⚠️ Toolchain-находка (спайк подтвердил PTY, но вскрыл баг тулчейна):**
-- **Реализация рабочая, доказана:** `openpty`+`posix_spawn(POSIX_SPAWN_SETSID)` даёт `/bin/cat` round-trip, resize (`TIOCSWINSZ`), exit-код, spawn-error — все 4 PTY-теста + smoke зелёные.
+- **Реализация рабочая, доказана:** `openpty`+`posix_spawn(POSIX_SPAWN_SETSID)` даёт `/bin/cat` round-trip, resize (`TIOCSWINSZ`), exit-код, spawn-error. Cinterop линкуется в **main**-бинарь → примитив реально исполняется при `./kotlin build`/`./kotlin run`. Сами 4 PTY-интеграционных теста сейчас `@Ignore` (см. блокер ниже), smoke зелёный, `./kotlin test` = exit 0.
 - **cinterop header-scan:** тулчейн НЕ сканирует `util.h`/`sys/ioctl.h`/`termios.h` из `headers=` (в klib-манифест попал только `spawn.h`). `openpty` и установка winsize вынесены в C-хелперы (`kotgent_openpty`/`kotgent_set_winsize`) в `---`-теле `.def` — тело компилируется против этих заголовков, поэтому символы резолвятся. `posix_spawn*`/`POSIX_SPAWN_SETSID` берутся из `spawn.h` штатно.
-- **⚠️ Баг (0.11.0 И 0.11.1=latest):** авто-cinterop klib линкуется в **main**-бинарь, но НЕ в **test**-бинарь (`linkMacosArm64TestDebug` не получает `-library=pty.klib`) → partial-linkage заглушает cinterop → `IrLinkageError` в рантайме тестов (в test-`.kexe` ноль `cinterop_pty`-символов). **Обход:** `test-settings.kotlin.freeCompilerArgs: -library=<АБСОЛЮТНЫЙ путь к build/.../pty.klib>` в `module.yaml` (konanc не резолвит относительные `-library`, в module.yaml нет подстановки переменных → путь захардкожен абсолютным, обновить при переносе проекта). Кандидаты на постоянный фикс (для оркестратора): апгрейд тулчейна, когда починят; вынос cinterop в отдельный dependency-модуль; build-хук. `./kotlin build` (без тестов) обхода не требует.
+- **✅ Корректирующий рефактор (машинно-зависимый хак УДАЛЁН, портабельно):** cinterop `.def` + тонкий wrapper `Pty` вынесены в выделенный модуль `sysnative` (`kmp/lib`, `macosArm64`); корневой `module.yaml` зависит от `./sysnative`; создан `project.yaml` (`modules: [., ./sysnative]`). Абсолютный `-library`-путь в `test-settings.freeCompilerArgs` (был машинно-специфичным, указывал в gitignored `build/`) полностью убран. Проверка: `git grep -n 'freeCompilerArgs\|/Users/yoda' -- '*.yaml'` = пусто. cinterop klib теперь линкуется в **main**-бинарь app'а как обычная модульная зависимость.
+- **⚠️ ОСТАВШИЙСЯ БЛОКЕР (0.11.0 — нужна ЭСКАЛАЦИЯ к пользователю):** выделенный модуль НЕ починил линковку cinterop в **test**-бинарь. `linkMacosArm64TestDebug` не линкует cinterop klib НИ в один test-бинарь — доказано тремя способами: (1) cinterop в самом app-модуле (Task 2); (2) cinterop в зависимости `sysnative`, потребляемой app'ом (транзитивно) — `IrLinkageError` в app-test; (3) cinterop-тест ВНУТРИ собственного test-бинаря `sysnative` — тот же `IrLinkageError: kotgent_openpty` (KT-78062). Портабельного обхода нет: относительный `-library` konanc трактует как имя репозитория (не файл), в module.yaml нет подстановки переменных, а ЛЮБОЙ `freeCompilerArgs -library` нарушает требование портабельности. → 4 PTY-интеграционных теста помечены `@Ignore` (в отчёте = SKIPPED, это НЕ подделка «pass»); включаются обратно, когда тулчейн начнёт линковать cinterop в test-бинари (апстрим-фикс KT-78062). **Решение за пользователем:** (a) принять `@Ignore` — портабельно, дефолт репозитория сейчас; (b) вернуть абсолютный `-library`-хак только для локального прогона PTY-тестов (непортабельно); (c) ждать фикса тулчейна. `./kotlin build` и `./kotlin test` (exit 0) зелёные при любом выборе.
+- **➕ Корректирующий рефактор (вне нумерации задач, не меняет чекбоксы):** cinterop `.def` + `Pty` → модуль `sysnative` (`kmp/lib`); удалён машинно-зависимый абсолютный `-library` test-хак; PTY-тесты `@Ignore` до апстрим-фикса линковки cinterop в test-бинари.
 
 ### Task 3: Ktor CIO HTTP+WS-спайк на native (РИСК)
 
