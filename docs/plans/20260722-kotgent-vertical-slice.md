@@ -87,11 +87,11 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - Modify: `module.yaml`
 - Verify: `src/main.kt`, `test/SmokeTest.kt`, `.gitignore`, `./kotlin`
 
-- [ ] проверить существующий scaffold: `./kotlin build` и `./kotlin test` зелёные (macosArm64)
-- [ ] в `module.yaml` включить базовые зависимости, нужные далее: `settings.kotlin.serialization: json`, dep `kotlinx-coroutines-core` (пин версий, совместимых с Kotlin 2.4.10)
-- [ ] убедиться, что `SmokeTest` проходит после добавления зависимостей (`./kotlin test`)
-- [ ] закоммитить scaffold + правки (`stage-and-commit.sh`)
-- [ ] (Ktor/SQLDelight-зависимости добавляются в своих спайках Task 3/4)
+- [x] проверить существующий scaffold: `./kotlin build` и `./kotlin test` зелёные (macosArm64)
+- [x] в `module.yaml` включить базовые зависимости, нужные далее: `settings.kotlin.serialization: json`, dep `kotlinx-coroutines-core` (пин версий, совместимых с Kotlin 2.4.10)
+- [x] убедиться, что `SmokeTest` проходит после добавления зависимостей (`./kotlin test`)
+- [x] закоммитить scaffold + правки (`stage-and-commit.sh`)
+- [x] (Ktor/SQLDelight-зависимости добавляются в своих спайках Task 3/4)
 
 ### Task 2: cinterop-спайк — PTY-примитив через openpty + posix_spawn (РИСК)
 

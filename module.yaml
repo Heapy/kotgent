@@ -1,0 +1,13 @@
+product:
+  type: macos/app
+  platforms: [macosArm64]
+
+dependencies:
+  - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0
+
+settings:
+  kotlin:
+    version: 2.4.10
+    serialization: json
+  native:
+    entryPoint: io.kotgent.main
