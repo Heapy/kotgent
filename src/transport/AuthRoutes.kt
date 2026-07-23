@@ -52,7 +52,10 @@ const val AUTH_TICKET_PATH: String = "/auth/ticket"
 /** Where the login page spends a ticket for the session cookie. No `Bearer`; the ticket is the credential. */
 const val AUTH_EXCHANGE_PATH: String = "/auth/exchange"
 
-/** Where `kotgent token rotate` re-mints the master token. `Bearer` + loopback only. */
+/**
+ * Where `kotgent token rotate` re-mints the master token. `Bearer` + loopback only. Rotation also drops all
+ * outstanding sign-in tickets, so "revoke all browser credentials" covers pending ones as well as live cookies.
+ */
 const val AUTH_ROTATE_PATH: String = "/auth/rotate"
 
 /**
@@ -83,7 +86,8 @@ data class RotateResponse(val token: String)
  *
  * @param tokens the live master token; [TokenHolder.rotate] is what `/auth/rotate` calls, and
  *   [TokenHolder.current] is both the `Bearer` compared against and the HMAC key the cookie is signed with.
- * @param tickets the one-shot ticket store — issuing and redeeming are its two entry points.
+ * @param tickets the one-shot ticket store — issuing and redeeming are its main entry points; `/auth/rotate`
+ *   also calls [TicketStore.invalidateAll] so a rotation revokes outstanding (unredeemed) tickets too.
  * @param publicUrl the configured public origin, or `null` for loopback-only. Decides the `publicUrl` in a
  *   ticket response, the `Origin` allowlist on the exchange, and whether the cookie is `Secure`.
  * @param now epoch millis, stamped into the issued cookie (injected so tests are deterministic).
@@ -136,6 +140,14 @@ fun Route.authRoutes(
                 // Persist-then-publish lives in [TokenHolder.rotate]; a failing persist throws here and
                 // becomes a 500 with the OLD token still in force, which is the safe end of that failure.
                 val rotated = tokens.rotate()
+                // Then drop every outstanding sign-in ticket, so rotation actually means "revoke ALL browser
+                // credentials": cookies stop verifying the instant the key flips, but a ticket is a browser
+                // credential that has NOT been redeemed yet and would otherwise still exchange into a fresh
+                // cookie under the new token — the very shoulder-surfed link an operator rotates to kill.
+                // Ordered AFTER the token flip on purpose: once the new token is live the old Bearer can no
+                // longer mint a ticket, so this sweep clears exactly the pre-rotation set with nothing new
+                // racing in behind it (clearing first would let a last old-Bearer issue slip a ticket through).
+                tickets.invalidateAll()
                 call.respondText(
                     json.encodeToString(RotateResponse.serializer(), RotateResponse(rotated)),
                     ContentType.Application.Json,

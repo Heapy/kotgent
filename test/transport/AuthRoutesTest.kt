@@ -218,6 +218,29 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun rotationDropsOutstandingTicketsAndTheyNoLongerExchange() = withAuthServer { env ->
+        // Rotation is "revoke ALL browser credentials". A cookie is revoked because the HMAC key changes, but
+        // an outstanding, UNREDEEMED ticket is a pending browser credential too — a QR/link that was
+        // shoulder-surfed is exactly why an operator rotates. It must not survive: were it still redeemable, it
+        // would exchange into a valid cookie under the NEW token for up to the 10-minute TTL. So: mint a ticket,
+        // rotate with the OLD Bearer, then try to spend the pre-rotation ticket.
+        val ticket = env.issueTicket()
+
+        val rotate = env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token)
+        assertEquals(HttpStatusCode.OK, rotate.status, "rotation succeeds with the old Bearer")
+
+        // A valid exchange in every other respect (loopback Host + same-origin Origin) — only the rotation
+        // stands between minting and spending. It must read the same as an already-spent or never-issued value.
+        val resp = env.exchange(env.port, ticket)
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            resp.status,
+            "a ticket minted before the rotation no longer exchanges — rotation revoked it",
+        )
+        assertNull(resp.headers[HttpHeaders.SetCookie], "and no session cookie is planted for a pre-rotation ticket")
+    }
+
+    @Test
     fun rotationRejectsASessionCookieAndDoesNotRotate() = withAuthServer { env ->
         // The escalation this guards against: a browser holding a valid session cookie (e.g. an XSS in the
         // SPA) fires a SAME-ORIGIN POST at /auth/rotate. Everything the browser gate checks passes — Host is

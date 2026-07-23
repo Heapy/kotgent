@@ -111,6 +111,22 @@ class TicketStore(
     }
 
     /**
+     * Drop EVERY outstanding ticket at once — the "revoke all" half of a master-token rotation.
+     *
+     * An unredeemed ticket is a pending browser credential (a QR code or sign-in link that has been handed
+     * out but not yet spent). Rotation's whole promise is "revoke every browser credential at once" — cookies
+     * stop verifying the instant the HMAC key changes — but a ticket is redeemed AFTER the fact and signs its
+     * cookie with whatever token is current at redeem time, so a ticket minted before the rotation would
+     * otherwise still exchange into a valid cookie under the NEW token for up to [TICKET_TTL_MILLIS]. That is
+     * exactly the window an operator rotates to close (a shoulder-surfed or intercepted link), so
+     * `/auth/rotate` calls this as part of the rotation. Under the same [mutex] as [issue]/[redeem] so a
+     * concurrent redeem cannot slip a pre-rotation ticket through mid-clear.
+     */
+    suspend fun invalidateAll() = mutex.withLock {
+        outstanding.clear()
+    }
+
+    /**
      * Drop every ticket whose life has run out, as of [at]. A ticket is redeemable while `at < expiresAt`,
      * so one sampled at exactly its expiry instant is already gone — expiry is a deadline, not a grace.
      *
