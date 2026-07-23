@@ -5,9 +5,11 @@ import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
+import io.kotgent.core.PaneId
 import io.kotgent.core.Projection
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
+import io.kotgent.core.SessionState
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.reduce
@@ -213,6 +215,41 @@ class TransportTest {
         }
     }
 
+    // ---- 6. control ops: stop transitions; unknown session 404; unknown action 400; resume-blocked 409 ----
+
+    @Test
+    fun controlStopTransitionsTheSessionToStopped() = withServer { ctx ->
+        val created = ctx.startSession()
+        val resp = ctx.post("/sessions/${created.id}/stop")
+        assertEquals(HttpStatusCode.OK, resp.status, "stop returns 200")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("stopped", dto.state, "the session is now stopped")
+        assertTrue(ctx.tmux.killed.contains(created.id), "tmux kill-session was issued for the logical id")
+    }
+
+    @Test
+    fun aControlOpOnAnUnknownSessionIs404() = withServer { ctx ->
+        assertEquals(HttpStatusCode.NotFound, ctx.post("/sessions/no-such-id/stop").status)
+    }
+
+    @Test
+    fun anUnknownControlActionIs400() = withServer { ctx ->
+        val created = ctx.startSession()
+        assertEquals(HttpStatusCode.BadRequest, ctx.post("/sessions/${created.id}/frobnicate").status)
+    }
+
+    @Test
+    fun resumeWhileTheProviderIdIsPendingIs409() = withServer { ctx ->
+        // A dead session whose provider id was never captured → resume is blocked (409 ResumeBlocked).
+        ctx.store.upsertSession(
+            SessionMeta(
+                id = SessionId("pend01"), name = "pend01", agent = "claude", cwd = "/tmp",
+                tmuxSession = "kt-pend01", state = SessionState.crashed, createdAt = 1L, updatedAt = 1L,
+            ),
+        )
+        assertEquals(HttpStatusCode.Conflict, ctx.post("/sessions/pend01/resume").status)
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** The wired-up server + client + fakes handed to each test body. */
@@ -246,6 +283,11 @@ class TransportTest {
             }
             assertEquals(HttpStatusCode.OK, resp.status)
             return TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        }
+
+        /** An authenticated `POST` with no body — for the control ops (stop/resume/interrupt/…). */
+        suspend fun post(path: String) = client.post("http://127.0.0.1:$port$path") {
+            header(HttpHeaders.Authorization, "Bearer $token")
         }
     }
 
@@ -339,7 +381,8 @@ class TransportTest {
     /** A [PtyFactory] minting [WsFakePty]s and publishing each on [opened] so the test can grab the upstream. */
     private class WsFakePtyFactory : PtyFactory {
         val opened = Channel<WsFakePty>(Channel.UNLIMITED)
-        override fun invoke(command: List<String>): PtyHandle = WsFakePty(command).also { opened.trySend(it) }
+        override fun invoke(command: List<String>, env: Map<String, String>): PtyHandle =
+            WsFakePty(command).also { opened.trySend(it) }
     }
 
     /**
@@ -365,6 +408,20 @@ class TransportTest {
             val merged = if (prior != null) meta.copy(createdAt = prior.createdAt) else meta
             metas[meta.id] = merged
             updates.tryEmit(SessionUpdate(merged.id, merged.state, merged.lastSeq, unread(merged.lastSeq.value, merged.readCursor.value)))
+        }
+
+        override suspend fun updateSessionState(
+            sessionId: SessionId,
+            state: SessionState,
+            stateSource: EventSource,
+            paneId: PaneId?,
+            updatedAt: Long,
+        ): Unit = mutex.withLock {
+            // Honors the contract: update only state/state_source/pane_id/updated_at, NEVER last_seq or
+            // provider_session_id (so a concurrent append is not clobbered).
+            val m = metas[sessionId] ?: return@withLock
+            metas[sessionId] = m.copy(state = state, stateSource = stateSource, paneId = paneId, updatedAt = updatedAt)
+            updates.tryEmit(SessionUpdate(sessionId, state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value)))
         }
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }

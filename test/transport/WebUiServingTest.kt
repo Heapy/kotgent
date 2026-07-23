@@ -183,6 +183,13 @@ class WebUiServingTest {
     private class NoopEventStore : EventStore {
         override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow<SessionUpdate>()
         override suspend fun upsertSession(meta: SessionMeta) {}
+        override suspend fun updateSessionState(
+            sessionId: SessionId,
+            state: io.kotgent.core.SessionState,
+            stateSource: EventSource,
+            paneId: io.kotgent.core.PaneId?,
+            updatedAt: Long,
+        ) {}
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = Seq(0L)

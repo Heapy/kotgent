@@ -208,6 +208,13 @@ class HookRoutesTest {
         }
 
         override suspend fun upsertSession(meta: SessionMeta) = Unit
+        override suspend fun updateSessionState(
+            sessionId: SessionId,
+            state: io.kotgent.core.SessionState,
+            stateSource: EventSource,
+            paneId: io.kotgent.core.PaneId?,
+            updatedAt: Long,
+        ) = Unit
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()

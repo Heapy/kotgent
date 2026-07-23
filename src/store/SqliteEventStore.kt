@@ -14,6 +14,7 @@ import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.reduce
 import io.kotgent.core.replay
+import io.kotgent.core.unread
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.db.Sessions
 import kotlinx.coroutines.NonCancellable
@@ -132,6 +133,23 @@ class SqliteEventStore private constructor(
         )
     }
 
+    override suspend fun updateSessionState(
+        sessionId: SessionId,
+        state: SessionState,
+        stateSource: EventSource,
+        paneId: PaneId?,
+        updatedAt: Long,
+    ): Unit = mutex.withLock {
+        // Update only the daemon-owned control fields — never last_seq / provider_session_id, which a
+        // concurrent hook append advances under this same lock (a stale full-row upsert would clobber
+        // them). The in-memory `projections` cache is the pure event-log replay and is untouched here.
+        sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, sessionId.value)
+        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
+        _sessionUpdates.tryEmit(
+            SessionUpdate(sessionId, state, Seq(row.last_seq), unreadOf(row.last_seq, row.read_cursor)),
+        )
+    }
+
     override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock {
         sessions.get(sessionId.value).executeAsOneOrNull()?.toMeta()
     }
@@ -229,7 +247,7 @@ class SqliteEventStore private constructor(
 
     // --- internals (callers hold [mutex]) ---------------------------------------------------------
 
-    private fun unreadOf(lastSeq: Long, readCursor: Long): Long = (lastSeq - readCursor).coerceAtLeast(0)
+    private fun unreadOf(lastSeq: Long, readCursor: Long): Long = unread(lastSeq, readCursor)
 
     private fun readLocked(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> =
         events.selectFromSeq(sessionId.value, fromSeq.value) { session_id, seq, ts, _, source, payload ->

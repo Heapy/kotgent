@@ -3,6 +3,7 @@ package io.kotgent.store
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
+import io.kotgent.core.PaneId
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -98,6 +99,33 @@ class EventStoreTest {
             assertEquals(listOf(1L, 2L), listOf(b1, b2).map { it.value })
             assertEquals(listOf(1L, 2L, 3L), store.read(a, Seq(0)).map { it.seq.value })
             assertEquals(listOf(1L, 2L), store.read(b, Seq(0)).map { it.seq.value })
+        }
+    }
+
+    @Test
+    fun updateSessionStateDoesNotClobberLastSeqOrProviderId() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 7L })
+            val sid = SessionId("ctl")
+            store.upsertSession(meta(sid))
+            // Hook appends advance last_seq AND bind a provider id in the cache row.
+            val pid = ProviderSessionId("33333333-3333-3333-3333-333333333333")
+            store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)       // seq 1, binds provider id
+            store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook) // seq 2, needs_approval
+            assertEquals(Seq(2), store.getSession(sid)!!.lastSeq)
+
+            // A control op (interrupt/stop/resume effect) writes a derived state. It must update ONLY
+            // state / state_source / pane_id / updated_at — NEVER regress last_seq or drop the provider
+            // id, which a full-row upsert of a stale SessionMeta would (the bug this fix addresses).
+            store.updateSessionState(sid, SessionState.ready, EventSource.user, PaneId("%7"), 9L)
+            store.getSession(sid)!!.let { m ->
+                assertEquals(SessionState.ready, m.state, "control state applied")
+                assertEquals(EventSource.user, m.stateSource)
+                assertEquals(PaneId("%7"), m.paneId)
+                assertEquals(9L, m.updatedAt)
+                assertEquals(Seq(2), m.lastSeq, "last_seq is NOT clobbered by the control write")
+                assertEquals(pid, m.providerSessionId, "provider id is NOT dropped by the control write")
+            }
         }
     }
 

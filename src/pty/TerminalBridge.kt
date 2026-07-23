@@ -37,12 +37,16 @@ import kotlinx.coroutines.launch
  *                        (a real tmux `capture-pane` is a sub-millisecond subprocess call).
  * @param ptyFactory      how to open the upstream [PtyHandle] for [upstreamCommand].
  * @param scope           the scope the reader loop coroutine is launched on.
+ * @param env             child environment for the upstream (production: `TERM`/`HOME`/`PATH` so
+ *                        `tmux attach` can build a terminal — see [terminalAttachEnv]). Empty by
+ *                        default for the pure-fake unit tests, which never open a real pty.
  */
 class TerminalBridge(
     private val upstreamCommand: List<String>,
     private val seedProvider: () -> ByteArray,
     private val ptyFactory: PtyFactory,
     private val scope: CoroutineScope,
+    private val env: Map<String, String> = emptyMap(),
 ) {
     /** The reader loop for the currently-open upstream; cancelled when that upstream is closed. */
     private var readerJob: Job? = null
@@ -51,7 +55,7 @@ class TerminalBridge(
         openUpstream = {
             // 0→1: open the upstream and start pumping its bytes into the broadcaster. Runs under
             // the broadcaster lock; launch() only schedules the reader, so the lock is held briefly.
-            val up = ptyFactory(upstreamCommand)
+            val up = ptyFactory(upstreamCommand, env)
             readerJob = scope.launch { readerLoop(up) }
             up
         },

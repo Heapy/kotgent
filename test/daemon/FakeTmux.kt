@@ -3,14 +3,13 @@ package io.kotgent.daemon
 import io.kotgent.core.PaneId
 import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxPane
-import io.kotgent.tmux.TmuxSession
 
 /**
  * A host-free fake [TmuxControl] for the daemon unit tests — no real tmux, no cinterop, so it runs in
- * the test binary. It models a tiny in-memory tmux: [newSession] adds a live pane (+ session),
- * [killSession] removes them, and [listPanes] / [listSessions] report the current set. Every mutating
- * call is recorded ([newSessionCommands] / [killed] / [sentKeys]) so tests can assert what the
- * [SessionManager] asked tmux to do. Panes handed out are `%100`, `%101`, … so they are unambiguous.
+ * the test binary. It models a tiny in-memory tmux: [newSession] adds a live pane, [killSession]
+ * removes it, and [listPanes] reports the current set. Every mutating call is recorded
+ * ([newSessionCommands] / [killed] / [sentKeys]) so tests can assert what the [SessionManager] asked
+ * tmux to do. Panes handed out are `%100`, `%101`, … so they are unambiguous.
  *
  * The [Reconciler] tests seed the live-pane set directly via [seedPanes]; sessions with no seeded pane
  * are "gone" (dead/torn-down).
@@ -18,9 +17,6 @@ import io.kotgent.tmux.TmuxSession
 class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
 
     private val panes = seedPanes.toMutableList()
-    private val sessions = seedPanes
-        .map { TmuxSession(name = it.session, id = "\$0", windows = 1, created = 1L) }
-        .toMutableList()
     private var paneCounter = 100
 
     /** (logical id, rendered command) for every [newSession] call, in order. */
@@ -40,13 +36,8 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
         val pane = PaneId("%${paneCounter++}")
         panes.removeAll { it.session == name }
         panes.add(TmuxPane(session = name, paneId = pane, pid = 4242, dead = false, width = cols, height = rows))
-        if (sessions.none { it.name == name }) {
-            sessions.add(TmuxSession(name = name, id = "\$0", windows = 1, created = 1L))
-        }
         return pane
     }
-
-    override fun listSessions(): List<TmuxSession> = sessions.toList()
 
     override fun listPanes(): List<TmuxPane> = panes.toList()
 
@@ -55,7 +46,6 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
         val name = sessionName(id)
         val had = panes.any { it.session == name }
         panes.removeAll { it.session == name }
-        sessions.removeAll { it.name == name }
         return had
     }
 

@@ -51,8 +51,14 @@ interface PtyHandle {
 }
 
 /**
- * How the fan-out obtains an upstream [PtyHandle] for a given [command] (argv). Injected so the
- * lifecycle logic is testable: production passes [realPtyFactory] (opens a real cinterop [Pty]);
- * unit tests pass a fake factory that mints pure-Kotlin fakes and records how it was called.
+ * How the fan-out obtains an upstream [PtyHandle] for a given [command] (argv) and child [env].
+ * Injected so the lifecycle logic is testable: production passes [realPtyFactory] (opens a real
+ * cinterop [Pty]); unit tests pass a fake factory that mints pure-Kotlin fakes and records how it
+ * was called.
+ *
+ * The [env] is load-bearing for the production `tmux attach` upstream: with an empty environment
+ * `tmux attach` fails to build a terminal description ("missing or unsuitable terminal") and the
+ * child exits immediately, so the upstream must carry at least `TERM` (plus `HOME`/`PATH`). See
+ * [terminalAttachEnv] / [terminalBridgeForSession].
  */
-typealias PtyFactory = (command: List<String>) -> PtyHandle
+typealias PtyFactory = (command: List<String>, env: Map<String, String>) -> PtyHandle

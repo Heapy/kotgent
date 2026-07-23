@@ -67,8 +67,12 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
 class FakePtyFactory : PtyFactory {
     val created: MutableList<FakePtyHandle> = mutableListOf()
 
-    override fun invoke(command: List<String>): PtyHandle =
-        FakePtyHandle(command).also { created.add(it) }
+    /** The [env] passed on the most recent open (asserts the production TERM/HOME/PATH seam is threaded). */
+    var lastEnv: Map<String, String> = emptyMap()
+        private set
+
+    override fun invoke(command: List<String>, env: Map<String, String>): PtyHandle =
+        FakePtyHandle(command).also { created.add(it); lastEnv = env }
 
     /** Number of upstreams opened so far. */
     val openCount: Int get() = created.size

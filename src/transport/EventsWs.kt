@@ -4,6 +4,7 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.unread
 import io.kotgent.store.EventStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
@@ -80,6 +81,11 @@ private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.strea
         close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "malformed session id"))
         return
     }
+    // Reject an unknown session rather than subscribing to a never-emitting stream that hangs the socket.
+    if (store.getSession(sessionId) == null) {
+        close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "no such session"))
+        return
+    }
     val from = Seq((call.request.queryParameters["from"]?.toLongOrNull() ?: 0L).coerceAtLeast(0))
     try {
         store.subscribe(sessionId, from).collect { stored ->
@@ -117,7 +123,7 @@ fun SessionMeta.toUpdateDto(): SessionUpdateDto = SessionUpdateDto(
     state = state.name,
     needsAttention = state.needsAttention,
     lastSeq = lastSeq.value,
-    unread = (lastSeq.value - readCursor.value).coerceAtLeast(0),
+    unread = unread(lastSeq.value, readCursor.value),
 )
 
 /** A single canonical event pushed on the per-session `/events?session=…` stream. */

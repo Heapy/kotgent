@@ -11,9 +11,9 @@ import io.kotgent.core.PaneId
  * against a throwaway `tmux -L kotgent-test` server.
  *
  * [decision] The interface lives in the `tmux` package (a tmux concept), covers exactly what the
- * daemon calls, and leaves the richer [Tmux] surface (capturePane / paneAlive / panePid / ensureServer
- * / isAvailable) off it — those are used by other layers (terminal bridge, tests) against the concrete
- * type, not through this seam.
+ * daemon calls, and leaves the richer [Tmux] surface (capturePane / ensureServer / isAvailable) off
+ * it — `capturePane` feeds the terminal bridge, and `ensureServer`/`isAvailable` are used at daemon
+ * bootstrap / in tests against the concrete type, not through this seam.
  */
 interface TmuxControl {
     /** The tmux session name for a logical short [id] (`kt-<id>`). */
@@ -21,9 +21,6 @@ interface TmuxControl {
 
     /** Create a detached `kt-<id>` session running [cmd] in [cwd] at [cols]x[rows]; return its pane id. */
     fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId
-
-    /** All sessions on this socket (empty on a fresh/torn-down socket). */
-    fun listSessions(): List<TmuxSession>
 
     /** All panes across all sessions on this socket (empty on a fresh/torn-down socket). */
     fun listPanes(): List<TmuxPane>

@@ -64,6 +64,15 @@ UPDATE sessions
 SET state = ?, state_source = ?, last_seq = ?, provider_session_id = ?, updated_at = ?
 WHERE id = ?;
 
+-- Update ONLY the daemon-owned control fields (state, state_source, pane_id, updated_at) for a
+-- control op (stop/interrupt/resume) or a reconciler reclassification. Critically it does NOT touch
+-- last_seq or provider_session_id, which are advanced by EventStore.append under its own lock — a
+-- full-row upsert here would clobber a concurrent hook append's last_seq / provider_session_id.
+updateControlState:
+UPDATE sessions
+SET state = ?, state_source = ?, pane_id = ?, updated_at = ?
+WHERE id = ?;
+
 get:
 SELECT *
 FROM sessions

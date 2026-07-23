@@ -43,7 +43,7 @@ immortal:
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **163 run / 158 passed / 5 skipped**. The 5 skips are intentional and
+The suite currently reports **166 run / 161 passed / 5 skipped**. The 5 skips are intentional and
 explained under [Status & limitations](#status--limitations) — they are not failures.
 
 The produced binary lands under `build/` (the `macos/app` output); `kotgent` below refers to that binary.
@@ -65,8 +65,10 @@ kotgent <command> [args]
   --version | --help
 ```
 
-- **`daemon`** binds `127.0.0.1:27508` by default (`27508` = `0x6b74` = ASCII "kt"). Override with
-  `--port` or the `$KOTGENT_PORT` environment variable. This is the process launchd runs on login.
+- **`daemon`** binds `127.0.0.1:27508` by default (`27508` = `0x6b74` = ASCII "kt"). Override the
+  daemon's listen port with `--port`. The `$KOTGENT_PORT` environment variable does **not** change the
+  daemon's port — it tells the CLI *client* (`list`/`start`/`stop`/`attach`/…) which port to reach a
+  running daemon on. This is the process launchd runs on login.
 - **`install` / `uninstall`** write `~/Library/LaunchAgents/io.kotgent.daemon.plist`
   (`RunAtLoad` + `KeepAlive`, so the daemon comes up on login and is restarted if it dies) and
   `launchctl bootstrap` / `bootout` it.

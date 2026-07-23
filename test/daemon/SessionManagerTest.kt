@@ -295,7 +295,7 @@ class SessionManagerTest {
                 assertTrue(Regex("^%\\d+$").matches(pane.value), "captured a real %<n> pane id, was ${pane.value}")
                 assertEquals(SessionId("itg01"), registry.lookup(pane), "start registered the real pane->session")
                 assertEquals(provider, store.projectionOf(SessionId("itg01")).providerSessionId, "SessionBound captured")
-                assertTrue(realTmux.listSessions().any { it.name == "kt-itg01" }, "a real tmux session exists")
+                assertTrue(realTmux.listPanes().any { it.session == "kt-itg01" }, "a real tmux session exists")
 
                 // Simulate a daemon restart: a FRESH registry (in-memory state lost) + a NEW Reconciler over
                 // the SAME real tmux + SAME store. The live `cat` session must reclassify running and the

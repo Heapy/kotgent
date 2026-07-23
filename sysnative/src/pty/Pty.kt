@@ -2,10 +2,12 @@ package io.kotgent.pty
 
 import io.kotgent.cinterop.pty.POSIX_SPAWN_SETSID
 import io.kotgent.cinterop.pty.kotgent_openpty
+import io.kotgent.cinterop.pty.kotgent_ptsname
 import io.kotgent.cinterop.pty.kotgent_set_winsize
 import io.kotgent.cinterop.pty.posix_spawn
 import io.kotgent.cinterop.pty.posix_spawn_file_actions_addclose
 import io.kotgent.cinterop.pty.posix_spawn_file_actions_adddup2
+import io.kotgent.cinterop.pty.posix_spawn_file_actions_addopen
 import io.kotgent.cinterop.pty.posix_spawn_file_actions_destroy
 import io.kotgent.cinterop.pty.posix_spawn_file_actions_init
 import io.kotgent.cinterop.pty.posix_spawn_file_actions_tVar
@@ -38,10 +40,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
 import platform.posix.EINTR
+import platform.posix.O_RDWR
+import platform.posix.SIGKILL
 import platform.posix.SIGTERM
+import platform.posix.WNOHANG
 import platform.posix.errno
 import platform.posix.kill
 import platform.posix.strerror
+import platform.posix.usleep
 import platform.posix.waitpid
 import platform.posix.close as posixClose
 import platform.posix.read as posixRead
@@ -140,33 +146,77 @@ class Pty private constructor(
                 }
                 break
             }
-            val s = status.value
-            // macOS wait-status layout: low 7 bits = terminating signal (0 if exited
-            // normally), bits 8..15 = exit code when exited normally.
-            exitCode = if (s and 0x7f == 0) (s shr 8) and 0xff else 128 + (s and 0x7f)
+            exitCode = decodeStatus(status.value)
             reaped = true
         }
         return exitCode
     }
 
     /**
+     * Poll-wait up to [micros] microseconds for the child to exit without blocking indefinitely
+     * (`waitpid(WNOHANG)`). Returns `true` once the child is reaped (records its exit code), `false`
+     * if it is still alive after the deadline. Used by [close] to bound its wait so it can never
+     * deadlock a caller's lock (e.g. the Broadcaster's) on a child that ignores SIGTERM.
+     */
+    private fun reapBounded(micros: Long): Boolean {
+        memScoped {
+            val status = alloc<IntVar>()
+            var waited = 0L
+            val stepMicros = 5_000L // 5 ms
+            while (waited < micros) {
+                val r = waitpid(pid, status.ptr, WNOHANG)
+                when {
+                    r == -1 -> {
+                        if (errno == EINTR) continue
+                        reaped = true; exitCode = -1; return true // ECHILD: nothing to reap
+                    }
+                    r != 0 -> { exitCode = decodeStatus(status.value); reaped = true; return true }
+                    else -> { usleep(stepMicros.convert()); waited += stepMicros }
+                }
+            }
+        }
+        return false
+    }
+
+    /**
      * Terminate the child (if still alive), reap it, close the master fd and stop the
      * reader thread. Returns the child's exit code. Idempotent.
+     *
+     * Termination is escalated and BOUNDED: SIGTERM first (so the slave closes and the reader sees
+     * a clean EOF rather than us yanking the fd from under a blocked read), then a bounded poll-wait,
+     * and finally SIGKILL if the child ignores SIGTERM — so this never blocks forever even though it
+     * may run under a caller's lock.
      */
     fun close(): Int {
         if (closed) return exitCode
         closed = true
-        // Ask the child to exit so the slave side closes; the reader then sees a clean
-        // EOF on the master instead of us yanking the fd out from under a blocked read().
-        if (!reaped) kill(pid, SIGTERM)
-        val code = waitFor()
+        if (!reaped) {
+            kill(pid, SIGTERM)
+            if (!reapBounded(CLOSE_GRACE_MICROS)) {
+                kill(pid, SIGKILL)
+                waitFor() // SIGKILL is uncatchable — this reaps promptly
+            }
+        }
         posixClose(masterFd)
         readerScope.cancel()
         readerContext.close()
-        return code
+        return exitCode
     }
 
+    /**
+     * Decode a macOS wait-status word: low 7 bits = terminating signal (0 if exited normally),
+     * bits 8..15 = exit code when exited normally. A killed child reports `128 + signal`.
+     */
+    private fun decodeStatus(s: Int): Int =
+        if (s and 0x7f == 0) (s shr 8) and 0xff else 128 + (s and 0x7f)
+
     companion object {
+        /** Grace period (µs) after SIGTERM before [close] escalates to SIGKILL. */
+        private const val CLOSE_GRACE_MICROS: Long = 2_000_000L
+
+        /** Buffer size for the resolved pts path (well above macOS `PATH_MAX`/pts names). */
+        private const val PTS_PATH_CAP: Int = 1024
+
         /**
          * Open a pty and spawn [command] on its slave side.
          *
@@ -197,23 +247,30 @@ class Pty private constructor(
                 // Initial window size on the master; the slave inherits it.
                 kotgent_set_winsize(master, rows.toUShort(), cols.toUShort())
 
-                // File actions: wire the slave as the child's stdin/stdout/stderr, then
-                // drop both the extra slave fd and the master fd in the child so that
-                // closing our master later produces a clean EOF.
+                // Resolve the slave's pts path so the CHILD can open it itself and thereby acquire
+                // it as its controlling terminal (see the file actions below).
+                val ptsBuf = allocArray<ByteVar>(PTS_PATH_CAP)
+                if (kotgent_ptsname(master, ptsBuf, PTS_PATH_CAP.convert()) != 0) {
+                    posixClose(master)
+                    posixClose(slave)
+                    throw PtyException("ptsname failed: ${errnoMessage(errno)}")
+                }
+                val ptsPath = ptsBuf.toKString()
+
+                // File actions. CONTROLLING TERMINAL: under POSIX_SPAWN_SETSID the child is a fresh
+                // session leader with no controlling tty, and the FIRST tty it opens (without
+                // O_NOCTTY) becomes its controlling terminal. A dup2 of an *inherited* slave fd does
+                // NOT do this — so we have the child OPEN the slave by its pts path as fd 0, then
+                // wire that same tty to stdout/stderr. `tmux attach` requires a controlling tty; with
+                // only dup2 it fails ("open terminal failed: not a terminal") and exits immediately.
+                // Finally drop the inherited master/slave fds so closing our master yields a clean EOF.
                 val fileActions = alloc<posix_spawn_file_actions_tVar>()
                 posix_spawn_file_actions_init(fileActions.ptr)
-                posix_spawn_file_actions_adddup2(fileActions.ptr, slave, 0)
-                posix_spawn_file_actions_adddup2(fileActions.ptr, slave, 1)
-                posix_spawn_file_actions_adddup2(fileActions.ptr, slave, 2)
+                posix_spawn_file_actions_addopen(fileActions.ptr, 0, ptsPath, O_RDWR, 0.convert())
+                posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 1)
+                posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 2)
                 posix_spawn_file_actions_addclose(fileActions.ptr, slave)
                 posix_spawn_file_actions_addclose(fileActions.ptr, master)
-                // NOTE for Task 9 (`tmux attach`): the child there must acquire a
-                // CONTROLLING terminal. The robust pattern is, under POSIX_SPAWN_SETSID
-                // (child becomes a session leader), to have the child *open the slave by
-                // its ptsname() path* via posix_spawn_file_actions_addopen() -- the first
-                // tty a session leader opens becomes its controlling terminal -- instead
-                // of only dup2'ing an inherited slave fd. /bin/cat needs no controlling
-                // tty, so plain dup2 is sufficient for this spike.
 
                 val attr = alloc<posix_spawnattr_tVar>()
                 posix_spawnattr_init(attr.ptr)

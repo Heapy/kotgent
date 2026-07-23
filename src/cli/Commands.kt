@@ -20,10 +20,9 @@ import io.kotgent.transport.KotgentServer
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.readOrCreateToken
 import io.kotgent.transport.readTokenOrNull
+import io.kotgent.transport.writePrivateFile
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,10 +32,6 @@ import kotlinx.coroutines.runBlocking
 import platform.posix.S_IRUSR
 import platform.posix.S_IWUSR
 import platform.posix.S_IXUSR
-import platform.posix.chmod
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fwrite
 import platform.posix.mkdir
 
 /**
@@ -141,7 +136,17 @@ object Commands {
         ensureDir(kotgentHome())
 
         // File-backed store (restart-safety = the whole point of the control plane).
-        val store = SqliteEventStore.using(NativeSqliteDriver(KotgentDatabase.Schema, DB_FILENAME))
+        val store = SqliteEventStore.using(
+            NativeSqliteDriver(
+                schema = KotgentDatabase.Schema,
+                name = DB_FILENAME,
+                onConfiguration = { config ->
+                    config.copy(
+                        extendedConfig = config.extendedConfig.copy(basePath = kotgentHome()),
+                    )
+                },
+            ),
+        )
         val tmux = Tmux(TMUX_SOCKET)
         tmux.ensureServer()
 
@@ -153,13 +158,19 @@ object Commands {
         // session. adapter.events is emptyFlow(): the hook ingress appends straight into the store
         // (the source of truth), so the adapter does not need to re-surface events (Task 12 decision).
         val settingsPath = writeClaudeHookSettings(port, token)
-        val sessionIdSupported = ClaudeCli().supportsSessionId()
+        val claudeCli = ClaudeCli()
+        val sessionIdSupported = claudeCli.supportsSessionId()
+        // Resolve claude to an absolute path (like tmux, which is already absolute) so the tmux launch
+        // does not depend on the child shell's PATH under launchd's minimal env. Falls back to the bare
+        // name (found via the child's PATH) if it cannot be located.
+        val claudePath = claudeCli.locate() ?: "claude"
         val agentFactory = AgentFactory { _, cwd ->
             ClaudeAdapter(
                 cwd = cwd,
                 settingsPath = settingsPath,
                 events = emptyFlow(),
                 sessionIdSupported = sessionIdSupported,
+                binaryName = claudePath,
             )
         }
         val manager = SessionManager(tmux, store, registry, agentFactory, idCapture)
@@ -175,7 +186,7 @@ object Commands {
     }
 
     /** The daemon's SQLite database file name (kept next to the token under `~/.kotgent`). */
-    private val DB_FILENAME: String get() = "${kotgentHome()}/kotgent.db"
+    private const val DB_FILENAME: String = "kotgent.db"
 
     /**
      * The reconciler's vendor-store transcript probe (Task 18): the real Claude probe stats
@@ -203,17 +214,10 @@ object Commands {
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun writeClaudeHookSettings(port: Int, token: String): String {
         val path = "${kotgentHome()}/claude-hooks.json"
-        val bytes = ClaudeHookConfig.generate(port, token).encodeToByteArray()
-        val fp = fopen(path, "wb") ?: error("cannot write hook settings to $path")
-        try {
-            if (bytes.isNotEmpty()) bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
-        } finally {
-            fclose(fp)
-        }
-        chmod(path, (S_IRUSR or S_IWUSR).convert()) // 0600 — carries the hook token
+        // Written 0600 atomically (it carries the hook token) — never a brief 0644 window.
+        writePrivateFile(path, ClaudeHookConfig.generate(port, token).encodeToByteArray())
         return path
     }
 

@@ -5,18 +5,6 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.X_OK
 import platform.posix.access
 
-/** A tmux session as parsed from `list-sessions -F` (the `-F` fields we care about). */
-data class TmuxSession(
-    /** Session name, e.g. `kt-abc` (the logical `kt-<id>` handle). */
-    val name: String,
-    /** tmux's own session id, e.g. `$0`. */
-    val id: String,
-    /** Number of windows in the session. */
-    val windows: Int,
-    /** Creation time (epoch seconds, from `#{session_created}`). */
-    val created: Long,
-)
-
 /** A tmux pane as parsed from `list-panes -a -F`. */
 data class TmuxPane(
     /** Owning session name (`kt-<id>`). */
@@ -44,7 +32,7 @@ class TmuxException(message: String) : RuntimeException(message)
  * Callers address sessions by the **logical short id** (`id`); the wrapper maps it to the tmux
  * session name `kt-<id>` ([sessionName]). The runtime correlation handle is the [PaneId]
  * (`#{pane_id}`) that [newSession] returns and [listPanes] reports — that is what hooks send as
- * `$TMUX_PANE` and what pane-liveness queries ([paneAlive]/[panePid]) take.
+ * `$TMUX_PANE` and what the reconciler keys liveness on.
  *
  * ## Robustness
  * Argument construction goes through [ProcessRunner]'s strict quoting, so cwd paths, commands,
@@ -112,28 +100,6 @@ class Tmux(
         return PaneId(paneId)
     }
 
-    /** List all sessions on this socket. A fresh/torn-down socket reads as an empty list. */
-    override fun listSessions(): List<TmuxSession> {
-        val r = tmux(
-            "list-sessions", "-F",
-            fields("#{session_name}", "#{session_id}", "#{session_windows}", "#{session_created}"),
-        )
-        if (r.isAbsence()) return emptyList()
-        if (!r.isSuccess) throw TmuxException("tmux list-sessions failed: ${r.stderr.trim()}")
-        return r.stdout.lineSequence()
-            .filter { it.isNotBlank() }
-            .map { line ->
-                val f = line.split(FS)
-                TmuxSession(
-                    name = f[0],
-                    id = f.getOrElse(1) { "" },
-                    windows = f.getOrNull(2)?.toIntOrNull() ?: 0,
-                    created = f.getOrNull(3)?.toLongOrNull() ?: 0L,
-                )
-            }
-            .toList()
-    }
-
     /** List all panes across all sessions on this socket. A torn-down socket reads as empty. */
     override fun listPanes(): List<TmuxPane> {
         val r = tmux(
@@ -198,20 +164,6 @@ class Tmux(
         if (!r.isSuccess && !r.isAbsence()) {
             throw TmuxException("tmux send-keys for '$id' failed: ${r.stderr.trim()}")
         }
-    }
-
-    /** Whether [pane] currently exists and its process is alive (`#{pane_dead}` == 0). */
-    fun paneAlive(pane: PaneId): Boolean {
-        val r = tmux("display-message", "-p", "-t", pane.value, "-F", "#{pane_dead}")
-        if (!r.isSuccess) return false // no server / unknown pane -> not alive
-        return r.stdout.trim() == "0"
-    }
-
-    /** The pid of [pane]'s process, or `null` if the pane does not exist. */
-    fun panePid(pane: PaneId): Int? {
-        val r = tmux("display-message", "-p", "-t", pane.value, "-F", "#{pane_pid}")
-        if (!r.isSuccess) return null
-        return r.stdout.trim().toIntOrNull()
     }
 
     private fun fields(vararg specs: String): String = specs.joinToString(FS)

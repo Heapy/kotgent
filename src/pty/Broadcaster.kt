@@ -89,11 +89,15 @@ class Broadcaster(
         for (s in subscribers) s.sink.trySend(bytes)
     }
 
-    /** Route input from a subscriber to the single shared upstream (dropped if none is open). */
+    /**
+     * Route input from a subscriber to the single shared upstream (dropped if none is open). The
+     * [PtyHandle.write] runs OUTSIDE the lock (it can block on a full pty), so a concurrent close may
+     * race it; the write is guarded so a closed upstream is a clean no-op rather than a thrown 500.
+     */
     suspend fun writeInput(bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        val up = mutex.withLock { upstream }
-        up?.write(bytes)
+        val up = mutex.withLock { upstream } ?: return
+        runCatching { up.write(bytes) }
     }
 
     /** Apply a subscriber resize with the "last active" policy and remember it for re-opens. */
@@ -108,6 +112,11 @@ class Broadcaster(
      * upstream and closes out every remaining subscriber so clients learn the terminal ended and a
      * subsequent [attach] re-opens. Guarded by identity so a stale reader cannot clobber an
      * already-reopened upstream.
+     *
+     * Crucially it also [closeUpstream]s the dead handle: on a natural EOF the child (`tmux attach`)
+     * has exited but its pty master fd, reader thread and zombie child are NOT reclaimed unless we
+     * close the handle. Without this an authenticated client could leak an fd + OS thread + zombie
+     * per attach over the daemon's lifetime.
      */
     suspend fun onUpstreamEof(which: PtyHandle): Unit = mutex.withLock {
         if (upstream !== which) return@withLock
@@ -115,6 +124,7 @@ class Broadcaster(
         val gone = subscribers.toList()
         subscribers.clear()
         gone.forEach { it.sink.close() }
+        closeUpstream(which)
     }
 
     /** Tear everything down (test teardown / daemon shutdown): close subscribers and the upstream. */

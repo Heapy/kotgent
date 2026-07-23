@@ -184,6 +184,22 @@ class ClaudeAdapterTest {
         assertEquals("http://127.0.0.1:41337/hooks/claude", ClaudeHookConfig.ingressUrl(41337))
     }
 
+    @Test
+    fun theClaudeHookEventNamesArePinnedToTheirWireLiterals() {
+        // These are the exact Claude Code settings hook-event keys; the outgoing config writes them and
+        // the incoming normalizer keys on the same strings. A silent rename would break the whole hook
+        // wiring, so pin each to its literal (and the ordered HOOK_EVENTS list the settings iterate).
+        assertEquals("UserPromptSubmit", ClaudeHookConfig.USER_PROMPT_SUBMIT)
+        assertEquals("PostToolUse", ClaudeHookConfig.POST_TOOL_USE)
+        assertEquals("Stop", ClaudeHookConfig.STOP)
+        assertEquals("Notification", ClaudeHookConfig.NOTIFICATION)
+        assertEquals("SessionStart", ClaudeHookConfig.SESSION_START)
+        assertEquals(
+            listOf("UserPromptSubmit", "PostToolUse", "Stop", "Notification", "SessionStart"),
+            ClaudeHookConfig.HOOK_EVENTS,
+        )
+    }
+
     // ---- version gate: pure decision logic (no live binary) ----
 
     @Test

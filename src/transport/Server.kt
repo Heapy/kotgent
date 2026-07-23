@@ -1,6 +1,7 @@
 package io.kotgent.transport
 
 import io.kotgent.daemon.SessionManager
+import io.kotgent.exe.NativeExe
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
@@ -24,9 +25,12 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import platform.posix.F_OK
 import platform.posix.SEEK_END
 import platform.posix.SEEK_SET
+import platform.posix.access
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fread
@@ -68,9 +72,12 @@ class KotgentServer(
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
 ) {
+    /** The terminal bridge registry, captured so [stop] can tear its bridges (and their ptys) down. */
+    private var terminalRegistry: TerminalRegistry? = null
+
     private val server: EmbeddedServer<*, *> = embeddedServer(CIO, port = port, host = host) {
         // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
-        val registry = TerminalRegistry(this, terminalBridgeFactory)
+        val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
         val inputSink: TerminalInputSink = { id, bytes -> registry.getOrCreate(id.value).write(bytes) }
         install(WebSockets)
         routing {
@@ -80,7 +87,7 @@ class KotgentServer(
             authenticated(token) {
                 controlRoutes(sessionManager, store, inputSink, json)
                 eventsWs(store, json)
-                terminalWs(registry, json)
+                terminalWs(registry, store, json)
             }
             // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
             staticWebUi(webUiDir)
@@ -97,17 +104,22 @@ class KotgentServer(
     suspend fun port(): Int = server.engine.resolvedConnectors().first().port
 
     fun stop() {
+        // Tear the terminal bridges (and their real ptys/reader threads) down before stopping the
+        // engine, so a server stop reclaims those resources instead of leaking them.
+        terminalRegistry?.let { runBlocking { it.shutdownAll() } }
         server.stop(gracePeriodMillis = 100, timeoutMillis = 500)
     }
 
     companion object {
-        /** Default directory served at `/` (the Task-17 Web UI). */
+        /** Default directory served at `/` (the Task-17 Web UI). Cwd-relative; see [resolveWebUiDir]. */
         const val DEFAULT_WEBUI_DIR: String = "resources/webui"
 
         /**
          * Production wiring: terminal bridges attach the real `tmux -L <socket> attach` upstream with a
          * real `capture-pane -e` seed ([terminalBridgeForSession]) over the given [ptyFactory] (default
-         * [realPtyFactory] — a real cinterop `Pty`).
+         * [realPtyFactory] — a real cinterop `Pty`). The web UI directory is resolved to an ABSOLUTE
+         * path ([resolveWebUiDir]) so an installed daemon (launchd sets no `WorkingDirectory`, so its
+         * cwd is `/`) still serves the SPA instead of 404ing on a cwd-relative default.
          */
         fun production(
             sessionManager: SessionManager,
@@ -123,10 +135,32 @@ class KotgentServer(
             store = store,
             token = token,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },
-            webUiDir = webUiDir,
+            webUiDir = webUiDir?.let { resolveWebUiDir(it) },
             host = host,
             port = port,
         )
+
+        /**
+         * Resolve a (possibly cwd-relative) web UI [dir] to an absolute path anchored at the running
+         * executable's location, so an installed daemon whose cwd is `/` still finds the SPA. An
+         * already-absolute path is returned as-is; otherwise the executable's directory and its
+         * ancestors are searched for `<ancestor>/<dir>`, falling back to the cwd-relative [dir] (which
+         * resolves for a dev `./kotlin run` launched from the repo root).
+         */
+        @OptIn(ExperimentalForeignApi::class)
+        internal fun resolveWebUiDir(dir: String): String {
+            if (dir.startsWith("/")) return dir
+            val exe = NativeExe.path() ?: return dir
+            var d: String = exe.substringBeforeLast('/', missingDelimiterValue = "")
+            while (d.isNotEmpty()) {
+                val candidate = "$d/$dir"
+                if (access(candidate, F_OK) == 0) return candidate
+                val parent = d.substringBeforeLast('/', missingDelimiterValue = "")
+                if (parent == d) break
+                d = parent
+            }
+            return dir
+        }
     }
 }
 

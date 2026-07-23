@@ -50,6 +50,21 @@ static int kotgent_set_winsize(int fd, unsigned short rows, unsigned short cols)
     return ioctl(fd, TIOCSWINSZ, &ws);
 }
 
+// Resolve the slave (pts) path for a master fd. ptsname() lives in <stdlib.h> (included below)
+// but is not surfaced by cinterop's header scan, so it is wrapped here. The child spawned by
+// Pty.open() opens THIS path itself (via posix_spawn_file_actions_addopen) so that, as a session
+// leader under POSIX_SPAWN_SETSID, the pts becomes its CONTROLLING terminal — which `tmux attach`
+// requires. Writes a NUL-terminated path into buf; returns 0 on success, -1 on error (incl. buf
+// too small).
+static int kotgent_ptsname(int master, char *buf, unsigned int buflen) {
+    const char *name = ptsname(master);
+    if (name == (char *)0) return -1;
+    size_t n = strlen(name);
+    if (n + 1 > (size_t)buflen) return -1;
+    memcpy(buf, name, n + 1);
+    return 0;
+}
+
 // --- Local controlling-tty helpers for `kotgent attach` raw passthrough (Task 15) ---------------
 //
 // These wrap termios/ioctl so Kotlin never has to materialize a `struct termios` or `struct winsize`

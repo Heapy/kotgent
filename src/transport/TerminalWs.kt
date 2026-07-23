@@ -1,7 +1,9 @@
 package io.kotgent.transport
 
+import io.kotgent.core.SessionId
 import io.kotgent.pty.Subscriber
 import io.kotgent.pty.TerminalBridge
+import io.kotgent.store.EventStore
 import io.ktor.server.routing.Route
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
@@ -63,11 +65,18 @@ class TerminalRegistry(
  * [decision] Binary = terminal I/O, text = control. Keeping the two on distinct frame types avoids any
  * in-band escaping of raw pty bytes and matches xterm.js's natural binary transport.
  */
-fun Route.terminalWs(registry: TerminalRegistry, json: Json = TRANSPORT_JSON) {
+fun Route.terminalWs(registry: TerminalRegistry, store: EventStore, json: Json = TRANSPORT_JSON) {
     webSocket("/sessions/{id}/terminal") {
         val id = call.parameters["id"]
         if (id.isNullOrBlank()) {
             close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "missing session id"))
+            return@webSocket
+        }
+        // Reject an unknown session BEFORE minting a bridge — otherwise an arbitrary id mints a
+        // never-evicted bridge and opens a `tmux attach` that EOFs, leaking a pty (a DoS amplifier).
+        val sid = runCatching { SessionId(id) }.getOrNull()
+        if (sid == null || store.getSession(sid) == null) {
+            close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "no such session"))
             return@webSocket
         }
         val bridge = registry.getOrCreate(id)

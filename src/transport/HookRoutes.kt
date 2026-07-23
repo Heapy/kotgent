@@ -52,9 +52,9 @@ fun Route.claudeHookRoutes(
     json: Json = HOOK_JSON,
 ) {
     post(ClaudeHookConfig.INGRESS_PATH) {
-        // 1. Authenticate the shared hook token before anything else.
+        // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
         val presented = call.request.headers[ClaudeHookConfig.HOOK_TOKEN_HEADER]
-        if (presented == null || presented != token) {
+        if (presented == null || !constantTimeEquals(presented, token)) {
             call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
             return@post
         }

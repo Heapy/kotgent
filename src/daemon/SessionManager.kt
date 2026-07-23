@@ -19,14 +19,14 @@ import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
 /**
- * How to stop a session — the `StopMode` spectrum from the plan (`Detach ≠ Kill`). Only [Interrupt]
+ * How to stop a session — the `StopMode` spectrum from the plan (`Detach ≠ Kill`). [Interrupt]
  * leaves the agent alive to un-stick it; [Detach] leaves it entirely untouched (a transport concern);
- * the three termination modes tear the tmux session down.
+ * [Kill] tears the tmux session down.
  *
- * [decision] For the v1 slice the three termination modes ([Graceful]/[Terminate]/[Kill]) all collapse
- * to a single clean `tmux kill-session` — graduated signal escalation (ask-nicely → SIGTERM → SIGKILL)
- * is backlog. They are kept distinct in the enum so the transport/CLI vocabulary is stable and the
- * escalation can be filled in later without an API change.
+ * [decision] The v1 slice keeps only these three: graduated signal escalation (ask-nicely → SIGTERM →
+ * SIGKILL) is backlog, and the speculative `Graceful`/`Terminate` variants (which collapsed to the same
+ * `kill-session` as [Kill] and had no caller) were dropped to keep the surface honest — they can be
+ * re-introduced with the escalation logic that would justify them.
  */
 enum class StopMode {
     /** Client disconnect; the agent lives on. No-op at this layer (see [SessionManager.detach]). */
@@ -34,12 +34,6 @@ enum class StopMode {
 
     /** Ctrl-C to un-stick a stuck `running`; the agent lives on. */
     Interrupt,
-
-    /** Ask the agent to exit cleanly, then tear the session down (v1: `kill-session`). */
-    Graceful,
-
-    /** Terminate the agent (v1: `kill-session`). */
-    Terminate,
 
     /** Force-kill the agent / session (v1: `kill-session`). */
     Kill,
@@ -83,8 +77,6 @@ class PaneRegistry {
     }
 
     suspend fun snapshot(): Map<PaneId, SessionId> = mutex.withLock { HashMap(map) }
-
-    suspend fun size(): Int = mutex.withLock { map.size }
 }
 
 /** Thrown when an operation targets a session id that was never upserted. */
@@ -197,7 +189,7 @@ class SessionManager(
         when (mode) {
             StopMode.Detach -> detach(sessionId)
             StopMode.Interrupt -> interrupt(sessionId)
-            StopMode.Graceful, StopMode.Terminate, StopMode.Kill -> terminate(sessionId)
+            StopMode.Kill -> terminate(sessionId)
         }
     }
 
@@ -228,15 +220,13 @@ class SessionManager(
         val paneId = tmux.newSession(sessionId.value, meta.cwd, shellCommand(spec.command), cols, rows)
 
         val next = reduce(currentProjection(sessionId, meta), ControlSignal.Resume)
-        val updated = meta.copy(
-            paneId = paneId,
-            state = next.state,
-            stateSource = EventSource.user,
-            updatedAt = now(),
-        )
-        store.upsertSession(updated)
+        val ts = now()
+        // Update only the daemon-owned fields (state / state_source / pane_id / updated_at); do NOT
+        // upsert the whole (stale) row — the freshly-revived agent may already be appending hooks that
+        // advance last_seq / provider_session_id, which a full-row write would clobber.
+        store.updateSessionState(sessionId, next.state, EventSource.user, paneId, ts)
         registry.register(paneId, sessionId)
-        return updated
+        return meta.copy(paneId = paneId, state = next.state, stateSource = EventSource.user, updatedAt = ts)
     }
 
     /**
@@ -267,15 +257,16 @@ class SessionManager(
     }
 
     /**
-     * Write a control-signal-/reconciler-derived state to the sessions cache. Implemented as a full-row
-     * [EventStore.upsertSession] of the derived fields (state / state_source / updated_at) rather than a
-     * dedicated `updateCache` interface method: the manager already holds the full [SessionMeta], the
-     * upsert is atomic under the store's single-writer mutex and preserves `created_at`, and this avoids
-     * widening the Task-7 [EventStore] contract for a derived-state write. This realizes the plan's
-     * "write the derived state to the sessions cache via store.updateCache(...)".
+     * Write a control-signal-/reconciler-derived state to the sessions cache via
+     * [EventStore.updateSessionState], which updates ONLY the daemon-owned fields (state /
+     * state_source / pane_id / updated_at) atomically under the store's writer lock. A full-row
+     * [EventStore.upsertSession] of the (stale) [SessionMeta] must NOT be used here: a concurrent
+     * hook [EventStore.append] advances `last_seq` / `provider_session_id` under the same lock, and a
+     * stale full-row write would clobber it — regressing unread and reverting a captured provider id
+     * (which would wrongly block `resume`). The pane id is carried through unchanged.
      */
     private suspend fun persistDerivedState(meta: SessionMeta, state: SessionState, source: EventSource) {
-        store.upsertSession(meta.copy(state = state, stateSource = source, updatedAt = now()))
+        store.updateSessionState(meta.id, state, source, meta.paneId, now())
     }
 
     /**

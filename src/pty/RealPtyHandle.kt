@@ -1,8 +1,11 @@
 package io.kotgent.pty
 
 import io.kotgent.tmux.Tmux
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.ReceiveChannel
+import platform.posix.getenv
 
 /**
  * The production [PtyHandle]: a thin adapter over the cinterop-backed [Pty] (Task 2, `sysnative`).
@@ -25,11 +28,31 @@ class RealPtyHandle(private val pty: Pty) : PtyHandle {
 }
 
 /**
- * Production [PtyFactory]: open a real [Pty] running [command] on its slave side and wrap it as a
- * [PtyHandle]. `command[0]` must be an absolute executable path — [Pty] spawns via `posix_spawn`
- * (no `PATH` search), so callers pass e.g. `/opt/homebrew/bin/tmux` (which [Tmux.tmuxPath] resolves).
+ * Production [PtyFactory]: open a real [Pty] running [command] (with child [env]) on its slave side
+ * and wrap it as a [PtyHandle]. `command[0]` must be an absolute executable path — [Pty] spawns via
+ * `posix_spawn` (no `PATH` search), so callers pass e.g. `/opt/homebrew/bin/tmux` (which
+ * [Tmux.tmuxPath] resolves).
  */
-val realPtyFactory: PtyFactory = { command -> RealPtyHandle(Pty.open(command)) }
+val realPtyFactory: PtyFactory = { command, env -> RealPtyHandle(Pty.open(command, env)) }
+
+/**
+ * The environment handed to the `tmux attach` upstream child. `tmux attach` needs at least `TERM`
+ * to build a terminal description — with an empty environment it fails ("missing or unsuitable
+ * terminal") and the child exits immediately, EOFing the upstream so the browser/CLI terminal shows
+ * "[terminal disconnected]". We seed a capable `TERM` (falling back to `xterm-256color` if the daemon
+ * has none) and inherit the daemon's `HOME` and `PATH` (needed so tmux/the shell resolve state and
+ * binaries). Only these keys are forwarded — identity is never derived from inherited env.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun terminalAttachEnv(): Map<String, String> {
+    val env = LinkedHashMap<String, String>()
+    env["TERM"] = getenv("TERM")?.toKString()?.ifBlank { null } ?: "xterm-256color"
+    getenv("HOME")?.toKString()?.ifBlank { null }?.let { env["HOME"] = it }
+    env["PATH"] = getenv("PATH")?.toKString()?.ifBlank { null }
+        ?: "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    getenv("LANG")?.toKString()?.ifBlank { null }?.let { env["LANG"] = it }
+    return env
+}
 
 /**
  * Build a lazy [TerminalBridge] for the logical session [id] over [tmux]: the upstream is
@@ -46,9 +69,11 @@ fun terminalBridgeForSession(
     id: String,
     scope: CoroutineScope,
     ptyFactory: PtyFactory = realPtyFactory,
+    env: Map<String, String> = terminalAttachEnv(),
 ): TerminalBridge = TerminalBridge(
     upstreamCommand = listOf(tmux.tmuxPath, "-L", tmux.socket, "attach", "-t", tmux.sessionName(id)),
     seedProvider = { tmux.capturePane(id).encodeToByteArray() },
     ptyFactory = ptyFactory,
     scope = scope,
+    env = env,
 )

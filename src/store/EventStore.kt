@@ -77,6 +77,22 @@ interface EventStore {
      */
     suspend fun upsertSession(meta: SessionMeta)
 
+    /**
+     * Write a daemon-derived control state (a stop/interrupt/resume effect, or a reconciler
+     * reclassification) onto an existing session row — updating ONLY [state], [stateSource],
+     * [paneId] and `updated_at`, atomically under the writer lock. It deliberately does NOT rewrite
+     * `last_seq` or `provider_session_id`: those are advanced by [append] (hook-driven), so a
+     * full-row [upsertSession] of a stale [SessionMeta] would clobber a concurrent append. Emits a
+     * [sessionUpdates] signal like the other mutators. A no-op if the row does not exist.
+     */
+    suspend fun updateSessionState(
+        sessionId: SessionId,
+        state: SessionState,
+        stateSource: EventSource,
+        paneId: io.kotgent.core.PaneId?,
+        updatedAt: Long,
+    )
+
     /** The session's current metadata row, or `null` if no such session has been upserted. */
     suspend fun getSession(sessionId: SessionId): SessionMeta?
 

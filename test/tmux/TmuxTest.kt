@@ -9,7 +9,6 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -67,24 +66,16 @@ class TmuxTest {
             val pane = tmux.newSession(id = "new1", cwd = "/tmp", cmd = "cat", cols = 100, rows = 40)
             // new-session -P -F '#{pane_id}' yields a `%<n>` pane id (validated by the PaneId ctor).
             assertTrue(Regex("^%\\d+$").matches(pane.value), "pane id should look like %<n>, was <${pane.value}>")
-            assertTrue(tmux.listSessions().any { it.name == "kt-new1" }, "the new session must show up in list-sessions")
+            assertTrue(tmux.listPanes().any { it.session == "kt-new1" }, "the new session must show up in list-panes")
         }
     }
 
     @Test
-    fun listSessionsAndListPanesParse() = runBlocking {
+    fun listPanesParse() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking
         withTimeout(20_000) {
             val paneA = tmux.newSession(id = "la", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             val paneB = tmux.newSession(id = "lb", cwd = "/tmp", cmd = "cat", cols = 90, rows = 30)
-
-            val sessions = tmux.listSessions().associateBy { it.name }
-            assertTrue("kt-la" in sessions && "kt-lb" in sessions, "both sessions parsed from list-sessions")
-            sessions.values.forEach {
-                assertTrue(it.id.startsWith("$"), "session id like \$<n>, was <${it.id}>")
-                assertTrue(it.windows >= 1, "each session has at least one window")
-                assertTrue(it.created > 0, "session_created is a positive epoch, was ${it.created}")
-            }
 
             val panes = tmux.listPanes().filter { it.session == "kt-la" || it.session == "kt-lb" }
             assertEquals(2, panes.size, "one pane per session parsed from list-panes -a")
@@ -112,30 +103,13 @@ class TmuxTest {
     }
 
     @Test
-    fun paneAliveAndPanePidReflectLiveness() = runBlocking {
-        if (!tmuxAvailable()) return@runBlocking
-        withTimeout(20_000) {
-            val pane = tmux.newSession(id = "live", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
-            assertTrue(tmux.paneAlive(pane), "a running pane is alive")
-            val pid = tmux.panePid(pane)
-            assertNotNull(pid, "panePid returns the live pane's pid")
-            assertTrue(pid > 0, "pane pid is positive, was $pid")
-
-            tmux.killSession("live")
-            // With the last session gone the server is torn down: the pane no longer exists.
-            assertFalse(tmux.paneAlive(pane), "a pane on a killed session is not alive")
-            assertEquals(null, tmux.panePid(pane), "panePid of a gone pane is null, not an error")
-        }
-    }
-
-    @Test
     fun killSessionRemovesTheSession() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking
         withTimeout(20_000) {
             tmux.newSession(id = "kill1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
-            assertTrue(tmux.listSessions().any { it.name == "kt-kill1" }, "session exists before kill")
+            assertTrue(tmux.listPanes().any { it.session == "kt-kill1" }, "session exists before kill")
             assertTrue(tmux.killSession("kill1"), "killSession returns true when it removed a session")
-            assertFalse(tmux.listSessions().any { it.name == "kt-kill1" }, "session is gone after kill")
+            assertFalse(tmux.listPanes().any { it.session == "kt-kill1" }, "session is gone after kill")
         }
     }
 
@@ -162,12 +136,11 @@ class TmuxTest {
     }
 
     @Test
-    fun listSessionsOnAFreshSocketIsEmptyNotAnError() = runBlocking {
+    fun listPanesOnAFreshSocketIsEmptyNotAnError() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking
         withTimeout(20_000) {
             // BeforeTest killed the server; an empty tmux server does not persist, so there is
             // literally "no server running". That must read as an empty list, not an exception.
-            assertEquals(emptyList(), tmux.listSessions())
             assertEquals(emptyList(), tmux.listPanes())
         }
     }

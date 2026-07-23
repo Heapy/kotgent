@@ -61,6 +61,26 @@ class TerminalBridgeTest {
     }
 
     @Test
+    fun theUpstreamEnvIsThreadedThroughToThePtyFactory() = runBlocking {
+        withTimeout(20_000) {
+            val factory = FakePtyFactory()
+            val readerScope = CoroutineScope(coroutineContext + Job())
+            // Production threads TERM/HOME/PATH here so `tmux attach` can build a terminal (an empty env
+            // makes it EOF immediately). Assert the bridge passes the env down to the pty factory.
+            val env = mapOf("TERM" to "xterm-256color", "HOME" to "/home/x", "PATH" to "/usr/bin")
+            val bridge = TerminalBridge(listOf("tmux", "attach"), { ByteArray(0) }, factory, readerScope, env)
+            try {
+                val a = bridge.subscribe()
+                assertEquals(env, factory.lastEnv, "the upstream env reaches the pty factory unchanged")
+                a.close()
+            } finally {
+                bridge.shutdown()
+                readerScope.cancel()
+            }
+        }
+    }
+
+    @Test
     fun firstSubscriberOpensTheUpstreamLazilyAndOnlyOnce() = bridgeTest { bridge, factory ->
         assertEquals(0, factory.openCount, "nothing is opened before the first subscriber (lazy)")
 
@@ -254,7 +274,7 @@ class TerminalBridgeTest {
 
             // Last subscriber leaving closes the attach; the tmux session (and `cat`) survives.
             a.close()
-            assertTrue(tmux.listSessions().any { it.name == "kt-$id" }, "the session outlives the attach")
+            assertTrue(tmux.listPanes().any { it.session == "kt-$id" }, "the session outlives the attach")
         } finally {
             readerScope.cancel()
             tmux.killSession(id)

@@ -30,6 +30,8 @@ import platform.posix.ftell
 import platform.posix.fwrite
 import platform.posix.getenv
 import platform.posix.mkdir
+import platform.posix.umask
+import platform.posix.unlink
 import kotlin.random.Random
 
 /**
@@ -80,13 +82,31 @@ fun Route.authenticated(token: String, build: Route.() -> Unit): Route {
     val authed = createChild(AuthRouteSelector) as RoutingNode
     authed.intercept(ApplicationCallPipeline.Plugins) {
         val presented = call.presentedToken()
-        if (presented == null || presented != token) {
+        if (presented == null || !constantTimeEquals(presented, token)) {
             call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
             finish()
         }
     }
     authed.build()
     return authed
+}
+
+/**
+ * Constant-time string equality for secret comparison — always inspects every byte (and folds in any
+ * length difference) so it does not leak how many leading characters of the token matched via early-exit
+ * (`!=`) timing. Used for the bearer token and the hook token ([claudeHookRoutes]).
+ */
+fun constantTimeEquals(a: String, b: String): Boolean {
+    val ab = a.encodeToByteArray()
+    val bb = b.encodeToByteArray()
+    var diff = ab.size xor bb.size
+    val n = maxOf(ab.size, bb.size)
+    for (i in 0 until n) {
+        val x = if (i < ab.size) ab[i].toInt() and 0xff else 0
+        val y = if (i < bb.size) bb[i].toInt() and 0xff else 0
+        diff = diff or (x xor y)
+    }
+    return diff == 0
 }
 
 /** A path-neutral route selector (like Ktor's auth selector): matches transparently, adds no segment. */
@@ -101,6 +121,9 @@ private object AuthRouteSelector : RouteSelector() {
 
 private const val MODE_0600: Int = S_IRUSR or S_IWUSR
 private const val MODE_0700: Int = S_IRUSR or S_IWUSR or S_IXUSR
+
+/** umask masking off all group + other permission bits (`0o077`), so a new file is created `0600`. */
+private const val UMASK_GROUP_OTHER: Int = 0b111_111
 
 /** Default token path: `~/.kotgent/token`. Falls back to a cwd-relative path if `$HOME` is unset. */
 @OptIn(ExperimentalForeignApi::class)
@@ -123,9 +146,29 @@ fun readOrCreateToken(path: String = defaultTokenPath()): String {
     val token = generateToken()
     val dir = path.substringBeforeLast('/', missingDelimiterValue = "")
     if (dir.isNotEmpty()) mkdir(dir, MODE_0700.convert()) // ignore EEXIST — a pre-existing dir is fine
-    writeFileText(path, token)
-    chmod(path, MODE_0600.convert())
+    writePrivateFile(path, token.encodeToByteArray())
     return token
+}
+
+/**
+ * Write [bytes] to [path] as a secret file (mode `0600`) WITHOUT the brief world-readable window that
+ * `fopen` (creating `0666 & ~umask`, typically `0644`) followed by a later `chmod 0600` would leave: a
+ * restrictive [umask] is installed for the duration of the create so the file is `0600` from the moment
+ * it exists. Any stale file is unlinked first so a rewrite (e.g. the hook-settings file on daemon
+ * restart) also lands `0600`; a trailing `chmod` covers the rewrite-into-an-existing-file case. Shared
+ * by the token and the hook-settings writers — both carry secrets.
+ */
+@OptIn(ExperimentalForeignApi::class)
+internal fun writePrivateFile(path: String, bytes: ByteArray) {
+    unlink(path) // ignore ENOENT — a fresh file gets the umask-restricted 0600 mode on create
+    // Mask off ALL group + other bits (0o077) so a newly created 0666 file becomes 0600 immediately.
+    val previousMask = umask(UMASK_GROUP_OTHER.convert())
+    try {
+        writeFileText(path, bytes.decodeToString())
+    } finally {
+        umask(previousMask)
+    }
+    chmod(path, MODE_0600.convert())
 }
 
 /**

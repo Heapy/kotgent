@@ -204,9 +204,20 @@ private fun installSigwinch() {
     signal(SIGWINCH, staticCFunction<Int, Unit> { winchPending = true })
 }
 
-/** Write [bytes] straight to stdout (raw fd write — no buffering, so terminal output is immediate). */
+/**
+ * Write [bytes] straight to stdout (raw fd write — no buffering, so terminal output is immediate),
+ * looping over partial `write()` counts so a short write does not silently drop terminal output
+ * (like [io.kotgent.pty.Pty.write] / the stdin pump).
+ */
 @OptIn(ExperimentalForeignApi::class)
 private fun writeStdout(bytes: ByteArray) {
     if (bytes.isEmpty()) return
-    bytes.usePinned { write(STDOUT_FILENO, it.addressOf(0), bytes.size.convert()) }
+    bytes.usePinned { pinned ->
+        var offset = 0
+        while (offset < bytes.size) {
+            val n = write(STDOUT_FILENO, pinned.addressOf(offset), (bytes.size - offset).convert()).toInt()
+            if (n <= 0) break // error / would-block: best-effort, stop rather than spin
+            offset += n
+        }
+    }
 }

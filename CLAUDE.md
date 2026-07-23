@@ -124,7 +124,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **163 run / 158 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **166 run / 161 passed /
   5 skipped** (the 5 skips are the KT-78062 cases above — not failures).
 - Bound every Flow/WS/PTY test with `withTimeout(...)` (anti-hang) — the suite does this consistently.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in

@@ -254,39 +254,40 @@ class ReducerTest {
     )
 
     @Test
-    fun replayEqualsIncrementalFoldAndIsDeterministic() {
-        // Manual incremental fold threading the projection by hand.
+    fun replayReconstructsTheConcreteTrajectoryAndFinalProjection() {
+        // Pin the REAL reducer behaviour: the exact (state, pendingApprovals, lastSeq) after every event
+        // of the representative sequence — not merely that replay == kotlin.fold (a language guarantee).
+        val expected = listOf(
+            Triple(SessionState.running, 0, 1L),        // SessionBound: provider bound, no lifecycle change
+            Triple(SessionState.running, 0, 2L),        // TurnStarted
+            Triple(SessionState.running, 0, 3L),        // ToolCall(Read)
+            Triple(SessionState.needs_approval, 1, 4L), // ApprovalRequested(a1)
+            Triple(SessionState.needs_approval, 2, 5L), // ApprovalRequested(a2)
+            Triple(SessionState.running, 0, 6L),        // ToolCall(Bash) CLEARS pending approvals (critical rule)
+            Triple(SessionState.ready, 0, 7L),          // TurnCompleted
+            Triple(SessionState.running, 0, 8L),        // TurnStarted
+            Triple(SessionState.running, 0, 9L),        // ApprovalResolved floors at 0, stays running
+            Triple(SessionState.stopped, 0, 10L),       // Exited(0)
+        )
         var acc = Projection.EMPTY
-        for (e in representative) acc = reduce(acc, e)
-
-        val batch = replay(representative)
-        assertEquals(acc, batch, "replay must equal the incremental fold")
-        assertEquals(batch, replay(representative), "replay must be deterministic (no hidden state/clock)")
-
-        // The representative sequence ends stopped, provider id bound, seq == event count.
-        assertEquals(SessionState.stopped, batch.state)
-        assertEquals(providerId, batch.providerSessionId)
-        assertEquals(Seq(representative.size.toLong()), batch.lastSeq, "each event advances lastSeq by exactly 1")
-        assertEquals(0, batch.pendingApprovals)
-    }
-
-    @Test
-    fun replayIsAssociativeAcrossEverySplitPoint() {
-        // Restart-safety property: replay(prefix) then continue == replay(whole), for ANY split.
-        val whole = replay(representative)
-        for (k in 0..representative.size) {
-            val prefix = replay(representative.take(k))
-            val continued = representative.drop(k).fold(prefix) { p, e -> reduce(p, e) }
-            assertEquals(whole, continued, "replay must be associative at split k=$k")
+        representative.forEachIndexed { i, event ->
+            acc = reduce(acc, event)
+            val (state, pending, seq) = expected[i]
+            assertEquals(state, acc.state, "state after event $i (${event::class.simpleName})")
+            assertEquals(pending, acc.pendingApprovals, "pendingApprovals after event $i")
+            assertEquals(Seq(seq), acc.lastSeq, "lastSeq after event $i")
         }
-    }
+        assertEquals(providerId, acc.providerSessionId, "SessionBound's provider id is carried to the end")
+        assertFalse(acc.stopRequested)
 
-    @Test
-    fun reduceDoesNotMutateItsInput() {
-        val before = running.copy()
-        reduce(running, AgentEvent.ApprovalRequested("x"))
-        reduce(running, ControlSignal.Interrupt)
-        assertEquals(before, running, "reduce must be pure — the input projection is never mutated")
+        // replay() over the whole log yields that SAME concrete final projection (restart-safety) and is
+        // deterministic (no hidden clock/state).
+        val batch = replay(representative)
+        assertEquals(SessionState.stopped, batch.state)
+        assertEquals(0, batch.pendingApprovals)
+        assertEquals(Seq(10), batch.lastSeq)
+        assertEquals(providerId, batch.providerSessionId)
+        assertEquals(batch, replay(representative), "replay is deterministic")
     }
 
     /**

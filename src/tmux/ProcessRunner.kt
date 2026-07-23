@@ -82,19 +82,17 @@ class ProcessResult(
 object ProcessRunner {
 
     /**
-     * Run [argv] (argv[0] is the program; PATH is honored via `/bin/sh`) and return its result.
-     * [env] entries are exported to the child as `KEY='value'` assignments; the child otherwise
-     * inherits the current environment. Never throws on a non-zero child exit — that is reported
+     * Run [argv] (argv[0] is the program; PATH is honored via `/bin/sh`) and return its result. The
+     * child inherits the current environment. Never throws on a non-zero child exit — that is reported
      * in [ProcessResult.exitCode]. Throws [ProcessException] only on a runner-level failure
      * (e.g. `popen` itself failing).
      */
     @OptIn(ExperimentalForeignApi::class)
-    fun run(argv: List<String>, env: Map<String, String> = emptyMap()): ProcessResult {
+    fun run(argv: List<String>): ProcessResult {
         require(argv.isNotEmpty()) { "argv must not be empty" }
 
         val errPath = makeTempPath()
-        val envPrefix = env.entries.joinToString(separator = "") { (k, v) -> "$k=${shQuote(v)} " }
-        val commandLine = envPrefix + argv.joinToString(" ") { shQuote(it) } + " 2> " + shQuote(errPath)
+        val commandLine = argv.joinToString(" ") { shQuote(it) } + " 2> " + shQuote(errPath)
 
         try {
             val fp = popen(commandLine, "r")

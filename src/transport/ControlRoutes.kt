@@ -2,10 +2,12 @@ package io.kotgent.transport
 
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.unread
 import io.kotgent.daemon.NoSuchSessionException
 import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
 import io.kotgent.store.EventStore
+import io.kotgent.tmux.TmuxException
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receiveText
@@ -73,7 +75,13 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
-        val meta = sessionManager.start(req.agent, req.cwd, req.name, req.tags)
+        val meta = try {
+            sessionManager.start(req.agent, req.cwd, req.name, req.tags)
+        } catch (e: TmuxException) {
+            // e.g. a non-existent cwd → tmux new-session fails: a bad request, not a server error.
+            call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        }
         call.respondText(
             json.encodeToString(SessionDto.serializer(), meta.toDto()),
             ContentType.Application.Json,
@@ -135,6 +143,10 @@ fun Route.controlRoutes(
             return@post
         } catch (e: NoSuchSessionException) {
             call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
+            return@post
+        } catch (e: TmuxException) {
+            // e.g. resume's tmux new-session fails on a stale cwd: a bad request, not a 500.
+            call.respondText("action '$action' failed: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
         }
         val updated = store.getSession(id)
@@ -200,7 +212,7 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     paneId = paneId?.value,
     lastSeq = lastSeq.value,
     readCursor = readCursor.value,
-    unread = (lastSeq.value - readCursor.value).coerceAtLeast(0),
+    unread = unread(lastSeq.value, readCursor.value),
     createdAt = createdAt,
     updatedAt = updatedAt,
 )

@@ -56,7 +56,7 @@ data class Projection(
      * Number of events not yet seen by a client whose read cursor is [readCursor] (held elsewhere,
      * e.g. [SessionMeta.readCursor], since a projection is not per-client). Never negative.
      */
-    fun unread(readCursor: Seq): Long = (lastSeq.value - readCursor.value).coerceAtLeast(0)
+    fun unread(readCursor: Seq): Long = unread(lastSeq.value, readCursor.value)
 
     /** Whether any event past [readCursor] has been applied. */
     fun hasUnread(readCursor: Seq): Boolean = lastSeq > readCursor
@@ -78,3 +78,10 @@ data class Projection(
         )
     }
 }
+
+/**
+ * The number of unread events for a read cursor: `lastSeq - readCursor`, floored at 0. The single
+ * definition of "unread"; the store cache signal ([io.kotgent.store.SessionUpdate]) and the transport
+ * DTOs use it against a [SessionMeta]'s columns, and [Projection.unread] delegates here.
+ */
+fun unread(lastSeq: Long, readCursor: Long): Long = (lastSeq - readCursor).coerceAtLeast(0)

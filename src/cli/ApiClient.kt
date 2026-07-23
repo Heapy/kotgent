@@ -81,9 +81,6 @@ class ApiClient(
     /** `POST /sessions/{id}/interrupt`. */
     suspend fun interrupt(id: String): SessionDto? = control(id, "interrupt")
 
-    /** `POST /sessions/{id}/detach`. */
-    suspend fun detach(id: String): SessionDto? = control(id, "detach")
-
     private suspend fun control(id: String, action: String): SessionDto? {
         val resp = client.post("$baseUrl/sessions/$id/$action") { bearer() }
         ensureSuccess(resp)
