@@ -19,6 +19,8 @@
             <button id="new-session-button" class="button button-primary button-small" type="button">
               New session
             </button>
+            <button id="help-button" class="icon-button icon-button-small" type="button"
+                    aria-label="Help" title="How kotgent works">?</button>
             <button id="prefs-button" class="icon-button icon-button-small" type="button"
                     aria-label="Preferences" title="Preferences">⚙</button>
           </div>
@@ -147,6 +149,142 @@
         <button id="prefs-submit" class="button button-primary" type="submit">Save</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <div id="help-form">
+      <div class="dialog-head">
+        <div>
+          <h2 id="help-title">How kotgent works</h2>
+          <p>Sessions, states, and what each control does.</p>
+        </div>
+        <button id="help-close" class="icon-button" type="button" aria-label="Close">×</button>
+      </div>
+
+      <div id="help-body">
+        <section class="help-section">
+          <h3>Sessions</h3>
+          <p>
+            A session is one coding agent running inside its own <code>tmux</code> session
+            (<code>kt-&lt;id&gt;</code>) in a working directory you pick. The daemon owns it — not this
+            page. Closing the tab, detaching, or restarting the daemon does not stop the agent.
+          </p>
+          <p>
+            What you see in the right pane is that real tmux pane. The daemon holds exactly one
+            <code>tmux attach</code> per session and fans it out to every viewer, so a browser, an IDE and
+            <code>kotgent attach</code> all watch and type into the same terminal.
+          </p>
+          <p>
+            State is never stored directly: the agent reports events through hooks, they are appended to a
+            per-session log, and the state you see is replayed from that log. That is why sessions survive
+            a daemon restart.
+          </p>
+        </section>
+
+        <section class="help-section">
+          <h3>States</h3>
+          <dl class="help-list">
+            <dt><span class="badge badge-running">running</span></dt>
+            <dd>The agent is working on a turn.</dd>
+            <dt><span class="badge badge-ready">ready</span></dt>
+            <dd>Alive and idle — it finished its turn and is waiting for your next prompt.</dd>
+            <dt><span class="badge badge-attention">needs approval</span></dt>
+            <dd>
+              Blocked asking permission for an action. Answer it in the terminal; the approval clears by
+              itself as soon as the agent acts again.
+            </dd>
+            <dt><span class="badge badge-attention">needs answer</span></dt>
+            <dd>
+              Blocked on a question. Modeled but never produced by the current Claude adapter — interactive
+              Claude gives no "waiting for an answer" signal.
+            </dd>
+            <dt><span class="badge badge-dead">stopped</span></dt>
+            <dd>The agent process exited cleanly (this is what Stop leaves behind).</dd>
+            <dt><span class="badge badge-crashed">crashed</span></dt>
+            <dd>The agent process exited abnormally or its pane was lost.</dd>
+            <dt><span class="badge badge-resumable">resumable</span></dt>
+            <dd>Dead, but the conversation transcript survives — Resume can revive it.</dd>
+          </dl>
+          <p class="help-note">
+            The first four are <em>alive</em> (a process is running in tmux), the last three are
+            <em>dead</em>. The two "needs" states are the ones counted as needing attention.
+          </p>
+        </section>
+
+        <section class="help-section">
+          <h3>Controls</h3>
+          <dl class="help-list">
+            <dt>New session</dt>
+            <dd>
+              Starts an agent in the directory you give it. With a base path set in Preferences, each
+              group's <strong>+</strong> starts one in that group's directory instead.
+            </dd>
+            <dt>Attach</dt>
+            <dd>
+              Connects this browser to the session's terminal. It starts nothing — it only opens a view on
+              an agent that is already running.
+            </dd>
+            <dt>Interrupt</dt>
+            <dd>
+              Sends <kbd>Ctrl-C</kbd> to the pane and marks the session ready, clearing any pending
+              approval. Use it for a turn that is stuck or running away. The agent stays alive.
+            </dd>
+            <dt>Stop</dt>
+            <dd>
+              Kills the tmux session, so the agent process ends and the state becomes stopped. The
+              conversation transcript is kept, so this is reversible with Resume.
+            </dd>
+            <dt>Resume</dt>
+            <dd>
+              Relaunches the agent against the saved transcript in a fresh tmux session and puts it back to
+              ready. It is refused while the provider's session id has not been captured yet — that id is
+              what a resume is addressed to.
+            </dd>
+            <dt>Detach</dt>
+            <dd>
+              Closes only <em>your</em> terminal client. The agent keeps working; when the last viewer
+              leaves, the daemon drops its upstream tmux attach too.
+            </dd>
+          </dl>
+        </section>
+
+        <section class="help-section">
+          <h3>The sidebar</h3>
+          <p>
+            "Needs attention" counts the sessions blocked on you and repeats them at the top so nothing is
+            missed. The blue pill is the number of events appended since you last read the session, and the
+            badge is its current state. With a base path set in Preferences, rows are grouped by working
+            directory; anything outside that base path is grouped under its own path at the end.
+          </p>
+        </section>
+
+        <section class="help-section">
+          <h3>Access</h3>
+          <p>
+            The daemon listens on <code>127.0.0.1</code> and every route requires one token — the same
+            string as <code>~/.kotgent/token</code>. This page carries it in the URL fragment
+            (<code>#token=…</code>), which browsers never send to the server; it is replayed as a bearer
+            header for the API and as a query parameter for the WebSockets, because a browser cannot set
+            headers on a WebSocket handshake. Anyone with the URL has full control of your agents.
+          </p>
+        </section>
+
+        <section class="help-section">
+          <h3>The same thing from a terminal</h3>
+          <pre class="help-code">kotgent list                  list sessions
+kotgent start claude [cwd]    start a session
+kotgent attach &lt;id&gt;           attach a raw terminal
+kotgent interrupt &lt;id&gt;        send Ctrl-C
+kotgent stop &lt;id&gt;             stop a session
+kotgent resume &lt;id&gt;           resume a stopped/crashed session
+kotgent daemon [--port N]     run the control plane</pre>
+        </section>
+      </div>
+
+      <div class="dialog-actions">
+        <button id="help-done" class="button button-primary" type="button">Done</button>
+      </div>
+    </div>
   </dialog>
 
   <script src="vendor/xterm.js"></script>

@@ -111,6 +111,20 @@ class WebUiServingTest {
     }
 
     @Test
+    fun webUiExposesTheHelpScreen() = withServer { ctx ->
+        val body = ctx.get("/").bodyAsText()
+        assertTrue(body.contains("id=\"help-button\""), "the sidebar has the help entry point")
+        assertTrue(body.contains("id=\"help-dialog\""), "the UI includes the help screen")
+        // The help text explains the controls it documents — a rename that leaves it stale should fail.
+        for (control in listOf("Attach", "Interrupt", "Resume", "Detach", "Stop")) {
+            assertTrue(body.contains(">$control</dt>"), "help documents the $control control")
+        }
+        for (state in listOf("running", "ready", "needs approval", "stopped", "crashed", "resumable")) {
+            assertTrue(body.contains(">$state</span>"), "help documents the '$state' state")
+        }
+    }
+
+    @Test
     fun daemonServesTheVendoredXtermFromANestedPath() = withServer { ctx ->
         val resp = ctx.get("/vendor/xterm.js")
         assertEquals(HttpStatusCode.OK, resp.status, "GET /vendor/xterm.js (nested) is served")

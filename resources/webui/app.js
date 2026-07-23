@@ -173,6 +173,11 @@ const dom = {
   sessionCwd: document.getElementById("session-cwd"),
   sessionName: document.getElementById("session-name"),
   sessionTags: document.getElementById("session-tags"),
+  helpButton: document.getElementById("help-button"),
+  helpDialog: document.getElementById("help-dialog"),
+  helpBody: document.getElementById("help-body"),
+  helpClose: document.getElementById("help-close"),
+  helpDone: document.getElementById("help-done"),
   prefsButton: document.getElementById("prefs-button"),
   prefsDialog: document.getElementById("prefs-dialog"),
   prefsForm: document.getElementById("prefs-form"),
@@ -201,6 +206,20 @@ const dom = {
   detachButton: document.getElementById("detach-button"),
   stopButton: document.getElementById("stop-button"),
 };
+
+// ---------------------------------------------------------------------------------------------------
+// Help: a static explainer of sessions, states and controls (markup lives in index.html).
+// ---------------------------------------------------------------------------------------------------
+
+function showHelpDialog() {
+  dom.helpDialog.showModal();
+  dom.helpBody.scrollTop = 0; // a reopen should start at the top, not where the last read ended
+  window.setTimeout(() => dom.helpClose.focus(), 0);
+}
+
+function closeHelpDialog() {
+  if (dom.helpDialog.open) dom.helpDialog.close();
+}
 
 // ---------------------------------------------------------------------------------------------------
 // Preferences: base path + grouping level, persisted per browser in localStorage.
@@ -739,8 +758,11 @@ function debounce(fn, ms) {
 // ---------------------------------------------------------------------------------------------------
 
 function main() {
-  // Preferences are purely local, so they are wired (and applied) before the token guard.
+  // Help and preferences are purely local, so they are wired (and applied) before the token guard.
   prefs = loadPrefs();
+  dom.helpButton.addEventListener("click", showHelpDialog);
+  dom.helpClose.addEventListener("click", closeHelpDialog);
+  dom.helpDone.addEventListener("click", closeHelpDialog);
   dom.prefsButton.addEventListener("click", showPrefsDialog);
   dom.basePathNote.addEventListener("click", showPrefsDialog);
   dom.prefsClose.addEventListener("click", closePrefsDialog);

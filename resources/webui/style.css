@@ -491,7 +491,92 @@ dialog::backdrop {
   margin-top: 20px;
 }
 
+/* --- Help dialog --- */
+#help-dialog { width: 640px; }
+#help-form {
+  display: flex;
+  flex-direction: column;
+  max-height: min(82vh, 900px);
+  padding: 20px;
+}
+#help-form .dialog-head,
+#help-form .dialog-actions { flex: 0 0 auto; }
+/* The body is the only scroller, so the title and Done button stay put on a long read. */
+#help-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.help-section + .help-section {
+  border-top: 1px solid var(--border);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+.help-section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.help-section p {
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0 0 8px;
+}
+.help-section p:last-child { margin-bottom: 0; }
+.help-note {
+  color: var(--muted);
+  font-size: 12px !important;
+  margin-top: 12px;
+}
+
+.help-list {
+  display: grid;
+  grid-template-columns: minmax(88px, max-content) 1fr;
+  gap: 8px 14px;
+  margin: 0;
+}
+.help-list dt {
+  font-size: 13px;
+  font-weight: 600;
+}
+.help-list dd {
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+/* A state badge sits on the baseline of its description rather than filling the column. */
+.help-list dt .badge { display: inline-block; }
+
+.help-section code,
+.help-section kbd {
+  background: var(--row-hover);
+  border-radius: 4px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11.5px;
+  padding: 1px 5px;
+}
+.help-section kbd { border: 1px solid var(--border); }
+.help-code {
+  background: var(--row-hover);
+  border-radius: 7px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px 12px;
+}
+
 @media (max-width: 720px) {
+  #help-dialog { width: 100%; }
+  .help-list {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  .help-list dd { margin-bottom: 10px; }
   #app { flex-direction: column; }
   #sidebar {
     border-bottom: 1px solid var(--border);
