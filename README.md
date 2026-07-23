@@ -162,6 +162,10 @@ is and isn't here:
 - The **Codex** adapter (app-server / rollout-JSONL).
 - **Mobile PWA**, a **cloudflared** tunnel + Access, and **Web Push** for remote / phone access.
 - A **diff viewer**, external-session import, and snapshots.
+- **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
+  5-hour window and the weekly cap; Codex: the weekly cap).
+- A **prominent notification toggle** — one large, obvious control to turn notifications on and off per
+  device (phone / laptop).
 - A browser e2e harness (Playwright).
 
 **Why the real-PTY checks live in their own binary.** A Kotlin Toolchain issue
