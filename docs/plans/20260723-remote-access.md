@@ -232,16 +232,26 @@ WS-хендшейк определяется наличием заголовка
 - Create: `src/transport/SessionCookie.kt`
 - Create: `test/transport/SessionCookieTest.kt`
 
-- [ ] `issueSessionCookie(token: String, issuedAt: Long): String` → `v1.<issuedAt>.<hmacHex>`
-- [ ] `verifySessionCookie(token: String, value: String?): Boolean` — разбор, отбраковка мусора,
+- [x] `issueSessionCookie(token: String, issuedAt: Long): String` → `v1.<issuedAt>.<hmacHex>`
+- [x] `verifySessionCookie(token: String, value: String?): Boolean` — разбор, отбраковка мусора,
       `constantTimeEquals` для HMAC
-- [ ] константа имени `kotgent_session`; **чтение и запись cookie — через core-API Ktor**
+- [x] константа имени `kotgent_session`; **чтение и запись cookie — через core-API Ktor**
       (`call.request.cookies[...]`, `call.response.cookies.append(name, value, maxAgeInSeconds,
       path = "/", secure = …, httpOnly = true, extensions = mapOf("SameSite" to "Strict"))`).
       Свой парсер `Cookie:` и сериализатор `Set-Cookie` НЕ пишем — они есть в native-klib
-- [ ] тесты: round-trip; чужой токен не проходит; испорченный hmac; мусорный формат; пустая строка;
+- [x] тесты: round-trip; чужой токен не проходит; испорченный hmac; мусорный формат; пустая строка;
       `null`; ротация токена убивает ранее выданную cookie
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 3
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 3
+
+➕ добавлено сверх плана: тонкие обёртки над core-API Ktor — `ApplicationCall.sessionCookie()` и
+`ApplicationCall.setSessionCookie(value, secure)` (в них же живут `HttpOnly` / `SameSite=Strict` /
+`Path=/` / `Max-Age`), константа `SESSION_COOKIE_MAX_AGE_SECONDS` (10 лет) и `CookieEncoding.RAW` на
+обоих концах — подписанные байты совпадают с байтами на проводе. Роутов ещё нет, поэтому обёртки
+проверены на голом `embeddedServer(CIO, port = 0)` в самом тесте: это же и подтверждает посылку плана
+про наличие `RequestCookies`/`ResponseCookies` в native-klib (проверено вживую, не только по strings).
+`verifySessionCookie` дополнительно отбраковывает пустой мастер-токен (пустой ключ HMAC — валидный
+ключ, иначе битый `~/.kotgent/token` дал бы всем валидную cookie) и неканоничный `issuedAt` (`+17`).
+После Task 2 — **277 run / 277 passed / 0 skipped**.
 
 ### Task 3: Чистая функция authorize()
 
