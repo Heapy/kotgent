@@ -41,6 +41,9 @@
 }
 
 * { box-sizing: border-box; }
+/* An author `display` (e.g. `.session-actions { display: flex }`) beats the UA's `[hidden]` rule whatever
+   its specificity, so every `el.hidden = true` in app.js needs this to actually hide anything. */
+[hidden] { display: none !important; }
 button, input, select { font: inherit; }
 button { color: inherit; }
 
