@@ -142,9 +142,19 @@ private const val MODE_0700: Int = S_IRUSR or S_IWUSR or S_IXUSR
 /** [value] lower-cased with any trailing `/` dropped. Only called on a value [publicUrlProblem] accepted. */
 private fun canonicalPublicUrl(value: String): String = value.trim().trimEnd('/').lowercase()
 
-/** Create [path]'s parent directory `0700` if it does not exist; an existing directory is left alone. */
+/**
+ * Create the directory [path] `0700` (owner-only) if it does not exist; a pre-existing directory is left
+ * alone (EEXIST ignored). The single `0700` mkdir the cli reuses — both `~/.kotgent` (the daemon) and a
+ * config file's parent dir (`config set`) are created through here so the mode and error handling stay in
+ * one place.
+ */
 @OptIn(ExperimentalForeignApi::class)
+internal fun mkdir0700(path: String) {
+    mkdir(path, MODE_0700.convert()) // ignore EEXIST — a pre-existing dir is fine
+}
+
+/** Create [path]'s parent directory `0700` if it does not exist; an existing directory is left alone. */
 private fun ensureParentDir(path: String) {
     val dir = path.substringBeforeLast('/', missingDelimiterValue = "")
-    if (dir.isNotEmpty()) mkdir(dir, MODE_0700.convert()) // ignore EEXIST — a pre-existing dir is fine
+    if (dir.isNotEmpty()) mkdir0700(dir)
 }

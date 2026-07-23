@@ -35,17 +35,12 @@ import io.kotgent.transport.readOrCreateToken
 import io.kotgent.transport.readTokenOrNull
 import io.kotgent.transport.writePrivateFile
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.convert
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
-import platform.posix.S_IRUSR
-import platform.posix.S_IWUSR
-import platform.posix.S_IXUSR
-import platform.posix.mkdir
 
 /**
  * The `kotgent` subcommand handlers (plan Task 15). The network verbs (`list`/`start`/`stop`/`resume`/
@@ -165,9 +160,20 @@ object Commands {
             eprintln("config set: unknown key '$key' (only 'public-url' is supported)")
             return 2
         }
+        val path = defaultConfigPath()
+        // Reading the existing config can fail if the file on disk is unparseable — that is a runtime error,
+        // not something the user typed wrong, so it exits 1 (the same code `config get` returns for the same
+        // corrupt file), NOT the usage code 2.
+        val existing = try {
+            readConfig(path)
+        } catch (e: ConfigException) {
+            eprintln("config set: ${e.message}")
+            return 1
+        }
+        val updated = existing.copy(publicUrl = value)
+        // Writing validates the user-supplied URL; a bad value IS a usage error (like an unknown key), so it
+        // exits 2.
         return try {
-            val path = defaultConfigPath()
-            val updated = readConfig(path).copy(publicUrl = value)
             writeConfig(path, updated) // validates + canonicalises + writes 0600 atomically
             println("public-url = ${updated.normalized().publicUrl}")
             eprintln("restart the daemon to apply: launchctl kickstart -k gui/\$(id -u)/$DAEMON_LABEL")
@@ -225,7 +231,7 @@ object Commands {
      */
     @OptIn(ExperimentalForeignApi::class)
     fun daemon(port: Int): Int = runBlocking {
-        ensureDir(kotgentHome())
+        mkdir0700(kotgentHome())
         // The public origin is load-bearing for authorization (it IS the extra entry in the Host/Origin
         // allowlists), so a config that cannot be understood stops the daemon instead of silently starting
         // one that refuses every request from the tunnel it was configured for.
@@ -429,11 +435,6 @@ object Commands {
         val path = "${kotgentHome()}/codex-hook.sh"
         writePrivateFile(path, CodexHookConfig.hookScript(port, headerPath).encodeToByteArray())
         return path
-    }
-
-    @OptIn(ExperimentalForeignApi::class)
-    private fun ensureDir(path: String) {
-        mkdir(path, (S_IRUSR or S_IWUSR or S_IXUSR).convert()) // 0700; ignore EEXIST
     }
 }
 

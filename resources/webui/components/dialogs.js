@@ -281,9 +281,8 @@ function phoneBody(state, issue, onClose) {
 
 /** No public URL configured: explain the one-time tunnel setup rather than draw an unreachable QR. */
 function phoneSetup(onClose) {
-  // "27508" mirrors DEFAULT_PORT in Cli.kt — the fallback only bites if location.port is empty (a default
-  // 80/443), which does not happen for a loopback daemon that has no public URL configured yet.
-  const port = (typeof window !== "undefined" && window.location.port) || "27508";
+  // The daemon always serves this page on its own explicit port, so window.location.port is always set.
+  const port = window.location.port;
   const ingress = "  - hostname: <your-tunnel-host>\n    service: http://127.0.0.1:" + port;
   return html`
     <p id="phone-setup" class="phone-note">
