@@ -56,7 +56,8 @@ import kotlin.random.Random
  * A single shared secret gates the whole surface — the bearer clients present on control REST + the WS
  * handshakes, AND the value the Claude hooks send in their own header (the Task-12 [claudeHookRoutes]
  * checks the same string). The plan is explicit: "один токен на всё" (one token on all); a distinct
- * per-purpose token is backlog. [readOrCreateToken] is the one source of that value.
+ * per-purpose token is backlog. [readOrCreateToken] is the one source of that value at startup, and
+ * [TokenHolder] is what every gate reads it through afterwards, so a rotation is picked up live.
  *
  * ## Header OR query param (why both)
  * [presentedToken] accepts the token from either an `Authorization: Bearer <token>` header (REST clients)
@@ -83,20 +84,25 @@ fun ApplicationCall.presentedToken(): String? {
 }
 
 /**
- * Gate every route built inside [build] behind [token]: a request that presents a missing or wrong
- * token (see [presentedToken]) is answered `401` and the pipeline is stopped **before** the wrapped
+ * Gate every route built inside [build] behind the master token: a request that presents a missing or
+ * wrong token (see [presentedToken]) is answered `401` and the pipeline is stopped **before** the wrapped
  * handler runs. Crucially this rejects a bad WebSocket handshake too — the `401` is written in the
  * `Plugins` phase, before the WS route's upgrade handler executes, so no socket is upgraded.
+ *
+ * [token] is a PROVIDER, not a captured string ([TokenHolder.current]): the secret is resolved per request,
+ * so `kotgent token rotate` takes effect on the very next request instead of at the next daemon restart.
+ * Requests already past this phase — an established WebSocket, most visibly — are unaffected, because the
+ * decision is made once per request, at its start.
  *
  * Implemented as a transparent child route (adds no path segment) with a pipeline interceptor, the same
  * shape Ktor's own `authenticate { }` uses — so nested `/sessions`, `/events`, `/sessions/{id}/terminal`
  * keep their literal paths and their higher routing priority over any catch-all static route.
  */
-fun Route.authenticated(token: String, build: Route.() -> Unit): Route {
+fun Route.authenticated(token: () -> String, build: Route.() -> Unit): Route {
     val authed = createChild(AuthRouteSelector) as RoutingNode
     authed.intercept(ApplicationCallPipeline.Plugins) {
         val presented = call.presentedToken()
-        if (presented == null || !constantTimeEquals(presented, token)) {
+        if (presented == null || !constantTimeEquals(presented, token())) {
             call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
             finish()
         }
@@ -331,8 +337,15 @@ const val SECRET_BYTES: Int = 32
 fun randomBytes(n: Int = SECRET_BYTES): ByteArray =
     readFileBytesOrNull("/dev/urandom", limit = n)?.takeIf { it.size == n } ?: Random.nextBytes(n)
 
-/** 32 bytes of entropy, hex-encoded. Prefers `/dev/urandom`; falls back to [Random] if unreadable. */
-private fun generateToken(): String = hex(randomBytes(SECRET_BYTES))
+/**
+ * A fresh master token: 32 bytes of entropy, hex-encoded. Prefers `/dev/urandom`; falls back to [Random]
+ * if unreadable.
+ *
+ * Public so that THE minting of the machine's key happens in exactly one place — [readOrCreateToken] on
+ * first start and [TokenHolder.rotate] on `kotgent token rotate` both call it, rather than each deciding
+ * for itself how long a token is and where its entropy comes from.
+ */
+fun generateToken(): String = hex(randomBytes(SECRET_BYTES))
 
 /**
  * The whole contents of [path] as text, or `null` if it cannot be opened. THE file reader of the daemon —

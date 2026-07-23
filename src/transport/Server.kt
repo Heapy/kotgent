@@ -43,6 +43,8 @@ import platform.posix.access
  * ## Auth layering
  *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes]) are mounted at the root and do their
  *    own header-token check (Task 12) against the **same** [token] — the plan's "one token on all".
+ *    [token] is a provider ([TokenHolder.current]), never a captured string, so `kotgent token rotate`
+ *    reaches every gate at once.
  *  - The **control REST + both WebSockets** are wrapped in [authenticated], which rejects a missing/wrong
  *    token with `401` (including on the WS handshake, before any upgrade).
  *  - The **static Web UI** is deliberately UNauthenticated: the browser fetches it before it has the token
@@ -59,7 +61,7 @@ import platform.posix.access
 class KotgentServer(
     private val sessionManager: SessionManager,
     private val store: EventStore,
-    private val token: String,
+    private val token: () -> String,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
     host: String = "127.0.0.1",
@@ -148,7 +150,7 @@ class KotgentServer(
         fun production(
             sessionManager: SessionManager,
             store: EventStore,
-            token: String,
+            token: () -> String,
             tmux: Tmux,
             ptyFactory: PtyFactory = realPtyFactory,
             webUiDir: String? = DEFAULT_WEBUI_DIR,

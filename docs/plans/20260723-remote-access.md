@@ -329,16 +329,28 @@ WS-хендшейк определяется наличием заголовка
 - Modify: `test/transport/WebUiServingTest.kt` (конструктор на `:260-268`)
 - Modify: `test/transport/HookRoutesTest.kt` (`:66`, `:205`)
 
-- [ ] `TokenHolder(initial: String, persist: (String) -> Unit)` поверх `AtomicReference`:
+- [x] `TokenHolder(initial: String, persist: (String) -> Unit)` поверх `AtomicReference`:
       `current()`, `rotate(): String` (сгенерировать, вызвать `persist`, опубликовать)
-- [ ] протянуть провайдер через `KotgentServer`, `authenticated()`, `claudeHookRoutes`,
+- [x] протянуть провайдер через `KotgentServer`, `authenticated()`, `claudeHookRoutes`,
       `codexHookRoutes` — нигде не остаётся захваченной строки
-- [ ] в `Commands.daemon` собрать `persist`: перезапись `~/.kotgent/token` + обоих hook-header
+- [x] в `Commands.daemon` собрать `persist`: перезапись `~/.kotgent/token` + обоих hook-header
       файлов (переиспользовать `writeClaudeHookSettings` / `writeCodexHookScript`)
-- [ ] тесты `TokenHolder`: `rotate` меняет значение, `persist` вызван с новым значением,
+- [x] тесты `TokenHolder`: `rotate` меняет значение, `persist` вызван с новым значением,
       старое значение больше не совпадает
-- [ ] тест уровня сервера: после ротации запрос со старым Bearer → 401, с новым → 200
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 6
+- [x] тест уровня сервера: после ротации запрос со старым Bearer → 401, с новым → 200
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 6
+
+➕ добавлено сверх плана: `generateToken()` из `Auth.kt` стала публичной — теперь мастер-токен чеканится
+ровно в одном месте (`readOrCreateToken` на первом старте и `TokenHolder.rotate` на ротации), а не двумя
+копиями «32 байта + hex». Порядок в `rotate()` — **persist, затем publish**: упавший `persist` оставляет
+старый токен в силе (иначе живым оказался бы секрет, которого нет ни на диске, ни в hook-header файлах, и
+рестарт всё равно откатил бы его назад); тест `aFailingPersistAbortsTheRotation…` это пиннит. Реализация
+на `kotlin.concurrent.atomics.AtomicReference` (`@ExperimentalAtomicApi`) — есть в stdlib 2.4.10, `Mutex`
+не годится: читатели на каждом запросе, включая WS-хендшейк, и они не suspend. Grace-периода «принимаем
+оба токена» намеренно нет. `withIngress` в `HookRoutesTest` получил параметр `tokenProvider` (по умолчанию
+прежний фиксированный токен), на нём стоит ротационный тест ингресса; серверный тест ротации живёт на
+голом `embeddedServer` с единственным роутом под `authenticated(holder::current)` — падение указывает на
+сам гейт, а не на фейки демона. После Task 5 — **314 run / 314 passed / 0 skipped**.
 
 ### Task 6: Хранилище одноразовых тикетов
 

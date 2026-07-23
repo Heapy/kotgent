@@ -54,16 +54,20 @@ class HookRoutesTest {
     /**
      * Boots the ingress on an ephemeral port with [store] + [paneLookup], hands the caller its bound
      * port and a CIO client, and guarantees teardown of both — all under a single [withTimeout].
+     *
+     * [tokenProvider] is what the route validates against, resolved per request (Task 5); it defaults to
+     * the fixed test token, and the rotation test passes a live [TokenHolder] instead.
      */
     private fun withIngress(
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
+        tokenProvider: () -> String = { token },
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             // grace = 0: these tests do not exercise the launch/register race, so an unknown pane must
             // 404 immediately rather than waiting out the production grace window.
-            routing { claudeHookRoutes(token, paneLookup, store, paneLookupGraceMillis = 0) }
+            routing { claudeHookRoutes(tokenProvider, paneLookup, store, paneLookupGraceMillis = 0) }
         }
         try {
             withTimeout(20_000) {
@@ -193,6 +197,40 @@ class HookRoutesTest {
         }
     }
 
+    // ---- the token is read per request, so a rotation reaches the ingress live (Task 5) ----
+
+    @Test
+    fun rotatingTheTokenFlipsTheIngressToTheNewValueWithoutARestart() {
+        val store = RecordingEventStore()
+        val holder = TokenHolder(token)
+        withIngress(store, tokenProvider = holder::current) { port, client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.postHook(port, ClaudeHookConfig.STOP, token = holder.current()).status,
+                "the current token is accepted before the rotation",
+            )
+            store.appended.receive()
+
+            val rotated = holder.rotate()
+
+            // The hooks re-read their 0600 header file per invocation, so the very next hook already
+            // carries the new value — and the one still carrying the old value must be refused.
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                client.postHook(port, ClaudeHookConfig.STOP, token = token).status,
+                "the pre-rotation token no longer authenticates",
+            )
+            assertTrue(store.appended.tryReceive().isFailure, "a rejected hook appends nothing")
+
+            assertEquals(
+                HttpStatusCode.OK,
+                client.postHook(port, ClaudeHookConfig.STOP, token = rotated).status,
+                "the rotated token authenticates on the same running server",
+            )
+            assertEquals(session, store.appended.receive().sessionId)
+        }
+    }
+
     // ---- the Codex ingress: same contract, its own path and vocabulary ----
 
     /** Boots [codexHookRoutes] the same way [withIngress] boots the Claude one. */
@@ -202,7 +240,7 @@ class HookRoutesTest {
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
-            routing { codexHookRoutes(token, paneLookup, store, paneLookupGraceMillis = 0) }
+            routing { codexHookRoutes({ token }, paneLookup, store, paneLookupGraceMillis = 0) }
         }
         try {
             withTimeout(20_000) {

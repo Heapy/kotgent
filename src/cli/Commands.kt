@@ -28,6 +28,8 @@ import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
 import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.SessionDto
+import io.kotgent.transport.TokenHolder
+import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readOrCreateToken
 import io.kotgent.transport.readTokenOrNull
 import io.kotgent.transport.writePrivateFile
@@ -142,8 +144,19 @@ object Commands {
      */
     @OptIn(ExperimentalForeignApi::class)
     fun daemon(port: Int): Int = runBlocking {
-        val token = readOrCreateToken()
         ensureDir(kotgentHome())
+        // The master token lives behind a holder, not in a captured `val`: every gate (both hook
+        // ingresses, the Bearer check) resolves it per request, so `kotgent token rotate` takes effect on
+        // the next request instead of the next restart. Rotation must also reach the two consumers that
+        // read the secret from DISK — the CLI (`~/.kotgent/token`) and the hooks (their 0600 header
+        // files) — hence the persist callback rewrites all three (writeClaudeHookSettings /
+        // writeCodexHookScript rewrite their header file as their first step).
+        val tokenHolder = TokenHolder(readOrCreateToken()) { rotated ->
+            writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
+            writeClaudeHookSettings(port, rotated)
+            writeCodexHookScript(port, rotated)
+        }
+        val token = tokenHolder.current()
 
         // File-backed store (restart-safety = the whole point of the control plane).
         val store = SqliteEventStore.using(
@@ -222,7 +235,7 @@ object Commands {
         Reconciler(tmux, store, vendorProbe, registry).reconcile()
 
         try {
-            KotgentServer.production(manager, store, token, tmux, port = port).start()
+            KotgentServer.production(manager, store, tokenHolder::current, tmux, port = port).start()
         } catch (e: ServerBindException) {
             eprintln("kotgent daemon: ${e.message}")
             reportPortHolder(port)

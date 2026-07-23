@@ -40,6 +40,10 @@ import kotlinx.serialization.json.JsonObject
  * embedded server + a fake lookup + an in-memory store — no daemon, no real tmux (Task 3 proved Ktor
  * CIO server + client run in the test binary).
  *
+ * [token] is a PROVIDER ([TokenHolder.current]), read per request rather than captured: `kotgent token
+ * rotate` rewrites the `0600` hook-header files the hooks `curl -H @<file>` from, so the ingress has to be
+ * validating against the same new value by the time the next hook fires.
+ *
  * ## [decision] How Claude events reach the runtime event stream
  * The ingress appends directly to the [EventStore] — the single source of truth — rather than pushing
  * into a separate per-adapter channel. Downstream (the events-WS in Task 14, the daemon in Task 13)
@@ -50,7 +54,7 @@ import kotlinx.serialization.json.JsonObject
  * this task only makes the ingress append to the store and records the intended wiring.
  */
 fun Route.claudeHookRoutes(
-    token: String,
+    token: () -> String,
     paneLookup: suspend (PaneId) -> SessionId?,
     store: EventStore,
     json: Json = HOOK_JSON,
@@ -85,7 +89,7 @@ fun Route.claudeHookRoutes(
  * Codex and `Notification` only in Claude, and routing by path makes the mapping unambiguous.
  */
 fun Route.codexHookRoutes(
-    token: String,
+    token: () -> String,
     paneLookup: suspend (PaneId) -> SessionId?,
     store: EventStore,
     json: Json = HOOK_JSON,
@@ -115,7 +119,7 @@ private fun Route.hookRoutes(
     paneHeader: String,
     eventHeader: String,
     normalize: (String, JsonElement, PaneId) -> AgentEvent?,
-    token: String,
+    token: () -> String,
     paneLookup: suspend (PaneId) -> SessionId?,
     store: EventStore,
     json: Json,
@@ -124,7 +128,7 @@ private fun Route.hookRoutes(
     post(path) {
         // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
         val presented = call.request.headers[tokenHeader]
-        if (presented == null || !constantTimeEquals(presented, token)) {
+        if (presented == null || !constantTimeEquals(presented, token())) {
             call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
             return@post
         }
