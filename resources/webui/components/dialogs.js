@@ -11,10 +11,11 @@
  */
 
 import { html } from "htm/preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { groupFor, joinPath, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, sanitizePrefs } from "../lib/prefs.js";
-import { errorMessage } from "../lib/api.js";
+import { apiRequest, errorMessage } from "../lib/api.js";
+import { qrSvg } from "../lib/qr.js";
 
 function Dialog({ id, labelledBy, onClose, children }) {
   const ref = useRef(null);
@@ -200,6 +201,107 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
         </div>
       </form>
     <//>
+  `;
+}
+
+// --- Phone access ----------------------------------------------------------------------------------
+
+/**
+ * Sign in on a second device. Minting a ticket here is the same `POST /auth/ticket` the CLI's
+ * `kotgent web` uses; the difference is the QR, drawn over the returned `publicUrl` so a phone can
+ * scan it. When no public URL is configured the daemon returns `publicUrl: null` — there is nothing a
+ * phone could reach, so the dialog explains how to set the tunnel up instead of drawing a dead QR.
+ *
+ * The ticket is a full-access, one-time credential with a short life. That is stated plainly under the
+ * code, and "Refresh" mints a new one (each minting leaves the previous ticket to expire on its own).
+ */
+export function PhoneDialog({ onClose }) {
+  const [state, setState] = useState({ status: "loading" });
+
+  const issue = useCallback(async () => {
+    setState({ status: "loading" });
+    try {
+      const ticket = await apiRequest("/auth/ticket", { method: "POST" });
+      setState({ status: "ready", ticket: ticket });
+    } catch (e) {
+      setState({ status: "error", message: errorMessage(e) });
+    }
+  }, []);
+
+  useEffect(() => { issue(); }, [issue]);
+
+  return html`
+    <${Dialog} id="phone-dialog" labelledBy="phone-title" onClose=${onClose}>
+      <div id="phone-form">
+        <div class="dialog-head">
+          <div>
+            <h2 id="phone-title">Sign in from your phone</h2>
+            <p>Scan to open kotgent on another device.</p>
+          </div>
+          <button id="phone-close" class="icon-button" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+        ${phoneBody(state, issue, onClose)}
+      </div>
+    <//>
+  `;
+}
+
+/** Render the changing part of [PhoneDialog] for the current fetch state. */
+function phoneBody(state, issue, onClose) {
+  if (state.status === "loading") {
+    return html`<p id="phone-status" class="phone-status">Minting a one-time link…</p>`;
+  }
+  if (state.status === "error") {
+    return html`
+      <p id="phone-error" class="form-error" role="alert">Could not mint a link: ${state.message}</p>
+      <div class="dialog-actions">
+        <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>
+        <button class="button button-primary" type="button" onClick=${issue}>Try again</button>
+      </div>
+    `;
+  }
+
+  const ticket = state.ticket || {};
+  if (!ticket.publicUrl) return phoneSetup(onClose);
+
+  return html`
+    <div id="phone-qr" class="phone-qr" dangerouslySetInnerHTML=${{ __html: qrSvg(ticket.publicUrl) }}></div>
+    <p class="phone-url"><code>${ticket.publicUrl}</code></p>
+    <p class="phone-warn" role="note">
+      One-time link · expires in 10 minutes · full terminal access. Whoever opens it first is signed in,
+      so refresh it if you did not just scan it yourself.
+    </p>
+    <div class="dialog-actions">
+      <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>
+      <button id="phone-refresh" class="button button-primary" type="button" onClick=${issue}>Refresh</button>
+    </div>
+  `;
+}
+
+/** No public URL configured: explain the one-time tunnel setup rather than draw an unreachable QR. */
+function phoneSetup(onClose) {
+  const port = (typeof window !== "undefined" && window.location.port) || "27508";
+  const ingress = "  - hostname: <your-tunnel-host>\n    service: http://127.0.0.1:" + port;
+  return html`
+    <p id="phone-setup" class="phone-note">
+      No public URL is configured, so there is nothing to point a phone at yet. Phone access runs over a
+      Cloudflare tunnel to this daemon — a one-time setup:
+    </p>
+    <ol class="phone-steps">
+      <li>
+        Add an ingress rule to <code>~/.cloudflared/config.yml</code>:
+        <pre class="help-code">${ingress}</pre>
+      </li>
+      <li>
+        Tell kotgent its public origin:
+        <pre class="help-code">kotgent config set public-url https://your-tunnel-host</pre>
+      </li>
+      <li>Restart the daemon, then reopen this dialog to get a QR code.</li>
+    </ol>
+    <div class="dialog-actions">
+      <button class="button button-primary" type="button" onClick=${onClose}>Done</button>
+    </div>
   `;
 }
 

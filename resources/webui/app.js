@@ -33,7 +33,7 @@ import { loadPrefs, persistPrefs } from "./lib/prefs.js";
 import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
-import { HelpDialog, NewSessionDialog, PreferencesDialog } from "./components/dialogs.js";
+import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./components/dialogs.js";
 
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
 
@@ -230,6 +230,7 @@ function App() {
   const closeDialog = useCallback(() => setDialog(null), []);
   const openPrefs = useCallback(() => setDialog({ kind: "prefs" }), []);
   const openHelp = useCallback(() => setDialog({ kind: "help" }), []);
+  const openPhone = useCallback(() => setDialog({ kind: "phone" }), []);
 
   const interrupt = useCallback(() => controlSession("interrupt"), [controlSession]);
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
@@ -247,6 +248,7 @@ function App() {
       onNewSession=${openNewSession}
       onOpenPrefs=${openPrefs}
       onOpenHelp=${openHelp}
+      onOpenPhone=${openPhone}
     />
     <${TerminalPane}
       session=${activeSession}
@@ -266,6 +268,7 @@ function App() {
       <${PreferencesDialog} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "help" && html`<${HelpDialog} onClose=${closeDialog} />`}
+    ${dialog && dialog.kind === "phone" && html`<${PhoneDialog} onClose=${closeDialog} />`}
   `;
 }
 

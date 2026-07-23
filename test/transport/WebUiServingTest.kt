@@ -106,6 +106,7 @@ class WebUiServingTest {
             "preact/hooks" to "/vendor/preact-hooks.module.js",
             "htm" to "/vendor/htm.module.js",
             "htm/preact" to "/vendor/htm-preact.module.js",
+            "qrcode" to "/vendor/qrcode.module.js",
         )
         for ((specifier, path) in mapped) {
             assertTrue(
@@ -131,7 +132,7 @@ class WebUiServingTest {
     @Test
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
-            "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js",
+            "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/dialogs.js",
         )) {
             val resp = ctx.get(path)
@@ -191,6 +192,30 @@ class WebUiServingTest {
                              "stopped", "crashed", "resumable")) {
             assertTrue(dialogs.contains("[\"$state\","), "help documents the '$state' state")
         }
+    }
+
+    @Test
+    fun webUiExposesThePhoneAccessScreen() = withServer { ctx ->
+        assertTrue(
+            ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"phone-button\""),
+            "the sidebar has the phone (QR) entry point next to help and preferences",
+        )
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(dialogs.contains("id=\"phone-dialog\""), "the UI includes the phone sign-in screen")
+        assertTrue(dialogs.contains("/auth/ticket"), "the phone dialog mints a one-time ticket")
+        assertTrue(dialogs.contains("qrSvg"), "the phone dialog renders the ticket URL as a QR code")
+
+        // The QR is drawn by the vendored generator through the `lib/qr.js` wrapper — prove both are
+        // served and wired, since neither can run in this test binary.
+        val qr = ctx.get("/lib/qr.js")
+        assertEquals(HttpStatusCode.OK, qr.status, "GET /lib/qr.js (the SVG wrapper) is served")
+        assertContentTypeContains(qr, "javascript")
+        assertTrue(qr.bodyAsText().contains("export function qrSvg"), "the wrapper exports qrSvg")
+
+        val gen = ctx.get("/vendor/qrcode.module.js")
+        assertEquals(HttpStatusCode.OK, gen.status, "GET /vendor/qrcode.module.js is served")
+        assertContentTypeContains(gen, "javascript")
+        assertTrue(gen.bodyAsText().contains("export class QrCode"), "the vendored generator exports QrCode")
     }
 
     @Test

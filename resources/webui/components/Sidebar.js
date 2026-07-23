@@ -73,7 +73,7 @@ function SessionGroup({ group, activeId, onSelect, onNewSession }) {
 
 export function Sidebar({
   sessions, activeId, prefs, status,
-  onSelect, onNewSession, onOpenPrefs, onOpenHelp,
+  onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone,
 }) {
   const attention = sessions.filter((s) => isNeedsAttention(s.state));
   const grouped = groupingEnabled(prefs);
@@ -90,6 +90,14 @@ export function Sidebar({
               type="button"
               onClick=${() => onNewSession(null)}
             >New session</button>
+            <button
+              id="phone-button"
+              class="icon-button icon-button-small"
+              type="button"
+              aria-label="Sign in from your phone"
+              title="Sign in from your phone"
+              onClick=${onOpenPhone}
+            >📱</button>
             <button
               id="help-button"
               class="icon-button icon-button-small"

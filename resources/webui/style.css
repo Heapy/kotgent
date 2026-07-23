@@ -425,7 +425,8 @@ dialog::backdrop {
   backdrop-filter: blur(2px);
 }
 #new-session-form,
-#prefs-form { padding: 20px; }
+#prefs-form,
+#phone-form { padding: 20px; }
 .dialog-head {
   display: flex;
   align-items: flex-start;
@@ -490,6 +491,73 @@ dialog::backdrop {
   gap: 8px;
   margin-top: 20px;
 }
+
+/* --- Phone / QR dialog --- */
+.phone-status {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 8px 0;
+  text-align: center;
+}
+.phone-qr {
+  display: block;
+  margin: 4px auto 14px;
+  width: 232px;
+  max-width: 100%;
+}
+/* The generated SVG carries its own white quiet-zone; a little padding keeps it off the panel edge. */
+.phone-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px;
+}
+.phone-url {
+  margin: 0 0 12px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.phone-url code {
+  background: var(--row-hover);
+  border-radius: 4px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11.5px;
+  padding: 2px 6px;
+}
+.phone-warn {
+  background: var(--attn-bg);
+  border-radius: 7px;
+  color: var(--attn);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 9px 11px;
+}
+.phone-note {
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0 0 10px;
+}
+.phone-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+.phone-steps li {
+  font-size: 13px;
+  line-height: 1.55;
+  margin-bottom: 10px;
+}
+.phone-steps li:last-child { margin-bottom: 0; }
+.phone-steps code {
+  background: var(--row-hover);
+  border-radius: 4px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11.5px;
+  padding: 1px 5px;
+}
+.phone-steps .help-code { margin-top: 6px; }
 
 /* --- Help dialog --- */
 #help-dialog { width: 640px; }

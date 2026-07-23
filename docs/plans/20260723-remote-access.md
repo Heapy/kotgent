@@ -545,17 +545,32 @@ embedded-stub, что и остальные (2 теста), плюс 3 тест�
 - Modify: `resources/webui/style.css`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] вендорить QR-генератор как ES-модуль рядом с preact/htm/xterm; никакого шага сборки, никаких
+- [x] вендорить QR-генератор как ES-модуль рядом с preact/htm/xterm; никакого шага сборки, никаких
       внешних запросов
-- [ ] `lib/qr.js` — рендер в **SVG**, без canvas
-- [ ] `PhoneDialog`: `POST /auth/ticket` → QR по `publicUrl`, под ним URL текстом, кнопка
+- [x] `lib/qr.js` — рендер в **SVG**, без canvas
+- [x] `PhoneDialog`: `POST /auth/ticket` → QR по `publicUrl`, под ним URL текстом, кнопка
       «Обновить», предупреждение «одноразовый, 10 минут, полный доступ к терминалам»
-- [ ] при `publicUrl == null` — инструкция вместо QR: `kotgent config set public-url …` и готовый
+- [x] при `publicUrl == null` — инструкция вместо QR: `kotgent config set public-url …` и готовый
       фрагмент ingress для `~/.cloudflared/config.yml`
-- [ ] кнопка в шапке рядом с Preferences и Help
-- [ ] расширить `WebUiServingTest`: новые файлы (`lib/qr.js`, вендоренный модуль) отдаются с верным
+- [x] кнопка в шапке рядом с Preferences и Help
+- [x] расширить `WebUiServingTest`: новые файлы (`lib/qr.js`, вендоренный модуль) отдаются с верным
       content-type
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 12
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 12
+
+➕ добавлено сверх плана: QR-генератор `vendor/qrcode.module.js` — дословный, без зависимостей порт
+Project Nayuki's «QR Code generator library» (MIT), урезанный до byte-mode UTF-8 (URL всегда кодируется,
+а numeric/alphanumeric-режимы выкинуты); заводится через import map как bare-specifier `qrcode` — как
+preact/htm, а не относительным путём. `lib/qr.js` рисует один `<path>` по тёмным модулям на белой
+quiet-zone и фиксирует чёрное-на-белом (тема НЕ инвертирует QR: инвертированный код срывает часть
+сканеров телефона). `PhoneDialog` держит fetch-состояние (`loading`/`ready`/`error`), «Try again» на
+ошибке; при `publicUrl == null` печатает готовый ingress-фрагмент с РЕАЛЬНЫМ портом демона из
+`window.location.port` (fallback 27508). Kнопку в шапке пришлось добавлять в `Sidebar.js` (там живут
+Help/Prefs — файла нет в списке Task 11, это правка сверх него): новый проп `onOpenPhone`, глиф `📱`,
+`id="phone-button"`. JS в тестовом бинаре не исполняется, поэтому корректность порта дополнительно
+подтверждена прогоном через node: выбор версии совпал с известными границами ёмкости byte-mode (14 байт
+→ v1, 15 → v2; 105-символьный URL → v6/41×41), все внутренние ассерты порта (длины бит, диапазоны байт
+RS, границы штрафа, счётчик модулей) прошли на нескольких входах. После Task 11 —
+**361 run / 361 passed / 0 skipped**.
 
 ### Task 12: Verify acceptance criteria
 
