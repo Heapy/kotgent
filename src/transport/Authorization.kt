@@ -133,6 +133,27 @@ fun isAllowedHost(host: String?, publicUrl: String?): Boolean {
     return canonicalHostname(candidate) == publicHost
 }
 
+/**
+ * Must a cookie set on a request that arrived under [host] carry the `Secure` attribute?
+ *
+ * Answered from the request's own `Host` against the configured [publicUrl] — never from
+ * `X-Forwarded-Proto`. That header is trivially forged by any local client, and believing it would put a
+ * `Secure` cookie on a browser talking plain `http://127.0.0.1`, where the browser silently DISCARDS it:
+ * the operator would be locked out of their own daemon by a header they did not send. The `Host` cannot lie
+ * about which of the two surfaces answered, because it is the same value the allowlist above is built on.
+ *
+ * `true` only for the public host of an `https://` [publicUrl]. Loopback is deliberately `false` even when
+ * `publicUrl` itself is a loopback `http://…` — there is no TLS on Kotlin/Native, so a `Secure` cookie on
+ * the local surface could never be sent back.
+ */
+fun requiresSecureCookie(host: String?, publicUrl: String?): Boolean {
+    val url = publicUrl?.trim()?.lowercase() ?: return false
+    if (!url.startsWith("https://")) return false
+    val publicHost = originAuthority(url)?.let(::canonicalHostname) ?: return false
+    val candidate = host?.trim()?.ifEmpty { null } ?: return false
+    return canonicalHostname(candidate) == publicHost
+}
+
 /** The token from an `Authorization: Bearer <token>` header (scheme match is case-insensitive), or `null`. */
 fun bearerToken(authHeader: String?): String? {
     if (authHeader == null) return null

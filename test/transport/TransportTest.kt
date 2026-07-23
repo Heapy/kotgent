@@ -202,6 +202,24 @@ class TransportTest {
         assertTrue(wsRejected, "a WS handshake with a bad token must be rejected")
     }
 
+    // ---- 4b. the browser's key: a session cookie authenticates the same control plane ----
+
+    @Test
+    fun aSessionCookieAuthenticatesTheControlPlaneJustLikeABearer() = withServer { ctx ->
+        // The real server, not a bare route: this is what proves KotgentServer actually mounts the gate
+        // that knows about cookies. No Origin is sent, exactly as a browser does on a same-origin GET.
+        val cookie = issueSessionCookie(token, issuedAt = 1_700_000_000_000)
+        val resp = ctx.client.get("http://127.0.0.1:${ctx.port}/sessions") {
+            header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
+        }
+        assertEquals(HttpStatusCode.OK, resp.status, "a cookie minted from the master token is accepted")
+
+        val forged = ctx.client.get("http://127.0.0.1:${ctx.port}/sessions") {
+            header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=v1.1700000000000.deadbeef")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, forged.status, "a forged one is not")
+    }
+
     // ---- 5. a stale per-session cursor → error (restart-safe cursor is a hard error) ----
 
     @Test

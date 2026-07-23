@@ -41,21 +41,27 @@ import platform.posix.access
  * [terminalBridgeFactory] backed by a fake `PtyFactory`. The production wiring is [production].
  *
  * ## Auth layering
- *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes]) are mounted at the root and do their
- *    own header-token check (Task 12) against the **same** [token] — the plan's "one token on all".
+ *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes]) are mounted at the root, restricted to
+ *    a loopback `Host` ([loopbackOnly] — they are `curl`s from this machine, never tunnel traffic) and do
+ *    their own header-token check (Task 12) against the **same** [token] — the plan's "one token on all".
  *    [token] is a provider ([TokenHolder.current]), never a captured string, so `kotgent token rotate`
  *    reaches every gate at once.
- *  - The **control REST + both WebSockets** are wrapped in [authenticated], which rejects a missing/wrong
- *    token with `401` (including on the WS handshake, before any upgrade).
- *  - The **static Web UI** is deliberately UNauthenticated: the browser fetches it before it has the token
- *    (which lives in the URL fragment `#token=`, never sent to the server), then uses the token for the
- *    API/WS. Serving the bootstrap HTML/JS openly is what lets the token-in-fragment flow work.
+ *  - The **control REST + both WebSockets** are wrapped in [authenticated], i.e. the one [authorize] rule:
+ *    a `Host` allowlist built from [publicUrl], the `Origin` requirement on non-GET and on WS handshakes,
+ *    then a `Bearer` master token or the browser's session cookie. A refusal is written before any upgrade,
+ *    so a rejected WS handshake never becomes a socket.
+ *  - The **static Web UI** is deliberately UNauthenticated: the browser fetches it before it has any
+ *    credential, then the SPA calls the API with the cookie the login flow set. Serving the bootstrap
+ *    HTML/JS openly is what makes that first paint possible at all.
  *
  * @param terminalBridgeFactory builds the lazy [TerminalBridge] for a session id on a given scope; the
  *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
  *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
  * @param webUiDir directory served at `/` (the Task-17 SPA). `null` disables static serving (tests);
  *   the default serves whatever exists under `resources/webui` — nothing yet, i.e. `404`, until Task 17.
+ * @param publicUrl the origin the daemon is published at through the cloudflared tunnel
+ *   (`~/.kotgent/config.json`), or `null` for loopback-only. Passed IN by the daemon rather than read here:
+ *   the dependency runs cli → transport, and the transport does not read configuration files.
  * @param port `0` binds an ephemeral port (tests); [port] reports the resolved one.
  */
 class KotgentServer(
@@ -64,6 +70,7 @@ class KotgentServer(
     private val token: () -> String,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
+    private val publicUrl: String? = null,
     host: String = "127.0.0.1",
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
@@ -81,7 +88,7 @@ class KotgentServer(
             claudeHookRoutes(token, sessionManager.paneLookup, store, HOOK_JSON)
             codexHookRoutes(token, sessionManager.paneLookup, store, HOOK_JSON)
             // Token-gated control plane.
-            authenticated(token) {
+            authenticated(token, publicUrl) {
                 controlRoutes(sessionManager, store, inputSink, json)
                 eventsWs(store, json)
                 terminalWs(registry, store, json)
@@ -154,6 +161,7 @@ class KotgentServer(
             tmux: Tmux,
             ptyFactory: PtyFactory = realPtyFactory,
             webUiDir: String? = DEFAULT_WEBUI_DIR,
+            publicUrl: String? = null,
             host: String = "127.0.0.1",
             port: Int = 0,
         ): KotgentServer = KotgentServer(
@@ -162,6 +170,7 @@ class KotgentServer(
             token = token,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },
             webUiDir = webUiDir?.let { resolveWebUiDir(it) },
+            publicUrl = publicUrl,
             host = host,
             port = port,
         )

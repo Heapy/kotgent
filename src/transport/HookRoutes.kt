@@ -112,6 +112,11 @@ fun Route.codexHookRoutes(
  * The provider-neutral hook ingress both [claudeHookRoutes] and [codexHookRoutes] are built from: the
  * authenticate → identify → resolve → normalize → append pipeline described in [claudeHookRoutes], with
  * the provider-specific pieces ([path], the header names, [normalize]) passed in.
+ *
+ * The whole ingress sits inside [loopbackOnly]: a hook is a `curl` from a process on THIS machine, so a
+ * request arriving under any other `Host` — i.e. through the cloudflared tunnel — is refused with `403`
+ * before its token is even looked at. The gate lives here rather than at the mount site so the ingress
+ * cannot be wired up without it (tests mount these routes directly too).
  */
 private fun Route.hookRoutes(
     path: String,
@@ -124,7 +129,7 @@ private fun Route.hookRoutes(
     store: EventStore,
     json: Json,
     paneLookupGraceMillis: Long,
-) {
+) = loopbackOnly {
     post(path) {
         // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
         val presented = call.request.headers[tokenHeader]

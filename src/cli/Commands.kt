@@ -145,6 +145,15 @@ object Commands {
     @OptIn(ExperimentalForeignApi::class)
     fun daemon(port: Int): Int = runBlocking {
         ensureDir(kotgentHome())
+        // The public origin is load-bearing for authorization (it IS the extra entry in the Host/Origin
+        // allowlists), so a config that cannot be understood stops the daemon instead of silently starting
+        // one that refuses every request from the tunnel it was configured for.
+        val config = try {
+            readConfig()
+        } catch (e: ConfigException) {
+            eprintln("kotgent daemon: ${e.message}")
+            return@runBlocking 1
+        }
         // The master token lives behind a holder, not in a captured `val`: every gate (both hook
         // ingresses, the Bearer check) resolves it per request, so `kotgent token rotate` takes effect on
         // the next request instead of the next restart. Rotation must also reach the two consumers that
@@ -235,13 +244,21 @@ object Commands {
         Reconciler(tmux, store, vendorProbe, registry).reconcile()
 
         try {
-            KotgentServer.production(manager, store, tokenHolder::current, tmux, port = port).start()
+            KotgentServer.production(
+                manager,
+                store,
+                tokenHolder::current,
+                tmux,
+                publicUrl = config.publicUrl,
+                port = port,
+            ).start()
         } catch (e: ServerBindException) {
             eprintln("kotgent daemon: ${e.message}")
             reportPortHolder(port)
             return@runBlocking 1
         }
         println("kotgent daemon listening on http://127.0.0.1:$port  (tmux -L $TMUX_SOCKET)")
+        config.publicUrl?.let { println("  also reachable at $it  (Host + Origin allowlisted)") }
         awaitCancellation()
     }
 

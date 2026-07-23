@@ -19,6 +19,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.engine.embeddedServer
@@ -228,6 +229,41 @@ class HookRoutesTest {
                 "the rotated token authenticates on the same running server",
             )
             assertEquals(session, store.appended.receive().sessionId)
+        }
+    }
+
+    // ---- the ingress is local-only: a request through the tunnel is refused before the token ----
+
+    @Test
+    fun aHookArrivingUnderAForeignHostIs403AndAppendsNothing() {
+        val store = RecordingEventStore()
+        withIngress(store) { port, client ->
+            // A hook is a `curl` from a process on THIS machine, so the only legitimate Host is loopback.
+            // Publishing the daemon through cloudflared must not publish its ingress: this refusal happens
+            // before the token is even looked at, so a leaked hook-header file is still not remotely usable.
+            val response = client.post(url(port, ClaudeHookConfig.STOP)) {
+                header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
+                header(ClaudeHookConfig.TMUX_PANE_HEADER, pane.value)
+                header(HttpHeaders.Host, "kotgent.example.com")
+                setBody("{}")
+            }
+            assertEquals(HttpStatusCode.Forbidden, response.status)
+            assertTrue(store.appended.tryReceive().isFailure, "a non-local hook must append nothing")
+        }
+    }
+
+    @Test
+    fun theCodexIngressIsLocalOnlyToo() {
+        val store = RecordingEventStore()
+        withCodexIngress(store) { port, client ->
+            val response = client.post("http://127.0.0.1:$port${CodexHookConfig.INGRESS_PATH}?event=${CodexHookConfig.STOP}") {
+                header(CodexHookConfig.HOOK_TOKEN_HEADER, token)
+                header(CodexHookConfig.TMUX_PANE_HEADER, pane.value)
+                header(HttpHeaders.Host, "kotgent.example.com")
+                setBody("{}")
+            }
+            assertEquals(HttpStatusCode.Forbidden, response.status)
+            assertTrue(store.appended.tryReceive().isFailure)
         }
     }
 

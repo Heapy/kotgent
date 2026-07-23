@@ -394,18 +394,36 @@ WS-хендшейк определяется наличием заголовка
   `test/transport/HookRoutesTest.kt`
 - Create: `test/transport/AuthorizeWiringTest.kt`
 
-- [ ] `authenticated()` вызывает `authorize()` вместо прямого сравнения токена; cookie-путь
+- [x] `authenticated()` вызывает `authorize()` вместо прямого сравнения токена; cookie-путь
       подключён (значение выдаётся тестами напрямую через `issueSessionCookie`, роутов ещё нет)
-- [ ] `Route.loopbackOnly { }` — второй транспарентный child-route; hook-роуты и (в Task 8)
+- [x] `Route.loopbackOnly { }` — второй транспарентный child-route; hook-роуты и (в Task 8)
       `/auth/ticket` + `/auth/rotate` заворачиваются в него
-- [ ] WS-хендшейк детектится по `HttpHeaders.SecWebSocketKey`, не по пути
-- [ ] `Secure` для cookie выводится из «Host совпал с публичным хостом», **не** из
+- [x] WS-хендшейк детектится по `HttpHeaders.SecWebSocketKey`, не по пути
+- [x] `Secure` для cookie выводится из «Host совпал с публичным хостом», **не** из
       `X-Forwarded-Proto` (тот подделывается локальным клиентом и привёл бы к `Secure`-cookie на
       `http://127.0.0.1`, которую браузер молча выбросит)
-- [ ] тесты: существующие маршруты продолжают работать с Bearer при `port = 0`; GET с cookie без
+- [x] тесты: существующие маршруты продолжают работать с Bearer при `port = 0`; GET с cookie без
       Origin → 200; POST с cookie и чужим Origin → 403; hook-роут с внешним `Host` → 403,
       с loopback → как раньше
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 8
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 8
+
+➕ добавлено сверх плана: `ApplicationCall.requestFacts()` (сбор фактов в одном месте — край Ktor не
+принимает решений) и `requiresSecureCookie(host, publicUrl)` в `Authorization.kt` — чистое правило для
+`Secure`, которым Task 8 воспользуется при выдаче cookie (`https` + Host == публичный хост; loopback
+всегда `false`, иначе браузер молча выбросил бы cookie на `http://127.0.0.1`). `loopbackOnly` — гейт
+ТОЛЬКО по `Host` (`isLoopbackHost`), без проверки credential: это ровно первые две строки таблицы при
+`loopbackOnly = true` (loopback всегда входит в allowlist), а credential остаётся за тем, кто заворачивает
+(hook-роуты проверяют свой header-токен сами, `/auth/ticket` в Task 8 вложится в `authenticated {}`).
+Поэтому параметр `loopbackOnly` у чистой `authorize()` остаётся выражением того же правила «одной
+функцией», но в проводке Task 7 не используется. Гейт живёт ВНУТРИ `hookRoutes` (а не на месте монтажа) —
+ингресс невозможно смонтировать без него, включая тесты. `?token=` пока жив: `requestFacts` собирает
+`authHeader` через `presentedToken()`, т.е. query-форма превращается в синтетический `Bearer` — так Task 7
+не забирает работу Task 9 и все WS-тесты остаются зелёными. `daemon()` при битом `~/.kotgent/config.json`
+печатает ошибку и выходит с кодом 1 (конфиг load-bearing для авторизации), а при настроенном
+`publicUrl` допечатывает вторую строку «also reachable at …». Тесты `TransportTest`/`WebUiServingTest`
+править не пришлось: `publicUrl` у конструктора — с дефолтом `null`; вместо этого в `TransportTest`
+добавлен тест «cookie авторизует НАСТОЯЩИЙ сервер» (доказывает, что гейт смонтирован именно в
+`KotgentServer`). После Task 7 — **343 run / 343 passed / 0 skipped**.
 
 ### Task 8: Роуты /auth/ticket, /auth, /auth/exchange, /auth/rotate
 

@@ -6,6 +6,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
+import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RouteSelector
@@ -65,6 +66,12 @@ import kotlin.random.Random
  * headers on a WebSocket handshake** — the Web UI reads the token from its URL fragment (`#token=`, which
  * is never sent to the server) and appends it as `?token=` when opening the events / terminal sockets.
  * One extractor serves both so [authenticated] gates REST and WS uniformly.
+ *
+ * ## Where the DECISION lives
+ * This file is the Ktor edge: it collects request facts ([requestFacts]) and turns a refusal into a
+ * response. What counts as authorized — the `Host` allowlist, the `Origin` rule, `Bearer` vs the browser's
+ * session cookie — is the pure [authorize] in `Authorization.kt`, so the rule stays table-testable and this
+ * layer stays a handful of accessor calls.
  */
 
 /** Query-parameter name carrying the bearer token (WS handshakes; browsers can't set headers). */
@@ -84,32 +91,100 @@ fun ApplicationCall.presentedToken(): String? {
 }
 
 /**
- * Gate every route built inside [build] behind the master token: a request that presents a missing or
- * wrong token (see [presentedToken]) is answered `401` and the pipeline is stopped **before** the wrapped
- * handler runs. Crucially this rejects a bad WebSocket handshake too — the `401` is written in the
- * `Plugins` phase, before the WS route's upgrade handler executes, so no socket is upgraded.
+ * Every fact [authorize] is allowed to look at, read off [this] call.
+ *
+ * `isWebSocket` is derived from `Sec-WebSocket-Key`, NOT from matching a path: the stricter `Origin` rule
+ * exists because a handshake is the one browser request that reaches a server without a CORS preflight, and
+ * that property belongs to the request, not to the URL it happens to use. A future socket route therefore
+ * cannot silently opt out of the rule by being mounted somewhere new.
+ *
+ * The `Authorization` header is read through [presentedToken] so the legacy `?token=` query form still
+ * authenticates while it exists; Task 9 deletes the query form and this reads the raw header.
+ */
+fun ApplicationCall.requestFacts(): RequestFacts = RequestFacts(
+    host = request.headers[HttpHeaders.Host],
+    origin = request.headers[HttpHeaders.Origin],
+    authHeader = presentedToken()?.let { "Bearer $it" },
+    cookie = sessionCookie(),
+    method = request.httpMethod,
+    isWebSocket = request.headers[HttpHeaders.SecWebSocketKey] != null,
+)
+
+/**
+ * Gate every route built inside [build] behind the daemon's ONE authorization rule ([authorize]): a request
+ * that fails it is answered `401`/`403` and the pipeline is stopped **before** the wrapped handler runs.
+ * Crucially this rejects a bad WebSocket handshake too — the refusal is written in the `Plugins` phase,
+ * before the WS route's upgrade handler executes, so no socket is upgraded.
+ *
+ * Two credentials are accepted, and they are not interchangeable in what they require:
+ *  - a **`Bearer`** master token — the CLI, `kotgent attach`, the hooks. Never needs an `Origin`; it is not
+ *    a browser and no third-party page can make something else present it.
+ *  - the browser's **session cookie** ([verifySessionCookie]), which the browser attaches AMBIENTLY. That is
+ *    why the `Host` allowlist and the `Origin` rule exist at all — see [authorize].
  *
  * [token] is a PROVIDER, not a captured string ([TokenHolder.current]): the secret is resolved per request,
- * so `kotgent token rotate` takes effect on the very next request instead of at the next daemon restart.
- * Requests already past this phase — an established WebSocket, most visibly — are unaffected, because the
- * decision is made once per request, at its start.
+ * so `kotgent token rotate` takes effect on the very next request instead of at the next daemon restart —
+ * and, because the cookie is an HMAC under that same secret, a rotation invalidates every cookie ever issued
+ * at the same moment. Requests already past this phase — an established WebSocket, most visibly — are
+ * unaffected, because the decision is made once per request, at its start.
+ *
+ * [publicUrl] is the configured public origin (`~/.kotgent/config.json`), or `null` when the daemon is
+ * loopback-only; it is exactly the extra entry in the `Host`/`Origin` allowlists.
  *
  * Implemented as a transparent child route (adds no path segment) with a pipeline interceptor, the same
  * shape Ktor's own `authenticate { }` uses — so nested `/sessions`, `/events`, `/sessions/{id}/terminal`
  * keep their literal paths and their higher routing priority over any catch-all static route.
  */
-fun Route.authenticated(token: () -> String, build: Route.() -> Unit): Route {
+fun Route.authenticated(token: () -> String, publicUrl: String? = null, build: Route.() -> Unit): Route {
     val authed = createChild(AuthRouteSelector) as RoutingNode
     authed.intercept(ApplicationCallPipeline.Plugins) {
-        val presented = call.presentedToken()
-        if (presented == null || !constantTimeEquals(presented, token())) {
-            call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
+        val decision = authorize(
+            facts = call.requestFacts(),
+            publicUrl = publicUrl,
+            verifyToken = { presented -> constantTimeEquals(presented, token()) },
+            verifyCookie = { cookie -> verifySessionCookie(token(), cookie) },
+        )
+        if (decision is AuthDecision.Deny) {
+            // The client is told WHICH gate refused (401 vs 403) and nothing else: naming the host, the
+            // origin or the credential that failed would hand a prober a free oracle. The reason is for the
+            // daemon's own logs and for tests.
+            call.respondText(refusalBody(decision.status), status = decision.status)
             finish()
         }
     }
     authed.build()
     return authed
 }
+
+/**
+ * Restrict every route built inside [build] to requests that arrived under a LOOPBACK `Host` — the routes
+ * that are never published through the tunnel: both hook ingresses, and (Task 8) ticket issuance and token
+ * rotation. Anything else is `403`, decided in the `Plugins` phase like [authenticated].
+ *
+ * This is the route-level form of [authorize]'s `loopbackOnly` row, and it is a `Host` check rather than a
+ * peer-address check on purpose: the daemon binds `127.0.0.1` and cloudflared connects to it FROM localhost,
+ * so the peer address cannot tell "the tunnel" from "a local client" — the `Host` the tunnel forwards can.
+ * A missing `Host` is refused too ([isLoopbackHost] of `""` is false): HTTP/1.1 requires the header, and a
+ * request that omits it has not said it was talking to this machine.
+ *
+ * It carries NO credential check of its own, so it composes: the hook ingresses check their own header token
+ * inside the handler, and a route needing the master token nests this inside [authenticated].
+ */
+fun Route.loopbackOnly(build: Route.() -> Unit): Route {
+    val local = createChild(LoopbackRouteSelector) as RoutingNode
+    local.intercept(ApplicationCallPipeline.Plugins) {
+        if (!isLoopbackHost(call.request.headers[HttpHeaders.Host].orEmpty())) {
+            call.respondText(refusalBody(HttpStatusCode.Forbidden), status = HttpStatusCode.Forbidden)
+            finish()
+        }
+    }
+    local.build()
+    return local
+}
+
+/** The one-word body sent with a refusal — deliberately says only which gate answered. */
+private fun refusalBody(status: HttpStatusCode): String =
+    if (status == HttpStatusCode.Forbidden) "forbidden" else "unauthorized"
 
 /**
  * Constant-time string equality for secret comparison — always inspects every byte (and folds in any
@@ -135,6 +210,14 @@ private object AuthRouteSelector : RouteSelector() {
         RouteSelectorEvaluation.Transparent
 
     override fun toString(): String = "(authenticated)"
+}
+
+/** The same path-neutral selector for [loopbackOnly] — a separate object only so routes print distinctly. */
+private object LoopbackRouteSelector : RouteSelector() {
+    override suspend fun evaluate(context: RoutingResolveContext, segmentIndex: Int): RouteSelectorEvaluation =
+        RouteSelectorEvaluation.Transparent
+
+    override fun toString(): String = "(loopback-only)"
 }
 
 // --- token file (~/.kotgent/token, 0600) ---------------------------------------------------------
