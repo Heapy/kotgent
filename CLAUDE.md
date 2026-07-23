@@ -41,8 +41,9 @@ Four modules (see `project.yaml`):
   interface (see KT-78062 below).
 - **`ptycheck/` — `macos/app`, `macosArm64`**: a **test fixture, not a product**. Its `main()` runs the
   real-PTY integration checks that a test binary cannot run at all (KT-78062 below): the `cat`
-  round-trip, `resize`, the child exit code, a failing spawn, a real `tmux attach` acquiring a
-  controlling tty, and `TerminalBridge`'s fan-out over that attach. It depends on `./sysnative` **and**
+  round-trip, `resize`, the child exit code, a failing spawn, the spawned child inheriting only its tty
+  (`POSIX_SPAWN_CLOEXEC_DEFAULT`), a real `tmux attach` acquiring a controlling tty, and
+  `TerminalBridge`'s fan-out over that attach. It depends on `./sysnative` **and**
   on the root app module (allowed, one-way — that is where `TerminalBridge`/`Tmux` live). The suite's
   `PtyTest` execs the binary and asserts it exits 0. Because there is now more than one runnable
   module, `./kotlin run` needs `-m kotgent` (it errors and lists the modules otherwise).
@@ -81,6 +82,20 @@ upstream PTY opens on the *first* subscriber and closes on the *last* (that last
 the agent lives on in `tmux`). Input from any subscriber goes to the one upstream; resize is "last active".
 Do not open a second `tmux attach` or route input via `tmux send-keys` — it breaks the single-upstream
 invariant.
+
+**Spawned children inherit stdio and NOTHING else.** Every process the daemon starts outlives it —
+`tmux` daemonizes, and the agent lives on inside `tmux` — so an inherited descriptor is an inherited
+descriptor *forever*. The listening socket is created inside Ktor CIO (macOS `socket(2)` has no
+`SOCK_CLOEXEC`), so it is inheritable by default, and a `tmux` server that inherited it keeps the port
+bound after the daemon dies: rebinds fail with `EADDRINUSE`, and clients hang on connections the kernel
+accepts but nobody serves. Both spawn paths are closed and must stay closed:
+`ProcessRunner.run` (`popen`) sweeps the descriptor table with `markOpenFdsCloexec` (`src/sys/Cloexec.kt`,
+stock `fcntl` so it links into test binaries) right before the fork; `Pty.open` (`posix_spawn`) passes
+macOS's `POSIX_SPAWN_CLOEXEC_DEFAULT`, which closes everything not named in its file actions, atomically.
+**Any new spawn path must do the same.** Covered by `CloexecTest` (popen) and a `ptycheck` check
+(posix_spawn). Corollary for clients: never issue an untimed request at the daemon — a socket held by an
+orphan accepts and then stays silent, so `ApiClient` sets `HttpTimeout` and `AttachClient` bounds the WS
+*handshake* with `withTimeout` (a finite `requestTimeoutMillis` would kill a healthy long-lived attach).
 
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on
@@ -141,7 +156,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **201 run / 201 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **204 run / 204 passed /
   0 skipped**.
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
@@ -161,6 +176,7 @@ module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck 
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
+src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, ClaudeVendorStoreProbe

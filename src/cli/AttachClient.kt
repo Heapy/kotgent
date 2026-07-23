@@ -5,8 +5,9 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
-import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.websocket.Frame
+import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -19,10 +20,12 @@ import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.withTimeout
 import platform.posix.SIGWINCH
 import platform.posix.STDIN_FILENO
 import platform.posix.STDOUT_FILENO
@@ -148,26 +151,41 @@ class AttachClient(
         val stdinCtx = newSingleThreadContext("kotgent-attach-stdin")
         tty.enterRaw()
         try {
-            client.webSocket(wsUrl) {
-                sendResize(tty.windowSize()) // initial size
-                installSigwinch()
-                val resizeLoop = launch {
-                    while (isActive) {
-                        delay(SIGWINCH_POLL_MS)
-                        if (winchPending) {
-                            winchPending = false
-                            sendResize(tty.windowSize())
+            // Handshake under a timeout, the streaming session without one. A dead daemon whose
+            // listening socket is still held open by some other process (an orphaned tmux server —
+            // see io.kotgent.sys.markOpenFdsCloexec) accepts the TCP connection at the kernel level and
+            // then answers nothing, so a plain connect hangs forever instead of failing. The timeout
+            // cannot be an HttpTimeout plugin: its requestTimeoutMillis spans the whole WebSocket
+            // request, so a finite value would tear down a healthy long-lived attach.
+            val session = try {
+                withTimeout(HANDSHAKE_TIMEOUT_MS) { client.webSocketSession(wsUrl) }
+            } catch (e: TimeoutCancellationException) {
+                throw AttachTimeoutException(baseUrl, HANDSHAKE_TIMEOUT_MS, e)
+            }
+            try {
+                with(session) {
+                    sendResize(tty.windowSize()) // initial size
+                    installSigwinch()
+                    val resizeLoop = launch {
+                        while (isActive) {
+                            delay(SIGWINCH_POLL_MS)
+                            if (winchPending) {
+                                winchPending = false
+                                sendResize(tty.windowSize())
+                            }
                         }
                     }
+                    // stdin → WS on a dedicated thread doing the blocking read().
+                    val stdinPump = launch(stdinCtx) { pumpStdinToWs() }
+                    // WS → stdout (this coroutine), until the server closes the stream.
+                    for (frame in incoming) {
+                        if (frame is Frame.Binary) writeStdout(frame.readBytes())
+                    }
+                    resizeLoop.cancel()
+                    stdinPump.cancel()
                 }
-                // stdin → WS on a dedicated thread doing the blocking read().
-                val stdinPump = launch(stdinCtx) { pumpStdinToWs() }
-                // WS → stdout (this coroutine), until the server closes the stream.
-                for (frame in incoming) {
-                    if (frame is Frame.Binary) writeStdout(frame.readBytes())
-                }
-                resizeLoop.cancel()
-                stdinPump.cancel()
+            } finally {
+                runCatching { session.close() }
             }
         } finally {
             tty.restore()
@@ -196,8 +214,18 @@ class AttachClient(
     companion object {
         /** How often the resize loop checks the SIGWINCH flag. */
         private const val SIGWINCH_POLL_MS: Long = 150
+
+        /** Budget for the WebSocket handshake (connect + `101`), after which attach fails loudly. */
+        const val HANDSHAKE_TIMEOUT_MS: Long = 5_000
     }
 }
+
+/** Thrown when the daemon accepts the connection but never completes the terminal WS handshake. */
+class AttachTimeoutException(baseUrl: String, timeoutMs: Long, cause: Throwable?) : RuntimeException(
+    "no answer from the kotgent daemon at $baseUrl within ${timeoutMs}ms — " +
+        "the port may be held by a stale process (check: lsof -nP -iTCP -sTCP:LISTEN)",
+    cause,
+)
 
 /**
  * SIGWINCH plumbing. The handler must be a non-capturing static C function, so it only flips a global

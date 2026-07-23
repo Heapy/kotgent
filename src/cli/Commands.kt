@@ -15,8 +15,10 @@ import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.LaunchdInstaller
 import io.kotgent.store.SqliteEventStore
+import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
+import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.readOrCreateToken
 import io.kotgent.transport.readTokenOrNull
@@ -182,9 +184,38 @@ object Commands {
         manager.rebuildRegistryFromStore()
         Reconciler(tmux, store, vendorProbe, registry).reconcile()
 
-        KotgentServer.production(manager, store, token, tmux, port = port).start()
+        try {
+            KotgentServer.production(manager, store, token, tmux, port = port).start()
+        } catch (e: ServerBindException) {
+            eprintln("kotgent daemon: ${e.message}")
+            reportPortHolder(port)
+            return@runBlocking 1
+        }
         println("kotgent daemon listening on http://127.0.0.1:$port  (tmux -L $TMUX_SOCKET)")
         awaitCancellation()
+    }
+
+    /**
+     * Print who is holding [port] after a failed bind. Usually the answer is an **orphaned `tmux`
+     * server**: a `tmux` spawned by an earlier daemon inherited its listening socket and, having
+     * daemonized, keeps the port bound after that daemon is gone (see [io.kotgent.sys.markOpenFdsCloexec] —
+     * newly spawned tmux servers no longer inherit it, but one started before that fix, or by an older
+     * binary, still holds it until killed). Naming the PID turns an opaque `EADDRINUSE` into an
+     * actionable message. Best-effort: `lsof` may be absent or blocked, in which case only the hint is
+     * printed.
+     */
+    private fun reportPortHolder(port: Int) {
+        val holders = runCatching {
+            ProcessRunner.run(listOf("lsof", "-nP", "-iTCP:$port", "-sTCP:LISTEN"))
+        }.getOrNull()?.takeIf { it.isSuccess }?.stdout?.trim().orEmpty()
+        if (holders.isEmpty()) {
+            eprintln("  nothing reported by: lsof -nP -iTCP:$port -sTCP:LISTEN")
+            return
+        }
+        eprintln("  port $port is held by:")
+        holders.lineSequence().forEach { eprintln("    $it") }
+        eprintln("  if that is a tmux server, it inherited the socket from a previous daemon;")
+        eprintln("  killing it also kills the agents running in it — detach or finish them first.")
     }
 
     /** The daemon's SQLite database file name (kept next to the token under `~/.kotgent`). */

@@ -7,6 +7,7 @@ import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.store.EventStore
+import io.kotgent.sys.markOpenFdsCloexec
 import io.kotgent.tmux.Tmux
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -24,8 +25,11 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import platform.posix.F_OK
 import platform.posix.SEEK_END
@@ -94,9 +98,35 @@ class KotgentServer(
         }
     }
 
-    /** Start the engine without blocking. */
+    /**
+     * Start the engine without serving on the caller's thread, returning once the listening socket is
+     * actually bound.
+     *
+     * Waiting for the bind is what makes a failure reportable: `start(wait = false)` binds on an engine
+     * coroutine, so an `EADDRINUSE` would otherwise surface asynchronously (or not at all) and the
+     * daemon would go on to print "listening on …" about a server that never came up. Resolving the
+     * connectors here rethrows that failure as [ServerBindException], which the CLI turns into a
+     * diagnosis (`Commands.daemon`).
+     *
+     * With the socket bound, [markOpenFdsCloexec] flags it close-on-exec **before** any `tmux` can be
+     * spawned, so it can never be inherited by a `tmux` server that outlives this daemon — the
+     * orphaned-listener bug documented on [markOpenFdsCloexec]. The per-spawn sweep in
+     * [io.kotgent.tmux.ProcessRunner] covers descriptors opened later.
+     */
     fun start(): KotgentServer {
         server.start(wait = false)
+        runBlocking {
+            try {
+                withTimeout(BIND_TIMEOUT_MS) { server.engine.resolvedConnectors() }
+            } catch (e: TimeoutCancellationException) {
+                throw ServerBindException("timed out after ${BIND_TIMEOUT_MS}ms waiting for the bind", e)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                throw ServerBindException(e.message ?: e::class.simpleName ?: "bind failed", e)
+            }
+        }
+        markOpenFdsCloexec()
         return this
     }
 
@@ -113,6 +143,9 @@ class KotgentServer(
     companion object {
         /** Default directory served at `/` (the Task-17 Web UI). Cwd-relative; see [resolveWebUiDir]. */
         const val DEFAULT_WEBUI_DIR: String = "resources/webui"
+
+        /** How long [start] waits for the engine to resolve its connectors before giving up. */
+        private const val BIND_TIMEOUT_MS: Long = 10_000
 
         /**
          * Production wiring: terminal bridges attach the real `tmux -L <socket> attach` upstream with a
@@ -163,6 +196,14 @@ class KotgentServer(
         }
     }
 }
+
+/**
+ * Thrown by [KotgentServer.start] when the listening socket never came up — most often `EADDRINUSE`
+ * because another process holds the port. Carries the engine's own failure as [cause] so the CLI can
+ * both report it and add a diagnosis of who holds the port.
+ */
+class ServerBindException(message: String, cause: Throwable?) :
+    RuntimeException("failed to bind the kotgent server: $message", cause)
 
 /**
  * Serve a static SPA from [dir] at `/` (Task 14 mounts it now; Task 17 fills [dir] with the UI). Reads

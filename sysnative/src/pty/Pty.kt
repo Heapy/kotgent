@@ -1,5 +1,6 @@
 package io.kotgent.pty
 
+import io.kotgent.cinterop.pty.POSIX_SPAWN_CLOEXEC_DEFAULT
 import io.kotgent.cinterop.pty.POSIX_SPAWN_SETSID
 import io.kotgent.cinterop.pty.kotgent_openpty
 import io.kotgent.cinterop.pty.kotgent_ptsname
@@ -298,7 +299,15 @@ class Pty private constructor(
                     throw PtyException("posix_spawnattr_init failed: ${errnoMessage(attrInit)} (code=$attrInit)$cleanup")
                 }
                 // POSIX_SPAWN_SETSID: child calls setsid(), detaching from our session.
-                val setFlags = posix_spawnattr_setflags(attr.ptr, POSIX_SPAWN_SETSID.toShort())
+                // POSIX_SPAWN_CLOEXEC_DEFAULT (Apple extension, <sys/spawn.h>): close EVERY inherited
+                // descriptor at exec except the ones named in the file actions above — i.e. the child
+                // gets exactly the pts wired to 0/1/2 and nothing else. Without it a `tmux attach`
+                // spawned here inherits the daemon's whole descriptor table, listening socket included;
+                // an agent living on inside tmux then keeps that socket open after the daemon dies,
+                // blocking rebinds and swallowing client connections (see io.kotgent.sys.markOpenFdsCloexec).
+                // Unlike the popen path's sweep this is race-free: the closing happens atomically at exec.
+                val spawnFlags = POSIX_SPAWN_SETSID or POSIX_SPAWN_CLOEXEC_DEFAULT
+                val setFlags = posix_spawnattr_setflags(attr.ptr, spawnFlags.toShort())
                 if (setFlags != 0) {
                     val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr)) +
                         cleanupNote(ATTR_DESTROY, posix_spawnattr_destroy(attr.ptr))

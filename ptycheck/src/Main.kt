@@ -8,7 +8,9 @@ import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.tmux.Tmux
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.readBytes
 import kotlinx.coroutines.CoroutineScope
@@ -17,8 +19,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.system.exitProcess
+import platform.posix.F_DUPFD
+import platform.posix.close
+import platform.posix.fcntl
 import platform.posix.fread
 import platform.posix.pclose
+import platform.posix.pipe
 import platform.posix.popen
 
 /**
@@ -40,6 +46,7 @@ fun main() {
     resizeSucceeds()
     exitCodeIsCaptured()
     spawnNonexistentCommandFails()
+    spawnedChildInheritsOnlyTheTty()
     tmuxAttachAcquiresControllingTty()
     terminalBridgeFansOutRealTmuxAttach()
 
@@ -97,6 +104,42 @@ private fun spawnNonexistentCommandFails() = check("spawning a nonexistent comma
         e
     }
     expect(thrown != null) { "expected PtyException for a nonexistent binary, got a live Pty" }
+}
+
+/**
+ * `POSIX_SPAWN_CLOEXEC_DEFAULT`: the child must get the pts on 0/1/2 and NOTHING else. This is what
+ * stops a `tmux attach` (and the agent living on inside tmux) from inheriting the daemon's listening
+ * socket and holding the port after the daemon dies — see `io.kotgent.sys.markOpenFdsCloexec`. Only a
+ * real `posix_spawn` can show it, hence a check here rather than in the suite; the `popen` side of the
+ * same guarantee is covered by `CloexecTest`.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits only the tty") {
+    memScoped {
+        val fds = allocArray<IntVar>(2)
+        expect(pipe(fds) == 0) { "pipe() failed" }
+        // F_DUPFD picks the lowest free slot at or above 30 (never closing anything, unlike dup2) and
+        // clears FD_CLOEXEC — so this descriptor is inheritable unless the spawn flag closes it.
+        val high = fcntl(fds[0], F_DUPFD, 30)
+        expect(high >= 30) { "F_DUPFD failed (got $high)" }
+        val pty = try {
+            Pty.open(listOf("/bin/sh", "-c", "ls /dev/fd"))
+        } catch (e: PtyException) {
+            close(high); close(fds[0]); close(fds[1])
+            throw e
+        }
+        try {
+            val out = readUntil(pty, "0")
+            val reported = out.split(Regex("\\s+")).filter { it.isNotBlank() }.toSet()
+            expect("1" in reported) { "child should report its stdout; got <$out>" }
+            expect("$high" !in reported) { "fd $high leaked into the pty child; got <$out>" }
+        } finally {
+            pty.close()
+            close(high)
+            close(fds[0])
+            close(fds[1])
+        }
+    }
 }
 
 /**

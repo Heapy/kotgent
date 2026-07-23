@@ -7,6 +7,7 @@ import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readTokenOrNull
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -44,7 +45,7 @@ class ApiException(val status: Int, val body: String) :
 class ApiClient(
     private val baseUrl: String = defaultBaseUrl(),
     private val token: String? = readTokenOrNull(),
-    private val client: HttpClient = HttpClient(CIO),
+    private val client: HttpClient = defaultHttpClient(),
     private val json: Json = TRANSPORT_JSON,
     private val tokenPath: String = defaultTokenPath(),
 ) : AutoCloseable {
@@ -103,3 +104,24 @@ class ApiClient(
         if (resp.status.value !in 200..299) throw ApiException(resp.status.value, resp.bodyAsText())
     }
 }
+
+/**
+ * The CLI's HTTP client: plain CIO plus finite timeouts. Every control call is a short request/response,
+ * so an answer that never arrives is always a failure, never patience — and it *can* never arrive: if
+ * the daemon died while an orphaned process still holds its listening socket (see
+ * [io.kotgent.sys.markOpenFdsCloexec]), the kernel completes the TCP handshake against a socket nobody
+ * accepts, and an untimed client waits forever. Timeouts turn that into a reportable error.
+ */
+fun defaultHttpClient(): HttpClient = HttpClient(CIO) {
+    install(HttpTimeout) {
+        connectTimeoutMillis = CONNECT_TIMEOUT_MS
+        requestTimeoutMillis = REQUEST_TIMEOUT_MS
+        socketTimeoutMillis = REQUEST_TIMEOUT_MS
+    }
+}
+
+/** TCP connect budget — loopback, so anything slower than this is not a live daemon. */
+private const val CONNECT_TIMEOUT_MS: Long = 3_000
+
+/** End-to-end budget for one control call (`start` shells out to tmux + claude, so not too tight). */
+private const val REQUEST_TIMEOUT_MS: Long = 20_000

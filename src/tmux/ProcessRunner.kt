@@ -1,5 +1,6 @@
 package io.kotgent.tmux
 
+import io.kotgent.sys.markOpenFdsCloexec
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -86,11 +87,18 @@ object ProcessRunner {
      * child inherits the current environment. Never throws on a non-zero child exit — that is reported
      * in [ProcessResult.exitCode]. Throws [ProcessException] only on a runner-level failure
      * (e.g. `popen` itself failing).
+     *
+     * The child inherits stdin/stdout/stderr and nothing else: every other descriptor is flagged
+     * close-on-exec first ([markOpenFdsCloexec]). Without that, a `tmux new-session` here forks off a
+     * `tmux` **server** that daemonizes holding the daemon's listening socket, which then blocks every
+     * later rebind and silently swallows client connections — see [markOpenFdsCloexec] for the full
+     * mechanism. `popen`'s own pipe is created after the sweep and unaffected.
      */
     @OptIn(ExperimentalForeignApi::class)
     fun run(argv: List<String>): ProcessResult {
         require(argv.isNotEmpty()) { "argv must not be empty" }
 
+        markOpenFdsCloexec()
         val errPath = makeTempPath()
         val commandLine = argv.joinToString(" ") { shQuote(it) } + " 2> " + shQuote(errPath)
 
