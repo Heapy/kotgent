@@ -21,6 +21,7 @@ import io.kotgent.daemon.claudeVendorStoreProbe
 import io.kotgent.daemon.codexVendorStoreProbe
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
+import io.kotgent.launchd.DAEMON_LABEL
 import io.kotgent.launchd.LaunchdInstaller
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.tmux.ProcessRunner
@@ -94,6 +95,86 @@ object Commands {
         } catch (e: Throwable) {
             eprintln("attach failed: ${e.message}")
             1
+        }
+    }
+
+    // --- web / token / config (Task 10) ----------------------------------------------------------
+
+    /**
+     * `web [--print]` — mint a one-shot login ticket from the daemon and open the local Web UI in the
+     * default browser (`open <localUrl>` via [ProcessRunner], whose cloexec sweep keeps `open` from
+     * inheriting any daemon descriptor). The ticket rides in the URL fragment, so it lands the browser on a
+     * page that trades it for a session cookie — no token ever appears in the address bar.
+     *
+     * `--print` prints the URL instead of opening it (a headless host, or pasting the link somewhere by
+     * hand). If `open` cannot launch a browser, the URL is printed as a fallback so the flow is never a
+     * dead end.
+     */
+    fun web(print: Boolean): Int = withApi { api ->
+        val ticket = api.issueTicket()
+        if (print) {
+            println(ticket.localUrl)
+            return@withApi 0
+        }
+        val result = ProcessRunner.run(listOf("open", ticket.localUrl))
+        if (result.isSuccess) {
+            println("opening the kotgent web UI in your browser…")
+        } else {
+            eprintln("could not launch a browser (open exited ${result.exitCode}); open this link yourself:")
+            println(ticket.localUrl)
+        }
+        0
+    }
+
+    /**
+     * `token rotate` — ask the daemon to re-mint the master token and print the new value. By the time this
+     * returns the daemon has already rewritten `~/.kotgent/token` and both hook-header files, so live
+     * sessions keep delivering events; what changes is that the OLD key no longer authenticates NEW requests
+     * or NEW WebSocket handshakes. Sockets already open (an events stream, a terminal, a live `kotgent
+     * attach`) survive until they reconnect — authorization is evaluated once, at handshake time. The
+     * warning states that plainly rather than implying an instant, total cut-off.
+     */
+    fun tokenRotate(): Int = withApi { api ->
+        val token = api.rotateToken()
+        println(token)
+        eprintln("rotated the kotgent master token.")
+        eprintln("  new requests and new connections with the old key are now rejected;")
+        eprintln("  sockets already open (events stream, terminals, a live `kotgent attach`) keep working")
+        eprintln("  until they reconnect. all browser session cookies are now invalid — sign in again with:")
+        eprintln("    kotgent web")
+        0
+    }
+
+    /** `config get` — print the persisted config (currently just the public URL, or a clear "not set"). */
+    fun configGet(): Int = try {
+        println("public-url = ${readConfig().publicUrl ?: "(not set)"}")
+        0
+    } catch (e: ConfigException) {
+        eprintln("config get: ${e.message}")
+        1
+    }
+
+    /**
+     * `config set <key> <value>` — persist a config value. Only `public-url` is understood today; the value
+     * is validated ([publicUrlProblem], via [writeConfig]) BEFORE anything is written, so a bad URL is
+     * rejected without disturbing the existing config. The value is read once at daemon startup, so a
+     * running daemon needs a restart to pick it up — the hint spells that out.
+     */
+    fun configSet(key: String, value: String): Int {
+        if (key != "public-url") {
+            eprintln("config set: unknown key '$key' (only 'public-url' is supported)")
+            return 2
+        }
+        return try {
+            val path = defaultConfigPath()
+            val updated = readConfig(path).copy(publicUrl = value)
+            writeConfig(path, updated) // validates + canonicalises + writes 0600 atomically
+            println("public-url = ${updated.normalized().publicUrl}")
+            eprintln("restart the daemon to apply: launchctl kickstart -k gui/\$(id -u)/$DAEMON_LABEL")
+            0
+        } catch (e: ConfigException) {
+            eprintln("config set: ${e.message}")
+            2
         }
     }
 

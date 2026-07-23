@@ -1,8 +1,12 @@
 package io.kotgent.cli
 
+import io.kotgent.transport.AUTH_ROTATE_PATH
+import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
 import io.kotgent.transport.TRANSPORT_JSON
+import io.kotgent.transport.TicketResponse
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -154,6 +158,33 @@ class CliTest {
         assertTrue(parseArgs(listOf("frobnicate")) is CliCommand.Invalid)
     }
 
+    @Test
+    fun parsesWebWithAndWithoutPrint() {
+        assertEquals(CliCommand.Web(print = false), parseArgs(listOf("web")))
+        assertEquals(CliCommand.Web(print = true), parseArgs(listOf("web", "--print")))
+        assertTrue(parseArgs(listOf("web", "bogus")) is CliCommand.Invalid, "an unexpected arg is a usage error")
+    }
+
+    @Test
+    fun parsesTokenRotateAndRejectsABareToken() {
+        assertEquals(CliCommand.TokenRotate, parseArgs(listOf("token", "rotate")))
+        // A bare `token` is deliberately NOT `cat ~/.kotgent/token` — it has no default action.
+        assertTrue(parseArgs(listOf("token")) is CliCommand.Invalid, "bare `token` needs a subcommand")
+        assertTrue(parseArgs(listOf("token", "wat")) is CliCommand.Invalid, "an unknown subcommand is invalid")
+    }
+
+    @Test
+    fun parsesConfigGetAndSet() {
+        assertEquals(CliCommand.ConfigGet, parseArgs(listOf("config", "get")))
+        assertEquals(
+            CliCommand.ConfigSet("public-url", "https://kotgent.heapyhop.com"),
+            parseArgs(listOf("config", "set", "public-url", "https://kotgent.heapyhop.com")),
+        )
+        assertTrue(parseArgs(listOf("config", "set", "public-url")) is CliCommand.Invalid, "set without a value")
+        assertTrue(parseArgs(listOf("config", "set")) is CliCommand.Invalid, "set without a key")
+        assertTrue(parseArgs(listOf("config")) is CliCommand.Invalid, "config without a subcommand")
+    }
+
     // ---- 2. ApiClient against an embedded stub daemon -------------------------------------------
 
     @Test
@@ -187,6 +218,29 @@ class CliTest {
         val req = stub.requests.receive()
         assertEquals("POST", req.method)
         assertEquals("/sessions/abc123/stop", req.path)
+        assertEquals("Bearer secret", req.auth)
+    }
+
+    @Test
+    fun issueTicketPostsToAuthTicketUnderBearerAndReturnsTheUrls() = withStub { stub, api ->
+        val ticket = api.issueTicket()
+        assertEquals("http://127.0.0.1:27508/auth#ticket=deadbeef", ticket.localUrl, "the local URL is surfaced")
+        assertNull(ticket.publicUrl, "no public URL when the daemon is loopback-only")
+
+        val req = stub.requests.receive()
+        assertEquals("POST", req.method)
+        assertEquals(AUTH_TICKET_PATH, req.path)
+        assertEquals("Bearer secret", req.auth, "ticket issuance is Bearer-authenticated")
+    }
+
+    @Test
+    fun rotateTokenPostsToAuthRotateAndReturnsTheNewToken() = withStub { stub, api ->
+        val token = api.rotateToken()
+        assertEquals("newmastertoken", token, "the freshly minted token is returned for the CLI to print")
+
+        val req = stub.requests.receive()
+        assertEquals("POST", req.method)
+        assertEquals(AUTH_ROTATE_PATH, req.path)
         assertEquals("Bearer secret", req.auth)
     }
 
@@ -267,6 +321,12 @@ class CliTest {
             sampleDto("bbb22222", "needs_approval", needsAttention = true),
         )
         private val cannedStart = sampleDto("newsess1", "running", needsAttention = false)
+        private val cannedTicket = TicketResponse(
+            ticket = "deadbeef",
+            localUrl = "http://127.0.0.1:27508/auth#ticket=deadbeef",
+            publicUrl = null,
+            expiresAt = 42,
+        )
 
         val server = embeddedServer(CIO, port = 0, host = "127.0.0.1") {
             routing {
@@ -291,6 +351,20 @@ class CliTest {
                     record("POST", body)
                     call.respondText(
                         TRANSPORT_JSON.encodeToString(SessionDto.serializer(), cannedStart),
+                        ContentType.Application.Json,
+                    )
+                }
+                post(AUTH_TICKET_PATH) {
+                    record("POST", "")
+                    call.respondText(
+                        TRANSPORT_JSON.encodeToString(TicketResponse.serializer(), cannedTicket),
+                        ContentType.Application.Json,
+                    )
+                }
+                post(AUTH_ROTATE_PATH) {
+                    record("POST", "")
+                    call.respondText(
+                        TRANSPORT_JSON.encodeToString(RotateResponse.serializer(), RotateResponse("newmastertoken")),
                         ContentType.Application.Json,
                     )
                 }

@@ -1,8 +1,12 @@
 package io.kotgent.cli
 
+import io.kotgent.transport.AUTH_ROTATE_PATH
+import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
 import io.kotgent.transport.TRANSPORT_JSON
+import io.kotgent.transport.TicketResponse
 import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readTokenOrNull
 import io.ktor.client.HttpClient
@@ -89,6 +93,28 @@ class ApiClient(
         val text = resp.bodyAsText()
         // The daemon returns the updated SessionDto for a live session, or a plain "ok" otherwise.
         return runCatching { json.decodeFromString(SessionDto.serializer(), text) }.getOrNull()
+    }
+
+    /**
+     * `POST /auth/ticket` — mint a one-shot login ticket plus the URLs (local + optional public) that carry
+     * it in their fragment. `Bearer` + loopback only on the daemon side, so this is the CLI's job, not a
+     * browser's. Backs `kotgent web` and the Task-11 QR dialog.
+     */
+    suspend fun issueTicket(): TicketResponse {
+        val resp = client.post("$baseUrl$AUTH_TICKET_PATH") { bearer() }
+        ensureSuccess(resp)
+        return json.decodeFromString(TicketResponse.serializer(), resp.bodyAsText())
+    }
+
+    /**
+     * `POST /auth/rotate` — re-mint the master token, returning the new value for `kotgent token rotate` to
+     * print. The daemon persists it (token file + hook headers) and publishes it before answering, so the
+     * old key stops authenticating new requests the moment this returns.
+     */
+    suspend fun rotateToken(): String {
+        val resp = client.post("$baseUrl$AUTH_ROTATE_PATH") { bearer() }
+        ensureSuccess(resp)
+        return json.decodeFromString(RotateResponse.serializer(), resp.bodyAsText()).token
     }
 
     override fun close(): Unit = client.close()

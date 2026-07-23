@@ -504,20 +504,35 @@ exchange. Страница `/auth` — англоязычная (весь ост
 - Modify: `src/cli/ApiClient.kt` (`issueTicket()`, `rotateToken()`)
 - Modify: `test/cli/CliTest.kt`
 
-- [ ] `kotgent web [--print]` — `POST /auth/ticket`, затем `open <localUrl>` через существующий
+- [x] `kotgent web [--print]` — `POST /auth/ticket`, затем `open <localUrl>` через существующий
       `ProcessRunner` (cloexec там уже есть); `--print` печатает URL вместо открытия
-- [ ] `kotgent token rotate` — `POST /auth/rotate`; печать нового значения и честного
+- [x] `kotgent token rotate` — `POST /auth/rotate`; печать нового значения и честного
       предупреждения: **новые** запросы и **новые** подключения отвергаются, уже открытые WS
       (`/events`, терминал, живой `kotgent attach`) продолжают работать до переподключения —
       авторизация вычисляется один раз, в фазе `Plugins` (`Auth.kt:96-102`)
-- [ ] голую команду `kotgent token` НЕ добавляем — это `cat ~/.kotgent/token`
-- [ ] `kotgent config set public-url <url>` / `kotgent config get` — запись/чтение конфига плюс
+- [x] голую команду `kotgent token` НЕ добавляем — это `cat ~/.kotgent/token`
+- [x] `kotgent config set public-url <url>` / `kotgent config get` — запись/чтение конфига плюс
       подсказка про `launchctl kickstart`
-- [ ] обновить `USAGE`
-- [ ] тесты парсинга: `web`, `web --print`, `token rotate`, `config set public-url <url>`,
+- [x] обновить `USAGE`
+- [x] тесты парсинга: `web`, `web --print`, `token rotate`, `config set public-url <url>`,
       `config get`; ошибочные формы (`config set` без значения, `token` без подкоманды) дают
       `Invalid` с внятным текстом
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 11
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 11
+
+➕ добавлено сверх плана: `ApiClient.issueTicket()` возвращает весь `TicketResponse` (не только
+`localUrl`) — Task 11 переиспользует `publicUrl`/`expiresAt` из того же вызова. Парсинг `token` и
+`config` вынесен в `parseToken`/`parseConfig`/`parseConfigSet` (по образцу `parseStart`); `web`
+принимает ТОЛЬКО `--print` — любой другой аргумент это `Invalid` (а не молчаливое игнорирование), а
+`config set` понимает лишь ключ `public-url` (незнакомый ключ → exit 2 с внятным текстом ДО чтения
+файла). `config set` читает текущий конфиг и делает `.copy(publicUrl = …)` вместо записи с нуля —
+неизвестные ключи будущих версий переживают правку; валидация URL живёт в `writeConfig` (отклонённое
+значение не трогает файл, exit 2). Подсказка печатает литеральный `launchctl kickstart -k
+gui/$(id -u)/io.kotgent.daemon` (метка из `DAEMON_LABEL`) — `$(id -u)` резолвит сам шелл юзера.
+`web` при неудаче `open` (exit≠0) печатает URL как фолбэк и всё равно возвращает 0 — поток входа не
+становится тупиком; новый токен `token rotate` идёт в stdout, предупреждение — в stderr (stdout
+остаётся чистым для секрета). ApiClient-тесты бьют по `/auth/ticket` и `/auth/rotate` через тот же
+embedded-stub, что и остальные (2 теста), плюс 3 теста парсинга. После Task 10 —
+**360 run / 360 passed / 0 skipped**.
 
 ### Task 11: PhoneDialog и QR
 

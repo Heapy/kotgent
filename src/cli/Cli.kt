@@ -67,6 +67,18 @@ sealed interface CliCommand {
     /** `uninstall` — remove the launchd LaunchAgent (Task 16). */
     data object Uninstall : CliCommand
 
+    /** `web [--print]` — open the Web UI in a browser; [print] prints the one-shot login URL instead. */
+    data class Web(val print: Boolean) : CliCommand
+
+    /** `token rotate` — re-mint the master token; the old key stops authenticating new requests. */
+    data object TokenRotate : CliCommand
+
+    /** `config get` — print the persisted config (currently just the public URL). */
+    data object ConfigGet : CliCommand
+
+    /** `config set <key> <value>` — persist a config value (currently only `public-url`). */
+    data class ConfigSet(val key: String, val value: String) : CliCommand
+
     /** A usage error (unknown command / missing argument) — printed to stderr with [message], exit 2. */
     data class Invalid(val message: String) : CliCommand
 }
@@ -86,6 +98,10 @@ val USAGE: String = """
       resume <id>                    resume a stopped/crashed session
       interrupt <id>                 send Ctrl-C to un-stick a session
       attach <id>                    attach a raw terminal to a session
+      web [--print]                  open the Web UI in a browser (or print the login URL)
+      token rotate                   re-mint the master token (old key stops authenticating)
+      config get                     print the persisted config (public URL)
+      config set public-url <url>    set the public URL published behind the tunnel
       install | uninstall           (un)install the launchd LaunchAgent
       --version                      print version
       --help                         print this help
@@ -107,8 +123,41 @@ fun parseArgs(args: List<String>): CliCommand {
         "attach" -> requireId("attach", rest) { CliCommand.Attach(it) }
         "install" -> CliCommand.Install
         "uninstall" -> CliCommand.Uninstall
+        "web" -> parseWeb(rest)
+        "token" -> parseToken(rest)
+        "config" -> parseConfig(rest)
         else -> CliCommand.Invalid("unknown command: ${args[0]}")
     }
+}
+
+/** `web [--print]` — the only flag is `--print`; anything else is a usage error. */
+private fun parseWeb(rest: List<String>): CliCommand {
+    val unknown = rest.firstOrNull { it != "--print" }
+    if (unknown != null) return CliCommand.Invalid("web: unexpected argument '$unknown' (usage: kotgent web [--print])")
+    return CliCommand.Web(print = rest.contains("--print"))
+}
+
+/** `token <sub>` — only `rotate` today; a bare `token` is NOT `cat ~/.kotgent/token`, so it is an error. */
+private fun parseToken(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
+    "rotate" -> CliCommand.TokenRotate
+    null -> CliCommand.Invalid("token requires a subcommand: kotgent token rotate")
+    else -> CliCommand.Invalid("token: unknown subcommand '$sub' (did you mean: kotgent token rotate?)")
+}
+
+/** `config get` / `config set <key> <value>`. */
+private fun parseConfig(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
+    "get" -> CliCommand.ConfigGet
+    "set" -> parseConfigSet(rest.drop(1))
+    null -> CliCommand.Invalid("config requires a subcommand: kotgent config get | config set <key> <value>")
+    else -> CliCommand.Invalid("config: unknown subcommand '$sub' (use: config get | config set <key> <value>)")
+}
+
+private fun parseConfigSet(rest: List<String>): CliCommand {
+    val key = rest.getOrNull(0)
+    if (key.isNullOrBlank()) return CliCommand.Invalid("config set requires a key: kotgent config set public-url <url>")
+    val value = rest.getOrNull(1)
+    if (value.isNullOrBlank()) return CliCommand.Invalid("config set $key requires a value: kotgent config set $key <value>")
+    return CliCommand.ConfigSet(key, value)
 }
 
 private fun requireId(command: String, rest: List<String>, make: (String) -> CliCommand): CliCommand {
@@ -161,6 +210,10 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Attach -> Commands.attach(command.id)
     is CliCommand.Install -> Commands.install()
     is CliCommand.Uninstall -> Commands.uninstall()
+    is CliCommand.Web -> Commands.web(command.print)
+    is CliCommand.TokenRotate -> Commands.tokenRotate()
+    is CliCommand.ConfigGet -> Commands.configGet()
+    is CliCommand.ConfigSet -> Commands.configSet(command.key, command.value)
 }
 
 /**
