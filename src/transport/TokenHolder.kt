@@ -47,12 +47,17 @@ class TokenHolder(
      * wiring in `Commands.daemon` owns those paths); defaults to a no-op for tests and for callers that
      * only need the read side.
      *
-     * This is THREE independent file writes, not one atomic act. A failure partway (disk full after the token
-     * file but before a hook header) throws, which aborts the rotation with the OLD token still live in
-     * memory — the safe end of the failure, since publish has not happened yet — but it CAN leave the three
-     * files inconsistent with each other on disk. That is recoverable rather than fatal because rotation is
-     * idempotent: re-running `kotgent token rotate` mints another fresh token and rewrites all three, and a
-     * daemon restart re-reads `~/.kotgent/token` regardless.
+     * This is THREE independent file writes, not one atomic act, and the ORDER is load-bearing: the caller
+     * writes the two hook-header files FIRST and `~/.kotgent/token` LAST. A failure partway (disk full after
+     * a hook header, before the token file) throws, which aborts the rotation with the OLD token still live
+     * in memory — the safe end of the failure, since [ref.store] has not run yet. Writing the token file last
+     * means such a failure ALSO leaves `~/.kotgent/token` holding the OLD value, so the CLI (which reads the
+     * secret straight from that file) stays consistent with the daemon's in-memory OLD token and can still
+     * reach it to re-run rotation. Were the token file written first, a mid-persist failure would strand the
+     * NEW token on disk while memory kept the OLD one, and the CLI would 401 until a restart — a control-plane
+     * lockout. A partially-updated hook header is recoverable rather than fatal because rotation is idempotent:
+     * re-running `kotgent token rotate` mints another fresh token and rewrites all three, and a daemon restart
+     * re-reads `~/.kotgent/token` regardless.
      */
     private val persist: (String) -> Unit = {},
 ) {

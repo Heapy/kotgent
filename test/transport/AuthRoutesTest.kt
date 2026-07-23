@@ -218,6 +218,32 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun rotationRejectsASessionCookieAndDoesNotRotate() = withAuthServer { env ->
+        // The escalation this guards against: a browser holding a valid session cookie (e.g. an XSS in the
+        // SPA) fires a SAME-ORIGIN POST at /auth/rotate. Everything the browser gate checks passes — Host is
+        // loopback, Origin is allowed, the cookie verifies — so [authenticated] alone would ADMIT it, and
+        // rotation echoes the NEW master token back in its body. That would turn a browser-scoped credential
+        // into the machine key. Rotation is Bearer-only, so it must be refused 403.
+        val cookie = parseServerSetCookieHeader(
+            env.exchange(env.port, env.issueTicket()).headers[HttpHeaders.SetCookie]!!,
+        ).value
+
+        val denied = env.client.req(
+            env.port, AUTH_ROTATE_PATH, HttpMethod.Post,
+            cookie = cookie, origin = "http://127.0.0.1:${env.port}",
+        )
+        assertEquals(HttpStatusCode.Forbidden, denied.status, "a session cookie cannot rotate the master token")
+
+        // And nothing rotated: the OLD master token still authenticates a real (Bearer) rotate. Had the cookie
+        // attempt gone through, the OLD token would no longer be current and this would 401.
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token).status,
+            "the refused cookie attempt left the token untouched — the old Bearer still rotates",
+        )
+    }
+
+    @Test
     fun rotationRequiresALoopbackBearer() = withAuthServer(publicUrl = publicUrl) { env ->
         assertEquals(
             HttpStatusCode.Unauthorized,

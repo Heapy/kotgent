@@ -245,12 +245,20 @@ object Commands {
         // ingresses, the Bearer check) resolves it per request, so `kotgent token rotate` takes effect on
         // the next request instead of the next restart. Rotation must also reach the two consumers that
         // read the secret from DISK — the CLI (`~/.kotgent/token`) and the hooks (their 0600 header
-        // files) — hence the persist callback rewrites all three (writeClaudeHookSettings /
-        // writeCodexHookScript rewrite their header file as their first step).
+        // files) — hence the persist callback rewrites all three.
+        //
+        // ORDER MATTERS: the hook-header files are written FIRST and `~/.kotgent/token` LAST. The token file
+        // is both the CLI's view of the secret and the value `TokenHolder.rotate` publishes into memory only
+        // AFTER this callback returns; if a hook-header write throws partway, `ref.store` is skipped and the
+        // daemon keeps authenticating the OLD token. Writing the token file last means such a failure leaves
+        // it holding the OLD value too, so the CLI stays consistent with the daemon and can re-run rotation
+        // (idempotent). Were the token file written first, a mid-persist failure would strand the NEW token
+        // on disk while memory kept the OLD one, and the CLI would 401 until a restart — a control-plane
+        // lockout. A partially-updated hook header is self-healing on the next successful rotate.
         val tokenHolder = TokenHolder(readOrCreateToken()) { rotated ->
-            writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
             writeClaudeHookSettings(port, rotated)
             writeCodexHookScript(port, rotated)
+            writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
         }
         val token = tokenHolder.current()
 

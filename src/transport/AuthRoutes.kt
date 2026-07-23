@@ -95,8 +95,12 @@ fun Route.authRoutes(
     json: Json = TRANSPORT_JSON,
     now: () -> Long = ::authEpochMillis,
 ) {
-    // Ticket issuance and rotation: the master token AND a loopback Host. Nesting the two gates is the
-    // whole statement — the tunnel publishes the browser surface, never the surface that mints credentials.
+    // Ticket issuance and rotation: an authenticated credential AND a loopback Host. Nesting the two gates
+    // is the whole statement — the tunnel publishes the browser surface, never the surface that mints
+    // credentials. The two routes differ in WHICH credential they accept: ticket issuance takes either the
+    // master Bearer OR the browser's session cookie (the PhoneDialog mints a sign-in link from a logged-in
+    // browser, and a ticket only yields another browser cookie — no escalation). Rotation is Bearer-ONLY —
+    // it returns the NEW master token in its body, so a cookie must never reach it (guard in the handler).
     authenticated(tokens::current, publicUrl) {
         loopbackOnly {
             post(AUTH_TICKET_PATH) {
@@ -118,6 +122,17 @@ fun Route.authRoutes(
             }
 
             post(AUTH_ROTATE_PATH) {
+                // Bearer-ONLY, unlike ticket issuance above. [authenticated] admits EITHER the master
+                // Bearer OR the browser's session cookie, but rotation echoes the NEW master token back in
+                // its body — so a cookie reaching here (an XSS in the SPA firing a same-origin POST, whose
+                // Host is loopback and whose Origin is allowed) would escalate a browser-scoped credential
+                // into the machine key, collapsing the two-key model. Demand the Bearer explicitly, reusing
+                // the exact constant-time compare [authorize] runs for a token; a cookie-only caller is 403.
+                val presented = call.presentedToken()
+                if (presented == null || !constantTimeEquals(presented, tokens.current())) {
+                    call.respondText(refusalBody(HttpStatusCode.Forbidden), status = HttpStatusCode.Forbidden)
+                    return@post
+                }
                 // Persist-then-publish lives in [TokenHolder.rotate]; a failing persist throws here and
                 // becomes a 500 with the OLD token still in force, which is the safe end of that failure.
                 val rotated = tokens.rotate()
