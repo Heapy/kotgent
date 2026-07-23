@@ -129,7 +129,7 @@ class SqliteEventStore private constructor(
             meta.updatedAt,
         )
         _sessionUpdates.tryEmit(
-            SessionUpdate(meta.id, meta.state, meta.lastSeq, unreadOf(meta.lastSeq.value, meta.readCursor.value)),
+            SessionUpdate(meta.id, meta.state, meta.lastSeq, unread(meta.lastSeq.value, meta.readCursor.value)),
         )
     }
 
@@ -146,7 +146,7 @@ class SqliteEventStore private constructor(
         sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, sessionId.value)
         val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
         _sessionUpdates.tryEmit(
-            SessionUpdate(sessionId, state, Seq(row.last_seq), unreadOf(row.last_seq, row.read_cursor)),
+            SessionUpdate(sessionId, state, Seq(row.last_seq), unread(row.last_seq, row.read_cursor)),
         )
     }
 
@@ -192,7 +192,7 @@ class SqliteEventStore private constructor(
             // from the row (0 if the row was never upserted); we already hold the lock, so query direct.
             val readCursor = sessions.get(sessionId.value).executeAsOneOrNull()?.read_cursor ?: 0L
             _sessionUpdates.tryEmit(
-                SessionUpdate(sessionId, next.state, next.lastSeq, unreadOf(next.lastSeq.value, readCursor)),
+                SessionUpdate(sessionId, next.state, next.lastSeq, unread(next.lastSeq.value, readCursor)),
             )
             Seq(seq)
         }
@@ -246,8 +246,6 @@ class SqliteEventStore private constructor(
         mutex.withLock { subscribers[sessionId]?.size ?: 0 }
 
     // --- internals (callers hold [mutex]) ---------------------------------------------------------
-
-    private fun unreadOf(lastSeq: Long, readCursor: Long): Long = unread(lastSeq, readCursor)
 
     private fun readLocked(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> =
         events.selectFromSeq(sessionId.value, fromSeq.value) { session_id, seq, ts, _, source, payload ->

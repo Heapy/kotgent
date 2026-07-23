@@ -3,6 +3,7 @@ package io.kotgent.cli
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
 import io.kotgent.transport.TRANSPORT_JSON
+import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readTokenOrNull
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -45,7 +46,7 @@ class ApiClient(
     private val token: String? = readTokenOrNull(),
     private val client: HttpClient = HttpClient(CIO),
     private val json: Json = TRANSPORT_JSON,
-    private val tokenPath: String = io.kotgent.transport.defaultTokenPath(),
+    private val tokenPath: String = defaultTokenPath(),
 ) : AutoCloseable {
 
     /** `GET /sessions` — all sessions from the daemon's cache. */

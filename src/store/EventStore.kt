@@ -2,6 +2,7 @@ package io.kotgent.store
 
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
+import io.kotgent.core.PaneId
 import io.kotgent.core.Projection
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -89,7 +90,7 @@ interface EventStore {
         sessionId: SessionId,
         state: SessionState,
         stateSource: EventSource,
-        paneId: io.kotgent.core.PaneId?,
+        paneId: PaneId?,
         updatedAt: Long,
     )
 

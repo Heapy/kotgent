@@ -29,6 +29,10 @@ import kotlinx.serialization.json.Json
  *
  * A bridge is kept in the map after its last subscriber leaves (it is reusable — it re-attaches on the
  * next subscribe); the map only grows with distinct session ids, which is fine for the local-only slice.
+ *
+ * [decision] Keyed by the logical short-id `String`, not `SessionId`: that `String` is the addressing
+ * unit the [bridgeFactory] and the tmux/pty layer below it work in, so the `SessionId`-typed
+ * [TerminalInputSink] seam unwraps to `.value` at this boundary rather than the registry re-wrapping it.
  */
 class TerminalRegistry(
     private val scope: CoroutineScope,

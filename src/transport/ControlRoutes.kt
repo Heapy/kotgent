@@ -138,10 +138,10 @@ fun Route.controlRoutes(
                     return@post
                 }
             }
-        } catch (e: ResumeBlockedException) {
+        } catch (_: ResumeBlockedException) {
             call.respondText("resume blocked: provider id pending", status = HttpStatusCode.Conflict)
             return@post
-        } catch (e: NoSuchSessionException) {
+        } catch (_: NoSuchSessionException) {
             call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
             return@post
         } catch (e: TmuxException) {
