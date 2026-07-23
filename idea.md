@@ -1,5 +1,17 @@
 # Kotgent: диспетчер агентских сессий
 
+> **Implementation status (2026-07).** Первый вертикальный срез реализован. `kotgent start` запускает
+> **Claude** в `tmux`, закрытие IDE (Detach) оставляет сессию живой, Web UI (`127.0.0.1` + токен)
+> продолжает ту же сессию и подсвечивает `needs attention` при approval. Готово: event-sourcing-ядро
+> (лог → чистый редьюсер → проекция, restart-safe replay), SQLDelight-хранилище, single-upstream
+> `tmux`-fan-out, reconciliation при рестарте daemon, provider-id capture, CLI
+> (`daemon`/`install`/`start`/`list`/`attach`/`stop`/`resume`/`interrupt`) и launchd-установка. Пока
+> **только Claude** и **только local-only**; Codex, PWA, cloudflared-туннель, Web Push и diff viewer — в
+> бэклоге. Как собрать/запустить и что именно вошло — см. [README.md](README.md); паттерны, инварианты и
+> гочи тулчейна для дальнейшей работы — [CLAUDE.md](CLAUDE.md). Ниже — исходная концепция (без изменений;
+> реализация местами отошла от неё, напр. PTY через POSIX-cinterop вместо `pty4j`, а удалённый доступ —
+> cloudflared в бэклоге вместо своего relay).
+
 Проект имеет смысл не как «ещё один терминал», а как local-first диспетчер агентских сессий: процессы живут независимо от интерфейса, а IDE, браузер и телефон становятся взаимозаменяемыми клиентами.
 
 Главное архитектурное решение: `tmux` — транспорт и механизм выживания процесса, но не источник истины.

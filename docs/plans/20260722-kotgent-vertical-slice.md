@@ -479,10 +479,10 @@ Kotgent — local-first диспетчер агентских сессий: пр
 
 ### Task 19: Документация
 
-- [ ] `README.md` (требования: Kotlin Toolchain/`./kotlin`, tmux, claude; сборка/`daemon`/`install`/`start`/`attach`)
-- [ ] `CLAUDE.md` (паттерны: Kotlin Toolchain layout, host-free ядро, event-sourcing+редьюсер, cinterop-модель PTY, single-upstream инвариант, идентичность по pane_id, storage-путь SQLDelight-плагин/JSONL)
-- [ ] обновить статус в `idea.md` (что реализовано)
-- [ ] переместить план в `docs/plans/completed/`
+- [x] `README.md` (требования: Kotlin Toolchain/`./kotlin`, tmux, claude; сборка/`daemon`/`install`/`start`/`attach`) — создан: что такое kotgent, требования, build/test, CLI, токен-auth + Web UI, вертикальный срез, честная секция Status & limitations (v1 = Claude + local-only; 5 `@Ignore` = KT-78062)
+- [x] `CLAUDE.md` (паттерны: Kotlin Toolchain layout, host-free ядро, event-sourcing+редьюсер, cinterop-модель PTY, single-upstream инвариант, идентичность по pane_id, storage-путь SQLDelight-плагин/JSONL) — создан: build (Kotlin Toolchain, НЕ Gradle), модульная структура (app/sysnative/plugin), паттерны+инварианты, load-bearing toolchain-гочи (KT-78062, popen, WAL-PRAGMA, public-symbols, Clock)
+- [x] обновить статус в `idea.md` (что реализовано) — добавлена короткая шапка "Implementation status (2026-07)" со ссылками на README.md/CLAUDE.md; исходная концепция не переписана
+- [x] переместить план в `docs/plans/completed/` — **(moved by orchestrator at end of run)** — файл НЕ перемещён здесь намеренно (review/finalize/stats-фазы читают его на месте)
 
 ## Post-Completion
 
