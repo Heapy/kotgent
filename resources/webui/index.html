@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kotgent</title>
+  <!-- Vendored, offline (Task 17): pinned @xterm/xterm@5.5.0 + @xterm/addon-fit@0.10.0. -->
+  <link rel="stylesheet" href="vendor/xterm.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- data-webui-marker is asserted by test/transport/WebUiServingTest.kt (serving path). -->
+  <div id="app" data-webui-marker="kotgent-webui">
+    <aside id="sidebar">
+      <header id="sidebar-head">
+        <h1>Kotgent</h1>
+        <div id="attention-count" class="attn-count" title="Sessions needing attention">
+          <span id="attention-num">0</span> need attention
+        </div>
+      </header>
+
+      <section id="attention-section" hidden>
+        <h2 class="section-title attn">Needs attention</h2>
+        <ul id="attention-list" class="session-list"></ul>
+      </section>
+
+      <section id="all-section">
+        <h2 class="section-title">Sessions</h2>
+        <ul id="session-list" class="session-list"></ul>
+      </section>
+
+      <p id="status-line" class="status-line"></p>
+    </aside>
+
+    <main id="terminal-pane">
+      <div id="terminal-head">
+        <span id="terminal-title">No session selected</span>
+        <span id="terminal-state" class="badge"></span>
+      </div>
+      <div id="terminal-host"></div>
+      <p id="terminal-hint" class="terminal-hint">Select a session on the left to attach its terminal.</p>
+    </main>
+  </div>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

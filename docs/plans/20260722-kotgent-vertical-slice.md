@@ -441,15 +441,26 @@ Kotgent — local-first диспетчер агентских сессий: пр
 ### Task 17: Минимальный Web UI (статика + xterm.js)
 
 **Files:**
-- Create: `resources/webui/index.html`, `resources/webui/app.js`, `resources/webui/style.css`, `resources/webui/vendor/xterm.js` (vendored)
-- Create: `test/webui/AppLogicTest.kt` (или node-based unit для парсинга токена/API)
+- Create: `resources/webui/index.html`, `resources/webui/app.js`, `resources/webui/style.css`
+- Create (vendored, offline): `resources/webui/vendor/xterm.js`, `resources/webui/vendor/xterm.css`, `resources/webui/vendor/addon-fit.js`
+- Create: `test/transport/WebUiServingTest.kt` (Kotlin serving test — the browser JS can't run in the macosArm64 test binary, so we automate the SERVING path; browser behavior = Task 18 manual)
 
-- [ ] write юнит-тест тестируемой логики: парсинг токена из `#token=`, формирование запросов API-клиента
-- [ ] `index.html`+`app.js`: список сессий (`GET /sessions`), живость через events-WS (бейджи, очередь «needs attention»)
-- [ ] xterm.js на terminal-WS: рендер байтов, отправка ввода, `resize`-фреймы
-- [ ] daemon отдаёт статику из `resources/webui` на `/`; токен из фрагмента → API/WS
-- [ ] write тест: рендер строки сессии по состоянию (needs_approval → индикатор)
-- [ ] run `./kotlin test`; браузерный проход — Task 18 (manual)
+- [x] write юнит-тест тестируемой логики: парсинг токена из `#token=`, формирование запросов API-клиента — **[deviation]** pure helpers (`parseToken`/`wsUrl`/`stateBadge`/`isNeedsAttention`/`resizeFrame`) kept as small named functions in `app.js`; verified in Task-18 manual walkthrough (no node/JS test harness — the caller's directive)
+- [x] `index.html`+`app.js`: список сессий (`GET /sessions`), живость через events-WS (бейджи, очередь «needs attention»)
+- [x] xterm.js на terminal-WS: рендер байтов, отправка ввода, `resize`-фреймы
+- [x] daemon отдаёт статику из `resources/webui` на `/`; токен из фрагмента → API/WS
+- [x] write тест: рендер строки сессии по состоянию (needs_approval → индикатор) — **[deviation]** covered by the Kotlin `WebUiServingTest` (serving path) + the `stateBadge`/`isNeedsAttention` pure helpers; live row render verified in Task-18 manual
+- [x] run `./kotlin test`; браузерный проход — Task 18 (manual)
+
+**✅ Реализовано — минимальный vanilla SPA + xterm.js, отдаётся daemon'ом (6 WebUiServingTest зелёные; suite 158 ran / 153 passed / 5 skipped [4 PtyTest + 1 real-tmux TerminalBridgeTest — БЕЗ изменений, новых `@Ignore` НЕТ]; `./kotlin build`+`test` exit 0; `git grep '/Users/' -- '*.yaml'` пусто):**
+- `resources/webui/vendor/` — **вендорено `curl`'ом** (offline, self-contained): `@xterm/xterm@5.5.0/lib/xterm.js` (289KB UMD → `window.Terminal`) + `css/xterm.css` (5.5KB) + `@xterm/addon-fit@0.10.0/lib/addon-fit.js` (1.5KB UMD → `window.FitAddon.FitAddon`). Реальные JS/CSS проверены (не error-page): grep `Terminal`/`FitAddon` + размеры. **[decision] вендорим ещё и addon-fit** (план перечислял только xterm.js/css): fit-аддон делает терминал заполняющим панель и даёт чистые `term.onResize` события → ровно то, что нужно для «resize control frame on term.onResize/fit»; крошечный (1.5KB) и self-contained.
+- `resources/webui/index.html` — грузит vendored xterm.css/js + addon-fit.js + `app.js`/`style.css`; layout = левый список сессий + правая терминал-панель. Несёт `data-webui-marker="kotgent-webui"` — маркер, который проверяет serving-тест.
+- `resources/webui/app.js` — **чистые именованные хелперы без I/O** (structured for the Task-18 manual + future test): `parseToken(hash)` (из фрагмента `#token=`, не query → не течёт в логи сервера), `wsUrl(path,token)` (same-origin ws/wss + `?token=`, т.к. браузер не ставит WS-заголовки), `stateBadge(state)` (7 состояний → label+CSS-класс), `isNeedsAttention(state)` (needs_approval/needs_answer), `resizeFrame(cols,rows)` (`{"type":"resize",...}` — точная форма `TerminalWs`). Обвязка: (1) токен из `#token=` в памяти; (2) `GET /sessions` с `Authorization: Bearer` → рендер строк со state-badge + attn-индикатором (attn-dot) + «Needs attention» секцией и счётчиком-хайлайтом; (3) `GET /events?token=` WS → на `session_update` патчит строку live (unknown id → перезагрузка списка); (4) клик по сессии → xterm.js `Terminal` + `GET /sessions/{id}/terminal?token=` binary WS: входящие binary → `term.write(Uint8Array)`, `term.onData` → UTF-8 binary-фрейм (ввод), `term.onResize`/fit/`window.resize` → text resize-control-фрейм. Reconnect events-WS на close (daemon пере-шлёт snapshot → чистый resync).
+- `resources/webui/style.css` — минимальный читаемый стиль, sidebar + терминал-панель, light/dark через `prefers-color-scheme`, цветные state-бейджи.
+- `test/transport/WebUiServingTest.kt` — 6 тестов через РЕАЛЬНЫЙ `KotgentServer` (host-free фейки: `NoopEventStore` + `SessionManager` над `FakeTmux`): `GET /` → 200 + маркер `kotgent-webui` + грузит `app.js`/`vendor/xterm.js`; `GET /app.js` → 200 + `javascript` content-type + содержит `parseToken`/`session_update`; `GET /vendor/xterm.js` (nested) → 200 + `javascript` + >50KB + `Terminal`; `GET /style.css`+`/vendor/xterm.css` → 200 + `css`; missing → 404; **static catch-all НЕ затеняет token-gated API** (`GET /sessions` с токеном → 200 `[]`, не 404 от file-route). `webUiDir` локейтится робастно (`getcwd` + upward-search за `resources/webui/index.html`, фолбэк на relative default).
+- **[decision] Kotlin serving-тест вместо node/JS-харнесса (директива задачи):** браузерный JS не исполняется в macosArm64 test-бинаре, поэтому автоматизируем ЕДИНСТВЕННУЮ автоматизируемую часть — что daemon правильно ОТДАЁТ Web UI (serving path через реальный assembled сервер: static смонтирована, unauthenticated, не затеняет API). Поведение браузера (token-parse, live-updates, терминал) — Task 18 manual. Node/JS-харнесс НЕ строился.
+- **[decision] serving-тест через полный `KotgentServer` (не голый `staticWebUi`-роут):** faithfully проверяет, что static-роут реально смонтирован в собранном сервере, ВНЕ `authenticated` (браузер грузит бут до токена), и literal API-роуты приоритетнее catch-all статики — регрессию wiring голый route-тест бы не поймал. Существующие TransportTest гоняют `webUiDir=null` (catch-all не смонтирован), так что этот приоритет раньше НЕ покрывался.
+- **[decision] Server.kt НЕ менялся:** `staticWebUi` (Task 14) уже отдаёт вложенные `/vendor/*` через `get("/{path...}")` и мапит `.js`/`.css`/`.html` content-types в `contentTypeFor` — nested-paths и content-types заработали без правок. Path-traversal (`..`) уже режется 403.
 
 ### Task 18: Проверка acceptance-критериев (сквозной срез)
 
@@ -457,7 +468,7 @@ Kotgent — local-first диспетчер агентских сессий: пр
 - [ ] verify reconciliation: рестарт daemon (`launchctl kickstart`) — живые сессии переклассифицируются, terminal-WS в браузере заново поднимает lazy-мост; убитая → `crashed`; после kill tmux-сервера → `resumable`, `resume` восстанавливает разговор
 - [ ] verify provider-id capture: у каждой запущенной сессии сохранён `provider_session_id`; «id pending» блокирует resume честно
 - [ ] run full suite: `./kotlin test`
-- [ ] manual: браузерный проход среза (start → Detach → браузер → needs attention) + GIF для README
+- [ ] manual: **Web UI** сквозной проход (Task 17 SPA) — открыть `http://127.0.0.1:<port>/#token=<token>`: список сессий с state-бейджами грузится (`GET /sessions`); клик по сессии открывает xterm.js-терминал (`GET /sessions/{id}/terminal` — байты рендерятся, ввод доходит, resize работает); при approval сессия live-подсвечивается в «Needs attention» через events-WS; полный срез start → Detach → браузер → needs attention + GIF для README
 
 ### Task 19: Документация
 
@@ -471,7 +482,7 @@ Kotgent — local-first диспетчер агентских сессий: пр
 *Ручное вмешательство/внешние системы — без чекбоксов.*
 
 **Manual verification:**
-- сквозной браузерный проход среза (Task 18 GIF).
+- сквозной браузерный проход среза (Task 18 GIF) — **Web UI walkthrough (Task 17 SPA):** `#token=` фрагмент → список сессий/бейджи/«needs attention» (events-WS live) + xterm.js-терминал (`GET /sessions/{id}/terminal` binary WS: рендер байтов / ввод / resize). Браузерное поведение автотестами НЕ покрыто (JS не исполняется в macosArm64 test-бинаре) — проверяется здесь; автоматизирован лишь serving-path (`WebUiServingTest`).
 - `kotgent attach` в raw-tty — интерактивно (ввод/ресайз/восстановление терминала).
 - launchd на реальном логине/ребуте (RunAtLoad + KeepAlive + reconciliation).
 - версии `claude` (`--session-id`) и `tmux`.

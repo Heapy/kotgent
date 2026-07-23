@@ -1,0 +1,222 @@
+/* Kotgent Web UI — minimal styling (plan Task 17). Light/dark is a nice-to-have. */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #dfe3e8;
+  --text: #1c2128;
+  --muted: #6a737d;
+  --accent: #2563eb;
+  --attn: #d13438;
+  --attn-bg: #fdecea;
+  --row-hover: #eef2f7;
+  --row-active: #e2ebfb;
+  --term-bg: #1e1e1e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1b1f27;
+    --border: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #8a93a2;
+    --accent: #4a86ff;
+    --attn: #ff6b6b;
+    --attn-bg: #3a1f22;
+    --row-hover: #232833;
+    --row-active: #2a3242;
+    --term-bg: #000000;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+}
+
+/* --- Sidebar --- */
+#sidebar {
+  width: 320px;
+  min-width: 240px;
+  max-width: 40%;
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+#sidebar-head { margin-bottom: 8px; }
+#sidebar-head h1 {
+  font-size: 18px;
+  margin: 0 0 6px 0;
+  letter-spacing: 0.3px;
+}
+
+.attn-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+.attn-count.active {
+  color: var(--attn);
+  font-weight: 600;
+}
+.attn-count.active #attention-num {
+  background: var(--attn);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0 7px;
+  margin-right: 2px;
+}
+
+.section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin: 14px 0 6px 0;
+}
+.section-title.attn { color: var(--attn); }
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.session-row:hover { background: var(--row-hover); }
+.session-row.active {
+  background: var(--row-active);
+  border-color: var(--accent);
+}
+
+.session-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.session-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-sub {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attn-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--attn);
+  box-shadow: 0 0 0 3px var(--attn-bg);
+}
+
+.unread-pill {
+  flex: 0 0 auto;
+  font-size: 10px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 9px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+/* --- State badges --- */
+.badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+.badge-running   { background: #dbeafe; color: #1e40af; }
+.badge-ready     { background: #dcfce7; color: #166534; }
+.badge-attention { background: #fde3e3; color: #a4161a; }
+.badge-dead      { background: #e5e7eb; color: #4b5563; }
+.badge-crashed   { background: #fee2e2; color: #991b1b; }
+.badge-resumable { background: #fef3c7; color: #92400e; }
+
+@media (prefers-color-scheme: dark) {
+  .badge-running   { background: #1e3a8a; color: #bfd4ff; }
+  .badge-ready     { background: #14532d; color: #b7f7c9; }
+  .badge-attention { background: #5a1a1d; color: #ffc9c9; }
+  .badge-dead      { background: #2d333d; color: #aeb6c2; }
+  .badge-crashed   { background: #5a1a1a; color: #ffb3b3; }
+  .badge-resumable { background: #4a3610; color: #ffe0a3; }
+}
+
+.status-line {
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.status-line.error { color: var(--attn); }
+
+/* --- Terminal pane --- */
+#terminal-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--term-bg);
+}
+#terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+#terminal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+#terminal-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+}
+#terminal-host .xterm { height: 100%; }
+.terminal-hint {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 12px 14px;
+  margin: 0;
+}
