@@ -128,6 +128,16 @@ fun readOrCreateToken(path: String = defaultTokenPath()): String {
     return token
 }
 
+/**
+ * Read the shared token from [path] WITHOUT creating one — `null` if the file is missing or blank.
+ * This is the CLI client's path (plan Task 15): the daemon owns token creation ([readOrCreateToken]),
+ * so a CLI that finds no token can surface a clear "is the daemon running?" error instead of silently
+ * minting a secret the daemon does not know about.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun readTokenOrNull(path: String = defaultTokenPath()): String? =
+    readFileTextOrNull(path)?.trim()?.ifEmpty { null }
+
 /** 32 bytes of entropy, hex-encoded. Prefers `/dev/urandom`; falls back to [Random] if unreadable. */
 @OptIn(ExperimentalForeignApi::class)
 private fun generateToken(): String {

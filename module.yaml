@@ -19,6 +19,11 @@ dependencies:
   # Versions come from the BOM/catalog that `settings.ktor: enabled` provides (default 3.4.1).
   - io.ktor:ktor-server-cio
   - io.ktor:ktor-server-websockets
+  # Ktor CIO client (+ client WebSockets) — the CLI's ApiClient (control REST) and AttachClient
+  # (terminal WS raw passthrough) are MAIN code now (Task 15), so these moved out of
+  # test-dependencies into the main dependencies (still visible to the test compilation).
+  - io.ktor:ktor-client-cio
+  - io.ktor:ktor-client-websockets
   # SQLDelight runtime native SQLite driver (Task 4 storage spike). The toolchain resolves the
   # macosArm64 variant (native-driver-macosarm64.klib) via Gradle Module Metadata, exactly like
   # Ktor's native artifacts. It is a THIRD-PARTY klib (its own sqliter-driver cinterop to sqlite3),
@@ -26,11 +31,6 @@ dependencies:
   # (proven by the Ktor precedent in Task 3). Version matches the compiler used by the codegen
   # plugin (2.3.2, built with Kotlin 2.3.10 — klib-compatible with our 2.4.10).
   - app.cash.sqldelight:native-driver:2.3.2
-
-test-dependencies:
-  # Ktor CIO client (+ client WebSockets) drives the SpikeServer round-trips in WsSpikeTest.
-  - io.ktor:ktor-client-cio
-  - io.ktor:ktor-client-websockets
 
 settings:
   kotlin:

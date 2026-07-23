@@ -44,3 +44,38 @@ static int kotgent_set_winsize(int fd, unsigned short rows, unsigned short cols)
     ws.ws_ypixel = 0;
     return ioctl(fd, TIOCSWINSZ, &ws);
 }
+
+// --- Local controlling-tty helpers for `kotgent attach` raw passthrough (Task 15) ---------------
+//
+// These wrap termios/ioctl so Kotlin never has to materialize a `struct termios` or `struct winsize`
+// (neither type is surfaced by cinterop's header scan; only the compiled body below sees them). The
+// saved termios lives in C as a single process-wide value — there is exactly one controlling tty per
+// `kotgent attach`, so a global is sufficient and keeps the Kotlin side free of the opaque struct.
+
+static struct termios kotgent_saved_termios;
+static int kotgent_saved_termios_valid = 0;
+
+// Save fd's current termios, then switch it to raw mode (cfmakeraw). Returns 0 on success, -1 on error.
+static int kotgent_tty_enter_raw(int fd) {
+    if (tcgetattr(fd, &kotgent_saved_termios) != 0) return -1;
+    kotgent_saved_termios_valid = 1;
+    struct termios raw = kotgent_saved_termios;
+    cfmakeraw(&raw);
+    return tcsetattr(fd, TCSANOW, &raw);
+}
+
+// Restore the termios saved by kotgent_tty_enter_raw. Returns 0 if nothing was saved (no-op) or on
+// success, -1 on error. Safe to call unconditionally on exit.
+static int kotgent_tty_restore(int fd) {
+    if (!kotgent_saved_termios_valid) return 0;
+    return tcsetattr(fd, TCSAFLUSH, &kotgent_saved_termios);
+}
+
+// Read fd's current window size (ioctl TIOCGWINSZ) into *rows/*cols. Returns 0 on success, -1 on error.
+static int kotgent_get_winsize(int fd, unsigned short *rows, unsigned short *cols) {
+    struct winsize ws;
+    if (ioctl(fd, TIOCGWINSZ, &ws) != 0) return -1;
+    *rows = ws.ws_row;
+    *cols = ws.ws_col;
+    return 0;
+}
