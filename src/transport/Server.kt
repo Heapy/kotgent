@@ -43,9 +43,12 @@ import platform.posix.access
  * ## Auth layering
  *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes]) are mounted at the root, restricted to
  *    a loopback `Host` ([loopbackOnly] — they are `curl`s from this machine, never tunnel traffic) and do
- *    their own header-token check (Task 12) against the **same** [token] — the plan's "one token on all".
- *    [token] is a provider ([TokenHolder.current]), never a captured string, so `kotgent token rotate`
- *    reaches every gate at once.
+ *    their own header-token check (Task 12) against the **same** master token — the plan's "one token on
+ *    all". They read it through [TokenHolder.current], never as a captured string, so `kotgent token
+ *    rotate` reaches every gate at once.
+ *  - The **login routes** ([authRoutes]) carry their own layering: ticket issuance and token rotation are
+ *    `Bearer` + loopback-only, the login page is open, and the exchange is gated by `Host`/`Origin` alone
+ *    because the ticket it spends IS its credential.
  *  - The **control REST + both WebSockets** are wrapped in [authenticated], i.e. the one [authorize] rule:
  *    a `Host` allowlist built from [publicUrl], the `Origin` requirement on non-GET and on WS handshakes,
  *    then a `Bearer` master token or the browser's session cookie. A refusal is written before any upgrade,
@@ -54,6 +57,9 @@ import platform.posix.access
  *    credential, then the SPA calls the API with the cookie the login flow set. Serving the bootstrap
  *    HTML/JS openly is what makes that first paint possible at all.
  *
+ * @param tokens the live master token. A [TokenHolder] rather than a plain `() -> String` because the
+ *   server does not only READ the secret any more: `POST /auth/rotate` re-mints it, and every gate below
+ *   has to observe the new value on the very next request.
  * @param terminalBridgeFactory builds the lazy [TerminalBridge] for a session id on a given scope; the
  *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
  *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
@@ -62,15 +68,17 @@ import platform.posix.access
  * @param publicUrl the origin the daemon is published at through the cloudflared tunnel
  *   (`~/.kotgent/config.json`), or `null` for loopback-only. Passed IN by the daemon rather than read here:
  *   the dependency runs cli → transport, and the transport does not read configuration files.
+ * @param tickets the outstanding one-shot login tickets; in-memory and per-daemon-run by design.
  * @param port `0` binds an ephemeral port (tests); [port] reports the resolved one.
  */
 class KotgentServer(
     private val sessionManager: SessionManager,
     private val store: EventStore,
-    private val token: () -> String,
+    private val tokens: TokenHolder,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
     private val publicUrl: String? = null,
+    private val tickets: TicketStore = TicketStore(),
     host: String = "127.0.0.1",
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
@@ -85,10 +93,12 @@ class KotgentServer(
         install(WebSockets)
         routing {
             // Hook ingress, one route per provider: same token, their own header check (Task 12).
-            claudeHookRoutes(token, sessionManager.paneLookup, store, HOOK_JSON)
-            codexHookRoutes(token, sessionManager.paneLookup, store, HOOK_JSON)
+            claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+            codexHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+            // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
+            authRoutes(tokens, tickets, publicUrl, json)
             // Token-gated control plane.
-            authenticated(token, publicUrl) {
+            authenticated(tokens::current, publicUrl) {
                 controlRoutes(sessionManager, store, inputSink, json)
                 eventsWs(store, json)
                 terminalWs(registry, store, json)
@@ -157,7 +167,7 @@ class KotgentServer(
         fun production(
             sessionManager: SessionManager,
             store: EventStore,
-            token: () -> String,
+            tokens: TokenHolder,
             tmux: Tmux,
             ptyFactory: PtyFactory = realPtyFactory,
             webUiDir: String? = DEFAULT_WEBUI_DIR,
@@ -167,7 +177,7 @@ class KotgentServer(
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             store = store,
-            token = token,
+            tokens = tokens,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },
             webUiDir = webUiDir?.let { resolveWebUiDir(it) },
             publicUrl = publicUrl,

@@ -247,7 +247,7 @@ object Commands {
             KotgentServer.production(
                 manager,
                 store,
-                tokenHolder::current,
+                tokenHolder,
                 tmux,
                 publicUrl = config.publicUrl,
                 port = port,

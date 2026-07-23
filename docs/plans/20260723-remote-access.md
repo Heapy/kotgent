@@ -433,21 +433,34 @@ WS-хендшейк определяется наличием заголовка
 - Create: `test/transport/AuthRoutesTest.kt`
 - Modify: `src/transport/Server.kt` (монтаж)
 
-- [ ] `POST /auth/ticket` — внутри `authenticated {}` и `loopbackOnly {}`; отдаёт
+- [x] `POST /auth/ticket` — внутри `authenticated {}` и `loopbackOnly {}`; отдаёт
       `{ticket, localUrl, publicUrl, expiresAt}`, URL с фрагментом `#ticket=…`,
       `publicUrl = null` без конфига
-- [ ] `GET /auth` — вне авторизации, **без параметров**, отдаёт страницу-константу; сервер тикет
+- [x] `GET /auth` — вне авторизации, **без параметров**, отдаёт страницу-константу; сервер тикет
       здесь не видит вообще (он во фрагменте)
-- [ ] страница: читает `location.hash`, постит на `/auth/exchange`, на успехе `location.replace("/")`,
+- [x] страница: читает `location.hash`, постит на `/auth/exchange`, на успехе `location.replace("/")`,
       на ошибке — «тикет недействителен, выпусти новый: `kotgent web`» без указания причины
-- [ ] `POST /auth/exchange` — вне `authenticated {}` (credential — сам тикет), но **под Host-allowlist
+- [x] `POST /auth/exchange` — вне `authenticated {}` (credential — сам тикет), но **под Host-allowlist
       и Origin-проверкой** (это POST, браузер всегда шлёт Origin); гасит тикет, ставит cookie
-- [ ] `POST /auth/rotate` — под Bearer и loopback; зовёт `TokenHolder.rotate()`
-- [ ] тесты: выпуск тикета требует Bearer; выпуск с внешнего Host → 403; `GET /auth` ничего не гасит
+- [x] `POST /auth/rotate` — под Bearer и loopback; зовёт `TokenHolder.rotate()`
+- [x] тесты: выпуск тикета требует Bearer; выпуск с внешнего Host → 403; `GET /auth` ничего не гасит
       (двойной GET, затем успешный exchange); exchange гасит и возвращает cookie; повторный
       exchange → 400; exchange с чужим Origin → 403; запрос к `/sessions` с полученной cookie → 200;
       после `/auth/rotate` та же cookie → 401
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 9
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 9
+
+➕ добавлено сверх плана: `KotgentServer` конструктор перешёл с `token: () -> String` на `tokens:
+TokenHolder` (и `production(...)` вместе с ним) — `/auth/rotate` зовёт `rotate()`, которого нет за голым
+`current`; `TicketStore` тоже стал конструкторным параметром (дефолт — свежий in-memory store).
+`authorizeTicketExchange(facts, publicUrl)` вынесена отдельной чистой функцией: `authorize()` не умеет
+выразить «credential — сам тикет, cookie ещё нет» (она всегда кончается «no valid credential»), а правило
+браузера (Host-allowlist + **обязательный** Origin на этом POST) переиспользует те же `isAllowedHost` /
+`isAllowedOrigin`. `refusalBody` в `Auth.kt` из `private` стала `internal` — теперь тем же телом отвечает и
+exchange. Страница `/auth` — англоязычная (весь остальной UI в `resources/webui` на английском), одним
+файлом-константой `AUTH_PAGE_HTML` без внешних зависимостей (никакого fetch до входа). `now: () -> Long`
+инжектится и в `authRoutes` (штамп cookie), и в `TicketStore` — тесты детерминированы. `POST /auth/ticket`
+берёт origin из `Host` запроса, поэтому эфемерный порт харнесса и `--port` отражаются без знания транспорта
+о номере. После Task 8 — **355 run / 355 passed / 0 skipped**.
 
 ### Task 9: Выпиливание ?token= и #token=
 

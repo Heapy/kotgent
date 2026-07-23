@@ -356,7 +356,7 @@ class TransportTest {
             val bridgeFactory: (String, CoroutineScope) -> TerminalBridge = { id, scope ->
                 TerminalBridge(listOf("fake-attach", id), { seed }, ptyFactory, scope)
             }
-            val server = KotgentServer(manager, store, { token }, bridgeFactory, webUiDir = null, port = 0).start()
+            val server = KotgentServer(manager, store, TokenHolder(token), bridgeFactory, webUiDir = null, port = 0).start()
             val client = HttpClient(CIO) { install(WebSockets) }
             try {
                 block(Ctx(server.port(), client, store, ptyFactory, tmux))

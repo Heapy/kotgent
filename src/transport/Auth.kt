@@ -183,7 +183,7 @@ fun Route.loopbackOnly(build: Route.() -> Unit): Route {
 }
 
 /** The one-word body sent with a refusal — deliberately says only which gate answered. */
-private fun refusalBody(status: HttpStatusCode): String =
+internal fun refusalBody(status: HttpStatusCode): String =
     if (status == HttpStatusCode.Forbidden) "forbidden" else "unauthorized"
 
 /**

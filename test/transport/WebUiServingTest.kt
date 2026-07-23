@@ -260,7 +260,7 @@ class WebUiServingTest {
             val server = KotgentServer(
                 sessionManager = manager,
                 store = store,
-                token = { token },
+                tokens = TokenHolder(token),
                 // Never invoked in a serving test (no terminal WS connects); throwing makes that explicit.
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the serving test") },
                 webUiDir = locateWebUiDir(),
