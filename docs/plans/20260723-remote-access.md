@@ -259,21 +259,31 @@ WS-хендшейк определяется наличием заголовка
 - Create: `src/transport/Authorization.kt`
 - Create: `test/transport/AuthorizationTest.kt`
 
-- [ ] описать вход: `RequestFacts(host, origin, authHeader, cookie, method, isWebSocket)` и
+- [x] описать вход: `RequestFacts(host, origin, authHeader, cookie, method, isWebSocket)` и
       `AuthDecision` (`Allow` / `Deny(status, reason)`)
-- [ ] `isLoopbackHost(host: String): Boolean` — **игнорирует порт**: `127.0.0.1`, `localhost`,
+- [x] `isLoopbackHost(host: String): Boolean` — **игнорирует порт**: `127.0.0.1`, `localhost`,
       `[::1]` на любом порту (харнессы биндят `port = 0`, реальный порт известен только после
       `start()`)
-- [ ] `allowedOrigins(publicUrl: String?): Set<String>` — origin публичного хоста плюс loopback-формы
-- [ ] реализовать `authorize(facts, publicUrl, loopbackOnly, verifyToken, verifyCookie)` строго по
+- [x] `allowedOrigins(publicUrl: String?): Set<String>` — origin публичного хоста плюс loopback-формы
+- [x] реализовать `authorize(facts, publicUrl, loopbackOnly, verifyToken, verifyCookie)` строго по
       таблице из Technical Details
-- [ ] тесты таблицей: чужой Host → 403; loopback-only роут с внешнего Host → 403; **GET с валидной
+- [x] тесты таблицей: чужой Host → 403; loopback-only роут с внешнего Host → 403; **GET с валидной
       cookie и БЕЗ Origin → allow** (браузеры не шлют Origin на same-origin GET); GET с валидной
       cookie и чужим Origin → 403; POST с cookie без Origin → 403; POST с cookie и валидным
       Origin → allow; WS-хендшейк с cookie без Origin → 403; валидный Bearer без Origin (любой
       метод) → allow; ничего не предъявлено → 401; невалидный Bearer → 401
-- [ ] тесты на `isLoopbackHost`: совпадение на произвольном порту, включая `:0`
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 4
+- [x] тесты на `isLoopbackHost`: совпадение на произвольном порту, включая `:0`
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 4
+
+➕ добавлено сверх плана: `isAllowedHost(host, publicUrl)` и `isAllowedOrigin(origin, publicUrl)`
+(предикаты, которыми выражена таблица) и чистый `bearerToken(authHeader)` — на него в Task 9
+переведётся `presentedToken()`, чтобы разбор `Bearer ` жил в одном месте. Loopback-формы в
+`allowedOrigins` хранятся БЕЗ порта, а кандидат канонизируется так же — так «любой порт» проходит
+обычной проверкой членства в `Set`. Шаг таблицы «credential — cookie» реализован как «Bearer не
+прошёл проверку» (а не «заголовка нет»): строго уже, и `verifyToken` при этом вызывается максимум
+один раз. Отдельно отбраковывается литеральный `Origin: null` (его шлют sandboxed-iframe и
+`file://`) и любой origin с путём/query/userinfo. `Host` без значения — 403, а не подстановка
+дефолта. После Task 3 — **294 run / 294 passed / 0 skipped**.
 
 ### Task 4: Конфиг ~/.kotgent/config.json
 
