@@ -1,5 +1,6 @@
 package io.kotgent.transport
 
+import io.kotgent.crypto.hex
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -316,14 +317,22 @@ private fun stagePrivateTemp(path: String, bytes: ByteArray, publish: (String) -
 fun readTokenOrNull(path: String = defaultTokenPath()): String? =
     readFileTextOrNull(path)?.trim()?.ifEmpty { null }
 
-/** 32 bytes of entropy, hex-encoded. Prefers `/dev/urandom`; falls back to [Random] if unreadable. */
+/** How many bytes of entropy every secret this daemon mints carries (token, ticket): 256 bits. */
+const val SECRET_BYTES: Int = 32
+
+/**
+ * [n] bytes of entropy, preferring `/dev/urandom` and falling back to [Random] if it cannot be read.
+ *
+ * THE one entropy source in the daemon: the master token ([generateToken]) and the one-shot login tickets
+ * are both minted from it, so there is a single place where "where do our secrets come from" is answered
+ * (and a single place to fix if the fallback ever needs to become fatal instead).
+ */
 @OptIn(ExperimentalForeignApi::class)
-private fun generateToken(): String {
-    val bytes = readFileBytesOrNull("/dev/urandom", limit = 32)
-        ?.takeIf { it.size == 32 }
-        ?: Random.nextBytes(32)
-    return bytes.joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
-}
+fun randomBytes(n: Int = SECRET_BYTES): ByteArray =
+    readFileBytesOrNull("/dev/urandom", limit = n)?.takeIf { it.size == n } ?: Random.nextBytes(n)
+
+/** 32 bytes of entropy, hex-encoded. Prefers `/dev/urandom`; falls back to [Random] if unreadable. */
+private fun generateToken(): String = hex(randomBytes(SECRET_BYTES))
 
 @OptIn(ExperimentalForeignApi::class)
 private fun readFileTextOrNull(path: String): String? =

@@ -82,7 +82,8 @@ cookie — `SameSite` оперирует сайтом (eTLD+1), а значит 
 - **КРИТИЧНО: все тесты зелёные перед началом следующей задачи**
 - **КРИТИЧНО: план обновляется, если по ходу меняется объём**
 - `./kotlin build` перед `./kotlin test` (PtyTest запускает бинарь ptycheck)
-- baseline на старте: **204 run / 204 passed / 0 skipped**
+- baseline на старте: **253 run / 253 passed / 0 skipped** (значение 204 в исходном плане устарело —
+  измерено фактическим прогоном перед Task 1)
 
 ## Testing Strategy
 
@@ -209,16 +210,21 @@ WS-хендшейк определяется наличием заголовка
   `generateToken`; открыть публичный `randomBytes(n: Int): ByteArray`, на котором `generateToken`
   и строится — чтобы источник энтропии остался один)
 
-- [ ] реализовать `sha256(bytes: ByteArray): ByteArray` — чистый Kotlin, без cinterop (KT-78062)
-- [ ] реализовать `hmacSha256(key: ByteArray, message: ByteArray): ByteArray` по RFC 2104
+- [x] реализовать `sha256(bytes: ByteArray): ByteArray` — чистый Kotlin, без cinterop (KT-78062)
+- [x] реализовать `hmacSha256(key: ByteArray, message: ByteArray): ByteArray` по RFC 2104
       (padding ключа, ipad/opad, ключ длиннее блока хешируется)
-- [ ] `hex(bytes: ByteArray): String` в `Hex.kt`; `Auth.kt:325` переходит на него
-- [ ] открыть `randomBytes(n)` в `Auth.kt` (32 байта из `/dev/urandom`, фолбэк на `Random`),
+- [x] `hex(bytes: ByteArray): String` в `Hex.kt`; `Auth.kt:325` переходит на него
+- [x] открыть `randomBytes(n)` в `Auth.kt` (32 байта из `/dev/urandom`, фолбэк на `Random`),
       `generateToken()` = `hex(randomBytes(32))`
-- [ ] написать тесты SHA-256 на векторах NIST (пустая строка, "abc", строка длиннее блока,
+- [x] написать тесты SHA-256 на векторах NIST (пустая строка, "abc", строка длиннее блока,
       границы паддинга 55/56/64 байта)
-- [ ] написать тесты HMAC на векторах RFC 4231 (случаи 1–4, плюс ключ длиннее блока)
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 2
+- [x] написать тесты HMAC на векторах RFC 4231 (случаи 1–4, плюс ключ длиннее блока)
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 2
+
+➕ добавлено сверх плана: `hmacSha256Hex(key: String, message: String)` (форма, в которой значение
+нужно cookie), константы `SHA256_BLOCK_BYTES` / `SHA256_DIGEST_BYTES` / `SECRET_BYTES`.
+⚠️ baseline в «Development Approach» устарел: фактический прогон до Task 1 — **253**, а не 204;
+после Task 1 — **268 run / 268 passed / 0 skipped**.
 
 ### Task 2: Формат cookie-сессии
 
