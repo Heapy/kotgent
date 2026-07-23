@@ -586,6 +586,42 @@ class SessionManagerTest {
     }
 
     @Test
+    fun aResumeWhoseLaunchFailsAfterTheTmuxSessionExistsKillsTheOrphan() = runBlocking {
+        withTimeout(20_000) {
+            // The resume mirror of the start case above: tmux CREATED the `kt-<id>` session running
+            // `claude --resume` and the call still failed (`new-session -P` reported no pane id). With the
+            // launch outside the guarded region that left a live agent nothing tracks — its pane is never
+            // registered, so every hook 404s and its events are lost — while the row still asserted the
+            // pre-resume dead state with the stale pane id, so the next resume went straight back to
+            // `new-session` and collided with the duplicate tmux session name.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = ObservingTmux(failAfterCreate = true)
+            val provider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                now = { 9L },
+            )
+            store.upsertSession(meta("rorp01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
+
+            assertFailsWith<TmuxException> { mgr.resume(SessionId("rorp01")) }
+
+            assertEquals(listOf("rorp01"), tmux.inner.killed, "the created-but-unreported resume session is killed")
+            val row = store.getSession(SessionId("rorp01"))!!
+            assertEquals(
+                SessionState.resumable,
+                row.state,
+                "a resume that never completed must leave the row at its pre-resume dead state",
+            )
+            assertEquals(PaneId("%1"), row.paneId, "the pre-resume pane id is what the row keeps")
+            assertEquals(9L, row.updatedAt, "the compensation actually rewrote the row (it did not merely go untouched)")
+            assertEquals(emptyMap(), registry.snapshot(), "no pane is registered for a resume that never landed")
+        }
+    }
+
+    @Test
     fun aStartCancelledMidLaunchStillCompensatesTheRowItPublished() = runBlocking {
         withTimeout(20_000) {
             // Cancellation is an ordinary way for a launch to fail (daemon shutting down mid-start). The

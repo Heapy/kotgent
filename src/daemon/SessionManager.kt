@@ -363,9 +363,17 @@ class SessionManager(
         // then Resume takes it to `ready`. Computed BEFORE the launch so the compensation path below can
         // restore exactly this pre-resume dead classification.
         val deadState = if (meta.state.isDead) meta.state else SessionState.crashed
-        val paneId = tmux.newSession(sessionId.value, meta.cwd, shellCommand(spec.command), cols, rows)
 
+        // Null until the launch reports a pane; the compensation below tolerates that (it may have to
+        // clean up a tmux session whose pane id we never learned).
+        var paneId: PaneId? = null
         try {
+            // The launch is INSIDE the guarded region (same shape as start()): tmux can create the session
+            // and the call still fail (e.g. `new-session -P` came back with no pane id), which outside the
+            // try would leave a live, untracked `--resume` agent behind — its hooks would 404 forever —
+            // while the row still asserted the pre-resume dead state, so the next resume would go straight
+            // back to `new-session` and collide with the duplicate tmux session name.
+            paneId = tmux.newSession(sessionId.value, meta.cwd, shellCommand(spec.command), cols, rows)
             val next = reduce(store.projectionOf(sessionId).copy(state = deadState), ControlSignal.Resume)
             val ts = now()
             // Update only the daemon-owned fields (state / state_source / pane_id / updated_at); do NOT
@@ -380,7 +388,7 @@ class SessionManager(
                 updatedAt = ts,
             )
         } catch (e: Throwable) {
-            // Compensate a failure after the fresh agent was launched (see start()): kill it, drop the
+            // Compensate a failure at or after the fresh agent's launch (see start()): kill it, drop the
             // pane — and PUT THE ROW BACK to its pre-resume dead state. The write above may already have
             // committed `ready` + the fresh pane id, which would otherwise survive as a durable phantom
             // (an "alive" session whose pane we just killed) until the next daemon restart.
