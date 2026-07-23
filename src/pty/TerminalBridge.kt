@@ -75,6 +75,19 @@ class TerminalBridge(
     /** Current number of attached subscribers (observability / test synchronization). */
     suspend fun subscriberCount(): Int = broadcaster.subscriberCount()
 
+    /**
+     * Write terminal input to the shared upstream — the `POST /sessions/{id}/input` REST seam (Task 14).
+     * Routes through the same [Broadcaster] as attached subscribers' input, so it reaches the one shared
+     * `tmux attach` upstream and stays consistent with the terminal-WS input path.
+     *
+     * [decision] Because the upstream is lazy, this reaches the agent only while a terminal is attached
+     * (a subscriber is present); with none attached it is a no-op — the browser's normal flow keeps a
+     * terminal-WS attached, and terminal input over that WS is the primary path. (`tmux send-keys` would
+     * deliver subscriber-independently, but bypasses the single-upstream fan-out; the Broadcaster path is
+     * chosen so `/input` and terminal-WS input are one channel.)
+     */
+    suspend fun write(bytes: ByteArray): Unit = broadcaster.writeInput(bytes)
+
     /** Tear the bridge down regardless of subscribers (daemon shutdown / test teardown). */
     suspend fun shutdown(): Unit = broadcaster.shutdown()
 

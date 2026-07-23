@@ -17,9 +17,12 @@ import io.kotgent.core.replay
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.db.Sessions
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -72,6 +75,19 @@ class SqliteEventStore private constructor(
     /** Live relays per session; the writer fans committed events out to these after each append. */
     private val subscribers = HashMap<SessionId, MutableList<SendChannel<StoredEvent>>>()
 
+    /**
+     * Hot cross-session cache-change signal (Task 14 events-WS). Non-replaying so late subscribers do
+     * not re-see history (the transport pairs it with a `listSessions` snapshot); buffered + DROP_OLDEST
+     * so a burst of appends never suspends the single writer holding [mutex]. Emitted with [tryEmit]
+     * (non-suspending) from [append] / [upsertSession] under the lock.
+     */
+    private val _sessionUpdates = MutableSharedFlow<SessionUpdate>(
+        replay = 0,
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val sessionUpdates: SharedFlow<SessionUpdate> get() = _sessionUpdates
+
     init {
         // WAL at DB init (Technical Details): lets readers not block the single writer on a
         // file-backed DB. `PRAGMA journal_mode` returns a row (the resulting mode), so it must go
@@ -110,6 +126,9 @@ class SqliteEventStore private constructor(
             meta.readCursor.value,
             meta.createdAt,
             meta.updatedAt,
+        )
+        _sessionUpdates.tryEmit(
+            SessionUpdate(meta.id, meta.state, meta.lastSeq, unreadOf(meta.lastSeq.value, meta.readCursor.value)),
         )
     }
 
@@ -151,6 +170,12 @@ class SqliteEventStore private constructor(
             val stored = StoredEvent(sessionId, Seq(seq), ts, source, event)
             // Fan out to live subscribers (registered under this same lock — see subscribe).
             subscribers[sessionId]?.forEach { it.trySend(stored) }
+            // Signal the cache change for the events-WS. append does not touch read_cursor, so read it
+            // from the row (0 if the row was never upserted); we already hold the lock, so query direct.
+            val readCursor = sessions.get(sessionId.value).executeAsOneOrNull()?.read_cursor ?: 0L
+            _sessionUpdates.tryEmit(
+                SessionUpdate(sessionId, next.state, next.lastSeq, unreadOf(next.lastSeq.value, readCursor)),
+            )
             Seq(seq)
         }
 
@@ -203,6 +228,8 @@ class SqliteEventStore private constructor(
         mutex.withLock { subscribers[sessionId]?.size ?: 0 }
 
     // --- internals (callers hold [mutex]) ---------------------------------------------------------
+
+    private fun unreadOf(lastSeq: Long, readCursor: Long): Long = (lastSeq - readCursor).coerceAtLeast(0)
 
     private fun readLocked(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> =
         events.selectFromSeq(sessionId.value, fromSeq.value) { session_id, seq, ts, _, source, payload ->

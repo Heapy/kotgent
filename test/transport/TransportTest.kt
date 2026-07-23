@@ -1,0 +1,425 @@
+package io.kotgent.transport
+
+import io.kotgent.adapter.AgentAdapter
+import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchSpec
+import io.kotgent.core.AgentEvent
+import io.kotgent.core.EventSource
+import io.kotgent.core.Projection
+import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.Seq
+import io.kotgent.core.SessionId
+import io.kotgent.core.SessionMeta
+import io.kotgent.core.reduce
+import io.kotgent.core.replay
+import io.kotgent.daemon.AgentFactory
+import io.kotgent.daemon.FakeTmux
+import io.kotgent.daemon.PaneRegistry
+import io.kotgent.daemon.ProviderIdCapture
+import io.kotgent.daemon.SessionManager
+import io.kotgent.pty.PtyFactory
+import io.kotgent.pty.PtyHandle
+import io.kotgent.pty.TerminalBridge
+import io.kotgent.store.EventStore
+import io.kotgent.store.SessionUpdate
+import io.kotgent.store.StaleCursorException
+import io.kotgent.store.StoredEvent
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readBytes
+import io.ktor.websocket.readText
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.SendChannel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.builtins.ListSerializer
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * End-to-end transport tests (plan Task 14) — a real embedded [KotgentServer] on an ephemeral port,
+ * driven by a Ktor CIO client, wired to a host-free stack: a thread-safe in-memory [FakeEventStore], a
+ * [SessionManager] over a [FakeTmux] + a canned agent, and a [WsFakePtyFactory] behind the terminal
+ * bridges. Every body is bounded by [withTimeout] (anti-hang).
+ *
+ * ## Why fakes instead of SqliteEventStore / the Task-9 FakePtyHandle
+ * The CIO server runs handlers on its OWN engine threads, distinct from the test thread. So (a) shared
+ * state observed across that boundary must synchronize — the [WsFakePty] records input/resize/output on
+ * [Channel]s (which give a cross-thread happens-before), unlike the Task-9 single-threaded FakePtyHandle;
+ * and (b) the store is touched from both threads, so it is a coroutine-[Mutex]-guarded in-memory fake
+ * rather than the native sqliter driver (whose thread-affinity HookRoutesTest already sidesteps the same
+ * way). The fake honors the real [EventStore] contract, including the restart-safe stale-cursor error.
+ */
+class TransportTest {
+
+    private val token = "transport-secret-token-xyz789"
+    private val providerId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    private val seed = "SEED-SCREEN\r\n".encodeToByteArray()
+
+    // ---- 1. POST /sessions → the session appears in GET /sessions ----
+
+    @Test
+    fun postSessionsCreatesASessionThatAppearsInTheList() = withServer { ctx ->
+        val created = ctx.startSession(cwd = "/tmp/project")
+        assertEquals("claude", created.agent)
+        assertEquals("/tmp/project", created.cwd)
+        assertTrue(created.tmuxSession.startsWith("kt-"), "a tmux session name was assigned")
+        assertEquals(providerId.value, created.providerSessionId, "preallocated provider id is bound up front")
+
+        val list = ctx.getSessions()
+        assertTrue(list.any { it.id == created.id }, "the started session appears in GET /sessions")
+
+        val one = ctx.getSession(created.id)
+        assertEquals(created.id, one.id)
+        assertEquals("running", one.state)
+    }
+
+    // ---- 2. events-WS receives a state-change notification ----
+
+    @Test
+    fun eventsWsPushesAStateChangeWhenASessionStartsNeedingAttention() = withServer { ctx ->
+        val created = ctx.startSession()
+        val sid = SessionId(created.id)
+
+        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=$token") {
+            // Draining the baseline snapshot proves we are subscribed — so the append below is not raced.
+            val snapshot = receiveUpdate()
+            assertEquals(created.id, snapshot.sessionId, "the snapshot covers the started session")
+
+            // A hook-style approval append flips the session to needs_approval; the WS must deliver it live.
+            ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
+
+            val update = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
+            assertTrue(update.needsAttention, "needs_approval is a needs-attention state")
+            assertTrue(update.lastSeq >= 1, "lastSeq advanced")
+        }
+    }
+
+    // ---- 3. terminal-WS: seed first, then streamed bytes, forwarded input, and a resize frame ----
+
+    @Test
+    fun terminalWsDeliversSeedStreamsBytesForwardsInputAndHandlesResize() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal?token=$token") {
+            // The first subscriber lazily opened the single upstream (recorded by the fake factory).
+            val upstream = ctx.ptyFactory.opened.receive()
+
+            // (a) capture-pane seed arrives first, as a binary frame.
+            assertContentEquals(seed, receiveBinary(), "the capture-pane seed is delivered before live deltas")
+
+            // (b) a live delta from the upstream streams through to the client.
+            upstream.emit("hello-terminal".encodeToByteArray())
+            assertContentEquals("hello-terminal".encodeToByteArray(), receiveBinary(), "live bytes stream through")
+
+            // (c) client input (binary frame) is forwarded to the shared upstream.
+            send(Frame.Binary(fin = true, data = "typed-input".encodeToByteArray()))
+            assertContentEquals("typed-input".encodeToByteArray(), upstream.writes.receive(), "input reaches the upstream")
+
+            // (d) a resize control frame reaches the upstream as a TIOCSWINSZ resize.
+            send(Frame.Text("""{"type":"resize","cols":123,"rows":45}"""))
+            assertEquals(123 to 45, upstream.resizes.receive(), "the resize frame reaches the upstream")
+        }
+    }
+
+    // ---- 3b. POST /sessions/{id}/input reaches the shared upstream via the Broadcaster ----
+
+    @Test
+    fun postInputReachesTheSharedTerminalUpstream() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        // Attach a terminal so the lazy upstream is open, then POST /input to the SAME session.
+        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal?token=$token") {
+            val upstream = ctx.ptyFactory.opened.receive()
+            receiveBinary() // consume the seed
+
+            val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                setBody("rest-typed")
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            assertContentEquals("rest-typed".encodeToByteArray(), upstream.writes.receive(), "POST /input reaches the upstream")
+        }
+    }
+
+    // ---- 4. missing / wrong token → 401 on a control call AND on a WS handshake ----
+
+    @Test
+    fun missingOrWrongTokenIsRejectedOnRestAndOnWsHandshake() = withServer { ctx ->
+        // REST: no token at all.
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            ctx.client.get("http://127.0.0.1:${ctx.port}/sessions").status,
+            "a control call with no token is 401",
+        )
+        // REST: wrong token.
+        val wrong = ctx.client.get("http://127.0.0.1:${ctx.port}/sessions") {
+            header(HttpHeaders.Authorization, "Bearer not-the-token")
+        }
+        assertEquals(HttpStatusCode.Unauthorized, wrong.status, "a control call with a wrong token is 401")
+
+        // WS: a bad token must be rejected at the handshake (401, no upgrade) → the client connect throws.
+        var wsRejected = false
+        try {
+            ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=not-the-token") {
+                // Unreachable if the handshake is correctly rejected.
+            }
+        } catch (_: Throwable) {
+            wsRejected = true
+        }
+        assertTrue(wsRejected, "a WS handshake with a bad token must be rejected")
+    }
+
+    // ---- 5. a stale per-session cursor → error (restart-safe cursor is a hard error) ----
+
+    @Test
+    fun aStalePerSessionCursorErrorsTheEventsWs() = withServer { ctx ->
+        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+
+        // Subscribe per-session with a cursor far beyond lastSeq+1 → StaleCursorException → the server
+        // closes the socket with VIOLATED_POLICY (the client must resync, not silently skip).
+        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=$token&session=${created.id}&from=999") {
+            val reason = closeReason.await()
+            assertEquals(CloseReason.Codes.VIOLATED_POLICY, reason?.knownReason, "a stale cursor closes with VIOLATED_POLICY")
+        }
+    }
+
+    // --- harness -------------------------------------------------------------------------------------
+
+    /** The wired-up server + client + fakes handed to each test body. */
+    private inner class Ctx(
+        val port: Int,
+        val client: HttpClient,
+        val store: FakeEventStore,
+        val ptyFactory: WsFakePtyFactory,
+        val tmux: FakeTmux,
+    ) {
+        suspend fun startSession(agent: String = "claude", cwd: String = "/tmp/work"): SessionDto {
+            val resp = client.post("http://127.0.0.1:$port/sessions") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                setBody("""{"agent":"$agent","cwd":"$cwd"}""")
+            }
+            assertEquals(HttpStatusCode.Created, resp.status, "POST /sessions returns 201")
+            return TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        }
+
+        suspend fun getSessions(): List<SessionDto> {
+            val resp = client.get("http://127.0.0.1:$port/sessions") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            return TRANSPORT_JSON.decodeFromString(ListSerializer(SessionDto.serializer()), resp.bodyAsText())
+        }
+
+        suspend fun getSession(id: String): SessionDto {
+            val resp = client.get("http://127.0.0.1:$port/sessions/$id") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            return TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        }
+    }
+
+    private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
+        withTimeout(40_000) {
+            val store = FakeEventStore(now = { 1L })
+            val tmux = FakeTmux()
+            val registry = PaneRegistry()
+            val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val manager = SessionManager(
+                tmux, store, registry,
+                CannedAgentFactory(listOf("cat"), providerId),
+                ProviderIdCapture(store, idScope),
+                now = { 1L },
+            )
+            val ptyFactory = WsFakePtyFactory()
+            val bridgeFactory: (String, CoroutineScope) -> TerminalBridge = { id, scope ->
+                TerminalBridge(listOf("fake-attach", id), { seed }, ptyFactory, scope)
+            }
+            val server = KotgentServer(manager, store, token, bridgeFactory, webUiDir = null, port = 0).start()
+            val client = HttpClient(CIO) { install(WebSockets) }
+            try {
+                block(Ctx(server.port(), client, store, ptyFactory, tmux))
+            } finally {
+                client.close()
+                server.stop()
+                idScope.cancel()
+            }
+        }
+    }
+
+    // --- WS receive helpers (skip control frames) ----------------------------------------------------
+
+    private suspend fun DefaultClientWebSocketSession.receiveBinary(): ByteArray {
+        while (true) {
+            val frame = incoming.receive()
+            if (frame is Frame.Binary) return frame.readBytes()
+        }
+    }
+
+    private suspend fun DefaultClientWebSocketSession.receiveUpdate(): SessionUpdateDto {
+        while (true) {
+            val frame = incoming.receive()
+            if (frame is Frame.Text) return TRANSPORT_JSON.decodeFromString(SessionUpdateDto.serializer(), frame.readText())
+        }
+    }
+
+    private suspend fun DefaultClientWebSocketSession.awaitUpdate(predicate: (SessionUpdateDto) -> Boolean): SessionUpdateDto {
+        while (true) {
+            val update = receiveUpdate()
+            if (predicate(update)) return update
+        }
+    }
+
+    /** An [AgentFactory] yielding a canned launch spec (a harmless `cat` + a preallocated provider id). */
+    private class CannedAgentFactory(
+        private val command: List<String>,
+        private val preallocated: ProviderSessionId?,
+    ) : AgentFactory {
+        override fun create(agentKind: String, cwd: String): AgentAdapter = object : AgentAdapter {
+            override val events: Flow<AgentEvent> = emptyFlow()
+            override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
+                is LaunchMode.New -> LaunchSpec(command, emptyMap(), cwd, preallocated)
+                is LaunchMode.Resume ->
+                    LaunchSpec(command + listOf("--resume", mode.providerSessionId.value), emptyMap(), cwd, null)
+            }
+        }
+    }
+
+    /**
+     * A thread-safe fake [PtyHandle]: output/input/resize all cross the CIO-server↔test thread boundary
+     * on [Channel]s (happens-before), so the terminal test can observe them race-free (unlike the Task-9
+     * FakePtyHandle, which assumes a single dispatcher). [emit] plays a byte chunk as if the pty produced it.
+     */
+    private class WsFakePty(val command: List<String>) : PtyHandle {
+        private val out = Channel<ByteArray>(Channel.UNLIMITED)
+        override val output: ReceiveChannel<ByteArray> get() = out
+
+        /** Input the fan-out routed to this upstream. */
+        val writes = Channel<ByteArray>(Channel.UNLIMITED)
+
+        /** Resizes applied to this upstream (cols to rows). */
+        val resizes = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
+
+        fun emit(bytes: ByteArray) { out.trySend(bytes) }
+        override fun write(bytes: ByteArray) { writes.trySend(bytes) }
+        override fun resize(cols: Int, rows: Int) { resizes.trySend(cols to rows) }
+        override fun close() { out.close() }
+    }
+
+    /** A [PtyFactory] minting [WsFakePty]s and publishing each on [opened] so the test can grab the upstream. */
+    private class WsFakePtyFactory : PtyFactory {
+        val opened = Channel<WsFakePty>(Channel.UNLIMITED)
+        override fun invoke(command: List<String>): PtyHandle = WsFakePty(command).also { opened.trySend(it) }
+    }
+
+    /**
+     * A host-free, thread-safe in-memory [EventStore] honoring the Task-7 contract: append-only per-session
+     * log with a monotonic seq, a session cache advanced transactionally with each append, a cursored
+     * [subscribe] whose stale cursor is a hard [StaleCursorException], and the Task-14 [sessionUpdates]
+     * signal. Guarded by one coroutine [Mutex]; every observable is a [Channel] / [SharedFlow], so it is
+     * safe to touch from the CIO engine threads and the test thread at once.
+     */
+    private class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore {
+        private val mutex = Mutex()
+        private val metas = LinkedHashMap<SessionId, SessionMeta>()
+        private val logs = HashMap<SessionId, MutableList<StoredEvent>>()
+        private val projections = HashMap<SessionId, Projection>()
+        private val subs = HashMap<SessionId, MutableList<SendChannel<StoredEvent>>>()
+        private val updates = MutableSharedFlow<SessionUpdate>(
+            replay = 0, extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
+        override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
+
+        override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
+            val prior = metas[meta.id]
+            val merged = if (prior != null) meta.copy(createdAt = prior.createdAt) else meta
+            metas[meta.id] = merged
+            updates.tryEmit(SessionUpdate(merged.id, merged.state, merged.lastSeq, unread(merged.lastSeq.value, merged.readCursor.value)))
+        }
+
+        override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }
+
+        override suspend fun listSessions(): List<SessionMeta> = mutex.withLock { metas.values.toList() }
+
+        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = mutex.withLock {
+            val log = logs.getOrPut(sessionId) { mutableListOf() }
+            val prior = projections.getOrPut(sessionId) { replay(log.map { it.event }) }
+            val next = reduce(prior, event)
+            projections[sessionId] = next
+            val ts = now()
+            val stored = StoredEvent(sessionId, next.lastSeq, ts, source, event)
+            log.add(stored)
+            metas[sessionId]?.let { m ->
+                metas[sessionId] = m.copy(
+                    state = next.state,
+                    stateSource = source,
+                    lastSeq = next.lastSeq,
+                    providerSessionId = next.providerSessionId ?: m.providerSessionId,
+                    updatedAt = ts,
+                )
+            }
+            val readCursor = metas[sessionId]?.readCursor?.value ?: 0L
+            updates.tryEmit(SessionUpdate(sessionId, next.state, next.lastSeq, unread(next.lastSeq.value, readCursor)))
+            subs[sessionId]?.forEach { it.trySend(stored) }
+            next.lastSeq
+        }
+
+        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = mutex.withLock {
+            (logs[sessionId] ?: emptyList()).filter { it.seq.value >= fromSeq.value }
+        }
+
+        override suspend fun projectionOf(sessionId: SessionId): Projection = mutex.withLock {
+            projections.getOrPut(sessionId) { replay((logs[sessionId] ?: emptyList()).map { it.event }) }
+        }
+
+        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = channelFlow {
+            val relay = Channel<StoredEvent>(Channel.UNLIMITED)
+            val snapshot = mutex.withLock {
+                val last = (projections[sessionId] ?: replay((logs[sessionId] ?: emptyList()).map { it.event })).lastSeq
+                if (fromSeq.value > last.value + 1) throw StaleCursorException(sessionId, fromSeq, last)
+                val snap = (logs[sessionId] ?: emptyList()).filter { it.seq.value >= fromSeq.value }
+                subs.getOrPut(sessionId) { mutableListOf() }.add(relay)
+                snap
+            }
+            try {
+                for (e in snapshot) send(e)
+                for (e in relay) send(e)
+            } finally {
+                withContext(NonCancellable) { mutex.withLock { subs[sessionId]?.remove(relay) } }
+                relay.close()
+            }
+        }
+
+        private fun unread(last: Long, readCursor: Long): Long = (last - readCursor).coerceAtLeast(0)
+    }
+}

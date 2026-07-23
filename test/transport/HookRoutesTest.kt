@@ -10,6 +10,7 @@ import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.store.EventStore
+import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -23,6 +24,8 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -210,5 +213,6 @@ class HookRoutesTest {
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
         override suspend fun projectionOf(sessionId: SessionId): Projection = Projection.EMPTY
         override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = emptyFlow()
+        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
     }
 }

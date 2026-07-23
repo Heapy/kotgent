@@ -6,7 +6,9 @@ import io.kotgent.core.Projection
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.SessionState
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharedFlow
 
 /**
  * One stored row of the append-only `events` log: the canonical [event] plus the envelope the store
@@ -20,6 +22,25 @@ data class StoredEvent(
     val ts: Long,
     val source: EventSource,
     val event: AgentEvent,
+)
+
+/**
+ * A session read-model cache change notification (Task 14 events-WS). The store emits one whenever a
+ * session's cache row changes: after an [EventStore.append] (a new event advanced state / last_seq) or
+ * an [EventStore.upsertSession] (the daemon wrote a derived state, or created the row). The transport
+ * `/events` WebSocket fans these out to browsers so the session list and the "needs attention" queue
+ * stay live without polling.
+ *
+ * Carries the minimum a live UI needs to update a row in place — which [sessionId] changed, its new
+ * [state] (from which the UI derives "needs attention"), the [lastSeq] high-water mark, and the
+ * [unread] count (events past the session's read cursor). Fuller detail is fetched via
+ * `GET /sessions/{id}`. Deliberately small: this is a change *signal*, not a snapshot.
+ */
+data class SessionUpdate(
+    val sessionId: SessionId,
+    val state: SessionState,
+    val lastSeq: Seq,
+    val unread: Long,
 )
 
 /**
@@ -86,4 +107,17 @@ interface EventStore {
      * A cursor beyond `lastSeq + 1` (or into a gap) fails the flow with [StaleCursorException].
      */
     fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent>
+
+    /**
+     * A hot, shared stream of [SessionUpdate]s — one per [append] and per [upsertSession], across ALL
+     * sessions (the store is where both event appends and daemon control-op writes funnel, so it is the
+     * one place that observes every cache change, including hook-driven appends that never pass through
+     * the daemon). Hot and non-replaying: a late subscriber sees no history, so the transport `/events`
+     * WS pairs this with a [listSessions] snapshot to establish a baseline and then streams subsequent
+     * changes. Buffered, so a burst of appends is not lost if a subscriber briefly lags.
+     *
+     * [decision] The per-session restart-safe cursor lives on [subscribe] (seq is per-session, Task 7); a
+     * global cursor over this cross-session signal is not meaningful, so it is intentionally cursor-less.
+     */
+    val sessionUpdates: SharedFlow<SessionUpdate>
 }
