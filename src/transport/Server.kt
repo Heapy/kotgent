@@ -22,9 +22,6 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -32,14 +29,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import platform.posix.F_OK
-import platform.posix.SEEK_END
-import platform.posix.SEEK_SET
 import platform.posix.access
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fread
-import platform.posix.fseek
-import platform.posix.ftell
 
 /**
  * The real kotgent transport server (plan Task 14) — assembles the control REST, the events WS, the
@@ -242,20 +232,4 @@ private fun contentTypeFor(path: String): ContentType = when (path.substringAfte
     "svg" -> ContentType.Image.SVG
     "png" -> ContentType.Image.PNG
     else -> ContentType.Application.OctetStream
-}
-
-@OptIn(ExperimentalForeignApi::class)
-private fun readFileBytesOrNull(path: String): ByteArray? {
-    val fp = fopen(path, "rb") ?: return null
-    try {
-        fseek(fp, 0, SEEK_END)
-        val size = ftell(fp)
-        fseek(fp, 0, SEEK_SET)
-        if (size <= 0L) return ByteArray(0)
-        val buffer = ByteArray(size.toInt())
-        buffer.usePinned { fread(it.addressOf(0), 1.convert(), size.convert(), fp) }
-        return buffer
-    } finally {
-        fclose(fp)
-    }
 }

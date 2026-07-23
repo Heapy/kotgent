@@ -256,7 +256,7 @@ private fun existingToken(path: String): String? {
  * the hook-header writers — all carry secrets.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal fun writePrivateFile(path: String, bytes: ByteArray) {
+fun writePrivateFile(path: String, bytes: ByteArray) {
     stagePrivateTemp(path, bytes) { tmp ->
         if (rename(tmp, path) != 0) error("rename $tmp -> $path failed: ${errnoText(errno)}")
         true
@@ -334,12 +334,26 @@ fun randomBytes(n: Int = SECRET_BYTES): ByteArray =
 /** 32 bytes of entropy, hex-encoded. Prefers `/dev/urandom`; falls back to [Random] if unreadable. */
 private fun generateToken(): String = hex(randomBytes(SECRET_BYTES))
 
+/**
+ * The whole contents of [path] as text, or `null` if it cannot be opened. THE file reader of the daemon —
+ * the token, the hook-header files and `~/.kotgent/config.json` ([io.kotgent.cli.readConfig]) all come
+ * through here, so "how kotgent reads a file" is answered in exactly one place.
+ */
 @OptIn(ExperimentalForeignApi::class)
-private fun readFileTextOrNull(path: String): String? =
-    readFileBytesOrNull(path, limit = Int.MAX_VALUE)?.decodeToString()
+fun readFileTextOrNull(path: String): String? = readFileBytesOrNull(path)?.decodeToString()
 
+/**
+ * The bytes of [path], or `null` if it cannot be opened (missing, unreadable). At most [limit] bytes are
+ * returned; the default reads the whole file, which is what the static Web UI and the config/token readers
+ * want.
+ *
+ * A file whose size cannot be determined by seeking — `/dev/urandom` is the one that matters here — is read
+ * as exactly [limit] bytes, and as NOTHING when [limit] is unbounded: there is no size to allocate against,
+ * and sizing that read by `Int.MAX_VALUE` would try to allocate 2 GiB for what is usually an EMPTY regular
+ * file (a truncated token, an empty `config.json`), turning a routine "start from scratch" into an OOM.
+ */
 @OptIn(ExperimentalForeignApi::class)
-private fun readFileBytesOrNull(path: String, limit: Int): ByteArray? {
+fun readFileBytesOrNull(path: String, limit: Int = Int.MAX_VALUE): ByteArray? {
     val fp = fopen(path, "rb") ?: return null
     try {
         // /dev/urandom is not seekable to a size; read a fixed [limit] there. For a regular file, size
@@ -347,7 +361,11 @@ private fun readFileBytesOrNull(path: String, limit: Int): ByteArray? {
         fseek(fp, 0, SEEK_END)
         val size = ftell(fp)
         fseek(fp, 0, SEEK_SET)
-        val want = if (size > 0L) minOf(size.toInt(), limit) else limit
+        val want = when {
+            size > 0L -> minOf(size, limit.toLong()).toInt()
+            limit < Int.MAX_VALUE -> limit
+            else -> 0
+        }
         if (want <= 0) return ByteArray(0)
         val buffer = ByteArray(want)
         val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), want.convert(), fp) }

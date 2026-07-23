@@ -295,14 +295,26 @@ WS-хендшейк определяется наличием заголовка
   переводится на него)
 - Modify: `src/transport/Server.kt` (использование общего читателя вместо своей копии)
 
-- [ ] `KotgentConfig(publicUrl: String?)` c `@Serializable`
-- [ ] `readConfig(path): KotgentConfig` — отсутствующий файл даёт пустой конфиг, битый JSON —
+- [x] `KotgentConfig(publicUrl: String?)` c `@Serializable`
+- [x] `readConfig(path): KotgentConfig` — отсутствующий файл даёт пустой конфиг, битый JSON —
       внятную ошибку с путём, а не падение сериализатора
-- [ ] `writeConfig(path, config)` — атомарно через `writePrivateFile`, `0600`
-- [ ] `defaultConfigPath()` рядом с `defaultTokenPath()`
-- [ ] валидация `publicUrl`: только `https://` (или `http://` для loopback), без пути и query
-- [ ] тесты: round-trip; отсутствующий файл; битый JSON; отклонение невалидного URL; права `0600`
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 5
+- [x] `writeConfig(path, config)` — атомарно через `writePrivateFile`, `0600`
+- [x] `defaultConfigPath()` рядом с `defaultTokenPath()`
+- [x] валидация `publicUrl`: только `https://` (или `http://` для loopback), без пути и query
+- [x] тесты: round-trip; отсутствующий файл; битый JSON; отклонение невалидного URL; права `0600`
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 5
+
+➕ добавлено сверх плана: `publicUrlProblem(value): String?` — чистая функция «почему URL не годится»
+(текст печатается пользователю в Task 10), `KotgentConfig.normalized()` (канонизация: trim, lowercase,
+без хвостового `/`) и `ConfigException`. Валидация работает на ОБОИХ концах: `readConfig` отбраковывает
+руками отредактированный файл, `writeConfig` — до записи (отклонённая запись оставляет прежний конфиг
+нетронутым). Конфиг читается через общий `readFileTextOrNull` из `Auth.kt`, но `Server.kt` переведён на
+общий `readFileBytesOrNull` (публичный, `limit` по умолчанию — весь файл): статике нужны БАЙТЫ, декод в
+текст испортил бы png/svg. Заодно закрыт латентный баг того же читателя: у файла нулевого размера
+`ftell` даёт 0, и при неограниченном `limit` старый код пытался выделить `ByteArray(Int.MAX_VALUE)` —
+т.е. пустой `config.json` (или обрезанный `~/.kotgent/token`) уронил бы демон OOM'ом вместо «ничего не
+настроено». `writeConfig` создаёт `~/.kotgent` (`0700`), если его ещё нет — `config set` может выполниться
+раньше первого запуска демона. После Task 4 — **306 run / 306 passed / 0 skipped**.
 
 ### Task 5: Токен как атомарный провайдер + ротация
 
