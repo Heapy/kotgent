@@ -58,9 +58,9 @@ class Tmux(
     val socket: String,
     /** Path to the tmux binary; resolved from common locations by default. */
     val tmuxPath: String = defaultTmuxPath(),
-) {
+) : TmuxControl {
     /** The tmux session name for a logical [id]. */
-    fun sessionName(id: String): String = "kt-$id"
+    override fun sessionName(id: String): String = "kt-$id"
 
     /** True if the configured tmux binary is runnable (`tmux -V` succeeds) — the tests' skip-guard. */
     fun isAvailable(): Boolean = ProcessRunner.run(listOf(tmuxPath, "-V")).isSuccess
@@ -95,7 +95,7 @@ class Tmux(
      * return its pane id (`new-session -P -F '#{pane_id}'`). `KOTGENT_SESSION_ID=<id>` is set as
      * a **debug label only** via `-e` (env-poisoning is never trusted for identity).
      */
-    fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
+    override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
         val r = tmux(
             "new-session", "-d",
             "-s", sessionName(id),
@@ -113,7 +113,7 @@ class Tmux(
     }
 
     /** List all sessions on this socket. A fresh/torn-down socket reads as an empty list. */
-    fun listSessions(): List<TmuxSession> {
+    override fun listSessions(): List<TmuxSession> {
         val r = tmux(
             "list-sessions", "-F",
             fields("#{session_name}", "#{session_id}", "#{session_windows}", "#{session_created}"),
@@ -135,7 +135,7 @@ class Tmux(
     }
 
     /** List all panes across all sessions on this socket. A torn-down socket reads as empty. */
-    fun listPanes(): List<TmuxPane> {
+    override fun listPanes(): List<TmuxPane> {
         val r = tmux(
             "list-panes", "-a", "-F",
             fields(
@@ -179,7 +179,7 @@ class Tmux(
      * was nothing to kill (unknown session or no server) — so double-kill and killing a
      * nonexistent session are both graceful, not errors.
      */
-    fun killSession(id: String): Boolean {
+    override fun killSession(id: String): Boolean {
         val r = tmux("kill-session", "-t", sessionName(id))
         if (r.isSuccess) return true
         if (r.isAbsence()) return false
@@ -191,7 +191,7 @@ class Tmux(
      * `-H` avoids any key-name interpretation, so arbitrary terminal input (control chars, UTF-8)
      * round-trips unchanged. Empty input is a no-op.
      */
-    fun sendKeys(id: String, bytes: ByteArray) {
+    override fun sendKeys(id: String, bytes: ByteArray) {
         if (bytes.isEmpty()) return
         val hex = bytes.map { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
         val r = tmux(*(arrayOf("send-keys", "-t", sessionName(id), "-H") + hex))
