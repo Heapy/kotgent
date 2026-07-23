@@ -39,7 +39,9 @@ const val TICKET_TTL_MILLIS: Long = 10L * 60 * 1000
 
 /**
  * A minted ticket: the [value] to put in the login URL's fragment, and the [expiresAt] wall-clock instant
- * (epoch millis) the UI shows so a QR code can say how long it is good for.
+ * (epoch millis) it stops being redeemable — the deadline [TicketStore] sweeps against, echoed back in the
+ * ticket response for any client that wants to show how long the link is good for (the QR dialog states the
+ * fixed ten-minute TTL in its copy rather than reading this).
  */
 data class Ticket(val value: String, val expiresAt: Long)
 
@@ -85,9 +87,13 @@ class TicketStore(
      * Spend [value]: `true` exactly once, for a ticket that was issued here and has not expired; `false` for
      * an unknown value, a replay, or one whose TTL has run out.
      *
-     * Expiry is decided in ONE place — the sweep runs first, so whatever is still in the map is live by
-     * definition and the redemption is a plain "was it there?". An expired ticket is therefore not merely
-     * refused, it is gone: a clock that later steps backwards (NTP, a laptop waking up) cannot resurrect it.
+     * Expiry is decided in ONE place — the sweep runs first, so whatever is still in the map is live by the
+     * current clock and the redemption is a plain "was it there?". Once a sweep has OBSERVED a ticket past its
+     * expiry it is gone, so a clock that then steps backwards (NTP, a laptop waking up) cannot bring that one
+     * back. The gap this does not cover is a ticket whose expiry passed with no intervening access at all: if
+     * the clock steps back below its `expiresAt` before any sweep sees it, it is still redeemable. That is not
+     * exploitable — minting a ticket needs the master token in the first place — but it is why this is a
+     * best-effort sweep, not a monotonic guarantee.
      *
      * A plain map lookup rather than a [constantTimeEquals] scan: the values are 256 bits of entropy, so the
      * timing of a hash lookup cannot be walked into a forgery the way a byte-by-byte string compare of a

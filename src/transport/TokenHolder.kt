@@ -1,5 +1,6 @@
 package io.kotgent.transport
 
+import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
@@ -25,10 +26,17 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  * both the old and the new token are accepted: "the old key stops working" is the entire point of rotation.
  *
  * ## Concurrency
- * An [AtomicReference] rather than a `Mutex`: readers are on every request path (including WebSocket
- * handshakes) and must not suspend, while writes happen at most once per operator command. Ktor CIO runs
- * the request pipeline across a thread pool, so the publication has to be a real atomic store — a plain
- * `var` would be a data race with no guarantee a request thread ever observes the new value.
+ * Reads go through an [AtomicReference], never a `Mutex`: [current] is on every request path (including
+ * WebSocket handshakes) and must not suspend. Ktor CIO runs the request pipeline across a thread pool, so
+ * the publication has to be a real atomic store — a plain `var` would be a data race with no guarantee a
+ * request thread ever observes the new value.
+ *
+ * [rotate] additionally takes a short non-suspending lock so that two concurrent rotations cannot interleave
+ * their persist+publish pairs — without it, `A.persist → B.persist → B.publish → A.publish` would leave one
+ * token on disk and a different one live in memory, and the CLI/hooks (which read the secret from disk) would
+ * 401 until a restart. The lock is on the WRITE side only; readers never touch it. Rotation is an operator
+ * command, so real contention is vanishingly rare — the lock is there to make "at most once at a time" a
+ * guarantee rather than an assumption.
  */
 @OptIn(ExperimentalAtomicApi::class)
 class TokenHolder(
@@ -37,11 +45,22 @@ class TokenHolder(
      * Write [rotate]'s new value everywhere it is read from disk — `~/.kotgent/token` plus both provider
      * hook-header files. Injected so the transport layer stays free of file layout knowledge (the daemon
      * wiring in `Commands.daemon` owns those paths); defaults to a no-op for tests and for callers that
-     * only need the read side. Throwing aborts the rotation with the old token still live.
+     * only need the read side.
+     *
+     * This is THREE independent file writes, not one atomic act. A failure partway (disk full after the token
+     * file but before a hook header) throws, which aborts the rotation with the OLD token still live in
+     * memory — the safe end of the failure, since publish has not happened yet — but it CAN leave the three
+     * files inconsistent with each other on disk. That is recoverable rather than fatal because rotation is
+     * idempotent: re-running `kotgent token rotate` mints another fresh token and rewrites all three, and a
+     * daemon restart re-reads `~/.kotgent/token` regardless.
      */
     private val persist: (String) -> Unit = {},
 ) {
     private val ref = AtomicReference(initial)
+
+    /** `0` = free, `1` = a rotation holds it. Serializes [rotate] against a concurrent [rotate] (write side
+     *  only); [current] never touches it. */
+    private val rotating = AtomicInt(0)
 
     /** The token in force right now. Called on every authenticated request — cheap, never suspends. */
     fun current(): String = ref.load()
@@ -55,9 +74,17 @@ class TokenHolder(
      * events stream survives until it reconnects. The CLI says so out loud rather than pretending otherwise.
      */
     fun rotate(): String {
-        val next = generateToken()
-        persist(next)
-        ref.store(next)
-        return next
+        // A concurrent rotation is publishing its own value — let it finish so the persist+publish pair below
+        // is atomic as a unit. Uncontended in practice (rotation is an operator command); the spin only ever
+        // runs if two `POST /auth/rotate` land at once.
+        while (!rotating.compareAndSet(0, 1)) { /* spin until the other rotation releases */ }
+        try {
+            val next = generateToken()
+            persist(next)
+            ref.store(next)
+            return next
+        } finally {
+            rotating.store(0)
+        }
     }
 }

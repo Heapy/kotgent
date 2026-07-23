@@ -149,8 +149,8 @@ kill the whole UI. Safe anyway: cross-site `fetch` is always CORS-mode (carries 
 change is a POST, and the WS handshake — the one browser channel that bypasses CORS — always carries
 `Origin`. `SameSite` alone is insufficient because sibling `*.example.com` hosts are the same *site*.
 `Bearer` never needs an `Origin` (it is not a browser). **The published surface is browser-only**: hook
-ingress and ticket issuance are additionally **loopback-only** (`Route.loopbackOnly {}`, gated on `Host`
-via `isLoopbackHost`, which ignores the port — harnesses bind `port = 0`).
+ingress, ticket issuance and token rotation are additionally **loopback-only** (`Route.loopbackOnly {}`,
+gated on `Host` via `isLoopbackHost`, which ignores the port — harnesses bind `port = 0`).
 
 **No secret in a URL, ever.** The old `?token=`/`#token=` forms are gone. The browser signs in through a
 **one-time ticket** (`TicketStore`, 32 random bytes, 10-min TTL, in memory — a restart clears them) carried
@@ -253,7 +253,7 @@ src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes
-src/transport/                 Server, Auth, Authorization (authorize + loopbackOnly), SessionCookie, TokenHolder (atomic master token), Tickets (one-time login tickets), AuthRoutes (/auth ticket exchange, /auth/rotate), ControlRoutes, EventsWs, TerminalWs, HookRoutes
+src/transport/                 Server, Auth (authenticated + loopbackOnly route gates), Authorization (pure authorize), SessionCookie, TokenHolder (atomic master token), Tickets (one-time login tickets), AuthRoutes (/auth ticket exchange, /auth/rotate), ControlRoutes, EventsWs, TerminalWs, HookRoutes
 src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands, Config (~/.kotgent/config.json)
 src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)

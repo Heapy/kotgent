@@ -160,6 +160,37 @@ class AuthRoutesTest {
         assertEquals(HttpStatusCode.Forbidden, resp.status, "a phished ticket cannot plant a cookie cross-site")
     }
 
+    @Test
+    fun exchangeOverTheTunnelHostSetsASecureCookie() = withAuthServer(publicUrl = publicUrl) { env ->
+        val ticket = env.issueTicket()
+        // The REAL phone path, which every other exchange test skips by driving from loopback: the exchange
+        // arrives under the public Host with the public Origin. It must succeed AND the cookie must be Secure,
+        // because it will ride back over https through the tunnel (a non-Secure cookie there would leak).
+        val resp = env.client.req(
+            env.port, AUTH_EXCHANGE_PATH, HttpMethod.Post,
+            host = "kotgent.example.com", origin = publicUrl,
+            jsonBody = """{"ticket":"$ticket"}""",
+        )
+        assertEquals(HttpStatusCode.OK, resp.status, "the public host with a matching Origin exchanges")
+        val cookie = parseServerSetCookieHeader(resp.headers[HttpHeaders.SetCookie]!!)
+        assertTrue(verifySessionCookie(token, cookie.value), "the cookie verifies against the master token")
+        assertTrue(cookie.secure, "a cookie set over the https public host carries Secure")
+        assertTrue(cookie.httpOnly, "and stays HttpOnly")
+    }
+
+    @Test
+    fun exchangeUnderAForeignHostIs403() = withAuthServer(publicUrl = publicUrl) { env ->
+        val ticket = env.issueTicket()
+        // A Host we do not serve (a stray tunnel rule, DNS rebinding) is refused before the ticket is even
+        // looked at — the exchange never plants a cookie for a hostname outside the allowlist.
+        val resp = env.client.req(
+            env.port, AUTH_EXCHANGE_PATH, HttpMethod.Post,
+            host = "evil.example.com", origin = "https://evil.example.com",
+            jsonBody = """{"ticket":"$ticket"}""",
+        )
+        assertEquals(HttpStatusCode.Forbidden, resp.status, "a host we do not serve cannot exchange a ticket")
+    }
+
     // --- the cookie composes with the real gate ---------------------------------------------------
 
     @Test

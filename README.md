@@ -142,8 +142,9 @@ your own identity — the host fronts a terminal that can run anything on the Ma
 Authorization is one rule for both surfaces: the `Host` must be in the allowlist (loopback or the
 configured public host), and an `Origin`, **required on any non-GET request and on every WebSocket
 handshake and checked for a match whenever it is present**, keeps a cookie from being replayed cross-site
-(`SameSite` alone would not — sibling `*.example.com` hosts are the same site). Hook ingress and ticket
-issuance are additionally **loopback-only**: only the browser surface is ever published outward.
+(`SameSite` alone would not — sibling `*.example.com` hosts are the same site). Hook ingress, ticket
+issuance and token rotation are additionally **loopback-only**: only the browser surface is ever published
+outward.
 
 ## The first vertical slice
 

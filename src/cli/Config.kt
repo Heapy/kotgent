@@ -1,5 +1,6 @@
 package io.kotgent.cli
 
+import io.kotgent.transport.authorityHasForbiddenChars
 import io.kotgent.transport.isLoopbackHost
 import io.kotgent.transport.readFileTextOrNull
 import io.kotgent.transport.writePrivateFile
@@ -116,7 +117,7 @@ fun publicUrlProblem(value: String): String? {
     if (scheme != "https" && scheme != "http") return "'$scheme' is not a supported scheme — use https://"
     val authority = url.substring(separator + SCHEME_SEPARATOR.length).trimEnd('/')
     if (authority.isEmpty()) return "it has no host"
-    if (authority.any { it == '/' || it == '?' || it == '#' || it == '@' || it.isWhitespace() }) {
+    if (authorityHasForbiddenChars(authority)) {
         return "it must be a scheme and a host only — drop the path, query and userinfo"
     }
     if (scheme == "http" && !isLoopbackHost(authority)) {

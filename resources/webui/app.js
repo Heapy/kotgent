@@ -50,7 +50,7 @@ function App() {
   const [attachedId, setAttachedId] = useState(null);   // the session whose terminal is open here
   const [pendingAction, setPendingAction] = useState(null);
   const [prefs, setPrefs] = useState(loadPrefs);
-  const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd} | {kind:'prefs'} | {kind:'help'}
+  const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd} | {kind:'prefs'} | {kind:'help'} | {kind:'phone'}
   const [status, setStatus] = useState({ text: "", error: false });
   const [hint, setHint] = useState(SELECT_HINT);
 

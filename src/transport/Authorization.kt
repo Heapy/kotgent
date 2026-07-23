@@ -129,8 +129,8 @@ fun isAllowedHost(host: String?, publicUrl: String?): Boolean {
     val candidate = host?.trim().orEmpty()
     if (candidate.isEmpty()) return false
     if (isLoopbackHost(candidate)) return true
-    val publicHost = publicUrl?.let(::originAuthority)?.let(::canonicalHostname) ?: return false
-    return canonicalHostname(candidate) == publicHost
+    val configured = publicHost(publicUrl) ?: return false
+    return canonicalHostname(candidate) == configured
 }
 
 /**
@@ -149,10 +149,18 @@ fun isAllowedHost(host: String?, publicUrl: String?): Boolean {
 fun requiresSecureCookie(host: String?, publicUrl: String?): Boolean {
     val url = publicUrl?.trim()?.lowercase() ?: return false
     if (!url.startsWith("https://")) return false
-    val publicHost = originAuthority(url)?.let(::canonicalHostname) ?: return false
+    val configured = publicHost(url) ?: return false
     val candidate = host?.trim()?.ifEmpty { null } ?: return false
-    return canonicalHostname(candidate) == publicHost
+    return canonicalHostname(candidate) == configured
 }
+
+/**
+ * The configured public host: [publicUrl]'s authority with its port stripped and lower-cased, or `null` when
+ * none is configured or the value does not parse as an `http(s)://…` origin. The shared "which host is the
+ * public one" used by both [isAllowedHost] and [requiresSecureCookie].
+ */
+private fun publicHost(publicUrl: String?): String? =
+    publicUrl?.let(::originAuthority)?.let(::canonicalHostname)
 
 /** The token from an `Authorization: Bearer <token>` header (scheme match is case-insensitive), or `null`. */
 fun bearerToken(authHeader: String?): String? {
@@ -185,7 +193,10 @@ fun bearerToken(authHeader: String?): String? {
  * @param publicUrl the configured public origin (`https://kotgent.heapyhop.com`), or `null` when the daemon
  *   is loopback-only — in which case nothing but loopback is an allowed host or origin.
  * @param loopbackOnly `true` for the routes that are never published through the tunnel (hook ingress,
- *   ticket issuance, token rotation).
+ *   ticket issuance, token rotation). Production does NOT pass this: the loopback gate on those routes is the
+ *   separate [Route.loopbackOnly] wrapper (in `Auth.kt`), which composes with whatever credential the wrapped
+ *   route checks. The parameter keeps the whole rule expressible as one table-testable function and is
+ *   exercised only by `AuthorizationTest`, not by the live request pipeline.
  * @param verifyToken constant-time comparison against the current master token (a provider, not a captured
  *   string — see Task 5, so a rotation takes effect immediately).
  * @param verifyCookie [verifySessionCookie] against that same current token.
@@ -277,6 +288,14 @@ private fun originAuthority(value: String): String? {
     if (scheme != "http" && scheme != "https") return null
     val authority = value.substring(separator + 3).trimEnd('/').lowercase()
     if (authority.isEmpty()) return null
-    if (authority.any { it == '/' || it == '?' || it == '#' || it == '@' || it.isWhitespace() }) return null
+    if (authorityHasForbiddenChars(authority)) return null
     return authority
 }
+
+/**
+ * Does [authority] carry anything a bare `host[:port]` may not — a path, query, fragment, userinfo, or
+ * whitespace? The ONE definition of "what may follow `scheme://`", shared by [originAuthority] here and the
+ * config validator ([io.kotgent.cli.publicUrlProblem]) so the two rules cannot silently drift apart.
+ */
+internal fun authorityHasForbiddenChars(authority: String): Boolean =
+    authority.any { it == '/' || it == '?' || it == '#' || it == '@' || it.isWhitespace() }

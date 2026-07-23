@@ -281,6 +281,8 @@ function phoneBody(state, issue, onClose) {
 
 /** No public URL configured: explain the one-time tunnel setup rather than draw an unreachable QR. */
 function phoneSetup(onClose) {
+  // "27508" mirrors DEFAULT_PORT in Cli.kt — the fallback only bites if location.port is empty (a default
+  // 80/443), which does not happen for a loopback daemon that has no public URL configured yet.
   const port = (typeof window !== "undefined" && window.location.port) || "27508";
   const ingress = "  - hostname: <your-tunnel-host>\n    service: http://127.0.0.1:" + port;
   return html`
@@ -292,6 +294,11 @@ function phoneSetup(onClose) {
       <li>
         Add an ingress rule to <code>~/.cloudflared/config.yml</code>:
         <pre class="help-code">${ingress}</pre>
+      </li>
+      <li>
+        Put <strong>Cloudflare Access</strong> in front of the host and scope the policy to your own
+        email only. This host fronts a terminal that can run anything on your Mac, so a loose policy is
+        more dangerous here than anywhere else — do not publish it without the identity gate.
       </li>
       <li>
         Tell kotgent its public origin:
