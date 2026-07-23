@@ -60,12 +60,12 @@ import kotlin.random.Random
  * per-purpose token is backlog. [readOrCreateToken] is the one source of that value at startup, and
  * [TokenHolder] is what every gate reads it through afterwards, so a rotation is picked up live.
  *
- * ## Header OR query param (why both)
- * [presentedToken] accepts the token from either an `Authorization: Bearer <token>` header (REST clients)
- * or a `?token=<token>` query parameter. The query form exists because **browsers cannot set custom
- * headers on a WebSocket handshake** — the Web UI reads the token from its URL fragment (`#token=`, which
- * is never sent to the server) and appends it as `?token=` when opening the events / terminal sockets.
- * One extractor serves both so [authenticated] gates REST and WS uniformly.
+ * ## Bearer header only
+ * [presentedToken] reads the token from an `Authorization: Bearer <token>` header and nowhere else — the
+ * CLI, the hooks and `kotgent attach` all set it (an `attach` WS handshake carries it too; a native client
+ * has no trouble setting headers). The browser does NOT present a token at all: it authenticates with the
+ * ambient session cookie ([verifySessionCookie]) the login flow set, so no secret ever rides in a URL, its
+ * query string or its fragment. The old `?token=` / `#token=` forms are gone entirely.
  *
  * ## Where the DECISION lives
  * This file is the Ktor edge: it collects request facts ([requestFacts]) and turns a refusal into a
@@ -74,21 +74,13 @@ import kotlin.random.Random
  * layer stays a handful of accessor calls.
  */
 
-/** Query-parameter name carrying the bearer token (WS handshakes; browsers can't set headers). */
-const val TOKEN_QUERY_PARAM: String = "token"
-
 /**
- * The bearer token the client presented on [this] call, from `Authorization: Bearer <token>` or the
- * [TOKEN_QUERY_PARAM] query parameter, or `null` if neither is present. Trimmed; the scheme match is
- * case-insensitive.
+ * The bearer token the client presented on [this] call via `Authorization: Bearer <token>`, or `null` if
+ * the header is absent or malformed. Delegates to [bearerToken] so the `Bearer ` scheme is parsed in
+ * exactly one place; the scheme match is case-insensitive and the value is trimmed. There is no
+ * query-parameter fallback any more — the browser authenticates with the session cookie, not a URL token.
  */
-fun ApplicationCall.presentedToken(): String? {
-    val auth = request.headers[HttpHeaders.Authorization]
-    if (auth != null && auth.regionMatches(0, "Bearer ", 0, 7, ignoreCase = true)) {
-        return auth.substring(7).trim().ifEmpty { null }
-    }
-    return request.queryParameters[TOKEN_QUERY_PARAM]?.trim()?.ifEmpty { null }
-}
+fun ApplicationCall.presentedToken(): String? = bearerToken(request.headers[HttpHeaders.Authorization])
 
 /**
  * Every fact [authorize] is allowed to look at, read off [this] call.
@@ -98,8 +90,9 @@ fun ApplicationCall.presentedToken(): String? {
  * that property belongs to the request, not to the URL it happens to use. A future socket route therefore
  * cannot silently opt out of the rule by being mounted somewhere new.
  *
- * The `Authorization` header is read through [presentedToken] so the legacy `?token=` query form still
- * authenticates while it exists; Task 9 deletes the query form and this reads the raw header.
+ * The `Authorization` header is read through [presentedToken] and re-normalised to a `Bearer <token>`
+ * string, which [authorize] parses via [bearerToken]. There is no query-parameter fallback: the browser
+ * authenticates with the session cookie, never a token in the URL.
  */
 fun ApplicationCall.requestFacts(): RequestFacts = RequestFacts(
     host = request.headers[HttpHeaders.Host],

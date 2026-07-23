@@ -323,12 +323,12 @@ export function HelpDialog({ onClose }) {
           <section class="help-section">
             <h3>Access</h3>
             <p>
-              The daemon listens on <code>127.0.0.1</code> and every route requires one token — the same
-              string as <code>~/.kotgent/token</code>. This page carries it in the URL fragment
-              (<code>#token=…</code>), which browsers never send to the server; it is replayed as a
-              bearer header for the API and as a query parameter for the WebSockets, because a browser
-              cannot set headers on a WebSocket handshake. Anyone with the URL has full control of your
-              agents.
+              The daemon listens on <code>127.0.0.1</code>, and this page signs in with a session cookie
+              rather than a token in the URL. Run <code>kotgent web</code> to open it: that mints a
+              one-time ticket, exchanges it for an <code>HttpOnly</code> cookie, and leaves nothing secret
+              in the address bar. The master token (<code>~/.kotgent/token</code>) stays the machine's
+              key — the hooks and the CLI use it. The cookie is a key to your agents, so treat this
+              browser profile as you would an SSH session.
             </p>
           </section>
 

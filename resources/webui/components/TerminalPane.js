@@ -28,7 +28,7 @@ function sendResize(ws, cols, rows) {
 }
 
 export function TerminalPane({
-  session, attachedId, token, pendingAction, hint,
+  session, attachedId, pendingAction, hint,
   onAttach, onInterrupt, onResume, onDetach, onStop, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
@@ -54,7 +54,7 @@ export function TerminalPane({
     term.open(host);
     try { fit.fit(); } catch (_) { /* host not laid out yet — a later resize will fit */ }
 
-    const ws = new WebSocket(wsUrl("/sessions/" + encodeURIComponent(attachedId) + "/terminal", token));
+    const ws = new WebSocket(wsUrl("/sessions/" + encodeURIComponent(attachedId) + "/terminal"));
     ws.binaryType = "arraybuffer";
     // Distinguishes "we tore this down" from "the daemon dropped us": only the latter is worth
     // reporting to the user and reflecting in the parent's state.
@@ -92,7 +92,7 @@ export function TerminalPane({
       try { term.dispose(); } catch (_) {}
       host.replaceChildren();
     };
-  }, [attachedId, token]);
+  }, [attachedId]);
 
   const badge = session ? stateBadge(session.state) : null;
   const alive = session ? isAliveState(session.state) : false;

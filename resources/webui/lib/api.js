@@ -1,25 +1,17 @@
 /*
- * Talking to the daemon: the token, the REST calls and the WebSocket URLs.
+ * Talking to the daemon: the REST calls and the WebSocket URLs.
  *
- * The token arrives in the URL fragment (`#token=…`), which browsers never send to a server — so it
- * stays out of request lines and logs. It is then replayed as an `Authorization: Bearer` header for
- * REST and as a `?token=` query parameter for the two WebSockets, because a browser cannot set headers
- * on a WebSocket handshake.
+ * No token appears anywhere here. The browser authenticates with the ambient `kotgent_session` cookie the
+ * login flow set (`HttpOnly`, so this script cannot even read it) — the daemon reads it off every request
+ * and WebSocket handshake. So REST calls carry no `Authorization` header, only `credentials: "same-origin"`
+ * to make the cookie ride along, and the WebSocket URLs are plain same-origin URLs.
  */
 
-/** Extract the bearer token from a location fragment like `#token=abc` (or `#foo=1&token=abc`). */
-export function parseToken(hash) {
-  const m = /(?:^#|[#&])token=([^&]*)/.exec(hash || "");
-  if (!m || !m[1]) return null;
-  try { return decodeURIComponent(m[1]); } catch (_) { return m[1]; }
-}
-
-/** Build a same-origin WebSocket URL for [path], carrying the token as `?token=`. */
-export function wsUrl(path, token, base) {
+/** Build a same-origin WebSocket URL for [path]. The session cookie authenticates the handshake. */
+export function wsUrl(path, base) {
   const loc = base || window.location;
   const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-  const sep = path.indexOf("?") >= 0 ? "&" : "?";
-  return proto + "//" + loc.host + path + sep + "token=" + encodeURIComponent(token);
+  return proto + "//" + loc.host + path;
 }
 
 /** The text control frame the terminal WS expects for a resize (matches TerminalWs's protocol). */
@@ -32,14 +24,14 @@ export function errorMessage(error) {
 }
 
 /** Fetch one authenticated JSON API response and surface its server-provided error text. */
-export async function apiRequest(token, path, options) {
-  const opts = Object.assign({}, options || {});
-  opts.headers = Object.assign({ "Authorization": "Bearer " + token }, opts.headers || {});
+export async function apiRequest(path, options) {
+  const opts = Object.assign({ credentials: "same-origin" }, options || {});
+  opts.headers = Object.assign({}, opts.headers || {});
   if (opts.body) opts.headers["Content-Type"] = "application/json";
 
   const resp = await fetch(path, opts);
   const text = await resp.text();
-  if (resp.status === 401) throw new Error("Unauthorized — check the #token in the URL.");
+  if (resp.status === 401) throw new Error("Session expired — run `kotgent web` to sign in again.");
   if (!resp.ok) throw new Error(text || ("HTTP " + resp.status));
   if (!text) return null;
   try { return JSON.parse(text); } catch (_) { return text; }

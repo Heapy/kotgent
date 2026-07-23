@@ -44,8 +44,8 @@ import kotlinx.serialization.json.Json
  *    fails with [StaleCursorException], which is surfaced to the client as a `VIOLATED_POLICY` close
  *    (a stale cursor is a hard error, per Task 7 — the client must resync, not silently skip).
  *
- * Mounted inside [authenticated]; the token is presented as `?token=` on the handshake (browsers can't
- * set WS headers — see [presentedToken]).
+ * Mounted inside [authenticated]. The browser authenticates the handshake with its ambient session cookie
+ * (no token in the URL); `kotgent attach` and other native clients send an `Authorization: Bearer` header.
  */
 fun Route.eventsWs(store: EventStore, json: Json = TRANSPORT_JSON) {
     webSocket("/events") {

@@ -479,14 +479,22 @@ exchange. Страница `/auth` — англоязычная (весь ост
 - Modify: `test/transport/AuthTest.kt`, `test/transport/TransportTest.kt`
 - Modify: `test/cli/CliTest.kt` (`:218-225` ассертит старую форму URL)
 
-- [ ] `presentedToken()` перестаёт читать query; константа и упоминания удаляются
-- [ ] `terminalWsUrl` больше не принимает токен; `AttachClient` шлёт `Authorization` заголовком
-- [ ] SPA переходит на cookie: без заголовка `Authorization`, с `credentials: "same-origin"`;
+- [x] `presentedToken()` перестаёт читать query; константа и упоминания удаляются
+- [x] `terminalWsUrl` больше не принимает токен; `AttachClient` шлёт `Authorization` заголовком
+- [x] SPA переходит на cookie: без заголовка `Authorization`, с `credentials: "same-origin"`;
       на 401 — предложение выполнить `kotgent web`
-- [ ] обновить тесты, опиравшиеся на `?token=` (в частности
+- [x] обновить тесты, опиравшиеся на `?token=` (в частности
       `missingOrWrongTokenIsRejectedOnRestAndOnWsHandshake` и `terminalWsUrlIsBuiltFromTheHttpOrigin`)
-- [ ] тест: WS-хендшейк с `Authorization` проходит; тот же с `?token=` → 401
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 10
+- [x] тест: WS-хендшейк с `Authorization` проходит; тот же с `?token=` → 401
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 10
+
+➕ уточнения по объёму: `TOKEN_QUERY_PARAM` удалён целиком (нет других ссылок), `presentedToken()`
+переведён на общий `bearerToken(...)` — разбор `Bearer ` теперь в одном месте. `Server.kt` править НЕ
+пришлось: его auth-layering KDoc уже переписан в Task 5–8 и `#token=` не упоминает. `AuthTest.kt` тоже
+не тронут: `?token=`/`TOKEN_QUERY_PARAM` в нём нет (оба файла были в списке плана «на всякий случай»).
+Негативный тест «`?token=` → 401» встроен как ассерт в `missingOrWrongTokenIsRejectedOnRestAndOnWsHandshake`
+(шлёт РЕАЛЬНЫЙ токен в query и требует отказа — доказывает, что query-форма мертва даже с верным
+секретом), а не новым `@Test`, поэтому число тестов остаётся **355 run / 355 passed / 0 skipped**.
 
 ### Task 10: CLI — web, token rotate, config
 

@@ -6,8 +6,8 @@
  * no CDN. Markup is htm tagged templates (`html` below), which is JSX-shaped but needs no compiler.
  *
  * Flow:
- *   1. Read the token from the URL fragment `#token=…` (a fragment, so it is never sent to the server
- *      or its logs) and keep it in memory.
+ *   1. The browser already holds the `kotgent_session` cookie the login flow (`kotgent web`) set, so this
+ *      page needs no token: every request carries the cookie ambiently (`credentials: "same-origin"`).
  *   2. GET /sessions -> the session list; the sidebar draws it flat, or grouped by working directory
  *      when a base path is configured in Preferences.
  *   3. Open the GET /events WebSocket -> each session_update patches one keyed row in place.
@@ -28,17 +28,14 @@ import { render } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { html } from "htm/preact";
 
-import { apiRequest, errorMessage, parseToken, wsUrl } from "./lib/api.js";
+import { apiRequest, errorMessage, wsUrl } from "./lib/api.js";
 import { loadPrefs, persistPrefs } from "./lib/prefs.js";
 import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
 import { HelpDialog, NewSessionDialog, PreferencesDialog } from "./components/dialogs.js";
 
-const TOKEN = parseToken(window.location.hash);
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
-const NO_TOKEN_STATUS = "No token. Open this page as http://127.0.0.1:PORT/#token=YOUR_TOKEN";
-const NO_TOKEN_HINT = "Missing #token= fragment — cannot reach the daemon.";
 
 /** The hint shown for a session that cannot be attached because it is not alive. */
 function deadHint(state) {
@@ -54,10 +51,8 @@ function App() {
   const [pendingAction, setPendingAction] = useState(null);
   const [prefs, setPrefs] = useState(loadPrefs);
   const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd} | {kind:'prefs'} | {kind:'help'}
-  const [status, setStatus] = useState(
-    TOKEN ? { text: "", error: false } : { text: NO_TOKEN_STATUS, error: true },
-  );
-  const [hint, setHint] = useState(TOKEN ? SELECT_HINT : NO_TOKEN_HINT);
+  const [status, setStatus] = useState({ text: "", error: false });
+  const [hint, setHint] = useState(SELECT_HINT);
 
   // Latest values for handlers that must not be re-created on every update.
   const sessionsRef = useRef(sessions);
@@ -92,7 +87,7 @@ function App() {
 
   const loadSessions = useCallback(async () => {
     try {
-      const list = await apiRequest(TOKEN, "/sessions");
+      const list = await apiRequest("/sessions");
       setSessions(list);
       say(list.length + " session(s).");
       // A session that vanished server-side must not stay selected or attached.
@@ -104,13 +99,12 @@ function App() {
     }
   }, [say]);
 
-  useEffect(() => { if (TOKEN) loadSessions(); }, [loadSessions]);
+  useEffect(() => { loadSessions(); }, [loadSessions]);
 
   // Live updates. The daemon re-sends a full snapshot on connect, so a reconnect resyncs cleanly.
   const loadRef = useRef(loadSessions);
   loadRef.current = loadSessions;
   useEffect(() => {
-    if (!TOKEN) return undefined;
     let socket = null;
     let timer = null;
     let stopped = false;
@@ -118,7 +112,7 @@ function App() {
     const connect = () => {
       if (stopped) return;
       try {
-        socket = new WebSocket(wsUrl("/events", TOKEN));
+        socket = new WebSocket(wsUrl("/events"));
       } catch (e) {
         say("events WS error: " + e, true);
         return;
@@ -160,7 +154,7 @@ function App() {
   // --- actions ---------------------------------------------------------------------------------
 
   const startSession = useCallback(async (body) => {
-    const created = await apiRequest(TOKEN, "/sessions", {
+    const created = await apiRequest("/sessions", {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -182,7 +176,6 @@ function App() {
     say(capitalize(action) + " in progress…");
     try {
       const updated = await apiRequest(
-        TOKEN,
         "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
         { method: "POST" },
       );
@@ -258,7 +251,6 @@ function App() {
     <${TerminalPane}
       session=${activeSession}
       attachedId=${attachedId}
-      token=${TOKEN}
       pendingAction=${pendingAction}
       hint=${hint}
       onAttach=${attach}

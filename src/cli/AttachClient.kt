@@ -6,6 +6,8 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
+import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readBytes
@@ -96,14 +98,15 @@ class PosixTty(private val fd: Int = STDIN_FILENO) : LocalTty {
     }
 }
 
-/** Build the terminal WebSocket URL for [sessionId] on [baseUrl] (an `http(s)://…` origin), carrying [token]
- *  as a query param (browsers cannot set WS headers, and the server accepts `?token=` — see Auth). */
-fun terminalWsUrl(baseUrl: String, sessionId: String, token: String): String {
+/** Build the terminal WebSocket URL for [sessionId] on [baseUrl] (an `http(s)://…` origin). The token is
+ *  no longer carried in the URL — [AttachClient] presents it as an `Authorization: Bearer` handshake header
+ *  (a native client, unlike a browser, can set headers on a WebSocket handshake). */
+fun terminalWsUrl(baseUrl: String, sessionId: String): String {
     val origin = baseUrl
         .replaceFirst("https://", "wss://")
         .replaceFirst("http://", "ws://")
         .trimEnd('/')
-    return "$origin/sessions/$sessionId/terminal?token=$token"
+    return "$origin/sessions/$sessionId/terminal"
 }
 
 /**
@@ -139,7 +142,7 @@ class AttachClient(
     private val clientFactory: () -> HttpClient = { HttpClient(CIO) { install(WebSockets) } },
 ) {
     /** The WebSocket URL this client connects to (also the unit-tested URL-construction seam). */
-    val wsUrl: String get() = terminalWsUrl(baseUrl, sessionId, token)
+    val wsUrl: String get() = terminalWsUrl(baseUrl, sessionId)
 
     /**
      * Connect and pump until the terminal ends (server closes / EOF) or the process is interrupted. The
@@ -158,7 +161,9 @@ class AttachClient(
             // cannot be an HttpTimeout plugin: its requestTimeoutMillis spans the whole WebSocket
             // request, so a finite value would tear down a healthy long-lived attach.
             val session = try {
-                withTimeout(HANDSHAKE_TIMEOUT_MS) { client.webSocketSession(wsUrl) }
+                withTimeout(HANDSHAKE_TIMEOUT_MS) {
+                    client.webSocketSession(wsUrl) { header(HttpHeaders.Authorization, "Bearer $token") }
+                }
             } catch (e: TimeoutCancellationException) {
                 throw AttachTimeoutException(baseUrl, HANDSHAKE_TIMEOUT_MS, e)
             }

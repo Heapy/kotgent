@@ -113,7 +113,10 @@ class TransportTest {
         val created = ctx.startSession()
         val sid = SessionId(created.id)
 
-        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=$token") {
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
             // Draining the baseline snapshot proves we are subscribed — so the append below is not raced.
             val snapshot = receiveUpdate()
             assertEquals(created.id, snapshot.sessionId, "the snapshot covers the started session")
@@ -133,7 +136,10 @@ class TransportTest {
     fun terminalWsDeliversSeedStreamsBytesForwardsInputAndHandlesResize() = withServer { ctx ->
         val created = ctx.startSession()
 
-        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal?token=$token") {
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
             // The first subscriber lazily opened the single upstream (recorded by the fake factory).
             val upstream = ctx.ptyFactory.opened.receive()
 
@@ -161,7 +167,10 @@ class TransportTest {
         val created = ctx.startSession()
 
         // Attach a terminal so the lazy upstream is open, then POST /input to the SAME session.
-        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal?token=$token") {
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
             val upstream = ctx.ptyFactory.opened.receive()
             receiveBinary() // consume the seed
 
@@ -190,16 +199,31 @@ class TransportTest {
         }
         assertEquals(HttpStatusCode.Unauthorized, wrong.status, "a control call with a wrong token is 401")
 
-        // WS: a bad token must be rejected at the handshake (401, no upgrade) → the client connect throws.
+        // WS: a bad Bearer must be rejected at the handshake (401, no upgrade) → the client connect throws.
         var wsRejected = false
         try {
-            ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=not-the-token") {
+            ctx.client.webSocket(
+                "ws://127.0.0.1:${ctx.port}/events",
+                request = { header(HttpHeaders.Authorization, "Bearer not-the-token") },
+            ) {
                 // Unreachable if the handshake is correctly rejected.
             }
         } catch (_: Throwable) {
             wsRejected = true
         }
-        assertTrue(wsRejected, "a WS handshake with a bad token must be rejected")
+        assertTrue(wsRejected, "a WS handshake with a bad Bearer must be rejected")
+
+        // WS: the legacy `?token=` query form no longer authenticates anything — even the CORRECT token in
+        // the query must be rejected, so the secret can never live in a URL again (Task 9).
+        var queryTokenRejected = false
+        try {
+            ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=$token") {
+                // Unreachable if the query token is correctly ignored and the handshake refused.
+            }
+        } catch (_: Throwable) {
+            queryTokenRejected = true
+        }
+        assertTrue(queryTokenRejected, "a WS handshake carrying the token as ?token= must be rejected")
     }
 
     // ---- 4b. the browser's key: a session cookie authenticates the same control plane ----
@@ -228,7 +252,10 @@ class TransportTest {
 
         // Subscribe per-session with a cursor far beyond lastSeq+1 → StaleCursorException → the server
         // closes the socket with VIOLATED_POLICY (the client must resync, not silently skip).
-        ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=$token&session=${created.id}&from=999") {
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events?session=${created.id}&from=999",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
             val reason = closeReason.await()
             assertEquals(CloseReason.Codes.VIOLATED_POLICY, reason?.knownReason, "a stale cursor closes with VIOLATED_POLICY")
         }

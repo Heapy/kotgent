@@ -216,13 +216,15 @@ class CliTest {
 
     @Test
     fun terminalWsUrlIsBuiltFromTheHttpOrigin() {
+        // No token in the URL any more (Task 9): AttachClient presents it as an Authorization header on
+        // the handshake, so the WS URL is a plain same-origin path with the scheme upgraded to ws(s).
         assertEquals(
-            "ws://127.0.0.1:27508/sessions/sess1/terminal?token=tok",
-            terminalWsUrl("http://127.0.0.1:27508", "sess1", "tok"),
+            "ws://127.0.0.1:27508/sessions/sess1/terminal",
+            terminalWsUrl("http://127.0.0.1:27508", "sess1"),
         )
         assertEquals(
-            "wss://host:8443/sessions/s/terminal?token=t",
-            terminalWsUrl("https://host:8443/", "s", "t"),
+            "wss://host:8443/sessions/s/terminal",
+            terminalWsUrl("https://host:8443/", "s"),
         )
     }
 
