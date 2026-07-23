@@ -416,14 +416,27 @@ Kotgent — local-first диспетчер агентских сессий: пр
 
 **Files:**
 - Create: `src/launchd/Plist.kt`, `src/launchd/Install.kt`
-- Create: `test/launchd/PlistTest.kt`
+- Create: `test/launchd/PlistTest.kt`, `test/launchd/InstallTest.kt`
+- Modify: `src/cli/Commands.kt` (wire `install`/`uninstall` — replace the Task-15 stubs)
+- Modify: `sysnative/cinterop/pty.def` (+`kotgent_executable_path` C-helper); Create: `sysnative/src/exe/NativeExe.kt` (running-binary path for the plist)
 
-- [ ] write тесты: plist содержит `Label`, `ProgramArguments`=[бинарь, `daemon`], `RunAtLoad`, `KeepAlive`, `ThrottleInterval`, `EnvironmentVariables.PATH` (`/opt/homebrew/bin`), `StandardOut/ErrorPath`
-- [ ] `Plist.kt`: чистая генерация XML-plist
-- [ ] `Install.kt`: `install` пишет `~/Library/LaunchAgents/io.kotgent.daemon.plist` + `launchctl bootstrap`; `uninstall` — `bootout`+удаление; путь бинаря — из build-выхода `macos/app`
-- [ ] обработать существующий plist (идемпотентность)
-- [ ] write тесты: путь plist, идемпотентность
-- [ ] run `./kotlin test` — launchd зелёный перед Task 17
+- [x] write тесты: plist содержит `Label`, `ProgramArguments`=[бинарь, `daemon`], `RunAtLoad`, `KeepAlive`, `ThrottleInterval`, `EnvironmentVariables.PATH` (`/opt/homebrew/bin`), `StandardOut/ErrorPath`
+- [x] `Plist.kt`: чистая генерация XML-plist
+- [x] `Install.kt`: `install` пишет `~/Library/LaunchAgents/io.kotgent.daemon.plist` + `launchctl bootstrap`; `uninstall` — `bootout`+удаление; путь бинаря — из build-выхода `macos/app`
+- [x] обработать существующий plist (идемпотентность)
+- [x] write тесты: путь plist, идемпотентность
+- [x] run `./kotlin test` — launchd зелёный перед Task 17
+
+**✅ Реализовано — launchd LaunchAgent install (15 новых launchd-тестов зелёные [9 PlistTest + 6 InstallTest], чистый Kotlin + FAKE runner + TEMP-пути в test-бинаре; suite 152 ran / 147 passed / 5 skipped [4 PtyTest + 1 real-tmux TerminalBridgeTest — БЕЗ изменений, новых `@Ignore` НЕТ]; `./kotlin build`+`test` exit 0; `git grep '/Users/' -- '*.yaml'` пусто):**
+- `src/launchd/Plist.kt` — PURE `launchAgentPlist(binaryPath, logDir, label?, path?, throttleInterval?)` → строка XML-plist (детерминизм по аргументам, ноль I/O → юнит-тестируема поле-за-полем). Эмитит: `Label`=`io.kotgent.daemon` (константа `DAEMON_LABEL`), `ProgramArguments`=`[<binary>, "daemon"]`, `RunAtLoad`+`KeepAlive`=`<true/>`, `ThrottleInterval`=`<integer>10</integer>` (crash-loop floor), `EnvironmentVariables.PATH`=`/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin` (launchd-агент стартует с минимальным env — без этого daemon не найдёт `tmux`/`claude`), `StandardOutPath`/`StandardErrorPath` = `<logDir>/daemon.{out,err}.log`. Значения XML-эскейпятся (`&`/`<`/`>`).
+- `src/launchd/Install.kt` — `LaunchdInstaller` (runner/launchAgentsDir/logDir/label/uid — все инъектируемы). `install(binaryPath)`: mkdir -p `~/Library/LaunchAgents` + `~/Library/Logs/kotgent` → пишет `<label>.plist` (**overwrite = идемпотентно**) → `launchctl bootout gui/<uid> <plist>` (best-effort, ошибка «не загружен» игнорится) → `launchctl bootstrap gui/<uid> <plist>` (не-нулевой exit → `LaunchdException`). `uninstall()`: `bootout` (best-effort) + `unlink` plist (ENOENT игнор → идемпотентно). `launchctl` идёт ЧЕРЕЗ инъектированный `runner` (дефолт = `ProcessRunner`), `<uid>` = `getuid()`. `install` возвращается ПОСЛЕ bootstrap — daemon в процессе НЕ запускается (его стартует launchd по `RunAtLoad`).
+- `src/cli/Commands.kt` — `install`/`uninstall` (Task-15 стабы заменены): `install` резолвит абсолютный путь running-бинаря (`NativeExe.path()`) → `LaunchdInstaller().install(path)` с РЕАЛЬНЫМ `ProcessRunner`; человекочит. вывод + exit-код (ошибка → eprintln + 1). Non-blocking.
+- `sysnative/cinterop/pty.def` (+C-helper `kotgent_executable_path` через `_NSGetExecutablePath`+`realpath`, body-обёртка как `kotgent_openpty` — header-scan `<mach-o/dyld.h>` не отдаёт) + `sysnative/src/exe/NativeExe.kt` (тонкая обёртка, пакет `io.kotgent.exe`). Линкуется в MAIN (не в test — KT-78062), поэтому launchd-тесты его НЕ зовут (инжектят путь напрямую).
+- **[decision] `LaunchdInstaller`-класс с конструктор-инъекцией (runner/dirs/uid), а не голые top-level `install(binaryPath, runner)`:** план писал `install(binaryPath, runner)`/`uninstall(runner)` — реализовано классом (шов как у `ClaudeCli`), где `runner`+пути+uid инъектятся один раз → тест конструирует с FAKE runner + TEMP-путями + фикс-uid и зовёт `install`/`uninstall`; прод = `LaunchdInstaller()` (дефолты). Семантика та же, тестируемость выше.
+- **[decision] bootout+bootstrap по ПУТИ plist'а (`gui/<uid> <plist>`), не по label (`gui/<uid>/<label>`):** ровно как в тексте задачи; обе формы валидны для современного launchctl, path-форма симметрична install/uninstall.
+- **[decision] путь бинаря — `_NSGetExecutablePath`+`realpath` (не argv[0]):** K/N `main(args)` НЕ содержит argv[0], а на macOS нет `/proc/self/exe` → единственный корректный путь. Мелкий C-helper в проверенном sysnative-cinterop (линкуется в main как `Pty`); Install.kt его НЕ импортит (остаётся чистым/тестируемым — путь приходит параметром).
+- **[decision] `logDir` в `launchAgentPlist` — обязательный (без дефолта, читающего `$HOME`):** генератор остаётся host-free/pure; env-зависимые дефолты (`~/Library/...`) живут в `Install.kt` (`defaultLaunchAgentsDir`/`defaultLogDir`), которые инсталлер и подставляет.
+- Без deviations. Реальный `launchctl` в тестах НЕ вызывается (только FAKE runner); реальный daemon НЕ стартует.
 
 ### Task 17: Минимальный Web UI (статика + xterm.js)
 

@@ -11,6 +11,8 @@ import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.db.KotgentDatabase
+import io.kotgent.exe.NativeExe
+import io.kotgent.launchd.LaunchdInstaller
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
@@ -89,14 +91,38 @@ object Commands {
 
     // --- launchd (Task 16) -----------------------------------------------------------------------
 
+    /**
+     * `install` — install (and start) the daemon as a per-user launchd LaunchAgent. Resolves the
+     * running binary's absolute path (so the plist's `ProgramArguments` points at THIS binary), writes
+     * `~/Library/LaunchAgents/io.kotgent.daemon.plist`, and bootstraps it via the real [ProcessRunner].
+     * Returns after bootstrapping — it does NOT run the daemon in-process (launchd starts `kotgent
+     * daemon` per the plist's `RunAtLoad`).
+     */
     fun install(): Int {
-        eprintln("install: not yet implemented — the launchd LaunchAgent is plan Task 16.")
-        return 1
+        val binaryPath = NativeExe.path() ?: run {
+            eprintln("install: cannot resolve the kotgent binary path")
+            return 1
+        }
+        return try {
+            val plistPath = LaunchdInstaller().install(binaryPath)
+            println("installed launchd agent → $plistPath")
+            println("  runs: $binaryPath daemon   (RunAtLoad + KeepAlive)")
+            0
+        } catch (e: Throwable) {
+            eprintln("install failed: ${e.message}")
+            1
+        }
     }
 
-    fun uninstall(): Int {
-        eprintln("uninstall: not yet implemented — the launchd LaunchAgent is plan Task 16.")
-        return 1
+    /** `uninstall` — boot out the LaunchAgent and remove its plist. Idempotent. */
+    fun uninstall(): Int = try {
+        val installer = LaunchdInstaller()
+        installer.uninstall()
+        println("uninstalled launchd agent (${installer.plistPath})")
+        0
+    } catch (e: Throwable) {
+        eprintln("uninstall failed: ${e.message}")
+        1
     }
 
     // --- daemon (the real control-plane server) --------------------------------------------------

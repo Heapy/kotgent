@@ -22,6 +22,11 @@ headers = util.h sys/ioctl.h termios.h spawn.h
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <spawn.h>
+#include <mach-o/dyld.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <stdint.h>
 
 // openpty() lives in <util.h>. cinterop's header scan does not pick up util.h's
 // declarations here (only spawn.h/ioctl.h/termios.h symbols come through), so we expose
@@ -77,5 +82,25 @@ static int kotgent_get_winsize(int fd, unsigned short *rows, unsigned short *col
     if (ioctl(fd, TIOCGWINSZ, &ws) != 0) return -1;
     *rows = ws.ws_row;
     *cols = ws.ws_col;
+    return 0;
+}
+
+// --- Running-executable path for `kotgent install` (Task 16) -------------------------------------
+//
+// launchd's ProgramArguments must be the absolute path of the kotgent binary, so `install` needs to
+// know where the currently-running binary lives. macOS exposes this via _NSGetExecutablePath
+// (<mach-o/dyld.h>), which is not in cinterop's header scan set — so, like openpty above, we wrap it
+// in a compiled body helper. The raw path can be non-canonical (contain `.`/`..`/symlinks), so it is
+// resolved through realpath. Writes a NUL-terminated path into buf; returns 0 on success, -1 on error
+// (including buf too small).
+static int kotgent_executable_path(char *buf, unsigned int buflen) {
+    char raw[PATH_MAX];
+    uint32_t size = (uint32_t)sizeof(raw);
+    if (_NSGetExecutablePath(raw, &size) != 0) return -1;
+    char resolved[PATH_MAX];
+    const char *src = realpath(raw, resolved) ? resolved : raw;
+    size_t n = strlen(src);
+    if (n + 1 > (size_t)buflen) return -1;
+    memcpy(buf, src, n + 1);
     return 0;
 }
