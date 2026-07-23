@@ -212,7 +212,7 @@ class HookRoutesTest {
             )
             store.appended.receive()
 
-            val rotated = holder.rotate()
+            val rotated = holder.rotate(token)!!
 
             // The hooks re-read their 0600 header file per invocation, so the very next hook already
             // carries the new value — and the one still carrying the old value must be refused.

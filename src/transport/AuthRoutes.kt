@@ -113,10 +113,31 @@ fun Route.authRoutes(
     authenticated(tokens::current, publicUrl) {
         loopbackOnly {
             post(AUTH_TICKET_PATH) {
-                // Bind the ticket to the token live RIGHT NOW: the exchange signs its cookie with this value,
-                // not with whatever is current at redeem time, so a rotation between mint and redeem makes the
-                // resulting cookie dead on arrival (see [TicketStore] KDoc).
-                val ticket = tickets.issue(tokens.current())
+                // Take ONE token snapshot and use it for BOTH a credential re-check and the bind, so the ticket
+                // is bound to the token the caller ACTUALLY PROVED — atomically on a single value. The outer
+                // [authenticated] gate already validated a credential, but against tokens.current() as of the
+                // GATE; reading tokens.current() again here would reopen a window in which a rotation between
+                // the gate and this read lets a soon-to-be-revoked credential bind its ticket to the NEW token
+                // and launder itself across the rotation. With one snapshot: a rotation BEFORE it makes the old
+                // credential fail this re-check → 401 (correct — it is already revoked); a rotation AFTER it
+                // binds to the old token, whose exchanged cookie is dead under the new token by construction
+                // (see [TicketStore]). Either way no laundering, with no dependency on the threading model.
+                //
+                // This duplicates a little of the gate's Bearer-or-cookie logic on purpose — that is the price
+                // of making gate-and-bind atomic on one snapshot; a present Bearer must match (no fall-through
+                // to the cookie), so a stray non-live Bearer cannot mint a ticket.
+                val token = tokens.current()
+                val presented = call.presentedToken()
+                val proven = if (presented != null) {
+                    constantTimeEquals(presented, token)              // Bearer path (CLI, attach)
+                } else {
+                    verifySessionCookie(token, call.sessionCookie())  // cookie path (the PhoneDialog)
+                }
+                if (!proven) {
+                    call.respondText(refusalBody(HttpStatusCode.Unauthorized), status = HttpStatusCode.Unauthorized)
+                    return@post
+                }
+                val ticket = tickets.issue(token)
                 // The authority this request actually arrived on, so an ephemeral port (tests) or a
                 // non-default one (`--port`) is reflected without the transport having to know it.
                 // [loopbackOnly] already refused a request with no/foreign Host, so this is loopback.
@@ -136,17 +157,26 @@ fun Route.authRoutes(
             post(AUTH_ROTATE_PATH) {
                 // Bearer-ONLY, unlike ticket issuance above. [authenticated] admits EITHER the master
                 // Bearer OR the browser's session cookie, but rotation echoes the NEW master token back in
-                // its body — so a cookie reaching here (an XSS in the SPA firing a same-origin POST, whose
-                // Host is loopback and whose Origin is allowed) would escalate a browser-scoped credential
-                // into the machine key, collapsing the two-key model. Demand the Bearer explicitly, reusing
-                // the exact constant-time compare [authorize] runs for a token; a cookie-only caller is 403.
+                // its body — so a cookie-only caller reaching here (an XSS in the SPA firing a same-origin
+                // POST, whose Host is loopback and whose Origin is allowed) would escalate a browser-scoped
+                // credential into the machine key, collapsing the two-key model. [presentedToken] is
+                // Authorization-only (post-Task-9), so a cookie carries no Bearer and lands here as null → 403.
                 val presented = call.presentedToken()
-                if (presented == null || !constantTimeEquals(presented, tokens.current())) {
+                if (presented == null) {
                     call.respondText(refusalBody(HttpStatusCode.Forbidden), status = HttpStatusCode.Forbidden)
                     return@post
                 }
-                // Persist-then-publish lives in [TokenHolder.rotate]; a failing persist throws here and
-                // becomes a 500 with the OLD token still in force, which is the safe end of that failure.
+                // COMPARE-AND-SWAP under TokenHolder's write lock, replacing a separate bearer pre-check +
+                // rotate: those were NOT atomic, so two concurrent rotates presenting the same old token both
+                // passed the check and both minted, leaving the live token the last writer's while BOTH callers
+                // learned a value — a holder of the old token could race the operator and end up knowing the
+                // final live token. rotate(expected) proceeds only if `presented` is STILL the live token, so
+                // exactly one of two concurrent rotates wins; the loser gets `null` here → 409 (its token is
+                // stale) instead of silently succeeding into a split-brain. The CAS subsumes the old
+                // constant-time bearer check (rotate returns null unless `presented` matched the live token).
+                //
+                // Persist-then-publish lives in [TokenHolder.rotate]; a failing persist throws here and becomes
+                // a 500 with the OLD token still in force, which is the safe end of that failure.
                 //
                 // Rotation revokes ALL browser credentials by construction, with no ticket bookkeeping here:
                 // every session cookie is signed with the master token, and it just changed, so every cookie
@@ -156,7 +186,11 @@ fun Route.authRoutes(
                 // is set. There is deliberately no cross-lock "clear the tickets" step — it could only leak one
                 // way or the other between the token flip (TokenHolder's lock) and a map clear (TicketStore's
                 // Mutex), and it is not load-bearing once validity flows from the ticket's bound token.
-                val rotated = tokens.rotate()
+                val rotated = tokens.rotate(expected = presented)
+                if (rotated == null) {
+                    call.respondText("token changed", status = HttpStatusCode.Conflict)
+                    return@post
+                }
                 call.respondText(
                     json.encodeToString(RotateResponse.serializer(), RotateResponse(rotated)),
                     ContentType.Application.Json,

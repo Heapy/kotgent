@@ -36,7 +36,10 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  * token on disk and a different one live in memory, and the CLI/hooks (which read the secret from disk) would
  * 401 until a restart. The lock is on the WRITE side only; readers never touch it. Rotation is an operator
  * command, so real contention is vanishingly rare — the lock is there to make "at most once at a time" a
- * guarantee rather than an assumption.
+ * guarantee rather than an assumption. It also spans the COMPARE in [rotate]'s compare-and-swap: rotation
+ * proceeds only if the caller's [rotate] `expected` is still the live token, and doing the compare and the
+ * store under the one lock is what makes two concurrent rotates presenting the same old token resolve to
+ * exactly one winner rather than two silent successes.
  */
 @OptIn(ExperimentalAtomicApi::class)
 class TokenHolder(
@@ -71,19 +74,35 @@ class TokenHolder(
     fun current(): String = ref.load()
 
     /**
-     * Mint a fresh token ([generateToken]), persist it, publish it, and return it.
+     * COMPARE-AND-SWAP the master token: mint+persist+publish a fresh token and return it, but ONLY if
+     * [expected] is still the live token; return `null` if it is not (someone rotated first).
      *
-     * After this returns, the previous token no longer authenticates anything: new requests and new
+     * The check and the swap are ONE atomic step under [rotating], so two concurrent `POST /auth/rotate`
+     * presenting the SAME old token cannot both succeed: exactly one observes `current == expected` and swaps,
+     * the other observes the already-rotated value and gets `null`. Without the CAS both callers would pass a
+     * SEPARATE bearer pre-check and both mint — a split-brain where the live token is the last writer's while
+     * BOTH callers learned a value, so a holder of the old master token could race the operator's rotation and
+     * end up knowing the final live token (retaining control). Returning `null` tells the loser (a 4xx at the
+     * route) instead of letting it silently succeed.
+     *
+     * [expected] is compared with [constantTimeEquals] for consistency with every other secret compare in the
+     * daemon — it is already an authenticated value, so this is belt-and-braces rather than a load-bearing
+     * timing defence, but "compare secrets in constant time" is a single rule with no exceptions.
+     *
+     * Persist-then-publish order is unchanged: a failing [persist] throws with the OLD token still in force.
+     *
+     * After a successful swap the previous token no longer authenticates anything: new requests and new
      * WebSocket handshakes with it are rejected. Sockets that are ALREADY open stay open — authorization is
      * evaluated once, in the `Plugins` phase of the handshake — so a live `kotgent attach` or an open
      * events stream survives until it reconnects. The CLI says so out loud rather than pretending otherwise.
      */
-    fun rotate(): String {
-        // A concurrent rotation is publishing its own value — let it finish so the persist+publish pair below
-        // is atomic as a unit. Uncontended in practice (rotation is an operator command); the spin only ever
-        // runs if two `POST /auth/rotate` land at once.
+    fun rotate(expected: String): String? {
+        // Hold the write lock across BOTH the compare and the swap, so check-then-mint is atomic: a concurrent
+        // rotation cannot slip its own publish between our load and our store. Uncontended in practice
+        // (rotation is an operator command); the spin only ever runs if two `POST /auth/rotate` land at once.
         while (!rotating.compareAndSet(0, 1)) { /* spin until the other rotation releases */ }
         try {
+            if (!constantTimeEquals(ref.load(), expected)) return null // someone rotated first — not the live token
             val next = generateToken()
             persist(next)
             ref.store(next)

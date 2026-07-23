@@ -133,7 +133,7 @@ class AuthorizeWiringTest {
             val issued = cookie()
             assertEquals(HttpStatusCode.OK, client.probe(port, cookie = issued).status, "the cookie works")
 
-            holder.rotate()
+            holder.rotate(token)
 
             // "Log every device out" with no session table: the HMAC key changed, so every cookie ever
             // issued stops verifying at once — on the very next request, without a restart.

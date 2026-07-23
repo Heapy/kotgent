@@ -88,6 +88,53 @@ class AuthRoutesTest {
         )
     }
 
+    @Test
+    fun aSessionCookieCanMintATicketThatExchangesIntoAWorkingCookie() = withAuthServer { env ->
+        // The PhoneDialog path: an already-logged-in browser (a session cookie, NO Bearer) mints a sign-in
+        // link for a second device. The handler's single-token-snapshot re-check accepts the cookie against
+        // the current token and binds the new ticket to that same snapshot. Absent any rotation, the ticket
+        // then exchanges into a cookie that reaches the control plane — proving the cookie path of the
+        // gate-and-bind re-check still works end to end.
+        val loginCookie = parseServerSetCookieHeader(
+            env.exchange(env.port, env.issueTicket()).headers[HttpHeaders.SetCookie]!!,
+        ).value
+
+        val ticketResp = env.client.req(
+            env.port, AUTH_TICKET_PATH, HttpMethod.Post,
+            cookie = loginCookie, origin = "http://127.0.0.1:${env.port}",
+        )
+        assertEquals(HttpStatusCode.OK, ticketResp.status, "a valid session cookie mints a ticket (PhoneDialog)")
+        val ticket = TRANSPORT_JSON.decodeFromString(TicketResponse.serializer(), ticketResp.bodyAsText()).ticket
+
+        val exchanged = env.exchange(env.port, ticket)
+        assertEquals(HttpStatusCode.OK, exchanged.status, "the cookie-minted ticket redeems")
+        val newCookie = parseServerSetCookieHeader(exchanged.headers[HttpHeaders.SetCookie]!!).value
+        assertTrue(
+            verifySessionCookie(token, newCookie),
+            "the exchanged cookie verifies under the token that was current at issue",
+        )
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(env.port, "/sessions", cookie = newCookie).status,
+            "and it authenticates the control plane",
+        )
+    }
+
+    @Test
+    fun aTicketRequestWithANonLiveBearerIs401AndMintsNothing() = withAuthServer { env ->
+        // The single-snapshot re-check binds the ticket to the credential the caller actually PROVED: when a
+        // Bearer is present it MUST match the snapshot (no fall-through to the cookie), so a stray, non-live
+        // Bearer cannot mint a ticket even riding alongside a valid session cookie that would satisfy the gate.
+        val cookie = parseServerSetCookieHeader(
+            env.exchange(env.port, env.issueTicket()).headers[HttpHeaders.SetCookie]!!,
+        ).value
+        val resp = env.client.req(
+            env.port, AUTH_TICKET_PATH, HttpMethod.Post,
+            bearer = "not-the-live-master-token", cookie = cookie, origin = "http://127.0.0.1:${env.port}",
+        )
+        assertEquals(HttpStatusCode.Unauthorized, resp.status, "a non-live Bearer does not mint a ticket")
+    }
+
     // --- the page burns nothing -------------------------------------------------------------------
 
     @Test
@@ -291,6 +338,50 @@ class AuthRoutesTest {
             HttpStatusCode.Forbidden,
             env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token, host = "kotgent.example.com").status,
             "rotation is never reachable through the tunnel",
+        )
+    }
+
+    @Test
+    fun aStaleBearerCannotRotateTwice() = withAuthServer { env ->
+        // The end-to-end shape of the compare-and-swap: the first rotate with the master Bearer wins; a second
+        // rotate replaying the SAME (now-stale) Bearer is refused (4xx) and mints nothing. Without the CAS the
+        // old separate pre-check + rotate would let a concurrent replay mint a SECOND token and hand its holder
+        // the final live value; with it, only the winner's token is ever in force.
+        val first = env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token)
+        assertEquals(HttpStatusCode.OK, first.status)
+        val rotated = TRANSPORT_JSON.decodeFromString(RotateResponse.serializer(), first.bodyAsText()).token
+
+        val second = env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token)
+        assertTrue(second.status.value in 400..499, "a stale Bearer cannot rotate again; got ${second.status}")
+
+        // Nothing further changed: the token in force is still the FIRST rotation's, so its Bearer rotates.
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = rotated).status,
+            "the winner's token is still the live one — the stale replay changed nothing",
+        )
+    }
+
+    @Test
+    fun rotateWithANonLiveBearerConflictsAndDoesNotRotate() = withAuthServer { env ->
+        // Drive the handler's 409 branch deterministically: a request that passes the gate by ANOTHER means
+        // (a valid session cookie) but presents a Bearer that is NOT the live token. The CAS in
+        // TokenHolder.rotate only swaps when the presented value is still current, so a non-live Bearer yields
+        // null → 409 and no rotation — a stray/stale Bearer (or a concurrent-rotate loser) cannot mint.
+        val cookie = parseServerSetCookieHeader(
+            env.exchange(env.port, env.issueTicket()).headers[HttpHeaders.SetCookie]!!,
+        ).value
+        val resp = env.client.req(
+            env.port, AUTH_ROTATE_PATH, HttpMethod.Post,
+            bearer = "not-the-live-master-token", cookie = cookie, origin = "http://127.0.0.1:${env.port}",
+        )
+        assertEquals(HttpStatusCode.Conflict, resp.status, "a non-live Bearer cannot rotate (CAS lost) → 409")
+
+        // And nothing rotated: the real master Bearer still rotates, so the failed attempt left it untouched.
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token).status,
+            "the 409 attempt did not change the token — the live Bearer still rotates",
         )
     }
 
