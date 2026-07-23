@@ -4,291 +4,33 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Kotgent</title>
-  <!-- Vendored, offline (Task 17): pinned @xterm/xterm@5.5.0 + @xterm/addon-fit@0.10.0. -->
+  <!-- Vendored, offline: pinned @xterm/xterm@5.5.0 + @xterm/addon-fit@0.10.0, preact@10.29.7 + htm@3.1.1. -->
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />
+
+  <!--
+    No bundler: bare specifiers are resolved to the vendored ES modules by the browser itself. This map
+    must precede the first module load, which is why it lives in <head>.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "preact": "./vendor/preact.module.js",
+      "preact/hooks": "./vendor/preact-hooks.module.js",
+      "htm": "./vendor/htm.module.js",
+      "htm/preact": "./vendor/htm-preact.module.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <!-- data-webui-marker is asserted by test/transport/WebUiServingTest.kt (serving path). -->
-  <div id="app" data-webui-marker="kotgent-webui">
-    <aside id="sidebar">
-      <header id="sidebar-head">
-        <div class="brand-row">
-          <h1>Kotgent</h1>
-          <div class="brand-actions">
-            <button id="new-session-button" class="button button-primary button-small" type="button">
-              New session
-            </button>
-            <button id="help-button" class="icon-button icon-button-small" type="button"
-                    aria-label="Help" title="How kotgent works">?</button>
-            <button id="prefs-button" class="icon-button icon-button-small" type="button"
-                    aria-label="Preferences" title="Preferences">⚙</button>
-          </div>
-        </div>
-        <div id="attention-count" class="attn-count" title="Sessions needing attention">
-          <span id="attention-num">0</span> need attention
-        </div>
-      </header>
+  <div id="app" data-webui-marker="kotgent-webui"></div>
 
-      <section id="attention-section" hidden>
-        <h2 class="section-title attn">Needs attention</h2>
-        <ul id="attention-list" class="session-list"></ul>
-      </section>
-
-      <section id="all-section">
-        <h2 class="section-title">
-          <span>Sessions</span>
-          <button id="base-path-note" class="base-note" type="button" hidden></button>
-        </h2>
-        <ul id="session-list" class="session-list"></ul>
-        <p id="empty-sessions" class="empty-sessions" hidden>
-          No sessions yet. Start one to attach it here.
-        </p>
-      </section>
-
-      <p id="status-line" class="status-line" role="status" aria-live="polite"></p>
-    </aside>
-
-    <main id="terminal-pane">
-      <div id="terminal-head">
-        <div class="terminal-identity">
-          <span id="terminal-title">No session selected</span>
-          <span id="terminal-state" class="badge"></span>
-        </div>
-        <div id="session-actions" class="session-actions" hidden>
-          <button id="attach-button" class="button button-primary" type="button">Attach</button>
-          <button id="interrupt-button" class="button button-quiet" type="button">Interrupt</button>
-          <button id="resume-button" class="button button-primary" type="button">Resume</button>
-          <button id="detach-button" class="button button-quiet" type="button">Detach</button>
-          <button id="stop-button" class="button button-danger" type="button">Stop</button>
-        </div>
-      </div>
-      <div id="terminal-host"></div>
-      <p id="terminal-hint" class="terminal-hint">Select a session on the left to attach its terminal.</p>
-    </main>
-  </div>
-
-  <dialog id="new-session-dialog" aria-labelledby="new-session-title">
-    <form id="new-session-form">
-      <div class="dialog-head">
-        <div>
-          <h2 id="new-session-title">New session</h2>
-          <p>Start a coding agent in a tmux-backed workspace.</p>
-        </div>
-        <button id="new-session-close" class="icon-button" type="button" aria-label="Close">×</button>
-      </div>
-
-      <label class="field">
-        <span>Agent</span>
-        <select id="session-agent" name="agent">
-          <option value="claude">Claude</option>
-        </select>
-      </label>
-
-      <label class="field">
-        <span>Working directory</span>
-        <input id="session-cwd" name="cwd" type="text" required spellcheck="false"
-               placeholder="/path/to/project" />
-      </label>
-
-      <label class="field">
-        <span>Name <small>optional</small></span>
-        <input id="session-name" name="name" type="text" maxlength="80" placeholder="Feature or task" />
-      </label>
-
-      <label class="field">
-        <span>Tags <small>optional, comma-separated</small></span>
-        <input id="session-tags" name="tags" type="text" placeholder="backend, urgent" />
-      </label>
-
-      <p id="new-session-error" class="form-error" role="alert" hidden></p>
-
-      <div class="dialog-actions">
-        <button id="new-session-cancel" class="button button-quiet" type="button">Cancel</button>
-        <button id="new-session-submit" class="button button-primary" type="submit">Start session</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="prefs-dialog" aria-labelledby="prefs-title">
-    <form id="prefs-form">
-      <div class="dialog-head">
-        <div>
-          <h2 id="prefs-title">Preferences</h2>
-          <p>Stored in this browser only.</p>
-        </div>
-        <button id="prefs-close" class="icon-button" type="button" aria-label="Close">×</button>
-      </div>
-
-      <label class="field">
-        <span>Base path</span>
-        <input id="prefs-base-path" name="basePath" type="text" spellcheck="false"
-               placeholder="/Users/you/dev" />
-        <small class="field-hint">
-          Absolute path. Sessions below it are grouped by directory, and new sessions default to it.
-          Leave empty for one flat list.
-        </small>
-      </label>
-
-      <label class="field">
-        <span>Grouping level <small>directories below the base path</small></span>
-        <select id="prefs-grouping-level" name="groupingLevel">
-          <option value="0">0 — one group for everything</option>
-          <option value="1">1 — one group per direct child</option>
-          <option value="2">2 — two levels deep</option>
-          <option value="3">3 — three levels deep</option>
-          <option value="4">4 — four levels deep</option>
-        </select>
-        <small id="prefs-grouping-preview" class="field-hint"></small>
-      </label>
-
-      <p id="prefs-error" class="form-error" role="alert" hidden></p>
-
-      <div class="dialog-actions">
-        <button id="prefs-cancel" class="button button-quiet" type="button">Cancel</button>
-        <button id="prefs-submit" class="button button-primary" type="submit">Save</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="help-dialog" aria-labelledby="help-title">
-    <div id="help-form">
-      <div class="dialog-head">
-        <div>
-          <h2 id="help-title">How kotgent works</h2>
-          <p>Sessions, states, and what each control does.</p>
-        </div>
-        <button id="help-close" class="icon-button" type="button" aria-label="Close">×</button>
-      </div>
-
-      <div id="help-body">
-        <section class="help-section">
-          <h3>Sessions</h3>
-          <p>
-            A session is one coding agent running inside its own <code>tmux</code> session
-            (<code>kt-&lt;id&gt;</code>) in a working directory you pick. The daemon owns it — not this
-            page. Closing the tab, detaching, or restarting the daemon does not stop the agent.
-          </p>
-          <p>
-            What you see in the right pane is that real tmux pane. The daemon holds exactly one
-            <code>tmux attach</code> per session and fans it out to every viewer, so a browser, an IDE and
-            <code>kotgent attach</code> all watch and type into the same terminal.
-          </p>
-          <p>
-            State is never stored directly: the agent reports events through hooks, they are appended to a
-            per-session log, and the state you see is replayed from that log. That is why sessions survive
-            a daemon restart.
-          </p>
-        </section>
-
-        <section class="help-section">
-          <h3>States</h3>
-          <dl class="help-list">
-            <dt><span class="badge badge-running">running</span></dt>
-            <dd>The agent is working on a turn.</dd>
-            <dt><span class="badge badge-ready">ready</span></dt>
-            <dd>Alive and idle — it finished its turn and is waiting for your next prompt.</dd>
-            <dt><span class="badge badge-attention">needs approval</span></dt>
-            <dd>
-              Blocked asking permission for an action. Answer it in the terminal; the approval clears by
-              itself as soon as the agent acts again.
-            </dd>
-            <dt><span class="badge badge-attention">needs answer</span></dt>
-            <dd>
-              Blocked on a question. Modeled but never produced by the current Claude adapter — interactive
-              Claude gives no "waiting for an answer" signal.
-            </dd>
-            <dt><span class="badge badge-dead">stopped</span></dt>
-            <dd>The agent process exited cleanly (this is what Stop leaves behind).</dd>
-            <dt><span class="badge badge-crashed">crashed</span></dt>
-            <dd>The agent process exited abnormally or its pane was lost.</dd>
-            <dt><span class="badge badge-resumable">resumable</span></dt>
-            <dd>Dead, but the conversation transcript survives — Resume can revive it.</dd>
-          </dl>
-          <p class="help-note">
-            The first four are <em>alive</em> (a process is running in tmux), the last three are
-            <em>dead</em>. The two "needs" states are the ones counted as needing attention.
-          </p>
-        </section>
-
-        <section class="help-section">
-          <h3>Controls</h3>
-          <dl class="help-list">
-            <dt>New session</dt>
-            <dd>
-              Starts an agent in the directory you give it. With a base path set in Preferences, each
-              group's <strong>+</strong> starts one in that group's directory instead.
-            </dd>
-            <dt>Attach</dt>
-            <dd>
-              Connects this browser to the session's terminal. It starts nothing — it only opens a view on
-              an agent that is already running.
-            </dd>
-            <dt>Interrupt</dt>
-            <dd>
-              Sends <kbd>Ctrl-C</kbd> to the pane and marks the session ready, clearing any pending
-              approval. Use it for a turn that is stuck or running away. The agent stays alive.
-            </dd>
-            <dt>Stop</dt>
-            <dd>
-              Kills the tmux session, so the agent process ends and the state becomes stopped. The
-              conversation transcript is kept, so this is reversible with Resume.
-            </dd>
-            <dt>Resume</dt>
-            <dd>
-              Relaunches the agent against the saved transcript in a fresh tmux session and puts it back to
-              ready. It is refused while the provider's session id has not been captured yet — that id is
-              what a resume is addressed to.
-            </dd>
-            <dt>Detach</dt>
-            <dd>
-              Closes only <em>your</em> terminal client. The agent keeps working; when the last viewer
-              leaves, the daemon drops its upstream tmux attach too.
-            </dd>
-          </dl>
-        </section>
-
-        <section class="help-section">
-          <h3>The sidebar</h3>
-          <p>
-            "Needs attention" counts the sessions blocked on you and repeats them at the top so nothing is
-            missed. The blue pill is the number of events appended since you last read the session, and the
-            badge is its current state. With a base path set in Preferences, rows are grouped by working
-            directory; anything outside that base path is grouped under its own path at the end.
-          </p>
-        </section>
-
-        <section class="help-section">
-          <h3>Access</h3>
-          <p>
-            The daemon listens on <code>127.0.0.1</code> and every route requires one token — the same
-            string as <code>~/.kotgent/token</code>. This page carries it in the URL fragment
-            (<code>#token=…</code>), which browsers never send to the server; it is replayed as a bearer
-            header for the API and as a query parameter for the WebSockets, because a browser cannot set
-            headers on a WebSocket handshake. Anyone with the URL has full control of your agents.
-          </p>
-        </section>
-
-        <section class="help-section">
-          <h3>The same thing from a terminal</h3>
-          <pre class="help-code">kotgent list                  list sessions
-kotgent start claude [cwd]    start a session
-kotgent attach &lt;id&gt;           attach a raw terminal
-kotgent interrupt &lt;id&gt;        send Ctrl-C
-kotgent stop &lt;id&gt;             stop a session
-kotgent resume &lt;id&gt;           resume a stopped/crashed session
-kotgent daemon [--port N]     run the control plane</pre>
-        </section>
-      </div>
-
-      <div class="dialog-actions">
-        <button id="help-done" class="button button-primary" type="button">Done</button>
-      </div>
-    </div>
-  </dialog>
-
+  <!-- Classic scripts: xterm publishes the globals the terminal pane uses, and they run before the
+       deferred module below. -->
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

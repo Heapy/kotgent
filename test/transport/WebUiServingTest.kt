@@ -71,56 +71,125 @@ class WebUiServingTest {
         assertEquals(HttpStatusCode.OK, resp.status, "GET / serves the SPA index")
         val body = resp.bodyAsText()
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
-        assertTrue(body.contains("app.js"), "index.html bootstraps app.js")
+        assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
+        assertTrue(body.contains("src=\"app.js\""), "index.html bootstraps app.js")
         assertTrue(body.contains("vendor/xterm.js"), "index.html loads the vendored xterm.js")
         assertContentTypeContains(resp, "html")
     }
 
     @Test
-    fun daemonServesTheAppScriptWithAJavascriptContentType() = withServer { ctx ->
+    fun daemonServesTheAppEntryModule() = withServer { ctx ->
         val resp = ctx.get("/app.js")
         assertEquals(HttpStatusCode.OK, resp.status, "GET /app.js is served")
         val body = resp.bodyAsText()
-        assertTrue(body.contains("parseToken"), "app.js contains its pure token-parse helper")
+        assertTrue(body.contains("from \"preact\""), "the entry module imports the vendored Preact")
+        assertTrue(body.contains("from \"htm/preact\""), "the entry module imports htm's Preact binding")
         assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
         assertTrue(body.contains("startSession"), "app.js can create sessions")
         assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
-        assertTrue(body.contains("groupSessions"), "app.js groups the list by the base path")
-        assertTrue(body.contains("loadPrefs"), "app.js restores the stored preferences")
         assertContentTypeContains(resp, "javascript")
+    }
+
+    /**
+     * The no-build-step contract: bare specifiers (`preact`, `htm/preact`) are resolved by the browser
+     * through the import map in `index.html`, so a typo there — or a vendored file that was never
+     * committed — breaks the whole page with nothing to catch it. Assert every mapped target is really
+     * served, and that the modules' own bare imports are covered by the map.
+     */
+    @Test
+    fun theImportMapResolvesToVendoredModulesThatAreActuallyServed() = withServer { ctx ->
+        val index = ctx.get("/").bodyAsText()
+        assertTrue(index.contains("type=\"importmap\""), "index.html declares an import map")
+
+        val mapped = mapOf(
+            "preact" to "/vendor/preact.module.js",
+            "preact/hooks" to "/vendor/preact-hooks.module.js",
+            "htm" to "/vendor/htm.module.js",
+            "htm/preact" to "/vendor/htm-preact.module.js",
+        )
+        for ((specifier, path) in mapped) {
+            assertTrue(
+                index.contains("\"$specifier\"") && index.contains(path.removePrefix("/")),
+                "the import map wires '$specifier' to $path",
+            )
+            val resp = ctx.get(path)
+            assertEquals(HttpStatusCode.OK, resp.status, "GET $path (import-map target) is served")
+            assertContentTypeContains(resp, "javascript")
+            assertTrue(resp.bodyAsText().isNotEmpty(), "$path is not empty")
+        }
+
+        // htm's Preact binding re-exports from both bare specifiers; the hooks build imports 'preact'.
+        val htmPreact = ctx.get("/vendor/htm-preact.module.js").bodyAsText()
+        assertTrue(htmPreact.contains("\"preact\""), "htm/preact imports the bare 'preact' specifier")
+        assertTrue(htmPreact.contains("\"htm\""), "htm/preact imports the bare 'htm' specifier")
+        assertTrue(
+            ctx.get("/vendor/preact-hooks.module.js").bodyAsText().contains("\"preact\""),
+            "the hooks build imports the bare 'preact' specifier",
+        )
+    }
+
+    @Test
+    fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
+        for (path in listOf(
+            "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js",
+            "/components/Sidebar.js", "/components/TerminalPane.js", "/components/dialogs.js",
+        )) {
+            val resp = ctx.get(path)
+            assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
+            assertContentTypeContains(resp, "javascript")
+        }
+        assertTrue(
+            ctx.get("/lib/paths.js").bodyAsText().contains("export function groupSessions"),
+            "the grouping helpers are exported for the sidebar (and for out-of-browser checks)",
+        )
+        assertTrue(
+            ctx.get("/lib/prefs.js").bodyAsText().contains("export function loadPrefs"),
+            "the stored preferences are exported",
+        )
     }
 
     @Test
     fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
-        val body = ctx.get("/").bodyAsText()
-        assertTrue(body.contains("id=\"new-session-form\""), "the UI includes the new-session form")
-        assertTrue(body.contains("id=\"attach-button\""), "the UI includes attach")
-        assertTrue(body.contains("id=\"interrupt-button\""), "the UI includes interrupt")
-        assertTrue(body.contains("id=\"resume-button\""), "the UI includes resume")
-        assertTrue(body.contains("id=\"detach-button\""), "the UI includes detach")
-        assertTrue(body.contains("id=\"stop-button\""), "the UI includes stop")
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        assertTrue(pane.contains("id=\"attach-button\""), "the UI includes attach")
+        assertTrue(pane.contains("id=\"interrupt-button\""), "the UI includes interrupt")
+        assertTrue(pane.contains("id=\"resume-button\""), "the UI includes resume")
+        assertTrue(pane.contains("id=\"detach-button\""), "the UI includes detach")
+        assertTrue(pane.contains("id=\"stop-button\""), "the UI includes stop")
+        assertTrue(
+            ctx.get("/components/dialogs.js").bodyAsText().contains("id=\"new-session-form\""),
+            "the UI includes the new-session form",
+        )
     }
 
     @Test
     fun webUiExposesThePreferencesScreen() = withServer { ctx ->
-        val body = ctx.get("/").bodyAsText()
-        assertTrue(body.contains("id=\"prefs-button\""), "the sidebar has the preferences (gear) entry point")
-        assertTrue(body.contains("id=\"prefs-dialog\""), "the UI includes the preferences screen")
-        assertTrue(body.contains("id=\"prefs-base-path\""), "preferences expose the base path")
-        assertTrue(body.contains("id=\"prefs-grouping-level\""), "preferences expose the grouping level")
+        assertTrue(
+            ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"prefs-button\""),
+            "the sidebar has the preferences (gear) entry point",
+        )
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(dialogs.contains("id=\"prefs-dialog\""), "the UI includes the preferences screen")
+        assertTrue(dialogs.contains("id=\"prefs-base-path\""), "preferences expose the base path")
+        assertTrue(dialogs.contains("id=\"prefs-grouping-level\""), "preferences expose the grouping level")
     }
 
     @Test
     fun webUiExposesTheHelpScreen() = withServer { ctx ->
-        val body = ctx.get("/").bodyAsText()
-        assertTrue(body.contains("id=\"help-button\""), "the sidebar has the help entry point")
-        assertTrue(body.contains("id=\"help-dialog\""), "the UI includes the help screen")
-        // The help text explains the controls it documents — a rename that leaves it stale should fail.
-        for (control in listOf("Attach", "Interrupt", "Resume", "Detach", "Stop")) {
-            assertTrue(body.contains(">$control</dt>"), "help documents the $control control")
+        assertTrue(
+            ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"help-button\""),
+            "the sidebar has the help entry point",
+        )
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(dialogs.contains("id=\"help-dialog\""), "the UI includes the help screen")
+        // The help text explains the controls and states it documents — a rename that leaves the help
+        // stale should fail here rather than quietly ship a wrong explanation.
+        for (control in listOf("New session", "Attach", "Interrupt", "Resume", "Detach", "Stop")) {
+            assertTrue(dialogs.contains("[\"$control\","), "help documents the $control control")
         }
-        for (state in listOf("running", "ready", "needs approval", "stopped", "crashed", "resumable")) {
-            assertTrue(body.contains(">$state</span>"), "help documents the '$state' state")
+        for (state in listOf("running", "ready", "needs approval", "needs answer",
+                             "stopped", "crashed", "resumable")) {
+            assertTrue(dialogs.contains("[\"$state\","), "help documents the '$state' state")
         }
     }
 
