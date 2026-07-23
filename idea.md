@@ -5,12 +5,15 @@
 > продолжает ту же сессию и подсвечивает `needs attention` при approval. Готово: event-sourcing-ядро
 > (лог → чистый редьюсер → проекция, restart-safe replay), SQLDelight-хранилище, single-upstream
 > `tmux`-fan-out, reconciliation при рестарте daemon, provider-id capture, CLI
-> (`daemon`/`install`/`start`/`list`/`attach`/`stop`/`resume`/`interrupt`) и launchd-установка. Пока
-> **только Claude** и **только local-only**; Codex, PWA, cloudflared-туннель, Web Push и diff viewer — в
-> бэклоге. Как собрать/запустить и что именно вошло — см. [README.md](README.md); паттерны, инварианты и
-> гочи тулчейна для дальнейшей работы — [CLAUDE.md](CLAUDE.md). Ниже — исходная концепция (без изменений;
-> реализация местами отошла от неё, напр. PTY через POSIX-cinterop вместо `pty4j`, а удалённый доступ —
-> cloudflared в бэклоге вместо своего relay).
+> (`daemon`/`install`/`start`/`list`/`attach`/`stop`/`resume`/`interrupt`/`web`/`token rotate`/`config`) и
+> launchd-установка. Провайдеров два — **Claude и Codex** (оба TUI в `tmux`, hooks). Доступ уже **не
+> только local-only**: демон слушает `127.0.0.1`, но браузер авторизуется stateless-cookie (`kotgent web`,
+> секрет не попадает в URL), а вход с телефона — по QR через **cloudflared-туннель + Cloudflare Access**;
+> `kotgent token rotate` разом гасит все cookie. В бэклоге: мобильный PWA, Web Push и diff viewer. Как
+> собрать/запустить и что именно вошло — см. [README.md](README.md); паттерны, инварианты и гочи тулчейна
+> для дальнейшей работы — [CLAUDE.md](CLAUDE.md). Ниже — исходная концепция (без изменений; реализация
+> местами отошла от неё, напр. PTY через POSIX-cinterop вместо `pty4j`, а удалённый доступ — cloudflared-
+> туннель + Access вместо своего relay).
 
 Проект имеет смысл не как «ещё один терминал», а как local-first диспетчер агентских сессий: процессы живут независимо от интерфейса, а IDE, браузер и телефон становятся взаимозаменяемыми клиентами.
 

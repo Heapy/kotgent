@@ -47,7 +47,7 @@ immortal:
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **201 run / 201 passed / 0 skipped**.
+The suite currently reports **361 run / 361 passed / 0 skipped**.
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
 binary, and `./kotlin test` on its own never links a main binary. If the binary is missing the test says
@@ -70,6 +70,9 @@ kotgent <command> [args]
   resume <id>                   resume a stopped/crashed/resumable session
   interrupt <id>                send Ctrl-C to un-stick a session
   attach <id>                   attach a raw terminal to a session
+  web [--print]                 open the Web UI in a browser (or print the login URL)
+  token rotate                  re-mint the master token (old key stops authenticating)
+  config get | set public-url <url>   read / set the public URL published behind the tunnel
   --version | --help
 ```
 
@@ -85,27 +88,62 @@ kotgent <command> [args]
   terminal WebSocket (tty put in raw mode via `termios`, stdin → WS, WS → stdout, `SIGWINCH` → resize,
   terminal restored on exit). Detaching an attach only drops a client; the agent stays alive.
 
-### Local-only token auth
+### Access & auth — two keys, one shape
 
-The daemon serves `127.0.0.1` only, gated by a single shared token stored at **`~/.kotgent/token`**
-(mode `0600`, inside a `0700 ~/.kotgent`; generated from 32 bytes of `/dev/urandom`). The same token is
-used by the CLI (as a `Bearer` header), by the WebSocket clients (as a `?token=` query parameter, since
-browsers cannot set headers on a WS handshake), and by the Claude hooks (as their own header). `~/.kotgent`
-also holds the generated hook settings and the SQLite database.
+The daemon binds `127.0.0.1` only. Two distinct keys guard it:
 
-### Web UI
+- **The master token** — the *machine* key. Stored at **`~/.kotgent/token`** (mode `0600`, inside a
+  `0700 ~/.kotgent`; generated from 32 bytes of `/dev/urandom`). It authenticates the CLI (as a `Bearer`
+  header), the provider hooks (as their own header), and the issuing of browser tickets. `kotgent token
+  rotate` re-mints it; the old key stops authenticating **new** requests immediately (already-open
+  WebSockets survive until they reconnect, since auth is computed once at handshake).
+- **A session cookie** — the *browser* key. A stateless `HttpOnly; SameSite=Strict; Path=/` cookie of the
+  form `v1.<issuedAt>.<hmac>` where `hmac = HMAC-SHA256(master-token, "v1|" + issuedAt)`. There is **no
+  session table** — the cookie verifies by recomputing the HMAC, so "sign out every device" is just
+  `kotgent token rotate` (every HMAC dies at once). It is never in a URL.
 
-Open:
+`~/.kotgent` also holds the generated hook settings, the optional `config.json` (public URL), and the
+SQLite database.
 
-```text
-http://127.0.0.1:<port>/#token=<token>
+### Web UI — `kotgent web`
+
+```shell
+kotgent web            # mint a one-time ticket and open the Web UI in your browser
+kotgent web --print    # print the login URL instead of opening it
 ```
 
-The token lives in the URL **fragment** (`#token=`), which the browser never sends to the server; the SPA
-reads it from `location.hash` and appends it as `?token=` only when opening the events / terminal sockets.
+No copy-pasting a token into a URL. `kotgent web` issues a **one-time ticket** (32 bytes, 10-minute TTL,
+kept in memory) and opens `http://127.0.0.1:<port>/auth#ticket=…`. The ticket lives in the URL
+**fragment**, which the browser never sends to the server: the `/auth` page reads it from `location.hash`,
+`POST`s it to `/auth/exchange` (which burns the ticket and sets the cookie), then `location.replace("/")`
+so the ticket never lands in history. From then on the cookie authenticates every request and WebSocket.
+
 The UI shows the session list with live state badges and a "Needs attention" queue (fed by the events
 WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
 keyboard input, resize).
+
+### Sign in from your phone
+
+There is no TLS on the native build (`ktor-server-cio` for `macosArm64` has no `sslConnector` — that is a
+JVM-only API), so the phone reaches the daemon through a **cloudflared named tunnel** in front of
+Cloudflare Access, not by exposing the port. Point kotgent at the public host:
+
+```shell
+kotgent config set public-url https://kotgent.example.com
+```
+
+The Web UI's **phone** button (📱) then issues a ticket and renders a QR of
+`https://kotgent.example.com/auth#ticket=…`; scan it on a phone that has passed Access and the same
+one-time-ticket exchange sets a cookie there. Without a configured `public-url` the dialog prints the
+`cloudflared` ingress snippet to add instead of a QR. Setting up the tunnel and the Access policy is a
+one-time host-side step (ingress rule → `http://127.0.0.1:27508`, DNS route, a strict Access policy on
+your own identity — the host fronts a terminal that can run anything on the Mac).
+
+Authorization is one rule for both surfaces: the `Host` must be in the allowlist (loopback or the
+configured public host), and an `Origin`, **required on any non-GET request and on every WebSocket
+handshake and checked for a match whenever it is present**, keeps a cookie from being replayed cross-site
+(`SameSite` alone would not — sibling `*.example.com` hosts are the same site). Hook ingress and ticket
+issuance are additionally **loopback-only**: only the browser surface is ever published outward.
 
 ## The first vertical slice
 
@@ -120,8 +158,9 @@ Concretely:
 2. Attaching from the IDE terminal and then closing it (Detach) drops one WebSocket subscriber. The
    daemon holds the **single** upstream `tmux attach` client and fans it out, so the agent keeps running
    with no client attached.
-3. Opening `http://127.0.0.1:<port>/#token=<token>` in the browser and clicking the session re-attaches
-   to the very same live process — the browser is just another client of the same fan-out.
+3. Running `kotgent web` opens the browser (over a one-time ticket, no token in the URL) and clicking the
+   session re-attaches to the very same live process — the browser is just another client of the same
+   fan-out.
 4. When Claude hits a permission prompt, its `Notification` hook posts to the daemon, which normalizes it
    into an `ApprovalRequested` event; the reducer moves the session to `needs_approval`, and the events
    WebSocket lights the session up in the browser's "Needs attention" queue.
@@ -140,7 +179,7 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `tmux/` | Thin wrapper over `tmux -L kotgent` via a `popen`-based `ProcessRunner`. |
 | `adapter/` | `AgentAdapter` contract + the Claude and Codex adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
-| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, token auth, hook ingress, static Web UI. |
+| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), the `/auth` ticket exchange, hook ingress, static Web UI. |
 | `cli/` | Subcommands + the raw `attach` passthrough. |
 | `launchd/` | `plist` generation + install/uninstall. |
 | `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |
@@ -158,7 +197,10 @@ is and isn't here:
 - **Two providers: Claude and Codex.** Both run as a TUI in `tmux` and report through hooks. Codex adds
   a real `PermissionRequest` signal, so `needs_approval` is precise there rather than inferred from a
   generic notification.
-- **Local-only.** `127.0.0.1` + a single token. No remote access.
+- **Two keys, browser-friendly auth.** The daemon still binds `127.0.0.1` only, but browsers authenticate
+  with a stateless, no-secret-in-URL session cookie (`kotgent web` mints a one-time ticket), and a phone
+  can sign in through a **cloudflared** tunnel + Cloudflare Access. The CLI and hooks keep using the master
+  token; `kotgent token rotate` invalidates every cookie at once. No secret ever appears in a URL.
 - The full `start → Detach → browser → continue → needs-attention` path, session reconciliation on daemon
   restart (`running` / `stopped` / `crashed` / `resumable` classification), provider-id capture, and
   launchd install.
@@ -168,7 +210,10 @@ is and isn't here:
 - The Codex **app-server** (JSON-RPC v2) as an alternative event source — structured items, two-way
   approvals, and no terminal. That is a different product surface (a chat UI, not a terminal fan-out),
   so it is deliberately separate from the adapter above.
-- **Mobile PWA**, a **cloudflared** tunnel + Access, and **Web Push** for remote / phone access.
+- **Mobile-native UX** (a PWA manifest + home-screen icon, an Esc/Ctrl/Tab/arrow key row for the soft
+  keyboard, approve buttons) and **Web Push**. Remote phone access itself — the cloudflared tunnel +
+  Access, sign-in by QR, and the cookie — is now in the slice (see [Sign in from your
+  phone](#sign-in-from-your-phone)).
 - A **diff viewer**, external-session import, and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).

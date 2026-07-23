@@ -616,17 +616,17 @@ RS, границы штрафа, счётчик модулей) прошли н�
 
 ### Task 13: [Final] Документация
 
-- [ ] `README.md` — раздел про доступ: `kotgent web`, вход с телефона, требования к туннелю; снять
+- [x] `README.md` — раздел про доступ: `kotgent web`, вход с телефона, требования к туннелю; снять
       устаревшее описание `#token=` (строки ~88-105, 123, 143, 161) и обновить Status & limitations
-- [ ] `CLAUDE.md` — новые инварианты: два ключа и их роли; stateless cookie и почему нет таблицы
+- [x] `CLAUDE.md` — новые инварианты: два ключа и их роли; stateless cookie и почему нет таблицы
       сессий; правило «Origin обязателен на не-GET и WS, проверяется всегда при наличии»;
       loopback-only поверхность; SHA-256 чистым Kotlin из-за KT-78062; TLS на native отсутствует,
       отсюда туннель
-- [ ] `CLAUDE.md` — обновить дерево «Where things live»: `src/crypto/`, `src/cli/Config.kt`,
+- [x] `CLAUDE.md` — обновить дерево «Where things live»: `src/crypto/`, `src/cli/Config.kt`,
       `src/transport/{SessionCookie,Authorization,TokenHolder,Tickets,AuthRoutes}.kt`
-- [ ] `CLAUDE.md` — обновить baseline числа тестов
-- [ ] `idea.md:9` — снять «только local-only; cloudflared-туннель в бэклоге»
-- [ ] переместить план в `docs/plans/completed/`
+- [x] `CLAUDE.md` — обновить baseline числа тестов (361 run / 361 passed / 0 skipped)
+- [x] `idea.md:9` — снять «только local-only; cloudflared-туннель в бэклоге»
+- [x] переместить план в `docs/plans/completed/` (harness moves it after all phases — файл НЕ трогаем здесь)
 
 ## Post-Completion
 

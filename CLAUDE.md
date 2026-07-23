@@ -123,6 +123,53 @@ orphan accepts and then stays silent, so `ApiClient` sets `HttpTimeout` and `Att
 daemon start. Hooks report `$TMUX_PANE`. **Never trust an inherited env var** (`KOTGENT_SESSION_ID` is a
 debug label only) — env is poisoned across nested shells/agents.
 
+**Two keys, one authorization rule.** Access is guarded by **two** distinct secrets with different roles,
+and `authorize(...)` (`src/transport/Authorization.kt`) is the single pure function that decides every
+request:
+
+- **Master token** (`~/.kotgent/token`, `0600`) = the *machine* key: CLI `Bearer`, provider hooks, and
+  ticket issuance. Inside the daemon it is **not** a captured `val` but an atomic provider (`TokenHolder`
+  over `kotlin.concurrent.atomics.AtomicReference` — readers run on every request including the non-suspend
+  WS handshake, so a `Mutex` won't do). `rotate()` re-mints it **persist-then-publish** (a failed persist
+  leaves the old token live) and there is no grace period — the old key stops authenticating *new* requests
+  at once; already-open WS survive because auth is computed once, in `Plugins`.
+- **Session cookie** = the *browser* key: `kotgent_session=v1.<issuedAt>.<hmac>` where
+  `hmac = HMAC-SHA256(master-token, "v1|" + issuedAt)`, `HttpOnly; SameSite=Strict; Path=/`, `Max-Age` 10y
+  (Safari drops a session cookie on restart), `Secure` only when the request arrived on the public host
+  (never on `http://127.0.0.1`, which the browser would silently discard). It is **stateless — there is no
+  session table and no schema migration**: the cookie verifies by recomputing the HMAC, so "revoke every
+  device" is exactly `token rotate` (every HMAC dies together). The cookie is read/written via Ktor
+  core-API (`RequestCookies`/`ResponseCookies` are in the native klib — do not hand-roll a `Cookie:`
+  parser).
+
+The **Origin rule**: an `Origin` is **required on any non-GET request and on every WebSocket handshake**
+(detected by the `Sec-WebSocket-Key` header, not the path), and **checked for a match whenever it is
+present**. It is *not* required on same-origin GET — browsers don't send one there, and demanding it would
+kill the whole UI. Safe anyway: cross-site `fetch` is always CORS-mode (carries `Origin`), every state
+change is a POST, and the WS handshake — the one browser channel that bypasses CORS — always carries
+`Origin`. `SameSite` alone is insufficient because sibling `*.example.com` hosts are the same *site*.
+`Bearer` never needs an `Origin` (it is not a browser). **The published surface is browser-only**: hook
+ingress and ticket issuance are additionally **loopback-only** (`Route.loopbackOnly {}`, gated on `Host`
+via `isLoopbackHost`, which ignores the port — harnesses bind `port = 0`).
+
+**No secret in a URL, ever.** The old `?token=`/`#token=` forms are gone. The browser signs in through a
+**one-time ticket** (`TicketStore`, 32 random bytes, 10-min TTL, in memory — a restart clears them) carried
+in the URL **fragment**: `GET /auth` never sees it (so no prefetcher/scanner/Cloudflare-log can burn or
+leak it), the page `POST`s it to `/auth/exchange` which burns it and sets the cookie, then
+`location.replace("/")`. Reintroducing a query/hash token defeats the whole point.
+
+**SHA-256 and HMAC are pure Kotlin** (`src/crypto/`), *not* CommonCrypto via cinterop — because of KT-78062
+(custom cinterop does not link into the test binary), the same reason the PTY path is behind an interface.
+`randomBytes`/`hex` live once in `Auth.kt`/`Hex.kt`; don't add a second entropy source or hex encoder.
+
+**No TLS on native, hence the tunnel.** `ktor-server-cio` for `macosArm64` has **no `sslConnector`** (a
+JVM-only API — verified in the klib), so the daemon cannot terminate TLS itself. Remote/phone access goes
+through a **cloudflared named tunnel + Cloudflare Access** (the public host is `config.json`'s `publicUrl`,
+passed into `KotgentServer` by the constructor — transport never reads config files itself). The daemon
+trusts the inbound `Host` for the allowlist; if cloudflared ever rewrites it, switch to `X-Forwarded-Host`.
+`Secure` is derived from "Host matched the public host", **never** from `X-Forwarded-Proto` (a local client
+forges that and would set a `Secure` cookie on loopback).
+
 **Storage = SQLDelight via the custom plugin + `native-driver`.** Schema is `sqldelight/*.sq`; the
 `sqldelight-gen` plugin generates the typed API at build time; the runtime driver is
 `app.cash.sqldelight:native-driver`. `SqliteEventStore` is single-writer (a `Mutex`), WAL, and appends the
@@ -177,7 +224,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **204 run / 204 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **361 run / 361 passed /
   0 skipped**.
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
@@ -199,20 +246,21 @@ These are real and cost time to rediscover. Respect them.
 ```
 module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + plugin)
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
+src/crypto/                    Sha256, Hmac, Hex — pure-Kotlin (KT-78062: no CommonCrypto in the test binary)
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes
-src/transport/                 Server, Auth, ControlRoutes, EventsWs, TerminalWs, HookRoutes
-src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands
+src/transport/                 Server, Auth, Authorization (authorize + loopbackOnly), SessionCookie, TokenHolder (atomic master token), Tickets (one-time login tickets), AuthRoutes (/auth ticket exchange, /auth/rotate), ControlRoutes, EventsWs, TerminalWs, HookRoutes
+src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands, Config (~/.kotgent/config.json)
 src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)
 sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers)
 ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062); driven by PtyTest
 sqldelight/io/kotgent/db/      Events.sq, Sessions.sq (schema + typed queries)
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
-resources/webui/               static SPA (index.html, app.js, style.css, vendored xterm.js)
+resources/webui/               static SPA (index.html, app.js, style.css, vendored xterm.js + qrcode.module.js, lib/qr.js; the /auth login page is a string constant in AuthRoutes.kt)
 docs/plans/                    implementation plans
 ```
