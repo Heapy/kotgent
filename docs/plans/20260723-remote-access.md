@@ -358,15 +358,28 @@ WS-хендшейк определяется наличием заголовка
 - Create: `src/transport/Tickets.kt`
 - Create: `test/transport/TicketsTest.kt`
 
-- [ ] `TicketStore(now: () -> Long, ttlMillis: Long = 600_000)`
-- [ ] `issue(): Ticket` — `hex(randomBytes(32))`, `expiresAt = now() + ttl`
-- [ ] `redeem(value: String): Boolean` — валиден только один раз; просроченный не проходит
-- [ ] чистка протухших при каждом обращении (потолок с вытеснением НЕ делаем: TTL уже ограничивает
+- [x] `TicketStore(now: () -> Long, ttlMillis: Long = 600_000)`
+- [x] `issue(): Ticket` — `hex(randomBytes(32))`, `expiresAt = now() + ttl`
+- [x] `redeem(value: String): Boolean` — валиден только один раз; просроченный не проходит
+- [x] чистка протухших при каждом обращении (потолок с вытеснением НЕ делаем: TTL уже ограничивает
       рост, а вытеснение дало бы непонятный отказ «мой тикет перестал работать после 17 обновлений»)
-- [ ] потокобезопасность (`Mutex` — как в `SqliteEventStore`)
-- [ ] тесты: выкуп работает один раз; повторный выкуп — `false`; выкуп после TTL — `false`;
+- [x] потокобезопасность (`Mutex` — как в `SqliteEventStore`)
+- [x] тесты: выкуп работает один раз; повторный выкуп — `false`; выкуп после TTL — `false`;
       неизвестное значение — `false`; протухшие вычищаются
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 7
+- [x] `./kotlin build && ./kotlin test` — зелено перед Task 7
+
+➕ добавлено сверх плана: константа `TICKET_TTL_MILLIS` (вместо голого `600_000` в сигнатуре),
+`suspend fun outstandingCount()` — единственный способ проверить из теста, что чистка действительно
+случилась, а не что «выкуп вернул false»; `require(ttlMillis > 0)` в `init` (нулевой TTL сделал бы
+каждый тикет мёртвым при рождении — лучше громкий отказ на проводке); приватный `ticketEpochMillis()`
+как дефолтные часы (по образцу `systemEpochMillis` в `SqliteEventStore`, чтобы transport не тянул
+`daemonEpochMillis` из `daemon`). Решение о сроке годности живёт в ОДНОМ месте: `redeem` сначала
+подметает протухшие, а потом делает простое `remove(value) != null` — поэтому просроченный тикет не
+просто отвергается, а исчезает, и часы, шагнувшие назад (NTP, разбуженный ноутбук), не могут его
+воскресить (тест `aRedemptionAfterTheTtlDoesNotResurrectTheTicketLater`). Граница TTL — дедлайн, а не
+льгота: тикет жив при `now < expiresAt`. Сравнение — обычный поиск по map, а не `constantTimeEquals`:
+значение — 256 бит энтропии, тайминг хеш-лукапа в подделку не разворачивается, а O(n) constant-time
+скан добавил бы второе место, где можно ошибиться. После Task 6 — **329 run / 329 passed / 0 skipped**.
 
 ### Task 7: Обвязка authorize() — интерцептор, loopback-only, hook-роуты
 
