@@ -10,9 +10,9 @@ This project builds with the **JetBrains Kotlin Toolchain** (formerly Amper), dr
 plugins.
 
 ```shell
-./kotlin build      # compile
+./kotlin build      # compile        (run this BEFORE `test` — PtyTest execs the ptycheck binary)
 ./kotlin test       # run tests
-./kotlin run        # run the binary   (⚠️ avoid in automation — this starts things; see below)
+./kotlin run -m kotgent   # run the binary  (⚠️ avoid in automation — this starts things; see below)
 ```
 
 - **Manifests are declarative YAML.** The root module is `module.yaml`; the multi-module wiring is
@@ -29,7 +29,7 @@ plugins.
 
 ## Module structure
 
-Three modules (see `project.yaml`):
+Four modules (see `project.yaml`):
 
 - **root — `macos/app`, `macosArm64`** (`module.yaml`): the application. `src/` + `test/`, plus
   `sqldelight/*.sq` (schema) and `resources/webui/` (the SPA). Depends on `./sysnative`; enables the
@@ -39,6 +39,13 @@ Three modules (see `project.yaml`):
   auto-discovered cinterop klib links into the app's **main** binary as a normal module dependency (this
   replaced an old machine-specific `-library` hack). **Any new raw cinterop goes here**, behind an
   interface (see KT-78062 below).
+- **`ptycheck/` — `macos/app`, `macosArm64`**: a **test fixture, not a product**. Its `main()` runs the
+  real-PTY integration checks that a test binary cannot run at all (KT-78062 below): the `cat`
+  round-trip, `resize`, the child exit code, a failing spawn, a real `tmux attach` acquiring a
+  controlling tty, and `TerminalBridge`'s fan-out over that attach. It depends on `./sysnative` **and**
+  on the root app module (allowed, one-way — that is where `TerminalBridge`/`Tmux` live). The suite's
+  `PtyTest` execs the binary and asserts it exits 0. Because there is now more than one runnable
+  module, `./kotlin run` needs `-m kotgent` (it errors and lists the modules otherwise).
 - **`plugins/sqldelight-gen/` — `jvm/amper-plugin`**: a build-time JVM plugin that runs SQLDelight codegen
   (SQLDelight ships only a Gradle plugin, so we drive its compiler programmatically via a vendored,
   Gradle-free `SqlDelightEnvironment` and contribute the output via `generated.sources`). It runs on the
@@ -96,13 +103,23 @@ forked child can deadlock. A dedicated reader thread does the blocking `read()` 
 
 These are real and cost time to rediscover. Respect them.
 
-- **KT-78062 — custom cinterop klibs do NOT link into TEST binaries.** The toolchain (0.11.0) links an
-  auto-discovered cinterop klib into the **main** binary only; a test binary linking against it throws
-  `IrLinkageError` at the call site (partial linkage stubs the symbol). **Mitigation, and the pattern to
-  follow:** keep raw cinterop behind a pure-Kotlin interface (`PtyHandle`, `LocalTty`, `TmuxControl`) with
-  a `Fake…` for tests, so the *logic* runs for real in the test binary; wrap the actual cinterop in a
-  single thin class (`RealPtyHandle`, `NativeTty`) and `@Ignore` only the handful of tests that call it
-  directly. The 5 skipped tests (4 `PtyTest` + 1 real-`tmux` `TerminalBridgeTest`) are exactly those.
+- **KT-78062 — custom cinterop klibs do NOT link into TEST binaries.** An auto-discovered cinterop klib
+  reaches the **main** binary only; calling it from a test binary throws `IrLinkageError` at the call
+  site (partial linkage stubs the symbol). **Root cause** (read out of the toolchain's own bytecode):
+  `TaskBuilderNativeKt` registers the cinterop-klib task once, for the **non-test** fragment
+  (`isTest=false`), while `NativeLinkTask` selects `CinteropKlibsArtifact` with **its own** `isTest` —
+  so for a test link nothing matches. Nothing in YAML can fix it: a relative `-library` path cannot work
+  (the compiler subprocess runs with `workingDir = kotlinNativeHome`), `module.yaml` has no `${…}`
+  interpolation ("References are not yet supported in this file"), and neither `exported: true` nor a
+  duplicate entry in `test-dependencies` changes the selection. **Verified still broken on toolchain
+  0.11.0, 0.11.1 and 0.12.0-dev**, and reproducible in a one-module toy project.
+  **Two-part mitigation, and the pattern to follow:**
+  1. Keep raw cinterop behind a pure-Kotlin interface (`PtyHandle`, `LocalTty`, `TmuxControl`) with a
+     `Fake…` for tests, so the *logic* runs for real in the test binary, and wrap the actual cinterop in
+     a single thin class (`RealPtyHandle`, `NativeTty`).
+  2. For assertions that genuinely need the real cinterop, put them in the **`ptycheck` main binary**
+     (main binaries link it fine) and drive them from the suite — `PtyTest` execs it. That is how the
+     former 5 `@Ignore`d tests run today; **the suite has no skips left.**
   **This does NOT affect** third-party klibs that carry cinterop (Ktor, `native-driver`/`sqliter`) or the
   stock `platform.posix` bindings — those link into test binaries fine. Never reintroduce a `-library`
   path hack to work around it, and never fake a skip into a pass.
@@ -124,19 +141,23 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **166 run / 161 passed /
-  5 skipped** (the 5 skips are the KT-78062 cases above — not failures).
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **201 run / 201 passed /
+  0 skipped**.
+- **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
+  `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
+  instead of silently passing when the binary is missing.
 - Bound every Flow/WS/PTY test with `withTimeout(...)` (anti-hang) — the suite does this consistently.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
-  teardown; they never touch the real `-L kotgent` socket.
+  teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
 - **In automation, do not run the daemon or anything that spawns a real agent.** Avoid `kotgent daemon`,
-  `./kotlin run`, a real `claude`, and `launchctl` — they start long-lived / interactive processes.
-  Prefer the terminating `./kotlin build` / `./kotlin test`.
+  `./kotlin run -m kotgent`, a real `claude`, and `launchctl` — they start long-lived / interactive
+  processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck` binary
+  directly is fine — it terminates, and only touches the throwaway `-L kotgent-test` socket.
 
 ## Where things live
 
 ```
-module.yaml / project.yaml     build manifests (root app + sysnative + plugin)
+module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + plugin)
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
@@ -148,6 +169,7 @@ src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Command
 src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)
 sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers)
+ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062); driven by PtyTest
 sqldelight/io/kotgent/db/      Events.sq, Sessions.sq (schema + typed queries)
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
 resources/webui/               static SPA (index.html, app.js, style.css, vendored xterm.js)

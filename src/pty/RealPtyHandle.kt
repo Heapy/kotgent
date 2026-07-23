@@ -15,8 +15,8 @@ import platform.posix.getenv
  * *only* app file that references [Pty], and therefore our custom cinterop — is a single, obvious
  * seam. Because touching [Pty] from the TEST binary throws `IrLinkageError` (KT-78062), this class
  * and [realPtyFactory] must never be constructed from a unit test; unit tests use a pure-Kotlin
- * fake factory. The real path is exercised by `./kotlin build`/`run` (main binary links the
- * cinterop) and by the Task 18 acceptance test.
+ * fake factory. The real path runs in the `ptycheck` module's MAIN binary (which does link the
+ * cinterop), driven from the suite by `PtyTest`.
  */
 class RealPtyHandle(private val pty: Pty) : PtyHandle {
     override val output: ReceiveChannel<ByteArray> get() = pty.output
@@ -63,8 +63,8 @@ fun terminalAttachEnv(): Map<String, String> {
  * fake factory and fake seed instead.
  *
  * Note: driving a real `tmux attach` through [Pty] also depends on the child acquiring a
- * *controlling* terminal — see the note in [Pty.open] (Task 2). That, together with KT-78062, is
- * why the real end-to-end bridge is validated by the Task 18 acceptance test rather than a unit test.
+ * *controlling* terminal — see the note in [Pty.open] (Task 2). Because of KT-78062 that end-to-end
+ * path cannot run in a test binary; it is checked for real in the `ptycheck` module's main binary.
  */
 fun terminalBridgeForSession(
     tmux: Tmux,

@@ -11,8 +11,9 @@ dependencies:
   # sysnative owns the PTY cinterop (and future POSIX/tmux/sqlite bindings). Depending on
   # it links sysnative's auto-discovered cinterop klib into this app's MAIN binary as a
   # normal module dependency — the old machine-specific absolute -library test workaround
-  # is gone. KNOWN BLOCKER: Kotlin Toolchain 0.11.0 does NOT link cinterop into any TEST
-  # binary (KT-78062), so the PTY integration tests are @Ignore'd (see plan Task 2 blocker).
+  # is gone. KNOWN BLOCKER: the Kotlin Toolchain does NOT link cinterop into any TEST binary
+  # (KT-78062), so the real-PTY assertions run from the `ptycheck` app module's MAIN binary,
+  # which PtyTest execs. See CLAUDE.md.
   - ./sysnative
   - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0
   # Ktor CIO server + WebSockets — transport foundation (Task 3 spike, real Server in Task 14).

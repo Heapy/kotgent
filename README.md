@@ -43,8 +43,12 @@ immortal:
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **166 run / 161 passed / 5 skipped**. The 5 skips are intentional and
-explained under [Status & limitations](#status--limitations) — they are not failures.
+The suite currently reports **201 run / 201 passed / 0 skipped**.
+
+Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
+binary, and `./kotlin test` on its own never links a main binary. If the binary is missing the test says
+so rather than passing quietly. See [Status & limitations](#status--limitations) for why those checks
+live in a separate binary.
 
 The produced binary lands under `build/` (the `macos/app` output); `kotgent` below refers to that binary.
 
@@ -160,18 +164,21 @@ is and isn't here:
 - A **diff viewer**, external-session import, and snapshots.
 - A browser e2e harness (Playwright).
 
-**About the skipped tests.** `./kotlin test` reports 5 skipped. These are the tests that exercise
-**our own** raw-cinterop path directly from a test binary, blocked by a Kotlin Toolchain issue
-([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)): the toolchain (0.11.0) does not link
-custom cinterop klibs into **test** binaries — only into the main binary. The affected tests are the
-4 `PtyTest` cases and 1 real-`tmux`-attach fan-out case (`TerminalBridgeTest.realTmuxAttachFanOutEndToEnd`);
-they are marked `@Ignore` rather than faked to pass. The code they cover **does** run — cinterop links
-into the main binary — and is verified two ways:
+**Why the real-PTY checks live in their own binary.** A Kotlin Toolchain issue
+([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)) means **our own** raw-cinterop path cannot be
+called from a test binary at all: the toolchain registers the cinterop-klib task for the non-test fragment
+only, while the test link asks for a test-fragment cinterop artifact, so nothing matches and partial
+linkage turns every call into a stub that throws `IrLinkageError`. It is still the case on toolchain
+0.11.0, 0.11.1 and 0.12.0-dev, and nothing in the YAML can work around it (a relative `-library` path
+cannot resolve — the compiler runs with `workingDir = kotlinNativeHome` — and `module.yaml` has no
+variable interpolation).
 
-1. The logic around the cinterop is tested for real via interface fakes (`FakePtyHandle`, `FakeTty`), so
-   only the thin real-cinterop call site is skipped.
-2. The full real-cinterop path is exercised by manual acceptance against a live Claude session (see the
-   plan's Post-Completion notes).
+Main binaries *do* link the cinterop, so the affected assertions live in the **`ptycheck`** module, whose
+`main()` runs them for real: the `cat` round-trip, `resize`, the child exit code, a failing spawn, a real
+`tmux attach` acquiring a controlling terminal, and `TerminalBridge`'s fan-out over that attach. The suite
+runs them through `PtyTest`, which executes that binary and asserts it exits 0 — so these are real,
+non-skipped tests. Everything around the cinterop is still tested directly via interface fakes
+(`FakePtyHandle`, `FakeTty`).
 
 Third-party klibs that happen to contain cinterop (Ktor, the SQLite `native-driver`) and the stock
 `platform.posix` bindings are **not** affected — they link into test binaries normally — so the transport,

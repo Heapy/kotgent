@@ -9,9 +9,10 @@ import kotlinx.coroutines.channels.ReceiveChannel
  *
  * ## Why an interface (KT-78062)
  * Our own custom cinterop (the `pty.def` in `sysnative` that backs [io.kotgent.pty.Pty]) does
- * **not** link into the TEST binary on Kotlin Toolchain 0.11.0 (KT-78062): the reference links,
+ * **not** link into the TEST binary on Kotlin Toolchain 0.11.x (KT-78062): the reference links,
  * but calling a cinterop function from the test binary throws `IrLinkageError` at runtime (that is
- * why [io.kotgent.pty.Pty]'s own integration tests are `@Ignore`d). The fan-out LOGIC — lazy
+ * why [io.kotgent.pty.Pty]'s own integration checks run from the `ptycheck` main binary). The
+ * fan-out LOGIC — lazy
  * upstream lifecycle, multi-subscriber fan-out, input routing, "last active" resize, capture-pane
  * seeding — is pure Kotlin and must be unit-tested in the test binary. So everything downstream
  * depends on this pure-Kotlin [PtyHandle] plus a [PtyFactory], and:
@@ -20,8 +21,8 @@ import kotlinx.coroutines.channels.ReceiveChannel
  *    the test binary and cover the actual fan-out/lifecycle logic.
  *
  * The single genuine end-to-end path (a live `Pty.open("tmux … attach …")` driving real bytes
- * through the real cinterop) is covered by the `@Ignore`d integration test in TerminalBridgeTest
- * and, executably, by the Task 18 acceptance test.
+ * through the real cinterop to two subscribers) runs in `ptycheck/src/Main.kt` — a main binary,
+ * where the cinterop does link — and the suite's `PtyTest` execs it.
  *
  * The interface deliberately lives in the app module (not `sysnative`) even though the concrete
  * [io.kotgent.pty.Pty] is in `sysnative`: it is pure Kotlin, the app depends on `sysnative`, and

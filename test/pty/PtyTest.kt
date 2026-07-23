@@ -1,92 +1,70 @@
 package io.kotgent.pty
 
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import kotlin.test.Ignore
+import io.kotgent.tmux.ProcessRunner
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.test.fail
+import platform.posix.F_OK
+import platform.posix.access
 
 /**
- * Integration tests for the PTY primitive (Task 2 cinterop spike). These exercise the
- * `io.kotgent.pty.Pty` wrapper from the `sysnative` dependency against the real cinterop.
+ * Drives the real-PTY integration checks for [Pty] — the `cat` round-trip, `resize`, the child's
+ * exit code, a failing spawn, a real `tmux attach` acquiring a controlling terminal, and
+ * [TerminalBridge]'s fan-out over that real attach.
  *
- * Every test that reads from the master fd is wrapped in a bounded [withTimeout] so a
- * broken round-trip fails fast instead of hanging the suite (anti-flaky requirement).
+ * ## Why they run out-of-process instead of here
+ * [Pty] calls the `sysnative` cinterop (`openpty`, `posix_spawn`), and Kotlin Toolchain 0.11.x never
+ * links a custom cinterop klib into a TEST binary: the toolchain registers the cinterop-klib task
+ * for the non-test fragment only (`isTest=false`), while the test link asks for cinterop artifacts
+ * of the test fragment (`isTest=true`), so nothing matches and partial linkage replaces every call
+ * with a stub that throws `IrLinkageError` (KT-78062). Verified to still be the case on toolchain
+ * 0.11.0, 0.11.1 and 0.12.0-dev, and reproducible in a one-module project — so the assertions live
+ * in the `ptycheck` module, whose MAIN binary *does* link the cinterop, and this test execs it.
  *
- * BLOCKED / PARKED (@Ignore) — unresolved Kotlin Toolchain 0.11.0 gap, NOT a code defect:
- * `linkMacosArm64TestDebug` does not link cinterop klibs into ANY test binary — proven
- * three ways: (1) cinterop in this app module (Task 2), (2) cinterop in the `sysnative`
- * dependency consumed here (transitive), (3) cinterop tested inside `sysnative`'s own test
- * binary. All three throw `IrLinkageError: Function 'kotgent_openpty' can not be called`
- * (see KT-78062). The cinterop links fine into the MAIN binaries, so the PTY implementation
- * itself is exercised by `./kotlin build`; only the TEST binaries lack it. The prior fix — a
- * machine-specific absolute `-library` path in `test-settings.freeCompilerArgs` — was removed
- * (non-portable), and the dedicated-module refactor did not close the gap. Re-enable (drop
- * @Ignore) once the toolchain links cinterop into test binaries (or move these to
- * `sysnative/test/` if only same-module linkage lands). Tracked as a ⚠️ blocker in the plan.
+ * ## Precondition
+ * `./kotlin test` alone never links a main binary (not even its own module's), so the `ptycheck`
+ * binary comes from `./kotlin build` — the documented order. If it is missing, this test says so
+ * instead of silently passing.
  */
-@Ignore
 class PtyTest {
 
-    /** Receive chunks from the pty until [needle] appears in the accumulated output. */
-    private suspend fun readUntil(pty: Pty, needle: String, timeoutMs: Long = 5_000): String {
-        val sb = StringBuilder()
-        withTimeout(timeoutMs) {
-            while (needle !in sb) {
-                val chunk = pty.output.receive()
-                sb.append(chunk.decodeToString())
-            }
-        }
-        return sb.toString()
+    @Test
+    fun realPtyChecksPass() {
+        val binary = ptycheckBinary()
+        val result = ProcessRunner.run(listOf(binary))
+        val report = "\n--- ptycheck stdout ---\n${result.stdout}--- ptycheck stderr ---\n${result.stderr}"
+
+        assertEquals(0, result.exitCode, "ptycheck reported a failing PTY check$report")
+        // The exit code alone would also be 0 for a binary that ran nothing, so pin the contract:
+        // every check reported, none failed.
+        assertTrue(
+            "SUMMARY total=$EXPECTED_CHECKS failed=0" in result.stdout,
+            "ptycheck did not run all $EXPECTED_CHECKS checks$report",
+        )
     }
 
-    @Test
-    fun catEchoesRoundTrip() = runBlocking {
-        val pty = Pty.open(listOf("/bin/cat"))
-        try {
-            pty.write("hello-kotgent\n".encodeToByteArray())
-            val out = readUntil(pty, "hello-kotgent")
-            assertTrue("hello-kotgent" in out, "expected the pty to echo our line, got: <$out>")
-        } finally {
-            pty.close()
-        }
+    /**
+     * Locate the `ptycheck` binary. The test binary runs with the project root as its working
+     * directory (Kotlin Toolchain behaviour), so the toolchain's task-output path is relative.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun ptycheckBinary(): String {
+        val candidates = listOf(
+            "build/tasks/_ptycheck_linkMacosArm64Debug/ptycheck.kexe",
+            "build/tasks/_ptycheck_linkMacosArm64Release/ptycheck.kexe",
+        )
+        return candidates.firstOrNull { access(it, F_OK) == 0 }
+            ?: fail(
+                "the ptycheck binary is missing (looked for ${candidates.joinToString()}). " +
+                    "It is built by `./kotlin build`, which `./kotlin test` does not do on its own — " +
+                    "run `./kotlin build` first.",
+            )
     }
 
-    @Test
-    fun resizeSucceeds() = runBlocking {
-        val pty = Pty.open(listOf("/bin/cat"), cols = 80, rows = 24)
-        try {
-            // Must not throw; ioctl(TIOCSWINSZ) returns 0.
-            pty.resize(cols = 120, rows = 40)
-        } finally {
-            pty.close()
-        }
-    }
-
-    @Test
-    fun exitCodeIsCaptured() = runBlocking {
-        val pty = Pty.open(listOf("/bin/sh", "-c", "exit 7"))
-        try {
-            val code = withTimeout(5_000) {
-                // The child exits on its own; that closes the slave, which EOFs the master
-                // and closes the output channel. Draining it means the child is reapable.
-                for (chunk in pty.output) { /* discard */ }
-                pty.waitFor()
-            }
-            assertEquals(7, code, "child `sh -c 'exit 7'` should report exit code 7")
-        } finally {
-            pty.close()
-        }
-    }
-
-    @Test
-    fun spawnNonexistentCommandFails() {
-        // On Darwin posix_spawn resolves an absolute path synchronously and returns
-        // ENOENT, so open() throws rather than silently yielding a dead child.
-        assertFailsWith<PtyException> {
-            Pty.open(listOf("/nonexistent/kotgent-not-a-real-binary-xyz"))
-        }
+    private companion object {
+        /** Number of checks `ptycheck` reports; keep in sync with `ptycheck/src/Main.kt`. */
+        const val EXPECTED_CHECKS = 6
     }
 }

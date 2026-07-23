@@ -1,6 +1,5 @@
 package io.kotgent.pty
 
-import io.kotgent.tmux.Tmux
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
@@ -9,7 +8,6 @@ import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -22,11 +20,12 @@ import kotlin.test.assertTrue
  *
  * ## Why these run for real (the KT-78062 split, by design)
  * Our own custom cinterop ([io.kotgent.pty.Pty]) does not link into the test binary on Kotlin
- * Toolchain 0.11.0 (KT-78062). So the fan-out depends only on the pure-Kotlin [PtyHandle] +
+ * Toolchain 0.11.x (KT-78062). So the fan-out depends only on the pure-Kotlin [PtyHandle] +
  * [PtyFactory], and every test below drives it through a [FakePtyFactory] / [FakePtyHandle] — no
  * cinterop, so they execute the *actual* fan-out and lifecycle LOGIC in the test binary. The one
- * genuine end-to-end path (a real `Pty.open("tmux … attach …")`) is the `@Ignore`d
- * [realTmuxAttachFanOutEndToEnd] below; its coverage is the Task 18 acceptance test.
+ * genuine end-to-end path (a real `Pty.open("tmux … attach …")` fanned out to two subscribers) runs
+ * in the `ptycheck` module's main binary, which does link the cinterop; [io.kotgent.pty.PtyTest]
+ * execs it as part of this suite.
  *
  * Each test runs on the `runBlocking` event loop with the bridge's reader launched on that same
  * dispatcher (deterministic, single-threaded), bounded by [withTimeout] (anti-flaky), and tears the
@@ -298,50 +297,8 @@ class TerminalBridgeTest {
         b.close()
     }
 
-    /**
-     * PARKED (@Ignore) — the ONE real end-to-end fan-out: a live `Pty.open("tmux … attach …")`
-     * driving real bytes through the real custom cinterop.
-     *
-     * Ignored because calling our own cinterop from the TEST binary throws `IrLinkageError` on
-     * Kotlin Toolchain 0.11.0 (KT-78062) — the same reason [PtyTest] is `@Ignore`d. (Additionally,
-     * a real `tmux attach` needs the child to acquire a *controlling* terminal — see the note in
-     * [Pty.open], Task 2 — before this would pass even with the cinterop linked.) The real fan-out
-     * is validated executably by the Task 18 acceptance test; every other test here covers the
-     * fan-out/lifecycle logic through the pure-Kotlin fake. Re-enable once the toolchain links
-     * cinterop into test binaries.
-     */
-    @Test
-    @Ignore
-    fun realTmuxAttachFanOutEndToEnd() = runBlocking {
-        val tmux = Tmux(socket = "kotgent-test")
-        if (!tmux.isAvailable()) return@runBlocking
-        val id = "bridge-e2e"
-        val readerScope = CoroutineScope(coroutineContext + Job())
-        try {
-            tmux.killSession(id)
-            tmux.newSession(id = id, cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
-
-            val bridge = terminalBridgeForSession(tmux, id, readerScope, realPtyFactory)
-
-            // First subscriber opens the real upstream `tmux -L kotgent-test attach -t kt-bridge-e2e`.
-            val a = bridge.subscribe()
-            // Its seed is the capture-pane snapshot of the pane (may be blank for a fresh `cat`).
-            withTimeout(5_000) { a.output.receive() }
-
-            // Input from the subscriber reaches `cat`, which echoes it back over the fan-out.
-            a.write("hello-fanout\n".encodeToByteArray())
-            val sb = StringBuilder()
-            withTimeout(10_000) {
-                while ("hello-fanout" !in sb) sb.append(a.output.receive().decodeToString())
-            }
-            assertTrue("hello-fanout" in sb.toString())
-
-            // Last subscriber leaving closes the attach; the tmux session (and `cat`) survives.
-            a.close()
-            assertTrue(tmux.listPanes().any { it.session == "kt-$id" }, "the session outlives the attach")
-        } finally {
-            readerScope.cancel()
-            tmux.killSession(id)
-        }
-    }
+    // The real end-to-end fan-out (a live `Pty.open("tmux … attach …")` driving real bytes to two
+    // subscribers) used to sit here @Ignore'd, because our cinterop cannot be called from a test
+    // binary (KT-78062). It now runs for real in `ptycheck/src/Main.kt` — a MAIN binary, where the
+    // cinterop does link — and [PtyTest] execs that binary as part of this suite.
 }
