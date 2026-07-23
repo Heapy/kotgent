@@ -61,9 +61,15 @@ class Reconciler(
 ) {
     suspend fun reconcile(): ReconcileResult {
         val sessions = store.listSessions()
-        // Live (non-dead) panes indexed by their owning session name (`kt-<id>`).
+        // Live (non-dead) panes indexed by their owning session name (`kt-<id>`). v1 creates exactly one
+        // pane per `kt-<id>` session, so this is single-pane in practice; if a session ever reported
+        // multiple panes we keep the FIRST deterministically (list-panes order is stable) rather than an
+        // arbitrary last-wins, so hook routing stays predictable. [decision] one-pane-per-session is a v1
+        // invariant of the create path; a defensive first-wins guards a future multi-pane session.
         val livePaneBySession: Map<String, TmuxPane> =
-            tmux.listPanes().filter { !it.dead }.associateBy { it.session }
+            tmux.listPanes().filter { !it.dead }
+                .groupBy { it.session }
+                .mapValues { (_, panes) -> panes.first() }
 
         val livePanes = LinkedHashMap<PaneId, SessionId>()
         val reconciled = ArrayList<ReconciledSession>(sessions.size)
@@ -77,7 +83,12 @@ class Reconciler(
                 projection.stopRequested
             val transcriptExists = meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.cwd, it) } ?: false
 
-            val newState = classify(paneAlive, projection.state, stopIntent, transcriptExists)
+            // Classify a LIVE session from the CACHE-authoritative state (meta.state), not the pure
+            // event-log projection: the cache carries control effects (interrupt/resume) that are NOT in
+            // the log, so replaying the log would lose an unpersisted interrupt and could resurrect a
+            // stale `needs_approval`. tmux liveness only moves alive↔dead. (Consistent with the store's
+            // cache-state authority — see SqliteEventStore.append.)
+            val newState = classify(paneAlive, meta.state, stopIntent, transcriptExists)
             // Rebuild the pane_id correlation from the live pane (tmux is authoritative); keep the stored
             // one when the session is not currently live.
             val newPaneId = livePane?.paneId ?: meta.paneId
@@ -103,8 +114,9 @@ class Reconciler(
     companion object {
         /**
          * Pure classification (host-free, exhaustively testable):
-         *  - `paneAlive` → the process is live: keep the log's live state ([projectionState]) if it is
-         *    itself a live state, else `running` (a stale dead classification is corrected up to live).
+         *  - `paneAlive` → the process is live: keep the current live state ([currentState], the
+         *    cache-authoritative session state) if it is itself a live state, else `running` (a stale
+         *    dead classification is corrected up to live).
          *  - dead + `stopIntent` → `stopped` (an intended, clean termination — wins over a surviving
          *    transcript; the operator chose to stop it).
          *  - dead + `transcriptExists` → `resumable` (the conversation survives and can be revived —
@@ -113,11 +125,11 @@ class Reconciler(
          */
         fun classify(
             paneAlive: Boolean,
-            projectionState: SessionState,
+            currentState: SessionState,
             stopIntent: Boolean,
             transcriptExists: Boolean,
         ): SessionState = when {
-            paneAlive -> if (projectionState.isAlive) projectionState else SessionState.running
+            paneAlive -> if (currentState.isAlive) currentState else SessionState.running
             stopIntent -> SessionState.stopped
             transcriptExists -> SessionState.resumable
             else -> SessionState.crashed

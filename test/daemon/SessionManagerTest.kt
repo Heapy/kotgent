@@ -269,6 +269,81 @@ class SessionManagerTest {
         }
     }
 
+    // ---- id uniqueness / agent gating / dead-pane resume ----
+
+    @Test
+    fun startRegeneratesTheSessionIdOnACollisionWithAnExistingSessionOrLog() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            // A dead HISTORICAL session already occupies "dup00001" — its row AND event log survive.
+            store.upsertSession(meta("dup00001", SessionState.crashed, providerId = null))
+            store.append(SessionId("dup00001"), AgentEvent.TurnStarted, EventSource.hook)
+            // The id generator hands out the taken id twice, then a free one.
+            val ids = ArrayDeque(listOf("dup00001", "dup00001", "fresh001"))
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId(ids.removeFirst()) },
+                now = { 1L },
+            )
+
+            val started = mgr.start("claude", "/tmp")
+
+            assertEquals("fresh001", started.id.value, "the colliding id is rejected; a free id is used")
+            // The historical session's row + log are intact — not overwritten, not spliced into.
+            assertEquals(SessionState.crashed, store.getSession(SessionId("dup00001"))!!.state, "historical row untouched")
+            assertEquals(1, store.read(SessionId("dup00001"), Seq(0)).size, "the historical log is untouched")
+        }
+    }
+
+    @Test
+    fun claudeOnlyAgentFactoryRejectsUnsupportedAgentsBeforeAnyTmuxSideEffect() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val factory = claudeOnlyAgentFactory { cwd -> StubAgentFactory(cat, null).create("claude", cwd) }
+            // The factory itself rejects a non-claude kind (and surfaces which one).
+            val direct = assertFailsWith<UnsupportedAgentException> { factory.create("codex", "/tmp") }
+            assertEquals("codex", direct.agentKind)
+            // And a start() with an unsupported agent propagates it WITHOUT creating a tmux session.
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), factory,
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("x0000001") }, now = { 1L },
+            )
+            assertFailsWith<UnsupportedAgentException> { mgr.start("codex", "/tmp") }
+            assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux session is created for an unsupported agent")
+        }
+    }
+
+    @Test
+    fun resumeRevivesASessionWhoseCacheSaysAliveButWhosePaneActuallyDied() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux() // NO live pane for this session — it "died" while the daemon was up
+            val provider = ProviderSessionId("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                now = { 1L },
+            )
+            // Cache still claims the session is alive (running), but tmux reports no live pane for it.
+            store.upsertSession(meta("zomb01", SessionState.running, providerId = provider, paneId = PaneId("%1")))
+
+            val updated = mgr.resume(SessionId("zomb01"))
+
+            assertEquals(SessionState.ready, updated.state, "a dead-but-cached-alive session is revived, not a no-op")
+            assertEquals(1, tmux.newSessionCommands.size, "resume spawned a fresh tmux session for the dead pane")
+            assertEquals(SessionState.ready, store.getSession(SessionId("zomb01"))!!.state)
+        }
+    }
+
     // ---- INTEGRATION (guarded): real tmux start + captured pane, then a restart reconciles it ----
 
     @Test

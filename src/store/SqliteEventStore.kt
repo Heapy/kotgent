@@ -81,10 +81,15 @@ class SqliteEventStore private constructor(
      * not re-see history (the transport pairs it with a `listSessions` snapshot); buffered + DROP_OLDEST
      * so a burst of appends never suspends the single writer holding [mutex]. Emitted with [tryEmit]
      * (non-suspending) from [append] / [upsertSession] under the lock.
+     *
+     * A slow consumer that falls far behind can still miss an intermediate update; the events-WS guards
+     * against that with a periodic full resync from the store (see [io.kotgent.transport.eventsWs]), so
+     * a dropped notification can never leave the UI stuck on a stale "needs attention". The buffer is
+     * generous (1024) to make even transient drops unlikely between resyncs.
      */
     private val _sessionUpdates = MutableSharedFlow<SessionUpdate>(
         replay = 0,
-        extraBufferCapacity = 256,
+        extraBufferCapacity = 1024,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val sessionUpdates: SharedFlow<SessionUpdate> get() = _sessionUpdates
@@ -164,18 +169,35 @@ class SqliteEventStore private constructor(
             // The DB is the authority for the next per-session seq; the reducer must agree (the
             // in-memory projection is kept in lockstep with the log), which this check guards.
             val seq = events.nextSeq(sessionId.value).executeAsOne()
-            val next = reduce(prior, event)
+            val next = reduce(prior, event) // PURE event-log projection: authoritative for seq/provider id
             check(next.lastSeq.value == seq) {
                 "seq divergence for '${sessionId.value}': reducer=${next.lastSeq.value} db=$seq"
             }
             val ts = now()
             val (type, payload) = serialize(event)
 
+            // Cache-state authority. The sessions-cache `state` is the CONTROL-authoritative lifecycle:
+            // control ops (interrupt/resume/terminate) and the reconciler set it WITHOUT an event, so the
+            // pure event-log `next.state` must NOT clobber it — otherwise a state-neutral append (a late
+            // SessionBound, a stray hook after a kill) would resurrect a stopped/interrupted session. So
+            // seed the cache-state reduce from the CURRENT cached state: a dead/terminal cached session is
+            // never revived by an append (its lifecycle is owned by control/reconciliation — and once its
+            // pane is gone, no genuine hook can arrive); an alive one applies the event over the cached
+            // (control-aware) state. The provider id / last_seq still come from the pure `next`.
+            val cachedRow = sessions.get(sessionId.value).executeAsOneOrNull()
+            val cachedState = cachedRow?.state?.let { SessionState.valueOf(it) }
+            val cacheState = when {
+                cachedState == null -> next.state // no cache row yet → the log state is all we have
+                cachedState.isDead -> cachedState // never resurrect a dead session with a stray append
+                else -> reduce(prior.copy(state = cachedState), event).state
+            }
+            val readCursor = cachedRow?.read_cursor ?: 0L
+
             // Atomic: the event row AND the session read-model cache advance together, or neither.
             db.transaction {
                 events.insert(sessionId.value, seq, ts, type, source.name, payload)
                 sessions.updateCache(
-                    next.state.name,
+                    cacheState.name,
                     source.name,
                     next.lastSeq.value,
                     next.providerSessionId?.value,
@@ -184,15 +206,13 @@ class SqliteEventStore private constructor(
                 )
             }
 
-            projections[sessionId] = next
+            projections[sessionId] = next // the in-memory projection stays a PURE event-log replay
             val stored = StoredEvent(sessionId, Seq(seq), ts, source, event)
             // Fan out to live subscribers (registered under this same lock — see subscribe).
             subscribers[sessionId]?.forEach { it.trySend(stored) }
-            // Signal the cache change for the events-WS. append does not touch read_cursor, so read it
-            // from the row (0 if the row was never upserted); we already hold the lock, so query direct.
-            val readCursor = sessions.get(sessionId.value).executeAsOneOrNull()?.read_cursor ?: 0L
+            // Signal the (control-authoritative) cache change for the events-WS.
             _sessionUpdates.tryEmit(
-                SessionUpdate(sessionId, next.state, next.lastSeq, unread(next.lastSeq.value, readCursor)),
+                SessionUpdate(sessionId, cacheState, next.lastSeq, unread(next.lastSeq.value, readCursor)),
             )
             Seq(seq)
         }

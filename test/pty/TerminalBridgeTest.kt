@@ -8,6 +8,7 @@ import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -211,6 +212,31 @@ class TerminalBridgeTest {
             a.close()
             b.close()
         }
+
+    @Test
+    fun aStalledSubscriberIsDisconnectedWhenItsBoundedBufferOverflows() = bridgeTest { bridge, factory ->
+        val stalled = bridge.subscribe() // never drained
+        val up = factory.current
+
+        // Flood past the bounded per-subscriber buffer WITHOUT draining. The subscriber must be
+        // disconnected rather than the daemon buffering unboundedly (OOM) or dropping bytes mid-stream
+        // (which would corrupt its terminal).
+        repeat(Broadcaster.SUBSCRIBER_BUFFER + 5) { up.emit(byteArrayOf((it and 0xff).toByte())) }
+
+        // The reader fans the flood out; once the buffer is full the stalled subscriber is dropped.
+        withTimeout(10_000) { while (bridge.subscriberCount() != 0) yield() }
+        assertEquals(0, bridge.subscriberCount(), "the stalled subscriber was disconnected on sustained overflow")
+
+        // Draining it yields the buffered prefix, then the CLOSED signal (it was disconnected cleanly).
+        assertFailsWith<ClosedReceiveChannelException> {
+            withTimeout(10_000) { while (true) stalled.output.receive() }
+        }
+
+        // In production the disconnected client's WS handler then detaches, which tears the now-idle
+        // upstream down (no orphaned upstream after an overflow disconnect).
+        stalled.close()
+        assertTrue(up.closed, "detaching the disconnected subscriber closes the idle upstream")
+    }
 
     @Test
     fun upstreamEofDetachesSubscribersAndAllowsReopen() = bridgeTest { bridge, factory ->

@@ -60,7 +60,9 @@ class HookRoutesTest {
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
-            routing { claudeHookRoutes(token, paneLookup, store) }
+            // grace = 0: these tests do not exercise the launch/register race, so an unknown pane must
+            // 404 immediately rather than waiting out the production grace window.
+            routing { claudeHookRoutes(token, paneLookup, store, paneLookupGraceMillis = 0) }
         }
         try {
             withTimeout(20_000) {

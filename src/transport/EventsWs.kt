@@ -14,7 +14,11 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.onSubscription
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -59,17 +63,35 @@ private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.strea
     json: Json,
 ) {
     val ws = this
-    store.sessionUpdates
-        .onSubscription {
-            // Baseline snapshot (after subscription so nothing between here and the first live emit is lost).
-            for (meta in store.listSessions()) {
-                ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), meta.toUpdateDto())))
+    coroutineScope {
+        // Periodic full resync. `sessionUpdates` is a DROP_OLDEST buffer, so a consumer that falls far
+        // behind could miss a session's LAST update and show a stale state until it reconnects. Re-sending
+        // every session's current state on a slow tick makes any such drop self-heal (the newest state is
+        // re-delivered), so the UI can never get stuck on a stale "needs attention". Cheap: a handful of
+        // rows every few seconds. Cancelled when the collect below ends (socket closed).
+        launch {
+            while (isActive) {
+                delay(GLOBAL_RESYNC_MILLIS)
+                for (meta in store.listSessions()) {
+                    ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), meta.toUpdateDto())))
+                }
             }
         }
-        .collect { update ->
-            ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), update.toDto())))
-        }
+        store.sessionUpdates
+            .onSubscription {
+                // Baseline snapshot (after subscription so nothing between here and the first live emit is lost).
+                for (meta in store.listSessions()) {
+                    ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), meta.toUpdateDto())))
+                }
+            }
+            .collect { update ->
+                ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), update.toDto())))
+            }
+    }
 }
+
+/** How often the global events stream re-sends every session's current state as a drop-proof resync. */
+private const val GLOBAL_RESYNC_MILLIS: Long = 15_000
 
 private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.streamOneSession(
     store: EventStore,

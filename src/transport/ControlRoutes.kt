@@ -6,6 +6,7 @@ import io.kotgent.core.unread
 import io.kotgent.daemon.NoSuchSessionException
 import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.UnsupportedAgentException
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxException
 import io.ktor.http.ContentType
@@ -77,6 +78,10 @@ fun Route.controlRoutes(
         }
         val meta = try {
             sessionManager.start(req.agent, req.cwd, req.name, req.tags)
+        } catch (e: UnsupportedAgentException) {
+            // v1 supports only `claude` — a clear client error, not a silent Claude substitution or a 500.
+            call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
         } catch (e: TmuxException) {
             // e.g. a non-existent cwd → tmux new-session fails: a bad request, not a server error.
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)

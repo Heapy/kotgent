@@ -141,16 +141,21 @@ class ClaudeAdapterTest {
     // ---- hook config: well-formed, and every hook wires token + $TMUX_PANE + ingress ----
 
     @Test
-    fun hookConfigIsWellFormedAndEveryHookWiresTokenPaneAndIngress() {
+    fun hookConfigIsWellFormedAndEveryHookWiresHeaderFilePaneAndIngress() {
         val port = 8765
+        val headerFile = "/home/u/.kotgent/claude-hook-header"
         val token = "tok-abc123-XYZ"
-        val settings = ClaudeHookConfig.generate(port, token)
+        val settings = ClaudeHookConfig.generate(port, headerFile)
 
         // Parsing succeeds → the generated settings are well-formed JSON.
         val hooks = Json.parseToJsonElement(settings).jsonObject["hooks"]!!.jsonObject
 
         // Exactly the five v1 hook events are wired.
         assertEquals(ClaudeHookConfig.HOOK_EVENTS.toSet(), hooks.keys)
+
+        // The secret token is NEVER embedded in the settings (it lives only in the 0600 header file), so it
+        // cannot leak via `ps`/proc inspection of a hook's `curl`.
+        assertFalse(token in settings, "the token must not appear in the generated hook settings")
 
         val ingress = ClaudeHookConfig.ingressUrl(port)
         for (event in ClaudeHookConfig.HOOK_EVENTS) {
@@ -162,7 +167,8 @@ class ClaudeAdapterTest {
                 val obj = hook.jsonObject
                 assertEquals("command", obj["type"]!!.jsonPrimitive.content, "$event hook is a command hook")
                 val cmd = obj["command"]!!.jsonPrimitive.content
-                assertTrue(cmd.contains(token), "$event command carries the hook token: $cmd")
+                assertTrue(cmd.contains("@$headerFile"), "$event command reads the token header from the file: $cmd")
+                assertFalse(cmd.contains(token), "$event command must not embed the token in its argv: $cmd")
                 assertTrue(cmd.contains("\$TMUX_PANE"), "$event command carries \$TMUX_PANE: $cmd")
                 assertTrue(cmd.contains(ingress), "$event command posts to the ingress URL: $cmd")
                 assertTrue(cmd.contains(event), "$event command tags the hook event name: $cmd")
@@ -171,8 +177,17 @@ class ClaudeAdapterTest {
     }
 
     @Test
+    fun headerFileContentCarriesTheTokenHeaderLine() {
+        assertEquals(
+            "${ClaudeHookConfig.HOOK_TOKEN_HEADER}: sekret-123\n",
+            ClaudeHookConfig.headerFileContent("sekret-123"),
+            "the header file is a single curl-compatible header line carrying the token",
+        )
+    }
+
+    @Test
     fun postToolUseHookCarriesAToolMatcher() {
-        val settings = ClaudeHookConfig.generate(port = 9000, token = "t")
+        val settings = ClaudeHookConfig.generate(port = 9000, headerFilePath = "/h")
         val hooks = Json.parseToJsonElement(settings).jsonObject["hooks"]!!.jsonObject
         val block = hooks[ClaudeHookConfig.POST_TOOL_USE]!!.jsonArray.first().jsonObject
         assertTrue(block.containsKey("matcher"), "PostToolUse block carries a tool matcher")

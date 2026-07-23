@@ -2,9 +2,11 @@ package io.kotgent.transport
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
+import platform.posix.chmod
 import platform.posix.getenv
 import platform.posix.getpid
 import platform.posix.unlink
@@ -48,6 +50,19 @@ class AuthTest {
         // daemon, CLI and hooks all resolve one value.
         assertEquals(token, readOrCreateToken(path), "readOrCreateToken is idempotent")
         assertEquals(token, readTokenOrNull(path), "readTokenOrNull reads the same value back")
+    }
+
+    @Test
+    fun readOrCreateTokenRepairsAMisPermissionedExistingFile() {
+        unlink(path)
+        val token = readOrCreateToken(path) // creates it 0600
+        // Simulate a token file left group/other-readable by an older build.
+        chmod(path, 0b110_100_100.convert()) // 0644
+        assertEquals(0b110_100_100, fileMode(path) and 0b111_111_111, "precondition: the file is 0644")
+
+        val reread = readOrCreateToken(path) // the read path must re-harden the permissions
+        assertEquals(token, reread, "the same token is read back")
+        assertEquals(0b110_000_000, fileMode(path) and 0b111_111_111, "a mis-permissioned token is re-hardened to 0600 on read")
     }
 
     @Test

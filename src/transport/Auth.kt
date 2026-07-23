@@ -22,14 +22,20 @@ import platform.posix.S_IXUSR
 import platform.posix.SEEK_END
 import platform.posix.SEEK_SET
 import platform.posix.chmod
+import platform.posix.errno
 import platform.posix.fclose
+import platform.posix.fflush
+import platform.posix.fileno
 import platform.posix.fopen
 import platform.posix.fread
 import platform.posix.fseek
+import platform.posix.fsync
 import platform.posix.ftell
 import platform.posix.fwrite
 import platform.posix.getenv
 import platform.posix.mkdir
+import platform.posix.rename
+import platform.posix.strerror
 import platform.posix.umask
 import platform.posix.unlink
 import kotlin.random.Random
@@ -139,10 +145,20 @@ fun defaultTokenPath(): String {
  * secret is not world-readable. The token is 32 bytes of entropy (from `/dev/urandom` when available,
  * else [Random]) hex-encoded. Idempotent: an existing non-blank token file is read back verbatim, so
  * every process (daemon, CLI, hooks) resolves the same value.
+ *
+ * On reading an EXISTING file its permissions are re-hardened to `0600` (`chmod`): a token written by an
+ * older build — or otherwise left group/other-readable — must not silently stay world-readable just
+ * because it already exists.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun readOrCreateToken(path: String = defaultTokenPath()): String {
-    readFileTextOrNull(path)?.trim()?.let { if (it.isNotEmpty()) return it }
+    readFileTextOrNull(path)?.trim()?.let {
+        if (it.isNotEmpty()) {
+            // Repair a mis-permissioned pre-existing token (e.g. a 0644 left by an older version).
+            chmod(path, MODE_0600.convert())
+            return it
+        }
+    }
     val token = generateToken()
     val dir = path.substringBeforeLast('/', missingDelimiterValue = "")
     if (dir.isNotEmpty()) mkdir(dir, MODE_0700.convert()) // ignore EEXIST — a pre-existing dir is fine
@@ -151,24 +167,35 @@ fun readOrCreateToken(path: String = defaultTokenPath()): String {
 }
 
 /**
- * Write [bytes] to [path] as a secret file (mode `0600`) WITHOUT the brief world-readable window that
- * `fopen` (creating `0666 & ~umask`, typically `0644`) followed by a later `chmod 0600` would leave: a
- * restrictive [umask] is installed for the duration of the create so the file is `0600` from the moment
- * it exists. Any stale file is unlinked first so a rewrite (e.g. the hook-settings file on daemon
- * restart) also lands `0600`; a trailing `chmod` covers the rewrite-into-an-existing-file case. Shared
- * by the token and the hook-settings writers — both carry secrets.
+ * Write [bytes] to [path] as a secret file (mode `0600`) ATOMICALLY and durably: write to a sibling
+ * `<path>.tmp` under a restrictive [umask] (so it is `0600` from the moment it exists — never the brief
+ * `0644` window a plain `fopen`+later-`chmod` would leave), `fsync` + close-check it, `chmod 0600`, then
+ * `rename` it over [path]. Every IO error is checked and surfaced (`error`), and the temp file is removed
+ * on failure — so a disk error can neither DESTROY an existing valid secret (the original is untouched
+ * until the atomic rename) nor persist a partial/empty one while startup reports success. Shared by the
+ * token, the hook-settings, and the hook-header writers — all carry secrets.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal fun writePrivateFile(path: String, bytes: ByteArray) {
-    unlink(path) // ignore ENOENT — a fresh file gets the umask-restricted 0600 mode on create
-    // Mask off ALL group + other bits (0o077) so a newly created 0666 file becomes 0600 immediately.
+    val tmp = "$path.tmp"
+    // Mask off ALL group + other bits (0o077) so the newly created temp is 0600 immediately.
     val previousMask = umask(UMASK_GROUP_OTHER.convert())
     try {
-        writeFileText(path, bytes.decodeToString())
+        unlink(tmp) // clear any stale temp from a previous crashed write (ignore ENOENT)
+        writeAllOrThrow(tmp, bytes) // fwrite/fflush/fsync/fclose all checked; unlinks tmp + throws on error
+        if (chmod(tmp, MODE_0600.convert()) != 0) {
+            val e = errno
+            unlink(tmp)
+            error("chmod 0600 failed for $tmp: ${errnoText(e)}")
+        }
+        if (rename(tmp, path) != 0) {
+            val e = errno
+            unlink(tmp) // the original at [path] is left intact — rename never touched it
+            error("rename $tmp -> $path failed: ${errnoText(e)}")
+        }
     } finally {
         umask(previousMask)
     }
-    chmod(path, MODE_0600.convert())
 }
 
 /**
@@ -214,15 +241,32 @@ private fun readFileBytesOrNull(path: String, limit: Int): ByteArray? {
     }
 }
 
+/**
+ * Write ALL of [bytes] to [path], checking every step (short write, `fflush`, `fsync`, `fclose`). On any
+ * failure the partial file is unlinked and an error is thrown — the caller ([writePrivateFile]) only
+ * `rename`s a fully-written, fsynced temp over the real target, so a valid secret is never replaced by a
+ * partial one.
+ */
 @OptIn(ExperimentalForeignApi::class)
-private fun writeFileText(path: String, text: String) {
-    val bytes = text.encodeToByteArray()
-    val fp = fopen(path, "wb") ?: error("cannot open token file $path for write")
-    try {
+private fun writeAllOrThrow(path: String, bytes: ByteArray) {
+    val fp = fopen(path, "wb") ?: error("cannot open $path for write: ${errnoText(errno)}")
+    val writeError: String? = run {
         if (bytes.isNotEmpty()) {
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val written = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            if (written.toInt() != bytes.size) return@run "short write (${written.toInt()} of ${bytes.size} bytes)"
         }
-    } finally {
-        fclose(fp)
+        if (fflush(fp) != 0) return@run "fflush failed: ${errnoText(errno)}"
+        val fd = fileno(fp)
+        if (fd >= 0 && fsync(fd) != 0) return@run "fsync failed: ${errnoText(errno)}"
+        null
+    }
+    val closeFailed = fclose(fp) != 0
+    if (writeError != null || closeFailed) {
+        unlink(path)
+        error("write to $path failed: ${writeError ?: "fclose failed"}")
     }
 }
+
+/** `strerror` for [code], or a numeric fallback — for the private-file writer's error messages. */
+@OptIn(ExperimentalForeignApi::class)
+private fun errnoText(code: Int): String = strerror(code)?.toKString() ?: "errno=$code"

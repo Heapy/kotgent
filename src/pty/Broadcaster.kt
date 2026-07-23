@@ -35,10 +35,23 @@ import kotlinx.coroutines.sync.withLock
  *
  * ## Concurrency
  * A single [mutex] guards the subscriber set, the current [upstream] reference and [lastSize].
- * Every sink is an UNLIMITED [Channel], so [broadcast]'s `trySend` never blocks while holding the
- * lock. The reader loop calls [broadcast] (which takes the lock) while [attach] may hold it across
- * a seed capture; because both serialize on [mutex], a new subscriber's seed is enqueued strictly
- * before any live delta it should see, and no committed delta is lost across the join boundary.
+ * Every sink is a BOUNDED [Channel] ([SUBSCRIBER_BUFFER]), so [broadcast]'s `trySend` never blocks
+ * while holding the lock. The reader loop calls [broadcast] (which takes the lock) while [attach] may
+ * hold it across a seed capture; because both serialize on [mutex], a new subscriber's seed is enqueued
+ * strictly before any live delta it should see, and no committed delta is lost across the join boundary.
+ *
+ * [decision] The reader thread starts (in [openUpstream]) before a new subscriber's `capture-pane` seed
+ * is taken, but because live delivery is gated by [mutex] (held across seed-enqueue-then-add-to-set),
+ * the seed is always FIRST in the subscriber's channel — the ordering invariant holds. The only residual
+ * effect is that the initial `tmux attach` full-repaint may be delivered both inside the seed and as an
+ * early delta; a duplicated FULL repaint is self-correcting (it overwrites, not appends), so this is
+ * cosmetic for a local terminal and does not corrupt the stream.
+ *
+ * ## Backpressure: bound + disconnect (never drop mid-stream)
+ * A stalled authenticated subscriber that stops draining its channel must not accumulate terminal output
+ * until the daemon OOMs. Sinks are bounded; on sustained overflow [broadcast] DISCONNECTS that one slow
+ * subscriber (closes its channel — its WS then drops) rather than dropping bytes mid-stream (which would
+ * corrupt its terminal) or growing without bound. Healthy subscribers are unaffected.
  */
 class Broadcaster(
     private val openUpstream: () -> PtyHandle,
@@ -56,17 +69,35 @@ class Broadcaster(
      * before any live delta, then added to the fan-out set.
      */
     suspend fun attach(): Subscriber = mutex.withLock {
-        if (subscribers.isEmpty()) {
+        val opened = subscribers.isEmpty()
+        if (opened) {
             val up = openUpstream()
-            // Re-apply the last active geometry so a re-opened upstream matches what clients expect.
-            lastSize?.let { (cols, rows) -> up.resize(cols, rows) }
+            try {
+                // Re-apply the last active geometry so a re-opened upstream matches what clients expect.
+                lastSize?.let { (cols, rows) -> up.resize(cols, rows) }
+            } catch (e: Throwable) {
+                // Resize failed before the upstream was published: close it so no orphaned pty + reader
+                // thread leaks with zero subscribers.
+                closeUpstream(up)
+                throw e
+            }
             upstream = up
         }
         val sub = Subscriber(this)
-        // Seed BEFORE registering for live deltas (both under this lock) so the snapshot is first
-        // in the subscriber's channel and subsequent broadcasts append after it, in order.
-        val seed = seedProvider()
-        if (seed.isNotEmpty()) sub.sink.trySend(seed)
+        try {
+            // Seed BEFORE registering for live deltas (both under this lock) so the snapshot is first
+            // in the subscriber's channel and subsequent broadcasts append after it, in order.
+            val seed = seedProvider()
+            if (seed.isNotEmpty()) sub.sink.trySend(seed)
+        } catch (e: Throwable) {
+            // Seed capture failed. If THIS attach opened the upstream, roll it back — the subscriber was
+            // never added, so nothing would otherwise close the just-opened upstream.
+            if (opened) {
+                upstream?.let(closeUpstream)
+                upstream = null
+            }
+            throw e
+        }
         subscribers.add(sub)
         sub
     }
@@ -76,17 +107,33 @@ class Broadcaster(
      * `tmux attach`, leaving the session alive) — a later [attach] re-opens a fresh one.
      */
     suspend fun detach(sub: Subscriber): Unit = mutex.withLock {
-        if (!subscribers.remove(sub)) return@withLock
-        sub.sink.close()
-        if (subscribers.isEmpty()) {
+        val removed = subscribers.remove(sub)
+        if (removed) sub.sink.close()
+        // Close the upstream once the last subscriber is gone — even when THIS sub was already removed by
+        // a broadcast-overflow disconnect (its later detach must still drive the 1→0 upstream teardown).
+        if (subscribers.isEmpty() && upstream != null) {
             upstream?.let(closeUpstream)
             upstream = null
         }
     }
 
-    /** Fan [bytes] out to every current subscriber. Called by [TerminalBridge]'s reader loop. */
+    /**
+     * Fan [bytes] out to every current subscriber. Called by [TerminalBridge]'s reader loop. A subscriber
+     * whose bounded channel is full has stalled: it is DISCONNECTED (its channel closed, so its WS drops)
+     * rather than dropping bytes into its stream (which would corrupt its terminal) or letting an
+     * unbounded backlog OOM the daemon. Its own detach then runs the 1→0 upstream teardown if it was last.
+     */
     suspend fun broadcast(bytes: ByteArray): Unit = mutex.withLock {
-        for (s in subscribers) s.sink.trySend(bytes)
+        var overflowed: MutableList<Subscriber>? = null
+        for (s in subscribers) {
+            if (s.sink.trySend(bytes).isFailure) {
+                (overflowed ?: ArrayList<Subscriber>().also { overflowed = it }).add(s)
+            }
+        }
+        overflowed?.forEach { s ->
+            subscribers.remove(s)
+            s.sink.close()
+        }
     }
 
     /**
@@ -138,6 +185,15 @@ class Broadcaster(
 
     /** Current number of attached subscribers (observability; lets tests await transitions). */
     suspend fun subscriberCount(): Int = mutex.withLock { subscribers.size }
+
+    companion object {
+        /**
+         * Per-subscriber channel capacity (in fan-out messages, each up to one pty read ≈ 8 KiB). A
+         * subscriber that lets this many messages queue without draining has stalled and is disconnected
+         * by [broadcast]. Bounds worst-case per-subscriber memory to ≈ this × the read size.
+         */
+        const val SUBSCRIBER_BUFFER: Int = 1024
+    }
 }
 
 /**
@@ -147,8 +203,12 @@ class Broadcaster(
  * [Broadcaster.attach] — the constructor is internal so a client cannot fabricate one.
  */
 class Subscriber internal constructor(private val broadcaster: Broadcaster) {
-    /** This subscriber's private buffer; the send side is driven by [Broadcaster] under its lock. */
-    internal val sink: Channel<ByteArray> = Channel(Channel.UNLIMITED)
+    /**
+     * This subscriber's private buffer; the send side is driven by [Broadcaster] under its lock. BOUNDED
+     * ([Broadcaster.SUBSCRIBER_BUFFER]) so a stalled reader cannot grow it without bound — on sustained
+     * overflow [Broadcaster.broadcast] closes it, disconnecting this one slow subscriber.
+     */
+    internal val sink: Channel<ByteArray> = Channel(Broadcaster.SUBSCRIBER_BUFFER)
 
     /** Terminal output for this client: the capture-pane seed first, then live deltas. */
     val output: ReceiveChannel<ByteArray> get() = sink

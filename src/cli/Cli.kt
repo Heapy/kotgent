@@ -153,7 +153,8 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Help -> { println(USAGE); 0 }
     is CliCommand.Invalid -> { eprintln(command.message); eprintln(""); eprintln(USAGE); 2 }
     is CliCommand.Daemon -> Commands.daemon(command.port)
-    is CliCommand.Start -> Commands.start(command.agent, command.cwd ?: currentWorkingDir(), command.name, command.tags)
+    is CliCommand.Start ->
+        Commands.start(command.agent, resolveCwdAgainst(currentWorkingDir(), command.cwd), command.name, command.tags)
     is CliCommand.ListSessions -> Commands.list()
     is CliCommand.Stop -> Commands.stop(command.id)
     is CliCommand.Resume -> Commands.resume(command.id)
@@ -170,6 +171,22 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
 fun eprintln(line: String) {
     fputs(line + "\n", stderr)
     fflush(stderr)
+}
+
+/**
+ * Resolve a possibly-relative [cwd] against [base] (the CLI's own working directory) to an ABSOLUTE
+ * path. The daemon runs under launchd with cwd `/`, so a relative `cwd` sent verbatim (e.g.
+ * `kotgent start claude .` or `… start claude sub/dir`) would be resolved by the daemon against `/` —
+ * the wrong directory. The CLI resolves it here, against its own cwd, before sending. Pure (no IO), so
+ * it is unit-tested directly; an already-absolute cwd and the omitted (`null`) case pass through as the
+ * base. tmux `new-session -c` canonicalizes any remaining `..` segments at launch.
+ */
+fun resolveCwdAgainst(base: String, cwd: String?): String {
+    if (cwd.isNullOrEmpty() || cwd == ".") return base
+    if (cwd.startsWith("/")) return cwd
+    val rel = if (cwd.startsWith("./")) cwd.substring(2) else cwd
+    val b = base.trimEnd('/')
+    return if (rel.isEmpty()) b else "$b/$rel"
 }
 
 /** The process's current working directory (`start`'s default cwd), falling back to `$PWD` then `.`. */

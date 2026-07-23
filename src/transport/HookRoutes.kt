@@ -11,6 +11,7 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
+import kotlinx.coroutines.delay
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -50,6 +51,14 @@ fun Route.claudeHookRoutes(
     paneLookup: suspend (PaneId) -> SessionId?,
     store: EventStore,
     json: Json = HOOK_JSON,
+    /**
+     * How long to keep retrying an unresolved pane→session lookup before answering `404`. A hook can
+     * fire in the brief window between `tmux new-session` launching the agent and the daemon registering
+     * the pane (see [io.kotgent.daemon.SessionManager.start]); without a grace window an early
+     * `SessionStart` would 404 and the provider id would stay permanently pending. Small (a few ms) in
+     * practice; tests pass `0` to keep the genuine-unknown-pane case fast.
+     */
+    paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
 ) {
     post(ClaudeHookConfig.INGRESS_PATH) {
         // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
@@ -77,8 +86,9 @@ fun Route.claudeHookRoutes(
             return@post
         }
 
-        // 3. Resolve pane → session. An unknown pane is a clean 404, not a crash.
-        val sessionId = paneLookup(paneId)
+        // 3. Resolve pane → session, tolerating the brief post-launch/pre-register window with a bounded
+        // retry (see paneLookupGraceMillis). A still-unknown pane after the grace is a clean 404.
+        val sessionId = resolvePane(paneLookup, paneId, paneLookupGraceMillis)
         if (sessionId == null) {
             call.respondText("unknown pane ${paneId.value}", status = HttpStatusCode.NotFound)
             return@post
@@ -113,6 +123,32 @@ fun Route.claudeHookRoutes(
 val HOOK_JSON: Json = Json {
     ignoreUnknownKeys = true
     isLenient = true
+}
+
+/** Default grace window for the pane→session lookup retry (see [claudeHookRoutes]). */
+const val PANE_LOOKUP_GRACE_MILLIS: Long = 2_000
+
+/** Poll interval while waiting for a not-yet-registered pane to appear. */
+private const val PANE_LOOKUP_POLL_MILLIS: Long = 25
+
+/**
+ * Resolve [paneId] → session, retrying for up to [graceMillis] so a hook that arrives in the tiny window
+ * between the agent launching and its pane being registered is not dropped with a hard 404. Returns as
+ * soon as the pane resolves; `null` only if it never does within the grace.
+ */
+private suspend fun resolvePane(
+    paneLookup: suspend (PaneId) -> SessionId?,
+    paneId: PaneId,
+    graceMillis: Long,
+): SessionId? {
+    paneLookup(paneId)?.let { return it }
+    var waited = 0L
+    while (waited < graceMillis) {
+        delay(PANE_LOOKUP_POLL_MILLIS)
+        paneLookup(paneId)?.let { return it }
+        waited += PANE_LOOKUP_POLL_MILLIS
+    }
+    return null
 }
 
 private val EMPTY_OBJECT: JsonObject = JsonObject(emptyMap())

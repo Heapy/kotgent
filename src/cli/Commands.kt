@@ -4,12 +4,12 @@ import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import io.kotgent.adapter.claude.ClaudeAdapter
 import io.kotgent.adapter.claude.ClaudeCli
 import io.kotgent.adapter.claude.ClaudeHookConfig
-import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
+import io.kotgent.daemon.claudeOnlyAgentFactory
 import io.kotgent.daemon.claudeVendorStoreProbe
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
@@ -164,7 +164,9 @@ object Commands {
         // does not depend on the child shell's PATH under launchd's minimal env. Falls back to the bare
         // name (found via the child's PATH) if it cannot be located.
         val claudePath = claudeCli.locate() ?: "claude"
-        val agentFactory = AgentFactory { _, cwd ->
+        // Only `claude` is supported in v1: reject any other kind with a clear error instead of silently
+        // building a Claude adapter for it (which would launch Claude while persisting a different agent).
+        val agentFactory = claudeOnlyAgentFactory { cwd ->
             ClaudeAdapter(
                 cwd = cwd,
                 settingsPath = settingsPath,
@@ -215,9 +217,13 @@ object Commands {
     }
 
     private fun writeClaudeHookSettings(port: Int, token: String): String {
+        // The secret token goes into a SEPARATE 0600 header file that the hook reads via `curl -H @<file>`,
+        // so it never appears on a hook command line (visible to other local users via `ps`). Both the
+        // header file and the settings are written 0600 atomically — never a brief 0644 window.
+        val headerPath = "${kotgentHome()}/claude-hook-header"
+        writePrivateFile(headerPath, ClaudeHookConfig.headerFileContent(token).encodeToByteArray())
         val path = "${kotgentHome()}/claude-hooks.json"
-        // Written 0600 atomically (it carries the hook token) — never a brief 0644 window.
-        writePrivateFile(path, ClaudeHookConfig.generate(port, token).encodeToByteArray())
+        writePrivateFile(path, ClaudeHookConfig.generate(port, headerPath).encodeToByteArray())
         return path
     }
 

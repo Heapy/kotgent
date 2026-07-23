@@ -1,5 +1,6 @@
 package io.kotgent.daemon
 
+import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
 import io.kotgent.core.ProviderSessionId
@@ -117,6 +118,39 @@ class ReconcilerTest {
             assertEquals(true, byId.getValue(SessionId("alive")).paneAlive)
             assertEquals(false, byId.getValue(SessionId("crash")).paneAlive)
             assertEquals(SessionState.running to SessionState.resumable, byId.getValue(SessionId("resum")).let { it.previousState to it.newState })
+        }
+    }
+
+    // ---- a live session reconciles from the CACHE-authoritative state, not the pure event log ----
+
+    @Test
+    fun reconcileClassifiesALiveSessionFromTheCacheAuthoritativeStateNotTheEventLog() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val id = uuid('a')
+            store.upsertSession(meta("intr", SessionState.running, providerId = id, paneId = PaneId("%5")))
+            // The event LOG ends at needs_approval …
+            store.append(SessionId("intr"), AgentEvent.ApprovalRequested("perm"), EventSource.hook)
+            assertEquals(SessionState.needs_approval, store.projectionOf(SessionId("intr")).state, "log projection is needs_approval")
+            // … but a control interrupt set the CACHE to `ready` WITHOUT an event (as SessionManager.interrupt does).
+            store.updateSessionState(SessionId("intr"), SessionState.ready, EventSource.user, PaneId("%5"), 2L)
+
+            // The pane is still alive across the "restart".
+            val tmux = FakeTmux(
+                seedPanes = listOf(
+                    TmuxPane(session = "kt-intr", paneId = PaneId("%5"), pid = 1, dead = false, width = 80, height = 24),
+                ),
+            )
+            val reconciler = Reconciler(tmux, store, VendorStoreProbe { _, _ -> false }, PaneRegistry(), now = { 3L })
+            reconciler.reconcile()
+
+            // Reconciliation keeps the cache-authoritative `ready`, NOT the log's stale `needs_approval` —
+            // a daemon restart must not resurrect a needs_approval a control interrupt already cleared.
+            assertEquals(
+                SessionState.ready,
+                store.getSession(SessionId("intr"))!!.state,
+                "live-session reconciliation honors the cache-authoritative state, not the event-log replay",
+            )
         }
     }
 }

@@ -96,7 +96,7 @@ class ClaudeVendorStoreProbeTest {
             // ...which is exactly what turns a dead session into `resumable` rather than `crashed`.
             assertEquals(
                 SessionState.resumable,
-                Reconciler.classify(paneAlive = false, projectionState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript(cwd, id)),
+                Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript(cwd, id)),
             )
         }
     }
@@ -113,7 +113,7 @@ class ClaudeVendorStoreProbeTest {
 
             assertEquals(
                 SessionState.crashed,
-                Reconciler.classify(paneAlive = false, projectionState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript(cwd, id)),
+                Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript(cwd, id)),
             )
         }
     }

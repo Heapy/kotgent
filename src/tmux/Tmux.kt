@@ -172,11 +172,23 @@ class Tmux(
         /** Field separator embedded in `-F` formats: a raw TAB, absent from names/pids/dims. */
         private const val FS = "\t"
 
-        /** First runnable tmux among common install locations, else bare `tmux` (rely on PATH). */
+        /**
+         * An ABSOLUTE path to the tmux binary. Tries the common install locations first, then resolves
+         * via the shell PATH (`command -v tmux`, run through `/bin/sh` by [ProcessRunner], which honors
+         * PATH). An absolute path is REQUIRED for the terminal-attach upstream: it opens tmux via
+         * [io.kotgent.pty.Pty.open] → `posix_spawn`, which does NOT search PATH, so a bare `tmux` there
+         * ENOENTs under launchd's minimal env even though shell-based tmux CONTROL (`popen`) still works.
+         * Only if resolution fails does it fall back to the bare name (control-plane keeps functioning;
+         * terminal attach may not).
+         */
         @OptIn(ExperimentalForeignApi::class)
         fun defaultTmuxPath(): String {
             val candidates = listOf("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux")
-            return candidates.firstOrNull { access(it, X_OK) == 0 } ?: "tmux"
+            candidates.firstOrNull { access(it, X_OK) == 0 }?.let { return it }
+            val resolved = ProcessRunner.run(listOf("command", "-v", "tmux"))
+                .takeIf { it.isSuccess }
+                ?.stdout?.trim()?.lineSequence()?.firstOrNull()?.takeIf { it.startsWith("/") }
+            return resolved ?: "tmux"
         }
     }
 }

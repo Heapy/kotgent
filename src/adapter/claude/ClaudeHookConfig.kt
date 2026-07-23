@@ -24,12 +24,18 @@ import kotlinx.serialization.json.putJsonObject
  * "command": ...} ]} ]}}`. Tool-scoped events take a `matcher` (we use `"*"` on [POST_TOOL_USE] to
  * match every tool); the others omit it.
  *
+ * ## The secret token is never on the command line
+ * The shared hook token gates the ingress, so it is a secret. It is NOT embedded in the `curl` argv
+ * (which is visible to every local user via `ps`/`/proc/<pid>/cmdline`); instead the daemon writes it,
+ * once, into a `0600` header file ([headerFileContent]) and the hook does `curl -H @<file>`, which reads
+ * the header line from that file at hook time. Only the header FILE PATH appears in the command line,
+ * which is not sensitive.
+ *
  * ## Quoting
- * The generated command is a `/bin/sh` line. Fixed, kotgent-controlled arguments (URL, token header,
- * event header) are wrapped in POSIX single quotes so every byte is literal — no expansion, no
- * re-splitting, robust to any token bytes. The one exception is the `$TMUX_PANE` header, wrapped in
- * double quotes precisely so the shell expands `$TMUX_PANE` at hook time (its value is set by tmux in
- * the pane where claude runs).
+ * The generated command is a `/bin/sh` line. Fixed, kotgent-controlled arguments (URL, the `@header-file`
+ * reference, event header) are wrapped in POSIX single quotes so every byte is literal — no expansion,
+ * no re-splitting. The one exception is the `$TMUX_PANE` header, wrapped in double quotes precisely so
+ * the shell expands `$TMUX_PANE` at hook time (its value is set by tmux in the pane where claude runs).
  */
 object ClaudeHookConfig {
 
@@ -66,15 +72,25 @@ object ClaudeHookConfig {
     fun ingressUrl(port: Int): String = "http://127.0.0.1:$port$INGRESS_PATH"
 
     /**
-     * The `/bin/sh` command a hook for [event] runs: POST the hook's stdin payload to the ingress on
-     * [port], carrying [token], `$TMUX_PANE`, and the event name. `curl --data-binary @-` forwards the
-     * full payload from stdin unchanged.
+     * The content of the `0600` header file the hooks read the secret token from (a single
+     * `curl`-compatible header line, newline-terminated). The daemon writes this next to the settings
+     * (see [io.kotgent.cli.Commands]); the hook references it via `curl -H @<file>` so the token stays
+     * off every command line.
      */
-    fun hookCommand(port: Int, token: String, event: String): String {
+    fun headerFileContent(token: String): String = "$HOOK_TOKEN_HEADER: $token\n"
+
+    /**
+     * The `/bin/sh` command a hook for [event] runs: POST the hook's stdin payload to the ingress on
+     * [port], reading the secret token header from [headerFilePath] (`-H @<file>`) and carrying
+     * `$TMUX_PANE` + the event name. `curl --data-binary @-` forwards the full payload from stdin
+     * unchanged. The token never appears here — only the header file's path (not sensitive).
+     */
+    fun hookCommand(port: Int, headerFilePath: String, event: String): String {
         val url = ingressUrl(port) + "?event=" + event
         return buildString {
             append("curl -sS -o /dev/null -X POST ").append(shSingleQuote(url))
-            append(" -H ").append(shSingleQuote("$HOOK_TOKEN_HEADER: $token"))
+            // The secret token is read from the 0600 header file, never embedded in the argv.
+            append(" -H ").append(shSingleQuote("@$headerFilePath"))
             // Double-quoted on purpose so the shell expands $TMUX_PANE at hook execution time.
             append(" -H \"").append(TMUX_PANE_HEADER).append(": \$TMUX_PANE\"")
             append(" -H ").append(shSingleQuote("$HOOK_EVENT_HEADER: $event"))
@@ -85,10 +101,11 @@ object ClaudeHookConfig {
 
     /**
      * Generate the full settings JSON for `claude --settings <file>`, wiring every [HOOK_EVENTS]
-     * entry to [hookCommand] against [port] and [token]. Well-formed by construction (built via the
-     * kotlinx JSON DSL, which escapes values). Pretty-printed by default for human inspection.
+     * entry to [hookCommand] against [port], reading the token from [headerFilePath]. Well-formed by
+     * construction (built via the kotlinx JSON DSL, which escapes values). Pretty-printed by default
+     * for human inspection. The secret token is NOT part of this output (it lives in the header file).
      */
-    fun generate(port: Int, token: String, json: Json = PRETTY): String {
+    fun generate(port: Int, headerFilePath: String, json: Json = PRETTY): String {
         val root = buildJsonObject {
             putJsonObject("hooks") {
                 for (event in HOOK_EVENTS) {
@@ -98,7 +115,7 @@ object ClaudeHookConfig {
                             putJsonArray("hooks") {
                                 addJsonObject {
                                     put("type", "command")
-                                    put("command", hookCommand(port, token, event))
+                                    put("command", hookCommand(port, headerFilePath, event))
                                 }
                             }
                         }

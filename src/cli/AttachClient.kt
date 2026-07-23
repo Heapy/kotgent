@@ -40,10 +40,12 @@ data class WinSize(val cols: Int, val rows: Int)
  * which is not linked into test binaries — KT-78062). Tests inject a fake and assert save/restore.
  */
 interface LocalTty {
-    /** Switch the tty to raw mode, saving the prior settings for [restore]. */
+    /** Switch the tty to raw mode, saving the prior settings for [restore]. THROWS if it cannot — attach
+     *  must abort rather than run in canonical (line-buffered/echoing) mode. */
     fun enterRaw()
 
-    /** Restore the tty to the settings saved by [enterRaw]. Must be safe to call on any exit path. */
+    /** Restore the tty to the settings saved by [enterRaw]. Must be safe to call on any exit path;
+     *  best-effort (warns rather than throws) so it never masks a real error during teardown. */
     fun restore()
 
     /** The current window size (for the initial + SIGWINCH resize frames). */
@@ -67,11 +69,17 @@ inline fun <T> LocalTty.withRawMode(body: () -> T): T {
 /** The production [LocalTty]: the real controlling terminal via the `sysnative` [NativeTty] cinterop. */
 class PosixTty(private val fd: Int = STDIN_FILENO) : LocalTty {
     override fun enterRaw() {
-        NativeTty.enterRaw(fd)
+        // Abort rather than silently run in canonical mode: NativeTty returns false on tcsetattr/tcgetattr
+        // failure, and running the passthrough without raw mode (line-buffered, echoing) is broken.
+        if (!NativeTty.enterRaw(fd)) error("failed to enter raw terminal mode on fd $fd")
     }
 
     override fun restore() {
-        NativeTty.restore(fd)
+        // Best-effort on exit: warn but never throw (restore runs in a finally on every exit path, so a
+        // throw here would mask the real error). A false result means the tty may be left in raw mode.
+        if (!NativeTty.restore(fd)) {
+            eprintln("warning: failed to restore terminal mode on fd $fd (run `reset` if your terminal misbehaves)")
+        }
     }
 
     override fun windowSize(): WinSize {

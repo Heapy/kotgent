@@ -79,6 +79,19 @@ class CliTest {
     }
 
     @Test
+    fun resolveCwdAgainstMakesRelativePathsAbsoluteAgainstTheCliCwd() {
+        val base = "/Users/me/project"
+        // The daemon runs with cwd `/`, so the CLI must send an ABSOLUTE cwd; a relative one is anchored
+        // at the CLI's own cwd here.
+        assertEquals(base, resolveCwdAgainst(base, null), "omitted cwd → the CLI's own cwd")
+        assertEquals(base, resolveCwdAgainst(base, "."), "'.' → the CLI's own cwd")
+        assertEquals("$base/sub", resolveCwdAgainst(base, "sub"), "a relative cwd is anchored at the CLI cwd")
+        assertEquals("$base/sub", resolveCwdAgainst(base, "./sub"), "a leading ./ is stripped")
+        assertEquals("/abs/elsewhere", resolveCwdAgainst(base, "/abs/elsewhere"), "an absolute cwd passes through")
+        assertEquals("/Users/me/project/x", resolveCwdAgainst("/Users/me/project/", "x"), "a trailing slash on base is handled")
+    }
+
+    @Test
     fun parsesDaemonPortAndUnknownCommand() {
         assertEquals(CliCommand.Daemon(DEFAULT_PORT), parseArgs(listOf("daemon")))
         assertEquals(CliCommand.Daemon(9999), parseArgs(listOf("daemon", "--port", "9999")))

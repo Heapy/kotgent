@@ -6,6 +6,7 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.core.ControlSignal
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
@@ -49,6 +50,22 @@ fun interface AgentFactory {
     fun create(agentKind: String, cwd: String): AgentAdapter
 }
 
+/** The one agent kind the v1 slice supports (`start claude`); anything else is rejected up front. */
+const val CLAUDE_AGENT_KIND: String = "claude"
+
+/**
+ * Wrap [buildClaude] in an [AgentFactory] that ACCEPTS only the `claude` agent kind and rejects every
+ * other with [UnsupportedAgentException]. Without this the production factory silently ignored the
+ * requested kind and always built a Claude adapter, so `start codex` launched Claude while the session
+ * was persisted as a different agent. `create` runs before any tmux side effect (see
+ * [SessionManager.start] / [SessionManager.resume]), so a rejection leaves nothing to clean up.
+ */
+fun claudeOnlyAgentFactory(buildClaude: (cwd: String) -> AgentAdapter): AgentFactory =
+    AgentFactory { agentKind, cwd ->
+        if (agentKind != CLAUDE_AGENT_KIND) throw UnsupportedAgentException(agentKind)
+        buildClaude(cwd)
+    }
+
 /**
  * In-memory `pane_id → SessionId` map (plan Task 13). This IS the `paneLookup` the hook ingress
  * ([io.kotgent.transport.claudeHookRoutes], Task 12) needs to correlate a `$TMUX_PANE` callback back
@@ -86,6 +103,10 @@ class NoSuchSessionException(val sessionId: SessionId) :
 /** Thrown when [SessionManager.resume] is asked to revive a session whose provider id is still pending. */
 class ResumeBlockedException(val sessionId: SessionId) :
     IllegalStateException("resume blocked: provider session id is pending for ${sessionId.value}")
+
+/** Thrown when a start targets an agent kind the daemon does not support (v1: only `claude`). */
+class UnsupportedAgentException(val agentKind: String) :
+    IllegalArgumentException("unsupported agent kind '$agentKind' (v1 supports only 'claude')")
 
 /**
  * The daemon session manager (plan Task 13) — wires the pieces built so far into the create/stop/
@@ -146,42 +167,72 @@ class SessionManager(
         name: String? = null,
         tags: List<String> = emptyList(),
     ): SessionMeta {
-        val sessionId = newSessionId()
+        val sessionId = freshSessionId()
         val shortId = sessionId.value
         val tmuxSession = tmux.sessionName(shortId)
+        // create() rejects an unsupported agent kind (UnsupportedAgentException) BEFORE any tmux side
+        // effect, so a bad kind fails with nothing to clean up.
         val adapter = agentFactory.create(agentKind, cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.New)
         val paneId = tmux.newSession(shortId, cwd, shellCommand(spec.command), cols, rows)
 
-        val ts = now()
-        val meta = SessionMeta(
-            id = sessionId,
-            name = name ?: tmuxSession,
-            tags = tags,
-            agent = agentKind,
-            providerSessionId = spec.preallocatedSessionId,
-            cwd = cwd,
-            tmuxSession = tmuxSession,
-            paneId = paneId,
-            state = SessionState.running,
-            stateSource = EventSource.system,
-            createdAt = ts,
-            updatedAt = ts,
-        )
-        store.upsertSession(meta)
-        registry.register(paneId, sessionId)
+        try {
+            val ts = now()
+            val meta = SessionMeta(
+                id = sessionId,
+                name = name ?: tmuxSession,
+                tags = tags,
+                agent = agentKind,
+                providerSessionId = spec.preallocatedSessionId,
+                cwd = cwd,
+                tmuxSession = tmuxSession,
+                paneId = paneId,
+                state = SessionState.running,
+                stateSource = EventSource.system,
+                createdAt = ts,
+                updatedAt = ts,
+            )
+            // Upsert the row BEFORE registering the pane: a hook that resolves the pane must find the
+            // sessions row already present (else its append would race the row into existence). The hook
+            // ingress tolerates the brief not-yet-registered window with a bounded retry (see
+            // claudeHookRoutes), so the SessionStart callback is not lost during it.
+            store.upsertSession(meta)
+            registry.register(paneId, sessionId)
 
-        val prealloc = spec.preallocatedSessionId
-        if (prealloc != null) {
-            // Primary path: the id is known up front — bind it in the log immediately.
-            idCapture.bind(sessionId, prealloc)
-        } else {
-            // Fallback path (older claude): no id yet. Poll for the SessionStart hook to deliver it in
-            // the background; until it does the session is "id pending" (provider_session_id null →
-            // resume blocked). Bounded, fire-and-forget.
-            idCapture.captureInBackground(sessionId) { store.projectionOf(sessionId).providerSessionId }
+            val prealloc = spec.preallocatedSessionId
+            if (prealloc != null) {
+                // Primary path: the id is known up front — bind it in the log immediately.
+                idCapture.bind(sessionId, prealloc)
+            } else {
+                // Fallback path (older claude): no id yet. Poll for the SessionStart hook to deliver it in
+                // the background; until it does the session is "id pending" (provider_session_id null →
+                // resume blocked). Bounded, fire-and-forget.
+                idCapture.captureInBackground(sessionId) { store.projectionOf(sessionId).providerSessionId }
+            }
+            return store.getSession(sessionId) ?: meta
+        } catch (e: Throwable) {
+            // Durable state (or a subsequent step) failed AFTER the agent was launched — compensate by
+            // killing the just-created tmux session so no live agent is left orphaned/untracked.
+            runCatching { tmux.killSession(shortId) }
+            runCatching { registry.unregister(paneId) }
+            throw e
         }
-        return store.getSession(sessionId) ?: meta
+    }
+
+    /**
+     * A [SessionId] not already used by any stored session or event log. [randomShortId] is only 32
+     * bits, so a collision with a dead HISTORICAL session's `kt-<id>` (whose `sessions` row and event
+     * log survive) is improbable but not impossible — and a collision would overwrite that row and
+     * splice this new agent into its existing log. So we reject any candidate the store already knows
+     * and regenerate, bounded. The id stays 8 hex chars for a stable, copy-pasteable CLI handle; the
+     * store check — not the id width — is what makes reuse impossible.
+     */
+    private suspend fun freshSessionId(): SessionId {
+        repeat(MAX_ID_ATTEMPTS) {
+            val candidate = newSessionId()
+            if (store.getSession(candidate) == null && store.read(candidate, Seq(0)).isEmpty()) return candidate
+        }
+        error("could not allocate a unique session id after $MAX_ID_ATTEMPTS attempts")
     }
 
     /** Stop [sessionId] according to [mode] (defaults to a full [StopMode.Kill]). */
@@ -212,22 +263,41 @@ class SessionManager(
      */
     suspend fun resume(sessionId: SessionId): SessionMeta {
         val meta = store.getSession(sessionId) ?: throw NoSuchSessionException(sessionId)
-        if (meta.state.isAlive) return meta // already running; resume is a no-op
+        // The cache can say "alive" even though the pane died while the daemon was up: there is no live
+        // exit hook, and liveness is only reconciled at startup. Confirm real tmux liveness before
+        // treating resume as a no-op — otherwise a pane that dies mid-run could not be resumed until a
+        // daemon restart. A genuinely-live session is still a no-op.
+        if (meta.state.isAlive && isPaneAlive(meta.tmuxSession)) return meta
         val providerId = meta.providerSessionId ?: throw ResumeBlockedException(sessionId)
 
         val adapter = agentFactory.create(meta.agent, meta.cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.Resume(providerId))
         val paneId = tmux.newSession(sessionId.value, meta.cwd, shellCommand(spec.command), cols, rows)
 
-        val next = reduce(currentProjection(sessionId, meta), ControlSignal.Resume)
-        val ts = now()
-        // Update only the daemon-owned fields (state / state_source / pane_id / updated_at); do NOT
-        // upsert the whole (stale) row — the freshly-revived agent may already be appending hooks that
-        // advance last_seq / provider_session_id, which a full-row write would clobber.
-        store.updateSessionState(sessionId, next.state, EventSource.user, paneId, ts)
-        registry.register(paneId, sessionId)
-        return meta.copy(paneId = paneId, state = next.state, stateSource = EventSource.user, updatedAt = ts)
+        try {
+            // Reduce Resume from a DEAD seed: the cache may have claimed alive, but we confirmed the pane
+            // is gone, and Resume is a no-op on an alive-seeded projection — so reclassify to a dead
+            // state first, then Resume takes it to `ready`.
+            val deadState = if (meta.state.isDead) meta.state else SessionState.crashed
+            val next = reduce(store.projectionOf(sessionId).copy(state = deadState), ControlSignal.Resume)
+            val ts = now()
+            // Update only the daemon-owned fields (state / state_source / pane_id / updated_at); do NOT
+            // upsert the whole (stale) row — the freshly-revived agent may already be appending hooks that
+            // advance last_seq / provider_session_id, which a full-row write would clobber.
+            store.updateSessionState(sessionId, next.state, EventSource.user, paneId, ts)
+            registry.register(paneId, sessionId)
+            return meta.copy(paneId = paneId, state = next.state, stateSource = EventSource.user, updatedAt = ts)
+        } catch (e: Throwable) {
+            // Compensate a failure after the fresh agent was launched (see start()).
+            runCatching { tmux.killSession(sessionId.value) }
+            runCatching { registry.unregister(paneId) }
+            throw e
+        }
     }
+
+    /** True if tmux currently reports a LIVE (non-dead) pane for [tmuxSession] (`kt-<id>`). */
+    private fun isPaneAlive(tmuxSession: String): Boolean =
+        tmux.listPanes().any { it.session == tmuxSession && !it.dead }
 
     /**
      * Detach — a no-op at this layer. Detach is a transport concern (a terminal-WS subscriber left /
@@ -283,6 +353,9 @@ class SessionManager(
     companion object {
         const val DEFAULT_COLS: Int = 120
         const val DEFAULT_ROWS: Int = 40
+
+        /** How many times [freshSessionId] regenerates on a store collision before giving up. */
+        private const val MAX_ID_ATTEMPTS: Int = 8
 
         /** Exit code stamped on the pure classification Exit of a `kill-session` (SIGHUP = 128 + 1). */
         private const val TMUX_KILL_EXIT: Int = 129

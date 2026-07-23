@@ -130,6 +130,34 @@ class EventStoreTest {
     }
 
     @Test
+    fun aStrayAppendDoesNotResurrectAControlStoppedSession() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("stopres")
+            store.upsertSession(meta(sid)) // running
+            store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook) // log + cache -> running, seq 1
+
+            // A control op (terminate) sets the cache to `stopped` WITHOUT an event — the event log has no
+            // Exited, so the pure-replay projection stays `running`. This is the divergence that a naive
+            // append (writing the reduced-log state) would clobber.
+            store.updateSessionState(sid, SessionState.stopped, EventSource.user, PaneId("%1"), 5L)
+            assertEquals(SessionState.stopped, store.getSession(sid)!!.state)
+
+            // A late/stray hook append (e.g. a delayed SessionBound) must NOT flip the cache back to a live
+            // state — while still recording the event (seq advances) and capturing the provider id.
+            val pid = ProviderSessionId("44444444-4444-4444-4444-444444444444")
+            store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook) // seq 2
+            store.getSession(sid)!!.let { m ->
+                assertEquals(SessionState.stopped, m.state, "a stray append must not resurrect a stopped session")
+                assertEquals(Seq(2), m.lastSeq, "the event is still recorded (last_seq advances)")
+                assertEquals(pid, m.providerSessionId, "a late SessionBound still records the provider id")
+            }
+            // The pure event-log projection remains a faithful replay (running), independent of the cache.
+            assertEquals(SessionState.running, store.projectionOf(sid).state, "the event-log projection stays pure")
+        }
+    }
+
+    @Test
     fun appendIsAtomicWithTheSessionCacheUpdate() = runBlocking {
         withTimeout(20_000) {
             var clock = 1_000L

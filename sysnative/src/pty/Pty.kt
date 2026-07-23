@@ -264,18 +264,42 @@ class Pty private constructor(
                 // wire that same tty to stdout/stderr. `tmux attach` requires a controlling tty; with
                 // only dup2 it fails ("open terminal failed: not a terminal") and exits immediately.
                 // Finally drop the inherited master/slave fds so closing our master yields a clean EOF.
+                // Each posix_spawn_file_actions_* / posix_spawnattr_* call returns an errno on failure;
+                // ignoring them would feed a half-built structure to posix_spawn (fd leaks / a child with
+                // no controlling tty). Check each, and on failure destroy what was inited + close the fds
+                // + surface the error.
                 val fileActions = alloc<posix_spawn_file_actions_tVar>()
-                posix_spawn_file_actions_init(fileActions.ptr)
-                posix_spawn_file_actions_addopen(fileActions.ptr, 0, ptsPath, O_RDWR, 0.convert())
-                posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 1)
-                posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 2)
-                posix_spawn_file_actions_addclose(fileActions.ptr, slave)
-                posix_spawn_file_actions_addclose(fileActions.ptr, master)
+                val faInit = posix_spawn_file_actions_init(fileActions.ptr)
+                if (faInit != 0) {
+                    posixClose(master); posixClose(slave)
+                    throw PtyException("posix_spawn_file_actions_init failed: ${errnoMessage(faInit)} (code=$faInit)")
+                }
+                var faRc = posix_spawn_file_actions_addopen(fileActions.ptr, 0, ptsPath, O_RDWR, 0.convert())
+                if (faRc == 0) faRc = posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 1)
+                if (faRc == 0) faRc = posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 2)
+                if (faRc == 0) faRc = posix_spawn_file_actions_addclose(fileActions.ptr, slave)
+                if (faRc == 0) faRc = posix_spawn_file_actions_addclose(fileActions.ptr, master)
+                if (faRc != 0) {
+                    posix_spawn_file_actions_destroy(fileActions.ptr)
+                    posixClose(master); posixClose(slave)
+                    throw PtyException("posix_spawn_file_actions setup failed: ${errnoMessage(faRc)} (code=$faRc)")
+                }
 
                 val attr = alloc<posix_spawnattr_tVar>()
-                posix_spawnattr_init(attr.ptr)
+                val attrInit = posix_spawnattr_init(attr.ptr)
+                if (attrInit != 0) {
+                    posix_spawn_file_actions_destroy(fileActions.ptr)
+                    posixClose(master); posixClose(slave)
+                    throw PtyException("posix_spawnattr_init failed: ${errnoMessage(attrInit)} (code=$attrInit)")
+                }
                 // POSIX_SPAWN_SETSID: child calls setsid(), detaching from our session.
-                posix_spawnattr_setflags(attr.ptr, POSIX_SPAWN_SETSID.toShort())
+                val setFlags = posix_spawnattr_setflags(attr.ptr, POSIX_SPAWN_SETSID.toShort())
+                if (setFlags != 0) {
+                    posix_spawn_file_actions_destroy(fileActions.ptr)
+                    posix_spawnattr_destroy(attr.ptr)
+                    posixClose(master); posixClose(slave)
+                    throw PtyException("posix_spawnattr_setflags failed: ${errnoMessage(setFlags)} (code=$setFlags)")
+                }
 
                 // Marshal argv into native memory BEFORE the spawn.
                 val argv = allocArray<CPointerVar<ByteVar>>(command.size + 1)
