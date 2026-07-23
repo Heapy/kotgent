@@ -85,6 +85,8 @@ class WebUiServingTest {
         assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
         assertTrue(body.contains("startSession"), "app.js can create sessions")
         assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
+        assertTrue(body.contains("groupSessions"), "app.js groups the list by the base path")
+        assertTrue(body.contains("loadPrefs"), "app.js restores the stored preferences")
         assertContentTypeContains(resp, "javascript")
     }
 
@@ -97,6 +99,15 @@ class WebUiServingTest {
         assertTrue(body.contains("id=\"resume-button\""), "the UI includes resume")
         assertTrue(body.contains("id=\"detach-button\""), "the UI includes detach")
         assertTrue(body.contains("id=\"stop-button\""), "the UI includes stop")
+    }
+
+    @Test
+    fun webUiExposesThePreferencesScreen() = withServer { ctx ->
+        val body = ctx.get("/").bodyAsText()
+        assertTrue(body.contains("id=\"prefs-button\""), "the sidebar has the preferences (gear) entry point")
+        assertTrue(body.contains("id=\"prefs-dialog\""), "the UI includes the preferences screen")
+        assertTrue(body.contains("id=\"prefs-base-path\""), "preferences expose the base path")
+        assertTrue(body.contains("id=\"prefs-grouping-level\""), "preferences expose the grouping level")
     }
 
     @Test

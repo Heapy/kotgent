@@ -19,6 +19,8 @@
             <button id="new-session-button" class="button button-primary button-small" type="button">
               New session
             </button>
+            <button id="prefs-button" class="icon-button icon-button-small" type="button"
+                    aria-label="Preferences" title="Preferences">⚙</button>
           </div>
         </div>
         <div id="attention-count" class="attn-count" title="Sessions needing attention">
@@ -32,7 +34,10 @@
       </section>
 
       <section id="all-section">
-        <h2 class="section-title">Sessions</h2>
+        <h2 class="section-title">
+          <span>Sessions</span>
+          <button id="base-path-note" class="base-note" type="button" hidden></button>
+        </h2>
         <ul id="session-list" class="session-list"></ul>
         <p id="empty-sessions" class="empty-sessions" hidden>
           No sessions yet. Start one to attach it here.
@@ -99,6 +104,47 @@
       <div class="dialog-actions">
         <button id="new-session-cancel" class="button button-quiet" type="button">Cancel</button>
         <button id="new-session-submit" class="button button-primary" type="submit">Start session</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="prefs-dialog" aria-labelledby="prefs-title">
+    <form id="prefs-form">
+      <div class="dialog-head">
+        <div>
+          <h2 id="prefs-title">Preferences</h2>
+          <p>Stored in this browser only.</p>
+        </div>
+        <button id="prefs-close" class="icon-button" type="button" aria-label="Close">×</button>
+      </div>
+
+      <label class="field">
+        <span>Base path</span>
+        <input id="prefs-base-path" name="basePath" type="text" spellcheck="false"
+               placeholder="/Users/you/dev" />
+        <small class="field-hint">
+          Absolute path. Sessions below it are grouped by directory, and new sessions default to it.
+          Leave empty for one flat list.
+        </small>
+      </label>
+
+      <label class="field">
+        <span>Grouping level <small>directories below the base path</small></span>
+        <select id="prefs-grouping-level" name="groupingLevel">
+          <option value="0">0 — one group for everything</option>
+          <option value="1">1 — one group per direct child</option>
+          <option value="2">2 — two levels deep</option>
+          <option value="3">3 — three levels deep</option>
+          <option value="4">4 — four levels deep</option>
+        </select>
+        <small id="prefs-grouping-preview" class="field-hint"></small>
+      </label>
+
+      <p id="prefs-error" class="form-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button id="prefs-cancel" class="button button-quiet" type="button">Cancel</button>
+        <button id="prefs-submit" class="button button-primary" type="submit">Save</button>
       </div>
     </form>
   </dialog>
