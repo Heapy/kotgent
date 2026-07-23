@@ -53,8 +53,11 @@ const val AUTH_TICKET_PATH: String = "/auth/ticket"
 const val AUTH_EXCHANGE_PATH: String = "/auth/exchange"
 
 /**
- * Where `kotgent token rotate` re-mints the master token. `Bearer` + loopback only. Rotation also drops all
- * outstanding sign-in tickets, so "revoke all browser credentials" covers pending ones as well as live cookies.
+ * Where `kotgent token rotate` re-mints the master token. `Bearer` + loopback only. Rotation is "revoke all
+ * browser credentials": every session cookie is signed with the master token, so changing it stops every
+ * cookie from verifying at once. An outstanding, unredeemed sign-in ticket is bound to the token it was minted
+ * under, so any cookie it could still mint is signed with the OLD token and dead on arrival — pending
+ * credentials are covered too, by construction rather than by clearing a ticket map.
  */
 const val AUTH_ROTATE_PATH: String = "/auth/rotate"
 
@@ -85,9 +88,11 @@ data class RotateResponse(val token: String)
  * Mount the four login routes on [this] route.
  *
  * @param tokens the live master token; [TokenHolder.rotate] is what `/auth/rotate` calls, and
- *   [TokenHolder.current] is both the `Bearer` compared against and the HMAC key the cookie is signed with.
- * @param tickets the one-shot ticket store — issuing and redeeming are its main entry points; `/auth/rotate`
- *   also calls [TicketStore.invalidateAll] so a rotation revokes outstanding (unredeemed) tickets too.
+ *   [TokenHolder.current] is both the `Bearer` compared against and the token a freshly issued ticket is bound
+ *   to (the exchange signs the cookie with the ticket's bound token, so validity flows from the master token).
+ * @param tickets the one-shot ticket store — [TicketStore.issue] captures the current token onto the ticket
+ *   and [TicketStore.redeem] hands it back, so a rotation between mint and redeem yields a dead cookie without
+ *   any cross-lock ticket bookkeeping on `/auth/rotate`.
  * @param publicUrl the configured public origin, or `null` for loopback-only. Decides the `publicUrl` in a
  *   ticket response, the `Origin` allowlist on the exchange, and whether the cookie is `Secure`.
  * @param now epoch millis, stamped into the issued cookie (injected so tests are deterministic).
@@ -108,7 +113,10 @@ fun Route.authRoutes(
     authenticated(tokens::current, publicUrl) {
         loopbackOnly {
             post(AUTH_TICKET_PATH) {
-                val ticket = tickets.issue()
+                // Bind the ticket to the token live RIGHT NOW: the exchange signs its cookie with this value,
+                // not with whatever is current at redeem time, so a rotation between mint and redeem makes the
+                // resulting cookie dead on arrival (see [TicketStore] KDoc).
+                val ticket = tickets.issue(tokens.current())
                 // The authority this request actually arrived on, so an ephemeral port (tests) or a
                 // non-default one (`--port`) is reflected without the transport having to know it.
                 // [loopbackOnly] already refused a request with no/foreign Host, so this is loopback.
@@ -139,15 +147,16 @@ fun Route.authRoutes(
                 }
                 // Persist-then-publish lives in [TokenHolder.rotate]; a failing persist throws here and
                 // becomes a 500 with the OLD token still in force, which is the safe end of that failure.
+                //
+                // Rotation revokes ALL browser credentials by construction, with no ticket bookkeeping here:
+                // every session cookie is signed with the master token, and it just changed, so every cookie
+                // ever issued stops verifying at once. An outstanding, unredeemed sign-in ticket is bound to
+                // the token it was MINTED under (see [TicketStore]); it may still be redeemed for its TTL, but
+                // the cookie the exchange then mints is signed with that OLD token and is dead the instant it
+                // is set. There is deliberately no cross-lock "clear the tickets" step — it could only leak one
+                // way or the other between the token flip (TokenHolder's lock) and a map clear (TicketStore's
+                // Mutex), and it is not load-bearing once validity flows from the ticket's bound token.
                 val rotated = tokens.rotate()
-                // Then drop every outstanding sign-in ticket, so rotation actually means "revoke ALL browser
-                // credentials": cookies stop verifying the instant the key flips, but a ticket is a browser
-                // credential that has NOT been redeemed yet and would otherwise still exchange into a fresh
-                // cookie under the new token — the very shoulder-surfed link an operator rotates to kill.
-                // Ordered AFTER the token flip on purpose: once the new token is live the old Bearer can no
-                // longer mint a ticket, so this sweep clears exactly the pre-rotation set with nothing new
-                // racing in behind it (clearing first would let a last old-Bearer issue slip a ticket through).
-                tickets.invalidateAll()
                 call.respondText(
                     json.encodeToString(RotateResponse.serializer(), RotateResponse(rotated)),
                     ContentType.Application.Json,
@@ -175,14 +184,18 @@ fun Route.authRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
-        // One answer for "never existed", "already spent" and "expired": distinguishing them would tell a
-        // prober which of its guesses was ever a real ticket.
-        if (presented.isEmpty() || !tickets.redeem(presented)) {
+        // Redeem returns the token the ticket was BOUND to at mint time (null for "never existed", "already
+        // spent" or "expired" — one answer for all three, so a prober cannot learn which guess was ever real).
+        // Sign the cookie with THAT token, not `tokens.current()`: a rotation between mint and redeem thus
+        // yields a cookie signed with the old token, which fails verification against the now-current one and
+        // is dead the instant it is set — rotation revokes it with zero cross-lock timing dependency.
+        val boundToken = if (presented.isEmpty()) null else tickets.redeem(presented)
+        if (boundToken == null) {
             call.respondText("invalid or expired ticket", status = HttpStatusCode.BadRequest)
             return@post
         }
         call.setSessionCookie(
-            issueSessionCookie(tokens.current(), now()),
+            issueSessionCookie(boundToken, now()),
             secure = requiresSecureCookie(facts.host, publicUrl),
         )
         call.respondText("ok")

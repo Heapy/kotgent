@@ -127,9 +127,10 @@ object Commands {
      * sessions keep delivering events; what changes is that the OLD key no longer authenticates NEW requests
      * or NEW WebSocket handshakes. Sockets already open (an events stream, a terminal, a live `kotgent
      * attach`) survive until they reconnect — authorization is evaluated once, at handshake time. Rotation is
-     * "revoke all browser credentials": every session cookie stops verifying AND every outstanding, unredeemed
-     * sign-in ticket is dropped daemon-side, so a pre-rotation link cannot exchange into a cookie afterwards.
-     * The warning states that plainly rather than implying an instant, total cut-off.
+     * "revoke all browser credentials": every session cookie is signed with the master token, so all of them
+     * stop verifying at once, and an outstanding, unredeemed sign-in link is bound to the OLD token, so any
+     * cookie it could still exchange for is dead on arrival. The warning states that plainly rather than
+     * implying an instant, total cut-off.
      */
     fun tokenRotate(): Int = withApi { api ->
         val token = api.rotateToken()
@@ -138,7 +139,7 @@ object Commands {
         eprintln("  new requests and new connections with the old key are now rejected;")
         eprintln("  sockets already open (events stream, terminals, a live `kotgent attach`) keep working")
         eprintln("  until they reconnect. all browser session cookies are now invalid, and any outstanding")
-        eprintln("  sign-in links (from `kotgent web`) are dropped — sign in again with:")
+        eprintln("  sign-in links (from `kotgent web`) can no longer sign you in — sign in again with:")
         eprintln("    kotgent web")
         0
     }

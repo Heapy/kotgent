@@ -17,8 +17,18 @@ import kotlin.time.Clock
  * the real, long-lived credential (the session cookie).
  *
  * A ticket is therefore a BEARER of full daemon access for its short life. Two properties carry the whole
- * weight: it is single-use ([redeem] returns `true` at most once per value), and it expires
- * ([TICKET_TTL_MILLIS]). Both are enforced here rather than at the route, so no route can forget them.
+ * weight: it is single-use ([redeem] hands back its bound token at most once per value, `null` thereafter),
+ * and it expires ([TICKET_TTL_MILLIS]). Both are enforced here rather than at the route, so no route can
+ * forget them.
+ *
+ * ## Why a ticket carries the token it was minted under
+ * A ticket is redeemed AFTER it is issued, and the cookie the exchange mints must be signed with the master
+ * token. If the exchange read the *current* token at redeem time, a rotation landing between issue and redeem
+ * would sign a fresh cookie with the NEW token — a pre-rotation ticket would yield a live post-rotation
+ * session, defeating "revoke all". So each ticket captures the token that was live when it was MINTED and
+ * [redeem] returns it: the exchange signs with the ticket's issue-time token, and a rotation in between makes
+ * the resulting cookie fail [verifySessionCookie] against the now-current token — dead on arrival, with no
+ * cross-lock timing to get wrong (issue and rotate live in different synchronization domains).
  *
  * ## Why in memory and not in SQLite
  * A ticket lives ten minutes. Persisting it would mean a schema migration and a table that has to be swept,
@@ -67,25 +77,35 @@ class TicketStore(
 
     private val mutex = Mutex()
 
-    /** value → the instant it stops being redeemable. Swept on every access ([purgeExpired]). */
-    private val outstanding = mutableMapOf<String, Long>()
+    /** What an outstanding ticket carries: when it stops being redeemable, and the master token it was minted
+     *  under (the value [redeem] hands back, which the exchange signs its cookie with). */
+    private data class Outstanding(val expiresAt: Long, val boundToken: String)
+
+    /** value → its [Outstanding] record. Swept on every access ([purgeExpired]). */
+    private val outstanding = mutableMapOf<String, Outstanding>()
 
     /**
      * Mint a ticket: [SECRET_BYTES] of entropy from the daemon's one entropy source ([randomBytes]),
      * hex-encoded — the same strength as the master token itself, because for its ten minutes it grants the
      * same access.
+     *
+     * [boundToken] is the master token live at this instant; it is stored on the ticket and returned by
+     * [redeem] so the exchange signs its cookie with the token that was current at MINT time, not at redeem
+     * time (see the class KDoc on why this is what makes rotation revoke by construction).
      */
-    suspend fun issue(): Ticket = mutex.withLock {
+    suspend fun issue(boundToken: String): Ticket = mutex.withLock {
         val at = now()
         purgeExpired(at)
         val ticket = Ticket(value = hex(randomBytes(SECRET_BYTES)), expiresAt = at + ttlMillis)
-        outstanding[ticket.value] = ticket.expiresAt
+        outstanding[ticket.value] = Outstanding(ticket.expiresAt, boundToken)
         ticket
     }
 
     /**
-     * Spend [value]: `true` exactly once, for a ticket that was issued here and has not expired; `false` for
-     * an unknown value, a replay, or one whose TTL has run out.
+     * Spend [value]: return the ticket's issue-time [boundToken][Outstanding.boundToken] exactly once, for a
+     * ticket that was issued here and has not expired; `null` for an unknown value, a replay, or one whose TTL
+     * has run out. Single-use, TTL and sweep semantics are unchanged — only the success value differs (the
+     * bound token instead of a Boolean), so the exchange can sign with the token that was live at MINT time.
      *
      * Expiry is decided in ONE place — the sweep runs first, so whatever is still in the map is live by the
      * current clock and the redemption is a plain "was it there?". Once a sweep has OBSERVED a ticket past its
@@ -99,31 +119,15 @@ class TicketStore(
      * timing of a hash lookup cannot be walked into a forgery the way a byte-by-byte string compare of a
      * guessable secret could, and an O(n) constant-time scan would only add a second thing to get wrong.
      */
-    suspend fun redeem(value: String): Boolean = mutex.withLock {
+    suspend fun redeem(value: String): String? = mutex.withLock {
         purgeExpired(now())
-        outstanding.remove(value) != null
+        outstanding.remove(value)?.boundToken
     }
 
     /** How many tickets are outstanding right now (expired ones swept first). For tests and diagnostics. */
     suspend fun outstandingCount(): Int = mutex.withLock {
         purgeExpired(now())
         outstanding.size
-    }
-
-    /**
-     * Drop EVERY outstanding ticket at once — the "revoke all" half of a master-token rotation.
-     *
-     * An unredeemed ticket is a pending browser credential (a QR code or sign-in link that has been handed
-     * out but not yet spent). Rotation's whole promise is "revoke every browser credential at once" — cookies
-     * stop verifying the instant the HMAC key changes — but a ticket is redeemed AFTER the fact and signs its
-     * cookie with whatever token is current at redeem time, so a ticket minted before the rotation would
-     * otherwise still exchange into a valid cookie under the NEW token for up to [TICKET_TTL_MILLIS]. That is
-     * exactly the window an operator rotates to close (a shoulder-surfed or intercepted link), so
-     * `/auth/rotate` calls this as part of the rotation. Under the same [mutex] as [issue]/[redeem] so a
-     * concurrent redeem cannot slip a pre-rotation ticket through mid-clear.
-     */
-    suspend fun invalidateAll() = mutex.withLock {
-        outstanding.clear()
     }
 
     /**
@@ -137,7 +141,7 @@ class TicketStore(
         if (outstanding.isEmpty()) return
         val iterator = outstanding.entries.iterator()
         while (iterator.hasNext()) {
-            if (iterator.next().value <= at) iterator.remove()
+            if (iterator.next().value.expiresAt <= at) iterator.remove()
         }
     }
 }

@@ -23,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -218,26 +219,39 @@ class AuthRoutesTest {
     }
 
     @Test
-    fun rotationDropsOutstandingTicketsAndTheyNoLongerExchange() = withAuthServer { env ->
-        // Rotation is "revoke ALL browser credentials". A cookie is revoked because the HMAC key changes, but
-        // an outstanding, UNREDEEMED ticket is a pending browser credential too — a QR/link that was
-        // shoulder-surfed is exactly why an operator rotates. It must not survive: were it still redeemable, it
-        // would exchange into a valid cookie under the NEW token for up to the 10-minute TTL. So: mint a ticket,
-        // rotate with the OLD Bearer, then try to spend the pre-rotation ticket.
+    fun aTicketMintedBeforeRotationExchangesIntoADeadCookie() = withAuthServer { env ->
+        // Rotation is "revoke ALL browser credentials". A cookie is revoked because the HMAC key changes, and
+        // an outstanding, UNREDEEMED ticket — a QR/link that was shoulder-surfed, exactly why an operator
+        // rotates — is bound to the token it was MINTED under. So after a rotation it can still be redeemed,
+        // but the cookie the exchange then mints is signed with the OLD token: it is dead the instant it is
+        // set, because the gate verifies against the now-current token. No cross-lock ticket clearing needed.
         val ticket = env.issueTicket()
 
         val rotate = env.client.req(env.port, AUTH_ROTATE_PATH, HttpMethod.Post, bearer = token)
         assertEquals(HttpStatusCode.OK, rotate.status, "rotation succeeds with the old Bearer")
+        val rotated = TRANSPORT_JSON.decodeFromString(RotateResponse.serializer(), rotate.bodyAsText()).token
 
-        // A valid exchange in every other respect (loopback Host + same-origin Origin) — only the rotation
-        // stands between minting and spending. It must read the same as an already-spent or never-issued value.
+        // The exchange itself still 200s (the pre-rotation ticket redeems), but the cookie it plants is bound
+        // to the pre-rotation token — so it does NOT verify under the rotated one and cannot reach the gate.
         val resp = env.exchange(env.port, ticket)
-        assertEquals(
-            HttpStatusCode.BadRequest,
-            resp.status,
-            "a ticket minted before the rotation no longer exchanges — rotation revoked it",
+        assertEquals(HttpStatusCode.OK, resp.status, "the pre-rotation ticket still redeems")
+        val setCookie = resp.headers[HttpHeaders.SetCookie]
+        assertNotNull(setCookie, "and a Set-Cookie is returned")
+        val cookie = parseServerSetCookieHeader(setCookie).value
+        assertFalse(
+            verifySessionCookie(rotated, cookie),
+            "but the cookie is signed with the OLD token, so it does not verify under the rotated one — dead on arrival",
         )
-        assertNull(resp.headers[HttpHeaders.SetCookie], "and no session cookie is planted for a pre-rotation ticket")
+        assertTrue(
+            verifySessionCookie(token, cookie),
+            "it verifies only under the token that was live when the ticket was minted",
+        )
+        // The decisive check: it buys no access — the control-plane gate resolves the CURRENT token.
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            env.client.req(env.port, "/sessions", cookie = cookie).status,
+            "a pre-rotation ticket yields no usable session — rotation revoked it by construction",
+        )
     }
 
     @Test
