@@ -76,6 +76,27 @@ this split: put pure logic in `core/`, and keep I/O at the boundary.
   that is how an approval clears. `needs_answer` and `resumable` are **not** produced by the reducer;
   `needs_answer` is forward-modeled and `resumable` is a reconciler classification.
 
+**Two providers, one shape.** `claude` and `codex` are both launched as a **TUI inside `tmux`** and both
+report through **hooks → a local HTTP ingress → the normalizer**. Adding a provider means an adapter
+(launch spec + hook config + normalizer), an ingress route, a `VendorStoreProbe`, and an entry in
+`agentFactoryOf` — nothing in `core/`, the store, or the fan-out changes. What differs between the two:
+
+- **Hook delivery.** Claude takes a settings FILE (`claude --settings <path>`). Codex has no such flag, so
+  hooks ride in the argv as `-c 'hooks={…}'` — verified to resolve as `source: sessionFlags`, i.e. scoped
+  to that one launch. **Never** write kotgent's hooks into `$CODEX_HOME/hooks.json` or a `[hooks]` table in
+  the user's `config.toml`: both resolve as `source: user` and would fire for every codex session the user
+  runs. Codex also marks an unseen hook `untrusted`, hence the companion `-c bypass_hook_trust=true`.
+- **Provider id.** Claude preallocates (`--session-id <uuid>`). Codex cannot, so the id is captured after
+  the fact: the `SessionStart` hook if it fires, else `CodexRolloutScan` reading
+  `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl` (id in the file NAME, `cwd` in the first line). The
+  hook wins over the scan — it is authoritative for *this* session, the scan infers from disk.
+- **Approvals.** Codex fires a real `PermissionRequest`, so `needs_approval` is precise there; Claude maps
+  any `Notification`. The *clearing* rule is the same for both (see the reducer invariant above) — kotgent
+  never answers an approval, the operator does, in the terminal.
+- **Resumability.** Claude namespaces transcripts per project dir (probe needs the `cwd`); Codex names a
+  rollout by id alone (probe ignores the `cwd`). Archived codex rollouts do **not** count — archiving puts
+  a session out of `codex resume`'s reach.
+
 **Single-upstream `tmux`-client fan-out.** The daemon holds **exactly one** upstream `tmux attach` client
 per session and fans its output out to all subscribers (IDE, browser). `TerminalBridge` is **lazy**: the
 upstream PTY opens on the *first* subscriber and closes on the *last* (that last-detach is the "Detach" —
@@ -165,9 +186,13 @@ These are real and cost time to rediscover. Respect them.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
 - **In automation, do not run the daemon or anything that spawns a real agent.** Avoid `kotgent daemon`,
-  `./kotlin run -m kotgent`, a real `claude`, and `launchctl` — they start long-lived / interactive
-  processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck` binary
-  directly is fine — it terminates, and only touches the throwaway `-L kotgent-test` socket.
+  `./kotlin run -m kotgent`, a real `claude` / `codex`, and `launchctl` — they start long-lived /
+  interactive processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck`
+  binary directly is fine — it terminates, and only touches the throwaway `-L kotgent-test` socket.
+- Inspecting a provider's CLI is fine and often necessary (`codex --help`, `codex app-server
+  generate-json-schema --out <dir>`, `hooks/list` over an `app-server --stdio` pipe) — those terminate and
+  touch no model. Do NOT start a turn (`codex exec`, `turn/start`), and do not write into `~/.codex` or
+  `~/.claude`: a probe must be readable-only against the user's real home.
 
 ## Where things live
 
@@ -178,8 +203,8 @@ src/store/                     EventStore interface + SqliteEventStore (SQLDelig
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
-src/adapter/                   AgentAdapter, LaunchSpec; claude/ (Cli, HookConfig, HookNormalizer, Adapter)
-src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, ClaudeVendorStoreProbe
+src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
+src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes
 src/transport/                 Server, Auth, ControlRoutes, EventsWs, TerminalWs, HookRoutes
 src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands
 src/launchd/                   Plist, Install

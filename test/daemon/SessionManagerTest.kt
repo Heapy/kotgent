@@ -19,6 +19,7 @@ import io.kotgent.tmux.Tmux
 import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
@@ -244,6 +245,70 @@ class SessionManagerTest {
             assertEquals(EventSource.system, events[0].source)
             assertEquals(provider, store.projectionOf(SessionId("sess01")).providerSessionId)
             assertEquals(provider, store.getSession(SessionId("sess01"))!!.providerSessionId)
+        }
+    }
+
+    @Test
+    fun startFallsBackToProviderDiscoveryWhenNothingIsPreallocated() = runBlocking {
+        withTimeout(20_000) {
+            // The codex shape: no `--session-id` to preallocate, and (here) no SessionStart hook either,
+            // so the id can only come from the provider's own store — the rollout scan in production.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val discovered = ProviderSessionId("cccccccc-cccc-7ccc-8ccc-cccccccccccc")
+            val seen = mutableListOf<SessionMeta>()
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1),
+                discoverProviderId = { meta -> discovered.also { seen += meta } },
+                newSessionId = { SessionId("cx0001") },
+                now = { 1L },
+            )
+
+            mgr.start("codex", "/work/repo")
+
+            // The background capture is bounded and fire-and-forget; give it its first poll.
+            withTimeout(5_000) {
+                while (store.projectionOf(SessionId("cx0001")).providerSessionId == null) delay(5)
+            }
+            val events = store.read(SessionId("cx0001"), Seq(0))
+            assertEquals(1, events.size, "exactly one event: the discovered SessionBound")
+            assertEquals(AgentEvent.SessionBound(discovered), events[0].event)
+            assertEquals(discovered, store.getSession(SessionId("cx0001"))!!.providerSessionId, "resume is unblocked")
+
+            // Discovery is handed the session's own meta — that is what lets it scope the search to this
+            // session's cwd and launch time instead of grabbing whatever the provider wrote most recently.
+            assertEquals("codex", seen.first().agent)
+            assertEquals("/work/repo", seen.first().cwd)
+        }
+    }
+
+    @Test
+    fun aHookDeliveredIdWinsOverProviderDiscovery() = runBlocking {
+        withTimeout(20_000) {
+            // Both sources can answer; the hook is authoritative for THIS session, whereas discovery
+            // infers from what the provider happened to write on disk. Binding the wrong id would point
+            // `resume` at someone else's conversation, so the order matters.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val fromHook = ProviderSessionId("dddddddd-dddd-7ddd-8ddd-dddddddddddd")
+            val fromDisk = ProviderSessionId("eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee")
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 20),
+                discoverProviderId = { fromDisk },
+                newSessionId = { SessionId("cx0002") },
+                now = { 1L },
+            )
+
+            mgr.start("codex", "/work/repo")
+            // The SessionStart hook lands first (this is what the ingress does).
+            store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
+
+            withTimeout(5_000) {
+                while (store.projectionOf(SessionId("cx0002")).providerSessionId == null) delay(5)
+            }
+            assertEquals(fromHook, store.projectionOf(SessionId("cx0002")).providerSessionId)
         }
     }
 
@@ -778,21 +843,28 @@ class SessionManagerTest {
     }
 
     @Test
-    fun claudeOnlyAgentFactoryRejectsUnsupportedAgentsBeforeAnyTmuxSideEffect() = runBlocking {
+    fun agentFactoryRejectsUnsupportedAgentsBeforeAnyTmuxSideEffect() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
-            val factory = claudeOnlyAgentFactory { cwd -> StubAgentFactory(cat, null).create("claude", cwd) }
-            // The factory itself rejects a non-claude kind (and surfaces which one).
-            val direct = assertFailsWith<UnsupportedAgentException> { factory.create("codex", "/tmp") }
-            assertEquals("codex", direct.agentKind)
+            val factory = agentFactoryOf(
+                mapOf(
+                    "claude" to { cwd: String -> StubAgentFactory(cat, null).create("claude", cwd) },
+                    "codex" to { cwd: String -> StubAgentFactory(cat, null).create("codex", cwd) },
+                ),
+            )
+            // The factory itself rejects an unregistered kind (and surfaces which one, plus what it knows).
+            val direct = assertFailsWith<UnsupportedAgentException> { factory.create("aider", "/tmp") }
+            assertEquals("aider", direct.agentKind)
+            assertEquals(setOf("claude", "codex"), direct.supported)
+            assertTrue(direct.message!!.contains("claude, codex"), "the error names the supported kinds")
             // And a start() with an unsupported agent propagates it WITHOUT creating a tmux session.
             val mgr = SessionManager(
                 tmux, store, PaneRegistry(), factory,
                 ProviderIdCapture(store, this),
                 newSessionId = { SessionId("x0000001") }, now = { 1L },
             )
-            assertFailsWith<UnsupportedAgentException> { mgr.start("codex", "/tmp") }
+            assertFailsWith<UnsupportedAgentException> { mgr.start("aider", "/tmp") }
             assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux session is created for an unsupported agent")
         }
     }
@@ -853,7 +925,7 @@ class SessionManagerTest {
                 // the SAME real tmux + SAME store. The live `cat` session must reclassify running and the
                 // registry rebuild from the live pane.
                 val freshRegistry = PaneRegistry()
-                val reconciler = Reconciler(realTmux, store, VendorStoreProbe { _, _ -> false }, freshRegistry)
+                val reconciler = Reconciler(realTmux, store, VendorStoreProbe { _, _, _ -> false }, freshRegistry)
                 val result = reconciler.reconcile()
 
                 assertEquals(SessionState.running, store.getSession(SessionId("itg01"))!!.state, "the live session is reclassified running")

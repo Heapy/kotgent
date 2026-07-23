@@ -2,6 +2,9 @@ package io.kotgent.transport
 
 import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.claude.ClaudeHookNormalizer
+import io.kotgent.adapter.codex.CodexHookConfig
+import io.kotgent.adapter.codex.CodexHookNormalizer
+import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
 import io.kotgent.core.SessionId
@@ -59,10 +62,68 @@ fun Route.claudeHookRoutes(
      * practice; tests pass `0` to keep the genuine-unknown-pane case fast.
      */
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
+) = hookRoutes(
+    path = ClaudeHookConfig.INGRESS_PATH,
+    tokenHeader = ClaudeHookConfig.HOOK_TOKEN_HEADER,
+    paneHeader = ClaudeHookConfig.TMUX_PANE_HEADER,
+    eventHeader = ClaudeHookConfig.HOOK_EVENT_HEADER,
+    normalize = ClaudeHookNormalizer::normalize,
+    token = token,
+    paneLookup = paneLookup,
+    store = store,
+    json = json,
+    paneLookupGraceMillis = paneLookupGraceMillis,
+)
+
+/**
+ * The Codex hook ingress: `POST /hooks/codex` ([CodexHookConfig.INGRESS_PATH]), the counterpart of
+ * [claudeHookRoutes] for the hooks the generated `codex-hook.sh` posts. Same contract in every respect
+ * (auth → event name → pane → normalize → append); only the path and the normalizer differ.
+ *
+ * It is a SEPARATE path rather than one ingress with a `?provider=` parameter so the two providers' hook
+ * vocabularies cannot be confused: `Stop` means "turn finished" to both, but `SessionEnd` exists only in
+ * Codex and `Notification` only in Claude, and routing by path makes the mapping unambiguous.
+ */
+fun Route.codexHookRoutes(
+    token: String,
+    paneLookup: suspend (PaneId) -> SessionId?,
+    store: EventStore,
+    json: Json = HOOK_JSON,
+    /** See [claudeHookRoutes]. */
+    paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
+) = hookRoutes(
+    path = CodexHookConfig.INGRESS_PATH,
+    tokenHeader = CodexHookConfig.HOOK_TOKEN_HEADER,
+    paneHeader = CodexHookConfig.TMUX_PANE_HEADER,
+    eventHeader = CodexHookConfig.HOOK_EVENT_HEADER,
+    normalize = CodexHookNormalizer::normalize,
+    token = token,
+    paneLookup = paneLookup,
+    store = store,
+    json = json,
+    paneLookupGraceMillis = paneLookupGraceMillis,
+)
+
+/**
+ * The provider-neutral hook ingress both [claudeHookRoutes] and [codexHookRoutes] are built from: the
+ * authenticate → identify → resolve → normalize → append pipeline described in [claudeHookRoutes], with
+ * the provider-specific pieces ([path], the header names, [normalize]) passed in.
+ */
+private fun Route.hookRoutes(
+    path: String,
+    tokenHeader: String,
+    paneHeader: String,
+    eventHeader: String,
+    normalize: (String, JsonElement, PaneId) -> AgentEvent?,
+    token: String,
+    paneLookup: suspend (PaneId) -> SessionId?,
+    store: EventStore,
+    json: Json,
+    paneLookupGraceMillis: Long,
 ) {
-    post(ClaudeHookConfig.INGRESS_PATH) {
+    post(path) {
         // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
-        val presented = call.request.headers[ClaudeHookConfig.HOOK_TOKEN_HEADER]
+        val presented = call.request.headers[tokenHeader]
         if (presented == null || !constantTimeEquals(presented, token)) {
             call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
             return@post
@@ -70,12 +131,12 @@ fun Route.claudeHookRoutes(
 
         // 2. Hook event name (query param preferred, header as fallback) + $TMUX_PANE.
         val event = call.request.queryParameters["event"]
-            ?: call.request.headers[ClaudeHookConfig.HOOK_EVENT_HEADER]
+            ?: call.request.headers[eventHeader]
         if (event.isNullOrBlank()) {
             call.respondText("missing hook event name", status = HttpStatusCode.BadRequest)
             return@post
         }
-        val paneRaw = call.request.headers[ClaudeHookConfig.TMUX_PANE_HEADER]
+        val paneRaw = call.request.headers[paneHeader]
         if (paneRaw.isNullOrBlank()) {
             call.respondText("missing tmux pane header", status = HttpStatusCode.BadRequest)
             return@post
@@ -108,7 +169,7 @@ fun Route.claudeHookRoutes(
             }
         }
 
-        val normalized = ClaudeHookNormalizer.normalize(event, payload, paneId)
+        val normalized = normalize(event, payload, paneId)
         if (normalized != null) {
             store.append(sessionId, normalized, EventSource.hook)
             call.respondText("ok", status = HttpStatusCode.OK)

@@ -28,10 +28,11 @@ class ReconcilerTest {
         state: SessionState,
         providerId: ProviderSessionId? = null,
         paneId: PaneId? = null,
+        agent: String = "claude",
     ) = SessionMeta(
         id = SessionId(idV),
         name = "kt-$idV",
-        agent = "claude",
+        agent = agent,
         providerSessionId = providerId,
         cwd = "/tmp",
         tmuxSession = "kt-$idV",
@@ -89,7 +90,7 @@ class ReconcilerTest {
             )
             // A, B, C have transcripts on disk; D does not (idD absent). The "noid" session has no id at all.
             val transcripts = setOf(idA, idB, idC)
-            val vendorProbe = VendorStoreProbe { _, id -> id in transcripts }
+            val vendorProbe = VendorStoreProbe { _, _, id -> id in transcripts }
 
             val registry = PaneRegistry()
             registry.register(PaneId("%999"), SessionId("ghost")) // a stale entry that must be pruned
@@ -121,6 +122,40 @@ class ReconcilerTest {
         }
     }
 
+    // ---- the probe is dispatched per provider ----
+
+    @Test
+    fun eachSessionIsProbedWithItsOwnProvidersStore() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val claudeId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            val codexId = ProviderSessionId("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb")
+            store.upsertSession(meta("clsess", SessionState.running, providerId = claudeId, agent = "claude"))
+            store.upsertSession(meta("cxsess", SessionState.running, providerId = codexId, agent = "codex"))
+            store.upsertSession(meta("unknwn", SessionState.running, providerId = claudeId, agent = "aider"))
+
+            // Each provider's probe recognises only its OWN session's id. A shared probe would answer for
+            // both, hiding exactly the bug this guards: a codex session probed against ~/.claude (or vice
+            // versa) always misses, so every dead session would classify as `crashed` instead of resumable.
+            val probe = byAgentVendorStoreProbe(
+                mapOf(
+                    "claude" to VendorStoreProbe { _, _, id -> id == claudeId },
+                    "codex" to VendorStoreProbe { _, _, id -> id == codexId },
+                ),
+            )
+
+            Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 2L }).reconcile()
+
+            assertEquals(SessionState.resumable, store.getSession(SessionId("clsess"))!!.state)
+            assertEquals(SessionState.resumable, store.getSession(SessionId("cxsess"))!!.state)
+            assertEquals(
+                SessionState.crashed,
+                store.getSession(SessionId("unknwn"))!!.state,
+                "an agent kind with no registered probe answers 'no transcript', never another provider's",
+            )
+        }
+    }
+
     // ---- a live session reconciles from the CACHE-authoritative state, not the pure event log ----
 
     @Test
@@ -141,7 +176,7 @@ class ReconcilerTest {
                     TmuxPane(session = "kt-intr", paneId = PaneId("%5"), pid = 1, dead = false, width = 80, height = 24),
                 ),
             )
-            val reconciler = Reconciler(tmux, store, VendorStoreProbe { _, _ -> false }, PaneRegistry(), now = { 3L })
+            val reconciler = Reconciler(tmux, store, VendorStoreProbe { _, _, _ -> false }, PaneRegistry(), now = { 3L })
             reconciler.reconcile()
 
             // Reconciliation keeps the cache-authoritative `ready`, NOT the log's stale `needs_approval` —
@@ -171,7 +206,7 @@ class ReconcilerTest {
             // records the new incarnation — and that incarnation died while the daemon was down.
             store.updateSessionState(SessionId("reinc"), SessionState.ready, EventSource.user, PaneId("%8"), 2L)
 
-            val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _ -> true }, PaneRegistry(), now = { 3L })
+            val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _, _ -> true }, PaneRegistry(), now = { 3L })
             reconciler.reconcile()
 
             assertEquals(
@@ -189,7 +224,7 @@ class ReconcilerTest {
             val id = uuid('b')
             // `SessionManager.terminate` caches `stopped` without any event (there is no Exited hook in v1).
             store.upsertSession(meta("stopd", SessionState.stopped, providerId = id, paneId = PaneId("%9")))
-            val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _ -> true }, PaneRegistry(), now = { 3L })
+            val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _, _ -> true }, PaneRegistry(), now = { 3L })
 
             reconciler.reconcile()
             assertEquals(SessionState.stopped, store.getSession(SessionId("stopd"))!!.state, "a cached stop intent is honored")

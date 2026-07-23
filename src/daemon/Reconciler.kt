@@ -10,15 +10,30 @@ import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxPane
 
 /**
- * Probes the agent's vendor store for a session's transcript — for Claude, whether `~/.claude/...`
- * holds a transcript for the session launched in [cwd] with [providerSessionId], which makes a dead
- * session *resumable*. Both keys are needed because Claude namespaces transcripts by project directory
- * (`~/.claude/projects/<encoded-cwd>/<provider-session-id>.jsonl`). Injected so the [Reconciler] stays
- * host-free and unit-testable with a fake; the real one is [claudeVendorStoreProbe] (stats the path).
+ * Probes an agent's vendor store for a session's transcript — whether the provider still holds the
+ * conversation launched in [cwd] with [providerSessionId], which is what makes a dead session
+ * *resumable*. Injected so the [Reconciler] stays host-free and unit-testable with a fake.
+ *
+ * All three keys are part of the question because providers disagree on what identifies a transcript:
+ * Claude namespaces by project directory (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`, so it needs
+ * [cwd]), Codex names its rollout by id alone (`~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`, so it
+ * ignores [cwd]) — and [agent] is what selects between them. The real probes are
+ * [claudeVendorStoreProbe] and [codexVendorStoreProbe], dispatched by [byAgentVendorStoreProbe].
  */
 fun interface VendorStoreProbe {
-    suspend fun hasTranscript(cwd: String, providerSessionId: ProviderSessionId): Boolean
+    suspend fun hasTranscript(agent: String, cwd: String, providerSessionId: ProviderSessionId): Boolean
 }
+
+/**
+ * Dispatch to the per-provider probe registered for a session's [SessionMeta.agent]. An agent kind with
+ * no registered probe answers `false` — "no transcript known" — which classifies its dead sessions as
+ * `crashed` rather than offering a resume that would fail. That is the honest answer for a session row
+ * whose provider this daemon build cannot inspect (e.g. a kind removed in a later version).
+ */
+fun byAgentVendorStoreProbe(probes: Map<String, VendorStoreProbe>): VendorStoreProbe =
+    VendorStoreProbe { agent, cwd, providerSessionId ->
+        probes[agent]?.hasTranscript(agent, cwd, providerSessionId) ?: false
+    }
 
 /** One session's reconciliation outcome: how it was reclassified and whether its tmux pane is alive. */
 data class ReconciledSession(
@@ -87,7 +102,8 @@ class Reconciler(
             // (Same reason `projection.stopRequested` is not consulted: ControlSignal.Stop is not persisted,
             // so a replay can never observe it.)
             val stopIntent = meta.state == SessionState.stopped
-            val transcriptExists = meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.cwd, it) } ?: false
+            val transcriptExists =
+                meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.agent, meta.cwd, it) } ?: false
 
             // Classify a LIVE session from the CACHE-authoritative state (meta.state), not the pure
             // event-log projection: the cache carries control effects (interrupt/resume) that are NOT in

@@ -51,8 +51,8 @@ import platform.posix.ftell
  * [terminalBridgeFactory] backed by a fake `PtyFactory`. The production wiring is [production].
  *
  * ## Auth layering
- *  - The **hook ingress** ([claudeHookRoutes]) is mounted at the root and does its own header-token check
- *    (Task 12) against the **same** [token] — the plan's "one token on all".
+ *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes]) are mounted at the root and do their
+ *    own header-token check (Task 12) against the **same** [token] — the plan's "one token on all".
  *  - The **control REST + both WebSockets** are wrapped in [authenticated], which rejects a missing/wrong
  *    token with `401` (including on the WS handshake, before any upgrade).
  *  - The **static Web UI** is deliberately UNauthenticated: the browser fetches it before it has the token
@@ -85,8 +85,9 @@ class KotgentServer(
         val inputSink: TerminalInputSink = { id, bytes -> registry.getOrCreate(id.value).write(bytes) }
         install(WebSockets)
         routing {
-            // Hook ingress: same token, its own header check (Task 12).
+            // Hook ingress, one route per provider: same token, their own header check (Task 12).
             claudeHookRoutes(token, sessionManager.paneLookup, store, HOOK_JSON)
+            codexHookRoutes(token, sessionManager.paneLookup, store, HOOK_JSON)
             // Token-gated control plane.
             authenticated(token) {
                 controlRoutes(sessionManager, store, inputSink, json)

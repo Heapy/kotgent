@@ -1,6 +1,7 @@
 package io.kotgent.transport
 
 import io.kotgent.adapter.claude.ClaudeHookConfig
+import io.kotgent.adapter.codex.CodexHookConfig
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -34,7 +35,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Route tests for the Claude hook ingress ([claudeHookRoutes], plan Task 12). Each stands up an
+ * Route tests for both hook ingresses ([claudeHookRoutes] / [codexHookRoutes]). Each stands up an
  * embedded Ktor CIO server with the route wired to a fake pane lookup + a recording in-memory
  * [EventStore], drives it with a Ktor CIO client, and asserts behaviour via the store and the HTTP
  * status. Everything is wrapped in a bounded [withTimeout] so a broken round-trip fails fast.
@@ -189,6 +190,114 @@ class HookRoutesTest {
             val response = client.postHook(port, "PreToolUse")
             assertEquals(HttpStatusCode.OK, response.status, "a wired-but-unmapped hook is accepted")
             assertTrue(store.appended.tryReceive().isFailure, "an ignored hook stores nothing")
+        }
+    }
+
+    // ---- the Codex ingress: same contract, its own path and vocabulary ----
+
+    /** Boots [codexHookRoutes] the same way [withIngress] boots the Claude one. */
+    private fun withCodexIngress(
+        store: EventStore,
+        paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
+        block: suspend (port: Int, client: HttpClient) -> Unit,
+    ) = runBlocking {
+        val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
+            routing { codexHookRoutes(token, paneLookup, store, paneLookupGraceMillis = 0) }
+        }
+        try {
+            withTimeout(20_000) {
+                server.start(wait = false)
+                val port = server.engine.resolvedConnectors().first().port
+                val client = HttpClient(CIO)
+                try {
+                    block(port, client)
+                } finally {
+                    client.close()
+                }
+            }
+        } finally {
+            server.stop(gracePeriodMillis = 100, timeoutMillis = 500)
+        }
+    }
+
+    private suspend fun HttpClient.postCodexHook(
+        port: Int,
+        event: String,
+        token: String? = this@HookRoutesTest.token,
+        pane: String? = this@HookRoutesTest.pane.value,
+        body: String = "{}",
+    ): HttpResponse = post("http://127.0.0.1:$port${CodexHookConfig.INGRESS_PATH}?event=$event") {
+        if (token != null) header(CodexHookConfig.HOOK_TOKEN_HEADER, token)
+        if (pane != null) header(CodexHookConfig.TMUX_PANE_HEADER, pane)
+        setBody(body)
+    }
+
+    @Test
+    fun codexPermissionRequestAppendsAnApproval() {
+        val store = RecordingEventStore()
+        withCodexIngress(store) { port, client ->
+            val response = client.postCodexHook(
+                port,
+                CodexHookConfig.PERMISSION_REQUEST,
+                body = """{"tool_name":"shell","turn_id":"t1"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            val appended = store.appended.receive()
+            assertEquals(session, appended.sessionId, "the pane resolved to its session")
+            assertEquals(AgentEvent.ApprovalRequested("shell"), appended.event)
+            assertEquals(EventSource.hook, appended.source)
+        }
+    }
+
+    @Test
+    fun codexSessionStartBindsCodexOwnId() {
+        val store = RecordingEventStore()
+        val id = "019f8ea0-2548-7871-9835-947ff7623ccf"
+        withCodexIngress(store) { port, client ->
+            val response = client.postCodexHook(
+                port,
+                CodexHookConfig.SESSION_START,
+                body = """{"session_id":"$id","cwd":"/work"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.SessionBound(ProviderSessionId(id)), store.appended.receive().event)
+        }
+    }
+
+    @Test
+    fun codexIngressRejectsAWrongTokenBeforeLookingAtAnythingElse() {
+        val store = RecordingEventStore()
+        withCodexIngress(store) { port, client ->
+            val response = client.postCodexHook(port, CodexHookConfig.STOP, token = "wrong")
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
+            assertTrue(store.appended.tryReceive().isFailure, "an unauthenticated callback stores nothing")
+        }
+    }
+
+    @Test
+    fun codexIngress404sAnUnknownPane() {
+        val store = RecordingEventStore()
+        withCodexIngress(store, paneLookup = { null }) { port, client ->
+            assertEquals(HttpStatusCode.NotFound, client.postCodexHook(port, CodexHookConfig.STOP).status)
+            assertTrue(store.appended.tryReceive().isFailure)
+        }
+    }
+
+    @Test
+    fun eachIngressSpeaksOnlyItsOwnProvidersVocabulary() {
+        // The reason the two providers get separate PATHS rather than one route with a `?provider=`:
+        // `PermissionRequest` is Codex-only and `Notification` is Claude-only, and routing by path makes
+        // "which normalizer applies" unambiguous. Cross-posting is accepted but maps to nothing.
+        val claudeStore = RecordingEventStore()
+        withIngress(claudeStore) { port, client ->
+            assertEquals(HttpStatusCode.OK, client.postHook(port, CodexHookConfig.PERMISSION_REQUEST).status)
+            assertTrue(claudeStore.appended.tryReceive().isFailure, "a codex-only hook is inert on /hooks/claude")
+        }
+
+        val codexStore = RecordingEventStore()
+        withCodexIngress(codexStore) { port, client ->
+            assertEquals(HttpStatusCode.OK, client.postCodexHook(port, ClaudeHookConfig.NOTIFICATION).status)
+            assertTrue(codexStore.appended.tryReceive().isFailure, "a claude-only hook is inert on /hooks/codex")
         }
     }
 

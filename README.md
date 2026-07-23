@@ -2,14 +2,14 @@
 
 **kotgent** is a local-first, restart-safe control plane for coding-agent sessions.
 
-Agent processes (Claude today) run inside `tmux`, independent of any user interface. The IDE terminal,
+Agent processes (Claude and Codex today) run inside `tmux`, independent of any user interface. The IDE terminal,
 the browser, and — later — a phone are interchangeable clients over one daemon. `tmux` is the transport
 and the process-survival mechanism, **not** the source of truth: state is derived by replaying an
 append-only event log, so it survives a daemon restart.
 
 ```text
 IDE terminal ───────┐
-Desktop Web UI ─────┼──▶ kotgent daemon ──▶ tmux ──▶ claude
+Desktop Web UI ─────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex
 (mobile PWA — later)┘          │
                                ├── SQLite (event log + session cache)
                                └── provider adapter (hooks → canonical events, approvals)
@@ -35,6 +35,10 @@ immortal:
 - **`claude`** — the Claude Code CLI, on your `PATH`. Session-id preallocation (`claude --session-id`)
   needs a recent version; kotgent version-gates it and falls back to a `SessionStart` hook on older CLIs.
   Developed against claude 2.1.x.
+- **`codex`** — the Codex CLI, on your `PATH`, if you want codex sessions. kotgent installs its hooks
+  per launch (`codex -c 'hooks={…}'`), so your `~/.codex` is never modified. Codex has no session-id
+  preallocation, so the id is captured afterwards — from the `SessionStart` hook, or by reading the
+  rollout file Codex writes under `~/.codex/sessions`. Developed against codex-cli 0.145.
 
 ## Build & test
 
@@ -59,7 +63,7 @@ kotgent <command> [args]
 
   daemon [--port N]              run the control-plane server (default port 27508; the launchd entry point)
   install | uninstall           (un)install the launchd LaunchAgent (io.kotgent.daemon)
-  start <agent> [cwd]           start a session (agent e.g. 'claude'; cwd defaults to the current dir)
+  start <agent> [cwd]           start a session (agent: 'claude' | 'codex'; cwd defaults to the current dir)
              [--name N] [--tag T]
   list | ls                     list sessions and their states
   stop <id>                     stop a session
@@ -134,7 +138,7 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `store/` | `EventStore` interface + SQLDelight-backed `SqliteEventStore` (single-writer, WAL, append+cache in one transaction). |
 | `pty/` | `TerminalBridge` + `Broadcaster` — the lazy single-upstream `tmux attach` fan-out. |
 | `tmux/` | Thin wrapper over `tmux -L kotgent` via a `popen`-based `ProcessRunner`. |
-| `adapter/` | `AgentAdapter` contract + the Claude adapter (launch/resume spec, hook config, event normalization). |
+| `adapter/` | `AgentAdapter` contract + the Claude and Codex adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
 | `transport/` | Ktor CIO server: control REST, events WS, terminal WS, token auth, hook ingress, static Web UI. |
 | `cli/` | Subcommands + the raw `attach` passthrough. |
@@ -151,7 +155,9 @@ is and isn't here:
 
 **In the slice (v1):**
 
-- **Claude only.** The adapter seam exists, but Claude is the one implemented adapter.
+- **Two providers: Claude and Codex.** Both run as a TUI in `tmux` and report through hooks. Codex adds
+  a real `PermissionRequest` signal, so `needs_approval` is precise there rather than inferred from a
+  generic notification.
 - **Local-only.** `127.0.0.1` + a single token. No remote access.
 - The full `start → Detach → browser → continue → needs-attention` path, session reconciliation on daemon
   restart (`running` / `stopped` / `crashed` / `resumable` classification), provider-id capture, and
@@ -159,7 +165,9 @@ is and isn't here:
 
 **Backlog (not built yet):**
 
-- The **Codex** adapter (app-server / rollout-JSONL).
+- The Codex **app-server** (JSON-RPC v2) as an alternative event source — structured items, two-way
+  approvals, and no terminal. That is a different product surface (a chat UI, not a terminal fan-out),
+  so it is deliberately separate from the adapter above.
 - **Mobile PWA**, a **cloudflared** tunnel + Access, and **Web Push** for remote / phone access.
 - A **diff viewer**, external-session import, and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the

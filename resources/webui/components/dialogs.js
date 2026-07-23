@@ -81,6 +81,7 @@ export function NewSessionDialog({ initialCwd, onStart, onClose }) {
           <span>Agent</span>
           <select id="session-agent" value=${agent} onChange=${(e) => setAgent(e.target.value)}>
             <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
           </select>
         </label>
 
@@ -205,7 +206,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
 // --- Help ------------------------------------------------------------------------------------------
 
 const CLI_HELP = `kotgent list                  list sessions
-kotgent start claude [cwd]    start a session
+kotgent start <agent> [cwd]   start a session (claude | codex)
 kotgent attach <id>           attach a raw terminal
 kotgent interrupt <id>        send Ctrl-C
 kotgent stop <id>             stop a session

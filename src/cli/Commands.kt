@@ -4,13 +4,21 @@ import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import io.kotgent.adapter.claude.ClaudeAdapter
 import io.kotgent.adapter.claude.ClaudeCli
 import io.kotgent.adapter.claude.ClaudeHookConfig
+import io.kotgent.adapter.codex.CodexAdapter
+import io.kotgent.adapter.codex.CodexCli
+import io.kotgent.adapter.codex.CodexHookConfig
+import io.kotgent.daemon.CLAUDE_AGENT_KIND
+import io.kotgent.daemon.CODEX_AGENT_KIND
+import io.kotgent.daemon.CodexRolloutScan
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
-import io.kotgent.daemon.claudeOnlyAgentFactory
+import io.kotgent.daemon.agentFactoryOf
+import io.kotgent.daemon.byAgentVendorStoreProbe
 import io.kotgent.daemon.claudeVendorStoreProbe
+import io.kotgent.daemon.codexVendorStoreProbe
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.LaunchdInstaller
@@ -156,28 +164,57 @@ object Commands {
         val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val idCapture = ProviderIdCapture(store, bgScope)
 
-        // Generate + persist the Claude hook settings, then a factory that builds a ClaudeAdapter per
-        // session. adapter.events is emptyFlow(): the hook ingress appends straight into the store
+        // Generate + persist each provider's hook wiring, then a factory that builds the right adapter
+        // per session. adapter.events is emptyFlow(): the hook ingress appends straight into the store
         // (the source of truth), so the adapter does not need to re-surface events (Task 12 decision).
         val settingsPath = writeClaudeHookSettings(port, token)
+        val codexHookScriptPath = writeCodexHookScript(port, token)
         val claudeCli = ClaudeCli()
         val sessionIdSupported = claudeCli.supportsSessionId()
-        // Resolve claude to an absolute path (like tmux, which is already absolute) so the tmux launch
+        // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
         // does not depend on the child shell's PATH under launchd's minimal env. Falls back to the bare
         // name (found via the child's PATH) if it cannot be located.
-        val claudePath = claudeCli.locate() ?: "claude"
-        // Only `claude` is supported in v1: reject any other kind with a clear error instead of silently
-        // building a Claude adapter for it (which would launch Claude while persisting a different agent).
-        val agentFactory = claudeOnlyAgentFactory { cwd ->
-            ClaudeAdapter(
-                cwd = cwd,
-                settingsPath = settingsPath,
-                events = emptyFlow(),
-                sessionIdSupported = sessionIdSupported,
-                binaryName = claudePath,
-            )
-        }
-        val manager = SessionManager(tmux, store, registry, agentFactory, idCapture)
+        val claudePath = claudeCli.locate() ?: CLAUDE_AGENT_KIND
+        val codexPath = CodexCli().locate() ?: CODEX_AGENT_KIND
+        // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
+        // instead of silently building some other provider's adapter for it (which would launch the wrong
+        // agent while persisting the requested name).
+        val agentFactory = agentFactoryOf(
+            mapOf(
+                CLAUDE_AGENT_KIND to { cwd: String ->
+                    ClaudeAdapter(
+                        cwd = cwd,
+                        settingsPath = settingsPath,
+                        events = emptyFlow(),
+                        sessionIdSupported = sessionIdSupported,
+                        binaryName = claudePath,
+                    )
+                },
+                CODEX_AGENT_KIND to { cwd: String ->
+                    CodexAdapter(
+                        cwd = cwd,
+                        hookScriptPath = codexHookScriptPath,
+                        events = emptyFlow(),
+                        binaryName = codexPath,
+                    )
+                },
+            ),
+        )
+        // Codex has no `--session-id`, so a fresh codex session's provider id is unknown at launch. The
+        // rollout scan is the discovery path that does not depend on hook delivery: it finds the rollout
+        // Codex wrote for this cwd after the launch began and reads the id out of its file name. Claude
+        // preallocates and needs none of this, so the scan is scoped to codex sessions.
+        val rolloutScan = CodexRolloutScan()
+        val manager = SessionManager(
+            tmux,
+            store,
+            registry,
+            agentFactory,
+            idCapture,
+            discoverProviderId = { meta ->
+                if (meta.agent == CODEX_AGENT_KIND) rolloutScan.discoverSessionId(meta.cwd, meta.createdAt) else null
+            },
+        )
 
         // Restart-safe reconciliation: reclassify persisted sessions against tmux reality and rebuild
         // the pane→session registry from live panes (Task 13). Terminal bridges stay lazy (Task 9).
@@ -222,13 +259,18 @@ object Commands {
     private const val DB_FILENAME: String = "kotgent.db"
 
     /**
-     * The reconciler's vendor-store transcript probe (Task 18): the real Claude probe stats
-     * `~/.claude/projects/<encoded-cwd>/<provider-session-id>.jsonl` for each dead session, so a session
-     * whose transcript survives on disk classifies as `resumable` (revivable via `claude --resume`)
-     * rather than a dead-end `crashed`. Roots at the real `~/.claude` ([defaultClaudeDir]); host-free by
-     * injection (see [claudeVendorStoreProbe]). Replaces the Task-15 `{ false }` stub.
+     * The reconciler's vendor-store transcript probe (Task 18), dispatched per provider: for a dead
+     * session it asks whether the conversation still exists, so it classifies as `resumable` rather than
+     * a dead-end `crashed`. Claude stats `~/.claude/projects/<encoded-cwd>/<id>.jsonl`; Codex looks for
+     * `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`. Both root at the real user directories and are
+     * host-free by injection (see [claudeVendorStoreProbe] / [codexVendorStoreProbe]).
      */
-    private val vendorProbe: VendorStoreProbe = claudeVendorStoreProbe()
+    private val vendorProbe: VendorStoreProbe = byAgentVendorStoreProbe(
+        mapOf(
+            CLAUDE_AGENT_KIND to claudeVendorStoreProbe(),
+            CODEX_AGENT_KIND to codexVendorStoreProbe(),
+        ),
+    )
 
     // --- helpers ---------------------------------------------------------------------------------
 
@@ -255,6 +297,26 @@ object Commands {
         writePrivateFile(headerPath, ClaudeHookConfig.headerFileContent(token).encodeToByteArray())
         val path = "${kotgentHome()}/claude-hooks.json"
         writePrivateFile(path, ClaudeHookConfig.generate(port, headerPath).encodeToByteArray())
+        return path
+    }
+
+    /**
+     * Write the Codex hook script and its header file, returning the script's path (what
+     * [CodexAdapter] renders into the launch argv).
+     *
+     * Same secret discipline as the Claude settings: the token goes into a SEPARATE `0600` header file
+     * the script reads via `curl -H @<file>`, never into an argv. The script itself is `0600` too — the
+     * hook command names `/bin/sh` explicitly, so it needs no execute bit (see [CodexHookConfig.hooksToml]).
+     *
+     * The header file is per-provider rather than shared: the two ingress routes validate the same token
+     * today, but a provider-scoped file keeps them independently rotatable and makes it obvious which
+     * hook reads which file.
+     */
+    private fun writeCodexHookScript(port: Int, token: String): String {
+        val headerPath = "${kotgentHome()}/codex-hook-header"
+        writePrivateFile(headerPath, CodexHookConfig.headerFileContent(token).encodeToByteArray())
+        val path = "${kotgentHome()}/codex-hook.sh"
+        writePrivateFile(path, CodexHookConfig.hookScript(port, headerPath).encodeToByteArray())
         return path
     }
 

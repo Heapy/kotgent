@@ -91,12 +91,12 @@ class ClaudeVendorStoreProbeTest {
             placeTranscript(claudeDir, cwd, id) // Claude wrote a transcript here
 
             val probe = claudeVendorStoreProbe(claudeDir)
-            assertTrue(probe.hasTranscript(cwd, id), "a present transcript is detected")
+            assertTrue(probe.hasTranscript("claude", cwd, id), "a present transcript is detected")
 
             // ...which is exactly what turns a dead session into `resumable` rather than `crashed`.
             assertEquals(
                 SessionState.resumable,
-                Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript(cwd, id)),
+                Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript("claude", cwd, id)),
             )
         }
     }
@@ -109,11 +109,11 @@ class ClaudeVendorStoreProbeTest {
             val id = uuid('b')
 
             val probe = claudeVendorStoreProbe(claudeDir)
-            assertFalse(probe.hasTranscript(cwd, id), "no transcript on disk -> not resumable")
+            assertFalse(probe.hasTranscript("claude", cwd, id), "no transcript on disk -> not resumable")
 
             assertEquals(
                 SessionState.crashed,
-                Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript(cwd, id)),
+                Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript("claude", cwd, id)),
             )
         }
     }
@@ -127,8 +127,8 @@ class ClaudeVendorStoreProbeTest {
             placeTranscript(claudeDir, "/work/other", id)
 
             val probe = claudeVendorStoreProbe(claudeDir)
-            assertTrue(probe.hasTranscript("/work/other", id), "found under its own cwd")
-            assertFalse(probe.hasTranscript("/work/mine", id), "same id, wrong cwd -> not found (probe keys on cwd)")
+            assertTrue(probe.hasTranscript("claude", "/work/other", id), "found under its own cwd")
+            assertFalse(probe.hasTranscript("claude", "/work/mine", id), "same id, wrong cwd -> not found (probe keys on cwd)")
         }
     }
 

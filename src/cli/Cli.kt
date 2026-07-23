@@ -79,7 +79,7 @@ val USAGE: String = """
 
     Commands:
       daemon [--port N]              run the control-plane server (default port $DEFAULT_PORT)
-      start <agent> [cwd]            start a session (agent e.g. 'claude'; cwd defaults to .)
+      start <agent> [cwd]            start a session (agent: 'claude' | 'codex'; cwd defaults to .)
                  [--name N] [--tag T]
       list | ls                      list sessions
       stop <id>                      stop a session

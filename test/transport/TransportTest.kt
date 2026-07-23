@@ -19,7 +19,7 @@ import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
-import io.kotgent.daemon.claudeOnlyAgentFactory
+import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
@@ -253,10 +253,10 @@ class TransportTest {
 
     @Test
     fun startingAnUnsupportedAgentIs400() = withServer { ctx ->
-        // The daemon wires `claudeOnlyAgentFactory` (v1 supports only `claude`), so this is a client error.
+        // The factory only builds the kinds it was registered with, so an unknown one is a client error.
         val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions") {
             header(HttpHeaders.Authorization, "Bearer $token")
-            setBody("""{"agent":"codex","cwd":"/tmp"}""")
+            setBody("""{"agent":"aider","cwd":"/tmp"}""")
         }
         assertEquals(HttpStatusCode.BadRequest, resp.status)
     }
@@ -268,7 +268,7 @@ class TransportTest {
         // action route must map it the same way instead of surfacing a 500.
         ctx.store.upsertSession(
             SessionMeta(
-                id = SessionId("lgcy01"), name = "lgcy01", agent = "codex", providerSessionId = providerId,
+                id = SessionId("lgcy01"), name = "lgcy01", agent = "aider", providerSessionId = providerId,
                 cwd = "/tmp", tmuxSession = "kt-lgcy01", state = SessionState.resumable,
                 createdAt = 1L, updatedAt = 1L,
             ),
@@ -327,10 +327,10 @@ class TransportTest {
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
                 tmux, store, registry,
-                // Wired exactly as the daemon does (Commands.daemon): only `claude` is buildable, so an
-                // unsupported agent kind — on start OR on resume of a stored row — surfaces as the
+                // Wired as the daemon does (Commands.daemon), narrowed to one kind: an agent kind the
+                // factory does not know — on start OR on resume of a stored row — surfaces as the
                 // UnsupportedAgentException both routes must map to 400.
-                claudeOnlyAgentFactory { cwd -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) },
+                agentFactoryOf(mapOf("claude" to { cwd: String -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) })),
                 ProviderIdCapture(store, idScope),
                 now = { 1L },
             )

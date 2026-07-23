@@ -6,6 +6,7 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.core.ControlSignal
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
@@ -52,20 +53,23 @@ fun interface AgentFactory {
     fun create(agentKind: String, cwd: String): AgentAdapter
 }
 
-/** The one agent kind the v1 slice supports (`start claude`); anything else is rejected up front. */
+/** Agent kind for Claude Code (`start claude`). */
 const val CLAUDE_AGENT_KIND: String = "claude"
 
+/** Agent kind for Codex (`start codex`). */
+const val CODEX_AGENT_KIND: String = "codex"
+
 /**
- * Wrap [buildClaude] in an [AgentFactory] that ACCEPTS only the `claude` agent kind and rejects every
- * other with [UnsupportedAgentException]. Without this the production factory silently ignored the
- * requested kind and always built a Claude adapter, so `start codex` launched Claude while the session
- * was persisted as a different agent. `create` runs before any tmux side effect (see
- * [SessionManager.start] / [SessionManager.resume]), so a rejection leaves nothing to clean up.
+ * An [AgentFactory] over the agent kinds in [builders], rejecting every other kind with
+ * [UnsupportedAgentException]. The gate matters: without it a factory silently ignores the requested
+ * kind and builds whatever adapter it was closed over, so `start <unknown>` would launch the wrong agent
+ * while the session was persisted under the requested name. `create` runs before any tmux side effect
+ * (see [SessionManager.start] / [SessionManager.resume]), so a rejection leaves nothing to clean up.
  */
-fun claudeOnlyAgentFactory(buildClaude: (cwd: String) -> AgentAdapter): AgentFactory =
+fun agentFactoryOf(builders: Map<String, (cwd: String) -> AgentAdapter>): AgentFactory =
     AgentFactory { agentKind, cwd ->
-        if (agentKind != CLAUDE_AGENT_KIND) throw UnsupportedAgentException(agentKind)
-        buildClaude(cwd)
+        val build = builders[agentKind] ?: throw UnsupportedAgentException(agentKind, builders.keys)
+        build(cwd)
     }
 
 /**
@@ -106,9 +110,12 @@ class NoSuchSessionException(val sessionId: SessionId) :
 class ResumeBlockedException(val sessionId: SessionId) :
     IllegalStateException("resume blocked: provider session id is pending for ${sessionId.value}")
 
-/** Thrown when a start targets an agent kind the daemon does not support (v1: only `claude`). */
-class UnsupportedAgentException(val agentKind: String) :
-    IllegalArgumentException("unsupported agent kind '$agentKind' (v1 supports only 'claude')")
+/** Thrown when a start targets an agent kind the daemon does not support. */
+class UnsupportedAgentException(val agentKind: String, val supported: Set<String> = emptySet()) :
+    IllegalArgumentException(
+        "unsupported agent kind '$agentKind'" +
+            if (supported.isEmpty()) "" else " (supported: ${supported.sorted().joinToString(", ")})",
+    )
 
 /**
  * One cleanup step of a compensation that itself failed (e.g. the `kill-session` that should have
@@ -164,6 +171,17 @@ class SessionManager(
     val registry: PaneRegistry,
     private val agentFactory: AgentFactory,
     private val idCapture: ProviderIdCapture,
+    /**
+     * Provider-specific discovery of a session's id for the FALLBACK capture path — consulted only when
+     * the launch preallocated nothing AND no `SessionBound` has arrived from a hook yet.
+     *
+     * It exists because Codex has no `claude --session-id` equivalent: its id can only be learned after
+     * the fact, and relying on the `SessionStart` hook alone would leave `resume` permanently blocked
+     * whenever that hook does not fire. The daemon passes a scan of Codex's rollout files (see
+     * [CodexRolloutScan]); the default returns `null`, i.e. "hook only", which is exactly right for
+     * Claude and for tests.
+     */
+    private val discoverProviderId: suspend (SessionMeta) -> ProviderSessionId? = { null },
     private val newSessionId: () -> SessionId = { SessionId(randomShortId()) },
     private val now: () -> Long = ::daemonEpochMillis,
     private val cols: Int = DEFAULT_COLS,
@@ -252,10 +270,15 @@ class SessionManager(
                     // Primary path: the id is known up front — bind it in the log immediately.
                     idCapture.bind(sessionId, prealloc)
                 } else {
-                    // Fallback path (older claude): no id yet. Poll for the SessionStart hook to deliver it
-                    // in the background; until it does the session is "id pending" (provider_session_id null
-                    // → resume blocked). Bounded, fire-and-forget.
-                    idCapture.captureInBackground(sessionId) { store.projectionOf(sessionId).providerSessionId }
+                    // Fallback path (codex always; an older claude without `--session-id`): no id yet. Poll
+                    // in the background for the SessionStart hook to deliver it, and — failing that — for
+                    // [discoverProviderId] to find it in the provider's own store. Until one of them lands
+                    // the session is "id pending" (provider_session_id null → resume blocked). Bounded,
+                    // fire-and-forget. The hook is checked first: it is authoritative for THIS session,
+                    // whereas discovery infers from what the provider happened to write on disk.
+                    idCapture.captureInBackground(sessionId) {
+                        store.projectionOf(sessionId).providerSessionId ?: discoverProviderId(meta)
+                    }
                 }
                 store.getSession(sessionId) ?: meta
             } catch (e: Throwable) {

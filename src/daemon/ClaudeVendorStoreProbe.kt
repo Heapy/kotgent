@@ -61,6 +61,6 @@ fun defaultClaudeDir(): String {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun claudeVendorStoreProbe(claudeDir: String = defaultClaudeDir()): VendorStoreProbe =
-    VendorStoreProbe { cwd, providerSessionId ->
+    VendorStoreProbe { _, cwd, providerSessionId ->
         access(claudeTranscriptPath(claudeDir, cwd, providerSessionId), F_OK) == 0
     }
