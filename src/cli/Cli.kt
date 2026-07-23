@@ -153,8 +153,7 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Help -> { println(USAGE); 0 }
     is CliCommand.Invalid -> { eprintln(command.message); eprintln(""); eprintln(USAGE); 2 }
     is CliCommand.Daemon -> Commands.daemon(command.port)
-    is CliCommand.Start ->
-        Commands.start(command.agent, resolveCwdAgainst(currentWorkingDir(), command.cwd), command.name, command.tags)
+    is CliCommand.Start -> runStart(command)
     is CliCommand.ListSessions -> Commands.list()
     is CliCommand.Stop -> Commands.stop(command.id)
     is CliCommand.Resume -> Commands.resume(command.id)
@@ -162,6 +161,19 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Attach -> Commands.attach(command.id)
     is CliCommand.Install -> Commands.install()
     is CliCommand.Uninstall -> Commands.uninstall()
+}
+
+/**
+ * `start` — resolve the requested cwd to an ABSOLUTE path against the CLI's own working directory, then
+ * hand it to [Commands.start]. If that cannot be done (the CLI cannot determine its own working
+ * directory and the caller gave a relative path), it fails LOUDLY with exit code 2 instead of sending the
+ * daemon a relative path it would resolve against its own launchd cwd `/` — i.e. the wrong directory.
+ */
+private fun runStart(command: CliCommand.Start): Int = try {
+    Commands.start(command.agent, resolveCwdAgainst(currentWorkingDir(), command.cwd), command.name, command.tags)
+} catch (e: UnresolvableCwdException) {
+    eprintln(e.message ?: "cannot resolve the working directory")
+    2
 }
 
 // --- small native helpers ------------------------------------------------------------------------
@@ -174,6 +186,13 @@ fun eprintln(line: String) {
 }
 
 /**
+ * Raised when a relative cwd cannot be made absolute because [base] — the CLI's own working directory —
+ * is not itself absolute. Fatal on purpose: sending the daemon a relative path would have it resolved
+ * against launchd's cwd `/`, silently launching the agent in the wrong directory.
+ */
+class UnresolvableCwdException(message: String) : IllegalStateException(message)
+
+/**
  * Resolve a possibly-relative [cwd] against [base] (the CLI's own working directory) to an ABSOLUTE
  * path. The daemon runs under launchd with cwd `/`, so a relative `cwd` sent verbatim (e.g.
  * `kotgent start claude .` or `… start claude sub/dir`) would be resolved by the daemon against `/` —
@@ -181,15 +200,27 @@ fun eprintln(line: String) {
  * it is unit-tested directly; an already-absolute cwd and the omitted (`null`) case pass through as the
  * base. tmux `new-session -c` canonicalizes any remaining `..` segments at launch.
  *
+ * The result is ABSOLUTE in every branch, or it throws:
+ * - an absolute [cwd] passes straight through and never consults [base];
+ * - otherwise [base] must itself be absolute — a relative one (`"sub"`), the `"."` [currentWorkingDir]
+ *   falls back to when `getcwd` fails, or an empty string raise [UnresolvableCwdException]. Joining them
+ *   would produce `"./sub"` / `"sub"` (still relative, the exact bug this function exists to prevent), and
+ *   reading `""` as root would launch the agent in `/` — both silently wrong, so neither is guessed at.
+ *
  * Root is the edge case that must not collapse: `"/"` trims to the EMPTY string, and `"./"` strips to an
- * empty relative part, so a naive join yields `""` — not a path at all, which tmux would reject or (worse)
- * resolve against its own cwd. Both are normalized back to `/` here, so the result is always absolute
- * whenever [base] is.
+ * empty relative part, so a naive join yields `""` — not a path at all. Both are normalized back to `/`.
  */
 fun resolveCwdAgainst(base: String, cwd: String?): String {
-    val b = base.trimEnd('/').ifEmpty { "/" } // "/" (or "") stays root, never ""
+    // An absolute target needs no base at all — resolve it even if the CLI cannot name its own cwd.
+    if (cwd != null && cwd.startsWith("/")) return cwd
+    if (!base.startsWith("/")) {
+        throw UnresolvableCwdException(
+            "cannot resolve a relative directory: the current working directory is not absolute " +
+                "('$base') — pass an absolute path to `kotgent start`",
+        )
+    }
+    val b = base.trimEnd('/').ifEmpty { "/" } // "/" stays root, never ""
     if (cwd.isNullOrEmpty()) return b
-    if (cwd.startsWith("/")) return cwd
     // Strip leading "./" segments; "." / "./" / "././" all name the base directory itself.
     var rel: String = cwd
     while (rel.startsWith("./")) rel = rel.substring(2)
@@ -197,14 +228,20 @@ fun resolveCwdAgainst(base: String, cwd: String?): String {
     return if (b == "/") "/$rel" else "$b/$rel"
 }
 
-/** The process's current working directory (`start`'s default cwd), falling back to `$PWD` then `.`. */
+/**
+ * The process's current working directory (`start`'s default cwd): `getcwd`, else `$PWD`, else `"."`.
+ * Only an ABSOLUTE answer is accepted from either source — a relative `$PWD` (or a relative `getcwd`,
+ * which POSIX does not produce but a stub could) is no more usable than none at all. The `"."` fallback
+ * is deliberately not a path: it makes [resolveCwdAgainst] fail loudly rather than quietly resolving a
+ * relative cwd into another relative one.
+ */
 @OptIn(ExperimentalForeignApi::class)
 fun currentWorkingDir(): String = memScoped {
     val size = 4096
     val buf = allocArray<ByteVar>(size)
-    getcwd(buf, size.convert())?.toKString()
-        ?: getenv("PWD")?.toKString()
-        ?: "."
+    val fromGetcwd = getcwd(buf, size.convert())?.toKString()
+    if (fromGetcwd != null && fromGetcwd.startsWith("/")) return@memScoped fromGetcwd
+    getenv("PWD")?.toKString()?.takeIf { it.startsWith("/") } ?: "."
 }
 
 /** `~/.kotgent` (the token, hook-settings, and DB live here); `.kotgent` if `$HOME` is unset. */

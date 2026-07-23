@@ -19,6 +19,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import platform.posix.EEXIST
 import platform.posix.S_IRUSR
 import platform.posix.S_IWUSR
 import platform.posix.S_IXUSR
@@ -36,6 +37,8 @@ import platform.posix.fsync
 import platform.posix.ftell
 import platform.posix.fwrite
 import platform.posix.getenv
+import platform.posix.getpid
+import platform.posix.link
 import platform.posix.mkdir
 import platform.posix.rename
 import platform.posix.stat
@@ -149,6 +152,31 @@ private fun permissionBits(path: String): Int? = memScoped {
     if (stat(path, st.ptr) != 0) null else st.st_mode.toInt() and PERMISSION_MASK
 }
 
+/**
+ * Assert that [mode] (the nine permission bits of the token file at [path], as [permissionBits] reports
+ * them) is exactly `0600`, throwing [TokenPermissionException] otherwise.
+ *
+ * A `null` [mode] — the `stat` failed, so the mode is UNKNOWN — is a hard failure too, not a pass. The
+ * whole point of the check is to refuse a secret other local users might be able to read; "we could not
+ * find out" is not evidence that they cannot, and treating it as one would hand out an unverified token
+ * exactly when the filesystem is behaving strangely. Public so the decision is unit-testable directly
+ * (the `stat`-failure branch cannot be provoked through the file API).
+ */
+fun requireTokenMode0600(path: String, mode: Int?) {
+    if (mode == null) {
+        throw TokenPermissionException(
+            "cannot verify the permissions of token file $path (stat failed) — " +
+                "refusing to use a token whose mode could not be confirmed 0600",
+        )
+    }
+    if (mode != MODE_0600) {
+        throw TokenPermissionException(
+            "token file $path is still mode ${mode.toString(8).padStart(3, '0')} after chmod 0600 — " +
+                "refusing to use a token that may be readable by other users",
+        )
+    }
+}
+
 /** umask masking off all group + other permission bits (`0o077`), so a new file is created `0600`. */
 private const val UMASK_GROUP_OTHER: Int = 0b111_111
 
@@ -169,68 +197,111 @@ fun defaultTokenPath(): String {
  *
  * On reading an EXISTING file its permissions are re-hardened to `0600` (`chmod`) and the result is
  * VERIFIED: a token written by an older build — or otherwise left group/other-readable — must not
- * silently stay world-readable just because it already exists. If it cannot be hardened this throws
- * rather than returning the secret ([TokenPermissionException]): handing out a shared secret that other
- * local users can read is worse than refusing to start.
+ * silently stay world-readable just because it already exists. If it cannot be hardened (or its mode
+ * cannot be confirmed) this throws rather than returning the secret ([TokenPermissionException]):
+ * handing out a shared secret that other local users can read is worse than refusing to start.
+ *
+ * Creation is EXCLUSIVE ([createPrivateFileExclusive]) and the returned value is always re-read from the
+ * file, so the token this process hands out is the one actually persisted. Two processes (daemon + CLI +
+ * hooks) can legitimately race here on a fresh install; a plain "generate → overwrite → return what I
+ * generated" would let the loser use a token the file no longer holds, and every subsequent request from
+ * it would 401.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun readOrCreateToken(path: String = defaultTokenPath()): String {
-    readFileTextOrNull(path)?.trim()?.let {
-        if (it.isNotEmpty()) {
-            // Repair a mis-permissioned pre-existing token (e.g. a 0644 left by an older version). Both
-            // the chmod RESULT and the resulting mode are checked — an ignored failure would leave the
-            // secret group/world-readable while we happily used it.
-            if (chmod(path, MODE_0600.convert()) != 0) {
-                throw TokenPermissionException(
-                    "cannot secure token file $path (chmod 0600 failed: ${errnoText(errno)}) — " +
-                        "refusing to use a token that may be readable by other users",
-                )
-            }
-            val mode = permissionBits(path)
-            if (mode != null && mode != MODE_0600) {
-                throw TokenPermissionException(
-                    "token file $path is still mode ${mode.toString(8).padStart(3, '0')} after chmod 0600 — " +
-                        "refusing to use a token that may be readable by other users",
-                )
-            }
-            return it
-        }
-    }
+    existingToken(path)?.let { return it }
+
     val token = generateToken()
     val dir = path.substringBeforeLast('/', missingDelimiterValue = "")
     if (dir.isNotEmpty()) mkdir(dir, MODE_0700.convert()) // ignore EEXIST — a pre-existing dir is fine
-    writePrivateFile(path, token.encodeToByteArray())
+    if (!createPrivateFileExclusive(path, token.encodeToByteArray())) {
+        // Lost the race (or found a leftover). Whoever won owns the value — adopt it …
+        existingToken(path)?.let { return it }
+        // … unless what is there is blank/unusable (a truncated file from a crashed older writer), in
+        // which case it carries no secret to preserve and is replaced atomically.
+        writePrivateFile(path, token.encodeToByteArray())
+    }
+    // Read back what is on disk rather than trusting [token]: this is the value every other process will
+    // read, so it is the only value safe to authenticate with.
+    return existingToken(path)
+        ?: error("token file $path is missing or blank immediately after being written")
+}
+
+/**
+ * The persisted token at [path] — hardened to `0600` and verified — or `null` if the file is missing or
+ * blank. Repairs a mis-permissioned pre-existing token (e.g. a `0644` left by an older version): both the
+ * `chmod` RESULT and the resulting mode are checked ([requireTokenMode0600]), because an ignored failure
+ * would leave the secret group/world-readable while we happily used it.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun existingToken(path: String): String? {
+    val token = readFileTextOrNull(path)?.trim()?.ifEmpty { null } ?: return null
+    if (chmod(path, MODE_0600.convert()) != 0) {
+        throw TokenPermissionException(
+            "cannot secure token file $path (chmod 0600 failed: ${errnoText(errno)}) — " +
+                "refusing to use a token that may be readable by other users",
+        )
+    }
+    requireTokenMode0600(path, permissionBits(path))
     return token
 }
 
 /**
- * Write [bytes] to [path] as a secret file (mode `0600`) ATOMICALLY and durably: write to a sibling
- * `<path>.tmp` under a restrictive [umask] (so it is `0600` from the moment it exists — never the brief
- * `0644` window a plain `fopen`+later-`chmod` would leave), `fsync` + close-check it, `chmod 0600`, then
- * `rename` it over [path]. Every IO error is checked and surfaced (`error`), and the temp file is removed
- * on failure — so a disk error can neither DESTROY an existing valid secret (the original is untouched
- * until the atomic rename) nor persist a partial/empty one while startup reports success. Shared by the
- * token, the hook-settings, and the hook-header writers — all carry secrets.
+ * Write [bytes] to [path] as a secret file (mode `0600`) ATOMICALLY and durably, REPLACING whatever is
+ * there: stage into a private sibling temp ([stagePrivateTemp]) and `rename` it over [path]. Every IO
+ * error is checked and surfaced (`error`), and the temp is removed on failure — so a disk error can
+ * neither DESTROY an existing valid secret (the original is untouched until the atomic rename) nor
+ * persist a partial/empty one while startup reports success. Shared by the token, the hook-settings, and
+ * the hook-header writers — all carry secrets.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal fun writePrivateFile(path: String, bytes: ByteArray) {
-    val tmp = "$path.tmp"
+    stagePrivateTemp(path, bytes) { tmp ->
+        if (rename(tmp, path) != 0) error("rename $tmp -> $path failed: ${errnoText(errno)}")
+        true
+    }
+}
+
+/**
+ * Create [path] with [bytes] as a `0600` secret file ONLY IF IT DOES NOT EXIST — `true` if this call
+ * created it, `false` if another writer got there first (the existing file is left completely untouched).
+ *
+ * The publish step is `link`, which is atomic and fails with `EEXIST` on a pre-existing target: exactly
+ * the "first writer wins, everyone else adopts the winner's value" primitive [readOrCreateToken] needs.
+ * A `rename` cannot express this — it would silently clobber the winner's secret, leaving the loser
+ * authenticating with a token the file no longer holds. Public so the exclusivity is unit-testable.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun createPrivateFileExclusive(path: String, bytes: ByteArray): Boolean =
+    stagePrivateTemp(path, bytes) { tmp ->
+        if (link(tmp, path) == 0) return@stagePrivateTemp true
+        val e = errno
+        if (e == EEXIST) false else error("link $tmp -> $path failed: ${errnoText(e)}")
+    }
+
+/**
+ * Write [bytes] to a private sibling temp of [path] (`0600` from the moment it exists — never the brief
+ * `0644` window a plain `fopen`+later-`chmod` would leave, thanks to the restrictive [umask]), `fsync` +
+ * close-check it, then hand it to [publish] to move it into place; the temp is always removed afterwards.
+ *
+ * The temp name is UNIQUE PER WRITER (pid + random suffix). A shared `<path>.tmp` made concurrent writers
+ * collide: each one `unlink`ed and overwrote the other's in-flight temp, so a writer could `rename` a
+ * file another process had already replaced the contents of — and end up returning a secret different
+ * from the one persisted. Unique names make the writers independent up to their (atomic) publish step.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun stagePrivateTemp(path: String, bytes: ByteArray, publish: (String) -> Boolean): Boolean {
+    val tmp = "$path.tmp.${getpid()}.${Random.nextInt().toUInt().toString(16).padStart(8, '0')}"
     // Mask off ALL group + other bits (0o077) so the newly created temp is 0600 immediately.
     val previousMask = umask(UMASK_GROUP_OTHER.convert())
     try {
-        unlink(tmp) // clear any stale temp from a previous crashed write (ignore ENOENT)
         writeAllOrThrow(tmp, bytes) // fwrite/fflush/fsync/fclose all checked; unlinks tmp + throws on error
-        if (chmod(tmp, MODE_0600.convert()) != 0) {
-            val e = errno
-            unlink(tmp)
-            error("chmod 0600 failed for $tmp: ${errnoText(e)}")
-        }
-        if (rename(tmp, path) != 0) {
-            val e = errno
-            unlink(tmp) // the original at [path] is left intact — rename never touched it
-            error("rename $tmp -> $path failed: ${errnoText(e)}")
-        }
+        if (chmod(tmp, MODE_0600.convert()) != 0) error("chmod 0600 failed for $tmp: ${errnoText(errno)}")
+        return publish(tmp)
     } finally {
+        // ENOENT after a successful rename (the temp IS the target now); removes the staged copy after a
+        // link, a failed publish, or a chmod failure. Never touches [path] itself.
+        unlink(tmp)
         umask(previousMask)
     }
 }

@@ -116,6 +116,38 @@ class CliTest {
     }
 
     @Test
+    fun resolveCwdAgainstRefusesABaseThatIsNotItselfAbsolute() {
+        // `currentWorkingDir()` can legitimately fail to name the cwd (getcwd errors, no usable $PWD) and
+        // falls back to ".". Joining onto that produced "./sub" — still relative, so the daemon (cwd `/`
+        // under launchd) would resolve it against root: the exact bug this function exists to prevent.
+        // An empty base was worse: it was read as ROOT and silently launched the agent in `/`.
+        for (base in listOf(".", "", "relative/base", "./rel", "..")) {
+            assertFailsWith<UnresolvableCwdException>("base '$base' must not silently produce a relative path") {
+                resolveCwdAgainst(base, "sub")
+            }
+            assertFailsWith<UnresolvableCwdException>("base '$base' with an omitted cwd must fail too") {
+                resolveCwdAgainst(base, null)
+            }
+            assertFailsWith<UnresolvableCwdException>("base '$base' with '.' must fail too") {
+                resolveCwdAgainst(base, ".")
+            }
+            // An ABSOLUTE cwd needs no base at all, so it still resolves even when the cwd is unknown.
+            assertEquals("/abs/elsewhere", resolveCwdAgainst(base, "/abs/elsewhere"))
+        }
+    }
+
+    @Test
+    fun currentWorkingDirIsAbsoluteOrTheExplicitlyUnusableFallback() {
+        // Either a real absolute cwd, or "." — a deliberate non-path that makes resolveCwdAgainst fail
+        // loudly rather than quietly emitting another relative path.
+        val cwd = currentWorkingDir()
+        assertTrue(cwd.startsWith("/") || cwd == ".", "unexpected working directory: '$cwd'")
+        if (cwd.startsWith("/")) {
+            assertTrue(resolveCwdAgainst(cwd, "sub").startsWith("/"), "a real cwd resolves to an absolute path")
+        }
+    }
+
+    @Test
     fun parsesDaemonPortAndUnknownCommand() {
         assertEquals(CliCommand.Daemon(DEFAULT_PORT), parseArgs(listOf("daemon")))
         assertEquals(CliCommand.Daemon(9999), parseArgs(listOf("daemon", "--port", "9999")))

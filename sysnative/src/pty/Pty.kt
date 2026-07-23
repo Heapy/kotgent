@@ -329,21 +329,28 @@ class Pty private constructor(
                     envp,
                 )
 
-                // The spawn is decided; release both spawn objects. A destroy failure here CANNOT fail the
-                // call retroactively (the child is already running and must not be leaked by an exception),
-                // but it is a resource leak in this process, so it is reported on stderr rather than
-                // swallowed. On the error path below the primary spawn error still wins.
-                warnCleanupFailure(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr))
-                warnCleanupFailure(ATTR_DESTROY, posix_spawnattr_destroy(attr.ptr))
+                // The spawn is decided; release both spawn objects, keeping their results — a destroy
+                // failure means a spawn object leaked in THIS process and must not vanish.
+                val faDestroy = posix_spawn_file_actions_destroy(fileActions.ptr)
+                val attrDestroy = posix_spawnattr_destroy(attr.ptr)
                 // Parent has no use for the slave; the child holds its own dup'd copies.
                 posixClose(slave)
 
                 if (rc != 0) {
                     posixClose(master)
+                    // The spawn FAILED, so there is no child to protect: this path throws anyway, and the
+                    // cleanup notes ride along on the primary error exactly like the setup paths above.
+                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, faDestroy) + cleanupNote(ATTR_DESTROY, attrDestroy)
                     // posix_spawn returns the errno value directly (it does not set errno).
-                    throw PtyException("posix_spawn failed for '${command[0]}': ${errnoMessage(rc)} (code=$rc)")
+                    throw PtyException(
+                        "posix_spawn failed for '${command[0]}': ${errnoMessage(rc)} (code=$rc)$cleanup",
+                    )
                 }
 
+                // Success: the child is running and must not be leaked by an exception, so a destroy
+                // failure can only be reported — stderr, never swallowed.
+                warnCleanupFailure(FILE_ACTIONS_DESTROY, faDestroy)
+                warnCleanupFailure(ATTR_DESTROY, attrDestroy)
                 return Pty(master, pidVar.value).also { it.startReader() }
             }
         }

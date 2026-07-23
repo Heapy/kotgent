@@ -9,6 +9,9 @@ import kotlinx.cinterop.toKString
 import platform.posix.UF_IMMUTABLE
 import platform.posix.chflags
 import platform.posix.chmod
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fputs
 import platform.posix.getenv
 import platform.posix.getpid
 import platform.posix.unlink
@@ -98,6 +101,74 @@ class AuthTest {
     }
 
     @Test
+    fun readOrCreateTokenReturnsTheValueItActuallyPersisted() {
+        unlink(path)
+        val token = readOrCreateToken(path)
+        // The contract every other process depends on: what this call returned IS what is on disk. A
+        // creator that returned its own generated value while another writer's value landed on disk would
+        // authenticate with a secret the daemon never sees — every request 401s.
+        assertEquals(token, readTokenOrNull(path), "the returned token is the persisted token")
+    }
+
+    @Test
+    fun createPrivateFileExclusiveKeepsTheFirstWritersValue() {
+        unlink(path)
+        // The primitive behind concurrent token creation: first writer wins, everyone else must adopt its
+        // value rather than clobber it (a rename-based write would silently replace the winner's secret).
+        assertTrue(createPrivateFileExclusive(path, "first".encodeToByteArray()), "the first writer creates the file")
+        assertFalse(createPrivateFileExclusive(path, "second".encodeToByteArray()), "a later writer reports it lost")
+        assertEquals("first", readTokenOrNull(path), "the winner's value is untouched")
+        assertEquals(0b110_000_000, fileMode(path) and 0b111_111_111, "an exclusively created secret is 0600")
+    }
+
+    @Test
+    fun aConcurrentWritersTempFileIsNeverTouched() {
+        unlink(path)
+        // Every writer used to stage into the SAME "$path.tmp", so concurrent writers unlinked and
+        // overwrote each other's in-flight temp. A writer's temp is now unique to it: a foreign temp
+        // sitting next to the target must survive a full write untouched.
+        val foreignTmp = "$path.tmp"
+        writeText(foreignTmp, "another writer's in-flight token")
+        try {
+            val token = readOrCreateToken(path)
+            assertEquals(token, readTokenOrNull(path), "the token file holds what was returned")
+            assertEquals(
+                "another writer's in-flight token",
+                readTokenOrNull(foreignTmp),
+                "a concurrent writer's temp file must not be unlinked or overwritten",
+            )
+        } finally {
+            unlink(foreignTmp)
+        }
+    }
+
+    @Test
+    fun readOrCreateTokenReplacesABlankTokenFile() {
+        unlink(path)
+        // A truncated leftover from a crashed writer carries no secret to preserve: exclusive creation
+        // must not deadlock on it — it is replaced, and the fresh value is what gets returned.
+        writeText(path, "   \n")
+        val token = readOrCreateToken(path)
+        assertTrue(token.isNotBlank(), "a blank token file yields a freshly generated token")
+        assertEquals(token, readTokenOrNull(path), "and that token is what was persisted")
+        assertEquals(0b110_000_000, fileMode(path) and 0b111_111_111, "the replacement is 0600")
+    }
+
+    @Test
+    fun requireTokenMode0600RefusesAModeItCouldNotVerify() {
+        // `stat` failing means the mode is UNKNOWN — not "fine". Proceeding there would hand out an
+        // unverified secret exactly when the filesystem is misbehaving. (The branch is unreachable
+        // through the file API — the file was just read — so the decision is asserted directly.)
+        assertFailsWith<TokenPermissionException>("an unverifiable mode must not pass") {
+            requireTokenMode0600("/tmp/whatever", null)
+        }
+        assertFailsWith<TokenPermissionException>("a group/world-readable mode must not pass") {
+            requireTokenMode0600("/tmp/whatever", 0b110_100_100) // 0644
+        }
+        requireTokenMode0600("/tmp/whatever", 0b110_000_000) // 0600 — the only accepted mode
+    }
+
+    @Test
     fun constantTimeEqualsMatchesExactlyEqualStrings() {
         assertTrue(constantTimeEquals("abc123", "abc123"))
         assertTrue(constantTimeEquals("", ""))
@@ -111,5 +182,12 @@ class AuthTest {
         val st = alloc<platform.posix.stat>()
         platform.posix.stat(p, st.ptr)
         st.st_mode.toInt()
+    }
+
+    /** Write [text] to [p] verbatim — seeds the leftover/foreign files the creation paths must handle. */
+    private fun writeText(p: String, text: String) {
+        val fp = fopen(p, "wb") ?: error("cannot open $p for write")
+        fputs(text, fp)
+        fclose(fp)
     }
 }

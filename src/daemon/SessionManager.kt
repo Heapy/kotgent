@@ -13,8 +13,10 @@ import io.kotgent.core.SessionState
 import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxControl
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -109,6 +111,17 @@ class UnsupportedAgentException(val agentKind: String) :
     IllegalArgumentException("unsupported agent kind '$agentKind' (v1 supports only 'claude')")
 
 /**
+ * One cleanup step of a compensation that itself failed (e.g. the `kill-session` that should have
+ * removed a just-launched agent, or the state write that should have erased a phantom row).
+ *
+ * It is attached to the PRIMARY failure as a suppressed exception rather than swallowed: the primary
+ * error must still win (it is why we are compensating), but a silently-dropped cleanup failure means a
+ * live orphan pane or a durable phantom `running` row that nothing will report until the next daemon
+ * restart reconciles it. Surfacing it makes that detectable.
+ */
+class CompensationFailure(message: String, cause: Throwable) : IllegalStateException(message, cause)
+
+/**
  * The daemon session manager (plan Task 13) — wires the pieces built so far into the create/stop/
  * resume/interrupt lifecycle over `tmux` + the event store.
  *
@@ -129,9 +142,16 @@ class UnsupportedAgentException(val agentKind: String) :
  * Every control op is a read-modify-write across two systems (read the cache row → act on tmux → write the
  * derived state back), so concurrent ops on the SAME session must not interleave: an `interrupt` that read
  * a live row while a `stop` killed the pane would write `ready` over `stopped` and resurrect a session
- * that has no pane. [controlLockFor] gives each session id its own [Mutex], held across the whole
+ * that has no pane. [withControlLock] gives each session id its own [Mutex], held across the whole
  * read-modify-write of [interrupt] / [resume] / [terminate]. Different sessions still proceed in parallel
- * (the lock is per id, not global), and [start] needs none — its id is freshly minted and unreachable.
+ * (the lock is per id, not global).
+ *
+ * [start] takes the SAME lock. A freshly minted id is unreachable only until the row is published: from
+ * `upsertSession` onwards the session is listable and a concurrent `stop` can target it, so an unlocked
+ * start could (a) register its pane AFTER that stop unregistered it — leaving a killed session routable —
+ * or (b) have its compensation overwrite the committed `stopped`. Holding the lock across the launch,
+ * the publish, the pane registration AND the compensation makes start and the control ops mutually
+ * exclusive for that session.
  *
  * ## The terminal bridge is NOT started here
  * Per the Solution Overview / Task 9, the [io.kotgent.pty.TerminalBridge] is lazy — created on the first
@@ -178,6 +198,9 @@ class SessionManager(
      * Start a new agent session: ask the adapter how to launch it, create the tmux session, upsert the
      * `sessions` row, register the pane, and guarantee the provider id gets captured. Returns the stored
      * [SessionMeta]. Does NOT spawn the terminal bridge (lazy — see the class KDoc).
+     *
+     * The whole launch runs under the session's control lock, so a `stop` that targets the row the instant
+     * it is published cannot interleave with the rest of the start (see the class KDoc).
      */
     suspend fun start(
         agentKind: String,
@@ -192,54 +215,92 @@ class SessionManager(
         // effect, so a bad kind fails with nothing to clean up.
         val adapter = agentFactory.create(agentKind, cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.New)
-        val paneId = tmux.newSession(shortId, cwd, shellCommand(spec.command), cols, rows)
 
-        try {
-            val ts = now()
-            val meta = SessionMeta(
-                id = sessionId,
-                name = name ?: tmuxSession,
-                tags = tags,
-                agent = agentKind,
-                providerSessionId = spec.preallocatedSessionId,
-                cwd = cwd,
-                tmuxSession = tmuxSession,
-                paneId = paneId,
-                state = SessionState.running,
-                stateSource = EventSource.system,
-                createdAt = ts,
-                updatedAt = ts,
-            )
-            // Upsert the row BEFORE registering the pane: a hook that resolves the pane must find the
-            // sessions row already present (else its append would race the row into existence). The hook
-            // ingress tolerates the brief not-yet-registered window with a bounded retry (see
-            // claudeHookRoutes), so the SessionStart callback is not lost during it.
-            store.upsertSession(meta)
-            registry.register(paneId, sessionId)
+        return withControlLock(sessionId) {
+            // Null until the launch reports a pane; the compensation below tolerates that (it may have to
+            // clean up a tmux session whose pane id we never learned).
+            var paneId: PaneId? = null
+            try {
+                // The launch is INSIDE the guarded region: tmux can create the session and the call still
+                // fail (e.g. `new-session -P` came back with no pane id), which outside the try would leave
+                // a live, untracked agent behind with nothing to compensate it.
+                paneId = tmux.newSession(shortId, cwd, shellCommand(spec.command), cols, rows)
+                val ts = now()
+                val meta = SessionMeta(
+                    id = sessionId,
+                    name = name ?: tmuxSession,
+                    tags = tags,
+                    agent = agentKind,
+                    providerSessionId = spec.preallocatedSessionId,
+                    cwd = cwd,
+                    tmuxSession = tmuxSession,
+                    paneId = paneId,
+                    state = SessionState.running,
+                    stateSource = EventSource.system,
+                    createdAt = ts,
+                    updatedAt = ts,
+                )
+                // Upsert the row BEFORE registering the pane: a hook that resolves the pane must find the
+                // sessions row already present (else its append would race the row into existence). The hook
+                // ingress tolerates the brief not-yet-registered window with a bounded retry (see
+                // claudeHookRoutes), so the SessionStart callback is not lost during it.
+                store.upsertSession(meta)
+                registry.register(paneId, sessionId)
 
-            val prealloc = spec.preallocatedSessionId
-            if (prealloc != null) {
-                // Primary path: the id is known up front — bind it in the log immediately.
-                idCapture.bind(sessionId, prealloc)
-            } else {
-                // Fallback path (older claude): no id yet. Poll for the SessionStart hook to deliver it in
-                // the background; until it does the session is "id pending" (provider_session_id null →
-                // resume blocked). Bounded, fire-and-forget.
-                idCapture.captureInBackground(sessionId) { store.projectionOf(sessionId).providerSessionId }
+                val prealloc = spec.preallocatedSessionId
+                if (prealloc != null) {
+                    // Primary path: the id is known up front — bind it in the log immediately.
+                    idCapture.bind(sessionId, prealloc)
+                } else {
+                    // Fallback path (older claude): no id yet. Poll for the SessionStart hook to deliver it
+                    // in the background; until it does the session is "id pending" (provider_session_id null
+                    // → resume blocked). Bounded, fire-and-forget.
+                    idCapture.captureInBackground(sessionId) { store.projectionOf(sessionId).providerSessionId }
+                }
+                store.getSession(sessionId) ?: meta
+            } catch (e: Throwable) {
+                // The launch (or a step after it) failed — compensate by killing the just-created tmux
+                // session so no live agent is left orphaned/untracked, AND by correcting the row: the upsert
+                // above may already have committed `running` + a pane id, which would otherwise outlive the
+                // failure as a durable phantom (a `running` session with no pane) until the next daemon
+                // restart reconciled it. `crashed` is the honest classification — the launch did not
+                // complete. The state write is a no-op if the upsert itself was what failed (no row yet).
+                compensateFailedLaunch(sessionId, shortId, paneId, SessionState.crashed, null, e)
+                throw e
             }
-            return store.getSession(sessionId) ?: meta
-        } catch (e: Throwable) {
-            // Durable state (or a subsequent step) failed AFTER the agent was launched — compensate by
-            // killing the just-created tmux session so no live agent is left orphaned/untracked, AND by
-            // correcting the row: the upsert above may already have committed `running` + a pane id, which
-            // would otherwise outlive the failure as a durable phantom (a `running` session with no pane)
-            // until the next daemon restart reconciled it. `crashed` is the honest classification — the
-            // launch did not complete. A no-op if the upsert itself was what failed (no row to update).
-            runCatching { tmux.killSession(shortId) }
-            runCatching { registry.unregister(paneId) }
-            runCatching { store.updateSessionState(sessionId, SessionState.crashed, EventSource.system, null, now()) }
-            throw e
         }
+    }
+
+    /**
+     * Undo a failed launch ([start] / [resume]): kill the tmux session `kt-<shortId>`, drop [paneId] from
+     * the registry, and put the sessions row back to [restoreState] / [restorePaneId].
+     *
+     * Runs under [NonCancellable]. Compensation is itself suspending (registry + store writes), so in a
+     * CANCELLED coroutine — a perfectly ordinary way for a launch to fail, e.g. the daemon shutting down
+     * mid-start — every suspension point would throw immediately and the cleanup would silently not
+     * happen, leaving exactly the orphan pane / phantom row it exists to prevent.
+     *
+     * Cleanup failures are NOT swallowed: each is attached to the primary [cause] as a suppressed
+     * [CompensationFailure]. The primary error still wins (it is why we are compensating), but a dropped
+     * cleanup failure means an orphan pane or a phantom row that nothing would report.
+     */
+    private suspend fun compensateFailedLaunch(
+        sessionId: SessionId,
+        shortId: String,
+        paneId: PaneId?,
+        restoreState: SessionState,
+        restorePaneId: PaneId?,
+        cause: Throwable,
+    ): Unit = withContext(NonCancellable) {
+        fun note(what: String, failure: Throwable) =
+            cause.addSuppressed(CompensationFailure("compensation failed for '$shortId': $what", failure))
+
+        runCatching { tmux.killSession(shortId) }.onFailure { note("kill-session", it) }
+        if (paneId != null) {
+            runCatching { registry.unregister(paneId) }.onFailure { note("unregister pane ${paneId.value}", it) }
+        }
+        runCatching { store.updateSessionState(sessionId, restoreState, EventSource.system, restorePaneId, now()) }
+            .onFailure { note("restore state to $restoreState", it) }
     }
 
     /**
@@ -323,11 +384,7 @@ class SessionManager(
             // pane — and PUT THE ROW BACK to its pre-resume dead state. The write above may already have
             // committed `ready` + the fresh pane id, which would otherwise survive as a durable phantom
             // (an "alive" session whose pane we just killed) until the next daemon restart.
-            runCatching { tmux.killSession(sessionId.value) }
-            runCatching { registry.unregister(paneId) }
-            runCatching {
-                store.updateSessionState(sessionId, deadState, EventSource.system, meta.paneId, now())
-            }
+            compensateFailedLaunch(sessionId, sessionId.value, paneId, deadState, meta.paneId, e)
             throw e
         }
     }
@@ -346,10 +403,20 @@ class SessionManager(
         // Intentionally empty. See KDoc.
     }
 
-    /** Clean-kill termination: arm the stop intent, kill the tmux session, cache the derived `stopped`. */
+    /**
+     * Clean-kill termination: arm the stop intent, PERSIST it, then kill the tmux session.
+     *
+     * The persist comes FIRST on purpose. `stopped` is the only record that this teardown was intended,
+     * it is cache-only (control signals are never logged) and incarnation-scoped, so the reconciler reads
+     * it as the current stop intent. Killing first left a window — a daemon crash or a store failure
+     * between the kill and the write — in which the pane is gone but nothing says why, and the next
+     * reconcile would misclassify a clean operator stop as `resumable`/`crashed`. Written first, the
+     * intent survives any failure after it: a crash before the kill leaves a live pane, which reconcile
+     * corrects back to `running` (a live pane always wins over a cached dead state), and a crash after the
+     * kill leaves exactly the `stopped` the operator asked for.
+     */
     private suspend fun terminate(sessionId: SessionId): Unit = withControlLock(sessionId) {
         val meta = store.getSession(sessionId) ?: return@withControlLock
-        tmux.killSession(sessionId.value)
         // Derive the terminal state through the real reducer: ControlSignal.Stop arms the clean-stop
         // intent, and the clean kill is an intended Exit → `stopped` (not `crashed`). We use only the
         // derived STATE; the fabricated Exited is a pure classification aid and is never persisted (so
@@ -360,6 +427,25 @@ class SessionManager(
             AgentEvent.Exited(TMUX_KILL_EXIT),
         )
         persistDerivedState(meta, terminal.state, EventSource.user)
+        try {
+            tmux.killSession(sessionId.value)
+        } catch (e: Throwable) {
+            // The kill itself failed, so the session may well still be alive: roll the armed intent back
+            // rather than leaving the cache claiming a `stopped` that never happened, and surface any
+            // rollback failure with the primary error (see [compensateFailedLaunch]).
+            withContext(NonCancellable) {
+                runCatching { persistDerivedState(meta, meta.state, EventSource.system) }
+                    .onFailure {
+                        e.addSuppressed(
+                            CompensationFailure(
+                                "compensation failed for '${sessionId.value}': restore state to ${meta.state}",
+                                it,
+                            ),
+                        )
+                    }
+            }
+            throw e
+        }
         meta.paneId?.let { registry.unregister(it) }
     }
 

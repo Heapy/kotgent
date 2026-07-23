@@ -16,6 +16,8 @@ import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.Tmux
+import io.kotgent.tmux.TmuxControl
+import io.kotgent.tmux.TmuxException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -26,6 +28,7 @@ import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -96,11 +99,13 @@ class SessionManagerTest {
      * An [EventStore] decorator that simulates a step failing AFTER a durable write committed — the
      * window a compensation path has to clean up. [failAppend] fails `start`'s `SessionBound` append
      * (the session row is already `running` by then); [failAfterStateWrite] lets a state write commit
-     * and then throws (as a later step in the same op would).
+     * and then throws (as a later step in the same op would); [failStateWrite] makes the state write
+     * itself fail, which is how a COMPENSATION's own cleanup fails.
      */
     private class FailingStore(
         private val delegate: EventStore,
         private val failAppend: Boolean = false,
+        private val failStateWrite: Boolean = false,
         private val failAfterStateWrite: (SessionState) -> Boolean = { false },
     ) : EventStore by delegate {
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq {
@@ -115,8 +120,80 @@ class SessionManagerTest {
             paneId: PaneId?,
             updatedAt: Long,
         ) {
+            if (failStateWrite) throw IllegalStateException("simulated state-write failure ($state)")
             delegate.updateSessionState(sessionId, state, stateSource, paneId, updatedAt)
             if (failAfterStateWrite(state)) throw IllegalStateException("simulated failure after writing $state")
+        }
+    }
+
+    /**
+     * An [EventStore] decorator that (a) records every `updateSessionState` in order and (b) optionally
+     * PARKS the first `upsertSession` for [gateUpsertFor] AFTER the row has committed — the window in
+     * which `start` has published a listable session row but has not yet registered its pane.
+     *
+     * `updateSessionState` opens with a real suspension point ([yield]), which is what makes a
+     * compensation running in a CANCELLED coroutine observable: without `NonCancellable` that `yield`
+     * throws and the cleanup write silently never happens.
+     */
+    private class TracingStore(
+        private val delegate: EventStore,
+        private val gateUpsertFor: SessionId? = null,
+    ) : EventStore by delegate {
+        /** Completed once the gated upsert has been entered (start is parked, row already committed). */
+        val entered = CompletableDeferred<Unit>()
+
+        /** Complete this to let the parked start continue. */
+        val release = CompletableDeferred<Unit>()
+
+        /** States passed to [updateSessionState], in call order. */
+        val stateWrites = mutableListOf<SessionState>()
+
+        private var used = false
+
+        override suspend fun upsertSession(meta: SessionMeta) {
+            delegate.upsertSession(meta)
+            if (!used && meta.id == gateUpsertFor) {
+                used = true
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+
+        override suspend fun updateSessionState(
+            sessionId: SessionId,
+            state: SessionState,
+            stateSource: EventSource,
+            paneId: PaneId?,
+            updatedAt: Long,
+        ) {
+            yield()
+            stateWrites += state
+            delegate.updateSessionState(sessionId, state, stateSource, paneId, updatedAt)
+        }
+    }
+
+    /**
+     * A [TmuxControl] wrapper over [FakeTmux] that observes/fails the calls a compensation depends on:
+     * [onKill] runs before each `kill-session` (so a test can snapshot what was already persisted at
+     * that moment), [failKill] makes it throw, and [failAfterCreate] makes `new-session` create the
+     * session and THEN throw — the real "tmux created it but the pane id never came back" failure.
+     */
+    private class ObservingTmux(
+        val inner: FakeTmux = FakeTmux(),
+        private val failKill: Boolean = false,
+        private val failAfterCreate: Boolean = false,
+        private val onKill: (String) -> Unit = {},
+    ) : TmuxControl by inner {
+        override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
+            val pane = inner.newSession(id, cwd, cmd, cols, rows)
+            if (failAfterCreate) throw TmuxException("tmux new-session for '$id' returned no pane id")
+            return pane
+        }
+
+        override fun killSession(id: String): Boolean {
+            onKill(id)
+            if (failKill) throw TmuxException("simulated kill-session failure for '$id'")
+            return inner.killSession(id)
         }
     }
 
@@ -440,6 +517,196 @@ class SessionManagerTest {
             )
             assertEquals(PaneId("%1"), row.paneId, "the fresh (killed) pane id is rolled back")
             assertEquals(emptyMap(), registry.snapshot(), "the fresh pane is unregistered")
+        }
+    }
+
+    @Test
+    fun aStopCannotInterleaveWithAStartThatHasAlreadyPublishedItsRow() = runBlocking {
+        withTimeout(20_000) {
+            // Park `start` right after its `sessions` row commits — from that instant the session is
+            // listable, so a `stop` can legitimately target it while the start is still mid-flight.
+            val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }), gateUpsertFor = SessionId("strt01"))
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("44444444-4444-4444-8444-444444444444")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("strt01") },
+                now = { 1L },
+            )
+
+            val starting = launch { mgr.start("claude", "/tmp") }
+            store.entered.await()
+
+            val stopping = launch { mgr.stop(SessionId("strt01")) }
+            repeat(50) { yield() } // give the stop every chance to interleave with the parked start
+            // Mutual exclusion: start holds the session's control lock, so the stop cannot act yet.
+            assertTrue(tmux.killed.isEmpty(), "a stop must not run while the start still holds the session lock")
+
+            store.release.complete(Unit)
+            starting.join()
+            stopping.join()
+
+            assertEquals(listOf("strt01"), tmux.killed, "the stop ran — after the start finished")
+            assertEquals(SessionState.stopped, store.getSession(SessionId("strt01"))!!.state, "the stop is the last word")
+            assertEquals(
+                emptyMap(),
+                registry.snapshot(),
+                "a start that interleaved would re-register the pane AFTER the stop dropped it, " +
+                    "leaving a killed session still routable to hooks",
+            )
+        }
+    }
+
+    @Test
+    fun aStartWhoseLaunchFailsAfterTheTmuxSessionExistsKillsTheOrphan() = runBlocking {
+        withTimeout(20_000) {
+            // tmux CREATED the session and the call still failed (`new-session -P` reported no pane id).
+            // The agent is live but we never learned its pane — it must not be left running untracked.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = ObservingTmux(failAfterCreate = true)
+            val provider = ProviderSessionId("55555555-5555-4555-8555-555555555555")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("orph01") },
+                now = { 1L },
+            )
+
+            assertFailsWith<TmuxException> { mgr.start("claude", "/tmp") }
+
+            assertEquals(listOf("orph01"), tmux.inner.killed, "the created-but-unreported session is killed")
+            assertNull(store.getSession(SessionId("orph01")), "no row was ever published, so none is left behind")
+            assertEquals(emptyMap(), registry.snapshot())
+        }
+    }
+
+    @Test
+    fun aStartCancelledMidLaunchStillCompensatesTheRowItPublished() = runBlocking {
+        withTimeout(20_000) {
+            // Cancellation is an ordinary way for a launch to fail (daemon shutting down mid-start). The
+            // compensation is itself suspending, so unless it runs under NonCancellable every one of its
+            // steps aborts instantly — leaving the `running` row it exists to erase.
+            val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }), gateUpsertFor = SessionId("cncl01"))
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("66666666-6666-4666-8666-666666666666")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("cncl01") },
+                now = { 1L },
+            )
+
+            val starting = launch { runCatching { mgr.start("claude", "/tmp") } }
+            store.entered.await() // the row is committed; the start is parked
+            starting.cancel()
+            store.release.complete(Unit)
+            starting.join()
+
+            assertEquals(listOf("cncl01"), tmux.killed, "the launched agent is killed even though the start was cancelled")
+            assertEquals(
+                SessionState.crashed,
+                store.getSession(SessionId("cncl01"))!!.state,
+                "the compensation's state write must survive cancellation — a `running` row with no pane is a phantom",
+            )
+            assertEquals(emptyMap(), registry.snapshot())
+        }
+    }
+
+    @Test
+    fun aCompensationThatItselfFailsIsSurfacedOnThePrimaryError() = runBlocking {
+        withTimeout(20_000) {
+            // The `SessionBound` append fails (primary), and the cleanup state-write fails too. The
+            // primary error must still win, but the failed cleanup must not vanish: a phantom `running`
+            // row survived and nothing else will report it.
+            val store = FailingStore(
+                SqliteEventStore.inMemory(now = { 1L }),
+                failAppend = true,
+                failStateWrite = true,
+            )
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("77777777-7777-4777-8777-777777777777")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("supp01") },
+                now = { 1L },
+            )
+
+            val error = assertFailsWith<IllegalStateException> { mgr.start("claude", "/tmp") }
+
+            assertEquals("simulated durable append failure", error.message, "the primary failure still wins")
+            assertTrue(
+                error.suppressedExceptions.any { it is CompensationFailure },
+                "the failed cleanup is attached to the primary error, not swallowed: ${error.suppressedExceptions}",
+            )
+            assertEquals(listOf("supp01"), tmux.killed, "the other cleanup steps still ran")
+        }
+    }
+
+    @Test
+    fun stopPersistsTheStopIntentBeforeKillingTmux() = runBlocking {
+        withTimeout(20_000) {
+            // `stopped` is the ONLY record that a teardown was intended (control signals are never
+            // logged), so it must be durable before the pane can disappear — otherwise a crash between
+            // the kill and the write leaves a dead pane with no intent, which the reconciler would
+            // misread as `resumable`/`crashed` instead of a clean operator stop.
+            val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }))
+            // Seeded with a sentinel no code path writes, so a never-invoked observer cannot pass vacuously.
+            var persistedAtKill: List<SessionState> = listOf(SessionState.needs_answer)
+            val tmux = ObservingTmux(onKill = { persistedAtKill = store.stateWrites.toList() })
+            val provider = ProviderSessionId("88888888-8888-4888-8888-888888888888")
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("ordr01") },
+                now = { 1L },
+            )
+            mgr.start("claude", "/tmp")
+
+            mgr.stop(SessionId("ordr01"))
+
+            assertEquals(listOf(SessionState.stopped), persistedAtKill, "the stop intent is persisted BEFORE the kill")
+            assertEquals(SessionState.stopped, store.getSession(SessionId("ordr01"))!!.state)
+        }
+    }
+
+    @Test
+    fun aStopWhoseKillFailsRollsTheStopIntentBack() = runBlocking {
+        withTimeout(20_000) {
+            // The intent is written first — so when the kill itself fails (the session may well still be
+            // alive) it has to be rolled back, or the cache would claim a `stopped` that never happened.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = ObservingTmux(failKill = true)
+            val provider = ProviderSessionId("99999999-9999-4999-8999-999999999999")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("kfai01") },
+                now = { 1L },
+            )
+            val started = mgr.start("claude", "/tmp")
+            val pane = started.paneId!!
+
+            assertFailsWith<TmuxException> { mgr.stop(SessionId("kfai01")) }
+
+            assertEquals(
+                SessionState.running,
+                store.getSession(SessionId("kfai01"))!!.state,
+                "a failed kill must not leave a phantom `stopped` over a still-live pane",
+            )
+            assertEquals(SessionId("kfai01"), registry.lookup(pane), "nothing was killed, so the pane stays registered")
         }
     }
 
