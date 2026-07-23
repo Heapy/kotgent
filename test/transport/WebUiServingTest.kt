@@ -83,7 +83,20 @@ class WebUiServingTest {
         val body = resp.bodyAsText()
         assertTrue(body.contains("parseToken"), "app.js contains its pure token-parse helper")
         assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
+        assertTrue(body.contains("startSession"), "app.js can create sessions")
+        assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
         assertContentTypeContains(resp, "javascript")
+    }
+
+    @Test
+    fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
+        val body = ctx.get("/").bodyAsText()
+        assertTrue(body.contains("id=\"new-session-form\""), "the UI includes the new-session form")
+        assertTrue(body.contains("id=\"attach-button\""), "the UI includes attach")
+        assertTrue(body.contains("id=\"interrupt-button\""), "the UI includes interrupt")
+        assertTrue(body.contains("id=\"resume-button\""), "the UI includes resume")
+        assertTrue(body.contains("id=\"detach-button\""), "the UI includes detach")
+        assertTrue(body.contains("id=\"stop-button\""), "the UI includes stop")
     }
 
     @Test

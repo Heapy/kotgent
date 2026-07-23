@@ -11,6 +11,8 @@
  *   4. Click a session -> open an xterm.js Terminal on GET /sessions/{id}/terminal?token=<token>
  *      (binary WS): incoming binary -> term.write; keystrokes -> binary frames; term.onResize/fit ->
  *      a text resize control frame.
+ *   5. Create sessions with POST /sessions and operate on the selected session with the lifecycle
+ *      endpoints (interrupt, stop, resume); detaching closes only this browser's terminal client.
  *
  * The pure helpers (token parse, WS URL, state->badge, resize frame, needs-attention) are small named
  * functions with no I/O, so they are trivially inspectable and verified in the Task-18 manual walkthrough
@@ -55,6 +57,12 @@ function isNeedsAttention(state) {
   return state === "needs_approval" || state === "needs_answer";
 }
 
+/** States backed by a currently live agent process. */
+function isAliveState(state) {
+  return state === "running" || state === "ready" ||
+    state === "needs_approval" || state === "needs_answer";
+}
+
 /** The text control frame the terminal WS expects for a resize (matches TerminalWs's protocol). */
 function resizeFrame(cols, rows) {
   return JSON.stringify({ type: "resize", cols: cols, rows: rows });
@@ -66,20 +74,39 @@ function resizeFrame(cols, rows) {
 
 const TOKEN = parseToken(window.location.hash);
 const sessions = new Map();     // id -> latest known session shape (from GET /sessions, patched by /events)
-let activeId = null;            // currently attached session id
+let activeId = null;            // currently selected session id (it may be detached or stopped)
 let terminal = null;            // { term, ws, fit, id, onWinResize } or null
+let pendingAction = null;       // lifecycle action currently awaiting its REST response
 
 const dom = {
+  newSessionButton: document.getElementById("new-session-button"),
+  newSessionDialog: document.getElementById("new-session-dialog"),
+  newSessionForm: document.getElementById("new-session-form"),
+  newSessionClose: document.getElementById("new-session-close"),
+  newSessionCancel: document.getElementById("new-session-cancel"),
+  newSessionSubmit: document.getElementById("new-session-submit"),
+  newSessionError: document.getElementById("new-session-error"),
+  sessionAgent: document.getElementById("session-agent"),
+  sessionCwd: document.getElementById("session-cwd"),
+  sessionName: document.getElementById("session-name"),
+  sessionTags: document.getElementById("session-tags"),
   attentionCount: document.getElementById("attention-count"),
   attentionNum: document.getElementById("attention-num"),
   attentionSection: document.getElementById("attention-section"),
   attentionList: document.getElementById("attention-list"),
   sessionList: document.getElementById("session-list"),
+  emptySessions: document.getElementById("empty-sessions"),
   status: document.getElementById("status-line"),
   termTitle: document.getElementById("terminal-title"),
   termState: document.getElementById("terminal-state"),
   termHost: document.getElementById("terminal-host"),
   termHint: document.getElementById("terminal-hint"),
+  sessionActions: document.getElementById("session-actions"),
+  attachButton: document.getElementById("attach-button"),
+  interruptButton: document.getElementById("interrupt-button"),
+  resumeButton: document.getElementById("resume-button"),
+  detachButton: document.getElementById("detach-button"),
+  stopButton: document.getElementById("stop-button"),
 };
 
 // ---------------------------------------------------------------------------------------------------
@@ -90,18 +117,33 @@ function authHeaders() {
   return { "Authorization": "Bearer " + TOKEN };
 }
 
+/** Fetch one authenticated JSON API response and surface its server-provided error text. */
+async function apiRequest(path, options) {
+  const opts = Object.assign({}, options || {});
+  opts.headers = Object.assign({}, authHeaders(), opts.headers || {});
+  if (opts.body) opts.headers["Content-Type"] = "application/json";
+
+  const resp = await fetch(path, opts);
+  const text = await resp.text();
+  if (resp.status === 401) throw new Error("Unauthorized — check the #token in the URL.");
+  if (!resp.ok) throw new Error(text || ("HTTP " + resp.status));
+  if (!text) return null;
+  try { return JSON.parse(text); } catch (_) { return text; }
+}
+
 async function loadSessions() {
   try {
-    const resp = await fetch("/sessions", { headers: authHeaders() });
-    if (resp.status === 401) { setStatus("Unauthorized — check the #token in the URL.", true); return; }
-    if (!resp.ok) { setStatus("GET /sessions failed: HTTP " + resp.status, true); return; }
-    const list = await resp.json();
+    const list = await apiRequest("/sessions");
     sessions.clear();
     for (const s of list) sessions.set(s.id, s);
+    if (activeId && !sessions.has(activeId)) {
+      closeTerminal();
+      activeId = null;
+    }
     setStatus(list.length + " session(s).");
     render();
   } catch (e) {
-    setStatus("GET /sessions error: " + e, true);
+    setStatus("Could not load sessions: " + errorMessage(e), true);
   }
 }
 
@@ -116,7 +158,17 @@ function sessionRow(s) {
   const li = document.createElement("li");
   li.className = "session-row" + (s.id === activeId ? " active" : "");
   li.dataset.id = s.id;
-  li.addEventListener("click", () => openTerminal(s.id));
+  li.tabIndex = 0;
+  li.setAttribute("role", "button");
+  li.setAttribute("aria-label", "Open " + displayName(s) + ", " + stateBadge(s.state).label);
+  if (s.id === activeId) li.setAttribute("aria-current", "true");
+  li.addEventListener("click", () => selectSession(s.id));
+  li.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectSession(s.id);
+    }
+  });
 
   if (isNeedsAttention(s.state)) {
     const dot = document.createElement("span");
@@ -168,19 +220,141 @@ function render() {
 
   // Full list.
   dom.sessionList.replaceChildren(...all.map(sessionRow));
+  dom.emptySessions.hidden = all.length !== 0;
 
-  // Keep the terminal header state badge in sync with the active session.
+  // Keep the terminal header and available controls in sync with the selected session.
   if (activeId && sessions.has(activeId)) {
     const s = sessions.get(activeId);
     const badge = stateBadge(s.state);
+    const alive = isAliveState(s.state);
+    const attached = !!terminal && terminal.id === s.id;
+
+    dom.termTitle.textContent = displayName(s);
     dom.termState.className = "badge " + badge.cls;
     dom.termState.textContent = badge.label;
+    dom.sessionActions.hidden = false;
+    dom.attachButton.hidden = !alive || attached;
+    dom.interruptButton.hidden = !alive;
+    dom.stopButton.hidden = !alive;
+    dom.detachButton.hidden = !attached;
+    dom.resumeButton.hidden = alive;
+    for (const button of dom.sessionActions.querySelectorAll("button")) {
+      button.disabled = pendingAction !== null;
+    }
+  } else {
+    dom.termTitle.textContent = "No session selected";
+    dom.termState.className = "badge";
+    dom.termState.textContent = "";
+    dom.sessionActions.hidden = true;
   }
 }
 
 function setStatus(text, isError) {
   dom.status.textContent = text;
   dom.status.classList.toggle("error", !!isError);
+}
+
+function errorMessage(error) {
+  return error && error.message ? error.message : String(error);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Session creation and lifecycle controls.
+// ---------------------------------------------------------------------------------------------------
+
+/** Open the new-session form, pre-filling the cwd from the selected session so the common case is one click. */
+function showNewSessionDialog() {
+  const selected = activeId ? sessions.get(activeId) : null;
+  if (selected && selected.cwd) dom.sessionCwd.value = selected.cwd;
+  dom.newSessionError.hidden = true;
+  dom.newSessionError.textContent = "";
+  dom.newSessionDialog.showModal();
+  window.setTimeout(() => dom.sessionCwd.focus(), 0);
+}
+
+function closeNewSessionDialog() {
+  if (dom.newSessionDialog.open) dom.newSessionDialog.close();
+}
+
+async function startSession(event) {
+  event.preventDefault();
+  if (!dom.newSessionForm.reportValidity()) return;
+
+  const tags = dom.sessionTags.value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag, index, all) => tag.length > 0 && all.indexOf(tag) === index);
+  const body = {
+    agent: dom.sessionAgent.value,
+    cwd: dom.sessionCwd.value.trim(),
+    name: dom.sessionName.value.trim() || null,
+    tags: tags,
+  };
+
+  dom.newSessionSubmit.disabled = true;
+  dom.newSessionSubmit.textContent = "Starting…";
+  dom.newSessionError.hidden = true;
+  try {
+    const created = await apiRequest("/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    sessions.set(created.id, created);
+    dom.newSessionForm.reset();
+    closeNewSessionDialog();
+    setStatus("Started " + displayName(created) + ".");
+    selectSession(created.id);
+  } catch (e) {
+    dom.newSessionError.textContent = "Could not start session: " + errorMessage(e);
+    dom.newSessionError.hidden = false;
+  } finally {
+    dom.newSessionSubmit.disabled = false;
+    dom.newSessionSubmit.textContent = "Start session";
+    render();
+  }
+}
+
+async function controlSession(action) {
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!s || pendingAction) return;
+  if (action === "stop" && !window.confirm("Stop " + displayName(s) + "? The conversation can be resumed later.")) {
+    return;
+  }
+
+  pendingAction = action;
+  render();
+  setStatus(capitalize(action) + " in progress…");
+  try {
+    const updated = await apiRequest(
+      "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
+      { method: "POST" },
+    );
+    if (updated && updated.id) sessions.set(updated.id, updated);
+
+    if (action === "stop") {
+      closeTerminal();
+      showTerminalHint("Session stopped. Resume it to continue.");
+    } else if (action === "resume") {
+      openTerminal(s.id);
+    }
+    setStatus(capitalize(action) + " completed for " + displayName(s) + ".");
+  } catch (e) {
+    setStatus(capitalize(action) + " failed: " + errorMessage(e), true);
+  } finally {
+    pendingAction = null;
+    render();
+  }
+}
+
+function detachTerminal() {
+  const s = activeId ? sessions.get(activeId) : null;
+  closeTerminal();
+  showTerminalHint(s ? "Detached from " + displayName(s) + ". The agent keeps running." : "Terminal detached.");
+  render();
+}
+
+function capitalize(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -213,6 +387,7 @@ function applyUpdate(u) {
   if (existing) {
     existing.state = u.state;
     existing.needsAttention = u.needsAttention;
+    existing.alive = isAliveState(u.state);
     existing.lastSeq = u.lastSeq;
     existing.unread = u.unread;
     render();
@@ -226,12 +401,36 @@ function applyUpdate(u) {
 // Terminal: xterm.js over the GET /sessions/{id}/terminal binary WebSocket.
 // ---------------------------------------------------------------------------------------------------
 
+function selectSession(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  activeId = id;
+  if (isAliveState(s.state)) {
+    openTerminal(id);
+  } else {
+    closeTerminal();
+    showTerminalHint(
+      s.state === "resumable"
+        ? "This session can be resumed."
+        : "This session is " + stateBadge(s.state).label + ". Resume it to continue.",
+    );
+    render();
+  }
+}
+
 function openTerminal(id) {
   if (terminal && terminal.id === id) return; // already attached
   closeTerminal();
 
   const s = sessions.get(id);
   activeId = id;
+  if (s && !isAliveState(s.state)) {
+    showTerminalHint("This session is " + stateBadge(s.state).label + ". Resume it to continue.");
+    render();
+    return;
+  }
+
+  dom.termHost.replaceChildren();
   dom.termHint.hidden = true;
   dom.termTitle.textContent = s ? displayName(s) : id;
 
@@ -259,7 +458,14 @@ function openTerminal(id) {
     if (typeof ev.data === "string") return;              // no server->client text frames defined
     term.write(new Uint8Array(ev.data));                  // raw terminal bytes (seed, then live deltas)
   };
-  ws.onclose = () => { term.write("\r\n[terminal disconnected]\r\n"); };
+  ws.onclose = () => {
+    term.write("\r\n[terminal disconnected]\r\n");
+    if (terminal && terminal.ws === ws) {
+      window.removeEventListener("resize", terminal.onWinResize);
+      terminal = null;
+    }
+    render();
+  };
 
   // Keystrokes / pastes -> UTF-8 binary frames (binary = input per the terminal WS protocol).
   term.onData((data) => {
@@ -288,6 +494,12 @@ function closeTerminal() {
   window.removeEventListener("resize", t.onWinResize);
   try { t.ws.close(); } catch (_) {}
   try { t.term.dispose(); } catch (_) {}
+  dom.termHost.replaceChildren();
+}
+
+function showTerminalHint(text) {
+  dom.termHint.textContent = text;
+  dom.termHint.hidden = false;
 }
 
 function debounce(fn, ms) {
@@ -308,6 +520,17 @@ function main() {
     dom.termHint.textContent = "Missing #token= fragment — cannot reach the daemon.";
     return;
   }
+
+  dom.newSessionButton.addEventListener("click", showNewSessionDialog);
+  dom.newSessionClose.addEventListener("click", closeNewSessionDialog);
+  dom.newSessionCancel.addEventListener("click", closeNewSessionDialog);
+  dom.newSessionForm.addEventListener("submit", startSession);
+  dom.attachButton.addEventListener("click", () => { if (activeId) openTerminal(activeId); });
+  dom.interruptButton.addEventListener("click", () => controlSession("interrupt"));
+  dom.resumeButton.addEventListener("click", () => controlSession("resume"));
+  dom.detachButton.addEventListener("click", detachTerminal);
+  dom.stopButton.addEventListener("click", () => controlSession("stop"));
+
   loadSessions();
   connectEvents();
 }

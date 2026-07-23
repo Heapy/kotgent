@@ -13,7 +13,14 @@
   <div id="app" data-webui-marker="kotgent-webui">
     <aside id="sidebar">
       <header id="sidebar-head">
-        <h1>Kotgent</h1>
+        <div class="brand-row">
+          <h1>Kotgent</h1>
+          <div class="brand-actions">
+            <button id="new-session-button" class="button button-primary button-small" type="button">
+              New session
+            </button>
+          </div>
+        </div>
         <div id="attention-count" class="attn-count" title="Sessions needing attention">
           <span id="attention-num">0</span> need attention
         </div>
@@ -27,20 +34,74 @@
       <section id="all-section">
         <h2 class="section-title">Sessions</h2>
         <ul id="session-list" class="session-list"></ul>
+        <p id="empty-sessions" class="empty-sessions" hidden>
+          No sessions yet. Start one to attach it here.
+        </p>
       </section>
 
-      <p id="status-line" class="status-line"></p>
+      <p id="status-line" class="status-line" role="status" aria-live="polite"></p>
     </aside>
 
     <main id="terminal-pane">
       <div id="terminal-head">
-        <span id="terminal-title">No session selected</span>
-        <span id="terminal-state" class="badge"></span>
+        <div class="terminal-identity">
+          <span id="terminal-title">No session selected</span>
+          <span id="terminal-state" class="badge"></span>
+        </div>
+        <div id="session-actions" class="session-actions" hidden>
+          <button id="attach-button" class="button button-primary" type="button">Attach</button>
+          <button id="interrupt-button" class="button button-quiet" type="button">Interrupt</button>
+          <button id="resume-button" class="button button-primary" type="button">Resume</button>
+          <button id="detach-button" class="button button-quiet" type="button">Detach</button>
+          <button id="stop-button" class="button button-danger" type="button">Stop</button>
+        </div>
       </div>
       <div id="terminal-host"></div>
       <p id="terminal-hint" class="terminal-hint">Select a session on the left to attach its terminal.</p>
     </main>
   </div>
+
+  <dialog id="new-session-dialog" aria-labelledby="new-session-title">
+    <form id="new-session-form">
+      <div class="dialog-head">
+        <div>
+          <h2 id="new-session-title">New session</h2>
+          <p>Start a coding agent in a tmux-backed workspace.</p>
+        </div>
+        <button id="new-session-close" class="icon-button" type="button" aria-label="Close">×</button>
+      </div>
+
+      <label class="field">
+        <span>Agent</span>
+        <select id="session-agent" name="agent">
+          <option value="claude">Claude</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Working directory</span>
+        <input id="session-cwd" name="cwd" type="text" required spellcheck="false"
+               placeholder="/path/to/project" />
+      </label>
+
+      <label class="field">
+        <span>Name <small>optional</small></span>
+        <input id="session-name" name="name" type="text" maxlength="80" placeholder="Feature or task" />
+      </label>
+
+      <label class="field">
+        <span>Tags <small>optional, comma-separated</small></span>
+        <input id="session-tags" name="tags" type="text" placeholder="backend, urgent" />
+      </label>
+
+      <p id="new-session-error" class="form-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button id="new-session-cancel" class="button button-quiet" type="button">Cancel</button>
+        <button id="new-session-submit" class="button button-primary" type="submit">Start session</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
