@@ -301,7 +301,7 @@ class SessionManagerTest {
                 // the SAME real tmux + SAME store. The live `cat` session must reclassify running and the
                 // registry rebuild from the live pane.
                 val freshRegistry = PaneRegistry()
-                val reconciler = Reconciler(realTmux, store, VendorStoreProbe { false }, freshRegistry)
+                val reconciler = Reconciler(realTmux, store, VendorStoreProbe { _, _ -> false }, freshRegistry)
                 val result = reconciler.reconcile()
 
                 assertEquals(SessionState.running, store.getSession(SessionId("itg01"))!!.state, "the live session is reclassified running")

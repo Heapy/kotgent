@@ -11,11 +11,13 @@ import io.kotgent.tmux.TmuxPane
 
 /**
  * Probes the agent's vendor store for a session's transcript — for Claude, whether `~/.claude/...`
- * holds a transcript for [providerSessionId], which makes a dead session *resumable*. Injected so the
- * [Reconciler] stays host-free and unit-testable with a fake (the real probe stats the vendor path).
+ * holds a transcript for the session launched in [cwd] with [providerSessionId], which makes a dead
+ * session *resumable*. Both keys are needed because Claude namespaces transcripts by project directory
+ * (`~/.claude/projects/<encoded-cwd>/<provider-session-id>.jsonl`). Injected so the [Reconciler] stays
+ * host-free and unit-testable with a fake; the real one is [claudeVendorStoreProbe] (stats the path).
  */
 fun interface VendorStoreProbe {
-    suspend fun hasTranscript(providerSessionId: ProviderSessionId): Boolean
+    suspend fun hasTranscript(cwd: String, providerSessionId: ProviderSessionId): Boolean
 }
 
 /** One session's reconciliation outcome: how it was reclassified and whether its tmux pane is alive. */
@@ -73,7 +75,7 @@ class Reconciler(
             val stopIntent = meta.state == SessionState.stopped ||
                 projection.state == SessionState.stopped ||
                 projection.stopRequested
-            val transcriptExists = meta.providerSessionId?.let { vendorProbe.hasTranscript(it) } ?: false
+            val transcriptExists = meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.cwd, it) } ?: false
 
             val newState = classify(paneAlive, projection.state, stopIntent, transcriptExists)
             // Rebuild the pane_id correlation from the live pane (tmux is authoritative); keep the stored

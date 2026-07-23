@@ -88,7 +88,7 @@ class ReconcilerTest {
             )
             // A, B, C have transcripts on disk; D does not (idD absent). The "noid" session has no id at all.
             val transcripts = setOf(idA, idB, idC)
-            val vendorProbe = VendorStoreProbe { it in transcripts }
+            val vendorProbe = VendorStoreProbe { _, id -> id in transcripts }
 
             val registry = PaneRegistry()
             registry.register(PaneId("%999"), SessionId("ghost")) // a stale entry that must be pruned

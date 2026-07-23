@@ -10,6 +10,7 @@ import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
+import io.kotgent.daemon.claudeVendorStoreProbe
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.LaunchdInstaller
@@ -177,12 +178,13 @@ object Commands {
     private val DB_FILENAME: String get() = "${kotgentHome()}/kotgent.db"
 
     /**
-     * [deviation] The reconciler's vendor-store transcript probe is a conservative `false` for the v1
-     * slice: a real Claude probe (stat `~/.claude/...` for the provider session's transcript) is
-     * Claude-internal and out of Task 15's scope. With `false`, dead sessions classify as `crashed`
-     * unless a clean-stop intent is recorded; genuine `resumable` detection is the Task 18 follow-up.
+     * The reconciler's vendor-store transcript probe (Task 18): the real Claude probe stats
+     * `~/.claude/projects/<encoded-cwd>/<provider-session-id>.jsonl` for each dead session, so a session
+     * whose transcript survives on disk classifies as `resumable` (revivable via `claude --resume`)
+     * rather than a dead-end `crashed`. Roots at the real `~/.claude` ([defaultClaudeDir]); host-free by
+     * injection (see [claudeVendorStoreProbe]). Replaces the Task-15 `{ false }` stub.
      */
-    private val vendorProbe: VendorStoreProbe = VendorStoreProbe { false }
+    private val vendorProbe: VendorStoreProbe = claudeVendorStoreProbe()
 
     // --- helpers ---------------------------------------------------------------------------------
 
