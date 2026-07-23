@@ -276,8 +276,46 @@ private fun canonicalOrigin(value: String): String? {
     val scheme = value.substringBefore("://").lowercase()
     val hostname = canonicalHostname(authority)
     // Loopback is stored port-less (see [isLoopbackHost]); a public origin keeps its port, where an
-    // explicit port really is part of the origin's identity.
-    return if (hostname in LOOPBACK_HOSTNAMES) "$scheme://$hostname" else "$scheme://$authority"
+    // explicit port really is part of the origin's identity — except a DEFAULT port for the scheme, which is
+    // dropped ([authorityWithoutDefaultPort]) so both sides canonicalise the way a browser serializes.
+    return if (hostname in LOOPBACK_HOSTNAMES) "$scheme://$hostname"
+    else "$scheme://${authorityWithoutDefaultPort(scheme, authority)}"
+}
+
+/**
+ * [authority] with a trailing DEFAULT port for [scheme] removed — `:443` for `https`, `:80` for `http`. A
+ * browser DROPS the default port when it serializes an `Origin` (it sends `https://host`, never
+ * `https://host:443`), so a `publicUrl` typed with the explicit default port must canonicalise to the same
+ * bare-host form or a perfectly valid config would 403 every cookie-authenticated request. A NON-default port
+ * (`:8443`) is left intact: there the port really is part of the origin's identity and must still match.
+ *
+ * The port is split off with the same shape rules as [canonicalHostname] (bracketed IPv6, bare IPv6, and
+ * `host:port`), so a bracketed literal's own digits or a bare IPv6's colons are never mistaken for a port.
+ */
+private fun authorityWithoutDefaultPort(scheme: String, authority: String): String {
+    val defaultPort = when (scheme) {
+        "https" -> "443"
+        "http" -> "80"
+        else -> return authority
+    }
+    return if (authorityPort(authority) == defaultPort) authority.removeSuffix(":$defaultPort") else authority
+}
+
+/**
+ * The port of an authority (`host:port`, `[v6]:port`, or none), or `null` when there is no port — the mirror
+ * of [canonicalHostname]'s host extraction, applying the identical shape rules so the two cannot disagree
+ * about where the host ends and the port begins.
+ */
+private fun authorityPort(authority: String): String? {
+    val trimmed = authority.trim()
+    return when {
+        trimmed.startsWith("[") ->
+            trimmed.indexOf(']').let { if (it < 0) null else trimmed.substring(it + 1).removePrefix(":").ifEmpty { null } }
+        // More than one colon and no brackets is a bare IPv6 literal, never `host:port` — it has no port.
+        trimmed.count { it == ':' } > 1 -> null
+        trimmed.contains(':') -> trimmed.substringAfter(':').ifEmpty { null }
+        else -> null
+    }
 }
 
 /** The lower-cased authority (`host[:port]`) of an `http(s)://…` origin, or `null` if [value] is not one. */

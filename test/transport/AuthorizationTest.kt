@@ -206,6 +206,53 @@ class AuthorizationTest {
         )
     }
 
+    @Test
+    fun anExplicitDefaultPortAndAPortlessOriginMatchEitherWayRound() {
+        // A browser DROPS the default port when it serializes an Origin, so a publicUrl typed WITH the
+        // explicit default port must still match the port-less Origin the browser actually sends — and
+        // symmetrically. Both directions flow through canonicalOrigin, so both must agree.
+        assertTrue(
+            isAllowedOrigin("https://host", "https://host:443"),
+            "config keeps :443, the browser drops it — they must still be the same origin",
+        )
+        assertTrue(
+            isAllowedOrigin("https://host:443", "https://host"),
+            "and the mirror: config is bare, an Origin carrying the explicit :443 still matches",
+        )
+        assertTrue(isAllowedHost("host", "https://host:443"), "the Host allowlist is likewise unbothered by :443")
+        assertTrue("https://host" in allowedOrigins("https://host:443"), "the stored allowlist entry is port-less")
+        // Loopback http:80 already normalises through the loopback branch, but lock it in.
+        assertTrue(isAllowedOrigin("http://127.0.0.1", "http://127.0.0.1:80"), "http default port :80 is dropped too")
+
+        // A genuinely non-default port is still part of the origin's identity and must be matched exactly.
+        assertFalse(
+            isAllowedOrigin("https://host", "https://host:8443"),
+            "a bare Origin does NOT match a config that demands an explicit non-default :8443",
+        )
+        assertTrue(isAllowedOrigin("https://host:8443", "https://host:8443"), "…but the matching :8443 does")
+        assertFalse(
+            isAllowedOrigin("https://host:443", "https://host:8443"),
+            "and :443 is not :8443 — normalising the default port never collapses a non-default one",
+        )
+
+        // The whole request path, not just the predicate: a cookie POST from the browser is served.
+        assertAllowed(
+            decide(
+                RequestFacts(host = "host", origin = "https://host", cookie = cookie, method = HttpMethod.Post),
+                publicUrl = "https://host:443",
+            ),
+            "a valid config with an explicit :443 must not 403 the browser's port-less Origin",
+        )
+        assertDenied(
+            HttpStatusCode.Forbidden,
+            decide(
+                RequestFacts(host = "host", origin = "https://host", cookie = cookie, method = HttpMethod.Post),
+                publicUrl = "https://host:8443",
+            ),
+            "but a config that really pins :8443 still refuses a port-less Origin",
+        )
+    }
+
     // --- the credentials themselves -----------------------------------------------------------------
 
     @Test
