@@ -125,6 +125,14 @@ class UnsupportedAgentException(val agentKind: String) :
  * missing from the event log is reconstructed anyway. (The v1 Claude slice has no `Exited` hook, so a
  * clean kill's `stopped` classification is likewise cached here and re-derived on restart.)
  *
+ * ## Control ops are serialized PER SESSION
+ * Every control op is a read-modify-write across two systems (read the cache row → act on tmux → write the
+ * derived state back), so concurrent ops on the SAME session must not interleave: an `interrupt` that read
+ * a live row while a `stop` killed the pane would write `ready` over `stopped` and resurrect a session
+ * that has no pane. [controlLockFor] gives each session id its own [Mutex], held across the whole
+ * read-modify-write of [interrupt] / [resume] / [terminate]. Different sessions still proceed in parallel
+ * (the lock is per id, not global), and [start] needs none — its id is freshly minted and unreachable.
+ *
  * ## The terminal bridge is NOT started here
  * Per the Solution Overview / Task 9, the [io.kotgent.pty.TerminalBridge] is lazy — created on the first
  * terminal-WS subscriber and torn down on the last. [start] deliberately does not spawn it.
@@ -143,6 +151,16 @@ class SessionManager(
 ) {
     /** Convenience view of [registry] as the `paneLookup` shape [io.kotgent.transport.claudeHookRoutes] takes. */
     val paneLookup: suspend (PaneId) -> SessionId? get() = registry::lookup
+
+    /** Guards [controlLocks] itself (the per-session lock table), never a control op. */
+    private val controlLocksGuard = Mutex()
+
+    /**
+     * One [Mutex] per session id, serializing that session's control ops (see the class KDoc). Entries are
+     * kept for the daemon's lifetime — one small object per session ever controlled, which is bounded by
+     * the session count; dropping an idle entry would race a waiter that already holds a reference to it.
+     */
+    private val controlLocks = HashMap<SessionId, Mutex>()
 
     /**
      * Rebuild [registry] from the store's sessions on daemon start (plan Task 13). Registers the pane of
@@ -212,9 +230,14 @@ class SessionManager(
             return store.getSession(sessionId) ?: meta
         } catch (e: Throwable) {
             // Durable state (or a subsequent step) failed AFTER the agent was launched — compensate by
-            // killing the just-created tmux session so no live agent is left orphaned/untracked.
+            // killing the just-created tmux session so no live agent is left orphaned/untracked, AND by
+            // correcting the row: the upsert above may already have committed `running` + a pane id, which
+            // would otherwise outlive the failure as a durable phantom (a `running` session with no pane)
+            // until the next daemon restart reconciled it. `crashed` is the honest classification — the
+            // launch did not complete. A no-op if the upsert itself was what failed (no row to update).
             runCatching { tmux.killSession(shortId) }
             runCatching { registry.unregister(paneId) }
+            runCatching { store.updateSessionState(sessionId, SessionState.crashed, EventSource.system, null, now()) }
             throw e
         }
     }
@@ -249,8 +272,10 @@ class SessionManager(
      * no hook on Esc/Ctrl-C) AND apply [ControlSignal.Interrupt] to the projection (alive → `ready`,
      * approvals cleared). The session stays alive, so its pane stays registered.
      */
-    suspend fun interrupt(sessionId: SessionId) {
-        val meta = store.getSession(sessionId) ?: return
+    suspend fun interrupt(sessionId: SessionId): Unit = withControlLock(sessionId) {
+        // The read (getSession) must happen INSIDE the lock: reading a live row outside it and then
+        // reducing from that snapshot is exactly how a racing stop gets overwritten with `ready`.
+        val meta = store.getSession(sessionId) ?: return@withControlLock
         tmux.sendKeys(sessionId.value, byteArrayOf(0x03)) // Ctrl-C
         val next = reduce(currentProjection(sessionId, meta), ControlSignal.Interrupt)
         persistDerivedState(meta, next.state, EventSource.user)
@@ -261,24 +286,25 @@ class SessionManager(
      * blocked with [ResumeBlockedException] if it is still pending), start a fresh tmux session, and
      * apply [ControlSignal.Resume] (dead → `ready`). A no-op on an already-alive session.
      */
-    suspend fun resume(sessionId: SessionId): SessionMeta {
+    suspend fun resume(sessionId: SessionId): SessionMeta = withControlLock(sessionId) {
         val meta = store.getSession(sessionId) ?: throw NoSuchSessionException(sessionId)
         // The cache can say "alive" even though the pane died while the daemon was up: there is no live
         // exit hook, and liveness is only reconciled at startup. Confirm real tmux liveness before
         // treating resume as a no-op — otherwise a pane that dies mid-run could not be resumed until a
         // daemon restart. A genuinely-live session is still a no-op.
-        if (meta.state.isAlive && isPaneAlive(meta.tmuxSession)) return meta
+        if (meta.state.isAlive && isPaneAlive(meta.tmuxSession)) return@withControlLock meta
         val providerId = meta.providerSessionId ?: throw ResumeBlockedException(sessionId)
 
         val adapter = agentFactory.create(meta.agent, meta.cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.Resume(providerId))
+        // Reduce Resume from a DEAD seed: the cache may have claimed alive, but we confirmed the pane is
+        // gone, and Resume is a no-op on an alive-seeded projection — so reclassify to a dead state first,
+        // then Resume takes it to `ready`. Computed BEFORE the launch so the compensation path below can
+        // restore exactly this pre-resume dead classification.
+        val deadState = if (meta.state.isDead) meta.state else SessionState.crashed
         val paneId = tmux.newSession(sessionId.value, meta.cwd, shellCommand(spec.command), cols, rows)
 
         try {
-            // Reduce Resume from a DEAD seed: the cache may have claimed alive, but we confirmed the pane
-            // is gone, and Resume is a no-op on an alive-seeded projection — so reclassify to a dead
-            // state first, then Resume takes it to `ready`.
-            val deadState = if (meta.state.isDead) meta.state else SessionState.crashed
             val next = reduce(store.projectionOf(sessionId).copy(state = deadState), ControlSignal.Resume)
             val ts = now()
             // Update only the daemon-owned fields (state / state_source / pane_id / updated_at); do NOT
@@ -286,11 +312,22 @@ class SessionManager(
             // advance last_seq / provider_session_id, which a full-row write would clobber.
             store.updateSessionState(sessionId, next.state, EventSource.user, paneId, ts)
             registry.register(paneId, sessionId)
-            return meta.copy(paneId = paneId, state = next.state, stateSource = EventSource.user, updatedAt = ts)
+            return@withControlLock meta.copy(
+                paneId = paneId,
+                state = next.state,
+                stateSource = EventSource.user,
+                updatedAt = ts,
+            )
         } catch (e: Throwable) {
-            // Compensate a failure after the fresh agent was launched (see start()).
+            // Compensate a failure after the fresh agent was launched (see start()): kill it, drop the
+            // pane — and PUT THE ROW BACK to its pre-resume dead state. The write above may already have
+            // committed `ready` + the fresh pane id, which would otherwise survive as a durable phantom
+            // (an "alive" session whose pane we just killed) until the next daemon restart.
             runCatching { tmux.killSession(sessionId.value) }
             runCatching { registry.unregister(paneId) }
+            runCatching {
+                store.updateSessionState(sessionId, deadState, EventSource.system, meta.paneId, now())
+            }
             throw e
         }
     }
@@ -310,8 +347,8 @@ class SessionManager(
     }
 
     /** Clean-kill termination: arm the stop intent, kill the tmux session, cache the derived `stopped`. */
-    private suspend fun terminate(sessionId: SessionId) {
-        val meta = store.getSession(sessionId) ?: return
+    private suspend fun terminate(sessionId: SessionId): Unit = withControlLock(sessionId) {
+        val meta = store.getSession(sessionId) ?: return@withControlLock
         tmux.killSession(sessionId.value)
         // Derive the terminal state through the real reducer: ControlSignal.Stop arms the clean-stop
         // intent, and the clean kill is an intended Exit → `stopped` (not `crashed`). We use only the
@@ -337,6 +374,18 @@ class SessionManager(
      */
     private suspend fun persistDerivedState(meta: SessionMeta, state: SessionState, source: EventSource) {
         store.updateSessionState(meta.id, state, source, meta.paneId, now())
+    }
+
+    /**
+     * Run [block] holding [sessionId]'s control lock, so a session's control ops (interrupt / stop /
+     * resume) are strictly serialized end-to-end — read of the cache row, tmux side effect, and the
+     * derived-state write all inside one critical section (see the class KDoc). Only the tiny lock-table
+     * lookup takes the shared [controlLocksGuard]; the op itself holds the per-session lock only, so
+     * different sessions never block each other.
+     */
+    private suspend fun <T> withControlLock(sessionId: SessionId, block: suspend () -> T): T {
+        val lock = controlLocksGuard.withLock { controlLocks.getOrPut(sessionId) { Mutex() } }
+        return lock.withLock { block() }
     }
 
     /**

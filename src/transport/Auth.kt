@@ -13,7 +13,10 @@ import io.ktor.server.routing.RoutingNode
 import io.ktor.server.routing.RoutingResolveContext
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import platform.posix.S_IRUSR
@@ -35,6 +38,7 @@ import platform.posix.fwrite
 import platform.posix.getenv
 import platform.posix.mkdir
 import platform.posix.rename
+import platform.posix.stat
 import platform.posix.strerror
 import platform.posix.umask
 import platform.posix.unlink
@@ -128,6 +132,23 @@ private object AuthRouteSelector : RouteSelector() {
 private const val MODE_0600: Int = S_IRUSR or S_IWUSR
 private const val MODE_0700: Int = S_IRUSR or S_IWUSR or S_IXUSR
 
+/** All nine `rwxrwxrwx` permission bits — the mask [permissionBits] applies to a `st_mode`. */
+private const val PERMISSION_MASK: Int = 0b111_111_111
+
+/**
+ * Raised when the shared token file cannot be made (or confirmed) `0600`. Fatal on purpose: the token
+ * gates the whole local control plane, so proceeding with a secret other local users can read would
+ * silently downgrade auth to "anyone on this machine".
+ */
+class TokenPermissionException(message: String) : IllegalStateException(message)
+
+/** The file's nine permission bits, or `null` if it cannot be `stat`ed (it was just read, so unlikely). */
+@OptIn(ExperimentalForeignApi::class)
+private fun permissionBits(path: String): Int? = memScoped {
+    val st = alloc<stat>()
+    if (stat(path, st.ptr) != 0) null else st.st_mode.toInt() and PERMISSION_MASK
+}
+
 /** umask masking off all group + other permission bits (`0o077`), so a new file is created `0600`. */
 private const val UMASK_GROUP_OTHER: Int = 0b111_111
 
@@ -146,16 +167,32 @@ fun defaultTokenPath(): String {
  * else [Random]) hex-encoded. Idempotent: an existing non-blank token file is read back verbatim, so
  * every process (daemon, CLI, hooks) resolves the same value.
  *
- * On reading an EXISTING file its permissions are re-hardened to `0600` (`chmod`): a token written by an
- * older build — or otherwise left group/other-readable — must not silently stay world-readable just
- * because it already exists.
+ * On reading an EXISTING file its permissions are re-hardened to `0600` (`chmod`) and the result is
+ * VERIFIED: a token written by an older build — or otherwise left group/other-readable — must not
+ * silently stay world-readable just because it already exists. If it cannot be hardened this throws
+ * rather than returning the secret ([TokenPermissionException]): handing out a shared secret that other
+ * local users can read is worse than refusing to start.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun readOrCreateToken(path: String = defaultTokenPath()): String {
     readFileTextOrNull(path)?.trim()?.let {
         if (it.isNotEmpty()) {
-            // Repair a mis-permissioned pre-existing token (e.g. a 0644 left by an older version).
-            chmod(path, MODE_0600.convert())
+            // Repair a mis-permissioned pre-existing token (e.g. a 0644 left by an older version). Both
+            // the chmod RESULT and the resulting mode are checked — an ignored failure would leave the
+            // secret group/world-readable while we happily used it.
+            if (chmod(path, MODE_0600.convert()) != 0) {
+                throw TokenPermissionException(
+                    "cannot secure token file $path (chmod 0600 failed: ${errnoText(errno)}) — " +
+                        "refusing to use a token that may be readable by other users",
+                )
+            }
+            val mode = permissionBits(path)
+            if (mode != null && mode != MODE_0600) {
+                throw TokenPermissionException(
+                    "token file $path is still mode ${mode.toString(8).padStart(3, '0')} after chmod 0600 — " +
+                        "refusing to use a token that may be readable by other users",
+                )
+            }
             return it
         }
     }

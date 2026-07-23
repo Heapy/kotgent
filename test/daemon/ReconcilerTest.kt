@@ -153,4 +153,48 @@ class ReconcilerTest {
             )
         }
     }
+
+    // ---- stop intent is INCARNATION-scoped: a previous incarnation's clean exit is not current intent ----
+
+    @Test
+    fun aStopFromAPreviousIncarnationDoesNotMaskAResumableAfterAResume() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val id = uuid('a')
+            store.upsertSession(meta("reinc", SessionState.running, providerId = id, paneId = PaneId("%7")))
+            store.append(SessionId("reinc"), AgentEvent.SessionBound(id), EventSource.system)
+            // Incarnation #1 ended cleanly, so the LOG (and, transactionally, the cache) says `stopped`.
+            store.append(SessionId("reinc"), AgentEvent.Exited(0), EventSource.hook)
+            assertEquals(SessionState.stopped, store.projectionOf(SessionId("reinc")).state, "the log ends at stopped")
+
+            // Then the operator RESUMED it — a ControlSignal, never written to the log, so only the cache
+            // records the new incarnation — and that incarnation died while the daemon was down.
+            store.updateSessionState(SessionId("reinc"), SessionState.ready, EventSource.user, PaneId("%8"), 2L)
+
+            val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _ -> true }, PaneRegistry(), now = { 3L })
+            reconciler.reconcile()
+
+            assertEquals(
+                SessionState.resumable,
+                store.getSession(SessionId("reinc"))!!.state,
+                "the historical Exited belongs to a dead incarnation — it must not be read as a fresh stop intent",
+            )
+        }
+    }
+
+    @Test
+    fun aCleanlyStoppedSessionStaysStoppedAcrossRepeatedReconciles() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val id = uuid('b')
+            // `SessionManager.terminate` caches `stopped` without any event (there is no Exited hook in v1).
+            store.upsertSession(meta("stopd", SessionState.stopped, providerId = id, paneId = PaneId("%9")))
+            val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _ -> true }, PaneRegistry(), now = { 3L })
+
+            reconciler.reconcile()
+            assertEquals(SessionState.stopped, store.getSession(SessionId("stopd"))!!.state, "a cached stop intent is honored")
+            reconciler.reconcile()
+            assertEquals(SessionState.stopped, store.getSession(SessionId("stopd"))!!.state, "and reconciliation is idempotent")
+        }
+    }
 }

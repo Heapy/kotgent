@@ -39,14 +39,16 @@ val realPtyFactory: PtyFactory = { command, env -> RealPtyHandle(Pty.open(comman
  * The environment handed to the `tmux attach` upstream child. `tmux attach` needs at least `TERM`
  * to build a terminal description — with an empty environment it fails ("missing or unsuitable
  * terminal") and the child exits immediately, EOFing the upstream so the browser/CLI terminal shows
- * "[terminal disconnected]". We seed a capable `TERM` (falling back to `xterm-256color` if the daemon
- * has none) and inherit the daemon's `HOME` and `PATH` (needed so tmux/the shell resolve state and
- * binaries). Only these keys are forwarded — identity is never derived from inherited env.
+ * "[terminal disconnected]". The attach is a shared transport for xterm.js and CLI clients, not the
+ * daemon's own terminal, so its `TERM` must be stable and portable: inheriting values such as
+ * `xterm-ghostty` also requires a custom `TERMINFO` path that a launchd daemon may not have. Use the
+ * system-provided `xterm-256color` entry and inherit only `HOME`/`PATH`/`LANG`. Identity is never
+ * derived from inherited env.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun terminalAttachEnv(): Map<String, String> {
     val env = LinkedHashMap<String, String>()
-    env["TERM"] = getenv("TERM")?.toKString()?.ifBlank { null } ?: "xterm-256color"
+    env["TERM"] = "xterm-256color"
     getenv("HOME")?.toKString()?.ifBlank { null }?.let { env["HOME"] = it }
     env["PATH"] = getenv("PATH")?.toKString()?.ifBlank { null }
         ?: "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"

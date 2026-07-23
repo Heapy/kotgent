@@ -38,6 +38,15 @@ class TerminalBridgeTest {
     private suspend fun ReceiveChannel<ByteArray>.receiveText(timeoutMs: Long = 5_000): String =
         withTimeout(timeoutMs) { receive().decodeToString() }
 
+    @Test
+    fun productionAttachUsesAPortableTermInsteadOfInheritingTheDaemonTerminal() {
+        assertEquals(
+            "xterm-256color",
+            terminalAttachEnv()["TERM"],
+            "the shared browser/CLI attach must not depend on a custom terminfo such as xterm-ghostty",
+        )
+    }
+
     /**
      * Run [body] with a fresh [TerminalBridge] over a [FakePtyFactory]. The reader loop is launched
      * on an independent child scope (same event-loop dispatcher) that is cancelled on teardown so a
@@ -232,10 +241,39 @@ class TerminalBridgeTest {
             withTimeout(10_000) { while (true) stalled.output.receive() }
         }
 
-        // In production the disconnected client's WS handler then detaches, which tears the now-idle
-        // upstream down (no orphaned upstream after an overflow disconnect).
+        // The disconnect emptied the subscriber set, so the 1→0 teardown runs RIGHT THERE — it must not
+        // wait for the stalled client's detach, which may never come (its WS is wedged; that is why it
+        // stalled). Otherwise the upstream pty + reader thread leak with nobody watching.
+        assertTrue(up.closed, "an overflow disconnect of the LAST subscriber closes the upstream itself")
+
+        // And the (late, or never-arriving) detach of that same subscriber is a clean no-op — no second
+        // close of the same handle.
         stalled.close()
-        assertTrue(up.closed, "detaching the disconnected subscriber closes the idle upstream")
+        assertEquals(0, bridge.subscriberCount())
+    }
+
+    @Test
+    fun anOverflowDisconnectOfTheLastSubscriberLetsAReattachOpenAFreshUpstream() = bridgeTest { bridge, factory ->
+        val stalled = bridge.subscribe() // never drained -> will overflow and be dropped
+        val upstream1 = factory.current
+
+        repeat(Broadcaster.SUBSCRIBER_BUFFER + 5) { upstream1.emit(byteArrayOf((it and 0xff).toByte())) }
+        withTimeout(10_000) { while (bridge.subscriberCount() != 0) yield() }
+        assertTrue(upstream1.closed, "the overflow disconnect tore the idle upstream down")
+
+        // A later attach must get a BRAND-NEW upstream. Before the fix the dead-but-open upstream was
+        // still referenced, so this attach silently overwrote it: an orphaned pty + reader kept running
+        // and two upstreams fed the same session.
+        val fresh = bridge.subscribe()
+        assertEquals(2, factory.openCount, "the re-attach opens a fresh upstream")
+        val upstream2 = factory.current
+        assertTrue(upstream1 !== upstream2, "the re-attach is a new upstream, not the closed one")
+        assertFalse(upstream2.closed)
+
+        upstream2.emit("after".encodeToByteArray())
+        assertEquals("after", fresh.output.receiveText())
+        fresh.close()
+        assertTrue(upstream2.closed, "and the fresh upstream still closes on its last detach")
     }
 
     @Test

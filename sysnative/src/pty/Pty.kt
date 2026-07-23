@@ -45,7 +45,10 @@ import platform.posix.SIGKILL
 import platform.posix.SIGTERM
 import platform.posix.WNOHANG
 import platform.posix.errno
+import platform.posix.fflush
+import platform.posix.fputs
 import platform.posix.kill
+import platform.posix.stderr
 import platform.posix.strerror
 import platform.posix.usleep
 import platform.posix.waitpid
@@ -280,25 +283,29 @@ class Pty private constructor(
                 if (faRc == 0) faRc = posix_spawn_file_actions_addclose(fileActions.ptr, slave)
                 if (faRc == 0) faRc = posix_spawn_file_actions_addclose(fileActions.ptr, master)
                 if (faRc != 0) {
-                    posix_spawn_file_actions_destroy(fileActions.ptr)
+                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr))
                     posixClose(master); posixClose(slave)
-                    throw PtyException("posix_spawn_file_actions setup failed: ${errnoMessage(faRc)} (code=$faRc)")
+                    throw PtyException(
+                        "posix_spawn_file_actions setup failed: ${errnoMessage(faRc)} (code=$faRc)$cleanup",
+                    )
                 }
 
                 val attr = alloc<posix_spawnattr_tVar>()
                 val attrInit = posix_spawnattr_init(attr.ptr)
                 if (attrInit != 0) {
-                    posix_spawn_file_actions_destroy(fileActions.ptr)
+                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr))
                     posixClose(master); posixClose(slave)
-                    throw PtyException("posix_spawnattr_init failed: ${errnoMessage(attrInit)} (code=$attrInit)")
+                    throw PtyException("posix_spawnattr_init failed: ${errnoMessage(attrInit)} (code=$attrInit)$cleanup")
                 }
                 // POSIX_SPAWN_SETSID: child calls setsid(), detaching from our session.
                 val setFlags = posix_spawnattr_setflags(attr.ptr, POSIX_SPAWN_SETSID.toShort())
                 if (setFlags != 0) {
-                    posix_spawn_file_actions_destroy(fileActions.ptr)
-                    posix_spawnattr_destroy(attr.ptr)
+                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr)) +
+                        cleanupNote(ATTR_DESTROY, posix_spawnattr_destroy(attr.ptr))
                     posixClose(master); posixClose(slave)
-                    throw PtyException("posix_spawnattr_setflags failed: ${errnoMessage(setFlags)} (code=$setFlags)")
+                    throw PtyException(
+                        "posix_spawnattr_setflags failed: ${errnoMessage(setFlags)} (code=$setFlags)$cleanup",
+                    )
                 }
 
                 // Marshal argv into native memory BEFORE the spawn.
@@ -322,8 +329,12 @@ class Pty private constructor(
                     envp,
                 )
 
-                posix_spawn_file_actions_destroy(fileActions.ptr)
-                posix_spawnattr_destroy(attr.ptr)
+                // The spawn is decided; release both spawn objects. A destroy failure here CANNOT fail the
+                // call retroactively (the child is already running and must not be leaked by an exception),
+                // but it is a resource leak in this process, so it is reported on stderr rather than
+                // swallowed. On the error path below the primary spawn error still wins.
+                warnCleanupFailure(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr))
+                warnCleanupFailure(ATTR_DESTROY, posix_spawnattr_destroy(attr.ptr))
                 // Parent has no use for the slave; the child holds its own dup'd copies.
                 posixClose(slave)
 
@@ -335,6 +346,25 @@ class Pty private constructor(
 
                 return Pty(master, pidVar.value).also { it.startReader() }
             }
+        }
+
+        /** Names of the spawn-object destructors, used in both the appended note and the stderr warning. */
+        private const val FILE_ACTIONS_DESTROY: String = "posix_spawn_file_actions_destroy"
+        private const val ATTR_DESTROY: String = "posix_spawnattr_destroy"
+
+        /**
+         * A suffix describing a failed cleanup call ([rc] != 0), or `""`. Appended to the PRIMARY error's
+         * message on the throwing paths: a destroy failure must not mask why the spawn setup failed, but
+         * it must not vanish either (it means a spawn object leaked).
+         */
+        private fun cleanupNote(what: String, rc: Int): String =
+            if (rc == 0) "" else " [cleanup: $what failed: ${errnoMessage(rc)} (code=$rc)]"
+
+        /** Report a failed cleanup call on stderr — the success path, where throwing is not an option. */
+        private fun warnCleanupFailure(what: String, rc: Int) {
+            if (rc == 0) return
+            fputs("kotgent: $what failed: ${errnoMessage(rc)} (code=$rc)\n", stderr)
+            fflush(stderr)
         }
 
         private fun errnoMessage(code: Int): String =

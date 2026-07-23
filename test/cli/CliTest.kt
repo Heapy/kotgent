@@ -89,6 +89,30 @@ class CliTest {
         assertEquals("$base/sub", resolveCwdAgainst(base, "./sub"), "a leading ./ is stripped")
         assertEquals("/abs/elsewhere", resolveCwdAgainst(base, "/abs/elsewhere"), "an absolute cwd passes through")
         assertEquals("/Users/me/project/x", resolveCwdAgainst("/Users/me/project/", "x"), "a trailing slash on base is handled")
+        // "./" strips to an empty relative part — it must still resolve to the base, not to "".
+        assertEquals(base, resolveCwdAgainst(base, "./"), "'./' → the CLI's own cwd")
+        assertEquals(base, resolveCwdAgainst(base, "././"), "repeated './' segments collapse to the base")
+    }
+
+    @Test
+    fun resolveCwdAgainstRootAlwaysYieldsAnAbsolutePath() {
+        // Root is the degenerate base: it TRIMS to the empty string, so a naive join produced "" — not a
+        // path at all, which tmux would reject or resolve against its own cwd. Every combination below
+        // must stay absolute.
+        assertEquals("/", resolveCwdAgainst("/", null), "root base, omitted cwd")
+        assertEquals("/", resolveCwdAgainst("/", ""), "root base, empty cwd")
+        assertEquals("/", resolveCwdAgainst("/", "."), "root base, '.'")
+        assertEquals("/", resolveCwdAgainst("/", "./"), "root base, './' — the regression: this returned \"\"")
+        assertEquals("/sub", resolveCwdAgainst("/", "sub"), "root base, a relative child — exactly one slash")
+        assertEquals("/sub", resolveCwdAgainst("/", "./sub"), "root base, './sub'")
+        assertEquals("/..", resolveCwdAgainst("/", ".."), "root base, '..' stays absolute (tmux canonicalizes)")
+        assertEquals("/..", resolveCwdAgainst("/", "./.."), "root base, './..'")
+        assertEquals("/a/..", resolveCwdAgainst("/", "a/.."), "root base, an embedded '..' stays absolute")
+        // Every result is absolute, whatever the relative part.
+        for (rel in listOf(null, "", ".", "./", "././", "..", "./..", "sub", "./sub", "a/b/..")) {
+            assertTrue(resolveCwdAgainst("/", rel).startsWith("/"), "resolveCwdAgainst(\"/\", $rel) must be absolute")
+            assertTrue(resolveCwdAgainst("/base", rel).startsWith("/base"), "resolveCwdAgainst(\"/base\", $rel) stays under the base")
+        }
     }
 
     @Test

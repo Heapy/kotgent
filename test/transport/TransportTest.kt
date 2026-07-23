@@ -19,6 +19,7 @@ import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.claudeOnlyAgentFactory
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
@@ -250,6 +251,33 @@ class TransportTest {
         assertEquals(HttpStatusCode.Conflict, ctx.post("/sessions/pend01/resume").status)
     }
 
+    @Test
+    fun startingAnUnsupportedAgentIs400() = withServer { ctx ->
+        // The daemon wires `claudeOnlyAgentFactory` (v1 supports only `claude`), so this is a client error.
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody("""{"agent":"codex","cwd":"/tmp"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+    }
+
+    @Test
+    fun resumingASessionWhoseAgentIsUnsupportedIs400NotA500() = withServer { ctx ->
+        // A legacy row persisted with an agent this daemon cannot build. `resume` rebuilds the adapter
+        // from the STORED agent kind, so it throws the very exception the start route maps to 400 — the
+        // action route must map it the same way instead of surfacing a 500.
+        ctx.store.upsertSession(
+            SessionMeta(
+                id = SessionId("lgcy01"), name = "lgcy01", agent = "codex", providerSessionId = providerId,
+                cwd = "/tmp", tmuxSession = "kt-lgcy01", state = SessionState.resumable,
+                createdAt = 1L, updatedAt = 1L,
+            ),
+        )
+        val resp = ctx.post("/sessions/lgcy01/resume")
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "an unsupported stored agent is a client error")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** The wired-up server + client + fakes handed to each test body. */
@@ -299,7 +327,10 @@ class TransportTest {
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
                 tmux, store, registry,
-                CannedAgentFactory(listOf("cat"), providerId),
+                // Wired exactly as the daemon does (Commands.daemon): only `claude` is buildable, so an
+                // unsupported agent kind — on start OR on resume of a stored row — surfaces as the
+                // UnsupportedAgentException both routes must map to 400.
+                claudeOnlyAgentFactory { cwd -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) },
                 ProviderIdCapture(store, idScope),
                 now = { 1L },
             )

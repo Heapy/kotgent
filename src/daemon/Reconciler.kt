@@ -41,7 +41,8 @@ data class ReconcileResult(
  * For each stored session it probes:
  *  - **tmux liveness** — is there a live (non-dead) pane for `kt-<id>`? (from [TmuxControl.listPanes])
  *  - **vendor store** — does the session's transcript survive? (from [vendorProbe]) → *resumable*
- *  - **clean-stop intent** — was it cleanly stopped? (cached `stopped`, or a `stopped` projection)
+ *  - **clean-stop intent** — was it cleanly stopped? (the cache-authoritative `stopped`, which is
+ *    incarnation-scoped — see the note in [reconcile])
  *
  * and classifies (see [classify]): alive → running (keeping a finer live state if the log has one);
  * dead + clean-stop → `stopped`; dead + transcript → `resumable`; dead + neither → `crashed`. Changed
@@ -77,10 +78,15 @@ class Reconciler(
         for (meta in sessions) {
             val livePane = livePaneBySession[meta.tmuxSession]
             val paneAlive = livePane != null
-            val projection = store.projectionOf(meta.id)
-            val stopIntent = meta.state == SessionState.stopped ||
-                projection.state == SessionState.stopped ||
-                projection.stopRequested
+            // Stop intent is INCARNATION-scoped, and only the sessions cache can express that. The cache is
+            // the control-authoritative lifecycle: it advances inside every append transaction AND on every
+            // control op / earlier reconcile, so a cached `stopped` is the CURRENT stop intent. The event
+            // log is not — a `stopped` there was produced by an `Exited` of a possibly PREVIOUS incarnation,
+            // and `Resume` is a control signal that is never logged, so after resume-then-die that historical
+            // `stopped` would masquerade as a fresh operator stop and mask the true `resumable` / `crashed`.
+            // (Same reason `projection.stopRequested` is not consulted: ControlSignal.Stop is not persisted,
+            // so a replay can never observe it.)
+            val stopIntent = meta.state == SessionState.stopped
             val transcriptExists = meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.cwd, it) } ?: false
 
             // Classify a LIVE session from the CACHE-authoritative state (meta.state), not the pure

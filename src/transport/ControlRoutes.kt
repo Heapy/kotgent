@@ -149,6 +149,12 @@ fun Route.controlRoutes(
         } catch (_: NoSuchSessionException) {
             call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
             return@post
+        } catch (e: UnsupportedAgentException) {
+            // `resume` rebuilds the adapter from the STORED agent kind, so a legacy/foreign row (e.g. a
+            // `codex` session persisted before the kind was gated) throws the same exception the start
+            // route maps to 400. Map it here too — it is a client error, not a 500.
+            call.respondText("action '$action' failed: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
         } catch (e: TmuxException) {
             // e.g. resume's tmux new-session fails on a stale cwd: a bad request, not a 500.
             call.respondText("action '$action' failed: ${e.message}", status = HttpStatusCode.BadRequest)

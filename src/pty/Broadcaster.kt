@@ -51,7 +51,8 @@ import kotlinx.coroutines.sync.withLock
  * A stalled authenticated subscriber that stops draining its channel must not accumulate terminal output
  * until the daemon OOMs. Sinks are bounded; on sustained overflow [broadcast] DISCONNECTS that one slow
  * subscriber (closes its channel — its WS then drops) rather than dropping bytes mid-stream (which would
- * corrupt its terminal) or growing without bound. Healthy subscribers are unaffected.
+ * corrupt its terminal) or growing without bound. Healthy subscribers are unaffected — and if the
+ * disconnect empties the set, the 1→0 teardown runs right there (a wedged client may never detach).
  */
 class Broadcaster(
     private val openUpstream: () -> PtyHandle,
@@ -92,10 +93,7 @@ class Broadcaster(
         } catch (e: Throwable) {
             // Seed capture failed. If THIS attach opened the upstream, roll it back — the subscriber was
             // never added, so nothing would otherwise close the just-opened upstream.
-            if (opened) {
-                upstream?.let(closeUpstream)
-                upstream = null
-            }
+            if (opened) closeUpstreamLocked()
             throw e
         }
         subscribers.add(sub)
@@ -111,17 +109,19 @@ class Broadcaster(
         if (removed) sub.sink.close()
         // Close the upstream once the last subscriber is gone — even when THIS sub was already removed by
         // a broadcast-overflow disconnect (its later detach must still drive the 1→0 upstream teardown).
-        if (subscribers.isEmpty() && upstream != null) {
-            upstream?.let(closeUpstream)
-            upstream = null
-        }
+        if (subscribers.isEmpty()) closeUpstreamLocked()
     }
 
     /**
      * Fan [bytes] out to every current subscriber. Called by [TerminalBridge]'s reader loop. A subscriber
      * whose bounded channel is full has stalled: it is DISCONNECTED (its channel closed, so its WS drops)
      * rather than dropping bytes into its stream (which would corrupt its terminal) or letting an
-     * unbounded backlog OOM the daemon. Its own detach then runs the 1→0 upstream teardown if it was last.
+     * unbounded backlog OOM the daemon.
+     *
+     * An overflow disconnect that empties the set runs the 1→0 teardown HERE rather than waiting for the
+     * dropped subscriber's own [detach]: a stalled client is exactly the one that may never detach (its
+     * WS is wedged), and an upstream left open with zero subscribers leaks the pty + reader thread AND
+     * would be silently overwritten by the next [attach] (two live upstreams → mixed terminal streams).
      */
     suspend fun broadcast(bytes: ByteArray): Unit = mutex.withLock {
         var overflowed: MutableList<Subscriber>? = null
@@ -130,9 +130,13 @@ class Broadcaster(
                 (overflowed ?: ArrayList<Subscriber>().also { overflowed = it }).add(s)
             }
         }
-        overflowed?.forEach { s ->
-            subscribers.remove(s)
-            s.sink.close()
+        val dropped = overflowed
+        if (dropped != null) {
+            dropped.forEach { s ->
+                subscribers.remove(s)
+                s.sink.close()
+            }
+            if (subscribers.isEmpty()) closeUpstreamLocked()
         }
     }
 
@@ -167,11 +171,10 @@ class Broadcaster(
      */
     suspend fun onUpstreamEof(which: PtyHandle): Unit = mutex.withLock {
         if (upstream !== which) return@withLock
-        upstream = null
         val gone = subscribers.toList()
         subscribers.clear()
         gone.forEach { it.sink.close() }
-        closeUpstream(which)
+        closeUpstreamLocked()
     }
 
     /** Tear everything down (test teardown / daemon shutdown): close subscribers and the upstream. */
@@ -179,8 +182,20 @@ class Broadcaster(
         val gone = subscribers.toList()
         subscribers.clear()
         gone.forEach { it.sink.close() }
-        upstream?.let(closeUpstream)
+        closeUpstreamLocked()
+    }
+
+    /**
+     * Close the current upstream EXACTLY ONCE (caller holds [mutex]). The reference is cleared *before*
+     * [closeUpstream] runs, so every teardown path — last detach, overflow disconnect, natural EOF,
+     * shutdown — is a no-op once another has already fired (and a throwing hook cannot leave a stale
+     * handle behind that a later close would double-free). A subsequent [attach] then sees `upstream ==
+     * null` and opens a fresh one.
+     */
+    private fun closeUpstreamLocked() {
+        val up = upstream ?: return
         upstream = null
+        closeUpstream(up)
     }
 
     /** Current number of attached subscribers (observability; lets tests await transitions). */

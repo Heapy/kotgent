@@ -180,13 +180,21 @@ fun eprintln(line: String) {
  * the wrong directory. The CLI resolves it here, against its own cwd, before sending. Pure (no IO), so
  * it is unit-tested directly; an already-absolute cwd and the omitted (`null`) case pass through as the
  * base. tmux `new-session -c` canonicalizes any remaining `..` segments at launch.
+ *
+ * Root is the edge case that must not collapse: `"/"` trims to the EMPTY string, and `"./"` strips to an
+ * empty relative part, so a naive join yields `""` — not a path at all, which tmux would reject or (worse)
+ * resolve against its own cwd. Both are normalized back to `/` here, so the result is always absolute
+ * whenever [base] is.
  */
 fun resolveCwdAgainst(base: String, cwd: String?): String {
-    if (cwd.isNullOrEmpty() || cwd == ".") return base
+    val b = base.trimEnd('/').ifEmpty { "/" } // "/" (or "") stays root, never ""
+    if (cwd.isNullOrEmpty()) return b
     if (cwd.startsWith("/")) return cwd
-    val rel = if (cwd.startsWith("./")) cwd.substring(2) else cwd
-    val b = base.trimEnd('/')
-    return if (rel.isEmpty()) b else "$b/$rel"
+    // Strip leading "./" segments; "." / "./" / "././" all name the base directory itself.
+    var rel: String = cwd
+    while (rel.startsWith("./")) rel = rel.substring(2)
+    if (rel.isEmpty() || rel == ".") return b
+    return if (b == "/") "/$rel" else "$b/$rel"
 }
 
 /** The process's current working directory (`start`'s default cwd), falling back to `$PWD` then `.`. */

@@ -6,6 +6,8 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
+import platform.posix.UF_IMMUTABLE
+import platform.posix.chflags
 import platform.posix.chmod
 import platform.posix.getenv
 import platform.posix.getpid
@@ -13,6 +15,7 @@ import platform.posix.unlink
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -32,6 +35,7 @@ class AuthTest {
 
     @AfterTest
     fun cleanup() {
+        chflags(path, 0.convert()) // drop any immutable flag a test set, so the unlink succeeds
         unlink(path)
     }
 
@@ -63,6 +67,28 @@ class AuthTest {
         val reread = readOrCreateToken(path) // the read path must re-harden the permissions
         assertEquals(token, reread, "the same token is read back")
         assertEquals(0b110_000_000, fileMode(path) and 0b111_111_111, "a mis-permissioned token is re-hardened to 0600 on read")
+    }
+
+    @Test
+    fun readOrCreateTokenRefusesATokenItCannotHarden() {
+        unlink(path)
+        readOrCreateToken(path) // creates it 0600
+        // Leave the token group/world-readable AND make it un-chmod-able (the macOS user-immutable flag
+        // makes chmod fail with EPERM even for the owner). The token gates the whole local control plane,
+        // so silently proceeding with a secret every local user can read would downgrade auth to "anyone
+        // on this machine" — the read path must fail loudly instead.
+        chmod(path, 0b110_100_100.convert()) // 0644
+        if (chflags(path, UF_IMMUTABLE.convert()) != 0) return // flag unsupported here: nothing to assert
+        try {
+            // Precondition, so this test can never pass vacuously: the flag really does make chmod fail.
+            assertTrue(chmod(path, 0b110_000_000.convert()) != 0, "precondition: chmod fails on an immutable file")
+            assertFailsWith<TokenPermissionException>("an un-hardenable token must not be handed out") {
+                readOrCreateToken(path)
+            }
+            assertEquals(0b110_100_100, fileMode(path) and 0b111_111_111, "the token is still world-readable")
+        } finally {
+            chflags(path, 0.convert()) // clear the flag so cleanup can unlink it
+        }
     }
 
     @Test
