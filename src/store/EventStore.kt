@@ -27,10 +27,11 @@ data class StoredEvent(
 
 /**
  * A session read-model cache change notification (Task 14 events-WS). The store emits one whenever a
- * session's cache row changes: after an [EventStore.append] (a new event advanced state / last_seq) or
- * an [EventStore.upsertSession] (the daemon wrote a derived state, or created the row). The transport
- * `/events` WebSocket fans these out to browsers so the session list and the "needs attention" queue
- * stay live without polling.
+ * session's cache row changes — after an [EventStore.append] (a new event advanced state / last_seq), an
+ * [EventStore.upsertSession] (the daemon wrote a derived state, or created the row), or any of the
+ * targeted mutators ([EventStore.updateSessionState], [EventStore.setArchived], [EventStore.setModel],
+ * [EventStore.markRead]). The transport `/events` WebSocket fans these out to browsers so the session list
+ * and the "needs attention" queue stay live without polling.
  *
  * Carries the minimum a live UI needs to update a row in place — which [sessionId] changed, its new
  * [state] (from which the UI derives "needs attention"), the [lastSeq] high-water mark, and the
@@ -79,9 +80,16 @@ class StaleCursorException(
 interface EventStore {
 
     /**
-     * Insert or fully update a session's [SessionMeta] row (identity + launch/tmux/repo context and
-     * the initial cache fields). The daemon owns this metadata; [append] only advances the
+     * Insert or update a session's [SessionMeta] row (identity + launch/tmux/repo context and the
+     * initial cache fields). The daemon owns this metadata; [append] only advances the
      * reducer-derived cache fields of an existing row. On update, `createdAt` is preserved.
+     *
+     * "Update" is full-row with one exception: `read_cursor` is **max-merged**
+     * (`MAX(existing, incoming)`), never overwritten, and the emitted [sessionUpdates] signal is built
+     * from the stored row read back after the write rather than from the passed-in [meta] — otherwise a
+     * caller holding a stale cursor would regress the unread badge, or leave the row right and the
+     * broadcast wrong. **Defence in depth, not a live race** — no caller can produce a stale cursor today;
+     * `Sessions.sq`'s `upsert` records which callers, and why that could change.
      */
     suspend fun upsertSession(meta: SessionMeta)
 
@@ -116,6 +124,23 @@ interface EventStore {
      */
     suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long)
 
+    /**
+     * Advance the session's read cursor to [seq] — the "I have seen through seq N" mark the Web UI
+     * posts for the session it is currently displaying — leaving `state` / `last_seq` /
+     * `provider_session_id` untouched, exactly like [setArchived] and [setModel].
+     *
+     * The write is **monotonic and clamped**, and every implementation owes both: it never regresses the
+     * cursor (a stale, out-of-order or retried mark-read cannot make a cleared badge count again) and never
+     * advances it past `lastSeq` (a bogus [seq] cannot silence the badge forever). It takes **no
+     * `updatedAt`** on purpose — this write must not touch `updated_at`, because viewing a session is not
+     * activity and `kotgent list` sorts by that column.
+     *
+     * Emits a [sessionUpdates] signal **unconditionally** — even when the MAX/MIN made the write a no-op:
+     * the emit is the resync path for a client whose earlier POST was lost. A no-op if the row does not
+     * exist.
+     */
+    suspend fun markRead(sessionId: SessionId, seq: Seq)
+
     /** The session's current metadata row, or `null` if no such session has been upserted. */
     suspend fun getSession(sessionId: SessionId): SessionMeta?
 
@@ -148,12 +173,14 @@ interface EventStore {
     fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent>
 
     /**
-     * A hot, shared stream of [SessionUpdate]s — one per [append] and per [upsertSession], across ALL
-     * sessions (the store is where both event appends and daemon control-op writes funnel, so it is the
-     * one place that observes every cache change, including hook-driven appends that never pass through
-     * the daemon). Hot and non-replaying: a late subscriber sees no history, so the transport `/events`
-     * WS pairs this with a [listSessions] snapshot to establish a baseline and then streams subsequent
-     * changes. Buffered, so a burst of appends is not lost if a subscriber briefly lags.
+     * A hot, shared stream of [SessionUpdate]s — one per [append], per [upsertSession] and per targeted
+     * mutator ([updateSessionState], [setArchived], [setModel], and [markRead], which emits even when its
+     * write was a no-op) — across ALL sessions (the store is where both event appends and daemon
+     * control-op writes funnel, so it is the one place that observes every cache change, including
+     * hook-driven appends that never pass through the daemon). Hot and non-replaying: a late subscriber
+     * sees no history, so the transport `/events` WS pairs this with a [listSessions] snapshot to
+     * establish a baseline and then streams subsequent changes. Buffered, so a burst of appends is not
+     * lost if a subscriber briefly lags.
      *
      * [decision] The per-session restart-safe cursor lives on [subscribe] (seq is per-session, Task 7); a
      * global cursor over this cross-session signal is not meaningful, so it is intentionally cursor-less.

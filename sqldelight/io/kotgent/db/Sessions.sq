@@ -32,7 +32,13 @@ CREATE TABLE sessions (
 );
 
 -- Full-row upsert (daemon-owned session metadata). On conflict, every field is refreshed from the
--- new row EXCEPT created_at, which is preserved from the existing row.
+-- new row EXCEPT created_at, which is preserved from the existing row, and read_cursor, which is
+-- max-merged: the cursor is UI-owned (setReadCursor) and advances outside any SessionMeta the daemon
+-- holds, so a caller writing a stale snapshot must never regress it and resurrect a cleared badge.
+-- DEFENCE IN DEPTH, not a live race — this is the record of that, for the code that points here: neither
+-- caller can carry a stale cursor today (SessionManager.start inserts a fresh row; Reconciler.reconcile
+-- runs ONCE at daemon start, before the server binds, over metas it read moments earlier), so the MAX
+-- always selects sessions.read_cursor. It guards a future periodic or concurrent reconciler.
 upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
@@ -57,7 +63,7 @@ ON CONFLICT(id) DO UPDATE SET
   state               = excluded.state,
   state_source        = excluded.state_source,
   last_seq            = excluded.last_seq,
-  read_cursor         = excluded.read_cursor,
+  read_cursor         = MAX(sessions.read_cursor, excluded.read_cursor),
   created_at          = sessions.created_at,
   updated_at          = excluded.updated_at,
   archived            = excluded.archived;
@@ -82,6 +88,18 @@ WHERE id = ?;
 setArchived:
 UPDATE sessions
 SET archived = ?, updated_at = ?
+WHERE id = ?;
+
+-- Advance ONLY the read cursor; never touches state/last_seq/provider id or updated_at (viewing is not
+-- activity, and `kotgent list` sorts by updated_at). The monotonic + clamped contract EventStore.markRead
+-- states is implemented here, so any caller gets it: MAX(read_cursor, …) never regresses, MIN(?, last_seq)
+-- never overshoots the log. Both are SQLite's 2-argument SCALAR functions and both read pre-update values.
+-- NOTE: SQLDelight infers a MIN() operand as nullable, so the signature is setReadCursor(value: Long?, id:
+-- String) — and binding null would evaluate the SET to NULL and violate NOT NULL at runtime. Keep every
+-- caller on a non-null Long (markRead's Seq is). The named-parameter form infers the same, so it is no fix.
+setReadCursor:
+UPDATE sessions
+SET read_cursor = MAX(read_cursor, MIN(?, last_seq))
 WHERE id = ?;
 
 -- Set ONLY the discovered model (and updated_at). Best-effort, once per session; never touches state.

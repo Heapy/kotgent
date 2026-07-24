@@ -434,6 +434,7 @@ class HookRoutesTest {
         ) = Unit
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
         override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long) = Unit
+        override suspend fun markRead(sessionId: SessionId, seq: Seq) = Unit
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()

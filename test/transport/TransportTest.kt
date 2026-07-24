@@ -595,11 +595,34 @@ class TransportTest {
         )
         override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
 
+        /**
+         * The fake's [io.kotgent.store.SqliteEventStore] `emitFromRow`: rebuild the signal from the STORED
+         * meta rather than from each mutator's arguments, so all five targeted writers stay in step with the
+         * real store by construction instead of by comment — including `archived`, which a client assigns
+         * unconditionally and which therefore un-hides a "done" row if any emitter drops it. [append] is the
+         * one exception, mirroring the real store (see its own note below).
+         */
+        private fun emitFromMeta(sessionId: SessionId) {
+            val m = metas[sessionId] ?: return
+            updates.tryEmit(
+                SessionUpdate(sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), m.archived),
+            )
+        }
+
         override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
             val prior = metas[meta.id]
-            val merged = if (prior != null) meta.copy(createdAt = prior.createdAt) else meta
+            // Honors the contract: full-row EXCEPT createdAt (preserved) and readCursor (max-merged, so a
+            // caller holding a stale cursor cannot regress the badge — Sessions.sq's `upsert`).
+            val merged = if (prior != null) {
+                meta.copy(
+                    createdAt = prior.createdAt,
+                    readCursor = Seq(maxOf(prior.readCursor.value, meta.readCursor.value)),
+                )
+            } else {
+                meta
+            }
             metas[meta.id] = merged
-            updates.tryEmit(SessionUpdate(merged.id, merged.state, merged.lastSeq, unread(merged.lastSeq.value, merged.readCursor.value)))
+            emitFromMeta(meta.id)
         }
 
         override suspend fun updateSessionState(
@@ -609,22 +632,30 @@ class TransportTest {
             paneId: PaneId?,
             updatedAt: Long,
         ): Unit = mutex.withLock {
+            val m = metas[sessionId] ?: return@withLock
             // Honors the contract: update only state/state_source/pane_id/updated_at, NEVER last_seq or
             // provider_session_id (so a concurrent append is not clobbered).
-            val m = metas[sessionId] ?: return@withLock
             metas[sessionId] = m.copy(state = state, stateSource = stateSource, paneId = paneId, updatedAt = updatedAt)
-            updates.tryEmit(SessionUpdate(sessionId, state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value)))
+            emitFromMeta(sessionId)
         }
 
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
             metas[sessionId] = m.copy(archived = archived, updatedAt = updatedAt)
-            updates.tryEmit(SessionUpdate(sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), archived))
+            emitFromMeta(sessionId)
         }
 
         override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long): Unit = mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
             metas[sessionId] = m.copy(model = model, updatedAt = updatedAt)
+            emitFromMeta(sessionId)
+        }
+
+        override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
+            val m = metas[sessionId] ?: return@withLock
+            // Mirrors the SQL: monotonic (max) and clamped to lastSeq (min); updated_at is NOT written.
+            metas[sessionId] = m.copy(readCursor = Seq(maxOf(m.readCursor.value, minOf(seq.value, m.lastSeq.value))))
+            emitFromMeta(sessionId)
         }
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }
@@ -648,8 +679,17 @@ class TransportTest {
                     updatedAt = ts,
                 )
             }
-            val readCursor = metas[sessionId]?.readCursor?.value ?: 0L
-            updates.tryEmit(SessionUpdate(sessionId, next.state, next.lastSeq, unread(next.lastSeq.value, readCursor)))
+            // Hand-built rather than [emitFromMeta], for the same two reasons the real store's `append` is
+            // exempt: the signal carries the freshly reduced state/lastSeq, and it must still go out when no
+            // meta row exists (the event was stored regardless). read_cursor and archived are untouched by an
+            // append but still ride it — an event on a done session must not un-hide its row.
+            val cached = metas[sessionId]
+            updates.tryEmit(
+                SessionUpdate(
+                    sessionId, next.state, next.lastSeq,
+                    unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), cached?.archived ?: false,
+                ),
+            )
             subs[sessionId]?.forEach { it.trySend(stored) }
             next.lastSeq
         }

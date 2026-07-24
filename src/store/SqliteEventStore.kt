@@ -79,8 +79,8 @@ class SqliteEventStore private constructor(
     /**
      * Hot cross-session cache-change signal (Task 14 events-WS). Non-replaying so late subscribers do
      * not re-see history (the transport pairs it with a `listSessions` snapshot); buffered + DROP_OLDEST
-     * so a burst of appends never suspends the single writer holding [mutex]. Emitted with [tryEmit]
-     * (non-suspending) from [append] / [upsertSession] under the lock.
+     * so a burst of appends never suspends the single writer holding [mutex]. Emitted non-suspendingly
+     * (`tryEmit`) under the lock: by [append] directly, and by every other mutator via [emitFromRow].
      *
      * A slow consumer that falls far behind can still miss an intermediate update; the events-WS guards
      * against that with a periodic full resync from the store (see [io.kotgent.transport.eventsWs]), so
@@ -147,12 +147,10 @@ class SqliteEventStore private constructor(
             meta.updatedAt,
             if (meta.archived) 1L else 0L,
         )
-        _sessionUpdates.tryEmit(
-            SessionUpdate(
-                meta.id, meta.state, meta.lastSeq,
-                unread(meta.lastSeq.value, meta.readCursor.value), meta.archived,
-            ),
-        )
+        // Emit from the COMMITTED row, not from `meta`: the upsert max-merges read_cursor, so a `meta`
+        // carrying a cursor the row has already moved past would broadcast an `unread` the DB disagrees
+        // with. Defence in depth — no caller can produce that today (see the note on Sessions.sq's upsert).
+        emitFromRow(meta.id)
     }
 
     override suspend fun updateSessionState(
@@ -166,34 +164,28 @@ class SqliteEventStore private constructor(
         // concurrent hook append advances under this same lock (a stale full-row upsert would clobber
         // them). The in-memory `projections` cache is the pure event-log replay and is untouched here.
         sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, sessionId.value)
-        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
-        _sessionUpdates.tryEmit(
-            SessionUpdate(sessionId, state, Seq(row.last_seq), unread(row.last_seq, row.read_cursor), row.archived != 0L),
-        )
+        emitFromRow(sessionId)
     }
 
     override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
         sessions.setArchived(if (archived) 1L else 0L, updatedAt, sessionId.value)
-        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
-        _sessionUpdates.tryEmit(
-            SessionUpdate(
-                sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
-                unread(row.last_seq, row.read_cursor), row.archived != 0L,
-            ),
-        )
+        emitFromRow(sessionId)
     }
 
     override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long): Unit = mutex.withLock {
         sessions.setModel(model, updatedAt, sessionId.value)
-        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
         // The model itself rides the periodic /events resync (SessionMeta.toUpdateDto); this signal just
         // keeps state/unread fresh (it carries archived, not model).
-        _sessionUpdates.tryEmit(
-            SessionUpdate(
-                sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
-                unread(row.last_seq, row.read_cursor), row.archived != 0L,
-            ),
-        )
+        emitFromRow(sessionId)
+    }
+
+    override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
+        // Monotonicity (MAX) and the clamp to last_seq (MIN) live in the statement itself, so nothing is
+        // computed here; the in-memory `projections` map is a pure event-log replay and is untouched.
+        sessions.setReadCursor(seq.value, sessionId.value)
+        // Emitted unconditionally — even when the MAX/MIN made the UPDATE a no-op — because this signal is
+        // how a client whose earlier POST was lost gets re-synchronized.
+        emitFromRow(sessionId)
     }
 
     override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock {
@@ -251,7 +243,8 @@ class SqliteEventStore private constructor(
             val stored = StoredEvent(sessionId, Seq(seq), ts, source, event)
             // Fan out to live subscribers (registered under this same lock — see subscribe).
             subscribers[sessionId]?.forEach { it.trySend(stored) }
-            // Signal the (control-authoritative) cache change for the events-WS.
+            // Signal the (control-authoritative) cache change for the events-WS. Hand-built rather than
+            // emitFromRow — see that helper's KDoc for why, and keep the two in step.
             _sessionUpdates.tryEmit(
                 SessionUpdate(
                     sessionId, cacheState, next.lastSeq,
@@ -310,6 +303,34 @@ class SqliteEventStore private constructor(
         mutex.withLock { subscribers[sessionId]?.size ?: 0 }
 
     // --- internals (callers hold [mutex]) ---------------------------------------------------------
+
+    /**
+     * Broadcast a [SessionUpdate] rebuilt from the session's COMMITTED row — the tail of every mutator
+     * except [append], which builds the same five fields by hand a few lines above. Reading back is what
+     * keeps the wire and the DB in agreement when a statement rewrote a value the caller did not supply
+     * (`upsert`'s max-merged `read_cursor`) or did not touch at all.
+     *
+     * [append]'s exemption is **not** "it would re-read what it just wrote" — so would the others. It is
+     * that (a) it already holds every value: the control-authoritative `cacheState` it computed and the row
+     * it read pre-transaction (whose `read_cursor` / `archived` `updateCache` never touches), and (b) it must
+     * emit even when there is NO `sessions` row — the event was stored and got a real seq regardless — while
+     * this helper is deliberately a silent no-op there. Edit the two together: they emit the same shape.
+     *
+     * `archived` comes from the row, never from a default: an archived ("done") session can still be the
+     * selected one, and a live update claiming `archived=false` un-hides it in every client until the next
+     * resync. A vanished row is a silent no-op, matching every mutator's "no-op if the row does not exist".
+     *
+     * Uses `sessions.get` directly, NOT [getSession] — [mutex] is not reentrant and the caller holds it.
+     */
+    private fun emitFromRow(sessionId: SessionId) {
+        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return
+        _sessionUpdates.tryEmit(
+            SessionUpdate(
+                sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
+                unread(row.last_seq, row.read_cursor), row.archived != 0L,
+            ),
+        )
+    }
 
     private fun readLocked(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> =
         events.selectFromSeq(sessionId.value, fromSeq.value) { session_id, seq, ts, _, source, payload ->

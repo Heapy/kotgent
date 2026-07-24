@@ -2,9 +2,9 @@ package io.kotgent.core
 
 /**
  * Session metadata — the non-event columns of the `sessions` row (Technical Details), host-free.
- * The event-derived fields ([state], [stateSource], [lastSeq], [readCursor]) are the reducer's
- * projection cached here; everything the projection does not own (identity, launch context, tmux
- * correlation, discovered repo/CLI info) lives here too.
+ * The event-derived fields ([state], [stateSource], [lastSeq]) are the reducer's projection cached
+ * here; everything the projection does not own (identity, launch context, tmux correlation, discovered
+ * repo/CLI info, and the client-driven [readCursor]) lives here too.
  *
  * Fields are declared in `sessions`-column order and use the value-class ids where the schema
  * has one. Anything not known when the session is first created is nullable and filled in later:
@@ -47,7 +47,11 @@ data class SessionMeta(
     val stateSource: EventSource? = null,
     /** Highest applied event seq; `Seq(0)` means no events yet. */
     val lastSeq: Seq = Seq(0),
-    /** Read cursor for unread tracking; `Seq(0)` means nothing read yet. */
+    /**
+     * Read cursor for the unread badge (`unread = lastSeq - readCursor`); `Seq(0)` means nothing read
+     * yet. Client-driven, never produced by the reducer: written only via
+     * [io.kotgent.store.EventStore.markRead], which the Web UI drives for the session it is displaying.
+     */
     val readCursor: Seq = Seq(0),
     /** Creation timestamp (epoch millis). */
     val createdAt: Long,

@@ -14,6 +14,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.replay
+import io.kotgent.core.unread
 import io.kotgent.db.KotgentDatabase
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
@@ -405,6 +406,263 @@ class EventStoreTest {
             // SQLITE_ERROR stack trace on every daemon start.
             val reopened = SqliteEventStore.using(driver, now = { 3L })
             assertTrue(reopened.getSession(sid)!!.archived, "a second open over the migrated DB still reads")
+        }
+    }
+
+    // ---- read cursor (the "unread events" badge) ----
+
+    @Test
+    fun markReadAdvancesTheCursorAndLeavesEverythingElseAlone() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 500L })
+            val sid = SessionId("rc01")
+            store.upsertSession(meta(sid, createdAt = 100L))
+            val pid = ProviderSessionId("55555555-5555-5555-5555-555555555555")
+            store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook) // seq 1
+            store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook) // seq 2 -> needs_approval
+            val before = store.getSession(sid)!!
+            assertEquals(Seq(0), before.readCursor, "nothing is read until a client says so")
+            assertEquals(2L, unread(before.lastSeq.value, before.readCursor.value), "the badge counts both events")
+
+            store.markRead(sid, Seq(2))
+            store.getSession(sid)!!.let { m ->
+                assertEquals(Seq(2), m.readCursor, "the cursor advanced to the seq the client displayed")
+                assertEquals(0L, unread(m.lastSeq.value, m.readCursor.value), "the badge is cleared")
+                assertEquals(before.state, m.state, "markRead never touches state")
+                assertEquals(before.lastSeq, m.lastSeq, "markRead never touches last_seq")
+                assertEquals(before.providerSessionId, m.providerSessionId, "markRead never touches the provider id")
+                assertEquals(before.updatedAt, m.updatedAt, "viewing is not activity: updated_at is NOT written")
+            }
+        }
+    }
+
+    @Test
+    fun markReadIsMonotonicSoALateOrRetriedMarkCannotRegressTheBadge() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc02")
+            store.upsertSession(meta(sid))
+            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 3
+
+            store.markRead(sid, Seq(3))
+            assertEquals(Seq(3), store.getSession(sid)!!.readCursor)
+            // An out-of-order / retried POST from a second client carrying an older seq must not regress it.
+            store.markRead(sid, Seq(1))
+            assertEquals(Seq(3), store.getSession(sid)!!.readCursor, "MAX() keeps the cursor at the high-water mark")
+        }
+    }
+
+    @Test
+    fun twoClientsMarkingReadConcurrentlyLeaveTheCursorAtTheHighestSeq() = runBlocking {
+        withTimeout(20_000) {
+            // The stated reason for MAX() is "two clients racing", so race them for real rather than
+            // relying on the sequential ordering above (the pattern from
+            // concurrentAppendsAreSerializedIntoAContiguousLog).
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc08")
+            store.upsertSession(meta(sid))
+            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 3
+
+            coroutineScope {
+                launch { store.markRead(sid, Seq(3)) }
+                launch { store.markRead(sid, Seq(1)) }
+            }
+            assertEquals(
+                Seq(3),
+                store.getSession(sid)!!.readCursor,
+                "whichever order the writer lock granted, the cursor lands on the highest seq",
+            )
+        }
+    }
+
+    @Test
+    fun markReadIsClampedToLastSeqSoABogusSeqCannotSilenceTheBadge() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc03")
+            store.upsertSession(meta(sid))
+            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 3
+
+            store.markRead(sid, Seq(999))
+            assertEquals(Seq(3), store.getSession(sid)!!.readCursor, "MIN() clamps the cursor to the log")
+
+            // Had the bogus 999 been stored, the next event would still read as 0 unread — forever.
+            store.append(sid, AgentEvent.TurnCompleted, EventSource.hook) // lastSeq = 4
+            store.getSession(sid)!!.let { m ->
+                assertEquals(1L, unread(m.lastSeq.value, m.readCursor.value), "the next event raises the badge again")
+            }
+        }
+    }
+
+    @Test
+    fun markReadEmitsAnUpdateCarryingUnreadZeroAndTheRowsArchivedFlag() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc04")
+            store.upsertSession(meta(sid))
+            store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook) // lastSeq = 1
+            store.setArchived(sid, true, 2L) // an archived ("done") session can still be the selected one
+
+            val seen = CompletableDeferred<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it) } }
+            yield()
+            store.markRead(sid, Seq(1))
+
+            val update = seen.await()
+            assertEquals(sid, update.sessionId)
+            assertEquals(0L, update.unread, "the badge clears in every connected client")
+            assertEquals(Seq(1), update.lastSeq)
+            assertTrue(update.archived, "the signal carries the row's archived — it must not un-hide the session")
+            collector.join()
+        }
+    }
+
+    @Test
+    fun anAppendAndAControlStateWriteOnAnArchivedSessionAlsoCarryArchived() = runBlocking {
+        withTimeout(20_000) {
+            // markRead is not the only emitter for a done session: a late hook append (whose signal is
+            // built by hand inside `append`, from the cached row) and a control-state write (which goes
+            // through emitFromRow) both broadcast too. A client assigns SessionUpdateDto.archived
+            // unconditionally, so dropping the flag on either path resurrects the hidden row in every
+            // sidebar until the next resync — pinned here against the REAL store, since the transport
+            // suite can only observe its own fake.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc09")
+            store.upsertSession(meta(sid))
+            store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook) // lastSeq = 1
+            store.setArchived(sid, true, 2L)
+
+            val seen = CompletableDeferred<List<SessionUpdate>>()
+            val collector = launch { seen.complete(store.sessionUpdates.take(2).toList()) }
+            yield()
+            store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook) // lastSeq = 2
+            store.updateSessionState(sid, SessionState.stopped, EventSource.system, null, 3L)
+
+            val (appended, controlled) = seen.await()
+            assertEquals(Seq(2), appended.lastSeq)
+            assertEquals(2L, appended.unread, "the badge still counts the unread event")
+            assertTrue(appended.archived, "an append on a done session must not un-hide it")
+            assertEquals(SessionState.stopped, controlled.state)
+            assertTrue(controlled.archived, "a control-state write on a done session must not un-hide it")
+            collector.join()
+        }
+    }
+
+    @Test
+    fun aNoOpMarkReadStillEmitsSoALostPostIsResynchronized() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc05")
+            store.upsertSession(meta(sid))
+            repeat(2) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 2
+            store.markRead(sid, Seq(2))
+
+            // Seq(1) is below the cursor, so the UPDATE changes nothing — but the emit is exactly how a
+            // client whose earlier POST was lost learns the true unread count, so it must still happen.
+            val seen = CompletableDeferred<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it) } }
+            yield()
+            store.markRead(sid, Seq(1))
+
+            assertEquals(0L, seen.await().unread, "a no-op markRead still broadcasts the current state")
+            assertEquals(Seq(2), store.getSession(sid)!!.readCursor)
+            collector.join()
+        }
+    }
+
+    @Test
+    fun aClearedBadgeSurvivesADaemonRestart() = runBlocking {
+        withTimeout(20_000) {
+            // Share one in-memory DB across two store instances to simulate a daemon restart (same trick as
+            // replayFromTheStoreReconstructsTheProjectionAcrossARestart). The cursor is a persisted column,
+            // so a restart must not resurrect a badge the user already cleared.
+            val driver = inMemoryDriver(KotgentDatabase.Schema)
+            val store1 = SqliteEventStore.using(driver, now = { 1L })
+            val sid = SessionId("rc07")
+            store1.upsertSession(meta(sid))
+            repeat(3) { store1.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 3
+            store1.markRead(sid, Seq(3))
+
+            val store2 = SqliteEventStore.using(driver, now = { 1L })
+            store2.getSession(sid)!!.let { m ->
+                assertEquals(Seq(3), m.readCursor, "the cursor is persisted, not in-memory state")
+                assertEquals(0L, unread(m.lastSeq.value, m.readCursor.value), "so the badge stays cleared")
+            }
+            // …and it still counts forward from there: only events after the restart are unread.
+            store2.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
+            store2.getSession(sid)!!.let { m ->
+                assertEquals(1L, unread(m.lastSeq.value, m.readCursor.value), "one new event, one unread")
+            }
+        }
+    }
+
+    @Test
+    fun anAppendPastTheCursorBroadcastsTheRecomputedUnreadNotTheWholeLog() = runBlocking {
+        withTimeout(20_000) {
+            // The badge's main render path: Sidebar draws THIS number and app.js feeds it back into the
+            // mark-read guard. Against a non-zero cursor the emitted `unread` must be the delta — if append
+            // ever fell back to a 0 cursor, the badge would jump to the full log count on every event and
+            // the UI would re-POST once per second forever, with the stored-value tests still green.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc10")
+            store.upsertSession(meta(sid))
+            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 3
+            store.markRead(sid, Seq(3))
+
+            val seen = CompletableDeferred<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it) } }
+            yield()
+            store.append(sid, AgentEvent.TurnCompleted, EventSource.hook) // lastSeq = 4
+
+            val update = seen.await()
+            assertEquals(Seq(4), update.lastSeq)
+            assertEquals(1L, update.unread, "one event past the cursor, not the whole log")
+            collector.join()
+        }
+    }
+
+    @Test
+    fun markReadOnAnUnknownSessionIsASilentNoOp() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val missing = SessionId("no-such-session")
+            // "Silent" is half the contract: hoisting the emit above the missing-row return would push a
+            // session_update for a session no client knows, and app.js answers an unknown id with a full
+            // GET /sessions reload — a self-inflicted request storm.
+            val updates = ArrayList<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
+            yield()
+            store.markRead(missing, Seq(5)) // must not throw
+            repeat(20) { yield() }
+
+            assertEquals(null, store.getSession(missing), "and creates no row")
+            assertTrue(updates.isEmpty(), "and broadcasts nothing for a session that does not exist: $updates")
+            collector.cancel()
+        }
+    }
+
+    @Test
+    fun aStaleFullRowUpsertNeitherRegressesTheCursorNorBroadcastsAStaleUnread() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("rc06")
+            store.upsertSession(meta(sid))
+            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) } // lastSeq = 3
+            store.markRead(sid, Seq(3))
+
+            // A full-row write carrying a SessionMeta snapshotted before the mark — i.e. readCursor = 0.
+            // The upsert's MAX() protects the stored value and the emit is rebuilt from the committed row,
+            // so the wire agrees with the DB. NOTE this pins DEFENCE IN DEPTH, not a live race (Sessions.sq's
+            // `upsert` records why no caller can produce a stale cursor today) — which is exactly why the
+            // invariant needs a test: nothing in production exercises it.
+            val seen = CompletableDeferred<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it) } }
+            yield()
+            store.upsertSession(meta(sid).copy(lastSeq = Seq(3), readCursor = Seq(0)))
+
+            assertEquals(Seq(3), store.getSession(sid)!!.readCursor, "a stale full-row write never regresses it")
+            assertEquals(0L, seen.await().unread, "the emit is built from the corrected row, not the stale meta")
+            collector.join()
         }
     }
 
