@@ -317,12 +317,25 @@ pin an old UI for a day).
 - Create: `src/push/EcdsaDer.kt`
 - Create: `test/push/EcdsaDerTest.kt`
 
-- [ ] add `derToRawSignature(der: ByteArray): ByteArray` returning exactly 64 bytes (left-padded `r`, `s`)
-- [ ] reject malformed input explicitly (bad tag, length overrun, `r`/`s` longer than 33 bytes)
-- [ ] write tests with fixtures: the common 70-byte form, the 71/72-byte forms where `r` or `s` carries a
+- [x] add `derToRawSignature(der: ByteArray): ByteArray` returning exactly 64 bytes (left-padded `r`, `s`)
+      ➕ pure and public, with `P256_COORDINATE_LENGTH` / `P256_RAW_SIGNATURE_LENGTH` named next to it
+- [x] reject malformed input explicitly (bad tag, length overrun, `r`/`s` longer than 33 bytes)
+      ➕ every failure is one new `EcdsaDerException` (an `IllegalArgumentException`, distinct from
+      `VapidKeyException` so task 8's signer can attribute it to openssl); also rejected: a declared
+      SEQUENCE length that disagrees with the input, a zero-length INTEGER, a long-form DER length, a
+      33-byte integer whose leading byte is NOT a sign byte, and trailing bytes after `s`. Non-minimal
+      encodings are deliberately ACCEPTED — stripping them is unambiguous and openssl never emits them,
+      so refusing would only add a way for production signing to fail
+- [x] write tests with fixtures: the common 70-byte form, the 71/72-byte forms where `r` or `s` carries a
       leading `0x00`, and a short `r` that must be left-padded
-- [ ] write tests: malformed DER throws rather than returning garbage
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 7
+      ➕ the fixtures are REAL `/usr/bin/openssl dgst -sha256 -sign` signatures (found by generating 1500
+      and keeping one of each shape) with the expected `r`/`s` extracted by `openssl asn1parse` — an
+      outside producer and an outside parser. Pinned as constants, never signed at test time: a signature
+      is randomised, so a generate-at-runtime test would only exercise whichever shape chance handed it.
+      All six shapes are covered (32/32, 33/32, 32/33, 33/33, 31/32, 32/31), plus a short `s`
+- [x] write tests: malformed DER throws rather than returning garbage
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 7
+      ➕ 14 new tests: **496 run / 496 passed / 0 skipped**
 
 ### Task 7: VAPID JWT builder and per-origin token cache (pure)
 
