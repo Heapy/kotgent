@@ -48,6 +48,10 @@ class CodexAdapter(
     private val binaryName: String = "codex",
     /** Extra environment for the launch (kept minimal; `KOTGENT_SESSION_ID` is a tmux-side debug label). */
     private val env: Map<String, String> = emptyMap(),
+    /** Detected `codex` version (e.g. `"0.145.0"`), echoed onto every [LaunchSpec.cliVersion]. */
+    private val cliVersion: String? = null,
+    /** Resolved `codex` path, echoed onto every [LaunchSpec.cliPath]. */
+    private val cliPath: String? = null,
 ) : AgentAdapter {
 
     override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec {
@@ -70,6 +74,8 @@ class CodexAdapter(
             cwd = cwd,
             // Never preallocated — see the class KDoc.
             preallocatedSessionId = null,
+            cliVersion = cliVersion,
+            cliPath = cliPath,
         )
     }
 

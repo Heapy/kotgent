@@ -26,6 +26,10 @@ class FakeAdapter(
     val env: Map<String, String> = mapOf("KOTGENT_FAKE" to "1"),
     /** The provider id a [LaunchMode.New] spec preallocates (must be a valid UUID). */
     val newSessionId: ProviderSessionId = ProviderSessionId("00000000-0000-4000-8000-000000000000"),
+    /** The CLI version the canned [LaunchSpec] reports (null by default — most tests do not care). */
+    val cliVersion: String? = null,
+    /** The CLI path the canned [LaunchSpec] reports. */
+    val cliPath: String? = null,
 ) : AgentAdapter {
 
     private val channel = Channel<AgentEvent>(Channel.UNLIMITED)
@@ -48,12 +52,16 @@ class FakeAdapter(
                 env = env,
                 cwd = cwd,
                 preallocatedSessionId = newSessionId,
+                cliVersion = cliVersion,
+                cliPath = cliPath,
             )
             is LaunchMode.Resume -> LaunchSpec(
                 command = listOf("claude", "--resume", mode.providerSessionId.value),
                 env = env,
                 cwd = cwd,
                 preallocatedSessionId = null,
+                cliVersion = cliVersion,
+                cliPath = cliPath,
             )
         }
     }

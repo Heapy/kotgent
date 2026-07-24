@@ -66,6 +66,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -87,6 +88,24 @@ class TransportTest {
     private val token = "transport-secret-token-xyz789"
     private val providerId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     private val seed = "SEED-SCREEN\r\n".encodeToByteArray()
+
+    // ---- 0. SessionDto mapping: cli version/path are carried through ----
+
+    @Test
+    fun sessionDtoCarriesTheCliVersionAndPath() {
+        val meta = SessionMeta(
+            id = SessionId("dto01"), name = "n", agent = "claude", cwd = "/w",
+            tmuxSession = "kt-dto01", state = SessionState.running, createdAt = 1L, updatedAt = 1L,
+            cliVersion = "2.1.218", cliPath = "/usr/local/bin/claude",
+        )
+        val dto = meta.toDto()
+        assertEquals("2.1.218", dto.cliVersion)
+        assertEquals("/usr/local/bin/claude", dto.cliPath)
+
+        val bare = meta.copy(cliVersion = null, cliPath = null).toDto()
+        assertNull(bare.cliVersion, "a session with no detected version maps to null")
+        assertNull(bare.cliPath)
+    }
 
     // ---- 1. POST /sessions → the session appears in GET /sessions ----
 

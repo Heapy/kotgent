@@ -85,6 +85,47 @@ class ClaudeAdapterTest {
         assertEquals("/work", spec.cwd)
     }
 
+    // ---- cli version/path metadata is echoed onto the spec ----
+
+    @Test
+    fun buildLaunchSpecCarriesTheCliVersionAndPathOnNewAndResume() {
+        val id = ProviderSessionId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        val adapter = ClaudeAdapter(
+            cwd = "/w",
+            settingsPath = "/s.json",
+            events = emptyFlow(),
+            cliVersion = "2.1.218",
+            cliPath = "/usr/local/bin/claude",
+        )
+        val new = adapter.buildLaunchSpec(LaunchMode.New)
+        assertEquals("2.1.218", new.cliVersion)
+        assertEquals("/usr/local/bin/claude", new.cliPath)
+
+        val resume = adapter.buildLaunchSpec(LaunchMode.Resume(id))
+        assertEquals("2.1.218", resume.cliVersion)
+        assertEquals("/usr/local/bin/claude", resume.cliPath)
+
+        // The fallback (no --session-id) path carries it too.
+        val fallback = ClaudeAdapter(
+            cwd = "/w",
+            settingsPath = "/s.json",
+            events = emptyFlow(),
+            sessionIdSupported = false,
+            cliVersion = "1.0.0",
+            cliPath = "/opt/claude",
+        ).buildLaunchSpec(LaunchMode.New)
+        assertEquals("1.0.0", fallback.cliVersion)
+        assertEquals("/opt/claude", fallback.cliPath)
+    }
+
+    @Test
+    fun buildLaunchSpecCliVersionAndPathDefaultToNull() {
+        val spec = ClaudeAdapter(cwd = "/w", settingsPath = "/s.json", events = emptyFlow())
+            .buildLaunchSpec(LaunchMode.New)
+        assertNull(spec.cliVersion, "cliVersion defaults to null when not supplied")
+        assertNull(spec.cliPath, "cliPath defaults to null when not supplied")
+    }
+
     // ---- version gate: fallback path ----
 
     @Test

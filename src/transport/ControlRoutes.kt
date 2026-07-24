@@ -195,6 +195,10 @@ data class SessionDto(
     val name: String,
     val tags: List<String>,
     val agent: String,
+    /** Agent CLI version (e.g. `"2.1.218"`), or null until detected — shown in the sidebar. */
+    val cliVersion: String? = null,
+    /** Resolved agent CLI path, or null — a tooltip detail (the sidebar shows the version). */
+    val cliPath: String? = null,
     val providerSessionId: String?,
     val state: String,
     val needsAttention: Boolean,
@@ -214,6 +218,8 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     name = name,
     tags = tags,
     agent = agent,
+    cliVersion = cliVersion,
+    cliPath = cliPath,
     providerSessionId = providerSessionId?.value,
     state = state.name,
     needsAttention = state.needsAttention,

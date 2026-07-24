@@ -39,3 +39,14 @@ export function displayName(s) {
 export function capitalize(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
+
+/**
+ * The sidebar sub-line: "agent · model · version". The model/version identify the running build; the cwd
+ * is intentionally NOT shown here (it is legible from directory grouping) but stays available as the row's
+ * title tooltip. Falls back to "agent · cwd" when neither model nor version is known yet.
+ */
+export function sessionSubline(s) {
+  const agent = s.agent || "?";
+  const detail = [s.model, s.cliVersion].filter(Boolean).join(" · ");
+  return detail ? agent + " · " + detail : agent + " · " + (s.cwd || "");
+}

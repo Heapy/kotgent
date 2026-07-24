@@ -53,4 +53,16 @@ data class LaunchSpec(
      * `null` for a [LaunchMode.Resume] (the id already exists and is carried inside [command]).
      */
     val preallocatedSessionId: ProviderSessionId? = null,
+    /**
+     * The agent CLI's version string (e.g. `"2.1.218"`), as detected once at daemon bootstrap. Pure
+     * metadata echoed here — the IO already happened when the adapter was constructed, so
+     * [io.kotgent.adapter.AgentAdapter.buildLaunchSpec] stays pure — so the daemon can persist it onto the
+     * session (see [io.kotgent.core.SessionMeta.cliVersion]). `null` when the version could not be detected.
+     */
+    val cliVersion: String? = null,
+    /**
+     * Absolute path the agent CLI resolved to (argv[0]), as located at bootstrap. Same metadata role as
+     * [cliVersion]; persisted onto [io.kotgent.core.SessionMeta.cliPath]. `null` when it could not be located.
+     */
+    val cliPath: String? = null,
 )

@@ -9,7 +9,7 @@
 import { html } from "htm/preact";
 import { groupSessions } from "../lib/paths.js";
 import { groupingEnabled } from "../lib/prefs.js";
-import { displayName, isNeedsAttention, stateBadge } from "../lib/sessions.js";
+import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
 
 function SessionRow({ session, active, onSelect }) {
   const badge = stateBadge(session.state);
@@ -29,6 +29,7 @@ function SessionRow({ session, active, onSelect }) {
       role="button"
       aria-label=${"Open " + displayName(session) + ", " + badge.label}
       aria-current=${active ? "true" : null}
+      title=${session.cwd || ""}
       onClick=${select}
       onKeyDown=${onKeyDown}
     >
@@ -36,7 +37,7 @@ function SessionRow({ session, active, onSelect }) {
         html`<span class="attn-dot" title="Needs attention"></span>`}
       <div class="session-main">
         <div class="session-name">${displayName(session)}</div>
-        <div class="session-sub">${(session.agent || "?") + " · " + (session.cwd || "")}</div>
+        <div class="session-sub">${sessionSubline(session)}</div>
       </div>
       ${session.unread > 0 &&
         html`<span class="unread-pill" title=${session.unread + " unread event(s)"}>

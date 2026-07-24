@@ -50,6 +50,10 @@ class ClaudeAdapter(
     private val env: Map<String, String> = emptyMap(),
     /** How a fresh provider session id is minted — injectable for deterministic tests. */
     private val generateSessionId: () -> ProviderSessionId = { ProviderSessionId(newUuidV4()) },
+    /** Detected `claude` version (e.g. `"2.1.218"`), echoed onto every [LaunchSpec.cliVersion]. */
+    private val cliVersion: String? = null,
+    /** Resolved `claude` path, echoed onto every [LaunchSpec.cliPath]. */
+    private val cliPath: String? = null,
 ) : AgentAdapter {
 
     override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
@@ -61,6 +65,8 @@ class ClaudeAdapter(
                     env = env,
                     cwd = cwd,
                     preallocatedSessionId = id,
+                    cliVersion = cliVersion,
+                    cliPath = cliPath,
                 )
             } else {
                 // Fallback for pre-`--session-id` CLIs: no preallocation; the id is captured from the
@@ -70,6 +76,8 @@ class ClaudeAdapter(
                     env = env,
                     cwd = cwd,
                     preallocatedSessionId = null,
+                    cliVersion = cliVersion,
+                    cliPath = cliPath,
                 )
             }
 
@@ -79,6 +87,8 @@ class ClaudeAdapter(
                 env = env,
                 cwd = cwd,
                 preallocatedSessionId = null,
+                cliVersion = cliVersion,
+                cliPath = cliPath,
             )
     }
 }

@@ -202,14 +202,60 @@ class SessionManagerTest {
     private class StubAgentFactory(
         private val command: List<String>,
         private val preallocated: ProviderSessionId?,
+        private val cliVersion: String? = null,
+        private val cliPath: String? = null,
     ) : AgentFactory {
         override fun create(agentKind: String, cwd: String): AgentAdapter = object : AgentAdapter {
             override val events: Flow<AgentEvent> = emptyFlow()
             override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
-                is LaunchMode.New -> LaunchSpec(command, emptyMap(), cwd, preallocated)
+                is LaunchMode.New ->
+                    LaunchSpec(command, emptyMap(), cwd, preallocated, cliVersion = cliVersion, cliPath = cliPath)
                 is LaunchMode.Resume ->
-                    LaunchSpec(command + listOf("--resume", mode.providerSessionId.value), emptyMap(), cwd, null)
+                    LaunchSpec(
+                        command + listOf("--resume", mode.providerSessionId.value),
+                        emptyMap(), cwd, null, cliVersion = cliVersion, cliPath = cliPath,
+                    )
             }
+        }
+    }
+
+    // ---- cli version/path from the spec are persisted onto the session ----
+
+    @Test
+    fun startPersistsTheCliVersionAndPathFromTheSpec() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null, cliVersion = "2.1.218", cliPath = "/usr/local/bin/claude"),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("sess09") },
+                now = { 1L },
+            )
+
+            mgr.start("claude", "/tmp/work")
+
+            val stored = store.getSession(SessionId("sess09"))!!
+            assertEquals("2.1.218", stored.cliVersion, "start persisted the spec's cliVersion")
+            assertEquals("/usr/local/bin/claude", stored.cliPath, "start persisted the spec's cliPath")
+        }
+    }
+
+    @Test
+    fun startLeavesCliVersionNullWhenTheSpecHasNone() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("sess10") },
+                now = { 1L },
+            )
+
+            mgr.start("claude", "/tmp/work")
+
+            assertNull(store.getSession(SessionId("sess10"))!!.cliVersion, "no version in spec -> null, no crash")
         }
     }
 

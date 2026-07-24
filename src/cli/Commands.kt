@@ -291,12 +291,20 @@ object Commands {
         val settingsPath = writeClaudeHookSettings(port, token)
         val codexHookScriptPath = writeCodexHookScript(port, token)
         val claudeCli = ClaudeCli()
-        val sessionIdSupported = claudeCli.supportsSessionId()
+        // Detect the version ONCE (one binary call) and reuse it for both the `--session-id` gate and the
+        // per-session `cliVersion` metadata surfaced in the UI.
+        val claudeVersion = claudeCli.detectVersion()
+        val sessionIdSupported = ClaudeCli.supportsSessionId(claudeVersion)
+        val codexCli = CodexCli()
+        val codexVersion = codexCli.detectVersion()
         // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
         // does not depend on the child shell's PATH under launchd's minimal env. Falls back to the bare
-        // name (found via the child's PATH) if it cannot be located.
-        val claudePath = claudeCli.locate() ?: CLAUDE_AGENT_KIND
-        val codexPath = CodexCli().locate() ?: CODEX_AGENT_KIND
+        // name (found via the child's PATH) if it cannot be located; the located path (nullable) is what
+        // we persist as `cliPath` metadata (the bare-name fallback is a launch detail, not a real path).
+        val claudeLocated = claudeCli.locate()
+        val claudePath = claudeLocated ?: CLAUDE_AGENT_KIND
+        val codexLocated = codexCli.locate()
+        val codexPath = codexLocated ?: CODEX_AGENT_KIND
         // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
         // instead of silently building some other provider's adapter for it (which would launch the wrong
         // agent while persisting the requested name).
@@ -309,6 +317,8 @@ object Commands {
                         events = emptyFlow(),
                         sessionIdSupported = sessionIdSupported,
                         binaryName = claudePath,
+                        cliVersion = claudeVersion?.toString(),
+                        cliPath = claudeLocated,
                     )
                 },
                 CODEX_AGENT_KIND to { cwd: String ->
@@ -317,6 +327,8 @@ object Commands {
                         hookScriptPath = codexHookScriptPath,
                         events = emptyFlow(),
                         binaryName = codexPath,
+                        cliVersion = codexVersion?.toString(),
+                        cliPath = codexLocated,
                     )
                 },
             ),

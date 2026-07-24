@@ -62,6 +62,27 @@ class CodexAdapterTest {
     }
 
     @Test
+    fun buildLaunchSpecCarriesTheCliVersionAndPath() {
+        val withMeta = CodexAdapter(
+            cwd = "/work/repo",
+            hookScriptPath = hookScript,
+            events = emptyFlow(),
+            cliVersion = "0.145.0",
+            cliPath = "/opt/homebrew/bin/codex",
+        )
+        val id = ProviderSessionId("019f8ea0-2548-7871-9835-947ff7623ccf")
+        for (spec in listOf(withMeta.buildLaunchSpec(LaunchMode.New), withMeta.buildLaunchSpec(LaunchMode.Resume(id)))) {
+            assertEquals("0.145.0", spec.cliVersion)
+            assertEquals("/opt/homebrew/bin/codex", spec.cliPath)
+        }
+
+        // Defaults are null when not supplied.
+        val bare = adapter().buildLaunchSpec(LaunchMode.New)
+        assertNull(bare.cliVersion)
+        assertNull(bare.cliPath)
+    }
+
+    @Test
     fun theLaunchArgvSurvivesTmuxShellQuoting() {
         // The whole argv is rendered into ONE /bin/sh line for `tmux new-session`, so the TOML (which is
         // full of quotes) must come back out as a single word. Re-splitting it would silently drop the

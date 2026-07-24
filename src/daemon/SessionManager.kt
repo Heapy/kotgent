@@ -250,6 +250,8 @@ class SessionManager(
                     tags = tags,
                     agent = agentKind,
                     providerSessionId = spec.preallocatedSessionId,
+                    cliVersion = spec.cliVersion,
+                    cliPath = spec.cliPath,
                     cwd = cwd,
                     tmuxSession = tmuxSession,
                     paneId = paneId,
