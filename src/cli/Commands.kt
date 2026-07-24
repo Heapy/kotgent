@@ -19,6 +19,7 @@ import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.daemon.byAgentVendorStoreProbe
 import io.kotgent.daemon.claudeVendorStoreProbe
 import io.kotgent.daemon.codexVendorStoreProbe
+import io.kotgent.daemon.daemonEpochMillis
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.DAEMON_LABEL
@@ -36,6 +37,8 @@ import io.kotgent.transport.readTokenOrNull
 import io.kotgent.transport.writePrivateFile
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
@@ -347,6 +350,23 @@ object Commands {
             discoverProviderId = { meta ->
                 if (meta.agent == CODEX_AGENT_KIND) rolloutScan.discoverSessionId(meta.cwd, meta.createdAt) else null
             },
+            // Codex records its model in the rollout's turn_context — written only once the session takes
+            // its first turn — so poll a few times after launch and persist the first hit. Claude captures
+            // its model via the hook path instead, so this is scoped to codex.
+            captureModelInBackground = { meta ->
+                if (meta.agent == CODEX_AGENT_KIND) {
+                    bgScope.launch {
+                        repeat(MODEL_CAPTURE_ATTEMPTS) {
+                            val model = rolloutScan.discoverModel(meta.cwd, meta.createdAt)
+                            if (model != null) {
+                                store.setModel(meta.id, model, daemonEpochMillis())
+                                return@launch
+                            }
+                            delay(MODEL_CAPTURE_INTERVAL_MILLIS)
+                        }
+                    }
+                }
+            },
         )
 
         // Restart-safe reconciliation: reclassify persisted sessions against tmux reality and rebuild
@@ -398,6 +418,12 @@ object Commands {
 
     /** The daemon's SQLite database file name (kept next to the token under `~/.kotgent`). */
     private const val DB_FILENAME: String = "kotgent.db"
+
+    /** How many times to poll a codex rollout for its model after launch (see the capture wiring). */
+    private const val MODEL_CAPTURE_ATTEMPTS: Int = 10
+
+    /** Delay between codex model-capture polls (10 × 3s ≈ 30s covers a promptly-started first turn). */
+    private const val MODEL_CAPTURE_INTERVAL_MILLIS: Long = 3_000
 
     /**
      * The reconciler's vendor-store transcript probe (Task 18), dispatched per provider: for a dead

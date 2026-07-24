@@ -66,6 +66,11 @@ fun Route.claudeHookRoutes(
      * practice; tests pass `0` to keep the genuine-unknown-pane case fast.
      */
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
+    /**
+     * Best-effort Claude model capture from each hook's `transcript_path`. Defaults to a real capture over
+     * [store] (so production is wired with no extra plumbing); tests inject one with a fake transcript reader.
+     */
+    modelCapture: ClaudeModelCapture = ClaudeModelCapture(store),
 ) = hookRoutes(
     path = ClaudeHookConfig.INGRESS_PATH,
     tokenHeader = ClaudeHookConfig.HOOK_TOKEN_HEADER,
@@ -77,6 +82,7 @@ fun Route.claudeHookRoutes(
     store = store,
     json = json,
     paneLookupGraceMillis = paneLookupGraceMillis,
+    onHookPayload = { sessionId, payload -> modelCapture.maybeCapture(sessionId, payload) },
 )
 
 /**
@@ -129,6 +135,13 @@ private fun Route.hookRoutes(
     store: EventStore,
     json: Json,
     paneLookupGraceMillis: Long,
+    /**
+     * Best-effort side-channel run for every authenticated, pane-resolved hook, AFTER the payload is
+     * parsed and REGARDLESS of whether it normalizes to an event (Claude hooks that map to `null`, like
+     * `SessionStart`, still carry `transcript_path`). Used for Claude model capture; the codex ingress
+     * leaves it a no-op. It must never fail the hook.
+     */
+    onHookPayload: suspend (SessionId, JsonElement) -> Unit = { _, _ -> },
 ) = loopbackOnly {
     post(path) {
         // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
@@ -177,6 +190,10 @@ private fun Route.hookRoutes(
                 return@post
             }
         }
+
+        // Best-effort side-channel (Claude model capture) — before normalize/append so an ignored hook
+        // that still carries a transcript_path is not skipped. Never fails the hook.
+        onHookPayload(sessionId, payload)
 
         val normalized = normalize(event, payload, paneId)
         if (normalized != null) {

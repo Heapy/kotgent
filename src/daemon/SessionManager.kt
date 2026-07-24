@@ -182,6 +182,13 @@ class SessionManager(
      * Claude and for tests.
      */
     private val discoverProviderId: suspend (SessionMeta) -> ProviderSessionId? = { null },
+    /**
+     * Best-effort, fire-and-forget model capture for a freshly-started session (Codex reads it from the
+     * rollout after launch; Claude captures it via the hook path instead, so this is a no-op there). Called
+     * once from [start] with the stored meta; the daemon wires it to a background job that discovers and
+     * persists the model. Default no-op keeps it inert in tests that do not exercise it.
+     */
+    private val captureModelInBackground: (SessionMeta) -> Unit = {},
     private val newSessionId: () -> SessionId = { SessionId(randomShortId()) },
     private val now: () -> Long = ::daemonEpochMillis,
     private val cols: Int = DEFAULT_COLS,
@@ -282,6 +289,9 @@ class SessionManager(
                         store.projectionOf(sessionId).providerSessionId ?: discoverProviderId(meta)
                     }
                 }
+                // Best-effort, fire-and-forget model capture (Codex reads the rollout post-launch; a no-op
+                // for Claude, whose model arrives via the hook path).
+                captureModelInBackground(meta)
                 store.getSession(sessionId) ?: meta
             } catch (e: Throwable) {
                 // The launch (or a step after it) failed — compensate by killing the just-created tmux

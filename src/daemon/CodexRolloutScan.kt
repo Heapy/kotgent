@@ -1,5 +1,6 @@
 package io.kotgent.daemon
 
+import io.kotgent.adapter.extractModel
 import io.kotgent.core.ProviderSessionId
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -161,6 +162,24 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
             }
     }
 
+    /**
+     * The model of the newest rollout written for [cwd] at or after [notBeforeMillis], or `null`. Codex
+     * records the model in a `turn_context` record (a few lines in, PAST the multi-KB `session_meta` line),
+     * so this reads a larger [MODEL_SCAN_BYTES] head than [discoverSessionId] and pulls the first
+     * `"model":"…"` out of it with [extractModel] (which skips `session_meta`'s neighbouring
+     * `model_provider`). Best-effort — a rollout with no model line yields `null`.
+     */
+    fun discoverModel(cwd: String, notBeforeMillis: Long): String? {
+        val threshold = notBeforeMillis - MTIME_SLACK_MILLIS
+        return rolloutFiles()
+            .filter { it.mtimeMillis >= threshold }
+            .sortedByDescending { it.mtimeMillis }
+            .firstNotNullOfOrNull { file ->
+                val head = readHead(file.path, MODEL_SCAN_BYTES) ?: return@firstNotNullOfOrNull null
+                if (rolloutCwd(head) == cwd) extractModel(head) else null
+            }
+    }
+
     /** One rollout file found on disk: its base [name], full [path], and mtime in epoch millis. */
     private data class RolloutFile(val name: String, val path: String, val mtimeMillis: Long)
 
@@ -211,13 +230,13 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
         st.st_mtimespec.tv_sec * 1000L + st.st_mtimespec.tv_nsec / 1_000_000L
     }
 
-    /** The first [HEAD_BYTES] of [path] as text, or `null` if it cannot be read. */
-    private fun readHead(path: String): String? {
+    /** The first [bytes] of [path] as text (default [HEAD_BYTES]), or `null` if it cannot be read. */
+    private fun readHead(path: String, bytes: Int = HEAD_BYTES): String? {
         val fp = fopen(path, "rb") ?: return null
         try {
             fseek(fp, 0, SEEK_SET)
-            val buffer = ByteArray(HEAD_BYTES)
-            val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), HEAD_BYTES.convert(), fp) }
+            val buffer = ByteArray(bytes)
+            val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), bytes.convert(), fp) }
             val n = read.toInt()
             if (n <= 0) return null
             return buffer.decodeToString(0, n)
@@ -233,6 +252,13 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
          * generous headroom while keeping the read O(1) per candidate file.
          */
         const val HEAD_BYTES: Int = 8 * 1024
+
+        /**
+         * How much of a rollout to read when looking for the `model`. It lives in a `turn_context` record a
+         * few lines PAST the multi-KB `session_meta` line, so this window must clear that line — 256 KB is
+         * ample for a freshly-started session (which is when model capture runs) while staying bounded.
+         */
+        const val MODEL_SCAN_BYTES: Int = 256 * 1024
 
         /** Tolerance on the mtime cutoff, absorbing clock/rounding skew (see [discoverSessionId]). */
         const val MTIME_SLACK_MILLIS: Long = 2_000

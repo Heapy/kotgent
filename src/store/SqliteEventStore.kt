@@ -179,6 +179,19 @@ class SqliteEventStore private constructor(
         )
     }
 
+    override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long): Unit = mutex.withLock {
+        sessions.setModel(model, updatedAt, sessionId.value)
+        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
+        // The model itself rides the periodic /events resync (SessionMeta.toUpdateDto); this signal just
+        // keeps state/unread fresh (it carries archived, not model).
+        _sessionUpdates.tryEmit(
+            SessionUpdate(
+                sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
+                unread(row.last_seq, row.read_cursor), row.archived != 0L,
+            ),
+        )
+    }
+
     override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock {
         sessions.get(sessionId.value).executeAsOneOrNull()?.toMeta()
     }

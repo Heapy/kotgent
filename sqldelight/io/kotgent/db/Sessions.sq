@@ -84,6 +84,12 @@ UPDATE sessions
 SET archived = ?, updated_at = ?
 WHERE id = ?;
 
+-- Set ONLY the discovered model (and updated_at). Best-effort, once per session; never touches state.
+setModel:
+UPDATE sessions
+SET model = ?, updated_at = ?
+WHERE id = ?;
+
 get:
 SELECT *
 FROM sessions

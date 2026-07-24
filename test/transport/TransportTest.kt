@@ -96,13 +96,15 @@ class TransportTest {
         val meta = SessionMeta(
             id = SessionId("dto01"), name = "n", agent = "claude", cwd = "/w",
             tmuxSession = "kt-dto01", state = SessionState.running, createdAt = 1L, updatedAt = 1L,
-            cliVersion = "2.1.218", cliPath = "/usr/local/bin/claude",
+            model = "claude-opus-4-8", cliVersion = "2.1.218", cliPath = "/usr/local/bin/claude",
         )
         val dto = meta.toDto()
+        assertEquals("claude-opus-4-8", dto.model)
         assertEquals("2.1.218", dto.cliVersion)
         assertEquals("/usr/local/bin/claude", dto.cliPath)
 
-        val bare = meta.copy(cliVersion = null, cliPath = null).toDto()
+        val bare = meta.copy(model = null, cliVersion = null, cliPath = null).toDto()
+        assertNull(bare.model, "a session with no discovered model maps to null")
         assertNull(bare.cliVersion, "a session with no detected version maps to null")
         assertNull(bare.cliPath)
     }
@@ -554,6 +556,11 @@ class TransportTest {
             val m = metas[sessionId] ?: return@withLock
             metas[sessionId] = m.copy(archived = archived, updatedAt = updatedAt)
             updates.tryEmit(SessionUpdate(sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), archived))
+        }
+
+        override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long): Unit = mutex.withLock {
+            val m = metas[sessionId] ?: return@withLock
+            metas[sessionId] = m.copy(model = model, updatedAt = updatedAt)
         }
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }

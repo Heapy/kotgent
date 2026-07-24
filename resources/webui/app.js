@@ -134,7 +134,7 @@ function App() {
               lastSeq: msg.lastSeq,
               unread: msg.unread,
               archived: msg.archived,
-            })
+            }, msg.model != null ? { model: msg.model } : {}) // only the resync carries model; never blank it
           : s)));
       };
       socket.onclose = () => { if (!stopped) timer = setTimeout(connect, 2000); };

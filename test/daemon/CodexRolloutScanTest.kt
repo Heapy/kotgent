@@ -214,6 +214,29 @@ class CodexRolloutScanTest {
         assertNull(CodexRolloutScan("/nonexistent/kotgent-test-codex").discoverSessionId("/work", 0))
     }
 
+    // --- model discovery ---
+
+    @Test
+    fun discoverModelReadsTheModelFromTurnContextPastTheHeadBoundary() {
+        val codexDir = makeCodexDir()
+        val id = uuid('d')
+        // The model sits in a turn_context record AFTER a >8 KB session_meta line — past discoverSessionId's
+        // 8 KB head, so this only works because discoverModel reads the larger MODEL_SCAN_BYTES window.
+        placeRolloutWithModel(codexDir, "2026", "07", "23", id, cwd = "/work/model", model = "gpt-5.5")
+
+        val scan = CodexRolloutScan(codexDir)
+        assertEquals("gpt-5.5", scan.discoverModel("/work/model", notBeforeMillis = 0))
+        assertNull(scan.discoverModel("/work/nowhere", notBeforeMillis = 0), "no matching cwd -> null")
+    }
+
+    @Test
+    fun discoverModelIsNullWhenTheRolloutHasNoModel() {
+        val codexDir = makeCodexDir()
+        // A plain session_meta-only rollout (no turn_context, no model) — best-effort miss.
+        placeRollout(codexDir, "2026", "07", "23", uuid('e'), cwd = "/work/nomodel")
+        assertNull(CodexRolloutScan(codexDir).discoverModel("/work/nomodel", notBeforeMillis = 0))
+    }
+
     // --- harness (throwaway $TMPDIR fake ~/.codex; NEVER the real one) --------------------------------
 
     private val mode0700: Int get() = S_IRUSR or S_IWUSR or S_IXUSR
@@ -253,6 +276,38 @@ class CodexRolloutScanTest {
             """{"timestamp":"$year-$month-${day}T10:00:00.000Z","type":"session_meta","payload":""" +
                 """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
         )
+        files += file
+    }
+
+    /**
+     * Like [placeRollout] but with a realistically LARGE `session_meta` line (padded past the 8 KB head)
+     * followed by a `turn_context` record carrying the [model] — the shape [CodexRolloutScan.discoverModel]
+     * must read past to find. The session_meta carries `model_provider` but not `model`, guarding the
+     * false-match.
+     */
+    private fun placeRolloutWithModel(
+        codexDir: String,
+        year: String,
+        month: String,
+        day: String,
+        id: ProviderSessionId,
+        cwd: String,
+        model: String,
+    ) {
+        var path = "$codexDir/sessions"
+        for (segment in listOf(year, month, day)) {
+            mkdir(path, mode0700.convert()).also { if (!dirs.contains(path)) dirs += path }
+            path = "$path/$segment"
+        }
+        mkdir(path, mode0700.convert()).also { if (!dirs.contains(path)) dirs += path }
+
+        val padding = "x".repeat(20_000) // pushes the turn_context past the 8 KB session-id head window
+        val file = "$path/rollout-$year-$month-${day}T10-00-00-${id.value}.jsonl"
+        val meta = """{"timestamp":"$year-$month-${day}T10:00:00.000Z","type":"session_meta","payload":""" +
+            """{"session_id":"${id.value}","cwd":"$cwd","model_provider":"openai","base_instructions":"$padding"}}"""
+        val turn = """{"timestamp":"$year-$month-${day}T10:00:05.000Z","type":"turn_context","payload":""" +
+            """{"cwd":"$cwd","model":"$model"}}"""
+        writeFile(file, meta + "\n" + turn + "\n")
         files += file
     }
 

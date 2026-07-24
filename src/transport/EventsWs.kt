@@ -131,6 +131,12 @@ data class SessionUpdateDto(
     val unread: Long,
     /** Whether the session is archived ("done"); the client hides/shows the row on this. */
     val archived: Boolean = false,
+    /**
+     * The discovered model, or null. Carried on the SNAPSHOT/resync form ([SessionMeta.toUpdateDto]); the
+     * live signal ([SessionUpdate]) does not track it, so it is null there — the client only overwrites its
+     * model when this is non-null (see app.js), so a live update never blanks an already-shown model.
+     */
+    val model: String? = null,
 )
 
 fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
@@ -150,6 +156,7 @@ fun SessionMeta.toUpdateDto(): SessionUpdateDto = SessionUpdateDto(
     lastSeq = lastSeq.value,
     unread = unread(lastSeq.value, readCursor.value),
     archived = archived,
+    model = model,
 )
 
 /** A single canonical event pushed on the per-session `/events?session=…` stream. */

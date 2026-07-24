@@ -198,6 +198,8 @@ data class SessionDto(
     val name: String,
     val tags: List<String>,
     val agent: String,
+    /** Best-effort discovered model (e.g. `"claude-opus-4-8"`), or null — shown in the sidebar. */
+    val model: String? = null,
     /** Agent CLI version (e.g. `"2.1.218"`), or null until detected — shown in the sidebar. */
     val cliVersion: String? = null,
     /** Resolved agent CLI path, or null — a tooltip detail (the sidebar shows the version). */
@@ -223,6 +225,7 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     name = name,
     tags = tags,
     agent = agent,
+    model = model,
     cliVersion = cliVersion,
     cliPath = cliPath,
     providerSessionId = providerSessionId?.value,

@@ -259,6 +259,28 @@ class SessionManagerTest {
         }
     }
 
+    @Test
+    fun startInvokesTheBackgroundModelCaptureForTheNewSession() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val captured = CompletableDeferred<SessionMeta>()
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                captureModelInBackground = { meta -> captured.complete(meta) },
+                newSessionId = { SessionId("mdl01") },
+                now = { 1L },
+            )
+
+            mgr.start("codex", "/work/x")
+
+            val meta = captured.await()
+            assertEquals(SessionId("mdl01"), meta.id, "start wired model capture for the new session")
+            assertEquals("/work/x", meta.cwd, "…with the session's cwd for the rollout scan")
+        }
+    }
+
     // ---- provider-id capture: preallocated -> SessionBound in the log immediately ----
 
     @Test

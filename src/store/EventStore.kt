@@ -108,6 +108,14 @@ interface EventStore {
      */
     suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long)
 
+    /**
+     * Set the best-effort discovered `model` on an existing session row (and its `updated_at`), leaving
+     * `state` / `last_seq` / `provider_session_id` untouched. Called once per session by the model-capture
+     * seams (Claude transcript / Codex rollout). A no-op if the row does not exist. The model reaches
+     * clients via the periodic `/events` resync (which carries it), so this emits an ordinary signal.
+     */
+    suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long)
+
     /** The session's current metadata row, or `null` if no such session has been upserted. */
     suspend fun getSession(sessionId: SessionId): SessionMeta?
 

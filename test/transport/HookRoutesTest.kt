@@ -10,7 +10,9 @@ import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.SessionState
 import io.kotgent.store.EventStore
+import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
 import io.ktor.client.HttpClient
@@ -63,12 +65,18 @@ class HookRoutesTest {
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
         tokenProvider: () -> String = { token },
+        modelCapture: ClaudeModelCapture? = null,
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             // grace = 0: these tests do not exercise the launch/register race, so an unknown pane must
             // 404 immediately rather than waiting out the production grace window.
-            routing { claudeHookRoutes(tokenProvider, paneLookup, store, paneLookupGraceMillis = 0) }
+            routing {
+                claudeHookRoutes(
+                    tokenProvider, paneLookup, store, paneLookupGraceMillis = 0,
+                    modelCapture = modelCapture ?: ClaudeModelCapture(store),
+                )
+            }
         }
         try {
             withTimeout(20_000) {
@@ -114,6 +122,30 @@ class HookRoutesTest {
             assertEquals(session, appended.sessionId, "appended under the pane-resolved session")
             assertEquals(AgentEvent.TurnCompleted, appended.event, "Stop → TurnCompleted")
             assertEquals(EventSource.hook, appended.source, "source is the hook ingress")
+        }
+    }
+
+    // ---- model capture is wired into the claude ingress (catches a missing wire) ----
+
+    @Test
+    fun aClaudeHookWithATranscriptPathCapturesTheModel() {
+        val store = SqliteEventStore.inMemory(now = { 1L })
+        val capture = ClaudeModelCapture(
+            store,
+            readTranscriptTail = { path -> if (path == "/t.jsonl") """{"message":{"model":"claude-opus-4-8"}}""" else null },
+            now = { 2L },
+        )
+        withIngress(store, modelCapture = capture) { port, client ->
+            store.upsertSession(
+                SessionMeta(
+                    id = session, name = "n", agent = "claude", cwd = "/w",
+                    tmuxSession = "kt-abc123", state = SessionState.running, createdAt = 1L, updatedAt = 1L,
+                ),
+            )
+            val response = client.postHook(port, ClaudeHookConfig.STOP, body = """{"transcript_path":"/t.jsonl"}""")
+            assertEquals(HttpStatusCode.OK, response.status)
+            // onHookPayload is awaited in the handler, so the model is persisted by the time the POST returns.
+            assertEquals("claude-opus-4-8", store.getSession(session)!!.model, "the ingress wired the model capture")
         }
     }
 
@@ -401,6 +433,7 @@ class HookRoutesTest {
             updatedAt: Long,
         ) = Unit
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
+        override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long) = Unit
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
