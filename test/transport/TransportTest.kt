@@ -443,7 +443,16 @@ class TransportTest {
                 setBody("swallowed")
             }
             assertEquals(HttpStatusCode.Conflict, refused.status, "an undeliverable write must not answer ok")
-            assertTrue("copy-mode" in refused.bodyAsText(), "and it must say why: ${refused.bodyAsText()}")
+            val refusalBody = refused.bodyAsText()
+            assertTrue("copy-mode" in refusalBody, "and it must say why: $refusalBody")
+            assertTrue(
+                "scroll the pane back to the bottom" in refusalBody,
+                "and it must carry the copy-mode remedy promised by both input paths: $refusalBody",
+            )
+            assertTrue(
+                upstream.writes.tryReceive().isFailure,
+                "a failed copy-mode preflight must short-circuit before any bytes reach the upstream",
+            )
         }
     }
 

@@ -235,6 +235,28 @@
 >
 > Suite is now **467 run / 467 passed / 0 skipped**; direct `ptycheck` remains 8/8.
 
+> **Revision 10 — adversarial-review teardown and input-ordering contracts.** All four findings were
+> confirmed:
+>
+> 1. The old `masterFdReservedAfterReaderJoin` assertion was tautological. It is replaced by
+>    `readerCompletedBeforeMasterFdRelease`, sampled from the independent reader job by the helper that
+>    actually calls `posixClose`. The held-slave check now discriminates the order itself. Negative
+>    control: with the wake pipe and every other fix retained, moving only `releaseMasterFd()` above
+>    wake/cancel/join made that check fail while the other ten passed:
+>    `SUMMARY total=11 failed=1 skipped=0`.
+> 2. `Pty.close` now claims teardown with an atomic compare-and-set and publishes its result through a
+>    one-shot completion. Concurrent and sequential callers await the winner, receive the same child
+>    exit code, and cannot repeat closes on recycled descriptor numbers. A bounded real-PTY check forces
+>    two calls to overlap through the SIGTERM grace period and requires both, plus a later call, to
+>    report `137`.
+> 3. The refused `/input` transport test now asserts the upstream write channel stayed empty. Swapping
+>    the `&&` operands would enqueue the refused body and fail the check.
+> 4. `/input`'s ambiguous 409 conditionally restores the copy-mode remedy both comments promised, while
+>    preserving the inspect-before-resending warning for a possible partial pty write.
+>
+> Final validation: **467 run / 467 passed / 0 skipped**; direct `ptycheck`
+> **11/11** (`failed=0 skipped=0`). No throwaway tmux server or test temp directory remained.
+
 ## Overview
 
 The daemon's tmux server (`-L kotgent`) **reads the user's `~/.tmux.conf`**. The `-L` socket label

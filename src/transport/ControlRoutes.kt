@@ -177,8 +177,9 @@ fun Route.controlRoutes(
             call.respondText(
                 "input delivery for session ${id.value} could not be confirmed: no terminal may be " +
                     "attached, tmux copy-mode clearance may have failed, or the pty write may have " +
-                    "stopped after delivering a prefix; inspect the session before resending because " +
-                    "retrying the whole body can duplicate input",
+                    "stopped after delivering a prefix; if tmux copy-mode is the cause, scroll the pane " +
+                    "back to the bottom (or press q), then retry; otherwise inspect the session before " +
+                    "resending because retrying the whole body can duplicate input",
                 status = HttpStatusCode.Conflict,
             )
             return@post

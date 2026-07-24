@@ -66,6 +66,7 @@ fun main() {
     spawnedChildInheritsOnlyTheTty()
     prepareCloseUnblocksAFullMasterWrite()
     closeStopsTheReaderBeforeReleasingTheMasterDescriptor()
+    concurrentCloseRunsTeardownExactlyOnce()
     tmuxAttachRunsOnTheSpawnedPts()
     resizeReachesARunningTmuxAttach()
     terminalBridgeFansOutRealTmuxAttach()
@@ -241,8 +242,10 @@ private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblock
 /**
  * A parent-held slave descriptor keeps the reader blocked after [Pty.prepareClose] terminates/reaps the
  * child. [Pty.close] must wake and JOIN that reader while [Pty.masterFd]'s NUMBER is still reserved, then
- * return the already-recorded child exit code. The descriptor observation is the falsifiable property:
- * the old close-first ordering still returns promptly, but reports that the number was reusable at join.
+ * return the already-recorded child exit code. [Pty.readerCompletedBeforeMasterFdRelease] is the
+ * discriminator: the release helper snapshots the independent reader job immediately before
+ * `posixClose`. Moving only that release above the wake/cancel/join protocol (while retaining the wake
+ * pipe) makes the snapshot false; the prompt return and exit-code assertions remain secondary checks.
  */
 @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class, ExperimentalForeignApi::class)
 private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
@@ -288,8 +291,8 @@ private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
             expect(closeExitCode == expectedExitCode) {
                 "close returned $closeExitCode instead of the recorded child exit code $expectedExitCode"
             }
-            expect(pty.masterFdReservedAfterReaderJoin) {
-                "the master descriptor number was already reusable when the reader joined"
+            expect(pty.readerCompletedBeforeMasterFdRelease) {
+                "the master descriptor was released before close completed and joined its reader"
             }
         } finally {
             if (heldSlaveFd >= 0) close(heldSlaveFd)
@@ -299,6 +302,95 @@ private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
             closeContext.close()
         }
     }
+
+/**
+ * [Pty.close] is publicly idempotent, including two callers that overlap during its bounded child reap.
+ * A child that inherits ignored `SIGTERM` forces the winning caller through the two-second grace period,
+ * while a start gate releases two dedicated workers together. Both callers must await the same teardown
+ * and return its real `SIGKILL` exit code; a second body would race `waitpid` and repeat the raw closes.
+ */
+@OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
+private fun concurrentCloseRunsTeardownExactlyOnce() = check("concurrent close runs teardown exactly once") {
+    val pty = Pty.open(
+        listOf("/bin/sh", "-c", "trap '' TERM; printf 'READY\\n'; exec /bin/sleep 60"),
+    )
+    val firstContext = newSingleThreadContext("ptycheck-close-first")
+    val secondContext = newSingleThreadContext("ptycheck-close-second")
+    val firstScope = CoroutineScope(firstContext + Job())
+    val secondScope = CoroutineScope(secondContext + Job())
+    val start = CompletableDeferred<Unit>()
+    val firstReady = CompletableDeferred<Unit>()
+    val secondReady = CompletableDeferred<Unit>()
+    var firstClose: Deferred<Int>? = null
+    var secondClose: Deferred<Int>? = null
+    var childMayBeAlive = true
+    var closeCompleted = false
+
+    try {
+        readUntil(pty, "READY", timeoutMs = 4_000)
+        val firstTask = firstScope.async {
+            firstReady.complete(Unit)
+            start.await()
+            pty.close()
+        }
+        val secondTask = secondScope.async {
+            secondReady.complete(Unit)
+            start.await()
+            pty.close()
+        }
+        firstClose = firstTask
+        secondClose = secondTask
+
+        val results = runBlocking {
+            val bothReady = withTimeoutOrNull(5_000) {
+                firstReady.await()
+                secondReady.await()
+                true
+            } ?: false
+            expect(bothReady) { "both dedicated close workers did not reach the start gate" }
+            start.complete(Unit)
+            delay(200)
+            expect(!firstTask.isCompleted && !secondTask.isCompleted) {
+                "the ignored-SIGTERM positive control did not keep both close callers overlapped"
+            }
+            withTimeoutOrNull(10_000) { firstTask.await() to secondTask.await() }
+        }
+        val completedResults = results
+            ?: throw AssertionError("the two close callers did not finish the one bounded teardown within 10 seconds")
+        childMayBeAlive = false
+        val expectedExitCode = 128 + SIGKILL
+        expect(completedResults.first == expectedExitCode && completedResults.second == expectedExitCode) {
+            "both close callers should return the one child exit code $expectedExitCode, got $completedResults"
+        }
+        expect(pty.close() == expectedExitCode) {
+            "a later sequential close should return the same child exit code $expectedExitCode"
+        }
+        closeCompleted = true
+    } finally {
+        try {
+            // Only needed if the check fails before the winning close reaps the child. Signal the process
+            // group so no ignored-SIGTERM fixture can survive a broken implementation.
+            if (childMayBeAlive) kill(-pty.pid, SIGKILL)
+            val workersFinished = runBlocking {
+                withTimeoutOrNull(5_000) {
+                    firstClose?.join()
+                    secondClose?.join()
+                    true
+                } ?: false
+            }
+            // Do not turn a bounded failure into an unbounded third close: only await the one-shot result
+            // after both workers finished, or claim teardown here when they were never started.
+            if (!closeCompleted && (workersFinished || firstClose == null && secondClose == null)) {
+                runCatching { pty.close() }
+            }
+        } finally {
+            firstScope.cancel()
+            secondScope.cancel()
+            firstContext.close()
+            secondContext.close()
+        }
+    }
+}
 
 /** Open a duplicate of a pty's slave side so a reader gets neither data nor EOF during close. */
 @OptIn(ExperimentalForeignApi::class)
@@ -328,7 +420,7 @@ private fun openSlave(masterFd: Int): Int = memScoped {
  * `~/.tmux.conf`, and one with `set -g destroy-unattached on` would have tmux tear the session down
  * the instant the attach below closes — failing the "should outlive the attach" assertion on a
  * machine-specific setting the fixture never mentions. It is the first of the three tmux checks in
- * `main()` (the 8th check overall), and `-f` only applies to the invocation that STARTS a server —
+ * `main()` (the 9th check overall), and `-f` only applies to the invocation that STARTS a server —
  * so the flag on the later calls *of this check* is inert while this server lives. Each of the other
  * tmux checks starts its own server (an empty tmux server does not persist, and the `finally` below
  * kills the last session), so their `-f` is load-bearing too, not inert.

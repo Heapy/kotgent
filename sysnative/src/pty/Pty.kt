@@ -34,6 +34,7 @@ import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -43,8 +44,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.runBlocking
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import platform.posix.EINTR
-import platform.posix.F_GETFD
 import platform.posix.O_RDWR
 import platform.posix.POLLIN
 import platform.posix.SIGKILL
@@ -52,7 +54,6 @@ import platform.posix.SIGTERM
 import platform.posix.SIGWINCH
 import platform.posix.WNOHANG
 import platform.posix.errno
-import platform.posix.fcntl
 import platform.posix.fflush
 import platform.posix.fputs
 import platform.posix.kill
@@ -83,7 +84,12 @@ class PtyException(message: String) : RuntimeException(message)
  * dedicated reader thread (there is no `Dispatchers.IO` on Kotlin/Native) into an
  * unlimited [output] channel that coroutine consumers read from.
  */
-@OptIn(ExperimentalForeignApi::class, DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
+@OptIn(
+    ExperimentalForeignApi::class,
+    DelicateCoroutinesApi::class,
+    ExperimentalCoroutinesApi::class,
+    ExperimentalAtomicApi::class,
+)
 class Pty private constructor(
     /** The pty master file descriptor, owned by this process. */
     val masterFd: Int,
@@ -102,17 +108,22 @@ class Pty private constructor(
     private val readerScope = CoroutineScope(readerContext)
     private lateinit var readerJob: Job
 
-    private var closed = false
+    /** Exactly one [close] caller owns teardown; every later caller awaits [closeCompletion]. */
+    private val closeClaimed = AtomicInt(0)
+    private val closeCompletion = CompletableDeferred<Int>()
     private var reaped = false
     private var exitCode = -1
 
     /**
-     * Whether [masterFd]'s number was still reserved after the reader worker joined during [close].
+     * Whether the independent reader job had completed when [close] began releasing [masterFd].
      *
      * Public as a real-PTY integration seam because KT-78062 prevents the test binary from linking
-     * this cinterop-backed class. Production teardown does not branch on this observation.
+     * this cinterop-backed class. Unlike checking the descriptor immediately before closing it (which
+     * is tautologically true), [releaseMasterFd] snapshots the reader's actual completion state at the
+     * release operation: moving that operation above the wake/cancel/join protocol makes this false.
+     * Production teardown does not branch on this observation.
      */
-    public var masterFdReservedAfterReaderJoin: Boolean = false
+    public var readerCompletedBeforeMasterFdRelease: Boolean = false
         private set
 
     private fun startReader() {
@@ -174,6 +185,17 @@ class Pty private constructor(
                 throw PtyException("wake pty reader failed: ${errnoMessage(code)}")
             }
         }
+    }
+
+    /**
+     * Release the master descriptor while recording the reader state at that exact operation.
+     *
+     * Keeping the observation and [posixClose] in one helper is load-bearing for the integration
+     * check: reordering the release necessarily reorders its snapshot too.
+     */
+    private fun releaseMasterFd() {
+        readerCompletedBeforeMasterFdRelease = readerJob.isCompleted
+        posixClose(masterFd)
     }
 
     /**
@@ -281,7 +303,12 @@ class Pty private constructor(
      * valid and cannot be reused until [close]. Idempotent.
      */
     fun prepareClose() {
-        if (closed || reaped) return
+        if (closeClaimed.load() != 0 || reaped) return
+        terminateAndReapChild()
+    }
+
+    /** The child-teardown half shared by [prepareClose] and the winning [close] caller. */
+    private fun terminateAndReapChild() {
         if (!reaped) {
             kill(pid, SIGTERM)
             if (!reapBounded(CLOSE_GRACE_MICROS)) {
@@ -306,20 +333,30 @@ class Pty private constructor(
      * cancels and explicitly joins [readerJob] while [masterFd]'s number is still reserved, then closes
      * the master. [prepareClose] remains separate for Broadcaster's close-vs-write gate; calling
      * [close] directly still performs both phases for every other owner.
+     *
+     * A compare-and-set claims this whole sequence before child teardown starts. Concurrent and later
+     * callers await the winner's [closeCompletion], so they return the same post-reap exit code and can
+     * never repeat any descriptor close after the numbers have been recycled.
      */
     fun close(): Int {
-        if (closed) return exitCode
-        prepareClose()
-        wakeReader()
-        readerScope.cancel()
-        runBlocking { readerJob.join() }
-        readerContext.close()
-        masterFdReservedAfterReaderJoin = fcntl(masterFd, F_GETFD) >= 0
-        posixClose(masterFd)
-        posixClose(readerWakeReadFd)
-        posixClose(readerWakeWriteFd)
-        closed = true
-        return exitCode
+        if (!closeClaimed.compareAndSet(0, 1)) {
+            return runBlocking { closeCompletion.await() }
+        }
+
+        try {
+            terminateAndReapChild()
+            wakeReader()
+            readerScope.cancel()
+            runBlocking { readerJob.join() }
+            readerContext.close()
+            releaseMasterFd()
+            posixClose(readerWakeReadFd)
+            posixClose(readerWakeWriteFd)
+            return exitCode.also { closeCompletion.complete(it) }
+        } catch (t: Throwable) {
+            closeCompletion.completeExceptionally(t)
+            throw t
+        }
     }
 
     /**

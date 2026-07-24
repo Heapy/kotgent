@@ -384,6 +384,18 @@ child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before
 forked child can deadlock. A dedicated reader thread does the blocking `read()` into a `Channel`
 (there is no `Dispatchers.IO` on native).
 
+**`Pty.close` joins the reader before releasing the master fd, exactly once.** Coroutine cancellation
+cannot interrupt a native thread blocked in a C syscall, so the reader polls the master plus a private
+wake pipe. Close terminates/reaps the child, signals that pipe, cancels and joins the reader, and only then
+closes the master; closing the master first frees its descriptor number while the stale reader can still
+run and consume bytes from a new session that reuses it. An atomic claim gives the whole teardown one
+owner, and concurrent or later callers await the same completed exit code instead of repeating any raw
+close. `prepareClose` remains the separate first phase used to unblock a full master write without
+releasing the fd. The `ptycheck` ordering check holds a slave open and snapshots the independent reader
+job at the actual master-release helper; moving only that helper above the unchanged wake/cancel/join
+sequence was verified to produce `SUMMARY total=11 failed=1 skipped=0`. Do not weaken the check back to a
+descriptor-validity query immediately before its own close — that observation is tautological.
+
 **A `posix_spawn`ed child gets NO controlling terminal, so `Pty.resize` must send `SIGWINCH` itself.**
 `ioctl(TIOCSWINSZ)` raises `SIGWINCH` on the tty's **foreground process group** — and this pty has none:
 the child opens the pts through a posix_spawn **file action**, and the kernel runs that open *without*
@@ -443,7 +455,7 @@ These are real and cost time to rediscover. Respect them.
 ## Testing & running
 
 - Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **463 native tests passed /
-  0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 8 real-PTY checks, driven by
+  0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
