@@ -209,12 +209,15 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - [x] run `./kotlin build && ./kotlin test` — must pass before Task 5
 
 ### Task 5: Verify acceptance criteria
-- [ ] `mergedDaemonPath` correctly merges/dedups and falls back (Task 1 green)
-- [ ] a fresh install writes a plist whose PATH includes the caller's PATH (Task 2 green)
-- [ ] an unresolvable agent fails fast with a clear 400 + `kotgent install` hint and **no** phantom
-      `running` row / orphan pane (Tasks 3-4 green)
-- [ ] run the full suite: `./kotlin build && ./kotlin test` — 0 failures, **0 skips**, count ≥ prior 361
-- [ ] no machine-specific absolute path leaked into any `*.yaml` (`git grep '/Users/' -- '*.yaml'` empty)
+- [x] `mergedDaemonPath` correctly merges/dedups and falls back (Task 1 green — 5 PlistTest cases pass)
+- [x] a fresh install writes a plist whose PATH includes the caller's PATH (Task 2 green — InstallTest
+      `installSnapshotsTheCallersPathIntoThePlist` + null-fallback case pass)
+- [x] an unresolvable agent fails fast with a clear 400 + `kotgent install` hint and **no** phantom
+      `running` row / orphan pane (Tasks 3-4 green — SessionManagerTest asserts no tmux side-effect + no
+      persisted row + hint message; TransportTest asserts 400 + hint for start and resume/action)
+- [x] run the full suite: `./kotlin build && ./kotlin test` — 0 failures, **0 skips**, count ≥ prior 361
+      (actual: 385 run / 385 passed / 0 skips)
+- [x] no machine-specific absolute path leaked into any `*.yaml` (`git grep '/Users/' -- '*.yaml'` empty)
 
 ### Task 6: Update documentation
 - [ ] update `CLAUDE.md` if warranted (note: the daemon's launchd PATH is snapshotted from the user's
