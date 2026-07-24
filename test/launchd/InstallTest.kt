@@ -1,5 +1,6 @@
 package io.kotgent.launchd
 
+import io.kotgent.sys.DEFAULT_UTF8_LOCALE
 import io.kotgent.tmux.ProcessResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -163,6 +164,33 @@ class InstallTest {
         assertTrue("<string>$DAEMON_DEFAULT_PATH</string>" in content, "falls back to DAEMON_DEFAULT_PATH")
     }
 
+    @Test
+    fun installSnapshotsTheCallersUtf8LangIntoThePlist() {
+        val fake = FakeRunner()
+        val (installer, _) = newInstaller(fake, uid = 501u, langProvider = { "ru_RU.UTF-8" })
+
+        val content = readFile(installer.install("/bin/kotgent"))
+
+        assertTrue("<string>ru_RU.UTF-8</string>" in content, "the caller's UTF-8 locale is written verbatim")
+    }
+
+    @Test
+    fun installSubstitutesAUtf8LangWhenTheCallerHasNoneOrANonUtf8One() {
+        // The launchd failure mode: no LANG (or a C/POSIX one) means every tmux client the daemon opens
+        // renders non-ASCII cells as `_`, so the plist must carry a UTF-8 locale regardless.
+        for (captured in listOf(null, "C")) {
+            val fake = FakeRunner()
+            val (installer, _) = newInstaller(fake, uid = 501u, langProvider = { captured })
+
+            val content = readFile(installer.install("/bin/kotgent"))
+
+            assertTrue(
+                "<string>$DEFAULT_UTF8_LOCALE</string>" in content,
+                "a captured LANG of <$captured> falls back to $DEFAULT_UTF8_LOCALE",
+            )
+        }
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** A [LaunchdInstaller] wired to [fake], writing under a fresh throwaway temp base (also returned). */
@@ -170,6 +198,7 @@ class InstallTest {
         fake: FakeRunner,
         uid: UInt,
         pathProvider: () -> String? = { null },
+        langProvider: () -> String? = { null },
     ): Pair<LaunchdInstaller, String> {
         val base = uniqueTempBase()
         bases += base
@@ -179,6 +208,7 @@ class InstallTest {
             logDir = "$base/Logs/kotgent",
             uid = uid,
             pathProvider = pathProvider,
+            langProvider = langProvider,
         )
         return installer to base
     }

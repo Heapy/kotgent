@@ -1,5 +1,6 @@
 package io.kotgent.launchd
 
+import io.kotgent.sys.DEFAULT_UTF8_LOCALE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -8,7 +9,8 @@ import kotlin.test.assertTrue
  * Unit tests for the PURE LaunchAgent plist generator (plan Task 16). [launchAgentPlist] takes no I/O
  * and is fully deterministic in its arguments, so every field is asserted directly against the emitted
  * XML: `Label`, `ProgramArguments = [<binary>, "daemon"]`, `RunAtLoad`, `KeepAlive`, `ThrottleInterval`,
- * `EnvironmentVariables.PATH` (must carry `/opt/homebrew/bin` so the daemon finds tmux/claude), and the
+ * `EnvironmentVariables.PATH` (must carry `/opt/homebrew/bin` so the daemon finds tmux/claude),
+ * `EnvironmentVariables.LANG` (a UTF-8 locale, else tmux renders non-ASCII as `_`), and the
  * `StandardOutPath` / `StandardErrorPath` under the log directory.
  */
 class PlistTest {
@@ -64,6 +66,15 @@ class PlistTest {
     }
 
     @Test
+    fun environmentCarriesAUtf8LangAlongsidePath() {
+        // launchd supplies no locale; without an explicit UTF-8 LANG every tmux client the daemon
+        // opens renders non-ASCII cells as `_`.
+        val lang = environmentValue(xml(), "LANG")
+        assertEquals(DEFAULT_UTF8_LOCALE, lang, "LANG defaults to the UTF-8 default")
+        assertTrue(lang.endsWith("UTF-8"), "the emitted locale is a UTF-8 one")
+    }
+
+    @Test
     fun standardOutAndErrorPathsLiveUnderTheLogDir() {
         val x = xml()
         val out = stringAfterKey(x, "StandardOutPath")
@@ -74,17 +85,19 @@ class PlistTest {
     }
 
     @Test
-    fun labelAndThrottleAndPathAreParameterizable() {
+    fun labelAndThrottleAndPathAndLangAreParameterizable() {
         val x = launchAgentPlist(
             binaryPath = binary,
             logDir = logDir,
             label = "io.example.custom",
             path = "/custom/bin",
+            lang = "ru_RU.UTF-8",
             throttleInterval = 42,
         )
         assertEquals("io.example.custom", labelValue(x))
         assertEquals(42, integerAfterKey(x, "ThrottleInterval"))
         assertEquals("/custom/bin", environmentPath(x))
+        assertEquals("ru_RU.UTF-8", environmentValue(x, "LANG"))
     }
 
     @Test
@@ -185,9 +198,11 @@ class PlistTest {
         return Regex("<string>([^<]*)</string>").findAll(array).map { it.groupValues[1] }.toList()
     }
 
-    private fun environmentPath(x: String): String {
+    private fun environmentPath(x: String): String = environmentValue(x, "PATH")
+
+    private fun environmentValue(x: String, key: String): String {
         val envDict = Regex("<key>EnvironmentVariables</key>\\s*<dict>(.*?)</dict>", RegexOption.DOT_MATCHES_ALL)
             .find(x)?.groupValues?.get(1) ?: error("no EnvironmentVariables dict")
-        return stringAfterKey(envDict, "PATH")
+        return stringAfterKey(envDict, key)
     }
 }

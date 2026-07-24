@@ -1,5 +1,7 @@
 package io.kotgent.launchd
 
+import io.kotgent.sys.DEFAULT_UTF8_LOCALE
+
 /**
  * The launchd `Label` for kotgent's per-user daemon agent — the reverse-DNS service id. This is the
  * plist file's basename (`io.kotgent.daemon.plist`) and the handle `launchctl` addresses the job by.
@@ -57,6 +59,10 @@ const val DAEMON_THROTTLE_INTERVAL: Int = 10
  * - `RunAtLoad = true` + `KeepAlive = true` — start at login and keep alive (respawn on exit).
  * - `ThrottleInterval` — minimum seconds between (re)starts (crash-loop floor).
  * - `EnvironmentVariables.PATH = [path]` — so the daemon resolves `tmux`/`claude` under launchd's minimal env.
+ * - `EnvironmentVariables.LANG = [lang]` — launchd supplies **no** locale (on macOS the terminal emulator
+ *   sets one, and no shell runs here), and everything the daemon spawns inherits that emptiness: a tmux
+ *   client without a UTF-8 locale rewrites every non-ASCII cell as `_`, so an agent TUI would render as
+ *   underscores. See [io.kotgent.sys.utf8LocaleOrDefault].
  * - `StandardOutPath` / `StandardErrorPath` — the daemon's stdout/stderr, under [logDir].
  *
  * @param binaryPath absolute path of the kotgent binary to launch (launchd does not expand `~` or `$PATH`).
@@ -68,6 +74,7 @@ fun launchAgentPlist(
     logDir: String,
     label: String = DAEMON_LABEL,
     path: String = DAEMON_DEFAULT_PATH,
+    lang: String = DEFAULT_UTF8_LOCALE,
     throttleInterval: Int = DAEMON_THROTTLE_INTERVAL,
 ): String {
     val logs = logDir.trimEnd('/')
@@ -95,6 +102,8 @@ fun launchAgentPlist(
         appendLine("    <dict>")
         appendLine("        <key>PATH</key>")
         appendLine("        <string>${esc(path)}</string>")
+        appendLine("        <key>LANG</key>")
+        appendLine("        <string>${esc(lang)}</string>")
         appendLine("    </dict>")
         appendLine("    <key>StandardOutPath</key>")
         appendLine("    <string>${esc(outPath)}</string>")

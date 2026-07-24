@@ -1,5 +1,6 @@
 package io.kotgent.pty
 
+import io.kotgent.sys.utf8LocaleOrDefault
 import kotlinx.coroutines.channels.ReceiveChannel
 
 /**
@@ -59,7 +60,52 @@ interface PtyHandle {
  *
  * The [env] is load-bearing for the production `tmux attach` upstream: with an empty environment
  * `tmux attach` fails to build a terminal description ("missing or unsuitable terminal") and the
- * child exits immediately, so the upstream must carry at least `TERM` (plus `HOME`/`PATH`). See
- * [terminalAttachEnv] / [terminalBridgeForSession].
+ * child exits immediately, so the upstream must carry at least `TERM` and a UTF-8 `LANG` (plus
+ * `HOME`/`PATH`). See [terminalAttachEnv] / [terminalBridgeForSession].
  */
 typealias PtyFactory = (command: List<String>, env: Map<String, String>) -> PtyHandle
+
+/**
+ * `TERM` for the `tmux attach` upstream. The attach is a shared transport for xterm.js and CLI
+ * clients, not the daemon's own terminal, so this must be stable and portable: inheriting a value
+ * such as `xterm-ghostty` would also require a custom `TERMINFO` path that a launchd daemon may not
+ * have. The system-provided `xterm-256color` entry always resolves.
+ */
+const val ATTACH_TERM: String = "xterm-256color"
+
+/** `PATH` floor for the attach upstream when the daemon itself has none (launchd's minimal env). */
+const val ATTACH_FALLBACK_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+/**
+ * The environment handed to the `tmux attach` upstream child — **pure**, built from the daemon's own
+ * [lang] / [home] / [path] (the `getenv` reads live in the no-arg overload in `RealPtyHandle.kt`).
+ *
+ * `tmux attach` needs at least [ATTACH_TERM] to build a terminal description — with an empty
+ * environment it fails ("missing or unsuitable terminal"), the child exits immediately and the
+ * browser/CLI terminal shows "[terminal disconnected]".
+ *
+ * `LANG` is **always set**, falling back to a UTF-8 locale via [utf8LocaleOrDefault] rather than
+ * being passed through only when inherited: a tmux client that reads as non-UTF-8 rewrites every
+ * non-ASCII cell as `_`, and under launchd there is no inherited `LANG` at all. Identity is never
+ * derived from inherited env.
+ */
+/**
+ * argv for the upstream attach client: `tmux -u -L <socket> attach -t <session>` — **pure**, so the
+ * exact flags are unit-testable without a tmux server.
+ *
+ * `-u` tells tmux to emit UTF-8 to this client whatever its locale says. It duplicates what a UTF-8
+ * `LANG` in [terminalAttachEnv] already buys, on purpose: the locale route depends on the requested
+ * locale existing on the host, the flag does not. Losing both means tmux rewrites every non-ASCII
+ * cell as `_` (`tty_check_codeset`) and an agent's box-drawing TUI arrives as underscores.
+ */
+fun attachUpstreamCommand(tmuxPath: String, socket: String, session: String): List<String> =
+    listOf(tmuxPath, "-u", "-L", socket, "attach", "-t", session)
+
+fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, String> {
+    val env = LinkedHashMap<String, String>()
+    env["TERM"] = ATTACH_TERM
+    home?.ifBlank { null }?.let { env["HOME"] = it }
+    env["PATH"] = path?.ifBlank { null } ?: ATTACH_FALLBACK_PATH
+    env["LANG"] = utf8LocaleOrDefault(lang)
+    return env
+}

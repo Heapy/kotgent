@@ -131,6 +131,19 @@ does **not** resolve on the daemon's PATH **fails fast**: the factory's `create(
 `AgentBinaryNotFoundException` before any tmux side-effect (no phantom `running` row), which `ControlRoutes`
 maps to a **400 carrying a `kotgent install` hint** — not a silent attach `1006`.
 
+**A UTF-8 `LANG` is never inherited — it is forced.** launchd supplies no locale at all (on macOS the
+terminal *emulator* sets `LANG`; no shell runs for a LaunchAgent, and `/etc/zprofile`'s `LANG=C.UTF-8`
+default only fires for a login shell that never happens here). A tmux **client** decides whether it may
+emit UTF-8 from its own locale, and a client that reads as non-UTF-8 makes tmux rewrite **every**
+non-ASCII cell as `_` (`tty_check_codeset`) — an agent's box-drawing TUI arrives as a wall of
+underscores, which is exactly what a launchd-started daemon used to produce. So the locale is forced in
+three places, never merely passed through: `utf8LocaleOrDefault` (`src/sys/Locale.kt`, the one pure rule
+— a missing *or* non-UTF-8 value becomes `en_US.UTF-8`), the plist's `EnvironmentVariables.LANG`
+(snapshotting the installer's `LANG` through that rule, so the daemon, the tmux server and the agent all
+run UTF-8), and the attach upstream, which sets `LANG` in `terminalAttachEnv` **and** passes tmux's
+global `-u` (`attachUpstreamCommand`) — the flag does not depend on the requested locale existing on the
+host. Do not "optimize" either half away.
+
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on
 daemon start. Hooks report `$TMUX_PANE`. **Never trust an inherited env var** (`KOTGENT_SESSION_ID` is a
@@ -255,7 +268,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **414 run / 414 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **428 run / 428 passed /
   0 skipped**.
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
@@ -280,7 +293,7 @@ src/core/                      host-free domain: AgentEvent, SessionState, Sessi
 src/crypto/                    Sha256, Hmac, Hex — pure-Kotlin (KT-78062: no CommonCrypto in the test binary)
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
-src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
+src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes

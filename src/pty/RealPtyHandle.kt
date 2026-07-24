@@ -36,31 +36,27 @@ class RealPtyHandle(private val pty: Pty) : PtyHandle {
 val realPtyFactory: PtyFactory = { command, env -> RealPtyHandle(Pty.open(command, env)) }
 
 /**
- * The environment handed to the `tmux attach` upstream child. `tmux attach` needs at least `TERM`
- * to build a terminal description — with an empty environment it fails ("missing or unsuitable
- * terminal") and the child exits immediately, EOFing the upstream so the browser/CLI terminal shows
- * "[terminal disconnected]". The attach is a shared transport for xterm.js and CLI clients, not the
- * daemon's own terminal, so its `TERM` must be stable and portable: inheriting values such as
- * `xterm-ghostty` also requires a custom `TERMINFO` path that a launchd daemon may not have. Use the
- * system-provided `xterm-256color` entry and inherit only `HOME`/`PATH`/`LANG`. Identity is never
- * derived from inherited env.
+ * The environment handed to the `tmux attach` upstream child: the daemon's own `HOME`/`PATH`/`LANG`
+ * fed into the pure [terminalAttachEnv] (which pins `TERM` and forces a UTF-8 `LANG`). This is the
+ * only I/O here — the `getenv` reads — so the shaping rules stay unit-testable.
  */
 @OptIn(ExperimentalForeignApi::class)
-fun terminalAttachEnv(): Map<String, String> {
-    val env = LinkedHashMap<String, String>()
-    env["TERM"] = "xterm-256color"
-    getenv("HOME")?.toKString()?.ifBlank { null }?.let { env["HOME"] = it }
-    env["PATH"] = getenv("PATH")?.toKString()?.ifBlank { null }
-        ?: "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    getenv("LANG")?.toKString()?.ifBlank { null }?.let { env["LANG"] = it }
-    return env
-}
+fun terminalAttachEnv(): Map<String, String> = terminalAttachEnv(
+    lang = getenv("LANG")?.toKString(),
+    home = getenv("HOME")?.toKString(),
+    path = getenv("PATH")?.toKString(),
+)
 
 /**
  * Build a lazy [TerminalBridge] for the logical session [id] over [tmux]: the upstream is
- * `tmux -L <socket> attach -t kt-<id>` and the per-subscriber seed is `capture-pane -e` on that
+ * `tmux -u -L <socket> attach -t kt-<id>` and the per-subscriber seed is `capture-pane -e` on that
  * session. This is the production wiring; unit tests construct [TerminalBridge] directly with a
  * fake factory and fake seed instead.
+ *
+ * `-u` forces the attach client to emit UTF-8 regardless of what its locale says — belt to
+ * [terminalAttachEnv]'s braces, and independent of whether the requested locale exists on the host.
+ * Without a UTF-8 client, tmux replaces every non-ASCII cell with `_` (`tty_check_codeset`) and an
+ * agent's box-drawing TUI arrives as underscores.
  *
  * Note: driving a real `tmux attach` through [Pty] also depends on the child acquiring a
  * *controlling* terminal — see the note in [Pty.open] (Task 2). Because of KT-78062 that end-to-end
@@ -73,7 +69,7 @@ fun terminalBridgeForSession(
     ptyFactory: PtyFactory = realPtyFactory,
     env: Map<String, String> = terminalAttachEnv(),
 ): TerminalBridge = TerminalBridge(
-    upstreamCommand = listOf(tmux.tmuxPath, "-L", tmux.socket, "attach", "-t", tmux.sessionName(id)),
+    upstreamCommand = attachUpstreamCommand(tmux.tmuxPath, tmux.socket, tmux.sessionName(id)),
     seedProvider = { tmux.capturePane(id).encodeToByteArray() },
     ptyFactory = ptyFactory,
     scope = scope,

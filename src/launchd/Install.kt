@@ -1,5 +1,6 @@
 package io.kotgent.launchd
 
+import io.kotgent.sys.utf8LocaleOrDefault
 import io.kotgent.tmux.ProcessResult
 import io.kotgent.tmux.ProcessRunner
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -33,6 +34,15 @@ fun currentUid(): UInt = getuid()
  */
 @OptIn(ExperimentalForeignApi::class)
 fun currentPath(): String? = getenv("PATH")?.toKString()?.ifEmpty { null }
+
+/**
+ * The caller's current `LANG` (`$LANG`), or `null` when unset/empty — snapshotted into the daemon's plist
+ * (through [io.kotgent.sys.utf8LocaleOrDefault], which substitutes a UTF-8 default for a missing or
+ * non-UTF-8 value) so the daemon and everything it spawns run in a UTF-8 locale. launchd sets none, and a
+ * tmux client without one renders every non-ASCII cell as `_`.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun currentLang(): String? = getenv("LANG")?.toKString()?.ifEmpty { null }
 
 /** `~/Library/LaunchAgents` (per-user launchd agents live here); cwd-relative if `$HOME` is unset. */
 @OptIn(ExperimentalForeignApi::class)
@@ -69,6 +79,7 @@ private fun homeDir(): String? = getenv("HOME")?.toKString()?.trimEnd('/')
  * executing, and inject [launchAgentsDir] / [logDir] / [uid] to write under a throwaway temp path. The
  * `pathProvider` seam (default [currentPath]) lets a test supply a deterministic captured `PATH` that
  * `install` merges (via [mergedDaemonPath]) into the plist's `EnvironmentVariables.PATH`.
+ * The `langProvider` seam (default [currentLang]) does the same for `EnvironmentVariables.LANG`.
  * `install` returns after bootstrapping — it does **not** run the daemon in-process (that is the
  * separate `daemon` subcommand the plist's `ProgramArguments` points at).
  */
@@ -79,6 +90,7 @@ class LaunchdInstaller(
     private val label: String = DAEMON_LABEL,
     private val uid: UInt = currentUid(),
     private val pathProvider: () -> String? = ::currentPath,
+    private val langProvider: () -> String? = ::currentLang,
 ) {
     /** Absolute path of the LaunchAgent plist this installer manages. */
     val plistPath: String get() = "${launchAgentsDir.trimEnd('/')}/$label.plist"
@@ -99,6 +111,7 @@ class LaunchdInstaller(
                 logDir = logDir,
                 label = label,
                 path = mergedDaemonPath(pathProvider()),
+                lang = utf8LocaleOrDefault(langProvider()),
             ),
         )
 
