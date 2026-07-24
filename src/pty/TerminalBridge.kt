@@ -94,6 +94,12 @@ class TerminalBridge(
      * terminal-WS attached, and terminal input over that WS is the primary path. (`tmux send-keys` would
      * deliver subscriber-independently, but bypasses the single-upstream fan-out; the Broadcaster path is
      * chosen so `/input` and terminal-WS input are one channel.)
+     *
+     * Leaving copy-mode is the CALLER's job, not this method's: bytes written into the upstream pty are
+     * routed to tmux's copy-mode key table and dropped whenever the shared pane is in a mode (one wheel
+     * scroll by any viewer, since kotgent forces `mouse on`). The programmatic REST seam calls
+     * `Tmux.leaveCopyMode` before it gets here and refuses when that fails; the interactive terminal WS
+     * deliberately does not — a human who scrolled back and then typed expects tmux's own behaviour.
      */
     suspend fun write(bytes: ByteArray): Unit = broadcaster.writeInput(bytes)
 

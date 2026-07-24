@@ -1,6 +1,7 @@
 package io.kotgent.pty
 
 import io.kotgent.tmux.Tmux
+import io.kotgent.tmux.forcesMouseOn
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CoroutineScope
@@ -50,8 +51,13 @@ fun terminalAttachEnv(): Map<String, String> = terminalAttachEnv(
 /**
  * Build a lazy [TerminalBridge] for the logical session [id] over [tmux]: the upstream is
  * `tmux -u -L <socket> attach -t kt-<id>` and the per-subscriber seed is `capture-pane -e` on that
- * session. This is the production wiring; unit tests construct [TerminalBridge] directly with a
- * fake factory and fake seed instead.
+ * session, composed by the pure [terminalSeed]. This is the production wiring; unit tests construct
+ * [TerminalBridge] directly with a fake factory and fake seed instead.
+ *
+ * The seed is not the raw capture: when [tmux] forces `mouse on` it is prefixed with
+ * [TERMINAL_MOUSE_ENABLE], because `capture-pane` emits no private-mode sequences and the upstream's
+ * own mouse-enable was broadcast when the upstream opened — a later joiner would otherwise never
+ * arm mouse reporting and its wheel could not reach the pane's history. See [terminalSeed].
  *
  * `-u` forces the attach client to emit UTF-8 regardless of what its locale says — belt to
  * [terminalAttachEnv]'s braces, and independent of whether the requested locale exists on the host.
@@ -70,7 +76,7 @@ fun terminalBridgeForSession(
     env: Map<String, String> = terminalAttachEnv(),
 ): TerminalBridge = TerminalBridge(
     upstreamCommand = attachUpstreamCommand(tmux.tmuxPath, tmux.socket, tmux.sessionName(id)),
-    seedProvider = { tmux.capturePane(id).encodeToByteArray() },
+    seedProvider = { terminalSeed(tmux.capturePane(id), mouseForced = forcesMouseOn(tmux.serverOptions)) },
     ptyFactory = ptyFactory,
     scope = scope,
     env = env,

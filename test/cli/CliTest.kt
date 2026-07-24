@@ -305,18 +305,39 @@ class CliTest {
 
     /**
      * `attach` must hand the terminal back the way it found it. `LocalTty.restore()` only covers
-     * termios; the private DEC modes (mouse reporting, alternate screen, cursor) were turned on by
-     * bytes the *remote* side sent, and their disable sequences are written into the upstream pty
-     * only after the last subscriber has gone — so they never reach the operator. Hence an explicit
-     * reset written to stdout on exit; this pins its exact contents.
+     * termios; the private DEC modes (mouse reporting, bracketed paste, theme reporting, alternate
+     * screen, cursor) were turned on by bytes the *remote* side sent, and their disable sequences are
+     * written into the upstream pty only after the last subscriber has gone — so they never reach the
+     * operator. Hence an explicit reset written to stdout on exit; this pins its contents AND order.
+     *
+     * Measured against a real pty attach (tmux 3.7b): the client unconditionally turns on `1049`,
+     * `2004`, `2031` and `25`; it turns on `1006`+`1000`+`1002` because kotgent forces `mouse on`;
+     * and it additionally forwards `1003` whenever the pane's own app asks for any-motion tracking
+     * (crossterm/ratatui's `EnableMouseCapture`, i.e. the codex TUI). **Every tracker must go off
+     * BEFORE the SGR encoding** — on terminals that model the three trackers as independent flags,
+     * clearing `1006` first downgrades a surviving tracker to the legacy X10 encoding and sprays
+     * bytes above 127 into the operator's shell, which is worse than not resetting at all.
+     *
+     * The name is scoped to what the constant really covers: DECCKM (`?1`) and cursor blink (`?12`)
+     * are also set by tmux and are deliberately left alone (see [TERMINAL_MODE_RESET]'s KDoc), so
+     * this is not a completeness claim.
      */
     @Test
-    fun theTerminalModeResetDisablesEveryModeTheRemoteSideCanTurnOn() {
+    fun theTerminalModeResetDisablesTheMouseBracketedPasteThemeAndAltScreenModes() {
         val esc = "\u001b"
         assertEquals(
-            listOf("$esc[?1006l", "$esc[?1002l", "$esc[?1000l", "$esc[?1049l", "$esc[?25h"),
+            listOf(
+                "$esc[?1003l", "$esc[?1002l", "$esc[?1000l", "$esc[?1006l",
+                "$esc[?2004l", "$esc[?2031l", "$esc[?1049l", "$esc[?25h",
+            ),
             TERMINAL_MODE_RESET.split(esc).filter { it.isNotEmpty() }.map { esc + it },
-            "SGR + button + normal mouse reporting off, alternate screen off, cursor shown",
+            "all three mouse trackers off, then the SGR encoding, bracketed paste, theme reporting " +
+                "and the alternate screen; cursor shown",
+        )
+        assertTrue(
+            TERMINAL_MODE_RESET.indexOf("$esc[?1003l") < TERMINAL_MODE_RESET.indexOf("$esc[?1006l"),
+            "the any-motion tracker must be disabled before the SGR encoding, or a survivor falls " +
+                "back to the X10 encoding",
         )
     }
 

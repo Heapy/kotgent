@@ -84,6 +84,44 @@ class AttachEnvTest {
         assertTrue(argv.indexOf("-u") < argv.indexOf("attach"), "-u is a global flag, before the subcommand")
     }
 
+    /**
+     * The per-subscriber seed is what a client joining an **existing** bridge gets, and it is the only
+     * thing it gets — the upstream's own mouse-enable was broadcast as a live delta back when the
+     * upstream opened. `capture-pane -p -e` carries ZERO private-mode sequences (measured), so with
+     * `mouse on` forced the seed has to arm mouse reporting itself or that viewer's wheel never
+     * reaches tmux and the pane history — the whole point of the option — stays unreachable for it.
+     *
+     * The enable comes FIRST (armed before the repaint) and an empty capture stays empty (an unknown
+     * session must not be answered with a stray mode change).
+     */
+    @Test
+    fun theSeedArmsMouseReportingWheneverTmuxForcesMouseOn() {
+        val esc = "\u001b"
+        assertEquals(
+            "$esc[?1000h$esc[?1002h$esc[?1006h",
+            TERMINAL_MOUSE_ENABLE,
+            "normal + button tracking then the SGR encoding — the set a tmux attach client emits for `mouse on`",
+        )
+        assertEquals(
+            (TERMINAL_MOUSE_ENABLE + "pane text").encodeToByteArray().toList(),
+            terminalSeed("pane text", mouseForced = true).toList(),
+            "the enable is prepended to the capture, so the joining terminal is armed before the repaint",
+        )
+        assertEquals(
+            "pane text".encodeToByteArray().toList(),
+            terminalSeed("pane text", mouseForced = false).toList(),
+            "without the forced option the seed is the bare capture — no unsolicited mode change",
+        )
+    }
+
+    @Test
+    fun anEmptySeedStaysEmptyEvenWithMouseForced() {
+        // capturePane() returns "" for an unknown session / torn-down server, and Broadcaster.attach
+        // reads an empty seed as "nothing to send". Prefixing a mode change would break that contract.
+        assertTrue(terminalSeed("", mouseForced = true).isEmpty(), "an empty capture yields an empty seed")
+        assertTrue(terminalSeed("", mouseForced = false).isEmpty())
+    }
+
     @Test
     fun theAttachCommandIsolatesTheUserConfig() {
         val argv = attachUpstreamCommand("/opt/homebrew/bin/tmux", "kotgent", "kt-abc123")

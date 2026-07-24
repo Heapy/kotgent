@@ -228,6 +228,18 @@ class SessionManager(
     /** Convenience view of [registry] as the `paneLookup` shape [io.kotgent.transport.claudeHookRoutes] takes. */
     val paneLookup: suspend (PaneId) -> SessionId? get() = registry::lookup
 
+    /**
+     * Leave copy-mode on [sessionId]'s pane so **programmatic** input is not eaten by the copy-mode key
+     * table; `false` means the pane is still in a mode and the caller must not claim delivery. Exposed
+     * for the `POST /sessions/{id}/input` seam, which writes into the shared upstream pty and would
+     * otherwise answer `ok` for bytes tmux discarded.
+     *
+     * Deliberately **outside** the per-session control lock: it touches only tmux's pane mode, never
+     * the projection or the store, and taking the lock would make a keystroke queue behind a
+     * `start`/`resume` for no benefit.
+     */
+    fun leaveCopyMode(sessionId: SessionId): Boolean = tmux.leaveCopyMode(sessionId.value)
+
     /** Guards [controlLocks] itself (the per-session lock table), never a control op. */
     private val controlLocksGuard = Mutex()
 

@@ -48,6 +48,10 @@ class TmuxTest {
      * `kill-server` returns as soon as the server acknowledges, not when it has exited. Anything that
      * then starts a *new* server (where `-f /dev/null` is the only invocation that matters) must wait
      * for the old one to be gone, or it races into the still-live one.
+     *
+     * Bounded at 40 × 50 ms and then gives up **silently**: the callers all follow it with an
+     * assertion that fails on its own if the old server really is still there, so an exception here
+     * would only replace a precise failure with a vague one.
      */
     private suspend fun killServerAndWait() {
         killServer()
@@ -58,9 +62,15 @@ class TmuxTest {
         }
     }
 
+    /**
+     * Waits for the previous test's server to be **gone**, not merely told to die. The isolation tests
+     * start their own un-isolated decoy server as their first act; landing that `new-session` on a
+     * still-live isolated server would make the decoy unloadable and fail the negative half for a
+     * reason that has nothing to do with what it measures.
+     */
     @BeforeTest
-    fun setUp() {
-        if (tmuxAvailable()) killServer()
+    fun setUp() = runBlocking {
+        if (tmuxAvailable()) killServerAndWait()
     }
 
     @AfterTest
@@ -128,7 +138,10 @@ class TmuxTest {
      * measured, the bytes never reach `cat`, the pane is unchanged, and tmux still exits 0. The one
      * production caller is `SessionManager.interrupt` (`0x03`), which then reduces the session to
      * `ready` — so a silently swallowed send would record an interrupt that never happened.
-     * [Tmux.sendKeys] cancels copy-mode first; this is the test that the cancel is really there.
+     * [Tmux.sendKeys] chains `copy-mode -q` ahead of the send and a `#{pane_in_mode}` read-back after
+     * it, all in ONE invocation; this is the test that the cancel half is really there and works.
+     * [sendKeysFailsLoudlyWhenTheCopyModeCancelIsDefeated] is the other half — that the read-back is
+     * a real detector rather than decoration.
      *
      * **This test is what licenses `mouse on` in [TMUX_SERVER_OPTIONS].** With mouse mode forced, a
      * pane reaches copy-mode from an ordinary wheel scroll by *any* subscriber — copy-mode is shared
@@ -150,6 +163,70 @@ class TmuxTest {
             val out = captureUntil("cm1", "COPYMODE-MARKER")
             assertTrue("COPYMODE-MARKER" in out, "send-keys must reach the process from copy-mode, got:\n<$out>")
             assertEquals("0", paneFormat("kt-cm1", "#{pane_in_mode}"), "the cancel left copy-mode")
+        }
+    }
+
+    /**
+     * The other half of the copy-mode guarantee: that [Tmux.sendKeys] does not merely *attempt* a
+     * cancel but **proves** the send landed, and shouts when it did not. Without the proof a wheel
+     * scroll would leave `SessionManager.interrupt` persisting `ready` for a `0x03` tmux threw away.
+     *
+     * Falsified by defeating exactly one thing — a `tmux` stand-in that drops the leading
+     * `copy-mode -q -t <target> ;` group out of the chained argv, i.e. a cancel that does not take.
+     * Everything else stays real, so a green result means the read-back caught it, and deleting the
+     * read-back from [Tmux.sendKeys] fails this test.
+     */
+    @Test
+    fun sendKeysFailsLoudlyWhenTheCopyModeCancelIsDefeated() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(30_000) {
+            val dir = makeTempDir()
+            try {
+                tmux.newSession(id = "cm2", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+                assertTrue(rawOnTestSocket("copy-mode", "-t", "kt-cm2").isSuccess, "could not enter copy-mode")
+                assertEquals("1", paneFormat("kt-cm2", "#{pane_in_mode}"), "the pane must be in copy-mode first")
+
+                val defeated = Tmux(socket = tmux.socket, tmuxPath = writeCancelDroppingWrapper(dir))
+                val thrown = assertFailsWith<TmuxException> {
+                    defeated.sendKeys("cm2", "COPYMODE-LOST\n".encodeToByteArray())
+                }
+                assertTrue(
+                    "copy-mode" in thrown.message.orEmpty(),
+                    "the failure must name copy-mode as the reason, was <${thrown.message}>",
+                )
+                delay(300)
+                assertFalse(
+                    "COPYMODE-LOST" in tmux.capturePane("cm2"),
+                    "the positive control: with the cancel defeated the bytes really are swallowed",
+                )
+            } finally {
+                removeTempDir(dir)
+            }
+        }
+    }
+
+    /**
+     * [Tmux.leaveCopyMode] is the seam `POST /sessions/{id}/input` uses before writing into the shared
+     * upstream pty — that path cannot chain its bytes through tmux (the single-upstream invariant), so
+     * it needs a standalone, verified cancel. All three answers are pinned here, including the graceful
+     * "there is nothing to ask about" case, which must read as `true` rather than refuse the write.
+     */
+    @Test
+    fun leaveCopyModeReportsWhetherThePaneIsClear() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(20_000) {
+            assertTrue(tmux.leaveCopyMode("never-existed"), "no server at all: nothing to refuse over")
+
+            tmux.newSession(id = "lcm", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            assertTrue(tmux.leaveCopyMode("lcm"), "a pane in no mode is already clear")
+            assertEquals("0", paneFormat("kt-lcm", "#{pane_in_mode}"), "and `copy-mode -q` left it alone")
+
+            assertTrue(rawOnTestSocket("copy-mode", "-t", "kt-lcm").isSuccess, "could not enter copy-mode")
+            assertEquals("1", paneFormat("kt-lcm", "#{pane_in_mode}"), "the pane must really be in copy-mode")
+            assertTrue(tmux.leaveCopyMode("lcm"), "the cancel takes, so the pane reports clear")
+            assertEquals("0", paneFormat("kt-lcm", "#{pane_in_mode}"), "and it really left copy-mode")
+
+            assertTrue(tmux.leaveCopyMode("no-such-session"), "an unknown session on a live server is graceful")
         }
     }
 
@@ -463,11 +540,44 @@ class TmuxTest {
         return path
     }
 
+    /**
+     * A `tmux` stand-in that drops a leading `copy-mode -q -t <target> ;` out of the chained argv and
+     * re-execs the real binary with everything else intact — a cancel that silently does not take.
+     *
+     * The positions are fixed because every kotgent argv has the same shape ([tmuxCommand]):
+     * `-f /dev/null -L <socket> <subcommand…>`, so the cancel group is exactly `$5`…`$9`.
+     */
+    private fun writeCancelDroppingWrapper(dir: String): String {
+        val path = "$dir/tmux-without-cancel"
+        val real = shq(tmux.tmuxPath)
+        val globals = (TMUX_CONFIG_ISOLATION + listOf("-L", tmux.socket)).joinToString(" ") { shq(it) }
+        val script = "#!/bin/sh\n" +
+            "if [ \"$5\" = copy-mode ]; then\n" +
+            "  shift 9\n" +
+            "  exec $real $globals \"$@\"\n" +
+            "fi\n" +
+            "exec $real \"$@\"\n"
+        writeFile(path, script)
+        assertTrue(ProcessRunner.run(listOf("chmod", "0700", path)).isSuccess, "chmod on the tmux wrapper failed")
+        return path
+    }
+
+    /** A fresh throwaway directory under `$TMPDIR` — never anywhere near the operator's real home. */
+    private fun makeTempDir(): String {
+        val r = ProcessRunner.run(listOf("/bin/sh", "-c", "mktemp -d \"\${TMPDIR:-/tmp}/kotgent-tmux-conf.XXXXXX\""))
+        val dir = r.stdout.trim()
+        assertTrue(r.isSuccess && dir.isNotEmpty(), "could not create a throwaway directory: ${r.stderr.trim()}")
+        return dir
+    }
+
+    /** Teardown of a [makeTempDir] tree — the whole tree, so nothing planted inside it can leak. */
+    private fun removeTempDir(dir: String) {
+        ProcessRunner.run(listOf("rm", "-rf", dir))
+    }
+
     /** A fresh throwaway `$HOME` holding nothing but the decoy `.tmux.conf`. */
     private fun makeFakeHome(): String {
-        val r = ProcessRunner.run(listOf("/bin/sh", "-c", "mktemp -d \"\${TMPDIR:-/tmp}/kotgent-tmux-conf.XXXXXX\""))
-        val home = r.stdout.trim()
-        assertTrue(r.isSuccess && home.isNotEmpty(), "could not create a throwaway HOME: ${r.stderr.trim()}")
+        val home = makeTempDir()
         // focus-events: the semantic decoy (kotgent never forces it). display-time: a value no real
         // ~/.tmux.conf would carry, so a broken HOME override cannot masquerade as a passing probe.
         writeFile("$home/.tmux.conf", "set -g focus-events on\nset -g display-time 4321\n")
@@ -476,7 +586,7 @@ class TmuxTest {
 
     /** Teardown of [makeFakeHome]'s tree — the whole tree, so nothing planted inside it can leak. */
     private fun removeFakeHome(home: String) {
-        ProcessRunner.run(listOf("rm", "-rf", home))
+        removeTempDir(home)
     }
 
     /**

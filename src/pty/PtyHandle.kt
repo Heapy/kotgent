@@ -119,3 +119,44 @@ fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, 
     env["LANG"] = utf8LocaleOrDefault(lang)
     return env
 }
+
+/**
+ * The mouse-reporting DECSET a per-subscriber seed carries: normal + button tracking, then the SGR
+ * encoding — byte-for-byte the set a `tmux attach` client emits for `mouse on` (measured, tmux 3.7b).
+ *
+ * ## Why the seed has to carry it at all
+ * A subscriber joining an **existing** bridge is seeded from `capture-pane -p -e`, and that output
+ * contains **zero** private-mode sequences (measured). The mouse-enable the upstream `tmux attach`
+ * emitted went out as live deltas when the upstream opened — to whoever was subscribed *then*. So a
+ * second browser tab keeps mouse reporting off, its wheel never reaches tmux, and the pane history
+ * (`history-limit 10000`, the only scrollback that viewer has) is unreachable. That is exactly the
+ * benefit `TMUX_SERVER_OPTIONS`' `mouse on` is documented to buy, so the seed must deliver it rather
+ * than leave the claim aspirational.
+ *
+ * tmux does re-emit the whole mode set on `tty_invalidate`, so a joiner whose resize *changes* the
+ * upstream geometry gets one for free — but macOS raises `SIGWINCH` only on an actual size change, so
+ * a second tab at the same geometry gets nothing. Relying on that is relying on a coincidence.
+ *
+ * Residual, accepted: when the pane's app has asked for **any-motion** tracking (`\u001b[?1003h`) tmux
+ * also forwards `1003h`, which this fixed set does not reproduce — a joiner then reports buttons and
+ * drags but not free motion until the next full repaint. The wheel, which is what the option is for,
+ * works either way. Undoing all of it on exit is `TERMINAL_MODE_RESET`'s job.
+ */
+const val TERMINAL_MOUSE_ENABLE: String = "\u001b[?1000h\u001b[?1002h\u001b[?1006h"
+
+/**
+ * Compose one subscriber's terminal seed: the `capture-pane -p -e` snapshot [capturedPane], preceded
+ * by [TERMINAL_MOUSE_ENABLE] when the session's tmux server forces `mouse on` ([mouseForced]).
+ *
+ * The enable goes **first** so the joining terminal is armed before the repaint lands. An EMPTY
+ * capture stays empty: `capturePane` returns `""` for an unknown session or a torn-down server, and
+ * `Broadcaster.attach` treats an empty seed as "nothing to send" — a client attaching to a session
+ * that is not there should not be handed a stray mode change.
+ *
+ * Pure, so the rule is unit-testable without tmux or cinterop (KT-78062).
+ */
+fun terminalSeed(capturedPane: String, mouseForced: Boolean): ByteArray = when {
+    capturedPane.isEmpty() -> ByteArray(0)
+    mouseForced -> (TERMINAL_MOUSE_ENABLE + capturedPane).encodeToByteArray()
+    else -> capturedPane.encodeToByteArray()
+}

@@ -201,18 +201,31 @@ deleted. **`mouse on` is the one forced row that flips a real default, and it is
 `kotgent attach`) — that history lives in the tmux pane, not in xterm.js, and a subscriber joining an
 existing bridge is seeded from `capture-pane`, so without it nothing older than the current screen is
 reachable; an app that requested SGR mouse reporting still gets its own events (measured), so alt-screen
-TUIs are unaffected. It costs this: copy-mode is *shared pane state*, so any subscriber's wheel puts **the**
-pane into it, and while `pane_in_mode=1` every `send-keys` — including `SessionManager.interrupt`'s `0x03`
-— is routed to the copy-mode key table and dropped while tmux still exits 0, which would make the
-projection record an interrupt that never happened. That is why **`Tmux.sendKeys` issues a best-effort
-`send-keys -X … cancel` before every send** (a separate call: chained, it aborts the whole invocation with
-"not in a mode" whenever the pane was not in copy-mode) — do not delete the cancel while `mouse on` is set;
-`TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` is its test, and copy-mode auto-exiting when the wheel
-reaches the bottom covers only the operator who scrolls back down. Two smaller obligations ride along:
-`kotgent attach` writes `TERMINAL_MODE_RESET` in the same `finally` as `tty.restore()` (otherwise the
-operator's terminal keeps emitting mouse reports after exit) and the browser terminal sets
-`macOptionClickForcesSelection: true` (xterm.js disables selection under mouse reporting — Option-drag on
-macOS, Shift-drag elsewhere). **`focus-events` is deliberately NOT set.** Focus has no single answer when
+TUIs are unaffected. **A joiner does not get that for free**: `capture-pane -p -e` carries zero
+private-mode sequences (measured) and the upstream's own mouse-enable went out as a live delta when the
+upstream *opened*, so the per-subscriber seed itself prepends `TERMINAL_MOUSE_ENABLE`
+(`terminalSeed` in `src/pty/PtyHandle.kt`, gated on `forcesMouseOn`). Do not "simplify" the seed back to a
+bare `capturePane` — tmux only re-emits the mode set on a repaint that a *geometry change* triggers, and
+macOS raises `SIGWINCH` solely on an actual size change, so a second tab at the same size would silently
+lose the wheel. It costs this: copy-mode is *shared pane state*, so any subscriber's wheel puts **the**
+pane into it, and while `pane_in_mode=1` every keystroke — `send-keys` and bytes written into an attached
+client's pty alike, including `SessionManager.interrupt`'s `0x03` — is routed to the copy-mode key table
+and dropped while tmux still exits 0, which would make the projection record an interrupt that never
+happened. That is why **`Tmux.sendKeys` chains `copy-mode -q` + the send + a `#{pane_in_mode}` read-back
+into ONE tmux invocation** and throws when the read-back says the keys were eaten: separate invocations
+leave a window a wheel event can land in, `copy-mode -q` (unlike `send-keys -X cancel`) is a silent no-op
+on a pane in no mode so it can be chained at all, and there is deliberately no retry — a duplicated `0x03`
+quits some agent TUIs. Do not weaken that chain while `mouse on` is set;
+`TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` and `…FailsLoudlyWhenTheCopyModeCancelIsDefeated` are
+its two halves, and copy-mode auto-exiting when the wheel reaches the bottom covers only the operator who
+scrolls back down. The same hazard reaches `POST /sessions/{id}/input`, which cannot chain (its bytes go
+into the shared upstream pty), so it calls `Tmux.leaveCopyMode` first and answers **409** when that
+provably fails instead of `ok` for discarded input; the interactive terminal WS deliberately does neither.
+Two smaller obligations ride along: `kotgent attach` writes `TERMINAL_MODE_RESET` in the same `finally` as
+`tty.restore()` — all three mouse trackers (`1003`/`1002`/`1000`) **before** the SGR encoding `1006`, or a
+surviving tracker degrades to the legacy X10 encoding, plus `2004`/`2031`/`1049`/`25` which a tmux client
+always sets — and the browser terminal sets `macOptionClickForcesSelection: true` (xterm.js disables
+selection under mouse reporting — Option-drag on macOS, Shift-drag elsewhere). **`focus-events` is deliberately NOT set.** Focus has no single answer when
 one upstream client serves N subscribers, and kotgent has better signals (the lazy `TerminalBridge`'s
 subscriber count, agent state over hooks); it doubles as the decoy in the isolation integration test
 *because* kotgent never sets it, and a unit test pins its absence so forcing it fails there first rather

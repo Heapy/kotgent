@@ -30,4 +30,16 @@ interface TmuxControl {
 
     /** Send raw [bytes] to `kt-<id>`'s active pane, byte-exact (used for Ctrl-C interrupt). */
     fun sendKeys(id: String, bytes: ByteArray)
+
+    /**
+     * Leave copy-mode on `kt-<id>`'s active pane and verify it; `true` when the pane is afterwards
+     * provably not in a mode (or there is no pane left to ask about), `false` when it still is and
+     * input would be swallowed by the copy-mode key table.
+     *
+     * On the seam because it guards **every programmatic input path**, not just [sendKeys]: the
+     * `POST /sessions/{id}/input` REST endpoint writes into the shared upstream pty and would
+     * otherwise report `ok` for bytes copy-mode ate. The interactive terminal WebSocket deliberately
+     * does not call it (see [Tmux.leaveCopyMode]).
+     */
+    fun leaveCopyMode(id: String): Boolean
 }

@@ -108,7 +108,17 @@ class KotgentServer(
         CoroutineScope(engineExceptionHandler).embeddedServer(CIO, port = port, host = host) {
             // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
             val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
-            val inputSink: TerminalInputSink = { id, bytes -> registry.getOrCreate(id.value).write(bytes) }
+            // Programmatic input: cancel copy-mode first (a wheel scroll by ANY viewer parks the shared
+            // pane there, where tmux silently eats every keystroke), then write into the one upstream.
+            // The interactive terminal WS deliberately does NOT do this — see `Tmux.leaveCopyMode`.
+            val inputSink: TerminalInputSink = { id, bytes ->
+                if (!sessionManager.leaveCopyMode(id)) {
+                    false
+                } else {
+                    registry.getOrCreate(id.value).write(bytes)
+                    true
+                }
+            }
             install(WebSockets)
             routing {
                 // Hook ingress, one route per provider: same token, their own header check (Task 12).

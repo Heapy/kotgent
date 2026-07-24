@@ -403,6 +403,50 @@ class TransportTest {
         }
     }
 
+    /**
+     * `mouse on` is forced, so a single wheel scroll by ANY viewer parks the SHARED pane in tmux
+     * copy-mode, where every keystroke — including bytes written into the attached client's pty — is
+     * routed to the copy-mode key table and dropped while tmux reports success. A REST caller has no
+     * terminal to look at, so this endpoint must leave copy-mode first and, when it provably cannot,
+     * **refuse** rather than answer `ok` for input that was thrown away.
+     *
+     * The interactive terminal WebSocket deliberately does NOT cancel: a human who scrolled back and
+     * then typed expects tmux's own behaviour. This is the programmatic path only.
+     */
+    @Test
+    fun postInputLeavesCopyModeAndRefusesWhenItCannot() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            val upstream = ctx.ptyFactory.opened.receive()
+            receiveBinary() // consume the seed
+
+            val ok = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                setBody("delivered")
+            }
+            assertEquals(HttpStatusCode.OK, ok.status)
+            assertContentEquals("delivered".encodeToByteArray(), upstream.writes.receive())
+            assertEquals(
+                listOf(created.id),
+                ctx.tmux.copyModeCancels,
+                "the REST input path leaves copy-mode before writing into the shared upstream",
+            )
+
+            // Now the cancel does not take (a viewer's wheel keeps dragging the pane back).
+            ctx.tmux.copyModeStuck = true
+            val refused = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                setBody("swallowed")
+            }
+            assertEquals(HttpStatusCode.Conflict, refused.status, "an undeliverable write must not answer ok")
+            assertTrue("copy-mode" in refused.bodyAsText(), "and it must say why: ${refused.bodyAsText()}")
+        }
+    }
+
     // ---- 4. missing / wrong token → 401 on a control call AND on a WS handshake ----
 
     @Test

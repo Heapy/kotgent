@@ -73,6 +73,47 @@
 > pane's history is then the only scrollback that viewer has. `focus-events` remains unset and remains the
 > isolation test's decoy; only `mouse` moved.
 
+> **Revision 5 — the three protections around `mouse on` are completed** (critical-only re-check;
+> the option itself is unchanged and stays). Revision 4 named three root causes as closed. Re-measured
+> against a real pty attach on tmux 3.7b, each was closed only partly:
+>
+> 1. **The copy-mode cancel was fire-and-forget, and unverified.** `send-keys -X cancel` and the `-H`
+>    send were two invocations, so a wheel event from any subscriber *between* them re-entered
+>    copy-mode and the send was eaten while tmux still exited 0 — `SessionManager.interrupt` would then
+>    persist `ready` for an interrupt that never happened. Any cancel failure other than "not in a mode"
+>    was swallowed for the same reason. Fixed by chaining `copy-mode -q` + `send-keys -H …` +
+>    `display-message -p '#{pane_in_mode}'` into **one** tmux invocation (measured: tmux runs the list
+>    without returning to its event loop, so nothing can interleave; `copy-mode -q` is a silent no-op on
+>    a pane in no mode, which is exactly why `send-keys -X cancel` could not be chained). A trailing `1`
+>    now raises `TmuxException` instead of reducing to `ready`. **No retry** — a duplicated `0x03` quits
+>    some agent TUIs. Falsified by `TmuxTest.sendKeysFailsLoudlyWhenTheCopyModeCancelIsDefeated`, which
+>    runs the real code against a `tmux` wrapper that drops the cancel out of the argv.
+> 2. **`POST /sessions/{id}/input` bypassed the cancel entirely** and answered `ok` unconditionally,
+>    although copy-mode eats bytes written into an attached client's pty exactly as it eats `send-keys`.
+>    It now goes through the new `TmuxControl.leaveCopyMode` seam and answers **409** when the pane
+>    provably cannot be cleared. The interactive terminal WS deliberately does **not** cancel — a human
+>    who scrolled back and then typed expects tmux's own behaviour.
+> 3. **The joiner never received the mouse-enable**, so "a second browser tab can scroll the pane's
+>    history" — the stated reason for the option in four artifacts — was false whenever that tab's
+>    resize did not change the upstream geometry (macOS raises `SIGWINCH` only on a real size change;
+>    `capture-pane -p -e` contains zero private-mode sequences, measured). Rather than weaken the claim,
+>    the per-subscriber seed now prepends `TERMINAL_MOUSE_ENABLE` (`terminalSeed`, gated on the new pure
+>    `forcesMouseOn`). Residual: a pane app's any-motion `1003h` is not reproduced for the joiner, which
+>    costs hover events, not the wheel.
+> 4. **`TERMINAL_MODE_RESET` did not disable every mode the remote side sets.** Measured: a tmux attach
+>    client always sends `2004h` (bracketed paste) and `2031h` (theme reporting), and forwards `1003h`
+>    whenever the pane app enables any-motion tracking (crossterm/ratatui — the codex TUI). The old
+>    reset covered only `1006`/`1002`/`1000`/`1049`/`25`, and cleared `1006` *first*, so a surviving
+>    tracker degraded to the legacy X10 encoding — worse than no reset. Now
+>    `1003l 1002l 1000l 1006l 2004l 2031l 1049l 25h`, trackers before the encoding. DECCKM (`?1`) and
+>    cursor blink (`?12`) remain deliberately untouched, so the pinning test was renamed from
+>    `…DisablesEveryModeTheRemoteSideCanTurnOn` to name the modes it actually covers.
+>
+> Also fixed: `TmuxTest`'s `@BeforeTest` used the non-waiting `killServer()`, racing the isolation
+> tests' decoy `new-session` into the previous test's still-live server; it now uses
+> `killServerAndWait()` (bounded at 2 s, then silently gives up — the caller's own assertion is the
+> better error).
+
 ## Overview
 
 The daemon's tmux server (`-L kotgent`) **reads the user's `~/.tmux.conf`**. The `-L` socket label

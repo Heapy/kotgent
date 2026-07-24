@@ -84,11 +84,13 @@ To build from source instead, see [Build & test](#build--test).
   In its place kotgent forces its own small set: `destroy-unattached off`, `default-terminal
   tmux-256color`, `mouse on`, `status off`, `history-limit 10000`, `escape-time 10`. `mouse on` is what
   makes the wheel scroll an agent's transcript — that scrollback lives in the tmux pane, so it is the only
-  way a browser tab that joined an existing session can see anything above the current screen. Two things
+  way a browser tab that joined an existing session can see anything above the current screen (kotgent arms
+  mouse reporting for each viewer as it joins, so the second tab works like the first). Two things
   to know about it: selecting text in the web terminal needs Option-drag on macOS (Shift-drag elsewhere),
   because a mouse-reporting terminal otherwise sends the drag to the app; and a wheel scroll puts the pane
   into tmux copy-mode, which every viewer shares — kotgent leaves copy-mode automatically before it
-  delivers keys, so Interrupt still reaches the agent. `focus-events` stays off: with one tmux client
+  delivers keys and verifies they landed, so Interrupt still reaches the agent or fails loudly instead of
+  being silently swallowed. `focus-events` stays off: with one tmux client
   fanned out to many viewers, "is the terminal focused" has no single answer. Developed against tmux 3.7b.
 - **`claude`** — the Claude Code CLI, on your `PATH`. Session-id preallocation (`claude --session-id`)
   needs a recent version; kotgent version-gates it and falls back to a `SessionStart` hook on older CLIs.

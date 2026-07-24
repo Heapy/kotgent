@@ -16,8 +16,10 @@ import kotlin.test.assertTrue
  *    that, and it must ride on every argv kotgent builds.
  *  - **`mouse on` is deliberately present** (see [TMUX_SERVER_OPTIONS]'s KDoc): it is the one forced
  *    row that changes a real tmux default, and it is what makes the wheel reach a pane's history
- *    from the browser and from `kotgent attach`. Its safety rests on `Tmux.sendKeys` cancelling
- *    copy-mode before every send.
+ *    from the browser and from `kotgent attach`. Two things hang off it, both read through
+ *    [forcesMouseOn] so neither can drift from the table: `Tmux.sendKeys`' atomic
+ *    cancel→send→verify chain, and the mouse-enable a joining subscriber's seed carries
+ *    ([io.kotgent.pty.terminalSeed]) because `capture-pane` emits no private-mode sequences.
  *  - **`focus-events` is deliberately absent** (see [TMUX_SERVER_OPTIONS]'s KDoc): focus has no
  *    single answer under a one-upstream/N-subscriber fan-out. It doubles as the decoy of the
  *    integration isolation test, which only stays falsifiable while kotgent never forces it.
@@ -65,10 +67,12 @@ class TmuxOptionsTest {
      * reach nothing older without it.
      *
      * It is safe only because copy-mode — shared *pane* state, so any subscriber's wheel puts *the*
-     * pane into it — cannot swallow input: [io.kotgent.tmux.Tmux.sendKeys] cancels copy-mode before
-     * every send, which is what keeps `SessionManager.interrupt`'s `0x03` reaching the process.
-     * `TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` is the test of that cancel; if it is ever
-     * deleted, this option has to go with it.
+     * pane into it — cannot silently swallow input: [io.kotgent.tmux.Tmux.sendKeys] chains
+     * `copy-mode -q`, the send and a `#{pane_in_mode}` read-back into one invocation and fails loudly
+     * if the keys were eaten, which is what keeps `SessionManager.interrupt`'s `0x03` honest.
+     * `TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` and
+     * `TmuxTest.sendKeysFailsLoudlyWhenTheCopyModeCancelIsDefeated` are the tests of the two halves;
+     * if either is ever deleted, this option has to go with it.
      */
     @Test
     fun serverOptionsForceMouseMode() {
@@ -76,7 +80,26 @@ class TmuxOptionsTest {
             TmuxOption("-g", "mouse", "on"),
             TMUX_SERVER_OPTIONS.single { it.name == "mouse" },
             "the wheel must scroll the pane's tmux history in both viewers — safe because " +
-                "Tmux.sendKeys cancels copy-mode before every send",
+                "Tmux.sendKeys cancels copy-mode and then proves the send landed",
+        )
+    }
+
+    /**
+     * The two obligations that ride on `mouse on` both read the option set through [forcesMouseOn],
+     * so neither can drift from the table: `Tmux.sendKeys`' verified copy-mode cancel, and the
+     * mouse-enable a joining subscriber's seed carries ([io.kotgent.pty.terminalSeed]) because
+     * `capture-pane` emits no private-mode sequences.
+     */
+    @Test
+    fun forcesMouseOnReadsTheOptionTableRatherThanRestatingIt() {
+        assertTrue(forcesMouseOn(TMUX_SERVER_OPTIONS), "the production set forces mouse mode")
+        assertFalse(
+            forcesMouseOn(TMUX_SERVER_OPTIONS.filterNot { it.name == "mouse" }),
+            "drop the row and the predicate must say so — this is what the seed's mouse-enable is gated on",
+        )
+        assertFalse(
+            forcesMouseOn(TMUX_SERVER_OPTIONS.map { if (it.name == "mouse") it.copy(value = "off") else it }),
+            "`mouse off` is not `mouse on` — the value is read, not just the name",
         )
     }
 

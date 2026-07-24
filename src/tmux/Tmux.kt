@@ -210,31 +210,98 @@ class Tmux(
     }
 
     /**
+     * The `#{pane_in_mode}` a verified chain printed as its LAST stdout line: `true` = the pane is in
+     * copy-mode (or any other mode), `false` = it is delivering keys to its process, `null` = the
+     * question was not answered (no server, unknown pane, unparseable output).
+     *
+     * `null` is deliberately distinct from `false`: it means "nothing left to prove", so callers treat
+     * it as a graceful no-op rather than as evidence either way.
+     */
+    private fun paneModeFrom(r: ProcessResult): Boolean? =
+        when (r.stdout.trim().lineSequence().lastOrNull()?.trim()) {
+            "1" -> true
+            "0" -> false
+            else -> null
+        }
+
+    /**
+     * Leave copy-mode on `kt-<id>`'s active pane and **verify it**: `true` when the pane is afterwards
+     * provably not in a mode (or the question is moot — no server / unknown session), `false` only
+     * when it is still in one and input would therefore be swallowed.
+     *
+     * A pane in copy-mode routes every keystroke — whether it arrives via `send-keys` or by being
+     * written into an attached client's pty — to the **copy-mode key table** instead of the process.
+     * kotgent forces `mouse on` ([TMUX_SERVER_OPTIONS]), so one wheel scroll by *any* subscriber puts
+     * the *shared* pane there for everyone, and the tmux prefix does the same. Every **programmatic**
+     * input path must therefore cancel first: [sendKeys] and the `POST /sessions/{id}/input` REST seam
+     * ([io.kotgent.transport.TerminalInputSink]). The interactive terminal WebSocket deliberately does
+     * **not** — a human who scrolled back and then typed expects tmux's own behaviour, and yanking
+     * them out of their scrollback would be the surprise.
+     *
+     * The cancel is `copy-mode -q`, not `send-keys -X … cancel`: `-q` exits copy mode *and any other
+     * mode* and is a silent no-op on a pane that is in none, whereas `send-keys -X cancel` fails with
+     * "not in a mode" — which, chained, aborts the whole invocation and takes the real command with it
+     * (measured). That is what lets the cancel and its read-back ride ONE tmux invocation, so no client
+     * event can land in between.
+     *
+     * The residual gap here is the caller's, not this method's: `/input` writes its bytes into the
+     * upstream *pty* afterwards (the single-upstream invariant forbids routing them through tmux), so
+     * a wheel scroll in that window can still re-enter copy-mode. [sendKeys], which does go through
+     * tmux, closes even that.
+     */
+    override fun leaveCopyMode(id: String): Boolean {
+        val target = sessionName(id)
+        val r = tmux("copy-mode", "-q", "-t", target, ";", "display-message", "-p", "-t", target, PANE_IN_MODE)
+        if (!r.isSuccess) return true // no server / unknown pane / unanswerable: nothing to refuse over
+        return paneModeFrom(r) != true
+    }
+
+    /**
      * Send raw [bytes] to session `kt-<id>`'s active pane, byte-exact, via `send-keys -H` (hex).
      * `-H` avoids any key-name interpretation, so arbitrary terminal input (control chars, UTF-8)
      * round-trips unchanged. Empty input is a no-op.
      *
-     * ## Copy-mode is cancelled first, and that is load-bearing
+     * ## Cancel, send and PROOF ride one invocation
      * A pane in copy-mode routes `send-keys` to the **copy-mode key table**, not to the process —
-     * measured: the bytes vanish, the pane is unchanged, and tmux still exits **0**. kotgent forces
-     * `mouse on` ([TMUX_SERVER_OPTIONS]), so any subscriber's wheel scroll puts the *shared* pane
-     * there, and the tmux prefix does the same — this cancel is what makes that option safe and must
-     * not be removed while it is set. The one caller is
-     * `SessionManager.interrupt`, which sends `0x03` and then reduces the session to `ready`, so a
-     * swallowed send would record an interrupt in the projection that never happened. `send-keys -X
-     * cancel` leaves copy-mode first (measured: `pane_in_mode` → 0 and the following send lands).
-     * It is a SEPARATE invocation on purpose: chained with `';'` it aborts the whole call with
-     * "not in a mode" whenever the pane was *not* in copy-mode, taking the real send with it. Its
-     * result is ignored for the same reason — "not in a mode" is the normal case.
+     * measured: the bytes vanish, the pane is unchanged, and tmux still exits **0**. So the exit
+     * status proves nothing. kotgent forces `mouse on` ([TMUX_SERVER_OPTIONS]), so any subscriber's
+     * wheel scroll parks the *shared* pane there; the one production caller is
+     * `SessionManager.interrupt`, which sends `0x03` and then reduces the session to `ready`, so an
+     * unproven send would record an interrupt in the projection that never happened.
+     *
+     * A cancel in its own invocation cannot fix that on its own — a wheel event landing between the
+     * two calls re-enters copy-mode and the send is eaten anyway. So all three commands are chained
+     * into a SINGLE tmux invocation, which tmux runs as one command list without returning to its
+     * event loop:
+     *
+     *  1. `copy-mode -q` — leave any mode (silent no-op when there is none; see [leaveCopyMode] for
+     *     why `send-keys -X cancel` cannot be chained);
+     *  2. `send-keys -H …` — the real send;
+     *  3. `display-message -p '#{pane_in_mode}'` — the proof, read with nothing able to intervene.
+     *
+     * A trailing `1` means the keys went to the copy-mode key table, and this **fails loudly** with a
+     * [TmuxException] rather than letting the caller reduce to `ready`. There is deliberately no retry:
+     * a duplicated `0x03` is not harmless (a second Ctrl-C quits some agent TUIs outright), and with
+     * the chain atomic a retry would only be papering over a tmux that no longer behaves as measured.
+     * This is what makes `mouse on` safe; do not weaken it while that option is set.
      */
     override fun sendKeys(id: String, bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        tmux("send-keys", "-X", "-t", sessionName(id), "cancel")
-        val hex = bytes.map { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
-        val r = tmux(*(arrayOf("send-keys", "-t", sessionName(id), "-H") + hex))
-        if (!r.isSuccess && !r.isAbsence()) {
-            throw TmuxException("tmux send-keys for '$id' failed: ${r.stderr.trim()}")
+        val target = sessionName(id)
+        val argv = listOf("copy-mode", "-q", "-t", target, ";", "send-keys", "-t", target, "-H") +
+            bytes.map { (it.toInt() and 0xff).toString(16).padStart(2, '0') } +
+            listOf(";", "display-message", "-p", "-t", target, PANE_IN_MODE)
+        val r = tmux(*argv.toTypedArray())
+        if (r.isAbsence()) return // no server / unknown session: graceful, as everywhere else here
+        // Checked BEFORE the exit status: a swallowed send can also fail the invocation for an unrelated
+        // reason (a copy-mode binding reporting "no current client"), and copy-mode is the real diagnosis.
+        if (paneModeFrom(r) == true) {
+            throw TmuxException(
+                "tmux send-keys for '$id' was not delivered: $target is in copy-mode, so the keys went " +
+                    "to the copy-mode key table instead of the process",
+            )
         }
+        if (!r.isSuccess) throw TmuxException("tmux send-keys for '$id' failed: ${r.stderr.trim()}")
     }
 
     private fun fields(vararg specs: String): String = specs.joinToString(FS)
@@ -242,6 +309,12 @@ class Tmux(
     companion object {
         /** Field separator embedded in `-F` formats: a raw TAB, absent from names/pids/dims. */
         private const val FS = "\t"
+
+        /**
+         * The format both verified chains end with. `1` means the pane is in copy-mode (or another
+         * mode) and is routing keys to the mode's key table instead of to its process.
+         */
+        private const val PANE_IN_MODE = "#{pane_in_mode}"
 
         /**
          * An ABSOLUTE path to the tmux binary. Tries the common install locations first, then resolves

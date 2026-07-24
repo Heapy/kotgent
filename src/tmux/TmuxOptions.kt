@@ -83,17 +83,33 @@ data class TmuxOption(
  * still receives its own events untouched (measured: `^[[<64;10;10M` arrives at the app, tmux does
  * not intercept), so an alt-screen TUI keeps behaving exactly as it did.
  *
+ * That benefit does not arrive on its own for a **joining** subscriber: `capture-pane -p -e` carries
+ * zero private-mode sequences (measured), and the mouse-enable the upstream `tmux attach` emitted was
+ * broadcast when the upstream *opened*, to whoever was subscribed then. tmux re-emits the whole mode
+ * set only on a repaint that a geometry change triggers, and macOS raises `SIGWINCH` solely on an
+ * actual size change — so a second browser tab at the same geometry would get nothing. Hence the
+ * per-subscriber seed itself carries the enable ([io.kotgent.pty.TERMINAL_MOUSE_ENABLE], applied by
+ * [io.kotgent.pty.terminalSeed] and gated on [forcesMouseOn]); without it the paragraph above would
+ * be a claim about the first viewer only.
+ *
  * What it costs, also measured: **copy-mode is shared *pane* state, not per-client** — one
  * subscriber's wheel puts *the* pane into copy-mode for everyone, and while `pane_in_mode=1` tmux
- * routes every `send-keys` to the copy-mode key table instead of the process, silently (exit 0). That
- * would swallow `SessionManager.interrupt`'s `0x03` and let the projection record an interrupt that
- * never happened. **This option is therefore coupled to [Tmux.sendKeys], which issues a best-effort
- * `send-keys -X … cancel` before every send** — do not delete that cancel; it is what makes this row
- * safe, and it covers prefix-typed copy-mode too. (Copy-mode also auto-exits on its own once the
- * wheel scrolls back to the bottom, but that only handles the operator who scrolls back down — the
- * cancel is what handles the one who does not.) Two smaller consequences are accepted: `kotgent
- * attach` must undo the mouse-reporting DECSET on exit (`TERMINAL_MODE_RESET`, written in the same
- * `finally` as the tty restore) and the browser terminal needs
+ * routes every keystroke to the copy-mode key table instead of the process, silently (exit 0) —
+ * whether it arrives as `send-keys` or as bytes written into an attached client's pty. That would
+ * swallow `SessionManager.interrupt`'s `0x03` and let the projection record an interrupt that never
+ * happened. **This option is therefore coupled to [Tmux.sendKeys]**, which chains `copy-mode -q`, the
+ * send and a `#{pane_in_mode}` read-back into ONE tmux invocation — atomic, so no wheel event can
+ * land between the cancel and the send — and **fails loudly** when the read-back says the keys were
+ * eaten. Do not weaken that chain; it is what makes this row safe, and it covers prefix-typed
+ * copy-mode too. (Copy-mode also auto-exits on its own once the wheel scrolls back to the bottom, but
+ * that only handles the operator who scrolls back down — the cancel is what handles the one who does
+ * not.) The same hazard reaches the programmatic `POST /sessions/{id}/input`, which cannot chain its
+ * bytes through tmux (they go into the shared upstream pty), so it calls [Tmux.leaveCopyMode] first
+ * and answers `409` when that provably fails rather than reporting `ok` for discarded input. The
+ * interactive terminal WebSocket deliberately does neither: a human who scrolled back and then typed
+ * expects tmux's own behaviour. Two smaller consequences are accepted: `kotgent attach` must undo the
+ * mouse-reporting DECSET on exit (`TERMINAL_MODE_RESET`, written in the same `finally` as the tty
+ * restore, and covering all three trackers before the SGR encoding) and the browser terminal needs
  * `macOptionClickForcesSelection` so text selection survives — Option-drag on macOS, Shift-drag
  * elsewhere.
  *
@@ -112,6 +128,17 @@ val TMUX_SERVER_OPTIONS: List<TmuxOption> = listOf(
     TmuxOption("-g", "history-limit", "10000"),
     TmuxOption("-s", "escape-time", "10"),
 )
+
+/**
+ * Whether [options] forces tmux's `mouse` option on — the single place that question is answered, so
+ * the two obligations that ride on the option cannot drift from it.
+ *
+ * Read by the terminal fan-out ([io.kotgent.pty.terminalSeed]): with `mouse on` a subscriber joining
+ * an existing bridge must be handed the mouse-enable DECSET itself, because its `capture-pane` seed
+ * carries no private-mode sequences and the upstream's own enable was broadcast before it arrived.
+ */
+fun forcesMouseOn(options: List<TmuxOption>): Boolean =
+    options.any { it.name == "mouse" && it.value == "on" }
 
 /**
  * Expand [options] into tmux argv: one `set-option <scope> <name> <value>` per option, each

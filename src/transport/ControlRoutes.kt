@@ -36,10 +36,18 @@ val TRANSPORT_JSON: Json = Json {
 
 /**
  * How the transport delivers `POST /sessions/{id}/input` bytes to a session's terminal. Injected by
- * [KotgentServer] as `{ id, bytes -> terminalRegistry.getOrCreate(id).write(bytes) }`, so [controlRoutes]
+ * [KotgentServer] (leave copy-mode, then write into the session's shared upstream), so [controlRoutes]
  * stays decoupled from the terminal fan-out plumbing (and unit tests can supply a recording sink).
+ *
+ * Returns **whether the bytes could actually be delivered**. This is a REST endpoint, so the caller
+ * gets one answer and no terminal to look at: with `mouse on` forced, one wheel scroll by ANY viewer
+ * puts the shared pane into copy-mode, where tmux routes every keystroke — including bytes written
+ * into the attached client's pty — to the copy-mode key table and drops them. Answering `ok` there
+ * would be the same silent swallow `Tmux.sendKeys`' cancel exists to prevent. So the sink cancels
+ * copy-mode first and reports `false` when it provably could not, which [controlRoutes] turns into a
+ * `409`.
  */
-typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Unit
+typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
 
 /**
  * The control-plane REST surface over [SessionManager] + the [EventStore] cache (plan Task 14). Read
@@ -141,7 +149,16 @@ fun Route.controlRoutes(
             return@post
         }
         // Raw terminal input. Read as text (UTF-8) — the primary binary input path is the terminal WS.
-        input(id, call.receiveText().encodeToByteArray())
+        // `false` = the pane is stuck in copy-mode and tmux would have discarded the bytes; a caller
+        // with no terminal to look at must hear that instead of an unconditional `ok`.
+        if (!input(id, call.receiveText().encodeToByteArray())) {
+            call.respondText(
+                "session ${id.value} is in tmux copy-mode and input was not delivered; " +
+                    "scroll the pane back to the bottom or press q in the terminal",
+                status = HttpStatusCode.Conflict,
+            )
+            return@post
+        }
         call.respondText("ok")
     }
 

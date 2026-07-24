@@ -28,6 +28,15 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
     /** (logical id, bytes) for every [sendKeys] call, in order. */
     val sentKeys = mutableListOf<Pair<String, ByteArray>>()
 
+    /** Logical ids passed to [leaveCopyMode], in order. */
+    val copyModeCancels = mutableListOf<String>()
+
+    /**
+     * When true, [leaveCopyMode] reports failure — the fake stand-in for a pane a wheel scroll keeps
+     * dragging back into copy-mode, which is what makes the "input was NOT delivered" path testable.
+     */
+    var copyModeStuck: Boolean = false
+
     override fun sessionName(id: String): String = "kt-$id"
 
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
@@ -51,5 +60,10 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
 
     override fun sendKeys(id: String, bytes: ByteArray) {
         sentKeys.add(id to bytes)
+    }
+
+    override fun leaveCopyMode(id: String): Boolean {
+        copyModeCancels.add(id)
+        return !copyModeStuck
     }
 }
