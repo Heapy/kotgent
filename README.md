@@ -211,6 +211,14 @@ is and isn't here:
 - The Codex **app-server** (JSON-RPC v2) as an alternative event source — structured items, two-way
   approvals, and no terminal. That is a different product surface (a chat UI, not a terminal fan-out),
   so it is deliberately separate from the adapter above.
+- **A third provider: `cursor-cli`** — another TUI-in-`tmux` adapter behind the same shape (launch spec +
+  hook config + normalizer, an ingress route, a `VendorStoreProbe`, and an `agentFactoryOf` entry), with
+  nothing in `core/`, the store, or the fan-out changing. Open questions to resolve first: whether it
+  exposes per-launch hooks (like Codex's `-c 'hooks={…}'`) or forces a user-scoped config, how it reports
+  approvals, and whether/how a session id can be preallocated or must be scanned after the fact.
+- **Show the provider version once a session is deployed** — capture the agent CLI's version
+  (`claude --version` / `codex --version`) at launch and surface it in the sidebar/session view, so it is
+  obvious which build is running (and, later, whether a session predates an upgrade).
 - **Mobile-native UX** (a PWA manifest + home-screen icon, an Esc/Ctrl/Tab/arrow key row for the soft
   keyboard, approve buttons) and **Web Push**. Remote phone access itself — the cloudflared tunnel +
   Access, sign-in by QR, and the cookie — is now in the slice (see [Sign in from your
