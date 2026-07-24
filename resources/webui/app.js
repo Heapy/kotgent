@@ -151,6 +151,11 @@ function App() {
   const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd} | {kind:'prefs'} | {kind:'help'} | {kind:'phone'}
   const [status, setStatus] = useState({ text: "", error: false });
   const [hint, setHint] = useState(SELECT_HINT);
+  // Narrow screens only: the sidebar is an overlay drawer there, so its open/closed state lives here —
+  // the hamburger that opens it sits in the terminal header, on the other side of the tree. Above the
+  // breakpoint the drawer classes mean nothing (the sidebar is a plain flex column) and this stays false,
+  // because the toggle that flips it is display:none.
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Latest values for handlers that must not be re-created on every update.
   const sessionsRef = useRef(sessions);
@@ -175,6 +180,10 @@ function App() {
   /** Select [session]: attach its terminal when it is alive, explain why not when it is not. */
   const showSession = useCallback((session) => {
     setActiveId(session.id);
+    // Picking a session is the drawer's whole purpose, so it closes itself — on a phone the terminal is
+    // behind it. This covers every entry point (a tap in the list, a freshly started session, a
+    // notification deep link), which is why it lives here and not in the click handler.
+    setDrawerOpen(false);
     if (isAliveState(session.state)) {
       setAttachedId(session.id);
       setHint(null);
@@ -413,6 +422,9 @@ function App() {
     setDialog({ kind: "new", cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath });
   }, []);
 
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
+
   const closeDialog = useCallback(() => setDialog(null), []);
   const openPrefs = useCallback(() => setDialog({ kind: "prefs" }), []);
   const openHelp = useCallback(() => setDialog({ kind: "help" }), []);
@@ -427,24 +439,33 @@ function App() {
   // --- render ----------------------------------------------------------------------------------
 
   return html`
+    ${/* The drawer's tap-outside dismissal — a real button so it is reachable by keyboard and by a screen
+          reader too, and rendered only while the drawer is open so desktop never has it in the tree. */ ""}
+    ${drawerOpen && html`
+      <button type="button" class="drawer-scrim" aria-label="Close the session list"
+              onClick=${closeDrawer}></button>`}
     <${Sidebar}
       sessions=${sessions}
       activeId=${activeId}
       prefs=${prefs}
       status=${status}
       currentVersion=${currentVersion}
+      drawerOpen=${drawerOpen}
       onSelect=${selectSession}
       onNewSession=${openNewSession}
       onOpenPrefs=${openPrefs}
       onOpenHelp=${openHelp}
       onOpenPhone=${openPhone}
       onRestore=${restore}
+      onCloseDrawer=${closeDrawer}
     />
     <${TerminalPane}
       session=${activeSession}
       attachedId=${attachedId}
       pendingAction=${pendingAction}
       hint=${hint}
+      drawerOpen=${drawerOpen}
+      onToggleDrawer=${toggleDrawer}
       onAttach=${attach}
       onInterrupt=${interrupt}
       onResume=${resume}

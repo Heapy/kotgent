@@ -743,15 +743,42 @@ pin an old UI for a day).
 - Modify: `resources/webui/components/Sidebar.js`
 - Modify: `resources/webui/components/TerminalPane.js`
 - Modify: `resources/webui/app.js`
+- ➕ Modify: `test/transport/WebUiServingTest.kt` (the mobile layer is invisible to every other test — a
+  drawer whose toggle was never rendered looks exactly like today's desktop UI in this binary)
 
-- [ ] add a width media query that turns the sidebar into an overlay drawer with a hamburger toggle;
+- [x] add a width media query that turns the sidebar into an overlay drawer with a hamburger toggle;
       selecting a session closes it
-- [ ] move interrupt/stop/resume/done into a compact icon row in the terminal header on narrow screens
-- [ ] switch the app shell to `100dvh`, add `env(safe-area-inset-*)` padding and
+      ➕ the breakpoint is the EXISTING `max-width: 720px` (the help dialog already uses it) — one
+      breakpoint, not two. The open/closed state lives in `app.js` because the hamburger sits in the
+      terminal header, on the other side of the tree; closing is wired in `showSession`, so every entry
+      point (a tap in the list, a freshly started session, a notification deep link) closes it rather
+      than only the click handler. Dismissal is also a real `<button class="drawer-scrim">` (keyboard- and
+      VoiceOver-reachable, unlike a `<div onClick>`) plus a `✕` inside the drawer — the scrim covers the
+      hamburger that opened it. Closed, the drawer is `visibility: hidden` as well as translated away, or
+      a keyboard would walk into off-screen controls
+- [x] move interrupt/stop/resume/done into a compact icon row in the terminal header on narrow screens
+      ➕ done with `data-icon` + `content: attr(data-icon)` under the media query, so ONE row of markup
+      serves both layouts with no JS branch and no second component; each button keeps its text (the
+      label collapses to `font-size: 0`) and gains an `aria-label`, so the accessible name is identical
+      above and below the breakpoint. Icons: 🔗 attach, ⏸ interrupt, ▶ resume, ⏏ detach, ⏹ stop, ✓ done
+- [x] switch the app shell to `100dvh`, add `env(safe-area-inset-*)` padding and
       `overscroll-behavior: none` (pull-to-refresh must not reload the page mid-session)
-- [ ] keep the desktop layout byte-for-byte identical above the breakpoint
-- [ ] syntax-check the changed modules (`node --check`); run `./kotlin build && ./kotlin test` — must pass
+      ➕ `height: 100vh` is kept as the preceding declaration (the fallback for a browser without `dvh`);
+      the safe-area padding sits on `#app` OUTSIDE the media query, because a notched phone in landscape
+      is wider than the breakpoint but still has an inset — `env()` is 0 everywhere else. The drawer is
+      `position: fixed`, so it re-applies the insets itself
+- [x] keep the desktop layout byte-for-byte identical above the breakpoint
+      ➕ the three new controls are `display: none` above the breakpoint (a `display:none` flex item
+      consumes no `gap`), `data-icon`/`aria-label` are non-visual, and `100dvh == 100vh` / `env(...) == 0`
+      on a desktop viewport. The only desktop-visible deletions are the OLD mobile rules this replaces
+- [x] syntax-check the changed modules (`node --check`); run `./kotlin build && ./kotlin test` — must pass
       before task 17
+      ➕ 1 new test (`theWebUiShipsTheMobileDrawerAndViewportRules`): **585 run / 585 passed / 0 skipped**
+      (branch baseline 584). It pins both ends of the CSS↔markup contract — `100dvh`, the safe-area
+      insets, `overscroll-behavior: none`, `#sidebar.open`, `content: attr(data-icon)`, and that every
+      lifecycle button really declares a `data-icon` AND an `aria-label`. The htm templates were also
+      parsed against the vendored `preact`+`htm` outside the browser, so the new attributes are proven to
+      reach the vnode rather than only to compile
 
 ### Task 17: Keyboard-aware terminal sizing and focus
 

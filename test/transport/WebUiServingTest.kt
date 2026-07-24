@@ -51,6 +51,7 @@ import platform.posix.access
 import platform.posix.getcwd
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -501,6 +502,57 @@ class WebUiServingTest {
         val xtermCss = ctx.get("/vendor/xterm.css")
         assertEquals(HttpStatusCode.OK, xtermCss.status, "GET /vendor/xterm.css (nested) is served")
         assertContentTypeContains(xtermCss, "css")
+    }
+
+    /**
+     * The mobile layer (plan Task 16). A viewport cannot be observed from this binary, but every piece of
+     * it is a file the daemon serves, and each failure is silent *here*: a drawer whose toggle was never
+     * rendered, or a shell that lost `100dvh`, looks exactly like today's desktop UI in every other test
+     * and only falls over on a phone. So pin both ends — the CSS that defines the narrow-screen behaviour
+     * and the markup it needs to find.
+     */
+    @Test
+    fun theWebUiShipsTheMobileDrawerAndViewportRules() = withServer { ctx ->
+        val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(css.contains("100dvh"), "the app shell is sized against the DYNAMIC viewport height")
+        assertTrue(css.contains("env(safe-area-inset-"), "the shell pads the notch / home-indicator insets")
+        assertTrue(
+            css.contains("overscroll-behavior: none"),
+            "pull-to-refresh must not reload the page and drop a live terminal attach",
+        )
+        assertTrue(css.contains("@media (max-width: 720px)"), "one width breakpoint drives the mobile layout")
+        assertTrue(css.contains("#sidebar.open"), "below it the sidebar is a drawer with an open state")
+        assertTrue(
+            css.contains("content: attr(data-icon)"),
+            "and the lifecycle controls collapse to the icons the markup declares",
+        )
+
+        // Every lifecycle control must carry BOTH halves of that collapse: the icon the narrow layout
+        // draws, and an aria-label so the accessible name survives the label being sized to 0.
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        assertTrue(pane.contains("id=\"drawer-toggle\""), "the terminal header carries the drawer opener")
+        val buttons = pane.split("<button")
+        for (id in listOf("attach-button", "interrupt-button", "resume-button",
+                          "detach-button", "stop-button", "done-button")) {
+            val markup = assertNotNull(
+                buttons.firstOrNull { it.contains("id=\"$id\"") },
+                "the terminal header still renders #$id",
+            )
+            assertTrue(markup.contains("data-icon="), "#$id declares the icon its narrow-screen form shows")
+            assertTrue(markup.contains("aria-label="), "#$id keeps its name when the label collapses")
+        }
+
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(sidebar.contains("drawerOpen"), "the sidebar takes the drawer state from the app")
+        assertTrue(sidebar.contains("\"open\""), "and turns it into the class the media query styles")
+        assertTrue(sidebar.contains("id=\"drawer-close\""), "the drawer can be dismissed from inside it")
+
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(app.contains("drawer-scrim"), "a tap outside the drawer closes it")
+        assertTrue(
+            app.contains("setDrawerOpen(false)"),
+            "selecting a session closes the drawer — the terminal is behind it",
+        )
     }
 
     @Test

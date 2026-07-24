@@ -53,8 +53,8 @@ async function writeClipboard(text) {
 }
 
 export function TerminalPane({
-  session, attachedId, pendingAction, hint,
-  onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
+  session, attachedId, pendingAction, hint, drawerOpen,
+  onToggleDrawer, onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   const [copyResult, setCopyResult] = useState(null);
@@ -160,12 +160,28 @@ export function TerminalPane({
   return html`
     <main id="terminal-pane">
       <div id="terminal-head">
+        ${/* The drawer opener. Rendered on every screen but display:none above the mobile breakpoint, so
+              the desktop header is laid out exactly as it was before the drawer existed. */ ""}
+        <button
+          id="drawer-toggle"
+          class="icon-button icon-button-small drawer-toggle"
+          type="button"
+          aria-label="Show the session list"
+          aria-expanded=${drawerOpen ? "true" : "false"}
+          aria-controls="sidebar"
+          title="Sessions"
+          onClick=${onToggleDrawer}
+        >☰</button>
         <div class="terminal-identity">
           <span id="terminal-title">${session ? displayName(session) : "No session selected"}</span>
           <span id="terminal-state" class=${badge ? "badge " + badge.cls : "badge"}>
             ${badge ? badge.label : ""}
           </span>
         </div>
+        ${/* Each control carries its label as text AND an icon in `data-icon`. Above the mobile
+              breakpoint the text is the button; below it, the text collapses and style.css draws
+              `data-icon` through ::before, so one row of markup serves both without a JS branch. The
+              aria-label keeps the accessible name identical to the desktop wording either way. */ ""}
         ${session && html`
           <div id="session-actions" class="session-actions">
             ${alive && tmuxCommand && html`
@@ -180,22 +196,22 @@ export function TerminalPane({
               </span>
             `}
             ${alive && !attached && html`
-              <button id="attach-button" class="button button-primary" type="button"
-                      disabled=${busy} onClick=${onAttach}>Attach</button>`}
+              <button id="attach-button" class="button button-primary" type="button" data-icon="🔗"
+                      aria-label="Attach" disabled=${busy} onClick=${onAttach}>Attach</button>`}
             ${alive && html`
-              <button id="interrupt-button" class="button button-quiet" type="button"
-                      disabled=${busy} onClick=${onInterrupt}>Interrupt</button>`}
+              <button id="interrupt-button" class="button button-quiet" type="button" data-icon="⏸"
+                      aria-label="Interrupt" disabled=${busy} onClick=${onInterrupt}>Interrupt</button>`}
             ${!alive && html`
-              <button id="resume-button" class="button button-primary" type="button"
-                      disabled=${busy} onClick=${onResume}>Resume</button>`}
+              <button id="resume-button" class="button button-primary" type="button" data-icon="▶"
+                      aria-label="Resume" disabled=${busy} onClick=${onResume}>Resume</button>`}
             ${attached && html`
-              <button id="detach-button" class="button button-quiet" type="button"
-                      disabled=${busy} onClick=${onDetach}>Detach</button>`}
+              <button id="detach-button" class="button button-quiet" type="button" data-icon="⏏"
+                      aria-label="Detach" disabled=${busy} onClick=${onDetach}>Detach</button>`}
             ${alive && html`
-              <button id="stop-button" class="button button-danger" type="button"
-                      disabled=${busy} onClick=${onStop}>Stop</button>`}
-            <button id="done-button" class="button button-quiet" type="button"
-                    disabled=${busy} onClick=${onDone}
+              <button id="stop-button" class="button button-danger" type="button" data-icon="⏹"
+                      aria-label="Stop" disabled=${busy} onClick=${onStop}>Stop</button>`}
+            <button id="done-button" class="button button-quiet" type="button" data-icon="✓"
+                    aria-label="Done" disabled=${busy} onClick=${onDone}
                     title="Stop the agent and hide this session from the sidebar">Done</button>
           </div>
         `}

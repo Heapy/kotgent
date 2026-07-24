@@ -104,8 +104,8 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
 }
 
 export function Sidebar({
-  sessions, activeId, prefs, status, currentVersion,
-  onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore,
+  sessions, activeId, prefs, status, currentVersion, drawerOpen,
+  onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore, onCloseDrawer,
 }) {
   const [showDone, setShowDone] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
@@ -148,8 +148,10 @@ export function Sidebar({
   const attention = visible.filter((s) => isNeedsAttention(s.state));
   const grouped = groupingEnabled(prefs);
 
+  // `open` only means anything under the mobile media query, where this aside is a fixed overlay drawer;
+  // above the breakpoint it is the same flex column it has always been.
   return html`
-    <aside id="sidebar">
+    <aside id="sidebar" class=${drawerOpen ? "open" : ""}>
       <header id="sidebar-head">
         <div class="brand-row">
           <h1>Kotgent</h1>
@@ -194,6 +196,16 @@ export function Sidebar({
               title="Preferences"
               onClick=${onOpenPrefs}
             >⚙</button>
+            ${/* Shown only under the mobile media query: the drawer's scrim covers the hamburger that
+                  opened it, so without this the only way back is a tap outside. */ ""}
+            <button
+              id="drawer-close"
+              class="icon-button icon-button-small drawer-close"
+              type="button"
+              aria-label="Close the session list"
+              title="Close the session list"
+              onClick=${onCloseDrawer}
+            >✕</button>
           </div>
         </div>
         <div

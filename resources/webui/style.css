@@ -64,12 +64,25 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
+  /* Pull-to-refresh would reload the page mid-session on a phone — losing the terminal attach for a
+     gesture the operator meant as a scroll. Nothing here scrolls the document anyway. */
+  overscroll-behavior: none;
 }
 
 #app {
   display: flex;
+  /* 100vh first as the fallback, then 100dvh: mobile browsers size vh against the LARGEST viewport (the
+     one with the toolbars hidden), so a 100vh shell is taller than the screen and pushes the terminal
+     under the address bar. dvh tracks the visible height. On desktop the two are the same value. */
   height: 100vh;
+  height: 100dvh;
   width: 100%;
+  /* `viewport-fit=cover` (index.html) plus iOS's black-translucent status bar draw the app under the
+     notch and the home indicator; these insets pay it back. env() is 0 on everything else, which is why
+     this sits outside the media query — a phone in landscape is wider than the breakpoint but still has
+     a notch on one side. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 /* --- Sidebar --- */
@@ -746,6 +759,14 @@ dialog::backdrop {
   padding: 10px 12px;
 }
 
+/* --- Mobile drawer: the three controls that exist only below the breakpoint ---
+   All three are in the DOM on every screen (the scrim only while the drawer is open) and hidden here, so
+   the desktop layout is laid out from exactly the boxes it always had — a display:none flex item takes no
+   space and consumes no `gap`. Everything that turns them on lives in the media query below. */
+.drawer-toggle,
+.drawer-close,
+.drawer-scrim { display: none; }
+
 @media (max-width: 720px) {
   #help-dialog { width: 100%; }
   .help-list {
@@ -753,24 +774,95 @@ dialog::backdrop {
     gap: 2px 0;
   }
   .help-list dd { margin-bottom: 10px; }
-  #app { flex-direction: column; }
+
+  /* The sidebar leaves the flex row and becomes an overlay drawer: the terminal gets the whole screen,
+     which is the only way a phone-sized viewport has room for one. `fixed` positions it against the
+     viewport, so it re-applies the safe-area insets #app carries for the in-flow layout. */
   #sidebar {
-    border-bottom: 1px solid var(--border);
-    border-right: 0;
-    max-height: 42vh;
+    position: fixed;
+    z-index: 30;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(86vw, 320px);
     max-width: none;
     min-width: 0;
-    width: 100%;
+    border-right: 1px solid var(--border);
+    padding: calc(12px + env(safe-area-inset-top)) 12px
+             calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
+    /* Closed: off-screen AND out of the tab order — a translated-away drawer is still focusable, so a
+       keyboard or VoiceOver user would otherwise walk into invisible controls. */
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 180ms ease-out, visibility 180ms;
+    overscroll-behavior: contain;
   }
-  #terminal-head {
-    align-items: flex-start;
+  #sidebar.open {
+    transform: translateX(0);
+    visibility: visible;
+    box-shadow: var(--shadow);
+  }
+
+  .drawer-scrim {
+    display: block;
+    position: fixed;
+    z-index: 20;
+    inset: 0;
+    width: 100%;
+    background: rgba(13, 18, 28, 0.58);
+    border: 0;
+    padding: 0;
+  }
+
+  /* Sized up from the 28px desktop icon button: this one is hit with a thumb. */
+  .drawer-toggle,
+  .drawer-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    font-size: 16px;
+    min-height: 34px;
+    width: 34px;
+  }
+  /* The drawer is narrow and the brand row now carries one more button; let it wrap rather than squeeze. */
+  .brand-actions {
     flex-wrap: wrap;
+    justify-content: flex-end;
   }
-  .session-actions {
-    margin-left: 0;
-    width: 100%;
+
+  /* The header stays a single row: the title truncates, the controls do not. */
+  #terminal-head {
+    gap: 8px;
+    padding: 6px 10px;
   }
   .copy-tmux-button { display: none; }
+  .terminal-identity {
+    flex: 1 1 auto;
+    gap: 6px;
+  }
+  #terminal-title { font-size: 12px; }
+  /* The lifecycle controls collapse to an icon row: the label text is still the button's content (and its
+     accessible name comes from aria-label either way), but it is drawn from `data-icon` instead. */
+  .session-actions { gap: 4px; }
+  .session-actions .button {
+    font-size: 0;
+    min-height: 34px;
+    min-width: 36px;
+    padding: 0;
+  }
+  .session-actions .button::before {
+    content: attr(data-icon);
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  #terminal-host { padding: 4px 6px; }
+}
+
+/* A drawer that slides is decoration; an operator who asked for less motion still needs it to open. */
+@media (prefers-reduced-motion: reduce) {
+  #sidebar { transition: none; }
 }
 
 /* "Done" / archived sessions */
