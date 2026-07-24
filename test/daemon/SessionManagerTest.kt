@@ -543,6 +543,46 @@ class SessionManagerTest {
     }
 
     @Test
+    fun cancellationAfterCtrlCStillPersistsTheInterruptStateExactlyOnce() = runBlocking {
+        withTimeout(20_000) {
+            val id = SessionId("intr02")
+            val tracing = TracingStore(SqliteEventStore.inMemory(now = { 1L }))
+            val store = GatedStore(tracing, id)
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { id },
+                now = { 1L },
+            )
+            mgr.start("claude", "/tmp")
+            tracing.stateWrites.clear()
+            store.arm()
+
+            val interrupting = launch { mgr.interrupt(id) }
+            try {
+                store.entered.await() // projection read entered only after verified Ctrl-C delivery
+                assertEquals(1, tmux.sentKeys.size, "Ctrl-C was irreversibly delivered exactly once")
+                interrupting.cancel()
+            } finally {
+                store.release.complete(Unit)
+            }
+            interrupting.join()
+
+            assertEquals(
+                listOf(SessionState.ready),
+                tracing.stateWrites,
+                "the whole post-delivery tail survives cancellation, including the suspending state write",
+            )
+            assertEquals(SessionState.ready, store.getSession(id)!!.state, "the durable cache matches delivered Ctrl-C")
+            assertEquals(1, tmux.sentKeys.size, "cancellation never retries the irreversible Ctrl-C")
+        }
+    }
+
+    @Test
     fun resumeSpawnsAFreshSessionForADeadSessionWithAProviderId() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })

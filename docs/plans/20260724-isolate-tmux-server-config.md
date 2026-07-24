@@ -212,6 +212,29 @@
 >
 > Suite remains **465 run / 465 passed / 0 skipped**; direct `ptycheck` remains 8/8.
 
+> **Revision 9 — external-review write-lifetime and interrupt-cancellation contracts** (`mouse on` and
+> both accepted residuals remain unchanged). All three findings were confirmed:
+>
+> 1. **An upstream handle may not escape close-vs-write exclusion.** `Broadcaster.writeInput` previously
+>    copied the handle under its state mutex and wrote after unlocking. Last-detach could then close its
+>    raw fd, another session could reuse that fd, and the stale write could reach the wrong agent while
+>    returning success. An atomic writable reference plus a dedicated upstream-I/O gate now serialize
+>    input writes and make teardown unpublish the handle, call bounded `PtyHandle.prepareClose` (terminate
+>    the child/unblock the write without freeing the master fd), then drain the gate before final close.
+>    The state mutex is not held across the potentially blocking write, so healthy output fan-out stays
+>    live, while teardown cannot deadlock behind a full pty. A deterministic fake parks the write and
+>    proves last-detach prepares but cannot finally close the handle early.
+> 2. **Verified Ctrl-C creates an uncancellable state-write obligation.** `SessionManager.interrupt`
+>    keeps `sendKeys` cancellable, but once it returns the exact projection-read/reduce/cache-write tail
+>    runs under `NonCancellable`. Otherwise request cancellation can leave stale `running` state and
+>    invite a second Ctrl-C that quits some agent TUIs. The regression cancels at a gated projection
+>    read and also places a suspension in the state write, proving the whole tail is covered.
+> 3. **The terminal-reset pin is byte-exact.** `CliTest` now compares the full expected string directly
+>    instead of splitting on `ESC` and filtering empty segments, so any extra bare/trailing `ESC` fails.
+>    The separate tracker-before-SGR ordering assertion remains.
+>
+> Suite is now **467 run / 467 passed / 0 skipped**; direct `ptycheck` remains 8/8.
+
 ## Overview
 
 The daemon's tmux server (`-L kotgent`) **reads the user's `~/.tmux.conf`**. The `-L` socket label

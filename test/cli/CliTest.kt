@@ -331,8 +331,8 @@ class CliTest {
             listOf(
                 "$esc[?1003l", "$esc[?1002l", "$esc[?1000l", "$esc[?1006l",
                 "$esc[?2004l", "$esc[?2031l", "$esc[?1049l", "$esc[?25h", "$esc>",
-            ),
-            TERMINAL_MODE_RESET.split(esc).filter { it.isNotEmpty() }.map { esc + it },
+            ).joinToString(""),
+            TERMINAL_MODE_RESET,
             "all three mouse trackers off, then the SGR encoding, bracketed paste, theme reporting, " +
                 "the alternate screen and application keypad; cursor shown",
         )

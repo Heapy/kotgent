@@ -1,10 +1,17 @@
 package io.kotgent.pty
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -177,6 +184,46 @@ class TerminalBridgeTest {
         assertTrue(bridge.write(ByteArray(0)), "an empty write has nothing to deliver and nothing to lose")
 
         a.close()
+    }
+
+    /**
+     * A write owns the raw pty fd until it returns. If last-detach could close the handle meanwhile,
+     * another session's `openpty` could reuse that fd and the stale write could reach the wrong agent
+     * while `/input` reported success. The dedicated writer thread makes the interleaving deterministic:
+     * park inside [FakePtyHandle.write], attempt last-detach undispatched, and require close to wait.
+     */
+    @Test
+    @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
+    fun lastDetachWaitsForAnInFlightUpstreamWriteBeforeClosingItsHandle() = bridgeTest { bridge, factory ->
+        val sub = bridge.subscribe()
+        val up = factory.current
+        val writeEntered = CompletableDeferred<Unit>()
+        val releaseWrite = CompletableDeferred<Unit>()
+        up.beforeWrite = {
+            writeEntered.complete(Unit)
+            runBlocking { releaseWrite.await() }
+        }
+        val writerContext = newSingleThreadContext("terminal-bridge-write-race")
+        try {
+            coroutineScope {
+                val writing = async(writerContext) { bridge.write("atomic-body".encodeToByteArray()) }
+                writeEntered.await()
+                val closing = async(start = CoroutineStart.UNDISPATCHED) { sub.close() }
+                try {
+                    assertFalse(closing.isCompleted, "last-detach must wait while the upstream write owns its fd")
+                    assertTrue(up.closePrepared, "teardown first asks the child/slave to unblock the write")
+                    assertFalse(up.closed, "the in-flight write's raw fd must not be closed or reusable")
+                } finally {
+                    releaseWrite.complete(Unit)
+                }
+                assertTrue(writing.await(), "the write completed before teardown closed the handle")
+                closing.await()
+                assertTrue(up.closed, "last-detach closes the handle after the write returns")
+            }
+        } finally {
+            releaseWrite.complete(Unit)
+            writerContext.close()
+        }
     }
 
     @Test

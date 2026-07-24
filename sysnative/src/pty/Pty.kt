@@ -187,7 +187,7 @@ class Pty private constructor(
     /**
      * Poll-wait up to [micros] microseconds for the child to exit without blocking indefinitely
      * (`waitpid(WNOHANG)`). Returns `true` once the child is reaped (records its exit code), `false`
-     * if it is still alive after the deadline. Used by [close] to bound its wait so it can never
+     * if it is still alive after the deadline. Used by [prepareClose] to bound its wait so it can never
      * deadlock a caller's lock (e.g. the Broadcaster's) on a child that ignores SIGTERM.
      */
     private fun reapBounded(micros: Long): Boolean {
@@ -211,17 +211,14 @@ class Pty private constructor(
     }
 
     /**
-     * Terminate the child (if still alive), reap it, close the master fd and stop the
-     * reader thread. Returns the child's exit code. Idempotent.
-     *
-     * Termination is escalated and BOUNDED: SIGTERM first (so the slave closes and the reader sees
-     * a clean EOF rather than us yanking the fd from under a blocked read), then a bounded poll-wait,
-     * and finally SIGKILL if the child ignores SIGTERM — so this never blocks forever even though it
-     * may run under a caller's lock.
+     * Terminate and reap the child without closing [masterFd]. This is the first half of [close], split
+     * out so a caller can make a blocking master write return before waiting for exclusive ownership of
+     * the fd. Termination is escalated and BOUNDED: SIGTERM first, then [reapBounded], then SIGKILL.
+     * The child closing its slave makes a blocked master write fail/finish, while the raw fd remains
+     * valid and cannot be reused until [close]. Idempotent.
      */
-    fun close(): Int {
-        if (closed) return exitCode
-        closed = true
+    fun prepareClose() {
+        if (closed || reaped) return
         if (!reaped) {
             kill(pid, SIGTERM)
             if (!reapBounded(CLOSE_GRACE_MICROS)) {
@@ -229,6 +226,19 @@ class Pty private constructor(
                 waitFor() // SIGKILL is uncatchable — this reaps promptly
             }
         }
+    }
+
+    /**
+     * Terminate the child (if still alive), reap it, close the master fd and stop the
+     * reader thread. Returns the child's exit code. Idempotent.
+     *
+     * [prepareClose] is deliberately separate for Broadcaster's close-vs-write gate; calling [close]
+     * directly still performs both phases for every other owner.
+     */
+    fun close(): Int {
+        if (closed) return exitCode
+        prepareClose()
+        closed = true
         posixClose(masterFd)
         readerScope.cancel()
         readerContext.close()

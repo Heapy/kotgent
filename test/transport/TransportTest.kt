@@ -858,6 +858,7 @@ class TransportTest {
         fun emit(bytes: ByteArray) { out.trySend(bytes) }
         override fun write(bytes: ByteArray) { writes.trySend(bytes) }
         override fun resize(cols: Int, rows: Int) { resizes.trySend(cols to rows) }
+        override fun prepareClose() = Unit
         override fun close() { out.close() }
     }
 

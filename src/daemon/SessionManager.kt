@@ -431,15 +431,21 @@ class SessionManager(
      * no hook on Esc/Ctrl-C) AND apply [ControlSignal.Interrupt] to the projection (alive → `ready`,
      * approvals cleared). The projection is persisted only after [TmuxControl.sendKeys] returns with
      * verified delivery; an absent target or any other send failure leaves it unchanged. The session
-     * stays alive, so its pane stays registered.
+     * stays alive, so its pane stays registered. Once that send returns, Ctrl-C is irreversible:
+     * cancellation must not abandon the following projection read/cache write and leave stale state
+     * that invites an unsafe second Ctrl-C (some agent TUIs interpret that as quit). Exactly that
+     * post-delivery tail runs under [NonCancellable]; the send itself deliberately does not.
      */
     suspend fun interrupt(sessionId: SessionId): Unit = withControlLock(sessionId) {
         // The read (getSession) must happen INSIDE the lock: reading a live row outside it and then
         // reducing from that snapshot is exactly how a racing stop gets overwritten with `ready`.
         val meta = store.getSession(sessionId) ?: return@withControlLock
         tmux.sendKeys(sessionId.value, byteArrayOf(0x03)) // Ctrl-C
-        val next = reduce(currentProjection(sessionId, meta), ControlSignal.Interrupt)
-        persistDerivedState(meta, next.state, EventSource.user)
+        withContext(NonCancellable) {
+            // Delivery cannot be rolled back, so cancellation cannot split it from its derived-state write.
+            val next = reduce(currentProjection(sessionId, meta), ControlSignal.Interrupt)
+            persistDerivedState(meta, next.state, EventSource.user)
+        }
     }
 
     /**

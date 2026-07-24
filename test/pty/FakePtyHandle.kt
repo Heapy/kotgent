@@ -11,9 +11,11 @@ import kotlinx.coroutines.channels.ReceiveChannel
  * and [eof] closes [output] to simulate the child exiting. Everything the fan-out does to the
  * handle is recorded: input [written], [resizes], and whether it was [closed].
  *
- * Single-threaded by construction: the suite drives it from a `runBlocking` event loop and launches
- * the bridge's reader on that same dispatcher, so the recording lists are only ever touched from
- * one thread. [output] is an UNLIMITED channel, so [emit] never blocks.
+ * Normally single-threaded: the suite drives it from a `runBlocking` event loop and launches the
+ * bridge's reader on that same dispatcher. The close-vs-write regression is the one deliberate
+ * exception: it parks [write] on a dedicated writer thread behind cross-thread
+ * `CompletableDeferred` barriers before reading any recording list. [output] is an UNLIMITED channel,
+ * so [emit] never blocks.
  */
 class FakePtyHandle(val command: List<String>) : PtyHandle {
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
@@ -30,6 +32,10 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
     var closed: Boolean = false
         private set
 
+    /** True once the two-phase teardown asked the fake to unblock I/O without releasing its handle. */
+    var closePrepared: Boolean = false
+        private set
+
     /**
      * When true, [write] throws before recording a byte — the stand-in for a pty whose master fd lost
      * its child before the write began. [Broadcaster.writeInput] guards the write, so this exercises
@@ -44,6 +50,12 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
      */
     var failWritesAfterBytes: Int? = null
 
+    /**
+     * Optional synchronous hook run at the start of [write]. A concurrency regression test parks a
+     * write here to prove teardown cannot close this handle until the write returns.
+     */
+    var beforeWrite: (() -> Unit)? = null
+
     /** Simulate the child writing [bytes] to the pty. */
     fun emit(bytes: ByteArray) {
         channel.trySend(bytes)
@@ -55,6 +67,7 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
     }
 
     override fun write(bytes: ByteArray) {
+        beforeWrite?.invoke()
         if (failWrites) throw IllegalStateException("fake pty write failed (closed master fd)")
         failWritesAfterBytes?.let { count ->
             val prefixSize = count.coerceIn(0, bytes.size)
@@ -68,8 +81,13 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
         resizes.add(cols to rows)
     }
 
+    override fun prepareClose() {
+        closePrepared = true
+    }
+
     override fun close() {
         if (closed) return
+        prepareClose()
         closed = true
         channel.close()
     }

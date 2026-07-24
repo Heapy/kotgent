@@ -1,9 +1,13 @@
 package io.kotgent.pty
 
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
  * The fan-out hub for one session's terminal (Task 9). N [Subscriber]s (each a browser / CLI
@@ -34,11 +38,20 @@ import kotlinx.coroutines.sync.withLock
  * `smallest` or forcing a uniform client size) is a Task 14/17 policy choice, not a fan-out concern.
  *
  * ## Concurrency
- * A single [mutex] guards the subscriber set, the current [upstream] reference and [lastSize].
- * Every sink is a BOUNDED [Channel] ([SUBSCRIBER_BUFFER]), so [broadcast]'s `trySend` never blocks
- * while holding the lock. The reader loop calls [broadcast] (which takes the lock) while [attach] may
- * hold it across a seed capture; because both serialize on [mutex], a new subscriber's seed is enqueued
- * strictly before any live delta it should see, and no committed delta is lost across the join boundary.
+ * [mutex] guards the subscriber set, the lifecycle-facing [upstream] reference and [lastSize]. Every
+ * sink is a BOUNDED [Channel] ([SUBSCRIBER_BUFFER]), so [broadcast]'s `trySend` never blocks while
+ * holding it. The atomic [writableUpstream] publishes the input handle, while [upstreamIoMutex] encloses
+ * each use of that handle and makes write-vs-close mutually exclusive: teardown unpublishes it, calls
+ * [PtyHandle.prepareClose] **outside** the gate to terminate the child without freeing the raw fd, then
+ * waits for the now-unblocked write before closing. A stale raw fd can therefore never be reused
+ * underneath a write. [PtyHandle.write] can block on a full pty, which is why it holds only this
+ * input/lifecycle gate — healthy output fan-out, seed ordering and resize remain on [mutex] and are not
+ * serialized behind input. Teardown cannot deadlock behind that blocking call: the real
+ * [PtyHandle.prepareClose] is bounded and closes the child/slave side that the master write is waiting on.
+ *
+ * The reader loop calls [broadcast] (which takes [mutex]) while [attach] may hold it across a seed
+ * capture; because both serialize on [mutex], a new subscriber's seed is enqueued strictly before any
+ * live delta it should see, and no committed delta is lost across the join boundary.
  *
  * [decision] The reader thread starts (in [openUpstream]) before a new subscriber's `capture-pane` seed
  * is taken, but because live delivery is gated by [mutex] (held across seed-enqueue-then-add-to-set),
@@ -54,14 +67,17 @@ import kotlinx.coroutines.sync.withLock
  * corrupt its terminal) or growing without bound. Healthy subscribers are unaffected — and if the
  * disconnect empties the set, the 1→0 teardown runs right there (a wedged client may never detach).
  */
+@OptIn(ExperimentalAtomicApi::class)
 class Broadcaster(
     private val openUpstream: () -> PtyHandle,
     private val closeUpstream: (PtyHandle) -> Unit,
     private val seedProvider: () -> ByteArray,
 ) {
     private val mutex = Mutex()
+    private val upstreamIoMutex = Mutex()
     private val subscribers = mutableListOf<Subscriber>()
     private var upstream: PtyHandle? = null
+    private val writableUpstream = AtomicReference<PtyHandle?>(null)
     private var lastSize: Pair<Int, Int>? = null
 
     /**
@@ -105,6 +121,11 @@ class Broadcaster(
             throw e
         }
         subscribers.add(sub)
+        if (opened) {
+            // Publish for input only after the subscriber exists. A concurrent REST write before
+            // subscribe() completes must still observe the lazy bridge as having no writable upstream.
+            writableUpstream.store(upstream)
+        }
         sub
     }
 
@@ -149,9 +170,12 @@ class Broadcaster(
     }
 
     /**
-     * Route input from a subscriber to the single shared upstream. The [PtyHandle.write] runs OUTSIDE
-     * the lock (it can block on a full pty), so a concurrent close may race it; the write is guarded so
-     * a closed upstream is a clean no-op rather than a thrown 500.
+     * Route input from a subscriber to the single shared upstream. [PtyHandle.write] runs under the
+     * dedicated [upstreamIoMutex], not the subscriber/output [mutex]: a pty write can block on a full
+     * input queue, so it must not serialize healthy output fan-out. Teardown atomically clears
+     * [writableUpstream], prepares the handle to unblock I/O without freeing its fd, then drains this
+     * gate before final close. It therefore either waits for this whole write or makes a later write
+     * observe no upstream; close can never free and recycle the raw fd while this call is using it.
      *
      * **Returns whether the full pty write completed without throwing** — `false` when there was no
      * upstream to write to (the lazy bridge's default: with zero subscribers no `tmux attach` is open,
@@ -167,8 +191,10 @@ class Broadcaster(
      */
     suspend fun writeInput(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return true
-        val up = mutex.withLock { upstream } ?: return false
-        return runCatching { up.write(bytes) }.isSuccess
+        return upstreamIoMutex.withLock {
+            val up = writableUpstream.load() ?: return@withLock false
+            runCatching { up.write(bytes) }.isSuccess
+        }
     }
 
     /** Apply a subscriber resize with the "last active" policy and remember it for re-opens. */
@@ -212,10 +238,22 @@ class Broadcaster(
      * handle behind that a later close would double-free). A subsequent [attach] then sees `upstream ==
      * null` and opens a fresh one.
      */
-    private fun closeUpstreamLocked() {
+    private suspend fun closeUpstreamLocked() {
         val up = upstream ?: return
         upstream = null
-        closeUpstream(up)
+        // Unpublish first so no later writer can obtain the handle. Then finish the cleanup even if the
+        // detach/request coroutine was cancelled: the logical state already says there is no upstream,
+        // and abandoning the wait here would leak the old pty behind a future re-attach.
+        writableUpstream.store(null)
+        withContext(NonCancellable) {
+            // Terminate the child WITHOUT freeing the master fd. This bounded phase closes the slave and
+            // makes a full-queue master write return, so waiting on the gate below cannot deadlock teardown.
+            up.prepareClose()
+            // Acquiring the gate waits for any write that linearized before the unpublish. Only after it
+            // releases is it safe for closeUpstream to free the raw fd.
+            upstreamIoMutex.withLock {}
+            closeUpstream(up)
+        }
     }
 
     /** Current number of attached subscribers (observability; lets tests await transitions). */

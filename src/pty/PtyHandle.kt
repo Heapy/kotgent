@@ -52,6 +52,16 @@ interface PtyHandle {
     fun resize(cols: Int, rows: Int)
 
     /**
+     * Begin teardown without closing/releasing the master fd. The real implementation terminates and
+     * reaps the child, which closes the slave side and unblocks any master [write], but deliberately
+     * keeps the raw master fd owned by this handle until [close]. Idempotent.
+     *
+     * This two-phase contract lets [Broadcaster] stop a potentially blocking write before waiting for
+     * write-vs-close exclusion, without freeing an fd that the in-flight write may still reference.
+     */
+    fun prepareClose()
+
+    /**
      * Terminate the child (if still alive), close the master fd and stop the reader. Idempotent.
      * For the `tmux attach` upstream this ends *this* attach client only — the tmux session (and
      * the agent running in it) survives, which is exactly the Detach semantics the bridge relies on.

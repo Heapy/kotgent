@@ -220,7 +220,10 @@ into ONE tmux invocation** and accepts only an answered `0`: an answered `1` thr
 `TmuxCopyModeException`, while an empty/unparseable answer or a missing server/session/pane throws a
 plain `TmuxException`. A soft absence makes `leaveCopyMode`'s clearance question moot (`true`), but it
 can never satisfy `sendKeys`' delivery contract; therefore `SessionManager.interrupt` persists `ready`
-only after verified delivery. Separate invocations
+only after verified delivery. Once that synchronous send returns, Ctrl-C is irreversible: the projection
+read plus derived-state write run under `NonCancellable`, because abandoning either would leave stale
+state that invites an unsafe second Ctrl-C (which quits some agent TUIs). The send itself stays
+cancellable. Separate invocations
 leave a window a wheel event can land in, `copy-mode -q` (unlike `send-keys -X cancel`) is a silent no-op
 on a pane in no mode so it can be chained at all, and there is deliberately no retry — a duplicated `0x03`
 quits some agent TUIs. Do not weaken that chain while `mouse on` is set;
@@ -240,7 +243,11 @@ bridge is lazy, so with no subscriber there is no upstream and definitely no wri
 different because the real loop may have written a prefix before a later syscall failed. The shared
 Boolean therefore means “full pty write completion observed,” not “the agent consumed the body,” and the
 `409` warns callers to inspect before resending because a whole-body retry can duplicate commands or
-paste content. An EMPTY body short-circuits to `ok` before
+paste content. `Broadcaster` uses a dedicated upstream-I/O gate (separate from output fan-out): a write
+owns its handle until it returns, and teardown unpublishes the handle, calls `PtyHandle.prepareClose`
+(bounded child termination, which unblocks a full-queue write **without** freeing the master fd), then
+drains the gate before the final close. Never let the handle escape that gate — an fd freed during a
+stale write can be reused by another session. An EMPTY body short-circuits to `ok` before
 either runs: cancelling
 copy-mode is a shared-pane side effect that would yank every viewer out of their scrollback for a
 guaranteed no-op (`Tmux.sendKeys` guards the same way).

@@ -23,6 +23,7 @@ class RealPtyHandle(private val pty: Pty) : PtyHandle {
     override val output: ReceiveChannel<ByteArray> get() = pty.output
     override fun write(bytes: ByteArray) = pty.write(bytes)
     override fun resize(cols: Int, rows: Int) = pty.resize(cols, rows)
+    override fun prepareClose() = pty.prepareClose()
     override fun close() {
         pty.close()
     }
