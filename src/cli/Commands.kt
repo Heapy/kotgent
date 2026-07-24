@@ -7,6 +7,7 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.codex.CodexAdapter
 import io.kotgent.adapter.codex.CodexCli
 import io.kotgent.adapter.codex.CodexHookConfig
+import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.CodexRolloutScan
@@ -293,10 +294,13 @@ object Commands {
         val claudeCli = ClaudeCli()
         val sessionIdSupported = claudeCli.supportsSessionId()
         // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
-        // does not depend on the child shell's PATH under launchd's minimal env. Falls back to the bare
-        // name (found via the child's PATH) if it cannot be located.
-        val claudePath = claudeCli.locate() ?: CLAUDE_AGENT_KIND
-        val codexPath = CodexCli().locate() ?: CODEX_AGENT_KIND
+        // does not depend on the child shell's PATH under launchd's minimal env. A null path means the
+        // agent is NOT resolvable on the daemon's PATH; rather than falling back to a bare name that would
+        // die at exec (127) and leave a phantom `running` session, the factory builder fails fast with
+        // AgentBinaryNotFoundException (thrown from create(), BEFORE any tmux side effect), pointing the
+        // user at `kotgent install` (which snapshots the shell PATH into the plist).
+        val claudePath: String? = claudeCli.locate()
+        val codexPath: String? = CodexCli().locate()
         // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
         // instead of silently building some other provider's adapter for it (which would launch the wrong
         // agent while persisting the requested name).
@@ -308,7 +312,7 @@ object Commands {
                         settingsPath = settingsPath,
                         events = emptyFlow(),
                         sessionIdSupported = sessionIdSupported,
-                        binaryName = claudePath,
+                        binaryName = claudePath ?: throw AgentBinaryNotFoundException(CLAUDE_AGENT_KIND),
                     )
                 },
                 CODEX_AGENT_KIND to { cwd: String ->
@@ -316,7 +320,7 @@ object Commands {
                         cwd = cwd,
                         hookScriptPath = codexHookScriptPath,
                         events = emptyFlow(),
-                        binaryName = codexPath,
+                        binaryName = codexPath ?: throw AgentBinaryNotFoundException(CODEX_AGENT_KIND),
                     )
                 },
             ),

@@ -870,6 +870,63 @@ class SessionManagerTest {
     }
 
     @Test
+    fun agentFactoryFailsFastWhenTheAgentBinaryIsNotFoundBeforeAnyTmuxSideEffect() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            // The daemon-bootstrap shape when `locate()` returned null under launchd's minimal PATH: the
+            // builder for that kind fails fast instead of falling back to a bare name that dies at exec.
+            val factory = agentFactoryOf(
+                mapOf(
+                    "claude" to { _: String -> throw AgentBinaryNotFoundException("claude") },
+                    "codex" to { cwd: String -> StubAgentFactory(cat, null).create("codex", cwd) },
+                ),
+            )
+            // The factory surfaces the not-found directly, carrying the kind and the `kotgent install` hint.
+            val direct = assertFailsWith<AgentBinaryNotFoundException> { factory.create("claude", "/tmp") }
+            assertEquals("claude", direct.agentKind)
+            assertTrue(direct.message!!.contains("claude"), "the message names the agent kind")
+            assertTrue(direct.message!!.contains("kotgent install"), "the message points at `kotgent install`")
+            // And a start() with that agent propagates it, leaving NO tmux session and NO phantom row.
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), factory,
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("nf000001") }, now = { 1L },
+            )
+            assertFailsWith<AgentBinaryNotFoundException> { mgr.start("claude", "/tmp") }
+            assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux session is created for an unresolvable agent")
+            assertNull(store.getSession(SessionId("nf000001")), "no phantom `running` row is persisted")
+        }
+    }
+
+    @Test
+    fun resumePropagatesAgentBinaryNotFoundBeforeAnyTmuxSideEffect() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux() // no live pane for this session — it is dead and would be resumed
+            // resume() also calls agentFactory.create() (SessionManager.kt:382) to build the resume launch
+            // spec, so an unresolvable agent must fail fast there too — before tmux is touched.
+            val factory = agentFactoryOf(
+                mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") }),
+            )
+            val provider = ProviderSessionId("ffffffff-ffff-4fff-8fff-ffffffffffff")
+            // A dead session WITH a captured provider id — so resume gets past the alive/pending guards
+            // and reaches create().
+            store.upsertSession(meta("nfr01", SessionState.crashed, providerId = provider))
+            val mgr = SessionManager(
+                tmux, store, registry, factory,
+                ProviderIdCapture(store, this),
+                now = { 1L },
+            )
+
+            val ex = assertFailsWith<AgentBinaryNotFoundException> { mgr.resume(SessionId("nfr01")) }
+            assertEquals("claude", ex.agentKind)
+            assertTrue(tmux.newSessionCommands.isEmpty(), "resume must not spawn tmux for an unresolvable agent")
+        }
+    }
+
+    @Test
     fun resumeRevivesASessionWhoseCacheSaysAliveButWhosePaneActuallyDied() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })

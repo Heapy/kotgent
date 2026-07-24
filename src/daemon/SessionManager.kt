@@ -118,6 +118,23 @@ class UnsupportedAgentException(val agentKind: String, val supported: Set<String
     )
 
 /**
+ * Thrown when a supported agent kind cannot be resolved to a binary on the daemon's PATH — i.e. the
+ * bootstrap's `locate()` returned null under launchd's minimal env. It fails the launch fast, from the
+ * factory builder (before any tmux side effect — see [SessionManager.start] / [SessionManager.resume]),
+ * so an unfindable agent surfaces an actionable message instead of a pane that dies at exec (127) and
+ * leaves a phantom `running` session.
+ *
+ * Deliberately a plain [IllegalStateException] (like [ResumeBlockedException]) and NOT a subtype of
+ * [UnsupportedAgentException] / [io.kotgent.tmux.TmuxException], so the transport's existing catches do
+ * not swallow it before its own dedicated mapping.
+ */
+class AgentBinaryNotFoundException(val agentKind: String) :
+    IllegalStateException(
+        "agent '$agentKind' not found on the daemon's PATH — run `kotgent install` from a shell where " +
+            "`$agentKind` resolves, then create the session again",
+    )
+
+/**
  * One cleanup step of a compensation that itself failed (e.g. the `kill-session` that should have
  * removed a just-launched agent, or the state write that should have erased a phantom row).
  *

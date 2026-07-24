@@ -175,24 +175,24 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - Modify: `src/cli/Commands.kt`
 - Modify: `test/daemon/SessionManagerTest.kt`
 
-- [ ] write test (mirror `agentFactoryRejectsUnsupportedAgentsBeforeAnyTmuxSideEffect`): a factory whose
+- [x] write test (mirror `agentFactoryRejectsUnsupportedAgentsBeforeAnyTmuxSideEffect`): a factory whose
       `claude` builder throws `AgentBinaryNotFoundException` → `factory.create("claude", cwd)` throws it
       directly
-- [ ] write test: `SessionManager.start("claude", …)` with that factory throws
+- [x] write test: `SessionManager.start("claude", …)` with that factory throws
       `AgentBinaryNotFoundException` and leaves **no** tmux side-effect (`tmux.newSessionCommands` empty)
       and **no** persisted row (no phantom `running`)
-- [ ] write test: `SessionManager.resume(...)` with a throwing builder likewise propagates
+- [x] write test: `SessionManager.resume(...)` with a throwing builder likewise propagates
       `AgentBinaryNotFoundException` before any tmux side-effect (matches the resume-level rigor of the
       existing `UnsupportedAgentException` tests — `SessionManager.kt:382` also calls `create()`)
-- [ ] write test: the exception message contains the kind and the `kotgent install` hint
-- [ ] add `class AgentBinaryNotFoundException(val agentKind: String) : …` beside the other exceptions in
+- [x] write test: the exception message contains the kind and the `kotgent install` hint
+- [x] add `class AgentBinaryNotFoundException(val agentKind: String) : …` beside the other exceptions in
       `SessionManager.kt`, with the hint message
-- [ ] in `Commands.kt`: make `claudePath`/`codexPath` nullable (`= claudeCli.locate()` /
+- [x] in `Commands.kt`: make `claudePath`/`codexPath` nullable (`= claudeCli.locate()` /
       `= CodexCli().locate()`, drop the `?: KIND` fallback); each `agentFactoryOf` builder throws
       `AgentBinaryNotFoundException(kind)` when its path is null, else builds with `binaryName = <path>`
-- [ ] rewrite the now-stale comment at `Commands.kt:295-297` (it still describes the removed bare-name
+- [x] rewrite the now-stale comment at `Commands.kt:295-297` (it still describes the removed bare-name
       fallback) to describe the fail-fast behavior
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 4
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 4
 
 ### Task 4: `ControlRoutes` maps `AgentBinaryNotFoundException` → 400
 
