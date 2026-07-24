@@ -56,6 +56,12 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
      */
     var beforeWrite: (() -> Unit)? = null
 
+    /**
+     * Optional synchronous hook run by [prepareClose]. The close-vs-write regression uses it to model
+     * the real child's slave closing and waking a master write that is blocked on a full input queue.
+     */
+    var afterPrepareClose: (() -> Unit)? = null
+
     /** Simulate the child writing [bytes] to the pty. */
     fun emit(bytes: ByteArray) {
         channel.trySend(bytes)
@@ -83,6 +89,7 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
 
     override fun prepareClose() {
         closePrepared = true
+        afterPrepareClose?.invoke()
     }
 
     override fun close() {

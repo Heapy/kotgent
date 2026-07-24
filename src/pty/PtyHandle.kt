@@ -62,9 +62,9 @@ interface PtyHandle {
     fun prepareClose()
 
     /**
-     * Terminate the child (if still alive), close the master fd and stop the reader. Idempotent.
-     * For the `tmux attach` upstream this ends *this* attach client only — the tmux session (and
-     * the agent running in it) survives, which is exactly the Detach semantics the bridge relies on.
+     * Terminate the child (if still alive), stop and join the reader, then release the master fd.
+     * Idempotent. For the `tmux attach` upstream this ends *this* attach client only — the tmux session
+     * (and the agent running in it) survives, which is exactly the Detach semantics the bridge relies on.
      */
     fun close()
 }

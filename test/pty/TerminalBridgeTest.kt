@@ -190,7 +190,8 @@ class TerminalBridgeTest {
      * A write owns the raw pty fd until it returns. If last-detach could close the handle meanwhile,
      * another session's `openpty` could reuse that fd and the stale write could reach the wrong agent
      * while `/input` reported success. The dedicated writer thread makes the interleaving deterministic:
-     * park inside [FakePtyHandle.write], attempt last-detach undispatched, and require close to wait.
+     * park inside [FakePtyHandle.write], attempt last-detach undispatched, and require production
+     * [PtyHandle.prepareClose] to unblock the write before final close can take the fd.
      */
     @Test
     @OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
@@ -198,11 +199,20 @@ class TerminalBridgeTest {
         val sub = bridge.subscribe()
         val up = factory.current
         val writeEntered = CompletableDeferred<Unit>()
-        val releaseWrite = CompletableDeferred<Unit>()
+        val prepareReleasedWrite = CompletableDeferred<Unit>()
+        val writeSawPrepare = CompletableDeferred<Unit>()
+        val allowWriteReturn = CompletableDeferred<Unit>()
         up.beforeWrite = {
             writeEntered.complete(Unit)
-            runBlocking { releaseWrite.await() }
+            runBlocking {
+                // Bounded independently of the outer test: last-detach is NonCancellable while it
+                // drains the I/O gate, so an omitted/no-op prepareClose must fail instead of hanging.
+                withTimeout(5_000) { prepareReleasedWrite.await() }
+                writeSawPrepare.complete(Unit)
+                allowWriteReturn.await()
+            }
         }
+        up.afterPrepareClose = { prepareReleasedWrite.complete(Unit) }
         val writerContext = newSingleThreadContext("terminal-bridge-write-race")
         try {
             coroutineScope {
@@ -210,18 +220,21 @@ class TerminalBridgeTest {
                 writeEntered.await()
                 val closing = async(start = CoroutineStart.UNDISPATCHED) { sub.close() }
                 try {
+                    withTimeout(5_000) { writeSawPrepare.await() }
                     assertFalse(closing.isCompleted, "last-detach must wait while the upstream write owns its fd")
                     assertTrue(up.closePrepared, "teardown first asks the child/slave to unblock the write")
                     assertFalse(up.closed, "the in-flight write's raw fd must not be closed or reusable")
                 } finally {
-                    releaseWrite.complete(Unit)
+                    // This releases only the post-prepare inspection barrier. It cannot make the test
+                    // pass when prepareClose failed to unblock the first barrier above.
+                    allowWriteReturn.complete(Unit)
                 }
                 assertTrue(writing.await(), "the write completed before teardown closed the handle")
                 closing.await()
                 assertTrue(up.closed, "last-detach closes the handle after the write returns")
             }
         } finally {
-            releaseWrite.complete(Unit)
+            allowWriteReturn.complete(Unit)
             writerContext.close()
         }
     }

@@ -25,6 +25,7 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.cstr
+import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
@@ -35,21 +36,29 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.runBlocking
 import platform.posix.EINTR
+import platform.posix.F_GETFD
 import platform.posix.O_RDWR
+import platform.posix.POLLIN
 import platform.posix.SIGKILL
 import platform.posix.SIGTERM
 import platform.posix.SIGWINCH
 import platform.posix.WNOHANG
 import platform.posix.errno
+import platform.posix.fcntl
 import platform.posix.fflush
 import platform.posix.fputs
 import platform.posix.kill
+import platform.posix.pipe
+import platform.posix.poll
+import platform.posix.pollfd
 import platform.posix.stderr
 import platform.posix.strerror
 import platform.posix.usleep
@@ -80,36 +89,90 @@ class Pty private constructor(
     val masterFd: Int,
     /** The child process id. */
     val pid: Int,
+    /** Read side of the private pipe that wakes the reader without releasing [masterFd]. */
+    private val readerWakeReadFd: Int,
+    /** Write side of the private pipe that wakes the reader without releasing [masterFd]. */
+    private val readerWakeWriteFd: Int,
 ) {
     /** Bytes read off the master fd, in arrival order. Closed when the child reaches EOF. */
     val output: Channel<ByteArray> = Channel(Channel.UNLIMITED)
 
-    // Dedicated single OS thread doing blocking read() on the master fd.
+    // Dedicated single OS thread polling the master fd and a private teardown wake pipe.
     private val readerContext = newSingleThreadContext("kotgent-pty-reader-$pid")
     private val readerScope = CoroutineScope(readerContext)
+    private lateinit var readerJob: Job
 
     private var closed = false
     private var reaped = false
     private var exitCode = -1
 
+    /**
+     * Whether [masterFd]'s number was still reserved after the reader worker joined during [close].
+     *
+     * Public as a real-PTY integration seam because KT-78062 prevents the test binary from linking
+     * this cinterop-backed class. Production teardown does not branch on this observation.
+     */
+    public var masterFdReservedAfterReaderJoin: Boolean = false
+        private set
+
     private fun startReader() {
-        readerScope.launch {
-            memScoped {
-                val bufSize = 8192
-                val buf = allocArray<ByteVar>(bufSize)
-                while (isActive) {
-                    val n = posixRead(masterFd, buf, bufSize.convert())
-                    when {
-                        n < 0 -> {
+        readerJob = readerScope.launch {
+            try {
+                memScoped {
+                    val bufSize = 8192
+                    val buf = allocArray<ByteVar>(bufSize)
+                    val pollFds = allocArray<pollfd>(2)
+                    pollFds[0].fd = masterFd
+                    pollFds[0].events = POLLIN.convert()
+                    pollFds[1].fd = readerWakeReadFd
+                    pollFds[1].events = POLLIN.convert()
+
+                    while (isActive) {
+                        pollFds[0].revents = 0
+                        pollFds[1].revents = 0
+                        val ready = poll(pollFds, 2.convert(), -1)
+                        if (ready < 0) {
                             if (errno == EINTR) continue
-                            break // EIO (slave closed) or a real error -> treat as EOF
+                            break
                         }
-                        n == 0L -> break // clean EOF: the last slave fd was closed
-                        else -> output.trySend(buf.readBytes(n.toInt()))
+                        // Teardown wins over simultaneously readable output: close means no consumer
+                        // should receive bytes after the reader's stop/join protocol has begun.
+                        if (pollFds[1].revents.toInt() != 0) break
+                        if (!isActive || pollFds[0].revents.toInt() == 0) continue
+
+                        // This is the only reader of masterFd, so readiness cannot be consumed between
+                        // poll and read. The read therefore returns data, EOF, or an error without
+                        // stranding teardown in a fresh blocking syscall.
+                        val n = posixRead(masterFd, buf, bufSize.convert())
+                        when {
+                            n < 0 -> {
+                                if (errno == EINTR) continue
+                                break // EIO (slave closed) or a real error -> treat as EOF
+                            }
+                            n == 0L -> break // clean EOF: the last slave fd was closed
+                            else -> output.trySend(buf.readBytes(n.toInt()))
+                        }
                     }
                 }
+            } finally {
+                output.close()
             }
-            output.close()
+        }
+    }
+
+    /** Wake the reader's blocking [poll] without closing or replacing [masterFd]. */
+    private fun wakeReader() {
+        memScoped {
+            val byte = alloc<ByteVar>()
+            byte.value = 0
+            while (true) {
+                val written = posixWrite(readerWakeWriteFd, byte.ptr, 1.convert())
+                if (written == 1L) return@memScoped
+                if (written < 0 && errno == EINTR) continue
+                if (readerJob.isCompleted) return@memScoped
+                val code = errno
+                throw PtyException("wake pty reader failed: ${errnoMessage(code)}")
+            }
         }
     }
 
@@ -229,19 +292,33 @@ class Pty private constructor(
     }
 
     /**
-     * Terminate the child (if still alive), reap it, close the master fd and stop the
-     * reader thread. Returns the child's exit code. Idempotent.
+     * Terminate/reap the child, stop and JOIN the reader, then release [masterFd]. Returns the child's
+     * exit code. Idempotent.
      *
-     * [prepareClose] is deliberately separate for Broadcaster's close-vs-write gate; calling [close]
-     * directly still performs both phases for every other owner.
+     * The order is load-bearing. Closing the master first does wake Darwin's blocked `read`, but it
+     * also frees the descriptor NUMBER before that reader exits; another session can reuse the number
+     * and the stale reader can consume its bytes. Moving `readerScope.cancel()` before that close is
+     * not a fix: coroutine cancellation cannot interrupt a thread parked in a C syscall, so teardown
+     * hangs. Atomically replacing the master with `dup2(/dev/null, masterFd)` looks tempting too, but
+     * on Darwin `dup2` itself blocks while another thread is reading the target pty (measured here).
+     *
+     * The reader therefore waits on the master plus a private wake pipe. Teardown signals that pipe,
+     * cancels and explicitly joins [readerJob] while [masterFd]'s number is still reserved, then closes
+     * the master. [prepareClose] remains separate for Broadcaster's close-vs-write gate; calling
+     * [close] directly still performs both phases for every other owner.
      */
     fun close(): Int {
         if (closed) return exitCode
         prepareClose()
-        closed = true
-        posixClose(masterFd)
+        wakeReader()
         readerScope.cancel()
+        runBlocking { readerJob.join() }
         readerContext.close()
+        masterFdReservedAfterReaderJoin = fcntl(masterFd, F_GETFD) >= 0
+        posixClose(masterFd)
+        posixClose(readerWakeReadFd)
+        posixClose(readerWakeWriteFd)
+        closed = true
         return exitCode
     }
 
@@ -400,7 +477,22 @@ class Pty private constructor(
                 // failure can only be reported — stderr, never swallowed.
                 warnCleanupFailure(FILE_ACTIONS_DESTROY, faDestroy)
                 warnCleanupFailure(ATTR_DESTROY, attrDestroy)
-                return Pty(master, pidVar.value).also { it.startReader() }
+
+                // The child is already spawned, so it cannot inherit this private wake pipe. Future
+                // kotgent spawn paths close all unnamed descriptors (CLOEXEC_DEFAULT / fd sweep).
+                val readerWakeFds = allocArray<IntVar>(2)
+                if (pipe(readerWakeFds) != 0) {
+                    val pipeErrno = errno
+                    terminateSpawnedChild(pidVar.value)
+                    posixClose(master)
+                    throw PtyException("pipe for pty reader wakeup failed: ${errnoMessage(pipeErrno)}")
+                }
+                return Pty(
+                    masterFd = master,
+                    pid = pidVar.value,
+                    readerWakeReadFd = readerWakeFds[0],
+                    readerWakeWriteFd = readerWakeFds[1],
+                ).also { it.startReader() }
             }
         }
 
@@ -421,6 +513,18 @@ class Pty private constructor(
             if (rc == 0) return
             fputs("kotgent: $what failed: ${errnoMessage(rc)} (code=$rc)\n", stderr)
             fflush(stderr)
+        }
+
+        /** Best-effort cleanup after a post-spawn reader setup failure; never leak the live child. */
+        private fun terminateSpawnedChild(pid: Int) {
+            kill(pid, SIGKILL)
+            memScoped {
+                val status = alloc<IntVar>()
+                while (true) {
+                    val result = waitpid(pid, status.ptr, 0)
+                    if (result >= 0 || errno != EINTR) return@memScoped
+                }
+            }
         }
 
         private fun errnoMessage(code: Int): String =

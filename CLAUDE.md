@@ -42,8 +42,8 @@ Five modules (see `project.yaml`):
 - **`ptycheck/` — `macos/app`, `macosArm64`**: a **test fixture, not a product**. Its `main()` runs the
   real-PTY integration checks that a test binary cannot run at all (KT-78062 below): the `cat`
   round-trip, `resize`, the child exit code, a failing spawn, the spawned child inheriting only its tty
-  (`POSIX_SPAWN_CLOEXEC_DEFAULT`), a real `tmux attach` acquiring a controlling tty, and
-  `TerminalBridge`'s fan-out over that attach. It depends on `./sysnative` **and**
+  (`POSIX_SPAWN_CLOEXEC_DEFAULT`), write/reader teardown ordering, a real `tmux attach` acquiring a
+  controlling tty, and `TerminalBridge`'s fan-out over that attach. It depends on `./sysnative` **and**
   on the root app module (allowed, one-way — that is where `TerminalBridge`/`Tmux` live). The suite's
   `PtyTest` execs the binary and asserts it exits 0. Because there is now more than one runnable
   module, `./kotlin run` needs `-m kotgent` (it errors and lists the modules otherwise).
@@ -222,8 +222,10 @@ plain `TmuxException`. A soft absence makes `leaveCopyMode`'s clearance question
 can never satisfy `sendKeys`' delivery contract; therefore `SessionManager.interrupt` persists `ready`
 only after verified delivery. Once that synchronous send returns, Ctrl-C is irreversible: the projection
 read plus derived-state write run under `NonCancellable`, because abandoning either would leave stale
-state that invites an unsafe second Ctrl-C (which quits some agent TUIs). The send itself stays
-cancellable. Separate invocations
+state that invites an unsafe second Ctrl-C (which quits some agent TUIs). The send itself is outside
+`NonCancellable`, but that does **not** make it cancellable: `Tmux.sendKeys` blocks
+synchronously inside `ProcessRunner` with no cancellation point, so a hung send holds the per-session
+control lock. Separate invocations
 leave a window a wheel event can land in, `copy-mode -q` (unlike `send-keys -X cancel`) is a silent no-op
 on a pane in no mode so it can be chained at all, and there is deliberately no retry — a duplicated `0x03`
 quits some agent TUIs. Do not weaken that chain while `mouse on` is set;

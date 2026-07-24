@@ -1,5 +1,6 @@
 package io.kotgent.ptycheck
 
+import io.kotgent.cinterop.pty.kotgent_ptsname
 import io.kotgent.pty.Pty
 import io.kotgent.pty.PtyException
 import io.kotgent.pty.Subscriber
@@ -11,23 +12,37 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.readBytes
+import kotlinx.cinterop.toKString
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.system.exitProcess
 import platform.posix.F_DUPFD
+import platform.posix.O_NOCTTY
+import platform.posix.O_RDWR
+import platform.posix.SIGKILL
 import platform.posix.close
 import platform.posix.fcntl
 import platform.posix.fread
+import platform.posix.kill
 import platform.posix.pclose
 import platform.posix.pipe
 import platform.posix.popen
+import platform.posix.open as posixOpen
 
 /**
  * Real-PTY integration checks for [Pty], run from a MAIN binary.
@@ -49,6 +64,8 @@ fun main() {
     exitCodeIsCaptured()
     spawnNonexistentCommandFails()
     spawnedChildInheritsOnlyTheTty()
+    prepareCloseUnblocksAFullMasterWrite()
+    closeStopsTheReaderBeforeReleasingTheMasterDescriptor()
     tmuxAttachRunsOnTheSpawnedPts()
     resizeReachesARunningTmuxAttach()
     terminalBridgeFansOutRealTmuxAttach()
@@ -146,6 +163,156 @@ private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits onl
 }
 
 /**
+ * [Pty.prepareClose] is the first half of Broadcaster's write-vs-close protocol: terminating the child
+ * closes the slave and must wake a master write blocked on a full tty input queue, without releasing the
+ * master descriptor. A large write to `sleep` deterministically fills that queue. Both operations run on
+ * dedicated workers and are bounded so a regression reports FAIL rather than parking `ptycheck`.
+ */
+@OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class)
+private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblocks a full master write") {
+    val pty = Pty.open(
+        listOf("/bin/sh", "-c", "/bin/stty -icanon -echo; echo READY; exec /bin/sleep 30"),
+    )
+    val payload = ByteArray(FULL_PTY_WRITE_BYTES) { 'x'.code.toByte() }
+    val writerContext = newSingleThreadContext("ptycheck-full-write")
+    val prepareContext = newSingleThreadContext("ptycheck-prepare-close")
+    val writerScope = CoroutineScope(writerContext + Job())
+    val prepareScope = CoroutineScope(prepareContext + Job())
+    val writeEntered = CompletableDeferred<Unit>()
+    var writing: Deferred<Result<Unit>>? = null
+    var preparing: Deferred<Unit>? = null
+    var childMayBeAlive = true
+
+    try {
+        readUntil(pty, "READY")
+        val writeTask = writerScope.async {
+            writeEntered.complete(Unit)
+            runCatching { pty.write(payload) }
+        }
+        writing = writeTask
+        val completedThroughPrepare = runBlocking {
+            withTimeout(5_000) { writeEntered.await() }
+            delay(200)
+            expect(!writeTask.isCompleted) {
+                "the positive control did not fill the tty input queue; the large write returned early"
+            }
+
+            val prepare = prepareScope.async { pty.prepareClose() }
+            preparing = prepare
+            val completed = withTimeoutOrNull(5_000) {
+                prepare.await()
+                writeTask.await()
+                true
+            } ?: false
+
+            if (!completed) {
+                // Cleanup for the broken implementation: killing the whole pty process group closes
+                // every slave holder, so both workers can finish and the check can report a failure.
+                kill(-pty.pid, SIGKILL)
+                withTimeout(5_000) {
+                    prepare.await()
+                    writeTask.await()
+                }
+            }
+            childMayBeAlive = false
+            completed
+        }
+        expect(completedThroughPrepare) {
+            "prepareClose did not make the blocked master write return within 5 seconds"
+        }
+    } finally {
+        // `/bin/sleep` cannot exit naturally during this short check. Signal only on an exceptional
+        // path where prepareClose did not finish; once reaped, this pid/pgid is eligible for reuse.
+        if (childMayBeAlive) kill(-pty.pid, SIGKILL)
+        runBlocking {
+            withTimeout(5_000) {
+                writing?.join()
+                preparing?.join()
+            }
+        }
+        pty.close()
+        writerScope.cancel()
+        prepareScope.cancel()
+        writerContext.close()
+        prepareContext.close()
+    }
+}
+
+/**
+ * A parent-held slave descriptor keeps the reader blocked after [Pty.prepareClose] terminates/reaps the
+ * child. [Pty.close] must wake and JOIN that reader while [Pty.masterFd]'s NUMBER is still reserved, then
+ * return the already-recorded child exit code. The descriptor observation is the falsifiable property:
+ * the old close-first ordering still returns promptly, but reports that the number was reusable at join.
+ */
+@OptIn(DelicateCoroutinesApi::class, ExperimentalCoroutinesApi::class, ExperimentalForeignApi::class)
+private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
+    check("close stops the reader before releasing the master descriptor") {
+        val pty = Pty.open(listOf("/bin/cat"))
+        val closeContext = newSingleThreadContext("ptycheck-reader-close")
+        val closeScope = CoroutineScope(closeContext + Job())
+        var heldSlaveFd = -1
+        var closing: Deferred<Int>? = null
+
+        try {
+            heldSlaveFd = openSlave(pty.masterFd)
+            pty.prepareClose()
+            val expectedExitCode = pty.waitFor()
+            expect(expectedExitCode >= 0) { "prepareClose should record the child's exit code" }
+            // Let the reader observe that the child closed its slave and settle back into poll. Our
+            // duplicate slave remains open, so EOF here would invalidate the positive control.
+            runBlocking { delay(200) }
+            expect(!pty.output.isClosedForReceive) {
+                "the held slave did not keep the reader blocked for the teardown check"
+            }
+
+            val closeTask = closeScope.async { pty.close() }
+            closing = closeTask
+            var closeExitCode: Int? = null
+            val stoppedBeforeRelease = runBlocking {
+                val completed = withTimeoutOrNull(2_000) {
+                    closeExitCode = closeTask.await()
+                    true
+                } ?: false
+                if (!completed) {
+                    // Cleanup for a broken wake/join implementation: releasing the positive-control
+                    // slave lets its reader finish so the harness can report FAIL rather than hang.
+                    close(heldSlaveFd)
+                    heldSlaveFd = -1
+                    closeExitCode = withTimeout(5_000) { closeTask.await() }
+                }
+                completed
+            }
+            expect(stoppedBeforeRelease) {
+                "close could not stop and join its reader while the master descriptor remained owned"
+            }
+            expect(closeExitCode == expectedExitCode) {
+                "close returned $closeExitCode instead of the recorded child exit code $expectedExitCode"
+            }
+            expect(pty.masterFdReservedAfterReaderJoin) {
+                "the master descriptor number was already reusable when the reader joined"
+            }
+        } finally {
+            if (heldSlaveFd >= 0) close(heldSlaveFd)
+            runBlocking { withTimeout(5_000) { closing?.join() } }
+            pty.close()
+            closeScope.cancel()
+            closeContext.close()
+        }
+    }
+
+/** Open a duplicate of a pty's slave side so a reader gets neither data nor EOF during close. */
+@OptIn(ExperimentalForeignApi::class)
+private fun openSlave(masterFd: Int): Int = memScoped {
+    val path = allocArray<ByteVar>(PTY_PATH_CAP)
+    expect(kotgent_ptsname(masterFd, path, PTY_PATH_CAP.convert()) == 0) {
+        "could not resolve the slave path for master fd $masterFd"
+    }
+    val fd = posixOpen(path.toKString(), O_RDWR or O_NOCTTY)
+    expect(fd >= 0) { "could not open the slave path for master fd $masterFd" }
+    fd
+}
+
+/**
  * The tty-wiring path, which only a real `tmux attach` exercises: [Pty.open] has the child *open the
  * pts by path* as its stdio rather than inheriting a dup of our slave fd. Without that, `tmux attach`
  * fails with "open terminal failed: not a terminal" and exits immediately.
@@ -161,7 +328,7 @@ private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits onl
  * `~/.tmux.conf`, and one with `set -g destroy-unattached on` would have tmux tear the session down
  * the instant the attach below closes — failing the "should outlive the attach" assertion on a
  * machine-specific setting the fixture never mentions. It is the first of the three tmux checks in
- * `main()` (the 6th check overall), and `-f` only applies to the invocation that STARTS a server —
+ * `main()` (the 8th check overall), and `-f` only applies to the invocation that STARTS a server —
  * so the flag on the later calls *of this check* is inert while this server lives. Each of the other
  * tmux checks starts its own server (an empty tmux server does not persist, and the `finally` below
  * kills the last session), so their `-f` is load-bearing too, not inert.
@@ -346,6 +513,12 @@ private fun check(name: String, body: () -> Unit) {
  * killed in teardown.
  */
 private const val TEST_SOCKET = "kotgent-test"
+
+/** Large enough to fill a Darwin tty input queue in raw mode when the slave never reads stdin. */
+private const val FULL_PTY_WRITE_BYTES = 16 * 1_048_576
+
+/** Buffer size for resolving the positive-control slave path. */
+private const val PTY_PATH_CAP = 1024
 
 /** Receive chunks from [pty] until [needle] appears in the accumulated output, or time out. */
 private fun readUntil(pty: Pty, needle: String, timeoutMs: Long = 5_000): String = runBlocking {

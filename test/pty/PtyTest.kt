@@ -65,6 +65,6 @@ class PtyTest {
 
     private companion object {
         /** Number of checks `ptycheck` reports; keep in sync with `ptycheck/src/Main.kt`. */
-        const val EXPECTED_CHECKS = 8
+        const val EXPECTED_CHECKS = 10
     }
 }
