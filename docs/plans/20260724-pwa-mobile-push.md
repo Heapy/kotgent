@@ -823,15 +823,28 @@ pin an old UI for a day).
 - Modify: `resources/webui/style.css`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] expose a send seam from `TerminalPane`: the WebSocket is a local inside the `attachedId` effect, so
+- [x] expose a send seam from `TerminalPane`: the WebSocket is a local inside the `attachedId` effect, so
       store a `sendBytes` ref inside that effect and clear it on teardown — `KeyBar` writes through the ref
-- [ ] add `KeyBar` with Esc, Tab, Shift+Tab, ↑ ↓ ← →, a sticky Ctrl modifier and Ctrl-C, each sending raw
+      ➕ the sender emits binary frames only while its socket is OPEN, and teardown identity-checks the
+      function before clearing it so an old terminal cannot erase a replacement socket's seam
+- [x] add `KeyBar` with Esc, Tab, Shift+Tab, ↑ ↓ ← →, a sticky Ctrl modifier and Ctrl-C, each sending raw
       bytes (`\x1b`, `\t`, `\x1b[Z`, `\x1b[A`/`[B`/`[C`/`[D`, `\x03`)
-- [ ] make the sticky Ctrl apply to the next printable key, then release itself (with a visible pressed state)
-- [ ] show the bar only on narrow screens and only while a terminal is attached; never steal focus from the
+      ➕ every button constructs a `Uint8Array`, preserving the terminal protocol's binary-input/text-resize
+      distinction; the dedicated Ctrl-C key also disarms an already-sticky Ctrl
+- [x] make the sticky Ctrl apply to the next printable key, then release itself (with a visible pressed state)
+      ➕ a live ref feeds xterm's `onData` path (reliable for the phone keyboard) while Preact state drives
+      `aria-pressed` styling. Standard ASCII Ctrl mappings and xterm's digit aliases are emitted; control
+      sequences and multi-character paste leave the modifier armed, while unsupported printable input is
+      passed through unchanged and consumes it
+- [x] show the bar only on narrow screens and only while a terminal is attached; never steal focus from the
       terminal (`preventDefault` on pointer-down)
-- [ ] add `/components/KeyBar.js` to `WebUiServingTest`'s served-module list; syntax-check the changed
+      ➕ the toolbar is conditionally rendered for the active attachment, hidden by default and flexed only
+      under the existing 720px breakpoint. Its height is reserved in the visual-viewport calculation so
+      the bar stays above the software keyboard
+- [x] add `/components/KeyBar.js` to `WebUiServingTest`'s served-module list; syntax-check the changed
       modules; run `./kotlin build && ./kotlin test` — must pass before task 19
+      ➕ `node --check` passed for `KeyBar.js` and `TerminalPane.js`; 1 new serving/source-contract test:
+      **587 run / 587 passed / 0 skipped** (branch baseline 586)
 
 ### Task 19: Reattach after backgrounding
 

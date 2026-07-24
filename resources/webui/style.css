@@ -1,4 +1,4 @@
-/* Kotgent Web UI — minimal styling (plan Task 17). Light/dark is a nice-to-have. */
+/* Kotgent Web UI — minimal styling (plan Task 18). Light/dark is a nice-to-have. */
 
 :root {
   --bg: #f6f7f9;
@@ -486,6 +486,52 @@ select:focus-visible {
   margin: 0;
 }
 
+/* The special-key row exists only with an attached terminal, and becomes layout only at the mobile
+   breakpoint below. Keeping the desktop rule explicit prevents an extra row from stealing terminal
+   height if the component is rendered on a narrow desktop window and then widened. */
+.key-bar {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  padding: 5px 6px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  touch-action: manipulation;
+  user-select: none;
+}
+.key-bar-key {
+  flex: 1 1 28px;
+  min-width: 24px;
+  min-height: 38px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--row-hover);
+  color: var(--text);
+  cursor: pointer;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.key-bar-key:active { background: var(--row-active); }
+.key-bar-key:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.key-bar-wide {
+  flex-basis: 40px;
+  min-width: 34px;
+}
+.key-bar-key[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 /* --- New-session dialog --- */
 dialog {
   background: var(--panel);
@@ -867,6 +913,7 @@ dialog::backdrop {
   }
 
   #terminal-host { padding: 4px 6px; }
+  .key-bar { display: flex; }
 }
 
 /* A drawer that slides is decoration; an operator who asked for less motion still needs it to open. */

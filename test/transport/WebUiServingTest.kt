@@ -55,17 +55,17 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Web UI serving tests (plan Task 17) — proof that the assembled [KotgentServer] actually serves the
+ * Web UI serving tests (plan Task 18) — proof that the assembled [KotgentServer] actually serves the
  * static SPA from `resources/webui`: `GET /` returns `index.html`, and the vendored xterm.js / `app.js`
  * / CSS are reachable with sensible content-types.
  *
  * ## What this covers (and what it can't)
  * The browser JS itself (token parse, live updates, xterm.js terminal) cannot run in the macosArm64 test
- * binary, so it is verified MANUALLY in Task 18. What IS automatable — and what these tests lock down —
- * is the **serving path**: the real files exist, the daemon serves them with 200s and correct
- * content-types (including nested `/vendor/` paths), the static catch-all is mounted UNauthenticated (the
- * browser must fetch the bootstrap before it has the token), and it does NOT shadow the token-gated API
- * routes. This is the same real [KotgentServer] the daemon runs, wired to host-free fakes.
+ * binary. What IS automatable — and what these tests lock down — is the **serving/source contract**: the
+ * real files exist, the daemon serves them with 200s and correct content-types (including nested
+ * `/vendor/` paths), browser-only features carry all of their required wiring, the static catch-all is
+ * mounted UNauthenticated (the browser must fetch the bootstrap before it has the token), and it does
+ * NOT shadow the token-gated API routes. Behaviour is exercised by the plan's manual device checklist.
  */
 class WebUiServingTest {
 
@@ -162,7 +162,8 @@ class WebUiServingTest {
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/throttle.js", "/lib/notify.js", "/lib/push.js",
-            "/components/Sidebar.js", "/components/TerminalPane.js", "/components/dialogs.js",
+            "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
+            "/components/dialogs.js",
         )) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
@@ -642,6 +643,121 @@ class WebUiServingTest {
             pane.contains("term.options.fontSize = terminalFontSize") &&
                 pane.contains("}, [terminalFontSize]);"),
             "changing the preference updates and re-fits the live xterm without reconnecting it",
+        )
+    }
+
+    /**
+     * The special-key bar is browser-only, so pin both its byte-exact terminal protocol and the edge
+     * contracts around it: a closed socket drops input, stale teardown cannot clear a replacement sender,
+     * non-printable/multi-character input cannot consume sticky Ctrl, and the toolbar never takes pointer
+     * focus.
+     */
+    @Test
+    fun theWebUiShipsTheMobileSpecialKeysBar() = withServer { ctx ->
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        val keyBar = ctx.get("/components/KeyBar.js").bodyAsText()
+        val css = ctx.get("/style.css").bodyAsText()
+
+        assertTrue(
+            pane.contains("import { KeyBar } from \"./KeyBar.js\"") &&
+                pane.contains("const sendBytesRef = useRef(null)"),
+            "TerminalPane imports KeyBar and owns its live WebSocket send seam",
+        )
+        assertTrue(
+            pane.contains("if (ws.readyState === WebSocket.OPEN) ws.send(bytes)") &&
+                pane.contains("sendBytesRef.current = sendBytes"),
+            "special keys become binary frames only while this terminal socket is open",
+        )
+        assertTrue(
+            pane.contains("if (sendBytesRef.current === sendBytes) sendBytesRef.current = null"),
+            "terminal teardown clears only its own sender, never a replacement socket's seam",
+        )
+        for (prop in listOf(
+            "barRef=\${keyBarRef}",
+            "sendBytesRef=\${sendBytesRef}",
+            "ctrlActive=\${ctrlActive}",
+            "onToggleCtrl=\${toggleCtrl}",
+            "onReleaseCtrl=\${releaseCtrl}",
+        )) {
+            assertTrue(pane.contains(prop), "TerminalPane wires KeyBar's $prop prop")
+        }
+
+        val expectedKeys = mapOf(
+            "Escape" to "0x1b",
+            "Tab" to "0x09",
+            "Shift Tab" to "0x1b, 0x5b, 0x5a",
+            "Up arrow" to "0x1b, 0x5b, 0x41",
+            "Down arrow" to "0x1b, 0x5b, 0x42",
+            "Left arrow" to "0x1b, 0x5b, 0x44",
+            "Right arrow" to "0x1b, 0x5b, 0x43",
+            "Control C" to "0x03",
+        )
+        for ((name, bytes) in expectedKeys) {
+            assertTrue(
+                keyBar.contains("name: \"$name\", bytes: [$bytes]"),
+                "$name sends the planned raw terminal bytes",
+            )
+        }
+        assertTrue(
+            keyBar.contains("Uint8Array.from(key.bytes)"),
+            "the toolbar sends binary data, not WebSocket text frames reserved for resize controls",
+        )
+        assertTrue(
+            keyBar.contains("releasesCtrl: true") && keyBar.contains("onReleaseCtrl()"),
+            "the dedicated Ctrl-C key disarms an already-pressed Ctrl modifier",
+        )
+
+        assertTrue(
+            pane.contains("const ctrlActiveRef = useRef(false)") &&
+                pane.contains("const ctrlBytes = ctrlBytesFor(data)") &&
+                Regex(
+                    """(?s)if \(ctrlBytes !== null\) \{.*?ctrlActiveRef\.current = false;""" +
+                        """.*?setCtrlActive\(false\);.*?sendBytes\(ctrlBytes\);""",
+                ).containsMatchIn(pane),
+            "sticky Ctrl is consumed synchronously by the next printable xterm input",
+        )
+        assertTrue(
+            pane.contains("if (chars.length !== 1) return null") &&
+                pane.contains("codePoint < 0x20") &&
+                pane.contains("return new TextEncoder().encode(char)"),
+            "multi-character paste, escape/control input, and unsupported printable keys take safe paths",
+        )
+        assertTrue(
+            keyBar.contains("aria-pressed=\${ctrlActive ? \"true\" : \"false\"}") &&
+                css.contains(".key-bar-key[aria-pressed=\"true\"]"),
+            "the one-shot Ctrl state is both accessible and visibly pressed",
+        )
+        assertTrue(
+            keyBar.contains("onPointerDown=\${preserveTerminalFocus}") &&
+                keyBar.contains("event.preventDefault()") &&
+                !keyBar.contains(".focus("),
+            "pointer use of the bar preserves xterm's focused textarea",
+        )
+
+        assertTrue(
+            Regex(
+                """(?s)\${'$'}\{attached\s*&&\s*html`\s*<\${'$'}\{KeyBar\}""",
+            ).containsMatchIn(pane),
+            "the toolbar is rendered only while the selected session has an attached terminal",
+        )
+        assertTrue(
+            pane.contains("const keyBarHeight = keyBarRef.current?.getBoundingClientRect().height || 0") &&
+                pane.contains("visibleBottom - bounds.top - keyBarHeight"),
+            "visualViewport sizing reserves room for the toolbar above the software keyboard",
+        )
+
+        val breakpoint = css.indexOf("@media (max-width: 720px)")
+        assertTrue(breakpoint > 0, "the mobile breakpoint exists")
+        val nextMedia = css.indexOf("@media ", breakpoint + 1).let { if (it < 0) css.length else it }
+        val desktopCss = css.substring(0, breakpoint)
+        val mobileCss = css.substring(breakpoint, nextMedia)
+        assertTrue(
+            Regex("""(?s)\.key-bar\s*\{[^}]*display:\s*none""").containsMatchIn(desktopCss),
+            "the toolbar consumes no terminal height on wider screens",
+        )
+        assertTrue(
+            Regex("""(?s)\.key-bar\s*\{[^}]*display:\s*flex""").containsMatchIn(mobileCss),
+            "the toolbar is visible at the mobile breakpoint",
         )
     }
 

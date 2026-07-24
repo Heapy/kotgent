@@ -12,6 +12,7 @@ import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
 import { displayName, isAliveState, stateBadge, tmuxAttachCommand } from "../lib/sessions.js";
+import { KeyBar } from "./KeyBar.js";
 
 function debounce(fn, ms) {
   let handle;
@@ -54,15 +55,53 @@ async function writeClipboard(text) {
   }
 }
 
+/**
+ * Apply the terminal's ordinary Ctrl-key rules to one printable character. A null means "this was not
+ * one printable key" (paste, an escape sequence, Enter, etc.), so sticky Ctrl must remain armed.
+ * Unsupported printable characters pass through unchanged but still consume the one-shot modifier,
+ * matching a physical Ctrl key rather than inventing a control code with a blanket `code & 0x1f`.
+ */
+function ctrlBytesFor(data) {
+  const chars = Array.from(data);
+  if (chars.length !== 1) return null;
+  const char = chars[0];
+  const codePoint = char.codePointAt(0);
+  if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) return null;
+
+  const upper = char.toUpperCase();
+  const upperCode = upper.length === 1 ? upper.charCodeAt(0) : -1;
+  if (upperCode >= 0x40 && upperCode <= 0x5f) {
+    return Uint8Array.of(upperCode & 0x1f);
+  }
+
+  // The digit aliases are the sequences xterm emits for Ctrl+2 through Ctrl+8.
+  switch (char) {
+    case " ":
+    case "2": return Uint8Array.of(0x00);
+    case "3": return Uint8Array.of(0x1b);
+    case "4": return Uint8Array.of(0x1c);
+    case "5": return Uint8Array.of(0x1d);
+    case "6": return Uint8Array.of(0x1e);
+    case "7": return Uint8Array.of(0x1f);
+    case "8":
+    case "?": return Uint8Array.of(0x7f);
+    default: return new TextEncoder().encode(char);
+  }
+}
+
 export function TerminalPane({
   session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen,
   onToggleDrawer, onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   const [copyResult, setCopyResult] = useState(null);
+  const keyBarRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
   const socketRef = useRef(null);
+  const sendBytesRef = useRef(null);
+  const ctrlActiveRef = useRef(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
   const fontSizeRef = useRef(terminalFontSize);
   fontSizeRef.current = terminalFontSize;
   // The close callback is read through a ref so a re-render cannot re-run the effect (which would tear
@@ -74,6 +113,8 @@ export function TerminalPane({
     if (!attachedId) return undefined;
     const host = hostRef.current;
     if (!host) return undefined;
+    ctrlActiveRef.current = false;
+    setCtrlActive(false);
 
     const term = new Terminal({
       convertEol: false,
@@ -107,7 +148,14 @@ export function TerminalPane({
       host.style.removeProperty("--terminal-visible-height");
       const bounds = host.getBoundingClientRect();
       const visibleBottom = viewport.offsetTop + viewport.height;
-      const visibleHeight = Math.floor(Math.min(bounds.height, visibleBottom - bounds.top));
+      // The key bar follows the host in the pane's flex column. Its ordinary layout already reduces
+      // bounds.height; subtract it from the visual-viewport ceiling too so the row itself stays above
+      // the software keyboard instead of occupying the last keyboard-covered pixels.
+      const keyBarHeight = keyBarRef.current?.getBoundingClientRect().height || 0;
+      const visibleHeight = Math.floor(Math.min(
+        bounds.height,
+        visibleBottom - bounds.top - keyBarHeight,
+      ));
       if (!Number.isFinite(visibleHeight) || visibleHeight <= 0) {
         if (previousHeight) {
           host.classList.add("visual-viewport-sized");
@@ -132,6 +180,10 @@ export function TerminalPane({
     // Distinguishes "we tore this down" from "the daemon dropped us": only the latter is worth
     // reporting to the user and reflecting in the parent's state.
     let teardown = false;
+    const sendBytes = (bytes) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(bytes);
+    };
+    sendBytesRef.current = sendBytes;
 
     const fitAndReport = () => {
       if (teardown) return;
@@ -158,7 +210,17 @@ export function TerminalPane({
 
     // Keystrokes / pastes -> UTF-8 binary frames (binary = input per the terminal WS protocol).
     const dataSubscription = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+      if (ctrlActiveRef.current) {
+        const ctrlBytes = ctrlBytesFor(data);
+        if (ctrlBytes !== null) {
+          // Clear the live ref before scheduling the render: two input events can arrive in one turn.
+          ctrlActiveRef.current = false;
+          setCtrlActive(false);
+          sendBytes(ctrlBytes);
+          return;
+        }
+      }
+      sendBytes(new TextEncoder().encode(data));
     });
     // xterm-initiated resizes (including from fit) -> text resize control frame.
     const resizeSubscription = term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
@@ -212,9 +274,11 @@ export function TerminalPane({
       try { ws.close(); } catch (_) {}
       try { term.dispose(); } catch (_) {}
       host.replaceChildren();
+      ctrlActiveRef.current = false;
       if (terminalRef.current === term) terminalRef.current = null;
       if (fitRef.current === fit) fitRef.current = null;
       if (socketRef.current === ws) socketRef.current = null;
+      if (sendBytesRef.current === sendBytes) sendBytesRef.current = null;
     };
   }, [attachedId]);
 
@@ -244,6 +308,15 @@ export function TerminalPane({
     } catch (_) {
       setCopyResult({ command: tmuxCommand, state: "failed" });
     }
+  };
+  const toggleCtrl = () => {
+    const next = !ctrlActiveRef.current;
+    ctrlActiveRef.current = next;
+    setCtrlActive(next);
+  };
+  const releaseCtrl = () => {
+    ctrlActiveRef.current = false;
+    setCtrlActive(false);
   };
 
   return html`
@@ -308,6 +381,16 @@ export function TerminalPane({
 
       ${/* Owned by xterm.js, never by the vdom: rendered childless so Preact has nothing to diff. */ ""}
       <div id="terminal-host" ref=${hostRef}></div>
+
+      ${attached && html`
+        <${KeyBar}
+          barRef=${keyBarRef}
+          sendBytesRef=${sendBytesRef}
+          ctrlActive=${ctrlActive}
+          onToggleCtrl=${toggleCtrl}
+          onReleaseCtrl=${releaseCtrl}
+        />
+      `}
 
       ${hint && html`<p id="terminal-hint" class="terminal-hint">${hint}</p>`}
     </main>
