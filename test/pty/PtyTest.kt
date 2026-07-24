@@ -33,7 +33,9 @@ class PtyTest {
     @Test
     fun realPtyChecksPass() {
         val binary = ptycheckBinary()
-        val result = ProcessRunner.run(listOf(binary))
+        // Close tracing is silent on success because ProcessRunner captures stderr. If a real-PTY
+        // check fails, the assertion report below includes the exact teardown stage and timing.
+        val result = ProcessRunner.run(listOf("/usr/bin/env", "$PTY_CLOSE_TRACE_ENV=1", binary))
         val report = "\n--- ptycheck stdout ---\n${result.stdout}--- ptycheck stderr ---\n${result.stderr}"
 
         assertEquals(0, result.exitCode, "ptycheck reported a failing PTY check$report")
@@ -64,6 +66,9 @@ class PtyTest {
     }
 
     private companion object {
+        /** Keep in sync with Pty.CLOSE_TRACE_ENV without linking the cinterop-backed class in this test. */
+        const val PTY_CLOSE_TRACE_ENV = "KOTGENT_PTY_CLOSE_TRACE"
+
         /** Number of checks `ptycheck` reports; keep in sync with `ptycheck/src/Main.kt`. */
         const val EXPECTED_CHECKS = 11
     }

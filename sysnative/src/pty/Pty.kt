@@ -46,6 +46,8 @@ import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.runBlocking
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.time.Duration.Companion.microseconds
+import kotlin.time.TimeSource
 import platform.posix.EINTR
 import platform.posix.O_RDWR
 import platform.posix.POLLIN
@@ -56,6 +58,7 @@ import platform.posix.WNOHANG
 import platform.posix.errno
 import platform.posix.fflush
 import platform.posix.fputs
+import platform.posix.getenv
 import platform.posix.kill
 import platform.posix.pipe
 import platform.posix.poll
@@ -99,6 +102,8 @@ class Pty private constructor(
     private val readerWakeReadFd: Int,
     /** Write side of the private pipe that wakes the reader without releasing [masterFd]. */
     private val readerWakeWriteFd: Int,
+    /** Whether close-stage diagnostics should be written to stderr. */
+    private val closeTraceEnabled: Boolean,
 ) {
     /** Bytes read off the master fd, in arrival order. Closed when the child reaches EOF. */
     val output: Channel<ByteArray> = Channel(Channel.UNLIMITED)
@@ -111,6 +116,7 @@ class Pty private constructor(
     /** Exactly one [close] caller owns teardown; every later caller awaits [closeCompletion]. */
     private val closeClaimed = AtomicInt(0)
     private val closeCompletion = CompletableDeferred<Int>()
+    private val closeTraceOrigin = TimeSource.Monotonic.markNow()
     private var reaped = false
     private var exitCode = -1
 
@@ -166,6 +172,7 @@ class Pty private constructor(
                     }
                 }
             } finally {
+                traceClose("reader-finished")
                 output.close()
             }
         }
@@ -173,15 +180,23 @@ class Pty private constructor(
 
     /** Wake the reader's blocking [poll] without closing or replacing [masterFd]. */
     private fun wakeReader() {
+        traceClose("reader-wake-start", "completed=${readerJob.isCompleted}")
         memScoped {
             val byte = alloc<ByteVar>()
             byte.value = 0
             while (true) {
                 val written = posixWrite(readerWakeWriteFd, byte.ptr, 1.convert())
-                if (written == 1L) return@memScoped
+                if (written == 1L) {
+                    traceClose("reader-wake-complete")
+                    return@memScoped
+                }
                 if (written < 0 && errno == EINTR) continue
-                if (readerJob.isCompleted) return@memScoped
+                if (readerJob.isCompleted) {
+                    traceClose("reader-wake-skipped", "reader already completed")
+                    return@memScoped
+                }
                 val code = errno
+                traceClose("reader-wake-failed", "errno=$code (${errnoMessage(code)})")
                 throw PtyException("wake pty reader failed: ${errnoMessage(code)}")
             }
         }
@@ -195,7 +210,29 @@ class Pty private constructor(
      */
     private fun releaseMasterFd() {
         readerCompletedBeforeMasterFdRelease = readerJob.isCompleted
-        posixClose(masterFd)
+        val rc = posixClose(masterFd)
+        val code = if (rc == 0) 0 else errno
+        traceClose(
+            "master-fd-released",
+            "readerCompleted=$readerCompletedBeforeMasterFdRelease rc=$rc${errnoDetail(rc, code)}",
+        )
+    }
+
+    /**
+     * Emit one flush-on-write teardown marker when [CLOSE_TRACE_ENV] was set when this pty was opened.
+     *
+     * The trace is deliberately opt-in: normal daemon operation stays quiet, while `ptycheck` enables
+     * it so a CI timeout reports the last completed syscall/lifecycle stage after the helper exits.
+     */
+    private fun traceClose(stage: String, detail: String = "") {
+        if (!closeTraceEnabled) return
+        val suffix = if (detail.isEmpty()) "" else " $detail"
+        fputs(
+            "kotgent: pty-close pid=$pid fd=$masterFd " +
+                "elapsedMs=${closeTraceOrigin.elapsedNow().inWholeMilliseconds} stage=$stage$suffix\n",
+            stderr,
+        )
+        fflush(stderr)
     }
 
     /**
@@ -249,16 +286,22 @@ class Pty private constructor(
 
     /** Block until the child exits and return its exit code (128 + signal if killed). */
     fun waitFor(): Int {
-        if (reaped) return exitCode
+        if (reaped) {
+            traceClose("wait-reused", "exitCode=$exitCode")
+            return exitCode
+        }
+        traceClose("wait-start")
         memScoped {
             val status = alloc<IntVar>()
             while (true) {
                 val r = waitpid(pid, status.ptr, 0)
                 if (r == -1) {
                     if (errno == EINTR) continue
+                    val code = errno
                     // ECHILD or similar: nothing to reap.
                     reaped = true
                     exitCode = -1
+                    traceClose("wait-failed", "errno=$code (${errnoMessage(code)})")
                     return exitCode
                 }
                 break
@@ -266,6 +309,7 @@ class Pty private constructor(
             exitCode = decodeStatus(status.value)
             reaped = true
         }
+        traceClose("wait-complete", "exitCode=$exitCode")
         return exitCode
     }
 
@@ -276,22 +320,48 @@ class Pty private constructor(
      * deadlock a caller's lock (e.g. the Broadcaster's) on a child that ignores SIGTERM.
      */
     private fun reapBounded(micros: Long): Boolean {
+        val timeout = micros.microseconds
+        val started = TimeSource.Monotonic.markNow()
+        var polls = 0
+        traceClose("reap-grace-start", "timeoutMicros=$micros")
         memScoped {
             val status = alloc<IntVar>()
-            var waited = 0L
-            val stepMicros = 5_000L // 5 ms
-            while (waited < micros) {
+            while (true) {
+                polls++
                 val r = waitpid(pid, status.ptr, WNOHANG)
                 when {
                     r == -1 -> {
-                        if (errno == EINTR) continue
-                        reaped = true; exitCode = -1; return true // ECHILD: nothing to reap
+                        val code = errno
+                        if (code != EINTR) {
+                            reaped = true
+                            exitCode = -1
+                            traceClose(
+                                "reap-grace-no-child",
+                                "polls=$polls errno=$code (${errnoMessage(code)})",
+                            )
+                            return true // ECHILD or similar: nothing to reap
+                        }
                     }
-                    r != 0 -> { exitCode = decodeStatus(status.value); reaped = true; return true }
-                    else -> { usleep(stepMicros.convert()); waited += stepMicros }
+                    r != 0 -> {
+                        exitCode = decodeStatus(status.value)
+                        reaped = true
+                        traceClose("reap-grace-complete", "polls=$polls exitCode=$exitCode")
+                        return true
+                    }
                 }
+
+                // `usleep(n)` may return much later than n on a loaded/virtualized macOS host.
+                // Compare against the monotonic wall clock after every poll; summing the requested
+                // sleeps made this nominal two-second grace take 7–10+ seconds and race CI's tripwire.
+                val remainingMicros = (timeout - started.elapsedNow()).inWholeMicroseconds
+                if (remainingMicros <= 0L) break
+                if (r == 0) usleep(minOf(REAP_POLL_MICROS, remainingMicros).convert())
             }
         }
+        traceClose(
+            "reap-grace-timeout",
+            "polls=$polls elapsedMs=${started.elapsedNow().inWholeMilliseconds}",
+        )
         return false
     }
 
@@ -310,11 +380,17 @@ class Pty private constructor(
     /** The child-teardown half shared by [prepareClose] and the winning [close] caller. */
     private fun terminateAndReapChild() {
         if (!reaped) {
-            kill(pid, SIGTERM)
+            val termRc = kill(pid, SIGTERM)
+            val termErrno = if (termRc == 0) 0 else errno
+            traceClose("signal-term", "rc=$termRc${errnoDetail(termRc, termErrno)}")
             if (!reapBounded(CLOSE_GRACE_MICROS)) {
-                kill(pid, SIGKILL)
+                val killRc = kill(pid, SIGKILL)
+                val killErrno = if (killRc == 0) 0 else errno
+                traceClose("signal-kill", "rc=$killRc${errnoDetail(killRc, killErrno)}")
                 waitFor() // SIGKILL is uncatchable — this reaps promptly
             }
+        } else {
+            traceClose("child-already-reaped", "exitCode=$exitCode")
         }
     }
 
@@ -340,21 +416,37 @@ class Pty private constructor(
      */
     fun close(): Int {
         if (!closeClaimed.compareAndSet(0, 1)) {
-            return runBlocking { closeCompletion.await() }
+            traceClose("close-waiter-start", "completion=${closeCompletion.isCompleted}")
+            val result = runBlocking { closeCompletion.await() }
+            traceClose("close-waiter-complete", "exitCode=$result")
+            return result
         }
 
+        traceClose("close-owner-claimed")
         try {
             terminateAndReapChild()
+            traceClose("reader-stop-start")
             wakeReader()
             readerScope.cancel()
+            traceClose("reader-cancelled")
             runBlocking { readerJob.join() }
+            traceClose("reader-joined")
             readerContext.close()
+            traceClose("reader-context-closed")
             releaseMasterFd()
-            posixClose(readerWakeReadFd)
-            posixClose(readerWakeWriteFd)
-            return exitCode.also { closeCompletion.complete(it) }
+            val wakeReadRc = posixClose(readerWakeReadFd)
+            val wakeReadErrno = if (wakeReadRc == 0) 0 else errno
+            traceClose("reader-wake-read-released", "rc=$wakeReadRc${errnoDetail(wakeReadRc, wakeReadErrno)}")
+            val wakeWriteRc = posixClose(readerWakeWriteFd)
+            val wakeWriteErrno = if (wakeWriteRc == 0) 0 else errno
+            traceClose("reader-wake-write-released", "rc=$wakeWriteRc${errnoDetail(wakeWriteRc, wakeWriteErrno)}")
+            val result = exitCode
+            closeCompletion.complete(result)
+            traceClose("close-owner-complete", "exitCode=$result")
+            return result
         } catch (t: Throwable) {
             closeCompletion.completeExceptionally(t)
+            traceClose("close-owner-failed", "${t::class.simpleName}: ${t.message}")
             throw t
         }
     }
@@ -367,8 +459,14 @@ class Pty private constructor(
         if (s and 0x7f == 0) (s shr 8) and 0xff else 128 + (s and 0x7f)
 
     companion object {
+        /** Set to `1` before [open] to emit close-stage diagnostics to stderr for that pty. */
+        const val CLOSE_TRACE_ENV: String = "KOTGENT_PTY_CLOSE_TRACE"
+
         /** Grace period (µs) after SIGTERM before [close] escalates to SIGKILL. */
         private const val CLOSE_GRACE_MICROS: Long = 2_000_000L
+
+        /** Maximum sleep between non-blocking child-state polls. */
+        private const val REAP_POLL_MICROS: Long = 5_000L
 
         /** Buffer size for the resolved pts path (well above macOS `PATH_MAX`/pts names). */
         private const val PTS_PATH_CAP: Int = 1024
@@ -529,6 +627,7 @@ class Pty private constructor(
                     pid = pidVar.value,
                     readerWakeReadFd = readerWakeFds[0],
                     readerWakeWriteFd = readerWakeFds[1],
+                    closeTraceEnabled = getenv(CLOSE_TRACE_ENV)?.toKString() == "1",
                 ).also { it.startReader() }
             }
         }
@@ -566,5 +665,9 @@ class Pty private constructor(
 
         private fun errnoMessage(code: Int): String =
             strerror(code)?.toKString() ?: "errno=$code"
+
+        /** Add errno only for a failed POSIX call; successful calls must not report stale thread errno. */
+        private fun errnoDetail(rc: Int, code: Int): String =
+            if (rc == 0) "" else " errno=$code (${errnoMessage(code)})"
     }
 }

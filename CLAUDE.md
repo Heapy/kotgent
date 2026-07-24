@@ -395,6 +395,11 @@ releasing the fd. The `ptycheck` ordering check holds a slave open and snapshots
 job at the actual master-release helper; moving only that helper above the unchanged wake/cancel/join
 sequence was verified to produce `SUMMARY total=11 failed=1 skipped=0`. Do not weaken the check back to a
 descriptor-validity query immediately before its own close — that observation is tautological.
+The SIGTERM grace is bounded by `TimeSource.Monotonic`, not by adding the requested `usleep` intervals:
+macOS may resume a 5 ms sleep much later under load, and the old accounting stretched the nominal two
+seconds to 7–10+ seconds on hosted runners. Set `KOTGENT_PTY_CLOSE_TRACE=1` before opening a pty to emit
+flush-on-write close stages, syscall results and elapsed time to stderr; `PtyTest` enables it for the
+out-of-process helper and only surfaces the captured trace when a check fails.
 
 **A `posix_spawn`ed child gets NO controlling terminal, so `Pty.resize` must send `SIGWINCH` itself.**
 `ioctl(TIOCSWINSZ)` raises `SIGWINCH` on the tty's **foreground process group** — and this pty has none:
