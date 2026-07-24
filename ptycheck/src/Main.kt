@@ -353,10 +353,17 @@ private fun concurrentCloseRunsTeardownExactlyOnce() = check("concurrent close r
             expect(!firstTask.isCompleted && !secondTask.isCompleted) {
                 "the ignored-SIGTERM positive control did not keep both close callers overlapped"
             }
-            withTimeoutOrNull(10_000) { firstTask.await() to secondTask.await() }
+            withTimeoutOrNull(CONCURRENT_CLOSE_TIMEOUT_MS) { firstTask.await() to secondTask.await() }
         }
         val completedResults = results
-            ?: throw AssertionError("the two close callers did not finish the one bounded teardown within 10 seconds")
+            ?: throw AssertionError(
+                "the two close callers did not finish the one bounded teardown within " +
+                    "${CONCURRENT_CLOSE_TIMEOUT_MS / 1_000} seconds; before cleanup: " +
+                    "first(active=${firstTask.isActive}, completed=${firstTask.isCompleted}, " +
+                    "cancelled=${firstTask.isCancelled}), " +
+                    "second(active=${secondTask.isActive}, completed=${secondTask.isCompleted}, " +
+                    "cancelled=${secondTask.isCancelled})",
+            )
         childMayBeAlive = false
         val expectedExitCode = 128 + SIGKILL
         expect(completedResults.first == expectedExitCode && completedResults.second == expectedExitCode) {
@@ -611,6 +618,9 @@ private const val FULL_PTY_WRITE_BYTES = 16 * 1_048_576
 
 /** Buffer size for resolving the positive-control slave path. */
 private const val PTY_PATH_CAP = 1024
+
+/** Three times the SIGTERM grace: enough scheduler headroom while still catching wall-clock drift. */
+private const val CONCURRENT_CLOSE_TIMEOUT_MS = 6_000L
 
 /** Receive chunks from [pty] until [needle] appears in the accumulated output, or time out. */
 private fun readUntil(pty: Pty, needle: String, timeoutMs: Long = 5_000): String = runBlocking {
