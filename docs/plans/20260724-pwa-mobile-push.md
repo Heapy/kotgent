@@ -377,8 +377,9 @@ pin an old UI for a day).
 
 **Files:**
 - Create: `resources/webui/manifest.webmanifest`
+- Move: `logo.svg` (repo root, provided by the user) → `resources/webui/icons/logo.svg`
 - Create: `resources/webui/icons/icon-192.png`, `resources/webui/icons/icon-512.png`,
-  `resources/webui/icons/apple-touch-icon.png` (placeholders — to be replaced by the user's artwork)
+  `resources/webui/icons/apple-touch-icon.png` (rendered from `logo.svg`)
 - Modify: `resources/webui/index.html`
 - Modify: `src/transport/Server.kt`
 - Modify: `test/transport/WebUiServingTest.kt`
@@ -386,10 +387,11 @@ pin an old UI for a day).
 - [ ] add the manifest: `name`/`short_name` "Kotgent", `start_url: "/"`, `scope: "/"`,
       `display: "standalone"`, background/theme colours matching `style.css`, 192 + 512 icons with
       `purpose: "any maskable"`
-- [ ] produce the placeholder PNGs from a committed one-colour SVG monogram via
-      `qlmanage -t -s 512 -o resources/webui/icons <svg>` then `sips -z 192 192` to downscale; if QuickLook
-      refuses the SVG, decode a committed base64 PNG blob with `base64 -d` instead. File names are the
-      contract — the artwork is replaceable without code changes
+- [ ] move the user's `logo.svg` (512×512, dark rounded square) from the repo root to
+      `resources/webui/icons/logo.svg` and render the PNGs from it — verified pipeline:
+      `qlmanage -t -s 512 -o <dir> logo.svg` (produces `logo.svg.png`, 512×512 RGBA) then
+      `sips -z 192 192 <in> --out icon-192.png`; `apple-touch-icon.png` is the 512 render at 180×180.
+      Commit the rendered PNGs — there is no build step to generate them at deploy time
 - [ ] update `index.html`: `<link rel="manifest">`, `<link rel="apple-touch-icon">`,
       `apple-mobile-web-app-capable`, `apple-mobile-web-app-status-bar-style`, `viewport-fit=cover`
 - [ ] teach `contentTypeFor` about `.webmanifest`; send `Cache-Control: no-cache` from `serveStaticFile` for
@@ -577,7 +579,7 @@ pin an old UI for a day).
       guard), the short-code ticket format with its rate-limit compensation, and the iOS-PWA
       separate-cookie-jar fact with the `401 → /auth` routing it forces
 - [ ] update the test-count baseline in `CLAUDE.md` to the new figure
-- [ ] note in `resources/webui/icons/` that the artwork is a placeholder
+- [ ] note in `resources/webui/icons/` that the PNGs are rendered from `logo.svg` (and how)
 - [ ] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
