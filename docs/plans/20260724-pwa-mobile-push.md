@@ -288,19 +288,28 @@ pin an old UI for a day).
 - Create: `src/push/VapidKey.kt`
 - Create: `test/push/VapidKeyTest.kt`
 
-- [ ] add `VapidKey` that reads `~/.kotgent/vapid.pem` or generates it once:
+- [x] add `VapidKey` that reads `~/.kotgent/vapid.pem` or generates it once:
       `/usr/bin/openssl ecparam -name prime256v1 -genkey -noout` → PEM on `stdoutBytes` →
       `createPrivateFileExclusive(path, pem)` (0600, first-writer-wins). **Do not use openssl's `-out`** —
       verified on macOS it writes 0644 and the key would ship world-readable
-- [ ] extract the public point: `/usr/bin/openssl ec -in <pem> -pubout -outform DER` → drop the 26-byte SPKI
+      ➕ generation + the cached point are serialized by a `Mutex` (two concurrent
+      `GET /push/vapid-key` calls would otherwise race the cache field); `defaultVapidKeyPath()` reuses
+      `kotgentHome()` rather than resolving `$HOME` a second time
+- [x] extract the public point: `/usr/bin/openssl ec -in <pem> -pubout -outform DER` → drop the 26-byte SPKI
       header → 65 bytes starting with `0x04` → `base64Url`
-- [ ] inject the openssl path, the key path and the `ProcessRunner` seam so tests run against a temp
+      ➕ the slicing rule is the pure, public `publicPointFromSpki(der)` (unit-testable without openssl);
+      it asserts the 91-byte length and the `0x04` tag instead of assuming them
+- [x] inject the openssl path, the key path and the `ProcessRunner` seam so tests run against a temp
       directory; pin `/usr/bin/openssl` by default (a bare name resolves to Homebrew's build locally and to
       nothing under a stale launchd PATH)
-- [ ] write tests: generating twice returns the same key (no silent re-mint — a new key kills every existing
+- [x] write tests: generating twice returns the same key (no silent re-mint — a new key kills every existing
       subscription); the public point is 65 bytes and starts with `0x04`; the file's mode is 0600
-- [ ] write test: a corrupt/empty pem surfaces a clear error instead of a half-broken key
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 6
+- [x] write test: a corrupt/empty pem surfaces a clear error instead of a half-broken key
+      ➕ four more failure paths: a non-PEM file, a bogus openssl path (and no key file left behind), a
+      non-zero openssl (its stderr is in the message), an exit-0-with-empty-stdout (never persisted as an
+      empty `vapid.pem`), and a runner-level throw folded into `VapidKeyException`
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 6
+      ➕ 13 new tests: **482 run / 482 passed / 0 skipped**
 
 ### Task 6: ECDSA DER → raw r||s
 
