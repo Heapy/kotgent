@@ -10,6 +10,7 @@ import { html } from "htm/preact";
 import { useState } from "preact/hooks";
 import { groupSessions } from "../lib/paths.js";
 import { groupingEnabled } from "../lib/prefs.js";
+import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
 
 function SessionRow({ session, active, onSelect, onRestore }) {
@@ -85,6 +86,13 @@ export function Sidebar({
   onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore,
 }) {
   const [showDone, setShowDone] = useState(false);
+  const [notifyOn, setNotifyOn] = useState(notifyEnabled());
+  const toggleNotifications = async () => {
+    const next = !notifyOn;
+    if (next) await ensurePermission(); // prompt once when turning on; notifyAttention guards on the result
+    setNotifyEnabled(next);
+    setNotifyOn(next);
+  };
   // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
   // and every count — and only surfaced under an explicit "Show done" toggle.
   const visible = sessions.filter((s) => !s.archived);
@@ -104,6 +112,16 @@ export function Sidebar({
               type="button"
               onClick=${() => onNewSession(null)}
             >New session</button>
+            <button
+              id="notify-toggle"
+              class=${"icon-button icon-button-small notify-toggle" + (notifyOn ? " active" : "")}
+              type="button"
+              aria-label=${notifyOn ? "Turn notifications off" : "Turn notifications on"}
+              aria-pressed=${notifyOn ? "true" : "false"}
+              title=${notifyOn ? "Notifications on (this device) — click to turn off"
+                : "Notifications off — click to turn on for this device"}
+              onClick=${toggleNotifications}
+            >${notifyOn ? "🔔" : "🔕"}</button>
             <button
               id="phone-button"
               class="icon-button icon-button-small"

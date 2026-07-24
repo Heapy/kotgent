@@ -689,3 +689,9 @@ dialog::backdrop {
 .show-done-toggle:hover { color: #111827; }
 
 .done-list .session-row { opacity: 0.75; }
+
+/* Notifications toggle */
+.notify-toggle.active {
+  background: #dbeafe;
+  border-radius: 6px;
+}

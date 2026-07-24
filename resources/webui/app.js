@@ -30,6 +30,7 @@ import { html } from "htm/preact";
 
 import { apiRequest, errorMessage, wsUrl } from "./lib/api.js";
 import { loadPrefs, persistPrefs } from "./lib/prefs.js";
+import { notifyAttention } from "./lib/notify.js";
 import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
@@ -125,6 +126,12 @@ function App() {
         if (!sessionsRef.current.some((s) => s.id === msg.sessionId)) {
           loadRef.current();
           return;
+        }
+        // Notify on a genuine live transition INTO needs-attention (was not, now is). Comparing against the
+        // known prior row means the initial snapshot / 15s resync of an already-attention session is silent.
+        const prevSession = sessionsRef.current.find((s) => s.id === msg.sessionId);
+        if (prevSession && !prevSession.needsAttention && msg.needsAttention) {
+          notifyAttention(prevSession);
         }
         setSessions((prev) => prev.map((s) => (s.id === msg.sessionId
           ? Object.assign({}, s, {
