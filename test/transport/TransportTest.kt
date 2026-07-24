@@ -107,6 +107,37 @@ class TransportTest {
         assertNull(bare.cliPath)
     }
 
+    @Test
+    fun archivedIsCarriedOnBothTheDtoAndTheUpdateDto() {
+        val meta = SessionMeta(
+            id = SessionId("arc01"), name = "n", agent = "claude", cwd = "/w",
+            tmuxSession = "kt-arc01", state = SessionState.stopped, createdAt = 1L, updatedAt = 1L,
+            archived = true,
+        )
+        assertTrue(meta.toDto().archived, "SessionDto carries archived")
+        assertTrue(meta.toUpdateDto().archived, "the resync SessionUpdateDto carries archived")
+        assertTrue(
+            SessionUpdate(SessionId("arc01"), SessionState.stopped, Seq(1), 0L, archived = true).toDto().archived,
+            "the live SessionUpdateDto carries archived",
+        )
+    }
+
+    @Test
+    fun doneArchivesTheSessionAndUndoneRestoresIt() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        val done = ctx.post("/sessions/${created.id}/done")
+        assertEquals(HttpStatusCode.OK, done.status, "done returns 200")
+        val doneDto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), done.bodyAsText())
+        assertEquals("stopped", doneDto.state, "done killed the agent")
+        assertTrue(doneDto.archived, "done archived the session")
+
+        val undone = ctx.post("/sessions/${created.id}/undone")
+        assertEquals(HttpStatusCode.OK, undone.status)
+        val undoneDto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), undone.bodyAsText())
+        assertEquals(false, undoneDto.archived, "undone restored the session")
+    }
+
     // ---- 1. POST /sessions → the session appears in GET /sessions ----
 
     @Test
@@ -517,6 +548,12 @@ class TransportTest {
             val m = metas[sessionId] ?: return@withLock
             metas[sessionId] = m.copy(state = state, stateSource = stateSource, paneId = paneId, updatedAt = updatedAt)
             updates.tryEmit(SessionUpdate(sessionId, state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value)))
+        }
+
+        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
+            val m = metas[sessionId] ?: return@withLock
+            metas[sessionId] = m.copy(archived = archived, updatedAt = updatedAt)
+            updates.tryEmit(SessionUpdate(sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), archived))
         }
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }

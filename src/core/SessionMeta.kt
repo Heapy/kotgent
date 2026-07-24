@@ -53,4 +53,10 @@ data class SessionMeta(
     val createdAt: Long,
     /** Last-update timestamp (epoch millis). */
     val updatedAt: Long,
+    /**
+     * Whether this session is "done" — hidden from the working-set sidebar. Orthogonal to [state]
+     * (an archived session is dead, but the reducer/control paths never touch this flag); set only via
+     * [io.kotgent.store.EventStore.setArchived] (the "Done" op archives after a kill; "Restore" clears it).
+     */
+    val archived: Boolean = false,
 )

@@ -400,6 +400,7 @@ class HookRoutesTest {
             paneId: io.kotgent.core.PaneId?,
             updatedAt: Long,
         ) = Unit
+        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()

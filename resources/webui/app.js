@@ -133,6 +133,7 @@ function App() {
               alive: isAliveState(msg.state),
               lastSeq: msg.lastSeq,
               unread: msg.unread,
+              archived: msg.archived,
             })
           : s)));
       };
@@ -164,11 +165,16 @@ function App() {
     showSession(created);   // from `created` directly: the ref has not caught up with setSessions yet
   }, [say, showSession]);
 
-  const controlSession = useCallback(async (action) => {
-    const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+  const controlSession = useCallback(async (action, id) => {
+    // Acts on an explicit session [id] when given (e.g. Restore from a sidebar row), else the active one.
+    const s = sessionsRef.current.find((x) => x.id === (id || activeRef.current));
     if (!s || pendingRef.current) return;
     if (action === "stop" &&
         !window.confirm("Stop " + displayName(s) + "? The conversation can be resumed later.")) {
+      return;
+    }
+    if (action === "done" &&
+        !window.confirm("Mark " + displayName(s) + " done? This stops the agent and hides the session.")) {
       return;
     }
 
@@ -182,9 +188,11 @@ function App() {
       if (updated && updated.id) {
         setSessions((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
       }
-      if (action === "stop") {
-        setAttachedId(null);
-        setHint("Session stopped. Resume it to continue.");
+      if (action === "stop" || action === "done") {
+        if (s.id === activeRef.current) setAttachedId(null);
+        setHint(action === "done"
+          ? "Marked done. Find it under “Show done”."
+          : "Session stopped. Resume it to continue.");
       } else if (action === "resume") {
         setAttachedId(s.id);
         setHint(null);
@@ -235,6 +243,8 @@ function App() {
   const interrupt = useCallback(() => controlSession("interrupt"), [controlSession]);
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
   const stop = useCallback(() => controlSession("stop"), [controlSession]);
+  const done = useCallback(() => controlSession("done"), [controlSession]);
+  const restore = useCallback((id) => controlSession("undone", id), [controlSession]);
 
   // --- render ----------------------------------------------------------------------------------
 
@@ -249,6 +259,7 @@ function App() {
       onOpenPrefs=${openPrefs}
       onOpenHelp=${openHelp}
       onOpenPhone=${openPhone}
+      onRestore=${restore}
     />
     <${TerminalPane}
       session=${activeSession}
@@ -260,6 +271,7 @@ function App() {
       onResume=${resume}
       onDetach=${detach}
       onStop=${stop}
+      onDone=${done}
       onTerminalClosed=${onTerminalClosed}
     />
     ${dialog && dialog.kind === "new" && html`

@@ -29,7 +29,7 @@ function sendResize(ws, cols, rows) {
 
 export function TerminalPane({
   session, attachedId, pendingAction, hint,
-  onAttach, onInterrupt, onResume, onDetach, onStop, onTerminalClosed,
+  onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   // The close callback is read through a ref so a re-render cannot re-run the effect (which would tear
@@ -125,6 +125,9 @@ export function TerminalPane({
             ${alive && html`
               <button id="stop-button" class="button button-danger" type="button"
                       disabled=${busy} onClick=${onStop}>Stop</button>`}
+            <button id="done-button" class="button button-quiet" type="button"
+                    disabled=${busy} onClick=${onDone}
+                    title="Stop the agent and hide this session from the sidebar">Done</button>
           </div>
         `}
       </div>

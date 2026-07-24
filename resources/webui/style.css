@@ -663,3 +663,29 @@ dialog::backdrop {
     width: 100%;
   }
 }
+
+/* "Done" / archived sessions */
+.session-restore {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+#done-section {
+  padding: 0 0.5rem 0.5rem;
+}
+
+.show-done-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.show-done-toggle:hover { color: #111827; }
+
+.done-list .session-row { opacity: 0.75; }

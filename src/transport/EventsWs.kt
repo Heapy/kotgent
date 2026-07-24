@@ -129,6 +129,8 @@ data class SessionUpdateDto(
     val needsAttention: Boolean,
     val lastSeq: Long,
     val unread: Long,
+    /** Whether the session is archived ("done"); the client hides/shows the row on this. */
+    val archived: Boolean = false,
 )
 
 fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
@@ -137,6 +139,7 @@ fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
     needsAttention = state.needsAttention,
     lastSeq = lastSeq.value,
     unread = unread,
+    archived = archived,
 )
 
 /** Snapshot form of a [SessionMeta] as a [SessionUpdateDto] (the baseline the client gets on connect). */
@@ -146,6 +149,7 @@ fun SessionMeta.toUpdateDto(): SessionUpdateDto = SessionUpdateDto(
     needsAttention = state.needsAttention,
     lastSeq = lastSeq.value,
     unread = unread(lastSeq.value, readCursor.value),
+    archived = archived,
 )
 
 /** A single canonical event pushed on the per-session `/events?session=…` stream. */

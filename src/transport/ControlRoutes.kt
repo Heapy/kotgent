@@ -49,7 +49,8 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Unit
  *  - `GET  /sessions`                       — list all sessions (from the store cache).
  *  - `GET  /sessions/{id}`                  — one session, or `404`.
  *  - `POST /sessions`                       — start a new session (`{agent, cwd, name?, tags?}`) → `201`.
- *  - `POST /sessions/{id}/{stop|resume|interrupt|detach}` — a lifecycle control op.
+ *  - `POST /sessions/{id}/{stop|resume|interrupt|detach|done|undone}` — a lifecycle control op
+ *    (`done` = kill + archive off the sidebar; `undone` = un-archive).
  *  - `POST /sessions/{id}/input`            — write raw terminal input (`TerminalInput` only in the slice).
  *
  * `PATCH /sessions/{id}` is BACKLOG (omitted per the plan). Mounted inside [authenticated] by the server,
@@ -138,6 +139,8 @@ fun Route.controlRoutes(
                 "resume" -> sessionManager.resume(id)
                 "interrupt" -> sessionManager.interrupt(id)
                 "detach" -> sessionManager.detach(id)
+                "done" -> sessionManager.markDone(id)
+                "undone" -> sessionManager.undone(id)
                 else -> {
                     call.respondText("unknown action '$action'", status = HttpStatusCode.BadRequest)
                     return@post
@@ -211,6 +214,8 @@ data class SessionDto(
     val unread: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    /** Whether the session is "done" — hidden from the default sidebar (the UI filters on this). */
+    val archived: Boolean = false,
 )
 
 fun SessionMeta.toDto(): SessionDto = SessionDto(
@@ -232,4 +237,5 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     unread = unread(lastSeq.value, readCursor.value),
     createdAt = createdAt,
     updatedAt = updatedAt,
+    archived = archived,
 )

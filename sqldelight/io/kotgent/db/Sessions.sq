@@ -24,7 +24,11 @@ CREATE TABLE sessions (
   last_seq            INTEGER NOT NULL,
   read_cursor         INTEGER NOT NULL,
   created_at          INTEGER NOT NULL,
-  updated_at          INTEGER NOT NULL
+  updated_at          INTEGER NOT NULL,
+  -- Orthogonal "hidden from the working set" flag (a "Done" session). Never touched by the reducer or
+  -- the control-state writes; set only via setArchived. Declared LAST so create() matches the additive
+  -- `ALTER TABLE ... ADD COLUMN archived` migration SqliteEventStore.init runs for pre-existing DBs.
+  archived            INTEGER NOT NULL DEFAULT 0
 );
 
 -- Full-row upsert (daemon-owned session metadata). On conflict, every field is refreshed from the
@@ -33,9 +37,9 @@ upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
   worktree, branch, tmux_session, pane_id, state, state_source, last_seq, read_cursor,
-  created_at, updated_at
+  created_at, updated_at, archived
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   name                = excluded.name,
   tags                = excluded.tags,
@@ -55,7 +59,8 @@ ON CONFLICT(id) DO UPDATE SET
   last_seq            = excluded.last_seq,
   read_cursor         = excluded.read_cursor,
   created_at          = sessions.created_at,
-  updated_at          = excluded.updated_at;
+  updated_at          = excluded.updated_at,
+  archived            = excluded.archived;
 
 -- Advance ONLY the reducer-derived cache fields; called inside EventStore.append's transaction
 -- (leaves identity/launch context and read_cursor untouched).
@@ -71,6 +76,12 @@ WHERE id = ?;
 updateControlState:
 UPDATE sessions
 SET state = ?, state_source = ?, pane_id = ?, updated_at = ?
+WHERE id = ?;
+
+-- Set ONLY the orthogonal archived flag (and updated_at). Never touches state/last_seq/provider id.
+setArchived:
+UPDATE sessions
+SET archived = ?, updated_at = ?
 WHERE id = ?;
 
 get:

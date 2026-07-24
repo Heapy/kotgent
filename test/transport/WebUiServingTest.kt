@@ -322,6 +322,7 @@ class WebUiServingTest {
             paneId: io.kotgent.core.PaneId?,
             updatedAt: Long,
         ) {}
+        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = Seq(0L)

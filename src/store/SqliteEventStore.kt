@@ -108,6 +108,15 @@ class SqliteEventStore private constructor(
             },
             parameters = 0,
         )
+        // Additive, idempotent migration for the `archived` column. The vendored sqldelight-gen plugin
+        // drops `.sqm` files (deriveSchemaFromMigrations/verifyMigrations are off) and leaves the
+        // generated `Schema.migrate()` empty, so a schema-version bump would NOT alter an existing table.
+        // Instead add the column here: on a fresh DB `create()` already added it, so this ALTER fails with
+        // "duplicate column name" and is swallowed; on a pre-`archived` DB it adds it. `ALTER … ADD COLUMN`
+        // returns no rows, so use execute(), not executeQuery().
+        runCatching {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
+        }
     }
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
@@ -132,9 +141,13 @@ class SqliteEventStore private constructor(
             meta.readCursor.value,
             meta.createdAt,
             meta.updatedAt,
+            if (meta.archived) 1L else 0L,
         )
         _sessionUpdates.tryEmit(
-            SessionUpdate(meta.id, meta.state, meta.lastSeq, unread(meta.lastSeq.value, meta.readCursor.value)),
+            SessionUpdate(
+                meta.id, meta.state, meta.lastSeq,
+                unread(meta.lastSeq.value, meta.readCursor.value), meta.archived,
+            ),
         )
     }
 
@@ -151,7 +164,18 @@ class SqliteEventStore private constructor(
         sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, sessionId.value)
         val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
         _sessionUpdates.tryEmit(
-            SessionUpdate(sessionId, state, Seq(row.last_seq), unread(row.last_seq, row.read_cursor)),
+            SessionUpdate(sessionId, state, Seq(row.last_seq), unread(row.last_seq, row.read_cursor), row.archived != 0L),
+        )
+    }
+
+    override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
+        sessions.setArchived(if (archived) 1L else 0L, updatedAt, sessionId.value)
+        val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return@withLock
+        _sessionUpdates.tryEmit(
+            SessionUpdate(
+                sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
+                unread(row.last_seq, row.read_cursor), row.archived != 0L,
+            ),
         )
     }
 
@@ -212,7 +236,10 @@ class SqliteEventStore private constructor(
             subscribers[sessionId]?.forEach { it.trySend(stored) }
             // Signal the (control-authoritative) cache change for the events-WS.
             _sessionUpdates.tryEmit(
-                SessionUpdate(sessionId, cacheState, next.lastSeq, unread(next.lastSeq.value, readCursor)),
+                SessionUpdate(
+                    sessionId, cacheState, next.lastSeq,
+                    unread(next.lastSeq.value, readCursor), (cachedRow?.archived ?: 0L) != 0L,
+                ),
             )
             Seq(seq)
         }
@@ -322,6 +349,7 @@ class SqliteEventStore private constructor(
         readCursor = Seq(read_cursor),
         createdAt = created_at,
         updatedAt = updated_at,
+        archived = archived != 0L,
     )
 
     companion object {

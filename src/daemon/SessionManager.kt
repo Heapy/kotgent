@@ -354,6 +354,25 @@ class SessionManager(
     }
 
     /**
+     * "Done" — finish with a session: kill the agent, then archive the row off the sidebar (its history
+     * survives; "Restore" via [undone] brings it back, still resumable).
+     *
+     * Composed like [stop], NOT wrapped in [withControlLock]: [terminate] already takes the session's
+     * control lock internally, and that [Mutex] is non-reentrant, so an outer lock here would deadlock.
+     * [store.setArchived][EventStore.setArchived] is orthogonal (it never touches control state), so a
+     * control op racing between the kill and the archive is harmless.
+     */
+    suspend fun markDone(sessionId: SessionId) {
+        terminate(sessionId)
+        store.setArchived(sessionId, true, now())
+    }
+
+    /** Un-archive a "Done" session so it reappears in the sidebar (leaves its dead/resumable state as-is). */
+    suspend fun undone(sessionId: SessionId) {
+        store.setArchived(sessionId, false, now())
+    }
+
+    /**
      * Interrupt a stuck session: send Ctrl-C to un-stick a `running` that will not budge (Claude emits
      * no hook on Esc/Ctrl-C) AND apply [ControlSignal.Interrupt] to the projection (alive → `ready`,
      * approvals cleared). The session stays alive, so its pane stays registered.

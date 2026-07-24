@@ -413,6 +413,56 @@ class SessionManagerTest {
         }
     }
 
+    // ---- Done: kill + archive, and Restore ----
+
+    @Test
+    fun markDoneKillsTheAgentAndArchivesTheSession() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = provider),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("done01") },
+                now = { 1L },
+            )
+            val started = mgr.start("claude", "/tmp")
+            val pane = started.paneId!!
+
+            mgr.markDone(SessionId("done01")) // completes (does NOT hang — terminate locks internally)
+
+            assertEquals(listOf("done01"), tmux.killed, "Done kills the agent")
+            val row = store.getSession(SessionId("done01"))!!
+            assertEquals(SessionState.stopped, row.state, "the killed session is stopped")
+            assertTrue(row.archived, "and archived off the sidebar")
+            assertEquals(null, registry.lookup(pane), "the pane is unregistered")
+        }
+    }
+
+    @Test
+    fun undoneUnarchivesWithoutTouchingTmux() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("done02") },
+                now = { 1L },
+            )
+            store.upsertSession(meta("done02", SessionState.stopped, providerId = null).copy(archived = true))
+
+            mgr.undone(SessionId("done02"))
+
+            assertEquals(false, store.getSession(SessionId("done02"))!!.archived, "Restore clears archived")
+            assertTrue(tmux.killed.isEmpty(), "Restore touches no tmux")
+        }
+    }
+
     // ---- control ops: stop / interrupt / resume / detach ----
 
     @Test

@@ -7,11 +7,12 @@
  */
 
 import { html } from "htm/preact";
+import { useState } from "preact/hooks";
 import { groupSessions } from "../lib/paths.js";
 import { groupingEnabled } from "../lib/prefs.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
 
-function SessionRow({ session, active, onSelect }) {
+function SessionRow({ session, active, onSelect, onRestore }) {
   const badge = stateBadge(session.state);
   const select = () => onSelect(session.id);
   const onKeyDown = (event) => {
@@ -43,7 +44,14 @@ function SessionRow({ session, active, onSelect }) {
         html`<span class="unread-pill" title=${session.unread + " unread event(s)"}>
           ${session.unread}
         </span>`}
-      <span class=${"badge " + badge.cls}>${badge.label}</span>
+      ${onRestore
+        ? html`<button
+            type="button"
+            class="button button-quiet button-small session-restore"
+            title="Bring this session back to the sidebar"
+            onClick=${(e) => { e.stopPropagation(); onRestore(session.id); }}
+          >Restore</button>`
+        : html`<span class=${"badge " + badge.cls}>${badge.label}</span>`}
     </li>
   `;
 }
@@ -74,9 +82,14 @@ function SessionGroup({ group, activeId, onSelect, onNewSession }) {
 
 export function Sidebar({
   sessions, activeId, prefs, status,
-  onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone,
+  onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore,
 }) {
-  const attention = sessions.filter((s) => isNeedsAttention(s.state));
+  const [showDone, setShowDone] = useState(false);
+  // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
+  // and every count — and only surfaced under an explicit "Show done" toggle.
+  const visible = sessions.filter((s) => !s.archived);
+  const doneSessions = sessions.filter((s) => s.archived);
+  const attention = visible.filter((s) => isNeedsAttention(s.state));
   const grouped = groupingEnabled(prefs);
 
   return html`
@@ -154,7 +167,7 @@ export function Sidebar({
 
         <ul id="session-list" class=${"session-list" + (grouped ? " grouped" : "")}>
           ${grouped
-            ? groupSessions(sessions, prefs.basePath, prefs.groupingLevel).map((g) => html`
+            ? groupSessions(visible, prefs.basePath, prefs.groupingLevel).map((g) => html`
                 <${SessionGroup}
                   key=${g.path}
                   group=${g}
@@ -163,17 +176,42 @@ export function Sidebar({
                   onNewSession=${onNewSession}
                 />
               `)
-            : sessions.map((s) => html`
+            : visible.map((s) => html`
                 <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
               `)}
         </ul>
 
-        ${sessions.length === 0 && html`
+        ${visible.length === 0 && html`
           <p id="empty-sessions" class="empty-sessions">
             No sessions yet. Start one to attach it here.
           </p>
         `}
       </section>
+
+      ${doneSessions.length > 0 && html`
+        <section id="done-section">
+          <button
+            id="show-done-toggle"
+            class="show-done-toggle"
+            type="button"
+            aria-expanded=${showDone ? "true" : "false"}
+            onClick=${() => setShowDone((v) => !v)}
+          >${(showDone ? "▾ " : "▸ ") + "Show done (" + doneSessions.length + ")"}</button>
+          ${showDone && html`
+            <ul id="done-list" class="session-list done-list">
+              ${doneSessions.map((s) => html`
+                <${SessionRow}
+                  key=${s.id}
+                  session=${s}
+                  active=${s.id === activeId}
+                  onSelect=${onSelect}
+                  onRestore=${onRestore}
+                />
+              `)}
+            </ul>
+          `}
+        </section>
+      `}
 
       <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
          role="status" aria-live="polite">${status.text}</p>

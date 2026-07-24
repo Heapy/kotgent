@@ -42,6 +42,13 @@ data class SessionUpdate(
     val state: SessionState,
     val lastSeq: Seq,
     val unread: Long,
+    /**
+     * Whether the session is archived ("done"). Carried on the live signal — not only the snapshot DTO —
+     * so the live and the periodic-resync `/events` messages agree: otherwise a live update for an
+     * archived session would report `archived=false` and un-hide it in another client until the next
+     * resync. Defaults to `false` for the common case (only a live, non-archived session gets appends).
+     */
+    val archived: Boolean = false,
 )
 
 /**
@@ -93,6 +100,13 @@ interface EventStore {
         paneId: PaneId?,
         updatedAt: Long,
     )
+
+    /**
+     * Set the orthogonal `archived` ("done") flag on an existing session row (and its `updated_at`),
+     * leaving `state` / `last_seq` / `provider_session_id` untouched. Emits a [sessionUpdates] signal
+     * carrying the new `archived` so clients hide/show the row live. A no-op if the row does not exist.
+     */
+    suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long)
 
     /** The session's current metadata row, or `null` if no such session has been upserted. */
     suspend fun getSession(sessionId: SessionId): SessionMeta?

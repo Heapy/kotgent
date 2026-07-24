@@ -1,5 +1,9 @@
 package io.kotgent.store
 
+import app.cash.sqldelight.db.AfterVersion
+import app.cash.sqldelight.db.QueryResult
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.db.SqlSchema
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
@@ -339,5 +343,93 @@ class EventStoreTest {
             }
             assertEquals(30, store.read(sid, Seq(0)).size)
         }
+    }
+
+    // ---- archived ("done") flag ----
+
+    @Test
+    fun archivedRoundTripsThroughUpsertAndGet() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("arch01")
+            store.upsertSession(meta(sid)) // default archived = false
+            assertEquals(false, store.getSession(sid)!!.archived, "a fresh session is not archived")
+
+            store.upsertSession(meta(sid).copy(archived = true))
+            assertTrue(store.getSession(sid)!!.archived, "archived = true round-trips")
+
+            store.upsertSession(meta(sid).copy(archived = false))
+            assertEquals(false, store.getSession(sid)!!.archived, "and back to false")
+        }
+    }
+
+    @Test
+    fun setArchivedFlipsTheFlagAndEmitsAnUpdate() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("arch02")
+            store.upsertSession(meta(sid))
+
+            val seen = CompletableDeferred<Boolean>()
+            val collector = launch {
+                store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it.archived) }
+            }
+            yield()
+            store.setArchived(sid, true, 2L)
+            assertTrue(store.getSession(sid)!!.archived, "setArchived persisted the flag")
+            assertTrue(seen.await(), "the emitted SessionUpdate carries archived = true")
+            collector.join()
+
+            store.setArchived(sid, false, 3L)
+            assertEquals(false, store.getSession(sid)!!.archived, "setArchived(false) clears it")
+        }
+    }
+
+    @Test
+    fun theInitMigrationAddsArchivedToAPreExistingTable() = runBlocking {
+        withTimeout(20_000) {
+            // A driver whose `sessions` table predates the `archived` column (the pre-migration v1 schema,
+            // verbatim minus that column). Opening a SqliteEventStore over it must add the column via the
+            // idempotent init ALTER — the in-memory create() path never exercises that.
+            val driver = inMemoryDriver(preArchivedSchema)
+            val store = SqliteEventStore.using(driver, now = { 1L })
+            val sid = SessionId("mig01")
+            store.upsertSession(meta(sid)) // would fail with "no such column: archived" if init didn't ALTER
+            assertEquals(false, store.getSession(sid)!!.archived, "migrated column defaults to false")
+
+            store.setArchived(sid, true, 2L)
+            assertTrue(store.getSession(sid)!!.archived, "…and is writable after the migration")
+        }
+    }
+
+    /** The `sessions`/`events` schema BEFORE the `archived` column (to test the init ALTER migration). */
+    private val preArchivedSchema = object : SqlSchema<QueryResult.Value<Unit>> {
+        override val version: Long = 1
+        override fun create(driver: SqlDriver): QueryResult.Value<Unit> {
+            driver.execute(
+                null,
+                "CREATE TABLE events (session_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, " +
+                    "type TEXT NOT NULL, source TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (session_id, seq))",
+                0,
+            )
+            driver.execute(
+                null,
+                "CREATE TABLE sessions (id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, tags TEXT NOT NULL, " +
+                    "agent TEXT NOT NULL, provider_session_id TEXT, model TEXT, cli_version TEXT, cli_path TEXT, " +
+                    "cwd TEXT NOT NULL, repository TEXT, worktree TEXT, branch TEXT, tmux_session TEXT NOT NULL, " +
+                    "pane_id TEXT, state TEXT NOT NULL, state_source TEXT, last_seq INTEGER NOT NULL, " +
+                    "read_cursor INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+                0,
+            )
+            driver.execute(null, "CREATE INDEX events_session_seq ON events(session_id, seq)", 0)
+            return QueryResult.Unit
+        }
+
+        override fun migrate(
+            driver: SqlDriver,
+            oldVersion: Long,
+            newVersion: Long,
+            vararg callbacks: AfterVersion,
+        ): QueryResult.Value<Unit> = QueryResult.Unit
     }
 }
