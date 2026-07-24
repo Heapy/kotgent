@@ -126,6 +126,9 @@ The UI shows the session list with live state badges and a "Needs attention" que
 WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
 keyboard input, resize).
 
+![The kotgent Web UI: the sidebar's "Needs attention" queue and session list on the left, a live Claude
+session's terminal on the right, with Interrupt / Detach / Stop / Done controls.](docs/images/web-ui.png)
+
 ### Sign in from your phone
 
 There is no TLS on the native build (`ktor-server-cio` for `macosArm64` has no `sslConnector` — that is a
