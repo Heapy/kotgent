@@ -220,10 +220,16 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - [x] no machine-specific absolute path leaked into any `*.yaml` (`git grep '/Users/' -- '*.yaml'` empty)
 
 ### Task 6: Update documentation
-- [ ] update `CLAUDE.md` if warranted (note: the daemon's launchd PATH is snapshotted from the user's
-      shell at `kotgent install`; agents inherit it — under the transport/launchd sections)
-- [ ] update `README.md` only if it documents install/PATH behavior
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md` if warranted (note: the daemon's launchd PATH is snapshotted from the user's
+      shell at `kotgent install`; agents inherit it — under the transport/launchd sections) — added a new
+      "The daemon's PATH is snapshotted at `kotgent install`" paragraph between the "Spawned children" and
+      "Session identity" invariants; covers `mergedDaemonPath`, agent inheritance, and the fail-fast 400 +
+      `kotgent install` hint
+- [x] update `README.md` only if it documents install/PATH behavior — README documents install (writes the
+      plist) and the `claude`/`codex` PATH requirement, so extended the `install`/`uninstall` bullet with the
+      PATH snapshot + agent fail-fast note
+- [x] move this plan to `docs/plans/completed/` — deferred to harness finalize (must not move now; remaining
+      review/finalize/stats phases read this path)
 
 ## Post-Completion
 *Manual / external — no checkboxes, informational only. Do not run these in automation.*

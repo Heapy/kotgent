@@ -82,7 +82,11 @@ kotgent <command> [args]
   running daemon on. This is the process launchd runs on login.
 - **`install` / `uninstall`** write `~/Library/LaunchAgents/io.kotgent.daemon.plist`
   (`RunAtLoad` + `KeepAlive`, so the daemon comes up on login and is restarted if it dies) and
-  `launchctl bootstrap` / `bootout` it.
+  `launchctl bootstrap` / `bootout` it. `install` also **snapshots your shell's `PATH`** into the plist so
+  the launchd-run daemon — which otherwise gets a minimal env — and the agents it spawns can find
+  `claude`/`codex`; re-run it from a full shell if your `PATH` changes. An agent that can't be resolved on
+  the daemon's `PATH` fails fast with a clear error pointing at `kotgent install`, not a silent attach
+  failure.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the agent in it, and records the session.
 - **`attach`** is **not** a direct `tmux attach`. It is a raw-terminal passthrough over the daemon's
   terminal WebSocket (tty put in raw mode via `termios`, stdin → WS, WS → stdout, `SIGWINCH` → resize,
