@@ -271,12 +271,16 @@ pin an old UI for a day).
 - Create: `src/crypto/Base64Url.kt`
 - Create: `test/crypto/Base64UrlTest.kt`
 
-- [ ] add `base64Url(bytes): String` only (RFC 4648 §5, `-`/`_`, no padding) — nothing in this feature
+- [x] add `base64Url(bytes): String` only (RFC 4648 §5, `-`/`_`, no padding) — nothing in this feature
       decodes base64url on the Kotlin side, so no decoder is written until RFC 8291 needs one
-- [ ] keep it pure Kotlin next to `Hex.kt`; do not add a second encoder anywhere else
-- [ ] write tests: RFC 4648 vectors, all three padding-remainder lengths, empty input
-- [ ] write test: output never contains `+`, `/` or `=` for high-bit bytes
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 5
+- [x] keep it pure Kotlin next to `Hex.kt`; do not add a second encoder anywhere else
+- [x] write tests: RFC 4648 vectors, all three padding-remainder lengths, empty input
+- [x] write test: output never contains `+`, `/` or `=` for high-bit bytes
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 5
+      ➕ 7 new tests: **469 run / 469 passed / 0 skipped**. Expected strings come from an independent
+      encoder (`python3 base64.urlsafe_b64encode`), not from this code agreeing with itself; extra cases
+      cover all 256 byte values, the 65-byte VAPID point (87 chars, the 2-byte-tail case the feature
+      actually hits) and the encoded length for every input size 0..40
 
 ### Task 5: VAPID keypair (generate, persist 0600, expose)
 
