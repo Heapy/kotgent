@@ -509,21 +509,42 @@ pin an old UI for a day).
 - Modify: `src/transport/Server.kt`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] add the manifest: `name`/`short_name` "Kotgent", `start_url: "/"`, `scope: "/"`,
+- [x] add the manifest: `name`/`short_name` "Kotgent", `start_url: "/"`, `scope: "/"`,
       `display: "standalone"`, background/theme colours matching `style.css`, 192 + 512 icons with
       `purpose: "any maskable"`
-- [ ] move the user's `logo.svg` (512×512, dark rounded square) from the repo root to
+      ➕ the colours are the **dark** `style.css` values (`#14171c`) for both `background_color` and
+      `theme_color`: a manifest carries one pair with no media query, and the artwork itself is a dark
+      `#0d1218` square, so a light splash would frame a dark icon with a white flash on every launch. Icon
+      `src`s are scope-absolute (`/icons/…`) so they resolve identically from `/` and from a deep link
+- [x] move the user's `logo.svg` (512×512, dark rounded square) from the repo root to
       `resources/webui/icons/logo.svg` and render the PNGs from it — verified pipeline:
       `qlmanage -t -s 512 -o <dir> logo.svg` (produces `logo.svg.png`, 512×512 RGBA) then
       `sips -z 192 192 <in> --out icon-192.png`; `apple-touch-icon.png` is the 512 render at 180×180.
       Commit the rendered PNGs — there is no build step to generate them at deploy time
-- [ ] update `index.html`: `<link rel="manifest">`, `<link rel="apple-touch-icon">`,
+      ➕ `git mv` (the file was tracked at the root) and `chmod 644` — the user's copy was `0600`, which the
+      daemon would still serve (same uid) but which is wrong for a committed static asset. `icon-512.png`
+      is the `qlmanage` render byte-for-byte, not a re-encode
+- [x] update `index.html`: `<link rel="manifest">`, `<link rel="apple-touch-icon">`,
       `apple-mobile-web-app-capable`, `apple-mobile-web-app-status-bar-style`, `viewport-fit=cover`
-- [ ] teach `contentTypeFor` about `.webmanifest`; send `Cache-Control: no-cache` from `serveStaticFile` for
+      ➕ status-bar style is `black-translucent` (the value that pairs with `viewport-fit=cover` and the
+      task-16 `env(safe-area-inset-*)` padding); also added `apple-mobile-web-app-title`, a
+      `<meta name="theme-color">` matching the manifest, and `rel="icon"` pointing at the SVG source so a
+      desktop tab gets the real artwork instead of a favicon 404
+- [x] teach `contentTypeFor` about `.webmanifest`; send `Cache-Control: no-cache` from `serveStaticFile` for
       `index.html` and `sw.js`
-- [ ] write tests in `WebUiServingTest`: the manifest is served as `application/manifest+json`, an icon as
+      ➕ the rule is a named private `isRevalidateAlways(rel)` matched on the whole request-relative path,
+      not on an extension — only the root-scope `/sw.js` may claim it (a nested `vendor/index.html` must
+      not), and it stays targeted: every other asset keeps the default with no `Cache-Control` at all
+- [x] write tests in `WebUiServingTest`: the manifest is served as `application/manifest+json`, an icon as
       `image/png`, and `index.html` carries `Cache-Control: no-cache`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 12
+      ➕ the manifest is **parsed** (a manifest that is not valid JSON is silently ignored by every browser,
+      which looks exactly like "the install prompt never appears") and every icon it declares is then
+      fetched and verified to be a real PNG **of the declared size, read out of its own IHDR** — the icons
+      are rendered by hand and committed, so "the 192 slot holds a 512 render" is a mistake nothing else
+      would catch. The `no-cache` test asserts both halves: `/` and `/index.html` carry it, and
+      `app.js`/`style.css`/the manifest/an icon carry no `Cache-Control` at all
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 12
+      ➕ 4 new tests: **550 run / 550 passed / 0 skipped** (branch baseline 546)
 
 ### Task 12: Service worker, subscription flow, deep link
 

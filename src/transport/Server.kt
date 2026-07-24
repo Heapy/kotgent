@@ -12,6 +12,7 @@ import io.kotgent.store.EventStore
 import io.kotgent.sys.markOpenFdsCloexec
 import io.kotgent.tmux.Tmux
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
@@ -307,15 +308,32 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: S
         call.respondText("not found", status = HttpStatusCode.NotFound)
         return
     }
+    if (isRevalidateAlways(rel)) call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
     call.respondBytes(bytes, contentTypeFor(rel))
 }
+
+/**
+ * The two files a stale cache would pin the whole app on, so both are served `Cache-Control: no-cache`
+ * ("revalidate before use", NOT "do not store"): `index.html` is the shell every other asset is fetched
+ * from, and `/sw.js` is the service worker — browsers cap a worker script's freshness at 24h, and a
+ * cached one would keep serving an old push handler for a day after the daemon was updated.
+ *
+ * Matched on the whole request-relative path, not the extension: only the root-scope worker gets this,
+ * and a `vendor/index.html` would not.
+ */
+private fun isRevalidateAlways(rel: String): Boolean = rel == "index.html" || rel == "sw.js"
 
 private fun contentTypeFor(path: String): ContentType = when (path.substringAfterLast('.', "")) {
     "html" -> ContentType.Text.Html
     "js" -> ContentType.Text.JavaScript
     "css" -> ContentType.Text.CSS
     "json" -> ContentType.Application.Json
+    // The manifest's own media type (W3C). Serving it as octet-stream makes Chrome refuse the install
+    // prompt outright, which would silently cost the whole PWA half of this feature.
+    "webmanifest" -> MANIFEST_CONTENT_TYPE
     "svg" -> ContentType.Image.SVG
     "png" -> ContentType.Image.PNG
     else -> ContentType.Application.OctetStream
 }
+
+private val MANIFEST_CONTENT_TYPE: ContentType = ContentType("application", "manifest+json")

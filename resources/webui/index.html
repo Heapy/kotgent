@@ -2,8 +2,25 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- viewport-fit=cover lets the layout reach under the notch/home indicator; style.css pays that back
+       with env(safe-area-inset-*) padding. Without it an installed iOS PWA letterboxes the whole app. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Kotgent</title>
+
+  <!--
+    PWA install surface. On iOS this is not polish: Web Push exists ONLY inside an installed PWA
+    (iOS 16.4+), so the manifest and the apple-* meta tags below are the precondition for notifications,
+    not a nicety. `black-translucent` draws the app under the status bar, which is what viewport-fit=cover
+    and the safe-area padding are for.
+  -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Kotgent" />
+  <meta name="theme-color" content="#14171c" />
+
   <!-- Vendored, offline: pinned @xterm/xterm@5.5.0 + @xterm/addon-fit@0.10.0, preact@10.29.7 + htm@3.1.1. -->
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />

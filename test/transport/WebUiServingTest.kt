@@ -23,6 +23,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.readRawBytes
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import kotlinx.cinterop.ByteVar
@@ -41,6 +42,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import platform.posix.F_OK
 import platform.posix.access
 import platform.posix.getcwd
@@ -281,6 +286,117 @@ class WebUiServingTest {
         assertTrue(gen.bodyAsText().contains("export class QrCode"), "the vendored generator exports QrCode")
     }
 
+    /**
+     * The PWA install surface (plan Task 11). On iOS this is not decoration: Web Push exists only inside
+     * an *installed* PWA, so a manifest Chrome/Safari refuses (wrong media type, an icon that 404s) costs
+     * the whole notification half of the feature — and nothing else in the suite would notice.
+     */
+    @Test
+    fun daemonServesTheWebManifestWithItsOwnMediaType() = withServer { ctx ->
+        val resp = ctx.get("/manifest.webmanifest")
+        assertEquals(HttpStatusCode.OK, resp.status, "GET /manifest.webmanifest is served")
+        assertContentTypeContains(resp, "application/manifest+json")
+
+        // Parse rather than substring-match: a manifest that is not valid JSON is silently ignored by
+        // every browser, which looks exactly like "install prompt never appears".
+        val manifest = Json.parseToJsonElement(resp.bodyAsText()).jsonObject
+        assertEquals("Kotgent", manifest["name"]?.jsonPrimitive?.content, "manifest name")
+        assertEquals("Kotgent", manifest["short_name"]?.jsonPrimitive?.content, "manifest short_name")
+        assertEquals("/", manifest["start_url"]?.jsonPrimitive?.content, "start_url is the app root")
+        assertEquals("/", manifest["scope"]?.jsonPrimitive?.content, "scope covers the whole origin")
+        assertEquals(
+            "standalone",
+            manifest["display"]?.jsonPrimitive?.content,
+            "display: standalone is what makes the home-screen launch chrome-less (and push-capable on iOS)",
+        )
+        for (key in listOf("background_color", "theme_color")) {
+            val colour = manifest[key]?.jsonPrimitive?.content
+            assertTrue(colour != null && colour.startsWith("#"), "$key is a concrete colour, was $colour")
+        }
+
+        // Every declared icon must actually be served, at the declared size, as a real PNG: the
+        // no-build-step contract means a typo'd or uncommitted icon fails only in a browser otherwise.
+        val icons = manifest["icons"]?.jsonArray.orEmpty()
+        assertEquals(2, icons.size, "the manifest declares the 192 and 512 icons")
+        val declaredSizes = mutableSetOf<String>()
+        for (icon in icons) {
+            val obj = icon.jsonObject
+            val src = obj["src"]!!.jsonPrimitive.content
+            val sizes = obj["sizes"]!!.jsonPrimitive.content
+            declaredSizes += sizes
+            assertEquals("image/png", obj["type"]?.jsonPrimitive?.content, "$src declares its type")
+            assertEquals(
+                "any maskable",
+                obj["purpose"]?.jsonPrimitive?.content,
+                "$src is usable both as-is and under an Android mask",
+            )
+            assertTrue(src.startsWith("/"), "$src is scope-absolute so it resolves from any start URL")
+            val iconResp = ctx.get(src)
+            assertEquals(HttpStatusCode.OK, iconResp.status, "GET $src (manifest icon) is served")
+            assertContentTypeContains(iconResp, "image/png")
+            assertPngOfSize(iconResp.readRawBytes(), sizes.substringBefore('x').toInt(), src)
+        }
+        assertEquals(setOf("192x192", "512x512"), declaredSizes, "the two required install sizes")
+    }
+
+    @Test
+    fun daemonServesTheAppleTouchIconAndTheSourceArtwork() = withServer { ctx ->
+        val apple = ctx.get("/icons/apple-touch-icon.png")
+        assertEquals(HttpStatusCode.OK, apple.status, "GET /icons/apple-touch-icon.png is served")
+        assertContentTypeContains(apple, "image/png")
+        // 180x180 is what iOS asks for; anything else gets rescaled and looks soft on the home screen.
+        assertPngOfSize(apple.readRawBytes(), 180, "/icons/apple-touch-icon.png")
+
+        // The PNGs are rendered from this file and committed (there is no build step), so it has to stay.
+        val svg = ctx.get("/icons/logo.svg")
+        assertEquals(HttpStatusCode.OK, svg.status, "GET /icons/logo.svg (the icon source) is served")
+        assertContentTypeContains(svg, "svg")
+        assertTrue(svg.bodyAsText().contains("<svg"), "the source artwork is really an SVG")
+    }
+
+    @Test
+    fun indexHtmlDeclaresThePwaInstallSurface() = withServer { ctx ->
+        val body = ctx.get("/").bodyAsText()
+        assertTrue(body.contains("rel=\"manifest\""), "index.html links the web manifest")
+        assertTrue(body.contains("manifest.webmanifest"), "index.html links THIS manifest file")
+        assertTrue(body.contains("rel=\"apple-touch-icon\""), "index.html declares the iOS home-screen icon")
+        assertTrue(
+            body.contains("name=\"apple-mobile-web-app-capable\"") && body.contains("content=\"yes\""),
+            "iOS only treats the home-screen launch as a standalone app (and allows push) with this tag",
+        )
+        assertTrue(
+            body.contains("apple-mobile-web-app-status-bar-style"),
+            "index.html picks an iOS status-bar style rather than inheriting Safari's",
+        )
+        assertTrue(
+            body.contains("viewport-fit=cover"),
+            "the viewport reaches under the notch — the safe-area padding depends on it",
+        )
+    }
+
+    /**
+     * `index.html` is the shell every other asset is fetched from and `/sw.js` will be the service worker
+     * (browsers cap a worker script at 24h of freshness), so both must revalidate. Everything else keeps
+     * the default so this stays a targeted rule, not a blanket "never cache anything".
+     */
+    @Test
+    fun theAppShellIsServedNoCacheAndTheRestIsNot() = withServer { ctx ->
+        for (path in listOf("/", "/index.html")) {
+            assertEquals(
+                "no-cache",
+                ctx.get(path).headers[HttpHeaders.CacheControl],
+                "GET $path revalidates so a deploy is never pinned behind a cached shell",
+            )
+        }
+        for (path in listOf("/app.js", "/style.css", "/manifest.webmanifest", "/icons/icon-192.png")) {
+            assertEquals(
+                null,
+                ctx.get(path).headers[HttpHeaders.CacheControl],
+                "GET $path keeps the default caching — the no-cache rule is targeted",
+            )
+        }
+    }
+
     @Test
     fun daemonServesTheVendoredXtermFromANestedPath() = withServer { ctx ->
         val resp = ctx.get("/vendor/xterm.js")
@@ -387,6 +503,24 @@ class WebUiServingTest {
     private suspend fun assertContentTypeContains(resp: HttpResponse, needle: String) {
         val ct = resp.headers[HttpHeaders.ContentType].orEmpty()
         assertTrue(ct.contains(needle, ignoreCase = true), "content-type '$ct' should mention '$needle'")
+    }
+
+    /**
+     * Assert [bytes] really are a square PNG of [size] pixels, read out of the file's own IHDR rather than
+     * trusted from the manifest or the filename. The icons are rendered by hand (`qlmanage` + `sips`) and
+     * committed, so "the 192 slot holds a 512 render" is a mistake nothing else in the repo would catch.
+     */
+    private fun assertPngOfSize(bytes: ByteArray, size: Int, what: String) {
+        val signature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10) // \x89 P N G \r \n \x1a \n
+        assertTrue(bytes.size > 24, "$what is too short to be a PNG (${bytes.size} bytes)")
+        assertTrue(
+            bytes.copyOfRange(0, 8).contentEquals(signature),
+            "$what does not start with the PNG signature",
+        )
+        assertEquals("IHDR", bytes.copyOfRange(12, 16).decodeToString(), "$what has no IHDR first chunk")
+        fun beInt(at: Int): Int = (0 until 4).fold(0) { acc, i -> (acc shl 8) or (bytes[at + i].toInt() and 0xFF) }
+        assertEquals(size, beInt(16), "$what pixel width")
+        assertEquals(size, beInt(20), "$what pixel height")
     }
 
     /**
