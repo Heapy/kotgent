@@ -280,6 +280,16 @@ class AuthRoutesTest {
                 "an exactly-full body is not mistaken for overflow",
             )
             assertEquals(
+                AuthExchangeBodyRead.Incomplete,
+                readAuthExchangeBody(
+                    ByteReadChannel(exact),
+                    expectedBytes = exact.length.toLong() + 1,
+                    maxBytes = exact.length + 1,
+                    timeoutMillis = 1_000,
+                ),
+                "EOF before the declared Content-Length is not accepted as a complete body",
+            )
+            assertEquals(
                 AuthExchangeBodyRead.TooLarge,
                 readAuthExchangeBody(ByteReadChannel("$exact!"), maxBytes = exact.length, timeoutMillis = 1_000),
                 "only max+1 bytes are needed to reject an oversized streaming body",
@@ -306,6 +316,33 @@ class AuthRoutesTest {
             } finally {
                 stalled.cancel(null)
             }
+        }
+    }
+
+    @Test
+    fun prematureEofCannotRedeemACompleteJsonPrefix() {
+        val limit = ExchangeRateLimit(now = { fixedNow }, max = 1)
+        withAuthServer(exchangeLimit = limit) { env ->
+            val ticket = env.issueTicket()
+            val validPrefix = """{"ticket":"$ticket"}"""
+            val response = env.rawExchangeUntilClosed(
+                contentLength = validPrefix.encodeToByteArray().size + 1,
+                body = validPrefix,
+                halfCloseRequest = true,
+            )
+
+            assertTrue(response.contains(" 400 "), "a body shorter than its Content-Length is rejected")
+            assertFalse(
+                response.contains("Set-Cookie:", ignoreCase = true),
+                "an incomplete request cannot plant a session cookie",
+            )
+            assertEquals(0, limit.failuresInWindow(), "an incomplete non-guess spends no failure budget")
+            limit.awaitReleasedCapacity()
+            assertEquals(
+                HttpStatusCode.OK,
+                env.exchange(env.port, ticket).status,
+                "rejecting the incomplete framing does not redeem its valid ticket prefix",
+            )
         }
     }
 
@@ -763,11 +800,17 @@ class AuthRoutesTest {
         )
 
         /**
-         * Speak HTTP over a raw socket, deliberately leaving [contentLength] bytes unsent. Returning proves
-         * the server closed the socket; a route-only channel cancellation would leave this read suspended in
-         * CIO's raw body parser until the outer timeout failed the test.
+         * Speak HTTP over a raw socket, deliberately sending fewer than [contentLength] bytes. With
+         * [halfCloseRequest], closing only the write channel tells CIO no more request bytes can arrive while
+         * preserving this socket's read side for the response. Returning proves the server closed the socket;
+         * a route-only channel cancellation would leave this read suspended in CIO's raw body parser until the
+         * outer timeout failed the test.
          */
-        suspend fun rawExchangeUntilClosed(contentLength: Int): String = withTimeout(2_000) {
+        suspend fun rawExchangeUntilClosed(
+            contentLength: Int,
+            body: String = "",
+            halfCloseRequest: Boolean = false,
+        ): String = withTimeout(2_000) {
             val selector = SelectorManager(Dispatchers.Default)
             val socket = aSocket(selector).tcp().connect("127.0.0.1", port)
             try {
@@ -783,6 +826,8 @@ class AuthRoutesTest {
                     append("\r\n")
                 }
                 output.writeFully(request.encodeToByteArray())
+                if (body.isNotEmpty()) output.writeFully(body.encodeToByteArray())
+                if (halfCloseRequest) output.flushAndClose()
 
                 val response = StringBuilder()
                 val buffer = ByteArray(1_024)

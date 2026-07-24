@@ -457,7 +457,7 @@ class WebUiServingTest {
         )
 
         val body = resp.bodyAsText()
-        for (handler in listOf("push", "notificationclick", "fetch")) {
+        for (handler in listOf("push", "pushsubscriptionchange", "notificationclick", "fetch")) {
             assertTrue(
                 body.contains("addEventListener(\"$handler\""),
                 "the worker handles the '$handler' event",
@@ -492,6 +492,48 @@ class WebUiServingTest {
         assertTrue(
             pushHandler.contains("event.waitUntil(showAttention());"),
             "the push event keeps the worker alive until its notification path completes",
+        )
+        val subscriptionChangeHandler = body.substringAfter(
+            "self.addEventListener(\"pushsubscriptionchange\", (event) => {",
+        ).substringBefore("\n});")
+        assertTrue(
+            subscriptionChangeHandler.contains("event.waitUntil(syncPushSubscription(event));"),
+            "subscription rotation keeps the worker alive through daemon synchronization",
+        )
+        val rotation = body.substringAfter("async function syncPushSubscription(event) {")
+            .substringBefore("\n}\n\n/**")
+        val saveReplacementAt = rotation.indexOf("await registerPushSubscription(replacement)")
+        val dropObsoleteAt = rotation.indexOf(
+            "await unregisterPushSubscription(oldSubscription.endpoint)",
+        )
+        assertTrue(
+            rotation.contains("event.newSubscription") &&
+                rotation.contains("event.oldSubscription") &&
+                rotation.contains(
+                    "self.registration.pushManager.subscribe(oldSubscription.options)",
+                ) &&
+                saveReplacementAt >= 0 &&
+                dropObsoleteAt > saveReplacementAt &&
+                rotation.contains("oldSubscription.endpoint !== replacement.endpoint"),
+            "rotation registers a replacement before dropping a distinct old endpoint and retries expiry",
+        )
+        val registerRotated = body.substringAfter(
+            "async function registerPushSubscription(subscription) {",
+        ).substringBefore("\n}")
+        val postPushState = body.substringAfter("async function postPushState(url, body) {")
+            .substringBefore("\n}")
+        assertTrue(
+            registerRotated.contains("subscription.toJSON()") &&
+                registerRotated.contains("p256dh: keys.p256dh") &&
+                registerRotated.contains("auth: keys.auth") &&
+                registerRotated.contains("postPushState(PUSH_SUBSCRIBE_URL"),
+            "the worker sends the complete replacement endpoint and keys to the daemon",
+        )
+        assertTrue(
+            postPushState.contains("credentials: \"include\"") &&
+                postPushState.contains("\"Content-Type\": \"application/json\"") &&
+                postPushState.contains("if (!response.ok)"),
+            "subscription rotation is authenticated and treats an HTTP rejection as a failed save",
         )
         val showAttention = body.substringAfter("async function showAttention() {")
             .substringBefore("\n}\n\n/**")
@@ -572,11 +614,18 @@ class WebUiServingTest {
         )
         val mutation = body.substringAfter("async function settleMutation(promise, context) {")
             .substringBefore("\n}\n\n/**")
+        val mutationResultAt = mutation.indexOf("return await promise")
+        val repairSignalAt = mutation.indexOf("signalPushRepair()")
+        val localRepairAt = mutation.indexOf("context.repairLatest()")
         assertTrue(
-            mutation.contains("return await promise") &&
+            body.contains(
+                "export const PUSH_REPAIR_SIGNAL_KEY = \"kotgent.push.repair.v1\"",
+            ) &&
+                mutationResultAt >= 0 &&
                 mutation.contains("finally") &&
-                mutation.contains("if (!context.isCurrent()) context.repairLatest()"),
-            "every irreversible push operation can repair the latest choice after a stale completion",
+                repairSignalAt > mutationResultAt &&
+                localRepairAt > repairSignalAt,
+            "a stale irreversible operation asks both this tab and every other tab to repair the latest choice",
         )
         val keyComparison = body.substringAfter(
             "function applicationServerKeyDiffers(subscription, requestedKey) {",
@@ -661,13 +710,19 @@ class WebUiServingTest {
             .substringBefore("\n}")
         val refreshRememberAt = refresh.indexOf("rememberEndpoint(existing.endpoint)")
         val refreshKeyAt = refresh.indexOf("await vapidKeyOrNull(context)")
+        val missingRegistrationAt = refresh.indexOf("if (!registration || !existing) {")
+        val repairWithoutPromptAt = refresh.indexOf("subscribe(Promise.resolve(true), context)")
         assertTrue(
             refresh.indexOf("await registerSubscription(subscription, context)") in
                 0 until refresh.indexOf("setPushActive(true)") &&
                 refreshRememberAt in 0 until refreshKeyAt &&
-                refresh.contains("Notification.permission === \"granted\"") &&
-                refresh.contains("subscribe(Promise.resolve(true), context)"),
-            "reload caches its endpoint early, activates after daemon registration, and repairs without prompting",
+                missingRegistrationAt >= 0 &&
+                repairWithoutPromptAt > missingRegistrationAt &&
+                refresh.substring(missingRegistrationAt, repairWithoutPromptAt)
+                    .contains("Notification.permission === \"granted\"") &&
+                !refresh.substringBefore("if (!registration || !existing) {")
+                    .contains("if (!registration"),
+            "reload caches its endpoint, activates after daemon registration, and registers an absent worker without prompting",
         )
 
         // The toggle that drives it is the sidebar's, and the two notification paths must not both fire.
@@ -696,7 +751,7 @@ class WebUiServingTest {
             "a deadline releases the queue without poisoning a still-current user choice",
         )
         val queue = sidebar.substringAfter(
-            "const queuePushTransition = useCallback((transition, operation, warning) => {",
+            "const queuePushTransition = useCallback((transition, desired, operation, warning) => {",
         ).substringBefore("\n  }, []);")
         val repair = sidebar.substringAfter("repairPushRef.current = () => {")
             .substringBefore("\n  const toggleGroup")
@@ -704,20 +759,26 @@ class WebUiServingTest {
             sidebar.contains("const pushTransitionRef = useRef(Promise.resolve())") &&
                 queue.contains("pushTransitionRef.current = pushTransitionRef.current") &&
                 queue.contains("transition === pushTransitionIdRef.current") &&
+                queue.contains("notifyEnabled() === desired") &&
                 queue.contains("boundedPushTransition(") &&
                 queue.contains("() => repairPushRef.current()") &&
+                toggle.contains("transition,\n      next,") &&
                 toggle.contains("pushSubscribe(permission, context)") &&
                 toggle.contains("pushUnsubscribe(context)") &&
                 toggle.contains(
                     "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
                 ) &&
-                repair.contains("pushRepairGenerationRef.current === transition") &&
-                repair.contains("notifyOnRef.current") &&
+                repair.contains("const desired = notifyEnabled()") &&
+                repair.contains("const repairGeneration = transition + \":\" + desired") &&
+                repair.contains("pushRepairGenerationRef.current === repairGeneration") &&
+                repair.contains("transition,\n      desired,") &&
                 repair.contains("refreshPush(context)") &&
                 repair.contains("pushUnsubscribe(context)"),
-            "opposing clicks cancel cancelable reads while stale mutations coalesce a latest-state repair",
+            "local ordering and the origin-wide choice guard mutations while stale repairs reread current intent",
         )
-        val storageSync = sidebar.substringAfter("const syncNotificationPreference = () => {")
+        val storageSync = sidebar.substringAfter(
+            "const syncNotificationPreference = (event = null) => {",
+        )
             .substringBefore("\n    };")
         val addStorageListenerAt = sidebar.indexOf(
             "window.addEventListener(\"storage\", syncNotificationPreference)",
@@ -725,18 +786,20 @@ class WebUiServingTest {
         val closeListenerGapAt = sidebar.indexOf("if (!syncNotificationPreference())")
         assertTrue(
             storageSync.contains("const next = notifyEnabled()") &&
-                storageSync.contains("if (next === notifyOnRef.current) return false") &&
+                storageSync.contains("event.key === PUSH_REPAIR_SIGNAL_KEY") &&
+                storageSync.contains("if (!preferenceChanged && !repairSignalled) return false") &&
                 storageSync.contains("notifyOnRef.current = next") &&
                 storageSync.contains("setNotifyOn(next)") &&
                 storageSync.contains("++pushTransitionIdRef.current") &&
                 storageSync.contains(
                     "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
                 ) &&
+                storageSync.contains("syncedTransition,\n        next,") &&
                 storageSync.contains("next ? refreshPush(context) : pushUnsubscribe(context)") &&
                 addStorageListenerAt >= 0 &&
                 closeListenerGapAt > addStorageListenerAt &&
                 sidebar.contains("window.removeEventListener(\"storage\", syncNotificationPreference)"),
-            "another tab's per-device choice supersedes stale work, including the render-to-listener gap",
+            "another tab's choice or stale-mutation signal supersedes work, including the listener gap",
         )
         val notify = ctx.get("/lib/notify.js").bodyAsText()
         assertTrue(
@@ -748,6 +811,23 @@ class WebUiServingTest {
         val app = ctx.get("/app.js").bodyAsText()
         assertTrue(app.contains("DEEP_LINK_PARAM = \"session\""), "app.js reads ?session= on load")
         assertTrue(app.contains("select-session"), "app.js honours the worker's focus-and-switch message")
+        val workerLayoutEffectAt = app.indexOf("useLayoutEffect(() => {")
+        val addWorkerListenerAt = app.indexOf(
+            "navigator.serviceWorker.addEventListener(\"message\", onMessage)",
+        )
+        val removeWorkerListenerAt = app.indexOf(
+            "navigator.serviceWorker.removeEventListener(\"message\", onMessage)",
+        )
+        val workerLayoutEffectEndAt = app.indexOf(
+            "\n  }, [selectSession]);",
+            startIndex = addWorkerListenerAt.coerceAtLeast(0),
+        )
+        assertTrue(
+            workerLayoutEffectAt >= 0 &&
+                addWorkerListenerAt > workerLayoutEffectAt &&
+                removeWorkerListenerAt in (addWorkerListenerAt + 1) until workerLayoutEffectEndAt,
+            "the worker listener is installed during commit, before DOMContentLoaded can release queued messages",
+        )
         val workerMessage = app.substringAfter("const onMessage = (event) => {")
             .substringBefore("\n    };")
         assertTrue(

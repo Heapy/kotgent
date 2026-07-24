@@ -29,6 +29,8 @@
 const TITLE = "Kotgent — needs attention";
 const SESSIONS_URL = "/sessions";
 const SESSIONS_TIMEOUT_MS = 10_000;
+const PUSH_SUBSCRIBE_URL = "/push/subscribe";
+const PUSH_UNSUBSCRIBE_URL = "/push/unsubscribe";
 const GENERIC_TAG = "kotgent-attention";
 const GENERIC_BODY = "A session needs your attention.";
 
@@ -48,11 +50,63 @@ self.addEventListener("push", (event) => {
   event.waitUntil(showAttention());
 });
 
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(syncPushSubscription(event));
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
   event.waitUntil(openSession(data.sessionId));
 });
+
+async function postPushState(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error("push subscription synchronization failed: HTTP " + response.status);
+}
+
+async function registerPushSubscription(subscription) {
+  const json = subscription.toJSON();
+  const keys = json.keys || {};
+  await postPushState(PUSH_SUBSCRIBE_URL, {
+    endpoint: json.endpoint,
+    p256dh: keys.p256dh || "",
+    auth: keys.auth || "",
+  });
+}
+
+async function unregisterPushSubscription(endpoint) {
+  await postPushState(PUSH_UNSUBSCRIBE_URL, { endpoint: endpoint });
+}
+
+/**
+ * Propagate a browser-initiated endpoint/key rotation while no page is open. New details are stored before
+ * the obsolete endpoint is removed, and a same-endpoint key rotation is only upserted. Some browsers report
+ * an expired subscription without a replacement, so make one best-effort attempt with the old options; a
+ * lost permission rejects that attempt and leaves only the obsolete daemon row to remove.
+ */
+async function syncPushSubscription(event) {
+  const oldSubscription = event.oldSubscription || null;
+  let replacement = event.newSubscription || null;
+  if (!replacement && oldSubscription) {
+    try {
+      replacement = await self.registration.pushManager.subscribe(oldSubscription.options);
+    } catch (_) {
+      replacement = null;
+    }
+  }
+  if (replacement) {
+    await registerPushSubscription(replacement);
+  }
+  if (oldSubscription && (!replacement || oldSubscription.endpoint !== replacement.endpoint)) {
+    await unregisterPushSubscription(oldSubscription.endpoint);
+  }
+}
 
 /** The sessions the daemon says are waiting on the operator, or an empty list if it could not be asked. */
 async function waitingSessions() {

@@ -106,6 +106,7 @@ data class RotateResponse(val token: String)
 /** The bounded outcome of reading an unauthenticated `/auth/exchange` request body. */
 sealed interface AuthExchangeBodyRead {
     data class Received(val text: String) : AuthExchangeBodyRead
+    data object Incomplete : AuthExchangeBodyRead
     data object TooLarge : AuthExchangeBodyRead
     data object TimedOut : AuthExchangeBodyRead
 }
@@ -115,14 +116,20 @@ sealed interface AuthExchangeBodyRead {
  * bound.
  *
  * Reading [maxBytes] plus one distinguishes an exactly-full valid body from an oversized chunked body
- * without ever buffering the rest. [withTimeoutOrNull] converts only this function's own timeout to
- * [AuthExchangeBodyRead.TimedOut]; cancellation of the owning request still propagates.
+ * without ever buffering the rest. When [expectedBytes] comes from `Content-Length`, EOF before that many
+ * bytes is [AuthExchangeBodyRead.Incomplete], never a complete body. [withTimeoutOrNull] converts only this
+ * function's own timeout to [AuthExchangeBodyRead.TimedOut]; cancellation of the owning request still
+ * propagates.
  */
 suspend fun readAuthExchangeBody(
     channel: ByteReadChannel,
+    expectedBytes: Long? = null,
     maxBytes: Int = AUTH_EXCHANGE_MAX_BODY_BYTES,
     timeoutMillis: Long = AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS,
 ): AuthExchangeBodyRead {
+    require(expectedBytes == null || expectedBytes >= 0) {
+        "the expected auth exchange body length must be non-negative, got $expectedBytes"
+    }
     require(maxBytes > 0) { "the auth exchange body limit must be positive, got $maxBytes" }
     require(maxBytes < Int.MAX_VALUE) { "the auth exchange body limit is too large to probe for overflow" }
     require(timeoutMillis > 0) { "the auth exchange body timeout must be positive, got $timeoutMillis ms" }
@@ -135,8 +142,11 @@ suspend fun readAuthExchangeBody(
             if (read < 0) break
             size += read
         }
-        if (size > maxBytes) AuthExchangeBodyRead.TooLarge
-        else AuthExchangeBodyRead.Received(bytes.decodeToString(endIndex = size))
+        when {
+            size > maxBytes -> AuthExchangeBodyRead.TooLarge
+            expectedBytes != null && size.toLong() < expectedBytes -> AuthExchangeBodyRead.Incomplete
+            else -> AuthExchangeBodyRead.Received(bytes.decodeToString(endIndex = size))
+        }
     } ?: AuthExchangeBodyRead.TimedOut
 }
 
@@ -297,14 +307,27 @@ fun Route.authRoutes(
         try {
             afterExchangeAdmitted()
             val requestBody = call.receiveChannel()
+            val contentLength = call.request.contentLength()
             val body = when {
-                (call.request.contentLength() ?: 0L) > AUTH_EXCHANGE_MAX_BODY_BYTES ->
+                (contentLength ?: 0L) > AUTH_EXCHANGE_MAX_BODY_BYTES ->
                     AuthExchangeBodyRead.TooLarge
 
-                else -> readAuthExchangeBody(requestBody, timeoutMillis = exchangeBodyTimeoutMillis)
+                else -> readAuthExchangeBody(
+                    requestBody,
+                    expectedBytes = contentLength,
+                    timeoutMillis = exchangeBodyTimeoutMillis,
+                )
             }
             val text = when (body) {
                 is AuthExchangeBodyRead.Received -> body.text
+                AuthExchangeBodyRead.Incomplete -> {
+                    call.respondToUnconsumedExchangeAndClose(
+                        "incomplete request body",
+                        HttpStatusCode.BadRequest,
+                        requestBody,
+                    )
+                    return@post
+                }
                 AuthExchangeBodyRead.TooLarge -> {
                     call.respondToUnconsumedExchangeAndClose(
                         "request body too large",

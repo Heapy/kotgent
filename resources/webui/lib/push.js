@@ -35,7 +35,11 @@ export const UNSUBSCRIBE_URL = "/push/unsubscribe";
 
 /** Last endpoint handed to the daemon by this tab. OFF can revoke it without a browser lookup. */
 const ENDPOINT_KEY = "kotgent.push.endpoint.v1";
+/** A stale irreversible mutation asks every other open tab to reconcile the origin-wide preference. */
+export const PUSH_REPAIR_SIGNAL_KEY = "kotgent.push.repair.v1";
 let endpointMemory = null;
+let repairSignalSequence = 0;
+const repairSignalSource = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
 
 const DEFAULT_TRANSITION = Object.freeze({
   isCurrent: () => true,
@@ -68,15 +72,30 @@ function rememberEndpoint(endpoint) {
   } catch (_) { /* private mode / quota — browser lookup remains the fallback */ }
 }
 
+function signalPushRepair() {
+  repairSignalSequence += 1;
+  try {
+    window.localStorage.setItem(
+      PUSH_REPAIR_SIGNAL_KEY,
+      repairSignalSource + ":" + repairSignalSequence,
+    );
+  } catch (_) { /* storage-disabled tabs still repair their own latest choice below */ }
+}
+
 /**
  * Browser PushManager calls and daemon writes cannot be cancelled safely. If one settles after a newer
  * generation started, queue a fresh reconciliation AFTER that stale mutation so the latest choice wins.
+ * Also signal the other tabs: the tab holding the newest choice must repair even though its preference
+ * already matches, and current mutations never signal so their mirror writes cannot create a ping-pong.
  */
 async function settleMutation(promise, context) {
   try {
     return await promise;
   } finally {
-    if (!context.isCurrent()) context.repairLatest();
+    if (!context.isCurrent()) {
+      signalPushRepair();
+      context.repairLatest();
+    }
   }
 }
 
@@ -298,9 +317,10 @@ export async function refreshActive(transition = DEFAULT_TRANSITION) {
     const registration = await navigator.serviceWorker.getRegistration();
     if (!context.isCurrent()) return false;
     const existing = registration ? await registration.pushManager.getSubscription() : null;
-    if (!registration || !context.isCurrent()) return false;
-    if (!existing) {
-      // Recreate a subscription removed by a stale OFF, but never open a permission prompt from reload/repair.
+    if (!context.isCurrent()) return false;
+    if (!registration || !existing) {
+      // Register the worker for an upgrading user, or recreate a subscription removed by a stale OFF.
+      // Reload/repair may use an already-granted permission but must never open a prompt without a gesture.
       return Notification.permission === "granted"
         ? subscribe(Promise.resolve(true), context)
         : false;

@@ -116,7 +116,7 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **612 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
+The suite currently reports **613 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
 plugin and the 11 real-PTY checks `ptycheck` runs (see below).
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`

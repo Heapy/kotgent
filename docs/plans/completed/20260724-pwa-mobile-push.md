@@ -2,10 +2,10 @@
 
 ## Completed status
 
-Completed on 2026-07-24. Implementation Tasks 1–20 shipped, and the final verification completed with
-**590 run / 590 passed / 0 skipped** (plus the separately driven real-PTY checks). This plan now lives
-under `docs/plans/completed/`; the manual real-device checks below remain post-completion verification,
-not unfinished implementation tasks.
+Completed on 2026-07-24. Implementation Tasks 1–20 shipped; two post-completion adversarial review passes
+subsequently brought the latest verification to **613 run / 613 passed / 0 skipped** (plus the separately
+driven real-PTY checks). This plan now lives under `docs/plans/completed/`; the manual real-device checks
+below remain post-completion verification, not unfinished implementation tasks.
 
 ## Overview
 
@@ -926,6 +926,24 @@ pin an old UI for a day).
       older notification loads and liveness reads from overwriting newer intent
 - [x] run `./kotlin build`, `./kotlin test`, and `node --check` for every changed JavaScript file
       ➕ 7 net-new regressions: **612 run / 612 passed / 0 skipped** (branch baseline 605)
+
+### External adversarial follow-up — round 2
+
+- [x] reject EOF before a declared `/auth/exchange` `Content-Length` before parsing or redemption; a raw
+      TCP half-close regression proves the valid JSON prefix cannot spend its ticket or failure budget
+- [x] make notification transitions origin-aware as well as tab-generation-aware; stale irreversible
+      mutations signal every tab to reconcile the current preference without reacting to ordinary push
+      mirror writes and creating a storage-event ping-pong
+- [x] register the service worker during `refreshActive` for upgrading users with an existing enabled
+      preference, and synchronize browser-initiated `pushsubscriptionchange` replacement/expiry with the
+      daemon while preserving register-before-delete ordering
+- [x] install the service-worker message listener in a layout effect, before `DOMContentLoaded` releases
+      queued client messages for a page that the worker only focused
+- [x] discard the proposed daemon timeout compensation: pinned CIO 3.4.3 completes resolved connectors
+      before `start(wait = false)` returns and cancels started connectors on bind failure, so the described
+      post-return timeout/late-bind state is unreachable
+- [x] run `./kotlin build`, `./kotlin test`, and `node --check` for every changed JavaScript file
+      ➕ 1 net-new regression test: **613 run / 613 passed / 0 skipped** (branch baseline 612)
 
 ## Post-Completion
 

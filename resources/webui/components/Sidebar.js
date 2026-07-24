@@ -12,6 +12,7 @@ import { groupSessions } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import {
+  PUSH_REPAIR_SIGNAL_KEY,
   refreshActive as refreshPush,
   subscribe as pushSubscribe,
   unsubscribe as pushUnsubscribe,
@@ -151,8 +152,11 @@ export function Sidebar({
   const pushPermissionRef = useRef({ transition: 0, request: null });
   const repairPushRef = useRef(() => {});
   useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
-  const queuePushTransition = useCallback((transition, operation, warning) => {
-    const isGenerationCurrent = () => transition === pushTransitionIdRef.current;
+  const queuePushTransition = useCallback((transition, desired, operation, warning) => {
+    // The local generation orders this tab; the stored preference orders every tab. Same-target operations
+    // may overlap safely because subscribe/unsubscribe and the daemon writes are all idempotent.
+    const isGenerationCurrent = () =>
+      transition === pushTransitionIdRef.current && notifyEnabled() === desired;
     pushTransitionRef.current = pushTransitionRef.current
       .then(() => {
         if (!isGenerationCurrent()) return undefined;
@@ -170,17 +174,24 @@ export function Sidebar({
   }, []);
   repairPushRef.current = () => {
     const transition = pushTransitionIdRef.current;
-    if (pushRepairGenerationRef.current === transition) return;
-    pushRepairGenerationRef.current = transition;
+    const desired = notifyEnabled();
+    const repairGeneration = transition + ":" + desired;
+    if (pushRepairGenerationRef.current === repairGeneration) return;
+    pushRepairGenerationRef.current = repairGeneration;
+    if (notifyOnRef.current !== desired) {
+      notifyOnRef.current = desired;
+      setNotifyOn(desired);
+    }
     queuePushTransition(
       transition,
+      desired,
       (context) => {
-        if (pushRepairGenerationRef.current === transition) {
+        if (pushRepairGenerationRef.current === repairGeneration) {
           pushRepairGenerationRef.current = null;
         }
         if (!context.isCurrent()) return undefined;
         const permission = pushPermissionRef.current;
-        return notifyOnRef.current
+        return desired
           ? (permission.transition === transition && permission.request
               ? pushSubscribe(permission.request, context)
               : refreshPush(context))
@@ -201,17 +212,28 @@ export function Sidebar({
   // through the same queue as clicks so it cannot overwrite a newer subscribe/unsubscribe transition.
   // The preference is origin-wide localStorage, so another open client must supersede this one's work too.
   useEffect(() => {
-    const syncNotificationPreference = () => {
+    const syncNotificationPreference = (event = null) => {
       const next = notifyEnabled();
-      if (next === notifyOnRef.current) return false;
-      notifyOnRef.current = next;
-      setNotifyOn(next);
+      const repairSignalled = event && event.key === PUSH_REPAIR_SIGNAL_KEY;
+      const preferenceChanged = next !== notifyOnRef.current;
+      if (!preferenceChanged && !repairSignalled) return false;
+      if (preferenceChanged) {
+        notifyOnRef.current = next;
+        setNotifyOn(next);
+      }
+      const permission = pushPermissionRef.current;
       const syncedTransition = ++pushTransitionIdRef.current;
-      pushPermissionRef.current = { transition: syncedTransition, request: null };
+      // A stale-mutation signal can interrupt this tab's own ON prompt without changing the preference.
+      // Keep that already-claimed user gesture attached to the replacement generation.
+      pushPermissionRef.current = {
+        transition: syncedTransition,
+        request: next && !preferenceChanged ? permission.request : null,
+      };
       pushRepairGenerationRef.current = null;
       Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
       queuePushTransition(
         syncedTransition,
+        next,
         (context) => next ? refreshPush(context) : pushUnsubscribe(context),
         "kotgent: cross-tab push reconciliation failed",
       );
@@ -222,10 +244,12 @@ export function Sidebar({
     // the sync owns the transition; otherwise queue the ordinary mount refresh exactly once.
     if (!syncNotificationPreference()) {
       const transition = ++pushTransitionIdRef.current;
+      const desired = notifyOnRef.current;
       pushPermissionRef.current = { transition: transition, request: null };
       queuePushTransition(
         transition,
-        (context) => notifyOnRef.current ? refreshPush(context) : pushUnsubscribe(context),
+        desired,
+        (context) => desired ? refreshPush(context) : pushUnsubscribe(context),
         "kotgent: push subscription refresh failed",
       );
     }
@@ -253,6 +277,7 @@ export function Sidebar({
     Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
     queuePushTransition(
       transition,
+      next,
       (context) => next ? pushSubscribe(permission, context) : pushUnsubscribe(context),
       // A failed subscribe is a downgrade, not an error the operator must act on: the tab keeps notifying.
       "kotgent: push subscription transition failed",

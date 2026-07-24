@@ -25,7 +25,7 @@
  */
 
 import { render } from "preact";
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { html } from "htm/preact";
 
 import { AUTH_PATH, apiRequest, errorMessage, isUnauthenticated, wsUrl } from "./lib/api.js";
@@ -371,7 +371,7 @@ function App() {
   // A notification tapped while this page was already open: the service worker focuses this window and
   // posts the session id, because a bare focus would leave whatever session was on screen — which is the
   // common case on a phone and would make the tap useless.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return undefined;
     const onMessage = (event) => {
       const msg = event.data;
