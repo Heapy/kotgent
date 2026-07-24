@@ -945,6 +945,19 @@ pin an old UI for a day).
 - [x] run `./kotlin build`, `./kotlin test`, and `node --check` for every changed JavaScript file
       ➕ 1 net-new regression test: **613 run / 613 passed / 0 skipped** (branch baseline 612)
 
+### External adversarial follow-up — round 3
+
+- [x] carry an ON click's already-claimed permission promise into a repair-signal replacement generation
+      instead of falling back to a refresh that cannot prompt while permission is still `default`
+- [x] mirror the origin-wide preference into one durable service-worker CacheStorage record; serialize
+      page preference messages with `pushsubscriptionchange`, re-check the record and live permission
+      around replacement creation/registration, and make a persisted OFF clean remembered/current
+      endpoints even after the page closes; ON mutations wait for the worker's bounded acknowledgement so
+      earlier cleanup cannot cross them (missing upgrade state fails closed until the next page refresh)
+- [x] strengthen the existing served-source lifecycle regressions; run `./kotlin build`, `./kotlin test`,
+      and `node --check` for every changed JavaScript file
+      ➕ **613 run / 613 passed / 0 skipped** (no new test case; the two existing contracts gained ordering assertions)
+
 ## Post-Completion
 
 *Items requiring manual intervention or external systems — no checkboxes, informational only*

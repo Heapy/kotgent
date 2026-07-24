@@ -15,6 +15,7 @@ import {
   PUSH_REPAIR_SIGNAL_KEY,
   refreshActive as refreshPush,
   subscribe as pushSubscribe,
+  syncWorkerPushPreference,
   unsubscribe as pushUnsubscribe,
 } from "../lib/push.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
@@ -214,6 +215,7 @@ export function Sidebar({
   useEffect(() => {
     const syncNotificationPreference = (event = null) => {
       const next = notifyEnabled();
+      syncWorkerPushPreference();
       const repairSignalled = event && event.key === PUSH_REPAIR_SIGNAL_KEY;
       const preferenceChanged = next !== notifyOnRef.current;
       if (!preferenceChanged && !repairSignalled) return false;
@@ -234,7 +236,14 @@ export function Sidebar({
       queuePushTransition(
         syncedTransition,
         next,
-        (context) => next ? refreshPush(context) : pushUnsubscribe(context),
+        (context) => {
+          const currentPermission = pushPermissionRef.current;
+          return next
+            ? (currentPermission.transition === syncedTransition && currentPermission.request
+                ? pushSubscribe(currentPermission.request, context)
+                : refreshPush(context))
+            : pushUnsubscribe(context);
+        },
         "kotgent: cross-tab push reconciliation failed",
       );
       return true;
@@ -270,6 +279,7 @@ export function Sidebar({
     // Claim the iOS permission prompt synchronously in THIS click, before queueing behind an older network
     // transition. Awaiting the queue first would lose the user gesture and Safari would refuse to prompt.
     const permission = next ? ensurePermission() : null;
+    syncWorkerPushPreference();
     const transition = ++pushTransitionIdRef.current;
     pushPermissionRef.current = { transition: transition, request: permission };
     pushRepairGenerationRef.current = null;

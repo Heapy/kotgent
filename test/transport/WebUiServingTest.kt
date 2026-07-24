@@ -457,7 +457,7 @@ class WebUiServingTest {
         )
 
         val body = resp.bodyAsText()
-        for (handler in listOf("push", "pushsubscriptionchange", "notificationclick", "fetch")) {
+        for (handler in listOf("push", "pushsubscriptionchange", "message", "notificationclick", "fetch")) {
             assertTrue(
                 body.contains("addEventListener(\"$handler\""),
                 "the worker handles the '$handler' event",
@@ -497,25 +497,120 @@ class WebUiServingTest {
             "self.addEventListener(\"pushsubscriptionchange\", (event) => {",
         ).substringBefore("\n});")
         assertTrue(
-            subscriptionChangeHandler.contains("event.waitUntil(syncPushSubscription(event));"),
-            "subscription rotation keeps the worker alive through daemon synchronization",
+            subscriptionChangeHandler.contains(
+                "event.waitUntil(queuePushLifecycle(() => syncPushSubscription(event)));",
+            ),
+            "subscription rotation is serialized with durable preference changes under waitUntil",
+        )
+        val preferenceHandler = body.substringAfter(
+            "self.addEventListener(\"message\", (event) => {",
+        ).substringBefore("\n});")
+        assertTrue(
+            preferenceHandler.contains("message.type !== PUSH_PREFERENCE_MESSAGE") &&
+                preferenceHandler.contains("typeof message.enabled !== \"boolean\"") &&
+                preferenceHandler.contains(
+                    "const applied = queuePushLifecycle(() => applyPushPreference(message.enabled, endpoints))",
+                ) &&
+                preferenceHandler.contains("event.waitUntil(applied.then(") &&
+                preferenceHandler.contains("() => answer(true)") &&
+                preferenceHandler.contains("() => answer(false)"),
+            "a page preference message keeps its durable write and OFF compensation alive after page closure",
         )
         val rotation = body.substringAfter("async function syncPushSubscription(event) {")
             .substringBefore("\n}\n\n/**")
+        val createReplacementAt = rotation.indexOf(
+            "await self.registration.pushManager.subscribe(oldSubscription.options)",
+        )
+        val intentBeforeCreateAt = rotation.indexOf("await pushIsStillWanted()")
+        val intentBeforeRegisterAt = rotation.indexOf(
+            "if (replacement && !(await pushIsStillWanted()))",
+        )
         val saveReplacementAt = rotation.indexOf("await registerPushSubscription(replacement)")
+        val intentAfterRegisterAt = rotation.indexOf(
+            "if (!(await pushIsStillWanted()))",
+            startIndex = saveReplacementAt.coerceAtLeast(0),
+        )
+        val compensateReplacementAt = rotation.indexOf(
+            "await discardPushSubscription(replacement)",
+            startIndex = intentAfterRegisterAt.coerceAtLeast(0),
+        )
         val dropObsoleteAt = rotation.indexOf(
             "await unregisterPushSubscription(oldSubscription.endpoint)",
         )
         assertTrue(
             rotation.contains("event.newSubscription") &&
                 rotation.contains("event.oldSubscription") &&
-                rotation.contains(
-                    "self.registration.pushManager.subscribe(oldSubscription.options)",
-                ) &&
-                saveReplacementAt >= 0 &&
+                intentBeforeCreateAt in 0 until createReplacementAt &&
+                intentBeforeRegisterAt in (createReplacementAt + 1) until saveReplacementAt &&
+                intentAfterRegisterAt in (saveReplacementAt + 1) until compensateReplacementAt &&
+                compensateReplacementAt in (intentAfterRegisterAt + 1) until dropObsoleteAt &&
                 dropObsoleteAt > saveReplacementAt &&
                 rotation.contains("oldSubscription.endpoint !== replacement.endpoint"),
-            "rotation registers a replacement before dropping a distinct old endpoint and retries expiry",
+            "rotation rechecks live intent around renewal and compensates a crossed OFF before old cleanup",
+        )
+        val lifecycleQueue = body.substringAfter("function queuePushLifecycle(operation) {")
+            .substringBefore("\n}\n\n/**")
+        val storePreference = body.substringAfter("async function storePushPreference(enabled) {")
+            .substringBefore("\n}\n\n/**")
+        val currentIntent = body.substringAfter("async function pushIsStillWanted() {")
+            .substringBefore("\n}\n\n/**")
+        val applyPreference = body.substringAfter(
+            "async function applyPushPreference(enabled, rememberedEndpoints) {",
+        ).substringBefore("\n}\n\n/**")
+        val discardReplacement = body.substringAfter(
+            "async function discardPushSubscription(subscription) {",
+        ).substringBefore("\n}\n\n/**")
+        val cacheReadAt = currentIntent.indexOf(
+            "await self.caches.match(",
+        )
+        val storedValueAt = currentIntent.indexOf(
+            "(await response.text()) === \"1\"",
+        )
+        val permissionAfterCacheAt = currentIntent.indexOf(
+            "Notification.permission === \"granted\"",
+            startIndex = storedValueAt.coerceAtLeast(0),
+        )
+        assertTrue(
+            body.contains("const PUSH_PREFERENCE_MESSAGE = \"push-notification-preference\"") &&
+                body.contains("const PUSH_PREFERENCE_CACHE = \"kotgent-push-preference-v1\"") &&
+                body.contains("const PUSH_PREFERENCE_URL = \"/.kotgent-push-preference\"") &&
+                lifecycleQueue.contains("pushLifecycle.catch(() => {}).then(operation)") &&
+                lifecycleQueue.contains("pushLifecycle = queued.catch(() => {})") &&
+                storePreference.contains("await self.caches.open(PUSH_PREFERENCE_CACHE)") &&
+                storePreference.contains(
+                    "cache.put(PUSH_PREFERENCE_URL, new Response(enabled ? \"1\" : \"0\"))",
+                ) &&
+                currentIntent.contains("Notification.permission !== \"granted\"") &&
+                currentIntent.contains(
+                    "{ cacheName: PUSH_PREFERENCE_CACHE }",
+                ) &&
+                cacheReadAt >= 0 &&
+                storedValueAt > cacheReadAt &&
+                permissionAfterCacheAt > storedValueAt,
+            "renewal requires a durable explicit ON and live permission even after every page disappears",
+        )
+        val persistChoiceAt = applyPreference.indexOf("await storePushPreference(enabled)")
+        val enabledReturnAt = applyPreference.indexOf("if (enabled) return")
+        val rememberedDropAt = applyPreference.indexOf("rememberedEndpoints.forEach(startDaemonDrop)")
+        val browserLookupAt = applyPreference.indexOf(
+            "await self.registration.pushManager.getSubscription()",
+        )
+        val discoveredDropAt = applyPreference.indexOf(
+            "startDaemonDrop(subscription.endpoint)",
+        )
+        val browserDropAt = applyPreference.indexOf("subscription.unsubscribe()")
+        assertTrue(
+            persistChoiceAt in 0 until enabledReturnAt &&
+                rememberedDropAt in (enabledReturnAt + 1) until browserLookupAt &&
+                discoveredDropAt in (browserLookupAt + 1) until browserDropAt &&
+                applyPreference.contains("await Promise.allSettled(["),
+            "serialized OFF persists first, then deletes remembered and current endpoints after page closure",
+        )
+        assertTrue(
+            discardReplacement.contains("Promise.allSettled([") &&
+                discardReplacement.indexOf("unregisterPushSubscription(subscription.endpoint)") in
+                0 until discardReplacement.indexOf("subscription.unsubscribe()"),
+            "a replacement that crosses OFF drops daemon reachability before its browser subscription",
         )
         val registerRotated = body.substringAfter(
             "async function registerPushSubscription(subscription) {",
@@ -587,9 +682,16 @@ class WebUiServingTest {
         val permissionAt = subscribe.indexOf("ensurePermission()")
         val permissionAwaitAt = subscribe.indexOf("await permission")
         val registrationAt = subscribe.indexOf("await activeRegistration(context)")
+        val preferenceAckAt = subscribe.indexOf(
+            "await syncWorkerPushPreference(registration, true)",
+        )
+        val subscribeKeyAt = subscribe.indexOf("await vapidKeyOrNull(context)")
         assertTrue(
-            permissionAt >= 0 && permissionAwaitAt > permissionAt && registrationAt > permissionAwaitAt,
-            "notification permission is requested before the first service-worker/network await (required by iOS)",
+            permissionAt >= 0 &&
+                permissionAwaitAt > permissionAt &&
+                registrationAt > permissionAwaitAt &&
+                preferenceAckAt in (registrationAt + 1) until subscribeKeyAt,
+            "permission starts from the click, then durable ON is acknowledged before browser/network mutation",
         )
         val vapidKey = body.substringAfter("async function vapidKeyOrNull(context) {")
             .substringBefore("\n}\n\n/**")
@@ -626,6 +728,38 @@ class WebUiServingTest {
                 repairSignalAt > mutationResultAt &&
                 localRepairAt > repairSignalAt,
             "a stale irreversible operation asks both this tab and every other tab to repair the latest choice",
+        )
+        val workerPreference = body.substringAfter(
+            "export async function syncWorkerPushPreference(registration = null, waitForApply = false) {",
+        ).substringBefore("\n}\n\nfunction signalPushRepair")
+        val delayedRegistrationAt = workerPreference.indexOf(
+            "await navigator.serviceWorker.getRegistration()",
+        )
+        val readCurrentPreferenceAt = workerPreference.indexOf("const enabled = notifyEnabled()")
+        val postPreferenceAt = workerPreference.indexOf("worker.postMessage(message)")
+        assertTrue(
+            body.contains(
+                "export const PUSH_PREFERENCE_MESSAGE = \"push-notification-preference\"",
+            ) &&
+                body.contains("const PUSH_PREFERENCE_ACK_TIMEOUT_MS = 2_000") &&
+                body.contains(
+                    "import { ensurePermission, isEnabled as notifyEnabled, setPushActive }",
+                ) &&
+                delayedRegistrationAt >= 0 &&
+                readCurrentPreferenceAt > delayedRegistrationAt &&
+                postPreferenceAt > readCurrentPreferenceAt &&
+                workerPreference.contains(
+                    "endpoints: enabled ? [] : Array.from(rememberedEndpoints())",
+                ) &&
+                workerPreference.contains("navigator.serviceWorker.controller") &&
+                workerPreference.contains("activeRegistrationMemory.active") &&
+                workerPreference.contains("if (!waitForApply)") &&
+                workerPreference.contains("const channel = new MessageChannel()") &&
+                workerPreference.contains(
+                    "setTimeout(() => finish(false), PUSH_PREFERENCE_ACK_TIMEOUT_MS)",
+                ) &&
+                workerPreference.contains("worker.postMessage(message, [channel.port2])"),
+            "messages reread intent after lookup, carry OFF endpoints, and can await serialized worker application",
         )
         val keyComparison = body.substringAfter(
             "function applicationServerKeyDiffers(subscription, requestedKey) {",
@@ -686,6 +820,7 @@ class WebUiServingTest {
         )
         val unsubscribe = body.substringAfter("export async function unsubscribe(transition = DEFAULT_TRANSITION) {")
             .substringBefore("\n}\n\n/**")
+        val publishOffAt = unsubscribe.indexOf("syncWorkerPushPreference()")
         val cachedDropAt = unsubscribe.indexOf("rememberedEndpoints().forEach(startDaemonDrop)")
         val browserLookupAt = unsubscribe.indexOf("await navigator.serviceWorker.getRegistration()")
         val discoveredDropAt = unsubscribe.indexOf("startDaemonDrop(endpoint)")
@@ -695,7 +830,8 @@ class WebUiServingTest {
         val cleanupFinallyAt = unsubscribe.indexOf("} finally {")
         val waitForDaemonAt = unsubscribe.indexOf("await Promise.allSettled(", cleanupFinallyAt)
         assertTrue(
-            cachedDropAt in 0 until browserLookupAt &&
+            publishOffAt in 0 until cachedDropAt &&
+                cachedDropAt in 0 until browserLookupAt &&
                 discoveredDropAt in (browserLookupAt + 1) until browserUnsubscribeAt &&
                 unsubscribe.contains("apiRequest(UNSUBSCRIBE_URL") &&
                 unsubscribe.contains("body: JSON.stringify({ endpoint: endpoint })") &&
@@ -708,6 +844,15 @@ class WebUiServingTest {
         )
         val refresh = body.substringAfter("export async function refreshActive(transition = DEFAULT_TRANSITION) {")
             .substringBefore("\n}")
+        val refreshRegistrationAt = refresh.indexOf(
+            "await navigator.serviceWorker.getRegistration()",
+        )
+        val refreshPreferenceAt = refresh.indexOf(
+            "await syncWorkerPushPreference(registration, true)",
+        )
+        val refreshLookupAt = refresh.indexOf(
+            "await registration.pushManager.getSubscription()",
+        )
         val refreshRememberAt = refresh.indexOf("rememberEndpoint(existing.endpoint)")
         val refreshKeyAt = refresh.indexOf("await vapidKeyOrNull(context)")
         val missingRegistrationAt = refresh.indexOf("if (!registration || !existing) {")
@@ -715,6 +860,8 @@ class WebUiServingTest {
         assertTrue(
             refresh.indexOf("await registerSubscription(subscription, context)") in
                 0 until refresh.indexOf("setPushActive(true)") &&
+                refreshRegistrationAt >= 0 &&
+                refreshPreferenceAt in (refreshRegistrationAt + 1) until refreshLookupAt &&
                 refreshRememberAt in 0 until refreshKeyAt &&
                 missingRegistrationAt >= 0 &&
                 repairWithoutPromptAt > missingRegistrationAt &&
@@ -731,10 +878,15 @@ class WebUiServingTest {
         assertTrue(sidebar.contains("../lib/push.js"), "the toggle drives the push subscription")
         val toggle = sidebar.substringAfter("const toggleNotifications = () => {")
             .substringBefore("\n  };")
+        val togglePermissionAt = toggle.indexOf(
+            "const permission = next ? ensurePermission() : null",
+        )
+        val togglePreferenceAt = toggle.indexOf("syncWorkerPushPreference()")
+        val toggleQueueAt = toggle.indexOf("queuePushTransition(")
         assertTrue(
-            toggle.indexOf("const permission = next ? ensurePermission() : null") in
-                0 until toggle.indexOf("queuePushTransition("),
-            "an enable click claims notification permission synchronously before entering the transition queue",
+            togglePermissionAt >= 0 &&
+                togglePreferenceAt in (togglePermissionAt + 1) until toggleQueueAt,
+            "an enable click claims permission first, then synchronously posts current intent before queueing",
         )
         val boundedTransition = sidebar.substringAfter(
             "function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onController) {",
@@ -784,8 +936,27 @@ class WebUiServingTest {
             "window.addEventListener(\"storage\", syncNotificationPreference)",
         )
         val closeListenerGapAt = sidebar.indexOf("if (!syncNotificationPreference())")
+        val preservedPermissionAt = storageSync.indexOf(
+            "request: next && !preferenceChanged ? permission.request : null",
+        )
+        val readPreservedPermissionAt = storageSync.indexOf(
+            "const currentPermission = pushPermissionRef.current",
+        )
+        val matchPreservedPermissionAt = storageSync.indexOf(
+            "currentPermission.transition === syncedTransition && currentPermission.request",
+        )
+        val subscribeWithPreservedPermissionAt = storageSync.indexOf(
+            "pushSubscribe(currentPermission.request, context)",
+        )
+        val refreshAfterPermissionAt = storageSync.indexOf(
+            "refreshPush(context)",
+            startIndex = subscribeWithPreservedPermissionAt.coerceAtLeast(0),
+        )
         assertTrue(
             storageSync.contains("const next = notifyEnabled()") &&
+                storageSync.indexOf("syncWorkerPushPreference()") in
+                (storageSync.indexOf("const next = notifyEnabled()") + 1) until
+                storageSync.indexOf("if (!preferenceChanged && !repairSignalled) return false") &&
                 storageSync.contains("event.key === PUSH_REPAIR_SIGNAL_KEY") &&
                 storageSync.contains("if (!preferenceChanged && !repairSignalled) return false") &&
                 storageSync.contains("notifyOnRef.current = next") &&
@@ -795,11 +966,16 @@ class WebUiServingTest {
                     "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
                 ) &&
                 storageSync.contains("syncedTransition,\n        next,") &&
-                storageSync.contains("next ? refreshPush(context) : pushUnsubscribe(context)") &&
+                preservedPermissionAt >= 0 &&
+                readPreservedPermissionAt > preservedPermissionAt &&
+                matchPreservedPermissionAt > readPreservedPermissionAt &&
+                subscribeWithPreservedPermissionAt > matchPreservedPermissionAt &&
+                refreshAfterPermissionAt > subscribeWithPreservedPermissionAt &&
+                storageSync.contains("pushUnsubscribe(context)") &&
                 addStorageListenerAt >= 0 &&
                 closeListenerGapAt > addStorageListenerAt &&
                 sidebar.contains("window.removeEventListener(\"storage\", syncNotificationPreference)"),
-            "another tab's choice or stale-mutation signal supersedes work, including the listener gap",
+            "cross-tab repair carries an in-flight permission gesture into the replacement generation",
         )
         val notify = ctx.get("/lib/notify.js").bodyAsText()
         assertTrue(

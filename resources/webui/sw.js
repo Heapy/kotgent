@@ -31,8 +31,12 @@ const SESSIONS_URL = "/sessions";
 const SESSIONS_TIMEOUT_MS = 10_000;
 const PUSH_SUBSCRIBE_URL = "/push/subscribe";
 const PUSH_UNSUBSCRIBE_URL = "/push/unsubscribe";
+const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
+const PUSH_PREFERENCE_CACHE = "kotgent-push-preference-v1";
+const PUSH_PREFERENCE_URL = "/.kotgent-push-preference";
 const GENERIC_TAG = "kotgent-attention";
 const GENERIC_BODY = "A session needs your attention.";
+let pushLifecycle = Promise.resolve();
 
 // Take over as soon as a new worker is installed: the shell is served `Cache-Control: no-cache`, so a
 // deploy must not leave yesterday's push handler in charge until every tab is closed.
@@ -51,7 +55,26 @@ self.addEventListener("push", (event) => {
 });
 
 self.addEventListener("pushsubscriptionchange", (event) => {
-  event.waitUntil(syncPushSubscription(event));
+  event.waitUntil(queuePushLifecycle(() => syncPushSubscription(event)));
+});
+
+self.addEventListener("message", (event) => {
+  const message = event.data;
+  if (!message || message.type !== PUSH_PREFERENCE_MESSAGE || typeof message.enabled !== "boolean") return;
+  const reply = event.ports && event.ports[0];
+  const endpoints = Array.isArray(message.endpoints)
+    ? message.endpoints.filter((endpoint) => typeof endpoint === "string" && endpoint.length > 0)
+    : [];
+  const applied = queuePushLifecycle(() => applyPushPreference(message.enabled, endpoints));
+  const answer = (value) => {
+    try {
+      if (reply) reply.postMessage(value);
+    } catch (_) { /* the page may have closed after posting */ }
+  };
+  event.waitUntil(applied.then(
+    () => answer(true),
+    () => answer(false),
+  ));
 });
 
 self.addEventListener("notificationclick", (event) => {
@@ -84,6 +107,72 @@ async function unregisterPushSubscription(endpoint) {
   await postPushState(PUSH_UNSUBSCRIBE_URL, { endpoint: endpoint });
 }
 
+/** Serialize preference writes and browser-initiated rotations under the worker's waitUntil lifetime. */
+function queuePushLifecycle(operation) {
+  const queued = pushLifecycle.catch(() => {}).then(operation);
+  pushLifecycle = queued.catch(() => {});
+  return queued;
+}
+
+/**
+ * Persist the page's origin-wide preference where a worker can read it after every client disappears.
+ * This cache is only a one-record state store; the fetch handler remains deliberately network-only.
+ */
+async function storePushPreference(enabled) {
+  const cache = await self.caches.open(PUSH_PREFERENCE_CACHE);
+  await cache.put(PUSH_PREFERENCE_URL, new Response(enabled ? "1" : "0"));
+}
+
+/** Missing/corrupt state and storage failures fail closed; permission is re-read after the cache await. */
+async function pushIsStillWanted() {
+  if (Notification.permission !== "granted") return false;
+  try {
+    const response = await self.caches.match(
+      PUSH_PREFERENCE_URL,
+      { cacheName: PUSH_PREFERENCE_CACHE },
+    );
+    return !!response && (await response.text()) === "1" && Notification.permission === "granted";
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Apply one serialized page choice. OFF persists first, starts remembered daemon deletes, then also removes
+ * whatever browser subscription exists now; therefore it compensates a whole rotation that won the queue
+ * before the OFF message even when the sending page has already closed.
+ */
+async function applyPushPreference(enabled, rememberedEndpoints) {
+  await storePushPreference(enabled);
+  if (enabled) return;
+  const daemonDrops = new Map();
+  const startDaemonDrop = (endpoint) => {
+    if (!endpoint || daemonDrops.has(endpoint)) return;
+    daemonDrops.set(
+      endpoint,
+      unregisterPushSubscription(endpoint).then(() => true).catch(() => false),
+    );
+  };
+  rememberedEndpoints.forEach(startDaemonDrop);
+  let subscription = null;
+  try {
+    subscription = await self.registration.pushManager.getSubscription();
+  } catch (_) { /* remembered daemon cleanup still completes */ }
+  if (subscription) startDaemonDrop(subscription.endpoint);
+  await Promise.allSettled([
+    ...Array.from(daemonDrops.values()),
+    subscription ? subscription.unsubscribe() : Promise.resolve(false),
+  ]);
+}
+
+/** Undo a replacement that crossed an explicit OFF. Start daemon cleanup before dropping the browser side. */
+async function discardPushSubscription(subscription) {
+  await Promise.allSettled([
+    unregisterPushSubscription(subscription.endpoint),
+    subscription.unsubscribe(),
+  ]);
+}
+
 /**
  * Propagate a browser-initiated endpoint/key rotation while no page is open. New details are stored before
  * the obsolete endpoint is removed, and a same-endpoint key rotation is only upserted. Some browsers report
@@ -93,15 +182,24 @@ async function unregisterPushSubscription(endpoint) {
 async function syncPushSubscription(event) {
   const oldSubscription = event.oldSubscription || null;
   let replacement = event.newSubscription || null;
-  if (!replacement && oldSubscription) {
+  if (!replacement && oldSubscription && await pushIsStillWanted()) {
     try {
       replacement = await self.registration.pushManager.subscribe(oldSubscription.options);
     } catch (_) {
       replacement = null;
     }
   }
+  if (replacement && !(await pushIsStillWanted())) {
+    await discardPushSubscription(replacement);
+    replacement = null;
+  }
   if (replacement) {
     await registerPushSubscription(replacement);
+    // OFF may cross the non-cancellable POST after its own delete. Re-read intent and compensate after it.
+    if (!(await pushIsStillWanted())) {
+      await discardPushSubscription(replacement);
+      replacement = null;
+    }
   }
   if (oldSubscription && (!replacement || oldSubscription.endpoint !== replacement.endpoint)) {
     await unregisterPushSubscription(oldSubscription.endpoint);

@@ -23,7 +23,7 @@
  */
 
 import { apiRequest } from "./api.js";
-import { ensurePermission, setPushActive } from "./notify.js";
+import { ensurePermission, isEnabled as notifyEnabled, setPushActive } from "./notify.js";
 
 /** The worker script — served from the root so its scope is the whole origin. */
 export const SW_URL = "/sw.js";
@@ -35,9 +35,13 @@ export const UNSUBSCRIBE_URL = "/push/unsubscribe";
 
 /** Last endpoint handed to the daemon by this tab. OFF can revoke it without a browser lookup. */
 const ENDPOINT_KEY = "kotgent.push.endpoint.v1";
+const PUSH_PREFERENCE_ACK_TIMEOUT_MS = 2_000;
+/** The classic worker duplicates this value because it cannot import this ES module. */
+export const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 /** A stale irreversible mutation asks every other open tab to reconcile the origin-wide preference. */
 export const PUSH_REPAIR_SIGNAL_KEY = "kotgent.push.repair.v1";
 let endpointMemory = null;
+let activeRegistrationMemory = null;
 let repairSignalSequence = 0;
 const repairSignalSource = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
 
@@ -70,6 +74,62 @@ function rememberEndpoint(endpoint) {
   try {
     window.localStorage.setItem(ENDPOINT_KEY, endpoint);
   } catch (_) { /* private mode / quota — browser lookup remains the fallback */ }
+}
+
+/**
+ * Publish the CURRENT origin preference, never a captured transition value. The service worker serializes
+ * these messages with `pushsubscriptionchange`, persists the value, and owns OFF cleanup after this page
+ * disappears. Re-reading here also keeps a delayed registration lookup from replaying an obsolete ON.
+ * ON-side browser mutations wait for an acknowledgement so an older worker cleanup cannot cross them.
+ */
+export async function syncWorkerPushPreference(registration = null, waitForApply = false) {
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return false;
+  if (registration) activeRegistrationMemory = registration;
+  let worker = navigator.serviceWorker.controller ||
+    (activeRegistrationMemory && activeRegistrationMemory.active);
+  if (!worker) {
+    try {
+      const found = await navigator.serviceWorker.getRegistration();
+      if (!found) return false;
+      activeRegistrationMemory = found;
+      worker = found.active;
+    } catch (_) {
+      return false;
+    }
+  }
+  if (!worker) return false;
+  const enabled = notifyEnabled();
+  const message = {
+    type: PUSH_PREFERENCE_MESSAGE,
+    enabled: enabled,
+    endpoints: enabled ? [] : Array.from(rememberedEndpoints()),
+  };
+  if (!waitForApply) {
+    try {
+      worker.postMessage(message);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    let settled = false;
+    const finish = (applied) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      channel.port1.close();
+      resolve(applied);
+    };
+    const timeout = setTimeout(() => finish(false), PUSH_PREFERENCE_ACK_TIMEOUT_MS);
+    channel.port1.onmessage = (event) => finish(event.data === true);
+    try {
+      worker.postMessage(message, [channel.port2]);
+    } catch (_) {
+      finish(false);
+    }
+  });
 }
 
 function signalPushRepair() {
@@ -130,7 +190,9 @@ async function activeRegistration(context) {
   await navigator.serviceWorker.register(SW_URL, { scope: "/" });
   if (!context.isCurrent()) return null;
   const registration = await navigator.serviceWorker.ready;
-  return context.isCurrent() ? registration : null;
+  if (!context.isCurrent()) return null;
+  activeRegistrationMemory = registration;
+  return registration;
 }
 
 /**
@@ -232,6 +294,7 @@ export async function subscribe(permissionRequest = null, transition = DEFAULT_T
 
   const registration = await activeRegistration(context);
   if (!registration || !context.isCurrent()) return false;
+  if (!(await syncWorkerPushPreference(registration, true)) || !context.isCurrent()) return false;
   const key = await vapidKeyOrNull(context);
   if (!key) return false;
   const subscription = await subscribeWith(registration, key, context);
@@ -252,6 +315,7 @@ export async function unsubscribe(transition = DEFAULT_TRANSITION) {
   const context = transitionContext(transition);
   if (!context.isCurrent()) return false;
   setPushActive(false);
+  syncWorkerPushPreference();
 
   const daemonDrops = new Map();
   const startDaemonDrop = (endpoint) => {
@@ -276,6 +340,7 @@ export async function unsubscribe(transition = DEFAULT_TRANSITION) {
       context.repairLatest();
       return false;
     }
+    syncWorkerPushPreference(registration);
     const subscription = registration ? await registration.pushManager.getSubscription() : null;
     if (!context.isCurrent()) {
       context.repairLatest();
@@ -315,6 +380,8 @@ export async function refreshActive(transition = DEFAULT_TRANSITION) {
   }
   try {
     const registration = await navigator.serviceWorker.getRegistration();
+    if (!context.isCurrent()) return false;
+    if (registration && !(await syncWorkerPushPreference(registration, true))) return false;
     if (!context.isCurrent()) return false;
     const existing = registration ? await registration.pushManager.getSubscription() : null;
     if (!context.isCurrent()) return false;
