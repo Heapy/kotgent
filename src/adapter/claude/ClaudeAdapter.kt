@@ -90,7 +90,7 @@ private const val HEX_DIGITS = "0123456789abcdef"
  * form [ProviderSessionId] validates and `claude --session-id` expects. Draws 16 bytes from [random]
  * (injectable for deterministic tests), then stamps the version (`4`) and variant (`10xx`) bits.
  *
- * Public rather than `internal`: Kotlin Toolchain 0.11.0 does not compile `test/` as a friend module,
+ * Public rather than `internal`: Kotlin Toolchain 0.11.x does not compile `test/` as a friend module,
  * so the adapter test (which asserts the generated ids) could not see an `internal` declaration.
  */
 fun newUuidV4(random: Random = Random.Default): String {

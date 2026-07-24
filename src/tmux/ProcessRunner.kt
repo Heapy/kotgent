@@ -58,7 +58,7 @@ class ProcessResult(
  * ## Why `popen`/`pclose` and not `posix_spawn`
  * `posix_spawn` and friends live in `<spawn.h>`, which is **not** in the macosArm64 `platform.posix`
  * header set (that is exactly why [io.kotgent.pty.Pty] had to add its own `pty.def` cinterop for
- * them). Custom cinterop klibs do not link into TEST binaries on Kotlin Toolchain 0.11.0 (KT-78062,
+ * them). Custom cinterop klibs do not link into TEST binaries on Kotlin Toolchain 0.11.x (KT-78062,
  * see the Task 2 blocker), and these tmux commands MUST be spawnable from the test binary. That
  * rules out `posix_spawn`. A hand-rolled `fork()`+`execvp()` in Kotlin/Native is unsafe: only
  * async-signal-safe work may run between fork and exec, and any Kotlin allocation or GC safepoint

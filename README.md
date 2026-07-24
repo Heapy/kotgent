@@ -28,7 +28,7 @@ immortal:
 - **macOS on Apple Silicon (arm64).** The build targets `macosArm64` and links against macOS system
   libraries; there is no other supported target.
 - **JetBrains Kotlin Toolchain** — invoked through the bundled `./kotlin` wrapper committed in the repo.
-  You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.11.0) on
+  You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.11.1) on
   first run. A JDK is required for the toolchain and the build-time SQLDelight codegen plugin.
 - **`tmux`** — sessions live on a dedicated server socket (`tmux -L kotgent`), isolated from your normal
   `tmux`. Developed against tmux 3.7b.

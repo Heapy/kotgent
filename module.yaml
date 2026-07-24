@@ -39,7 +39,7 @@ settings:
     serialization: json
     # SQLDelight's native-driver depends on co.touchlab:sqliter-driver, whose cinterop calls
     # the system SQLite (sqlite3_* symbols). Sqliter's own `linkerOpts = -lsqlite3` is NOT
-    # propagated to the final Kotlin/Native link by toolchain 0.11.0, so both the main and test
+    # propagated to the final Kotlin/Native link by toolchain 0.11.x, so both the main and test
     # binaries fail with `ld: symbol(s) not found` for _sqlite3_*. We pass the flag ourselves.
     # This is PORTABLE (unlike the removed Task-2 absolute -library path hack): -lsqlite3 is a
     # standard system library present in every macOS SDK; the linker finds it with no -L path.
