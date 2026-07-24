@@ -200,13 +200,13 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - Modify: `src/transport/ControlRoutes.kt`
 - Modify: `test/transport/TransportTest.kt`
 
-- [ ] write test: a start request whose `SessionManager` throws `AgentBinaryNotFoundException` → HTTP 400
+- [x] write test: a start request whose `SessionManager` throws `AgentBinaryNotFoundException` → HTTP 400
       with the hint text in the body
-- [ ] write test: the same via the action/resume handler → HTTP 400 with the hint text
-- [ ] add `catch (e: AgentBinaryNotFoundException)` to the start handler and the action/resume handler,
+- [x] write test: the same via the action/resume handler → HTTP 400 with the hint text
+- [x] add `catch (e: AgentBinaryNotFoundException)` to the start handler and the action/resume handler,
       `respondText(e.message ?: "…", status = HttpStatusCode.BadRequest)` (consistent with
       `UnsupportedAgentException`)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 5
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 5
 
 ### Task 5: Verify acceptance criteria
 - [ ] `mergedDaemonPath` correctly merges/dedups and falls back (Task 1 green)
