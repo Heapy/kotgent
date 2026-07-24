@@ -9,11 +9,15 @@ import kotlin.test.assertTrue
  * Unit tests for the PURE tmux configuration surfaces — the isolation flags, the forced option set,
  * and the argv builder every kotgent tmux invocation goes through.
  *
- * These are the record of two decisions:
+ * These are the record of three decisions:
  *  - **isolation, not inheritance**: `-L` isolates the SOCKET, not the CONFIG — a server on
  *    `-L kotgent` still parses `~/.tmux.conf`, so an operator's `destroy-unattached on` would kill
  *    the agent the moment kotgent's single upstream attach detaches. `-f /dev/null` is what closes
  *    that, and it must ride on every argv kotgent builds.
+ *  - **`mouse on` is deliberately present** (see [TMUX_SERVER_OPTIONS]'s KDoc): it is the one forced
+ *    row that changes a real tmux default, and it is what makes the wheel reach a pane's history
+ *    from the browser and from `kotgent attach`. Its safety rests on `Tmux.sendKeys` cancelling
+ *    copy-mode before every send.
  *  - **`focus-events` is deliberately absent** (see [TMUX_SERVER_OPTIONS]'s KDoc): focus has no
  *    single answer under a one-upstream/N-subscriber fan-out. It doubles as the decoy of the
  *    integration isolation test, which only stays falsifiable while kotgent never forces it.
@@ -35,12 +39,13 @@ class TmuxOptionsTest {
             listOf(
                 TmuxOption("-g", "destroy-unattached", "off"),
                 TmuxOption("-g", "default-terminal", "tmux-256color"),
+                TmuxOption("-g", "mouse", "on"),
                 TmuxOption("-g", "status", "off"),
                 TmuxOption("-g", "history-limit", "10000"),
                 TmuxOption("-s", "escape-time", "10"),
             ),
             TMUX_SERVER_OPTIONS,
-            "the forced option set is exactly the five rows of the option table",
+            "the forced option set is exactly the six rows of the option table",
         )
     }
 
@@ -54,18 +59,24 @@ class TmuxOptionsTest {
     }
 
     /**
-     * `mouse on` was measured to break [io.kotgent.tmux.Tmux.sendKeys]: a wheel scroll from ANY
-     * subscriber puts the shared pane into copy-mode, and every later `send-keys` — including the
-     * `0x03` that `SessionManager.interrupt` sends — is then routed to the copy-mode key table and
-     * silently dropped while tmux still exits 0. Wheel-scrollback is left to the clients' own
-     * scrollback instead.
+     * `mouse on` is the only row that flips a real tmux default (built-in `off`), and the only one an
+     * operator feels: the wheel scrolls the *pane's* history, which is where an agent transcript
+     * actually lives — a subscriber joining an existing bridge is seeded from `capture-pane` and can
+     * reach nothing older without it.
+     *
+     * It is safe only because copy-mode — shared *pane* state, so any subscriber's wheel puts *the*
+     * pane into it — cannot swallow input: [io.kotgent.tmux.Tmux.sendKeys] cancels copy-mode before
+     * every send, which is what keeps `SessionManager.interrupt`'s `0x03` reaching the process.
+     * `TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` is the test of that cancel; if it is ever
+     * deleted, this option has to go with it.
      */
     @Test
-    fun serverOptionsNeverForceMouseMode() {
-        assertFalse(
-            TMUX_SERVER_OPTIONS.any { it.name == "mouse" },
-            "`mouse on` makes one subscriber's wheel put the shared pane into copy-mode, where " +
-                "send-keys (Interrupt's Ctrl-C included) is swallowed — see TMUX_SERVER_OPTIONS's KDoc",
+    fun serverOptionsForceMouseMode() {
+        assertEquals(
+            TmuxOption("-g", "mouse", "on"),
+            TMUX_SERVER_OPTIONS.single { it.name == "mouse" },
+            "the wheel must scroll the pane's tmux history in both viewers — safe because " +
+                "Tmux.sendKeys cancels copy-mode before every send",
         )
     }
 
@@ -75,6 +86,7 @@ class TmuxOptionsTest {
             listOf(
                 "set-option", "-g", "destroy-unattached", "off", ";",
                 "set-option", "-g", "default-terminal", "tmux-256color", ";",
+                "set-option", "-g", "mouse", "on", ";",
                 "set-option", "-g", "status", "off", ";",
                 "set-option", "-g", "history-limit", "10000", ";",
                 "set-option", "-s", "escape-time", "10", ";",

@@ -129,6 +129,12 @@ class TmuxTest {
      * production caller is `SessionManager.interrupt` (`0x03`), which then reduces the session to
      * `ready` — so a silently swallowed send would record an interrupt that never happened.
      * [Tmux.sendKeys] cancels copy-mode first; this is the test that the cancel is really there.
+     *
+     * **This test is what licenses `mouse on` in [TMUX_SERVER_OPTIONS].** With mouse mode forced, a
+     * pane reaches copy-mode from an ordinary wheel scroll by *any* subscriber — copy-mode is shared
+     * pane state — so the swallowed-Interrupt path is no longer the rare prefix-typed accident it
+     * would be with the built-in `mouse off`; it is one scroll away, on every session. If this test
+     * is ever deleted or weakened, `mouse on` must be dropped in the same change.
      */
     @Test
     fun sendKeysReachesTheProcessEvenFromCopyMode() = runBlocking {
@@ -282,10 +288,12 @@ class TmuxTest {
      * server at all: `error connecting to …`, exit 1).
      *
      * Driven off [TMUX_SERVER_OPTIONS] rather than a hardcoded copy, so adding an option to the list
-     * extends this assertion for free. Three of the five equal tmux's own built-in default today
+     * extends this assertion for free. Three of the six equal tmux's own built-in default today
      * (they are pins), so this test is only partly falsifiable by construction —
      * [theForcedOptionsApplyBeforeThePaneExists] carries the rest of the signal by driving a value
-     * tmux would never choose itself.
+     * tmux would never choose itself. The other three do carry signal on their own: `mouse on` in
+     * particular reads back as the built-in `off` if the chain never lands, which is exactly the
+     * behaviour an operator would notice as "the wheel does nothing".
      */
     @Test
     fun newSessionForcesEveryServerOption() = runBlocking {

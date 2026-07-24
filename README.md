@@ -82,10 +82,14 @@ To build from source instead, see [Build & test](#build--test).
   `default-terminal`. This is deliberate. A `~/.tmux.conf` is written for a terminal *you* drive, and one
   line of it (`set -g destroy-unattached on`) would kill the agent every time the last viewer detaches.
   In its place kotgent forces its own small set: `destroy-unattached off`, `default-terminal
-  tmux-256color`, `status off`, `history-limit 10000`, `escape-time 10`. `mouse` and `focus-events` stay
-  off — with one tmux client fanned out to many viewers, mouse mode puts the *shared* pane into copy-mode
-  and swallows the Ctrl-C that Interrupt sends. Scroll back with your terminal's own scrollback (or the
-  browser's). Developed against tmux 3.7b.
+  tmux-256color`, `mouse on`, `status off`, `history-limit 10000`, `escape-time 10`. `mouse on` is what
+  makes the wheel scroll an agent's transcript — that scrollback lives in the tmux pane, so it is the only
+  way a browser tab that joined an existing session can see anything above the current screen. Two things
+  to know about it: selecting text in the web terminal needs Option-drag on macOS (Shift-drag elsewhere),
+  because a mouse-reporting terminal otherwise sends the drag to the app; and a wheel scroll puts the pane
+  into tmux copy-mode, which every viewer shares — kotgent leaves copy-mode automatically before it
+  delivers keys, so Interrupt still reaches the agent. `focus-events` stays off: with one tmux client
+  fanned out to many viewers, "is the terminal focused" has no single answer. Developed against tmux 3.7b.
 - **`claude`** — the Claude Code CLI, on your `PATH`. Session-id preallocation (`claude --session-id`)
   needs a recent version; kotgent version-gates it and falls back to a `SessionStart` hook on older CLIs.
   Developed against claude 2.1.x.
@@ -242,6 +246,12 @@ the first question is almost always "does the plist still match my shell?".
   override — the option set lives in `src/tmux/TmuxOptions.kt`. Note the flag only affects the command
   that *starts* a server: if something else already started one on `-L kotgent`, that server has your
   config until it is restarted (`tmux -L kotgent kill-server`, which also stops every agent on it).
+- **I can't select text in the browser terminal / the wheel scrolls tmux instead of my terminal.** Both
+  are `mouse on`, which kotgent forces so the wheel reaches the pane's own history (10 000 lines, and the
+  only scrollback a newly attached viewer has). To select text while an agent's TUI is running, hold
+  Option and drag on macOS, or Shift and drag elsewhere. The wheel puts the pane into tmux copy-mode —
+  shared by every viewer of that session — which scrolls back down to the bottom to exit, and kotgent
+  cancels it anyway before sending keys, so Interrupt is never swallowed by it.
 - **Inspecting the daemon itself.** It is a normal LaunchAgent: `launchctl print gui/$UID/io.kotgent.daemon`
   shows its state, and the plist at `~/Library/LaunchAgents/io.kotgent.daemon.plist` shows the exact `PATH`
   and `LANG` that were snapshotted.

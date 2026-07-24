@@ -10,7 +10,9 @@
 > the "Failure mode" section further down. They are recorded here rather than rewritten inline so the
 > reasoning that produced the original design stays readable.
 >
-> 1. **`mouse on` is dropped from the forced set.** Measured after implementation: with `mouse on`, a
+> 1. **`mouse on` is dropped from the forced set.** *(Item 1 only — SUPERSEDED by revision 4 below, which
+>    restores the option. The measurements here are still accurate and are why the three protections
+>    exist; items 2-4 stand unchanged.)* Measured after implementation: with `mouse on`, a
 >    wheel scroll from *any* subscriber puts the shared pane into copy-mode, and while `pane_in_mode=1`
 >    every `send-keys` — including the exact `0x03` `SessionManager.interrupt` sends — is routed to the
 >    copy-mode key table and never reaches the process, while tmux still exits **0**. `Tmux.sendKeys`
@@ -43,6 +45,33 @@
 >    `display-time 4321` line so a broken `HOME` override cannot masquerade as a pass by reading the
 >    developer's real `~/.tmux.conf` (which contains literally `set -g focus-events on`). All three
 >    mutations — isolation removed, chain removed, copy-mode cancel removed — were verified to fail.
+
+> **Revision 4 — `mouse on` is restored to the forced set** (explicit decision by the repository owner,
+> superseding revision 3's item 1 only). Revision 3 removed the option *and*, in the same pass, fixed each
+> of the three problems that had motivated the removal — independently of the option, and those fixes stay.
+> With all three landed the removal is no longer justified, so the option table below stands as originally
+> written: `mouse` `-g` `on`.
+>
+> The three root causes and where each is now closed:
+>
+> 1. **Copy-mode swallowing Interrupt** — `Tmux.sendKeys` (`src/tmux/Tmux.kt`) issues a best-effort
+>    `send-keys -X <target> cancel` before the `-H` send, so a pane in copy-mode no longer eats the `0x03`
+>    (and the prefix-typed copy-mode case is covered too, which it was not before). Pinned by
+>    `TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode`, whose positive control puts the pane in
+>    copy-mode first. That test is now load-bearing for this option, and its KDoc says so.
+> 2. **`kotgent attach` leaving the operator's terminal emitting mouse reports** — `TERMINAL_MODE_RESET`
+>    (`src/cli/AttachClient.kt`) is written to stdout in the same `finally` as `tty.restore()`, before
+>    termios is handed back. Pinned by `CliTest.theTerminalModeResetDisablesEveryModeTheRemoteSideCanTurnOn`.
+> 3. **Text selection in the browser terminal** — `macOptionClickForcesSelection: true`
+>    (`resources/webui/components/TerminalPane.js`), so selection survives a mouse-reporting TUI:
+>    Option-drag on macOS, Shift-drag elsewhere.
+>
+> The remaining trade-offs are accepted, not fixed, and are documented in `TMUX_SERVER_OPTIONS`' KDoc:
+> copy-mode is shared *pane* state across subscribers (it auto-exits when the wheel reaches the bottom, and
+> the cancel above handles the operator who never scrolls back down), and a subscriber that joins an
+> existing bridge is seeded by `capture-pane` — which is itself the argument *for* the option, since the
+> pane's history is then the only scrollback that viewer has. `focus-events` remains unset and remains the
+> isolation test's decoy; only `mouse` moved.
 
 ## Overview
 

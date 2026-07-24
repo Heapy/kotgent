@@ -215,9 +215,11 @@ class Tmux(
      * round-trips unchanged. Empty input is a no-op.
      *
      * ## Copy-mode is cancelled first, and that is load-bearing
-     * A pane in copy-mode (the operator hit the tmux prefix, or an app/mouse put it there) routes
-     * `send-keys` to the **copy-mode key table**, not to the process — measured: the bytes vanish,
-     * the pane is unchanged, and tmux still exits **0**. The one caller is
+     * A pane in copy-mode routes `send-keys` to the **copy-mode key table**, not to the process —
+     * measured: the bytes vanish, the pane is unchanged, and tmux still exits **0**. kotgent forces
+     * `mouse on` ([TMUX_SERVER_OPTIONS]), so any subscriber's wheel scroll puts the *shared* pane
+     * there, and the tmux prefix does the same — this cancel is what makes that option safe and must
+     * not be removed while it is set. The one caller is
      * `SessionManager.interrupt`, which sends `0x03` and then reduces the session to `ready`, so a
      * swallowed send would record an interrupt in the projection that never happened. `send-keys -X
      * cancel` leaves copy-mode first (measured: `pane_in_mode` → 0 and the following send lands).

@@ -11,8 +11,9 @@ package io.kotgent.tmux
  * last-detach IS the "Detach", and the agent is supposed to live on inside tmux. With that option
  * inherited, tmux destroys the session the moment the upstream goes away.
  *
- * `-f /dev/null` suppresses the user config completely (measured: `mouse` falls back to the built-in
- * `off` despite `mouse on` in `~/.tmux.conf`), which alone restores the Detach invariant — tmux's own
+ * `-f /dev/null` suppresses the user config completely (measured: `focus-events` falls back to the
+ * built-in `off` despite `focus-events on` in `~/.tmux.conf` — the decoy the integration isolation test
+ * uses, precisely because kotgent never forces it), which alone restores the Detach invariant — tmux's own
  * default for `destroy-unattached` is already `off`. Same shape as the `LANG` rule: **force, never
  * inherit.** A generated `~/.kotgent/tmux.conf` was rejected — a file that can go stale and invites
  * hand-editing, where a Kotlin list stays testable.
@@ -52,6 +53,7 @@ data class TmuxOption(
  * |---|---|---|
  * | `destroy-unattached off` | `off` | Pin: Detach must never kill the agent |
  * | `default-terminal tmux-256color` | `tmux-256color` | Pin against a future default change |
+ * | `mouse on` | `off` | The wheel scrolls the pane's history, which lives in tmux and nowhere else |
  * | `status off` | `on` | The status bar costs a row and renders noise into a pane nobody drives with tmux keys |
  * | `history-limit 10000` | `2000` | 2000 lines is thin for an agent transcript |
  * | `escape-time 10` | `10` | Pin: the legacy 500 ms default makes `ESC` laggy in a TUI |
@@ -70,14 +72,30 @@ data class TmuxOption(
  * itself, check the entry resolves first — `set-option` succeeds regardless (tmux does not validate
  * terminfo at set time), so a bad value only shows up as a broken TUI inside the pane.
  *
- * **`mouse` is deliberately NOT here** (it stays at the built-in `off`). Turning it on looks like
- * free wheel-scrollback but breaks two things under kotgent's fan-out: copy-mode is *pane* state, so
- * one subscriber's wheel puts the shared pane into copy-mode, and while a pane is in copy-mode every
- * `send-keys` — including [Tmux.sendKeys]'s Ctrl-C — is routed to the copy-mode key table and never
- * reaches the process, silently (tmux still exits 0). The pane's terminal-mode DECSET is also only
- * ever seen by the subscriber that opened the upstream, so the feature would not even work for a
- * client that joins an existing bridge. Client-side scrollback (xterm.js, the CLI's own terminal)
- * covers the ergonomics without any of that.
+ * **`mouse on` is the one row that changes real behaviour for the operator**, and it is here on
+ * purpose — tmux's built-in is `off`, so this is a genuine flip, not a pin. What it buys, measured
+ * on tmux 3.7b: the wheel scrolls **the pane's own history** in both viewers — the web terminal and
+ * `kotgent attach`. That history lives in the tmux pane (`history-limit 10000` above), not in
+ * xterm.js and not in the CLI's scrollback: a subscriber joining an existing bridge is seeded from
+ * `capture-pane` and sees only the current screen, so without `mouse on` the older transcript is
+ * simply unreachable from the UI. A wheel event over a *normal-screen* pane enters `copy-mode` and
+ * scrolls (measured `scroll_position` moves); an app that has itself requested SGR mouse reporting
+ * still receives its own events untouched (measured: `^[[<64;10;10M` arrives at the app, tmux does
+ * not intercept), so an alt-screen TUI keeps behaving exactly as it did.
+ *
+ * What it costs, also measured: **copy-mode is shared *pane* state, not per-client** — one
+ * subscriber's wheel puts *the* pane into copy-mode for everyone, and while `pane_in_mode=1` tmux
+ * routes every `send-keys` to the copy-mode key table instead of the process, silently (exit 0). That
+ * would swallow `SessionManager.interrupt`'s `0x03` and let the projection record an interrupt that
+ * never happened. **This option is therefore coupled to [Tmux.sendKeys], which issues a best-effort
+ * `send-keys -X … cancel` before every send** — do not delete that cancel; it is what makes this row
+ * safe, and it covers prefix-typed copy-mode too. (Copy-mode also auto-exits on its own once the
+ * wheel scrolls back to the bottom, but that only handles the operator who scrolls back down — the
+ * cancel is what handles the one who does not.) Two smaller consequences are accepted: `kotgent
+ * attach` must undo the mouse-reporting DECSET on exit (`TERMINAL_MODE_RESET`, written in the same
+ * `finally` as the tty restore) and the browser terminal needs
+ * `macOptionClickForcesSelection` so text selection survives — Option-drag on macOS, Shift-drag
+ * elsewhere.
  *
  * **`focus-events` is deliberately NOT here.** Focus tracking is meaningless under kotgent's fan-out
  * — one upstream client serves N subscribers (browser, IDE, CLI), so "is the terminal focused" has
@@ -89,6 +107,7 @@ data class TmuxOption(
 val TMUX_SERVER_OPTIONS: List<TmuxOption> = listOf(
     TmuxOption("-g", "destroy-unattached", "off"),
     TmuxOption("-g", "default-terminal", "tmux-256color"),
+    TmuxOption("-g", "mouse", "on"),
     TmuxOption("-g", "status", "off"),
     TmuxOption("-g", "history-limit", "10000"),
     TmuxOption("-s", "escape-time", "10"),

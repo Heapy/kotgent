@@ -177,10 +177,10 @@ prepend `TMUX_CONFIG_ISOLATION`. **Any new tmux argv site must go through `tmuxC
 `ptycheck/src/Main.kt` hand-rolls `"${q(tmux)} -f /dev/null -L $socket"` as a shell string (it cannot use
 `ProcessRunner`), and `TmuxTest.rawTmux` builds a deliberately *un*-isolated argv — that one **is** the
 isolation probe. (Exempt, because they start no server and parse no config: `tmux -V`, `command -v tmux`,
-and `kill-server` teardowns.) On top of isolation kotgent forces five options (`TMUX_SERVER_OPTIONS`):
-`destroy-unattached off`, `default-terminal tmux-256color`, `status off`, `history-limit 10000`,
-`escape-time 10` (`-s`). Three of them already equal tmux 3.7b's built-in defaults — isolation is what
-fixes Detach; they are pins against a future upstream default change. `TmuxOption.scope` is documentation
+and `kill-server` teardowns.) On top of isolation kotgent forces six options (`TMUX_SERVER_OPTIONS`):
+`destroy-unattached off`, `default-terminal tmux-256color`, `mouse on`, `status off`,
+`history-limit 10000`, `escape-time 10` (`-s`). Three of them already equal tmux 3.7b's built-in defaults
+— isolation is what fixes Detach; they are pins against a future upstream default change. `TmuxOption.scope` is documentation
 plus the read-back flag, **not** a correctness gate: tmux resolves an option's scope from its *name* and
 ignores a mismatched flag (`set-option -g escape-time 55` exits 0 and sets the server option). Note
 `default-terminal` is the `TERM` the agent sees *inside* the pane; `ATTACH_TERM` (`xterm-256color`,
@@ -196,16 +196,27 @@ error, and silently lost the pane-creation-time options anyway. `Tmux.serverOpti
 parameter (deliberately **not** on `TmuxControl`) purely as a test seam: it is the only way to drive a
 *non-default* `default-terminal` through `newSession` and prove from the pane's `$TERM` that the chain
 landed before the pane existed — with the production values that assertion would pass with the whole chain
-deleted. **`focus-events` and `mouse` are deliberately NOT set.** Focus has no single answer when one
-upstream client serves N subscribers, and kotgent has better signals (the lazy `TerminalBridge`'s
-subscriber count, agent state over hooks); `focus-events` doubles as the decoy in the isolation
-integration test *because* kotgent never sets it. `mouse on` was measured to **break Interrupt**: a wheel
-scroll from any subscriber puts the shared pane into copy-mode, where every `send-keys` — including
-`SessionManager.interrupt`'s `0x03` — is routed to the copy-mode key table and dropped while tmux still
-exits 0, so the projection would record an interrupt that never happened. `Tmux.sendKeys` therefore issues
-a best-effort `send-keys -X … cancel` first (a separate call: chained, it aborts the whole invocation with
-"not in a mode" whenever the pane was not in copy-mode). Unit tests pin the absence of both options, so
-adding either fails there first rather than quietly making the isolation test unfalsifiable.
+deleted. **`mouse on` is the one forced row that flips a real default, and it is coupled to
+`Tmux.sendKeys`.** It buys the wheel scrolling a pane's *own* history in both viewers (web terminal and
+`kotgent attach`) — that history lives in the tmux pane, not in xterm.js, and a subscriber joining an
+existing bridge is seeded from `capture-pane`, so without it nothing older than the current screen is
+reachable; an app that requested SGR mouse reporting still gets its own events (measured), so alt-screen
+TUIs are unaffected. It costs this: copy-mode is *shared pane state*, so any subscriber's wheel puts **the**
+pane into it, and while `pane_in_mode=1` every `send-keys` — including `SessionManager.interrupt`'s `0x03`
+— is routed to the copy-mode key table and dropped while tmux still exits 0, which would make the
+projection record an interrupt that never happened. That is why **`Tmux.sendKeys` issues a best-effort
+`send-keys -X … cancel` before every send** (a separate call: chained, it aborts the whole invocation with
+"not in a mode" whenever the pane was not in copy-mode) — do not delete the cancel while `mouse on` is set;
+`TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` is its test, and copy-mode auto-exiting when the wheel
+reaches the bottom covers only the operator who scrolls back down. Two smaller obligations ride along:
+`kotgent attach` writes `TERMINAL_MODE_RESET` in the same `finally` as `tty.restore()` (otherwise the
+operator's terminal keeps emitting mouse reports after exit) and the browser terminal sets
+`macOptionClickForcesSelection: true` (xterm.js disables selection under mouse reporting — Option-drag on
+macOS, Shift-drag elsewhere). **`focus-events` is deliberately NOT set.** Focus has no single answer when
+one upstream client serves N subscribers, and kotgent has better signals (the lazy `TerminalBridge`'s
+subscriber count, agent state over hooks); it doubles as the decoy in the isolation integration test
+*because* kotgent never sets it, and a unit test pins its absence so forcing it fails there first rather
+than quietly making the isolation test unfalsifiable.
 
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on
