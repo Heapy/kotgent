@@ -879,6 +879,8 @@ class SessionManagerTest {
             val factory = agentFactoryOf(
                 mapOf(
                     "claude" to { _: String -> throw AgentBinaryNotFoundException("claude") },
+                    // The real daemon registers both providers; codex resolves here so the fail-fast for
+                    // claude stays scoped to the requested kind and is not masked by a resolvable sibling.
                     "codex" to { cwd: String -> StubAgentFactory(cat, null).create("codex", cwd) },
                 ),
             )
