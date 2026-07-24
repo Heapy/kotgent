@@ -378,20 +378,66 @@ Verified inventory (revision 1 had this wrong — four sites are string-interpol
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview: isolation on every call, six options forced, `focus-events`
+- [x] verify all requirements from Overview: isolation on every call, six options forced, `focus-events`
       absent, degradation path present
-- [ ] verify edge cases: second session idempotent, decoy proven loadable *and* proven suppressed, pane id
+      (all four hold. Isolation: the complete inventory of sites that actually exec tmux is
+      `Tmux.tmux()` → `tmuxCommand()` (`Tmux.kt:83` — the single funnel for `ensureServer`,
+      `newSession`, `listPanes`, `capturePane`, `killSession`, `sendKeys`) and `attachUpstreamCommand`
+      (`PtyHandle.kt:112`); both carry `TMUX_CONFIG_ISOLATION`. Six options: `TMUX_SERVER_OPTIONS` has
+      exactly the table's six rows, pinned by `serverOptionsHoldExactlyTheDocumentedTable` and read
+      back off a live server by `newSessionForcesEveryServerOption`. `focus-events`: absent, pinned by
+      `serverOptionsNeverForceFocusEvents`. Degradation: `newSession` chained → bare retry →
+      `applyServerOptionsBestEffort`, exercised by `aRejectedOptionChainDegradesToABareNewSession`)
+- [x] verify edge cases: second session idempotent, decoy proven loadable *and* proven suppressed, pane id
       still returned, `TERM` correct inside the pane, bogus-option session still created
-- [ ] `git grep -nE '\-L (\$|")' -- src test ptycheck` — the revision-1 grep (`'"-L"'`) could not see
+      (all five ran for real against tmux **3.7b** — the skip-guard did NOT short-circuit them, confirmed
+      from per-test durations in the full log: `aSecondSessionSucceedsAndLeavesTheOptionsIntact` 123 ms,
+      `theUserConfigLeaksWithoutIsolationAndIsSuppressedByIt` 94 ms,
+      `theOptionChainLeavesThePaneIdAloneOnStdout` 45 ms, `theForcedOptionsApplyBeforeThePaneExists`
+      52 ms, `aRejectedOptionChainDegradesToABareNewSession` 119 ms — 13/13 `TmuxTest` OK)
+- [x] `git grep -nE '\-L (\$|")' -- src test ptycheck` — the revision-1 grep (`'"-L"'`) could not see
       interpolated `-L $socket` sites and would have passed while four were unfixed
-- [ ] record why the remaining hits are exempt: `Tmux.isAvailable()` (`tmux -V`, no server, no config) and
+      (3 hits, all clean: `ptycheck/src/Main.kt:172` and `:217` both read
+      `"${q(tmux)} -f /dev/null -L $socket"`, i.e. already isolated; `src/cli/Commands.kt:401` is a
+      `println` hint string, not an invocation)
+- [x] record why the remaining hits are exempt: `Tmux.isAvailable()` (`tmux -V`, no server, no config) and
       the `kill-server` teardowns in `TmuxTest.kt:37`, `SessionManagerTest.kt:1126,1161`
-- [ ] run full test suite: `./kotlin build && ./kotlin test` (baseline 428 run / 428 passed / 0 skipped —
+      (⚠️ the corrected grep is **necessary but not sufficient** for this step: it sees only
+      shell-interpolated argv, so the list-literal sites it is meant to exempt do not appear in it
+      either. Enumerated instead with
+      `git grep -nE '"-L"|-L \$|-L "|tmuxPath|ProcessRunner\.run' -- src test ptycheck`. Exempt sites,
+      each re-checked rather than assumed:
+      • `Tmux.kt:71` `isAvailable()` — `tmux -V` prints the version and exits; starts no server, parses
+        no config, so there is nothing to isolate;
+      • ➕ `Tmux.kt:259` `defaultTmuxPath()` — `command -v tmux` is a shell path lookup, not a tmux
+        invocation (not on the plan's list);
+      • ➕ `Commands.kt:401` — `println("… (tmux -L $TMUX_SOCKET)")`, log text that executes nothing
+        (not on the plan's list; it is the third grep hit);
+      • `TmuxTest.kt:54` (KDoc at `:36`, not `:37`) and `SessionManagerTest.kt:1126,1161` — `kill-server`
+        teardown only; `kill-server` never *starts* a server, so it never parses a config;
+      • `TmuxTest.kt:355` `rawTmux()` — isolation is deliberately conditional on the `isolate` flag;
+        this argv **is** the probe, and pinning `-f` on would destroy the negative half;
+      • `TerminalBridgeTest.kt:56,98` — the fake factory's own default command string, never executed;
+      • `ptycheck/src/Main.kt:262` `Tmux(socket = TEST_SOCKET)` — covered transitively by Task 2)
+- [x] run full test suite: `./kotlin build && ./kotlin test` (baseline 428 run / 428 passed / 0 skipped —
       expect the count to rise, expect **0 skipped**)
-- [ ] confirm no tmux server leaked: `tmux -L kotgent-test kill-server` reports "no server running"
-- [ ] note: no suite assertion depends on pane *height* (`TmuxTest.kt:87` asserts `height > 0`, `:89`
+      (**454 run / 454 passed / 0 skipped**, 40 test cases, 22.2 s. The 428 in CLAUDE.md was already
+      stale before this work: `git grep -c '@Test' 7dd2f9b -- test` totals **438** at the pre-change
+      commit and **454** at HEAD, matching the +16 this plan added — so Task 7 must write 454, and the
+      438 recorded in Task 1 is confirmed. `ptycheck` run directly from
+      `build/tasks/_ptycheck_linkMacosArm64Debug/ptycheck.kexe`: `SUMMARY total=8 failed=0 skipped=0`,
+      exit 0)
+- [x] confirm no tmux server leaked: `tmux -L kotgent-test kill-server` reports "no server running"
+      (reports `no server running on /private/tmp/tmux-501/kotgent-test` after both the suite and the
+      direct `ptycheck` run; the real `-L kotgent` socket was never touched)
+- [x] note: no suite assertion depends on pane *height* (`TmuxTest.kt:87` asserts `height > 0`, `:89`
       asserts width 80, `Main.kt:226` asserts `window_width`), so `status off` breaks no test — its real
       effect is on the running system (one extra row per pane, one more line in the `capture-pane` seed)
+      (confirmed, with the line numbers as they now stand after Tasks 2-5: `TmuxTest.kt:104` asserts
+      `width > 0 && height > 0`, `:106` asserts width 80, `Main.kt:239` asserts `window_width == 143`
+      — `window_height` appears at `Main.kt:242` only inside a failure *message*. `ReconcilerTest`'s
+      heights are hand-built `TmuxPane` fixtures, not real tmux. So nothing in the suite pins an exact
+      pane height and `status off` moves no assertion)
 
 ### Task 7: [Final] Update documentation
 
