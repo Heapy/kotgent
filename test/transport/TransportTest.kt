@@ -5,6 +5,7 @@ import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.cli.DaemonPush
 import io.kotgent.cli.startDaemonServer
+import io.kotgent.cli.withStartupCompensation
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -50,6 +51,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -194,6 +196,47 @@ class TransportTest {
             assertTrue(
                 failure.suppressedExceptions.any { it === closeFailure },
                 "the push cleanup failure is attached to the primary error: ${failure.suppressedExceptions}",
+            )
+        }
+    }
+
+    @Test
+    fun cancelledPushAssemblyCompensatesBeforeADaemonPushExists() = runBlocking {
+        withTimeout(20_000) {
+            val primary = CancellationException("notifier startup cancelled")
+            val closeFailure = IllegalStateException("transport close failed")
+            val cleanupCompleted = CompletableDeferred<Unit>()
+            val observed = CompletableDeferred<Throwable>()
+            var closeCalls = 0
+
+            val startup = launch {
+                try {
+                    withStartupCompensation(
+                        compensate = {
+                            yield()
+                            closeCalls++
+                            cleanupCompleted.complete(Unit)
+                            throw closeFailure
+                        },
+                    ) {
+                        // Model PushNotifier.start failing after DarwinPushTransport has been allocated but
+                        // before startPush can return the DaemonPush that normally owns its cleanup.
+                        currentCoroutineContext()[Job]!!.cancel(primary)
+                        throw primary
+                    }
+                } catch (failure: Throwable) {
+                    observed.complete(failure)
+                }
+            }
+
+            val failure = observed.await()
+            startup.join()
+            assertTrue(cleanupCompleted.isCompleted, "suspending transport cleanup survives startup cancellation")
+            assertEquals(1, closeCalls, "the pre-owner resource is compensated exactly once")
+            assertTrue(failure === primary, "the notifier startup cancellation remains primary")
+            assertTrue(
+                failure.suppressedExceptions.any { it === closeFailure },
+                "a failed transport close remains visible on the primary cancellation",
             )
         }
     }
@@ -1081,6 +1124,8 @@ class TransportTest {
             replay = 0, extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST,
         )
         override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
+        private val reliableUpdates = MutableSharedFlow<SessionUpdate>()
+        override val reliableSessionUpdates: SharedFlow<SessionUpdate> get() = reliableUpdates
 
         /**
          * The fake's [io.kotgent.store.SqliteEventStore] `emitFromRow`: rebuild the signal from the STORED
@@ -1089,9 +1134,9 @@ class TransportTest {
          * unconditionally and which therefore un-hides a "done" row if any emitter drops it. [append] is the
          * one exception, mirroring the real store (see its own note below).
          */
-        private fun emitFromMeta(sessionId: SessionId) {
+        private suspend fun emitFromMeta(sessionId: SessionId) {
             val m = metas[sessionId] ?: return
-            updates.tryEmit(
+            emitUpdate(
                 SessionUpdate(sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), m.archived),
             )
         }
@@ -1171,7 +1216,7 @@ class TransportTest {
             // meta row exists (the event was stored regardless). read_cursor and archived are untouched by an
             // append but still ride it — an event on a done session must not un-hide its row.
             val cached = metas[sessionId]
-            updates.tryEmit(
+            emitUpdate(
                 SessionUpdate(
                     sessionId, next.state, next.lastSeq,
                     unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), cached?.archived ?: false,
@@ -1179,6 +1224,12 @@ class TransportTest {
             )
             subs[sessionId]?.forEach { it.trySend(stored) }
             next.lastSeq
+        }
+
+        /** Mirror production: the UI signal may drop, while the notifier signal preserves committed order. */
+        private suspend fun emitUpdate(update: SessionUpdate) {
+            updates.tryEmit(update)
+            reliableUpdates.emit(update)
         }
 
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = mutex.withLock {

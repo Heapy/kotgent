@@ -18,6 +18,39 @@ import {
 } from "../lib/push.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
 
+const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
+
+/**
+ * Bound how long one push transition occupies the serialized queue. A deadline releases the next choice,
+ * but ONLY a newer generation makes the operation stale. A later user choice aborts cancelable reads;
+ * non-cancelable browser mutations may settle later and repair the newest desired state.
+ */
+function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onController) {
+  const controller = new AbortController();
+  let timeout = null;
+  const context = {
+    isCurrent: isGenerationCurrent,
+    repairLatest: repairLatest,
+    signal: controller.signal,
+  };
+  onController(controller, controller);
+  const task = Promise.resolve()
+    .then(() => operation(context))
+    .finally(() => onController(null, controller));
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error("push subscription transition timed out"));
+    }, PUSH_TRANSITION_TIMEOUT_MS);
+    controller.signal.addEventListener("abort", () => {
+      onController(null, controller);
+      reject(new Error("push subscription transition cancelled"));
+    }, { once: true });
+  });
+  return Promise.race([task, deadline]).finally(() => {
+    if (timeout !== null) clearTimeout(timeout);
+  });
+}
+
 function SessionRow({ session, active, onSelect, onRestore }) {
   const badge = stateBadge(session.state);
   const select = () => onSelect(session.id);
@@ -113,7 +146,49 @@ export function Sidebar({
   const notifyOnRef = useRef(notifyOn);
   const pushTransitionRef = useRef(Promise.resolve());
   const pushTransitionIdRef = useRef(0);
+  const pushTransitionAbortRef = useRef(new Set());
+  const pushRepairGenerationRef = useRef(null);
+  const pushPermissionRef = useRef({ transition: 0, request: null });
+  const repairPushRef = useRef(() => {});
   useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
+  const queuePushTransition = useCallback((transition, operation, warning) => {
+    const isGenerationCurrent = () => transition === pushTransitionIdRef.current;
+    pushTransitionRef.current = pushTransitionRef.current
+      .then(() => {
+        if (!isGenerationCurrent()) return undefined;
+        return boundedPushTransition(
+          operation,
+          isGenerationCurrent,
+          () => repairPushRef.current(),
+          (controller, owner) => {
+            if (controller) pushTransitionAbortRef.current.add(controller);
+            else pushTransitionAbortRef.current.delete(owner);
+          },
+        );
+      })
+      .catch((e) => console.warn(warning, e));
+  }, []);
+  repairPushRef.current = () => {
+    const transition = pushTransitionIdRef.current;
+    if (pushRepairGenerationRef.current === transition) return;
+    pushRepairGenerationRef.current = transition;
+    queuePushTransition(
+      transition,
+      (context) => {
+        if (pushRepairGenerationRef.current === transition) {
+          pushRepairGenerationRef.current = null;
+        }
+        if (!context.isCurrent()) return undefined;
+        const permission = pushPermissionRef.current;
+        return notifyOnRef.current
+          ? (permission.transition === transition && permission.request
+              ? pushSubscribe(permission.request, context)
+              : refreshPush(context))
+          : pushUnsubscribe(context);
+      },
+      "kotgent: push subscription repair failed",
+    );
+  };
   const toggleGroup = useCallback((path) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -124,15 +199,43 @@ export function Sidebar({
   // A subscription can vanish without this page being told (the browser drops it, site data is cleared),
   // and a stale "push is on" belief would silence the in-tab notifications too. Put this reconciliation
   // through the same queue as clicks so it cannot overwrite a newer subscribe/unsubscribe transition.
+  // The preference is origin-wide localStorage, so another open client must supersede this one's work too.
   useEffect(() => {
-    const transition = ++pushTransitionIdRef.current;
-    pushTransitionRef.current = pushTransitionRef.current
-      .then(() => {
-        if (transition !== pushTransitionIdRef.current) return undefined;
-        return notifyOnRef.current ? refreshPush() : pushUnsubscribe();
-      })
-      .catch((e) => console.warn("kotgent: push subscription refresh failed", e));
-  }, []);
+    const syncNotificationPreference = () => {
+      const next = notifyEnabled();
+      if (next === notifyOnRef.current) return false;
+      notifyOnRef.current = next;
+      setNotifyOn(next);
+      const syncedTransition = ++pushTransitionIdRef.current;
+      pushPermissionRef.current = { transition: syncedTransition, request: null };
+      pushRepairGenerationRef.current = null;
+      Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
+      queuePushTransition(
+        syncedTransition,
+        (context) => next ? refreshPush(context) : pushUnsubscribe(context),
+        "kotgent: cross-tab push reconciliation failed",
+      );
+      return true;
+    };
+    window.addEventListener("storage", syncNotificationPreference);
+    // Close the render→effect listener gap before the initial reconciliation: if storage changed there,
+    // the sync owns the transition; otherwise queue the ordinary mount refresh exactly once.
+    if (!syncNotificationPreference()) {
+      const transition = ++pushTransitionIdRef.current;
+      pushPermissionRef.current = { transition: transition, request: null };
+      queuePushTransition(
+        transition,
+        (context) => notifyOnRef.current ? refreshPush(context) : pushUnsubscribe(context),
+        "kotgent: push subscription refresh failed",
+      );
+    }
+    return () => {
+      window.removeEventListener("storage", syncNotificationPreference);
+      pushTransitionIdRef.current += 1;
+      repairPushRef.current = () => {};
+      Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
+    };
+  }, [queuePushTransition]);
   const toggleNotifications = () => {
     const next = !notifyOnRef.current;
     notifyOnRef.current = next;
@@ -144,14 +247,16 @@ export function Sidebar({
     // transition. Awaiting the queue first would lose the user gesture and Safari would refuse to prompt.
     const permission = next ? ensurePermission() : null;
     const transition = ++pushTransitionIdRef.current;
-    pushTransitionRef.current = pushTransitionRef.current
-      .then(async () => {
-        if (transition !== pushTransitionIdRef.current) return;
-        if (next) await pushSubscribe(permission);
-        else await pushUnsubscribe();
-      })
+    pushPermissionRef.current = { transition: transition, request: permission };
+    pushRepairGenerationRef.current = null;
+    // A fetch can be cancelled; a PushManager mutation cannot, and will repair the newest generation later.
+    Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
+    queuePushTransition(
+      transition,
+      (context) => next ? pushSubscribe(permission, context) : pushUnsubscribe(context),
       // A failed subscribe is a downgrade, not an error the operator must act on: the tab keeps notifying.
-      .catch((e) => console.warn("kotgent: push subscription transition failed", e));
+      "kotgent: push subscription transition failed",
+    );
   };
   // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
   // and every count — and only surfaced under an explicit "Show done" toggle.

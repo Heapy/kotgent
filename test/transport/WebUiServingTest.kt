@@ -107,6 +107,28 @@ class WebUiServingTest {
         val loadEnd = body.indexOf("\n  }, [cancelReattach", startIndex = loadStart.coerceAtLeast(0))
         assertTrue(loadStart >= 0 && loadEnd > loadStart, "the session loader is present and bounded")
         val loadSessions = body.substring(loadStart, loadEnd)
+        val versionCaptureAt = loadSessions.indexOf("const version = ++sessionsLoadVersionRef.current")
+        val responseAt = loadSessions.indexOf("const list = await apiRequest(\"/sessions\")")
+        val staleGuard = "if (version !== sessionsLoadVersionRef.current) return"
+        val successGuardAt = loadSessions.indexOf(staleGuard)
+        val setSessionsAt = loadSessions.indexOf("setSessions(list)")
+        assertTrue(
+            body.contains("const sessionsLoadVersionRef = useRef(0)") &&
+                versionCaptureAt in 0 until responseAt &&
+                successGuardAt in (responseAt + 1) until setSessionsAt,
+            "only the newest concurrent /sessions response may mutate the session list",
+        )
+        val catchAt = loadSessions.indexOf("} catch (e) {")
+        val errorGuardAt = loadSessions.indexOf(
+            staleGuard,
+            startIndex = (successGuardAt + staleGuard.length).coerceAtLeast(0),
+        )
+        val redirectAt = loadSessions.indexOf("window.location.replace(AUTH_PATH)")
+        val errorStatusAt = loadSessions.indexOf("say(\"Could not load sessions:")
+        assertTrue(
+            errorGuardAt in (catchAt + 1) until minOf(redirectAt, errorStatusAt),
+            "an older failed /sessions request cannot overwrite a newer response or redirect the page",
+        )
         assertTrue(
             Regex(
                 """(?s)if \(isFirstLoad && isUnauthenticated\(e\)\) \{\s*""" +
@@ -444,6 +466,22 @@ class WebUiServingTest {
         // Payload-less push: the worker is told only THAT something happened and asks the daemon what.
         assertTrue(body.contains("\"/sessions\""), "the worker learns which sessions are waiting from /sessions")
         assertTrue(body.contains("credentials: \"include\""), "that fetch carries the session cookie")
+        val waitingSessions = body.substringAfter("async function waitingSessions() {")
+            .substringBefore("\n}\n\nfunction sessionName")
+        val fetchAt = waitingSessions.indexOf("await fetch(SESSIONS_URL")
+        val jsonAt = waitingSessions.indexOf("await resp.json()")
+        val finallyAt = waitingSessions.indexOf("} finally {")
+        assertTrue(
+            body.contains("const SESSIONS_TIMEOUT_MS = 10_000") &&
+                waitingSessions.contains("const controller = new AbortController()") &&
+                waitingSessions.contains(
+                    "setTimeout(() => controller.abort(), SESSIONS_TIMEOUT_MS)",
+                ) &&
+                waitingSessions.contains("signal: controller.signal") &&
+                waitingSessions.contains("clearTimeout(timeout)") &&
+                fetchAt >= 0 && jsonAt > fetchAt && finallyAt > jsonAt,
+            "a stalled sessions response is aborted through body decoding so the generic banner can still run",
+        )
         assertTrue(
             body.contains("needsAttention") && body.contains("archived"),
             "it filters on the same needsAttention && !archived rule the daemon's tracker uses",
@@ -506,47 +544,130 @@ class WebUiServingTest {
             .substringBefore("\n}\n\n/**")
         val permissionAt = subscribe.indexOf("ensurePermission()")
         val permissionAwaitAt = subscribe.indexOf("await permission")
-        val registrationAt = subscribe.indexOf("await activeRegistration()")
+        val registrationAt = subscribe.indexOf("await activeRegistration(context)")
         assertTrue(
             permissionAt >= 0 && permissionAwaitAt > permissionAt && registrationAt > permissionAwaitAt,
             "notification permission is requested before the first service-worker/network await (required by iOS)",
         )
-        val vapidKey = body.substringAfter("async function vapidKeyOrNull() {")
+        val vapidKey = body.substringAfter("async function vapidKeyOrNull(context) {")
             .substringBefore("\n}\n\n/**")
         assertTrue(
-            vapidKey.contains("await apiRequest(VAPID_KEY_URL)") &&
+            vapidKey.contains("await apiRequest(VAPID_KEY_URL, { signal: context.signal })") &&
                 vapidKey.contains("catch (_)") &&
                 vapidKey.contains("return null") &&
-                vapidKey.indexOf("return responseKey(response)") > vapidKey.indexOf("catch (_)"),
+                vapidKey.indexOf("context.isCurrent() ? responseKey(response) : null") >
+                vapidKey.indexOf("catch (_)"),
             "an unavailable VAPID route downgrades to no push while a malformed success remains an error",
         )
         assertTrue(
-            subscribe.contains("const key = await vapidKeyOrNull()") &&
+            subscribe.contains("const key = await vapidKeyOrNull(context)") &&
                 subscribe.contains("if (!key) return false"),
             "subscribe reports the daemon's unavailable-push response as false instead of rejecting",
         )
-        val register = body.substringAfter("async function registerSubscription(subscription) {")
+        val activateAt = subscribe.indexOf("setPushActive(true)")
+        assertTrue(
+            subscribe.lastIndexOf("if (!context.isCurrent()) return false", startIndex = activateAt) in
+                0 until activateAt,
+            "a superseded subscribe cannot restore the active mirror flag",
+        )
+        val mutation = body.substringAfter("async function settleMutation(promise, context) {")
             .substringBefore("\n}\n\n/**")
         assertTrue(
-            register.contains("apiRequest(SUBSCRIBE_URL") &&
+            mutation.contains("return await promise") &&
+                mutation.contains("finally") &&
+                mutation.contains("if (!context.isCurrent()) context.repairLatest()"),
+            "every irreversible push operation can repair the latest choice after a stale completion",
+        )
+        val keyComparison = body.substringAfter(
+            "function applicationServerKeyDiffers(subscription, requestedKey) {",
+        ).substringBefore("\n}\n\n/**")
+        assertTrue(
+            keyComparison.contains("if (!storedKey) return false") &&
+                keyComparison.contains("stored.length !== requestedKey.length") &&
+                keyComparison.contains("stored.some((value, index) => value !== requestedKey[index])"),
+            "an existing subscription is considered mismatched only from comparable application-key bytes",
+        )
+        val subscribeWith = body.substringAfter("async function subscribeWith(registration, key, context) {")
+            .substringBefore("\n}\n\n/**")
+        val getExistingAt = subscribeWith.indexOf("await registration.pushManager.getSubscription()")
+        val currentBeforeMismatchAt = subscribeWith.indexOf(
+            "if (!context.isCurrent()) return null",
+            startIndex = getExistingAt.coerceAtLeast(0),
+        )
+        val mismatchGuardAt = subscribeWith.indexOf(
+            "!applicationServerKeyDiffers(existing, options.applicationServerKey)",
+        )
+        val dropExistingAt = subscribeWith.indexOf("settleMutation(existing.unsubscribe(), context)")
+        val currentAfterDropAt = subscribeWith.indexOf(
+            "if (!context.isCurrent()) return null",
+            startIndex = dropExistingAt.coerceAtLeast(0),
+        )
+        assertTrue(
+            currentBeforeMismatchAt in (getExistingAt + 1) until mismatchGuardAt &&
+                mismatchGuardAt in (currentBeforeMismatchAt + 1) until dropExistingAt &&
+                currentAfterDropAt > dropExistingAt &&
+                subscribeWith.split("settleMutation(").size - 1 == 3,
+            "a subscribe rejection drops an existing endpoint only for a proven VAPID-key mismatch",
+        )
+        val register = body.substringAfter("async function registerSubscription(subscription, context) {")
+            .substringBefore("\n}\n\n/**")
+        val remember = body.substringAfter("function rememberEndpoint(endpoint) {")
+            .substringBefore("\n}")
+        val remembered = body.substringAfter("function rememberedEndpoints() {")
+            .substringBefore("\n}")
+        val rememberAt = register.indexOf("rememberEndpoint(json.endpoint)")
+        val registerPostAt = register.indexOf("apiRequest(SUBSCRIBE_URL")
+        assertTrue(
+            rememberAt in 0 until registerPostAt &&
+                remember.indexOf("endpointMemory = endpoint") in
+                0 until remember.indexOf("window.localStorage.setItem(ENDPOINT_KEY, endpoint)") &&
+                register.contains("settleMutation(") &&
                 register.contains("endpoint: json.endpoint") &&
                 register.contains("p256dh: keys.p256dh") &&
-                register.contains("auth: keys.auth"),
-            "registration POSTs its endpoint and both browser keys to the subscribe route",
+                register.contains("auth: keys.auth") &&
+                register.contains("return context.isCurrent()"),
+            "registration remembers the endpoint before its repairable daemon write",
         )
-        val unsubscribe = body.substringAfter("export async function unsubscribe() {")
+        assertTrue(
+            remembered.contains("if (endpointMemory) endpoints.add(endpointMemory)") &&
+                remembered.contains("window.localStorage.getItem(ENDPOINT_KEY)") &&
+                remembered.contains("if (stored) endpoints.add(stored)") &&
+                remembered.contains("return endpoints"),
+            "OFF reads both this tab's endpoint and the latest cross-tab endpoint from origin storage",
+        )
+        val unsubscribe = body.substringAfter("export async function unsubscribe(transition = DEFAULT_TRANSITION) {")
             .substringBefore("\n}\n\n/**")
-        assertTrue(
-            unsubscribe.contains("apiRequest(UNSUBSCRIBE_URL") &&
-                unsubscribe.contains("endpoint: subscription.endpoint"),
-            "unsubscribe POSTs the browser endpoint to the unsubscribe route before dropping it",
+        val cachedDropAt = unsubscribe.indexOf("rememberedEndpoints().forEach(startDaemonDrop)")
+        val browserLookupAt = unsubscribe.indexOf("await navigator.serviceWorker.getRegistration()")
+        val discoveredDropAt = unsubscribe.indexOf("startDaemonDrop(endpoint)")
+        val browserUnsubscribeAt = unsubscribe.indexOf(
+            "settleMutation(subscription.unsubscribe(), context)",
         )
-        val refresh = body.substringAfter("export async function refreshActive() {")
-            .substringBefore("\n}")
+        val cleanupFinallyAt = unsubscribe.indexOf("} finally {")
+        val waitForDaemonAt = unsubscribe.indexOf("await Promise.allSettled(", cleanupFinallyAt)
         assertTrue(
-            refresh.indexOf("await registerSubscription(subscription)") in
-                0 until refresh.indexOf("setPushActive(true)"),
-            "reload marks push active only after the daemon has accepted the browser subscription",
+            cachedDropAt in 0 until browserLookupAt &&
+                discoveredDropAt in (browserLookupAt + 1) until browserUnsubscribeAt &&
+                unsubscribe.contains("apiRequest(UNSUBSCRIBE_URL") &&
+                unsubscribe.contains("body: JSON.stringify({ endpoint: endpoint })") &&
+                unsubscribe.split("settleMutation(").size - 1 == 2 &&
+                cleanupFinallyAt > browserUnsubscribeAt &&
+                waitForDaemonAt > cleanupFinallyAt &&
+                unsubscribe.contains("catch (_)") &&
+                !body.contains("removeItem(ENDPOINT_KEY)"),
+            "OFF repairs late daemon/browser writes and retains the endpoint for a stale subscribe compensation",
+        )
+        val refresh = body.substringAfter("export async function refreshActive(transition = DEFAULT_TRANSITION) {")
+            .substringBefore("\n}")
+        val refreshRememberAt = refresh.indexOf("rememberEndpoint(existing.endpoint)")
+        val refreshKeyAt = refresh.indexOf("await vapidKeyOrNull(context)")
+        assertTrue(
+            refresh.indexOf("await registerSubscription(subscription, context)") in
+                0 until refresh.indexOf("setPushActive(true)") &&
+                refreshRememberAt in 0 until refreshKeyAt &&
+                refresh.contains("Notification.permission === \"granted\"") &&
+                refresh.contains("subscribe(Promise.resolve(true), context)"),
+            "reload caches its endpoint early, activates after daemon registration, and repairs without prompting",
         )
 
         // The toggle that drives it is the sidebar's, and the two notification paths must not both fire.
@@ -557,15 +678,65 @@ class WebUiServingTest {
             .substringBefore("\n  };")
         assertTrue(
             toggle.indexOf("const permission = next ? ensurePermission() : null") in
-                0 until toggle.indexOf("pushTransitionRef.current = pushTransitionRef.current"),
+                0 until toggle.indexOf("queuePushTransition("),
             "an enable click claims notification permission synchronously before entering the transition queue",
         )
+        val boundedTransition = sidebar.substringAfter(
+            "function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onController) {",
+        ).substringBefore("\n}\n\nfunction SessionRow")
+        assertTrue(
+            sidebar.contains("const PUSH_TRANSITION_TIMEOUT_MS = 10_000") &&
+                boundedTransition.contains("Promise.race([task, deadline])") &&
+                boundedTransition.contains("isCurrent: isGenerationCurrent") &&
+                !boundedTransition.contains("active = false") &&
+                !boundedTransition.contains("controller.abort()") &&
+                boundedTransition.contains("signal.addEventListener(\"abort\"") &&
+                boundedTransition.contains(".finally(() => onController(null, controller))") &&
+                boundedTransition.contains("clearTimeout(timeout)"),
+            "a deadline releases the queue without poisoning a still-current user choice",
+        )
+        val queue = sidebar.substringAfter(
+            "const queuePushTransition = useCallback((transition, operation, warning) => {",
+        ).substringBefore("\n  }, []);")
+        val repair = sidebar.substringAfter("repairPushRef.current = () => {")
+            .substringBefore("\n  const toggleGroup")
         assertTrue(
             sidebar.contains("const pushTransitionRef = useRef(Promise.resolve())") &&
-                toggle.contains("transition !== pushTransitionIdRef.current") &&
-                toggle.contains("await pushSubscribe(permission)") &&
-                toggle.contains("await pushUnsubscribe()"),
-            "opposing notification clicks are serialized and stale queued transitions are skipped",
+                queue.contains("pushTransitionRef.current = pushTransitionRef.current") &&
+                queue.contains("transition === pushTransitionIdRef.current") &&
+                queue.contains("boundedPushTransition(") &&
+                queue.contains("() => repairPushRef.current()") &&
+                toggle.contains("pushSubscribe(permission, context)") &&
+                toggle.contains("pushUnsubscribe(context)") &&
+                toggle.contains(
+                    "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
+                ) &&
+                repair.contains("pushRepairGenerationRef.current === transition") &&
+                repair.contains("notifyOnRef.current") &&
+                repair.contains("refreshPush(context)") &&
+                repair.contains("pushUnsubscribe(context)"),
+            "opposing clicks cancel cancelable reads while stale mutations coalesce a latest-state repair",
+        )
+        val storageSync = sidebar.substringAfter("const syncNotificationPreference = () => {")
+            .substringBefore("\n    };")
+        val addStorageListenerAt = sidebar.indexOf(
+            "window.addEventListener(\"storage\", syncNotificationPreference)",
+        )
+        val closeListenerGapAt = sidebar.indexOf("if (!syncNotificationPreference())")
+        assertTrue(
+            storageSync.contains("const next = notifyEnabled()") &&
+                storageSync.contains("if (next === notifyOnRef.current) return false") &&
+                storageSync.contains("notifyOnRef.current = next") &&
+                storageSync.contains("setNotifyOn(next)") &&
+                storageSync.contains("++pushTransitionIdRef.current") &&
+                storageSync.contains(
+                    "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
+                ) &&
+                storageSync.contains("next ? refreshPush(context) : pushUnsubscribe(context)") &&
+                addStorageListenerAt >= 0 &&
+                closeListenerGapAt > addStorageListenerAt &&
+                sidebar.contains("window.removeEventListener(\"storage\", syncNotificationPreference)"),
+            "another tab's per-device choice supersedes stale work, including the render-to-listener gap",
         )
         val notify = ctx.get("/lib/notify.js").bodyAsText()
         assertTrue(
@@ -584,6 +755,16 @@ class WebUiServingTest {
                 workerMessage.contains("loadRef.current()"),
             "a notification target missing from a stale snapshot is retained and selected after a reload",
         )
+        val knownTarget = workerMessage.substringAfter(
+            "if (sessionsRef.current.some((session) => session.id === msg.sessionId)) {",
+        ).substringBefore("\n      }")
+        assertTrue(
+            knownTarget.indexOf("deepLinkRef.current = null") in
+                0 until knownTarget.indexOf("sessionsLoadVersionRef.current += 1") &&
+                knownTarget.indexOf("sessionsLoadVersionRef.current += 1") in
+                0 until knownTarget.indexOf("selectSession(msg.sessionId)"),
+            "a known notification target invalidates older loads before it is selected immediately",
+        )
         val reloadSelection = app.substringAfter("const wanted = deepLinkRef.current;")
             .substringBefore("\n    } catch (e) {")
         val targetGuard = reloadSelection.indexOf("if (target) {")
@@ -591,7 +772,7 @@ class WebUiServingTest {
             targetGuard >= 0 &&
                 reloadSelection.indexOf("deepLinkRef.current = null") > targetGuard &&
                 reloadSelection.indexOf("showSession(target)") > targetGuard,
-            "an older in-flight list cannot discard the retained target before a refreshed list contains it",
+            "a list that does not contain the notification target leaves it retained for a later refresh",
         )
     }
 
@@ -916,9 +1097,10 @@ class WebUiServingTest {
         assertTrue(
             app.contains("const reattachIdRef = useRef(null)") &&
                 app.contains("const reattachTimerRef = useRef(null)") &&
+                app.contains("const reattachRequestRef = useRef(null)") &&
                 app.contains("const reattachAvailableRef = useRef(false)") &&
                 !app.contains("reattachPendingRef"),
-            "the app keeps one candidate, uses the timer itself as the pending guard, and grants one attempt",
+            "the app keeps one candidate, one queued timer, one owned async request, and one attempt grant",
         )
         assertTrue(
             app.contains("document.addEventListener(\"visibilitychange\", reconnectWhenVisible)") &&
@@ -928,25 +1110,43 @@ class WebUiServingTest {
 
         val schedule = app.substringAfter("const scheduleReattach = useCallback(() => {")
             .substringBefore("\n  }, []);")
+        val freshSessionAt = schedule.indexOf("\"/sessions/\" + encodeURIComponent(id)")
         val attachAt = schedule.indexOf("setAttachedId(id)")
-        assertTrue(attachAt >= 0, "a valid foreground retry restores the attachment")
+        assertTrue(
+            freshSessionAt >= 0 && attachAt > freshSessionAt,
+            "a foreground retry asks the daemon for current liveness before restoring the attachment",
+        )
+        assertTrue(
+            app.contains("const REATTACH_LIVENESS_TIMEOUT_MS = 10_000") &&
+                schedule.contains("const controller = new AbortController()") &&
+                schedule.indexOf("reattachRequestRef.current = controller") in
+                0 until schedule.indexOf("if (previousRequest) previousRequest.abort()") &&
+                schedule.contains("() => controller.abort()") &&
+                schedule.contains("{ signal: controller.signal }") &&
+                schedule.contains("clearTimeout(livenessTimeout)") &&
+                schedule.contains(
+                    "if (reattachRequestRef.current === controller) reattachRequestRef.current = null",
+                ),
+            "a stalled liveness request is bounded and only its current owner may clean up the attempt",
+        )
         for (guard in listOf(
+            "reattachRequestRef.current !== controller",
+            "reattachIdRef.current !== id",
             "document.visibilityState !== \"visible\"",
-            "!reattachAvailableRef.current",
-            "reattachTimerRef.current !== null",
-            "const id = reattachIdRef.current",
             "activeRef.current !== id",
-            "!isAliveState(s.state)",
             "pendingRef.current",
+            "!isAliveState(s.state)",
         )) {
             assertTrue(
-                schedule.indexOf(guard) in 0 until attachAt,
-                "$guard is checked before a replacement terminal is attached",
+                schedule.indexOf(guard, startIndex = freshSessionAt) in (freshSessionAt + 1) until attachAt,
+                "$guard is re-checked after the daemon response and before a replacement terminal is attached",
             )
         }
         assertTrue(
-            schedule.indexOf("reattachTimerRef.current = setTimeout(() => {") >= 0,
-            "the timer handle itself records that a reconnect is already pending",
+            schedule.indexOf("reattachTimerRef.current = setTimeout(async () => {") >= 0 &&
+                schedule.indexOf("!reattachAvailableRef.current") in 0 until freshSessionAt &&
+                schedule.indexOf("reattachTimerRef.current !== null") in 0 until freshSessionAt,
+            "the timer handle guards the queued callback before controller identity owns the async work",
         )
         assertTrue(
             schedule.indexOf("if (!id || document.visibilityState !== \"visible\") return") in
@@ -954,9 +1154,21 @@ class WebUiServingTest {
             "a foreground timer that wins the race with the close callback preserves the one available retry",
         )
         assertTrue(
-            Regex("""(?s)if \(!isAliveState\(s\.state\)\) \{.*?setHint\(deadHint\(s\.state\)\);.*?return;""")
+            Regex(
+                """(?s)if \(!s \|\| !isAliveState\(s\.state\)\) \{.*?""" +
+                    """setHint\(deadHint\(s && s\.state\)\);.*?return;""",
+            )
                 .containsMatchIn(schedule),
-            "a session that died while hidden is explained and never reattached",
+            "a fresh daemon response that says the session died is explained and never reattached",
+        )
+        val failedRefresh = schedule.substringAfter("} catch (_) {")
+            .substringBefore("\n      } finally {")
+        assertTrue(
+            failedRefresh.indexOf("reattachRequestRef.current !== controller") in
+                0 until failedRefresh.indexOf("reattachIdRef.current = null") &&
+                failedRefresh.indexOf("reattachIdRef.current = null") in
+                0 until failedRefresh.indexOf("setHint(detachedHint(null))"),
+            "only the owning failed refresh consumes the retry, without claiming stale liveness",
         )
         assertTrue(
             schedule.indexOf("reattachIdRef.current = null") in 0 until attachAt,
@@ -966,9 +1178,14 @@ class WebUiServingTest {
         val visible = app.substringAfter("const reconnectWhenVisible = () => {")
             .substringBefore("\n    };")
         assertTrue(
-            visible.contains("reattachAvailableRef.current = document.visibilityState === \"visible\"") &&
+            visible.contains("const visible = document.visibilityState === \"visible\"") &&
+                visible.contains("reattachAvailableRef.current = visible") &&
+                visible.contains("if (!visible)") &&
+                visible.contains("reattachRequestRef.current = null") &&
+                visible.contains("if (request) request.abort()") &&
+                !visible.contains("reattachIdRef.current = null") &&
                 visible.contains("scheduleReattach()"),
-            "foregrounding grants one attempt and schedules it across a render boundary",
+            "hiding aborts stale async work but retains its candidate; foregrounding grants a fresh attempt",
         )
 
         val cancel = app.substringAfter("const cancelReattach = useCallback(() => {")
@@ -976,8 +1193,10 @@ class WebUiServingTest {
         assertTrue(
             cancel.contains("clearTimeout(reattachTimerRef.current)") &&
                 cancel.contains("reattachAvailableRef.current = false") &&
-                cancel.contains("reattachIdRef.current = null"),
-            "explicit intent and unmount cancel both the timer and its stale attachment candidate",
+                cancel.contains("reattachIdRef.current = null") &&
+                cancel.indexOf("reattachRequestRef.current = null") in
+                0 until cancel.indexOf("if (request) request.abort()"),
+            "explicit intent invalidates ownership before aborting async work and clears the candidate/timer",
         )
 
         val closed = app.substringAfter("const onTerminalClosed = useCallback((id) => {")

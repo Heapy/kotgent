@@ -466,9 +466,10 @@ object Commands {
      * [scope], returning what [KotgentServer] and the shutdown path need — or `null` when push cannot be
      * wired at all.
      *
-     * Push is an OPTIONAL capability, so this never throws: the only failure that can happen here and now
-     * is the subscription table (everything else is lazy), and it degrades to "no `/push` routes, no
-     * notifier" plus one line on stderr. A missing `/usr/bin/openssl` or an unwritable
+     * Push is an OPTIONAL capability, so an unusable subscription table degrades to "no `/push` routes, no
+     * notifier" plus one line on stderr. Lifecycle cancellation or a notifier-startup fault still
+     * propagates, but the already-created Darwin transport is compensated before it does. A missing
+     * `/usr/bin/openssl` or an unwritable
      * `~/.kotgent/vapid.pem` cannot be detected without generating the key, which would make every daemon
      * pay for a feature most never enable — so those surface at first use instead: a `503` from
      * `GET /push/vapid-key` (the browser then simply cannot turn notifications on) and one
@@ -495,24 +496,30 @@ object Commands {
         val signer = OpensslVapidSigner(keyPath = key.keyPath)
         val tokens = VapidTokenCache(subject = vapidSubject(publicUrl), sign = signer::sign)
         val transport = DarwinPushTransport()
-        val sender = PushSender(
-            store = subscriptions,
-            publicKey = key::publicKeyBase64Url,
-            vapidToken = tokens::tokenFor,
-            transport = transport,
-        )
-        // Started here — i.e. AFTER rebuildRegistryFromStore() + Reconciler.reconcile() — so the baseline
-        // already contains the startup reclassifications. start() is a readiness barrier: do not return
-        // until the flow is subscribed, because the server binds immediately after this helper.
-        val notifier = PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
-        return DaemonPush(
-            subscriptions,
-            key::publicKeyBase64Url,
-            close = {
-                notifier.cancelAndJoin()
-                transport.close()
-            },
-        )
+        // The Darwin client owns an NSURLSession immediately, so everything from here until a DaemonPush
+        // owner is returned lives inside one compensation boundary.
+        return withStartupCompensation(
+            compensate = { transport.close() },
+        ) {
+            val sender = PushSender(
+                store = subscriptions,
+                publicKey = key::publicKeyBase64Url,
+                vapidToken = tokens::tokenFor,
+                transport = transport,
+            )
+            // Started here — i.e. AFTER rebuildRegistryFromStore() + Reconciler.reconcile() — so the
+            // baseline already contains the startup reclassifications. start() is a readiness barrier: do
+            // not return until the flow is subscribed, because the server binds immediately afterwards.
+            val notifier = PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
+            DaemonPush(
+                subscriptions,
+                key::publicKeyBase64Url,
+                close = {
+                    notifier.cancelAndJoin()
+                    transport.close()
+                },
+            )
+        }
     }
 
     /**

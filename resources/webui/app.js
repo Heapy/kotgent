@@ -38,6 +38,7 @@ import { TerminalPane } from "./components/TerminalPane.js";
 import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./components/dialogs.js";
 
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
+const REATTACH_LIVENESS_TIMEOUT_MS = 10_000;
 
 /**
  * The query parameter a notification tap deep-links with (`/?session=<id>`) — the shape `sw.js` builds in
@@ -177,14 +178,21 @@ function App() {
   // nothing until the list exists). Seeded from the URL at mount; a focused stale client can replace it
   // with the worker's message and trigger a refresh.
   const deepLinkRef = useRef(deepLinkSessionId());
-  // Whether the /sessions load about to run is the FIRST one — the only one whose 401 means "this browser
-  // was never signed in" rather than "the credential died under a running page" (see loadSessions).
+  // Whether the initial /sessions phase has succeeded — before that, a current 401 means "this browser was
+  // never signed in"; afterwards it means the credential died under a running page (see loadSessions).
   const firstLoadRef = useRef(true);
+  // Only the newest list response may mutate state. A notification can request a refresh while the initial
+  // load is still in flight, and letting that older response land last would erase the notification target.
+  const sessionsLoadVersionRef = useRef(0);
   // An unexpected terminal close leaves one reattach candidate. The timer is a deliberate render
   // boundary: setting attachedId null and straight back to the same id in one turn can be batched into no
   // change, so TerminalPane's keyed effect would never build a replacement socket.
   const reattachIdRef = useRef(null);
   const reattachTimerRef = useRef(null);
+  // The AbortController is also the ownership token for the async liveness read. Timer identity only
+  // guards a queued callback; once it fires, this prevents an older same-id request from mutating a newer
+  // foreground attempt.
+  const reattachRequestRef = useRef(null);
   // A foreground transition grants one attempt. It remains available when the zero-delay timer wins the
   // race against the socket's close callback, then is consumed as soon as a real candidate is evaluated.
   const reattachAvailableRef = useRef(false);
@@ -192,6 +200,9 @@ function App() {
   const cancelReattach = useCallback(() => {
     reattachIdRef.current = null;
     reattachAvailableRef.current = false;
+    const request = reattachRequestRef.current;
+    reattachRequestRef.current = null;
+    if (request) request.abort();
     if (reattachTimerRef.current !== null) {
       clearTimeout(reattachTimerRef.current);
       reattachTimerRef.current = null;
@@ -227,10 +238,12 @@ function App() {
   }, [showSession]);
 
   const loadSessions = useCallback(async () => {
+    const version = ++sessionsLoadVersionRef.current;
     const isFirstLoad = firstLoadRef.current;
-    firstLoadRef.current = false;   // claimed up front, so a concurrent load is never "first" too
     try {
       const list = await apiRequest("/sessions");
+      if (version !== sessionsLoadVersionRef.current) return;
+      firstLoadRef.current = false;
       setSessions(list);
       say(list.length + " session(s).");
       // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
@@ -251,11 +264,12 @@ function App() {
         }
       }
     } catch (e) {
+      if (version !== sessionsLoadVersionRef.current) return;
       // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
       // its very first request is a 401 and there is no link to hand it. Send it to the sign-in page, where
       // the code form is the only way in. `replace` so the back button does not bounce straight back into
-      // this dead page. Only the FIRST load routes: a 401 later (a rotated token) leaves a live page with
-      // an attached terminal on screen, and navigating out from under it would throw that away silently.
+      // this dead page. Only the initial load phase routes: a 401 after one successful list (a rotated token)
+      // leaves a live page with an attached terminal on screen instead of throwing that terminal away.
       if (isFirstLoad && isUnauthenticated(e)) {
         window.location.replace(AUTH_PATH);
         return;
@@ -363,6 +377,11 @@ function App() {
       const msg = event.data;
       if (!msg || msg.type !== "select-session" || !msg.sessionId) return;
       if (sessionsRef.current.some((session) => session.id === msg.sessionId)) {
+        // This tap supersedes both an older retained target and any list already in flight. Otherwise an
+        // earlier unknown-session notification can land later and switch away from the session just tapped.
+        deepLinkRef.current = null;
+        clearDeepLink();
+        sessionsLoadVersionRef.current += 1;
         selectSession(msg.sessionId);
         return;
       }
@@ -379,7 +398,7 @@ function App() {
     if (document.visibilityState !== "visible" ||
         !reattachAvailableRef.current ||
         reattachTimerRef.current !== null) return;
-    reattachTimerRef.current = setTimeout(() => {
+    reattachTimerRef.current = setTimeout(async () => {
       reattachTimerRef.current = null;
       const id = reattachIdRef.current;
       // If visibility won the race with the queued WebSocket close, leave this foreground's one attempt
@@ -387,26 +406,51 @@ function App() {
       if (!id || document.visibilityState !== "visible") return;
       reattachAvailableRef.current = false;
 
-      // Re-read every value after the render boundary. A session may have died, been stopped, or been
-      // replaced while the app was hidden; none of those may resurrect an old terminal attachment.
-      const s = sessionsRef.current.find((session) => session.id === id);
-      if (activeRef.current !== id || !s) {
-        reattachIdRef.current = null;
-        return;
-      }
-      if (!isAliveState(s.state)) {
-        reattachIdRef.current = null;
-        setHint(deadHint(s.state));
-        return;
-      }
-      if (pendingRef.current) {
-        reattachIdRef.current = null;
-        return;
-      }
+      // The events socket can be suspended along with the terminal, so the cached row is not a liveness
+      // check. Ask the daemon for this session, then re-check every local intent after that await.
+      const controller = new AbortController();
+      const previousRequest = reattachRequestRef.current;
+      reattachRequestRef.current = controller;
+      if (previousRequest) previousRequest.abort();
+      const livenessTimeout = setTimeout(
+        () => controller.abort(),
+        REATTACH_LIVENESS_TIMEOUT_MS,
+      );
+      try {
+        const s = await apiRequest(
+          "/sessions/" + encodeURIComponent(id),
+          { signal: controller.signal },
+        );
+        if (reattachRequestRef.current !== controller) return;
+        if (reattachIdRef.current !== id) return;
+        if (document.visibilityState !== "visible") return;
+        if (activeRef.current !== id) {
+          reattachIdRef.current = null;
+          return;
+        }
+        if (pendingRef.current) {
+          reattachIdRef.current = null;
+          return;
+        }
+        if (!s || !isAliveState(s.state)) {
+          reattachIdRef.current = null;
+          setHint(deadHint(s && s.state));
+          return;
+        }
 
-      reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
-      setAttachedId(id);
-      setHint(null);
+        reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
+        setAttachedId(id);
+        setHint(null);
+      } catch (_) {
+        if (reattachRequestRef.current !== controller) return;
+        reattachIdRef.current = null;
+        // Failure means liveness is unknown; do not repeat the stale cached claim that the agent keeps
+        // running. The next events resync will supply a specific state if the daemon is reachable again.
+        if (activeRef.current === id) setHint(detachedHint(null));
+      } finally {
+        clearTimeout(livenessTimeout);
+        if (reattachRequestRef.current === controller) reattachRequestRef.current = null;
+      }
     }, 0);
   }, []);
 
@@ -417,7 +461,18 @@ function App() {
   // ordering while also forcing Preact to render the detached state first.
   useEffect(() => {
     const reconnectWhenVisible = () => {
-      reattachAvailableRef.current = document.visibilityState === "visible";
+      const visible = document.visibilityState === "visible";
+      reattachAvailableRef.current = visible;
+      if (!visible) {
+        if (reattachTimerRef.current !== null) {
+          clearTimeout(reattachTimerRef.current);
+          reattachTimerRef.current = null;
+        }
+        const request = reattachRequestRef.current;
+        reattachRequestRef.current = null;
+        if (request) request.abort();
+        return;
+      }
       scheduleReattach();
     };
 

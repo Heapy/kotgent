@@ -116,7 +116,7 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **603 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
+The suite currently reports **612 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
 plugin and the 11 real-PTY checks `ptycheck` runs (see below).
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
@@ -206,7 +206,8 @@ WebSocket), and renders a session's terminal with `xterm.js` over the terminal W
 keyboard input, resize). Its installable PWA layout adds a mobile sidebar drawer, safe-area handling,
 terminal sizing from `visualViewport`, and a phone-only row for Esc, Tab, Shift-Tab, arrows, Ctrl, and
 Ctrl-C. Terminal taps focus the software keyboard without Safari zooming the helper textarea, and a
-terminal socket lost while the app is backgrounded gets one liveness-checked reattach attempt on return.
+terminal socket lost while the app is backgrounded gets one bounded, daemon-liveness-checked reattach
+attempt on return.
 
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
 embedded short Git hash (for example `0.3.0+81c37fe`), while published Homebrew builds show the release
@@ -219,10 +220,11 @@ reload) and **persistent** (restarting the daemon does not resurrect a cleared b
 not count as activity, so `kotgent list`'s ordering is unaffected.
 
 The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
-`false → true` attention transition sends a payload-less push; the service worker fetches `/sessions`,
-shows one notification per waiting, non-archived session, and opens or focuses that session when tapped.
-If the fetch fails it still shows a generic attention notification. If Web Push is unsupported, denied,
-or unavailable on the daemon, the live tab falls back to ordinary in-tab notifications.
+`false → true` attention transition sends a payload-less push; the service worker fetches `/sessions`
+under a ten-second deadline, shows one notification per waiting, non-archived session, and opens or
+focuses that session when tapped. If the fetch fails or stalls it still shows a generic attention
+notification. If Web Push is unsupported, denied, or unavailable on the daemon, the live tab falls back
+to ordinary in-tab notifications.
 
 ![The kotgent Web UI: the sidebar's "Needs attention" queue and session list on the left, a live Claude
 session's terminal on the right, with Interrupt / Detach / Stop / Done controls.](docs/images/web-ui.png)

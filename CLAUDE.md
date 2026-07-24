@@ -320,11 +320,16 @@ the home screen without spending the code the installed PWA will need.
 Forty bits is acceptable only with the compensating `ExchangeRateLimit`: one daemon-wide,
 `Mutex`-guarded rolling budget of 10 failed redemptions per minute. It is global because cloudflared
 connects from loopback, so a per-IP key cannot identify the remote browser. An admitted attempt reserves
-capacity before lookup and is settled from a non-cancellable `finally`: a miss becomes a timestamped
-failure, while success releases the reservation. Without the in-flight reservation, concurrent guesses
-could all pass the check before any failure was charged. Only a real code miss spends the budget
-(successes, malformed bodies and requests rejected by Host/Origin do not). Keep this control with the
-short format.
+capacity before the unauthenticated body is read, then bounds that intake to 1024 bytes and five seconds;
+it is settled from a non-cancellable `finally`. A miss becomes a timestamped failure, while success,
+malformed/oversized/timed-out input, and cancellation release the reservation without charging it.
+Without the in-flight reservation, slow uploads or concurrent guesses could consume unbounded resources
+or all pass the check before any failure was charged. Requests rejected by Host/Origin never reach
+admission; every early response that leaves a body unread schedules the pinned CIO connection itself to
+close after a 100ms response-flush grace, because cancelling only Ktor's exposed request channel does not
+wake its raw socket parser. Failure ages come from monotonic elapsed time, never wall timestamps, so an
+NTP/sleep-wake rollback between sparse requests cannot extend the one-minute recovery. Keep this control
+with the short format.
 
 **An installed iOS PWA has a separate cookie jar from Safari.** The phone QR therefore opens the
 credential-free public `/auth` page: Safari can add it to the home screen without being signed in, and
@@ -335,23 +340,35 @@ installed app launches there with an empty cookie jar; its first `/sessions` `40
 out from under it.
 
 **Web Push is payload-less and edge-triggered.** After startup reconciliation, `PushNotifier.start` seeds
-`AttentionTracker` from the settled session list, installs the `sessionUpdates` subscription, and returns
-only when both are ready; `Commands.daemon` awaits that barrier before binding the server, so no accepted
-hook can land in the seed-to-subscribe handoff. The tracker records only a `false → true` waiting
-transition (`state.needsAttention && !archived`), so restart does not ring again and archived sessions are
-not targets. It queues those edges immediately and performs potentially slow network delivery in a
-separate worker, keeping the `DROP_OLDEST` store flow drained. `PushSender` POSTs an empty RFC 8030 message
-with VAPID, TTL and a per-session `Topic`; this deliberately avoids RFC 8291 payload encryption
-(`p256dh`/`auth` are stored now for that future path). The service worker wakes, fetches `/sessions` with
-the session cookie and shows one notification per waiting session (or a generic notification when the
-fetch fails). Permanent `404`/`410` endpoints are pruned; other delivery failures are logged and never
-make the daemon unhealthy.
+`AttentionTracker` from the settled session list, installs the replay-free
+`reliableSessionUpdates` subscription, and returns only when both are ready; `Commands.daemon` awaits that
+barrier before binding the server, so no accepted hook can land in the seed-to-subscribe handoff. The
+ordinary `sessionUpdates` flow remains a 1024-entry `DROP_OLDEST` UI signal whose periodic snapshot can
+self-heal. Notification edge tracking cannot drop an intermediate leave/re-entry, so the store publishes
+the same committed order to an unbuffered companion that backpressures only until the notifier's
+constant-time collector receives each update. The tracker records only a `false → true` waiting transition
+(`state.needsAttention && !archived`), so restart does not ring again and archived sessions are not
+targets. Potentially slow delivery runs in a separate worker with one conflated pending wake: payload-less
+push always makes the worker fetch the complete `/sessions` list, so retaining every stale session id adds
+no information and would make memory unbounded. `PushSender` POSTs an empty RFC 8030 message with VAPID,
+TTL and a per-session `Topic`; this deliberately avoids RFC 8291 payload encryption (`p256dh`/`auth` are
+stored now for that future path). The service worker wakes, fetches `/sessions` with the session cookie
+under a ten-second abort deadline and shows one notification per waiting session (or a generic notification
+when the fetch fails or stalls). Permanent `404`/`410` endpoints are pruned; other delivery failures are
+logged and never make the daemon unhealthy.
 
 **Push permission ordering is a user-gesture invariant on iOS.** The notifications toggle must call
 `Notification.requestPermission()` before its first `await`; only after permission resolves may it await
 root service-worker registration, `GET /push/vapid-key`, `pushManager.subscribe`, and
 `POST /push/subscribe`, in that order. Awaiting worker readiness or any other async operation before the
 permission request leaves the click's user-activation task and prevents iOS from showing the prompt.
+Transitions carry a monotonically increasing generation and a ten-second deadline, so a stalled
+reconciliation cannot block a later off click forever. Turning off starts an idempotent daemon delete from
+the remembered endpoint before it awaits browser subscription lookup, then drops the browser subscription;
+late browser or daemon mutations queue a coalesced repair of the newest choice, and `storage` events apply
+that same generation invalidation across open tabs because this is a per-device setting. A VAPID replacement
+may destroy an existing subscription only when its stored application-server-key bytes prove that the key
+differs.
 
 **The PWA is network-only, and its root files always revalidate.** `/sw.js` stays at the origin root so its
 scope covers the whole app and its push permission; its `fetch` handler deliberately does not call
@@ -366,7 +383,9 @@ visible keyboard-constrained size. A terminal tap focuses xterm's helper textare
 gesture, and the textarea stays at `16px` to prevent Safari auto-zoom from corrupting viewport geometry.
 The phone key bar sends binary terminal bytes and preserves xterm focus (special keys never become resize
 text frames). Finally, a terminal socket lost while hidden gets at most one foreground reattach attempt,
-and that attempt must re-check the active id, session liveness, and pending control action before opening.
+and that attempt must fetch fresh daemon liveness under a deadline, then re-check the active id,
+visibility, request ownership, and pending control action before opening. Hiding or explicit intent aborts
+the owned liveness request so an older same-id completion cannot consume a newer foreground attempt.
 
 **VAPID uses `/usr/bin/openssl`, but openssl never owns the private-key file.** `VapidKey` generates the
 P-256 PEM and `OpensslVapidSigner` signs ES256 through the existing CLOEXEC-safe `ProcessRunner`; the
@@ -536,7 +555,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **603 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **612 native tests passed /
   0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

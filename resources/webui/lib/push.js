@@ -33,6 +33,53 @@ export const VAPID_KEY_URL = "/push/vapid-key";
 export const SUBSCRIBE_URL = "/push/subscribe";
 export const UNSUBSCRIBE_URL = "/push/unsubscribe";
 
+/** Last endpoint handed to the daemon by this tab. OFF can revoke it without a browser lookup. */
+const ENDPOINT_KEY = "kotgent.push.endpoint.v1";
+let endpointMemory = null;
+
+const DEFAULT_TRANSITION = Object.freeze({
+  isCurrent: () => true,
+  repairLatest: () => {},
+  signal: undefined,
+});
+
+function transitionContext(context) {
+  return context || DEFAULT_TRANSITION;
+}
+
+function rememberedEndpoints() {
+  const endpoints = new Set();
+  if (endpointMemory) endpoints.add(endpointMemory);
+  try {
+    // Another tab may have replaced this tab's remembered endpoint. Delete both: either POST may have
+    // reached the daemon, and a stalled browser lookup must not leave the cross-tab endpoint subscribed.
+    const stored = window.localStorage.getItem(ENDPOINT_KEY);
+    if (stored) endpoints.add(stored);
+  } catch (_) {
+    // Private mode can deny storage while the in-memory fallback remains usable.
+  }
+  return endpoints;
+}
+
+function rememberEndpoint(endpoint) {
+  endpointMemory = endpoint;
+  try {
+    window.localStorage.setItem(ENDPOINT_KEY, endpoint);
+  } catch (_) { /* private mode / quota — browser lookup remains the fallback */ }
+}
+
+/**
+ * Browser PushManager calls and daemon writes cannot be cancelled safely. If one settles after a newer
+ * generation started, queue a fresh reconciliation AFTER that stale mutation so the latest choice wins.
+ */
+async function settleMutation(promise, context) {
+  try {
+    return await promise;
+  } finally {
+    if (!context.isCurrent()) context.repairLatest();
+  }
+}
+
 /**
  * Whether this browser can be a push target at all. All three are required: the worker to be woken, the
  * push machinery, and the notification API the subscription promises to use.
@@ -60,9 +107,28 @@ export function decodeBase64Url(value) {
 }
 
 /** Register the worker (idempotent) and wait until one is actually active — subscribe() needs that. */
-async function activeRegistration() {
+async function activeRegistration(context) {
   await navigator.serviceWorker.register(SW_URL, { scope: "/" });
-  return navigator.serviceWorker.ready;
+  if (!context.isCurrent()) return null;
+  const registration = await navigator.serviceWorker.ready;
+  return context.isCurrent() ? registration : null;
+}
+
+/**
+ * Whether [subscription] is provably tied to a different application-server key. Missing/non-standard
+ * option data is NOT proof: delete a working subscription only when the lengths differ or at least one
+ * stored byte differs from the requested key.
+ */
+function applicationServerKeyDiffers(subscription, requestedKey) {
+  const storedKey = subscription && subscription.options && subscription.options.applicationServerKey;
+  if (!storedKey) return false;
+  try {
+    const stored = new Uint8Array(storedKey);
+    if (stored.length !== requestedKey.length) return true;
+    return stored.some((value, index) => value !== requestedKey[index]);
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -71,15 +137,20 @@ async function activeRegistration() {
  * from `subscribe()` rather than by returning the stale subscription — leaving the device permanently
  * unreachable until it is dropped and re-taken.
  */
-async function subscribeWith(registration, key) {
+async function subscribeWith(registration, key, context) {
   const options = { userVisibleOnly: true, applicationServerKey: decodeBase64Url(key) };
   try {
-    return await registration.pushManager.subscribe(options);
+    const subscription = await settleMutation(registration.pushManager.subscribe(options), context);
+    return context.isCurrent() ? subscription : null;
   } catch (e) {
+    if (!context.isCurrent()) return null;
     const existing = await registration.pushManager.getSubscription();
-    if (!existing) throw e;
-    await existing.unsubscribe();
-    return registration.pushManager.subscribe(options);
+    if (!context.isCurrent()) return null;
+    if (!existing || !applicationServerKeyDiffers(existing, options.applicationServerKey)) throw e;
+    await settleMutation(existing.unsubscribe(), context);
+    if (!context.isCurrent()) return null;
+    const replacement = await settleMutation(registration.pushManager.subscribe(options), context);
+    return context.isCurrent() ? replacement : null;
   }
 }
 
@@ -97,24 +168,30 @@ function responseKey(response) {
  * capability downgrade (notably its 503 when openssl/key persistence is unavailable); a malformed successful
  * response still throws from responseKey because that is a broken server contract.
  */
-async function vapidKeyOrNull() {
+async function vapidKeyOrNull(context) {
   let response;
   try {
-    response = await apiRequest(VAPID_KEY_URL);
+    response = await apiRequest(VAPID_KEY_URL, { signal: context.signal });
   } catch (_) {
     return null;
   }
-  return responseKey(response);
+  return context.isCurrent() ? responseKey(response) : null;
 }
 
 /** Hand an existing browser subscription to the daemon, which is what makes this device reachable. */
-async function registerSubscription(subscription) {
+async function registerSubscription(subscription, context) {
+  if (!context.isCurrent()) return false;
   const json = subscription.toJSON();
   const keys = json.keys || {};
-  await apiRequest(SUBSCRIBE_URL, {
-    method: "POST",
-    body: JSON.stringify({ endpoint: json.endpoint, p256dh: keys.p256dh || "", auth: keys.auth || "" }),
-  });
+  rememberEndpoint(json.endpoint);
+  await settleMutation(
+    apiRequest(SUBSCRIBE_URL, {
+      method: "POST",
+      body: JSON.stringify({ endpoint: json.endpoint, p256dh: keys.p256dh || "", auth: keys.auth || "" }),
+    }),
+    context,
+  );
+  return context.isCurrent();
 }
 
 /**
@@ -124,42 +201,84 @@ async function registerSubscription(subscription) {
  *
  * Must be called from a user gesture: the permission prompt is requested before anything is awaited.
  * [permissionRequest] lets a serialized UI transition start that prompt synchronously in its click handler,
- * then wait for an older on/off transition before it performs the subscription I/O.
+ * then wait for an older on/off transition before it performs the subscription I/O. [context] carries the
+ * latest-choice predicate and repair hook; a queue deadline never turns a still-current choice into stale.
  */
-export async function subscribe(permissionRequest = null) {
-  if (!supported()) return false;
+export async function subscribe(permissionRequest = null, transition = DEFAULT_TRANSITION) {
+  const context = transitionContext(transition);
+  if (!supported() || !context.isCurrent()) return false;
   setPushActive(false);
   const permission = permissionRequest || ensurePermission();
-  if (!(await permission)) return false;
+  if (!(await permission) || !context.isCurrent()) return false;
 
-  const registration = await activeRegistration();
-  const key = await vapidKeyOrNull();
+  const registration = await activeRegistration(context);
+  if (!registration || !context.isCurrent()) return false;
+  const key = await vapidKeyOrNull(context);
   if (!key) return false;
-  const subscription = await subscribeWith(registration, key);
-  await registerSubscription(subscription);
+  const subscription = await subscribeWith(registration, key, context);
+  if (!subscription || !context.isCurrent()) return false;
+  if (!(await registerSubscription(subscription, context))) return false;
+  if (!context.isCurrent()) return false;
   setPushActive(true);
   return true;
 }
 
 /**
- * Stop being a push target: the daemon is told first (while the endpoint is still known) and the browser
- * subscription is dropped after. A daemon that cannot be reached is not fatal — it prunes an endpoint that
- * no longer exists on the first `404`/`410` from the push service.
+ * Stop being a push target. Daemon cleanup starts from remembered endpoints BEFORE any browser await:
+ * service-worker lookup and PushSubscription.unsubscribe() are not cancellable, and neither may keep sending
+ * notifications after the toggle is off. Browser and daemon cleanup then settle independently. A browser
+ * rejection never skips the daemon request, and a stale completion schedules a latest-state repair.
  */
-export async function unsubscribe() {
+export async function unsubscribe(transition = DEFAULT_TRANSITION) {
+  const context = transitionContext(transition);
+  if (!context.isCurrent()) return false;
   setPushActive(false);
-  if (!supported()) return false;
-  const registration = await navigator.serviceWorker.getRegistration();
-  const subscription = registration ? await registration.pushManager.getSubscription() : null;
-  if (!subscription) return false;
+
+  const daemonDrops = new Map();
+  const startDaemonDrop = (endpoint) => {
+    if (!endpoint || daemonDrops.has(endpoint)) return;
+    const drop = settleMutation(
+      apiRequest(UNSUBSCRIBE_URL, {
+        method: "POST",
+        body: JSON.stringify({ endpoint: endpoint }),
+      }),
+      context,
+    ).then(() => true).catch(() => false);
+    daemonDrops.set(endpoint, drop);
+  };
+
+  // This request is deliberately launched, not merely prepared, before getRegistration/getSubscription.
+  rememberedEndpoints().forEach(startDaemonDrop);
+  let browserDropped = false;
   try {
-    await apiRequest(UNSUBSCRIBE_URL, {
-      method: "POST",
-      body: JSON.stringify({ endpoint: subscription.endpoint }),
-    });
-  } catch (_) { /* the daemon prunes it on the next 410 */ }
-  await subscription.unsubscribe();
-  return true;
+    if (!supported()) return false;
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!context.isCurrent()) {
+      context.repairLatest();
+      return false;
+    }
+    const subscription = registration ? await registration.pushManager.getSubscription() : null;
+    if (!context.isCurrent()) {
+      context.repairLatest();
+      return false;
+    }
+    if (!subscription) return false;
+
+    const endpoint = subscription.endpoint;
+    rememberEndpoint(endpoint);
+    startDaemonDrop(endpoint);
+    try {
+      browserDropped = !!(await settleMutation(subscription.unsubscribe(), context));
+    } catch (_) {
+      browserDropped = false;
+    }
+    return browserDropped && context.isCurrent();
+  } finally {
+    // Keep the last endpoint cached after success: a stale subscribe POST may land after this delete, and
+    // the repair must still know which idempotent daemon delete to repeat even when the browser already dropped it.
+    await Promise.allSettled(Array.from(daemonDrops.values()));
+    if (!context.isCurrent()) context.repairLatest();
+  }
 }
 
 /**
@@ -168,24 +287,36 @@ export async function unsubscribe() {
  * regeneration. Re-subscribe with the current VAPID key and POST the endpoint again before standing down the
  * in-tab path. Every uncertain answer resolves to false.
  */
-export async function refreshActive() {
+export async function refreshActive(transition = DEFAULT_TRANSITION) {
+  const context = transitionContext(transition);
+  if (!context.isCurrent()) return false;
   setPushActive(false);
   if (!supported()) {
     return false;
   }
   try {
     const registration = await navigator.serviceWorker.getRegistration();
+    if (!context.isCurrent()) return false;
     const existing = registration ? await registration.pushManager.getSubscription() : null;
-    if (!registration || !existing) return false;
+    if (!registration || !context.isCurrent()) return false;
+    if (!existing) {
+      // Recreate a subscription removed by a stale OFF, but never open a permission prompt from reload/repair.
+      return Notification.permission === "granted"
+        ? subscribe(Promise.resolve(true), context)
+        : false;
+    }
+    rememberEndpoint(existing.endpoint);
 
-    const key = await vapidKeyOrNull();
+    const key = await vapidKeyOrNull(context);
     if (!key) return false;
-    const subscription = await subscribeWith(registration, key);
-    await registerSubscription(subscription);
+    const subscription = await subscribeWith(registration, key, context);
+    if (!subscription || !context.isCurrent()) return false;
+    if (!(await registerSubscription(subscription, context))) return false;
+    if (!context.isCurrent()) return false;
     setPushActive(true);
     return true;
   } catch (_) {
-    setPushActive(false);
+    if (context.isCurrent()) setPushActive(false);
     return false;
   }
 }

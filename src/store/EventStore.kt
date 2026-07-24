@@ -186,4 +186,18 @@ interface EventStore {
      * global cursor over this cross-session signal is not meaningful, so it is intentionally cursor-less.
      */
     val sessionUpdates: SharedFlow<SessionUpdate>
+
+    /**
+     * The ordered, lossless-while-subscribed form of [sessionUpdates] for consumers whose correctness
+     * depends on seeing every intermediate state.
+     *
+     * Unlike the UI-oriented signal above, a production implementation may backpressure writers briefly
+     * rather than discard an update when this consumer lags. It is still hot and non-replaying: with no
+     * subscriber, startup history is represented by [listSessions] instead of being retained in memory.
+     *
+     * The default preserves compatibility for simple/fake stores. Any implementation whose
+     * [sessionUpdates] can drop values must override this with a reliable signal.
+     */
+    val reliableSessionUpdates: SharedFlow<SessionUpdate>
+        get() = sessionUpdates
 }

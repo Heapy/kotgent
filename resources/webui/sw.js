@@ -28,6 +28,7 @@
 
 const TITLE = "Kotgent — needs attention";
 const SESSIONS_URL = "/sessions";
+const SESSIONS_TIMEOUT_MS = 10_000;
 const GENERIC_TAG = "kotgent-attention";
 const GENERIC_BODY = "A session needs your attention.";
 
@@ -55,8 +56,13 @@ self.addEventListener("notificationclick", (event) => {
 
 /** The sessions the daemon says are waiting on the operator, or an empty list if it could not be asked. */
 async function waitingSessions() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SESSIONS_TIMEOUT_MS);
   try {
-    const resp = await fetch(SESSIONS_URL, { credentials: "include" });
+    const resp = await fetch(SESSIONS_URL, {
+      credentials: "include",
+      signal: controller.signal,
+    });
     if (!resp.ok) return [];
     const list = await resp.json();
     if (!Array.isArray(list)) return [];
@@ -64,6 +70,8 @@ async function waitingSessions() {
     return list.filter((s) => s && s.needsAttention && !s.archived);
   } catch (_) {
     return [];   // offline / signed out — the caller still shows the generic banner
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

@@ -17,7 +17,10 @@ import io.kotgent.core.replay
 import io.kotgent.core.unread
 import io.kotgent.db.KotgentDatabase
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -343,6 +346,59 @@ class EventStoreTest {
                 reader.join()
             }
             assertEquals(30, store.read(sid, Seq(0)).size)
+        }
+    }
+
+    // ---- session update signals ----
+
+    @Test
+    fun reliableSessionUpdatesPreserveCommittedOrderAndBackpressureWriters() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("reliable-updates")
+
+            // With no subscriber a replay-free reliable signal retains nothing and never blocks startup.
+            store.upsertSession(meta(sid))
+
+            val firstSeen = CompletableDeferred<Unit>()
+            val releaseFirst = CompletableDeferred<Unit>()
+            val states = mutableListOf<SessionState>()
+            val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                store.reliableSessionUpdates.take(2).collect { update ->
+                    states += update.state
+                    if (states.size == 1) {
+                        firstSeen.complete(Unit)
+                        releaseFirst.await()
+                    }
+                }
+            }
+
+            val firstWrite = async(start = CoroutineStart.UNDISPATCHED) {
+                store.updateSessionState(
+                    sid, SessionState.needs_approval, EventSource.system, paneId = null, updatedAt = 2L,
+                )
+            }
+            firstSeen.await()
+            firstWrite.await()
+
+            // The first collect lambda is still held open. An unbuffered second publish has committed its
+            // row but cannot finish until the collector advances, applying bounded producer backpressure
+            // instead of dropping this intermediate state.
+            val secondWrite = async(start = CoroutineStart.UNDISPATCHED) {
+                store.updateSessionState(
+                    sid, SessionState.running, EventSource.system, paneId = null, updatedAt = 3L,
+                )
+            }
+            assertTrue(!secondWrite.isCompleted, "a lagging reliable subscriber backpressures the next writer")
+
+            releaseFirst.complete(Unit)
+            secondWrite.await()
+            collector.join()
+            assertEquals(
+                listOf(SessionState.needs_approval, SessionState.running),
+                states,
+                "the reliable signal preserves committed mutation order",
+            )
         }
     }
 

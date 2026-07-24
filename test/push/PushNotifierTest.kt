@@ -1,5 +1,6 @@
 package io.kotgent.push
 
+import io.kotgent.cli.withStartupCompensation
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -15,7 +16,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -23,9 +27,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -154,6 +159,60 @@ class PushNotifierTest {
     }
 
     @Test
+    fun cancellingStartJoinsAnIndependentWatcherBeforeCompensation() = runBlocking {
+        withTimeout(20_000) {
+            val seedStarted = CompletableDeferred<Unit>()
+            val watcherCancelling = CompletableDeferred<Unit>()
+            val allowWatcherToFinish = CompletableDeferred<Unit>()
+            val watcherFinished = CompletableDeferred<Unit>()
+            val compensationObservedFinished = CompletableDeferred<Boolean>()
+            val notifierParent = SupervisorJob()
+            val notifierScope = CoroutineScope(coroutineContext.minusKey(Job) + notifierParent)
+            val env = Env(
+                beforeListSessions = {
+                    seedStarted.complete(Unit)
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        withContext(NonCancellable) {
+                            watcherCancelling.complete(Unit)
+                            allowWatcherToFinish.await()
+                            watcherFinished.complete(Unit)
+                        }
+                    }
+                },
+            )
+
+            val caller = launch(start = CoroutineStart.UNDISPATCHED) {
+                withStartupCompensation(
+                    compensate = {
+                        compensationObservedFinished.complete(watcherFinished.isCompleted)
+                    },
+                ) {
+                    env.start(notifierScope)
+                }
+            }
+
+            try {
+                seedStarted.await()
+                caller.cancel()
+                watcherCancelling.await()
+                val compensationRanBeforeJoin = compensationObservedFinished.isCompleted
+                allowWatcherToFinish.complete(Unit)
+                caller.join()
+
+                assertTrue(!compensationRanBeforeJoin, "compensation waits for watcher teardown")
+                assertTrue(watcherFinished.isCompleted, "the independent watcher completed")
+                assertTrue(compensationObservedFinished.await(), "compensation observed the completed watcher")
+            } finally {
+                allowWatcherToFinish.complete(Unit)
+                caller.cancel()
+                notifierParent.cancel()
+            }
+        }
+    }
+
+    @Test
     fun theBaselineIsTakenExactlyOnce() = runBlocking {
         withTimeout(20_000) {
             val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
@@ -172,18 +231,39 @@ class PushNotifierTest {
     }
 
     @Test
-    fun slowDeliveryCannotOverflowAwayAttentionEdges() = runBlocking {
+    fun theNotifierConsumesTheReliableSignalInsteadOfTheLossyUiSignal() = runBlocking {
+        withTimeout(20_000) {
+            val env = Env(
+                sessions = listOf(
+                    meta("ui-only", SessionState.running),
+                    meta("reliable", SessionState.running),
+                ),
+            ).start(this)
+
+            // The UI signal is deliberately DROP_OLDEST and may omit intermediate transitions. A notifier
+            // wired to it would send ui-only first; the correctness signal carries only the second update.
+            env.store.emitUiOnly(update("ui-only", SessionState.needs_approval))
+            env.store.emitReliableOnly(update("reliable", SessionState.needs_approval))
+
+            assertEquals(
+                SessionId("reliable"),
+                env.sent.receive(),
+                "attention tracking uses the store's ordered reliable signal",
+            )
+            env.stop()
+            assertTrue(env.sent.tryReceive().isFailure, "the lossy UI-only update was ignored")
+        }
+    }
+
+    @Test
+    fun blockedDeliveryRetainsOnlyTheLatestWakeAndLaterEdgesStillDeliver() = runBlocking {
         withTimeout(20_000) {
             val firstDeliveryStarted = CompletableDeferred<Unit>()
             val releaseFirstDelivery = CompletableDeferred<Unit>()
             var first = true
             val env = Env(
-                sessions = listOf(
-                    meta("s1", SessionState.running),
-                    meta("s2", SessionState.running),
-                ),
                 beforeSend = { id ->
-                    if (first && id == SessionId("s1")) {
+                    if (first && id == SessionId("first")) {
                         first = false
                         firstDeliveryStarted.complete(Unit)
                         releaseFirstDelivery.await()
@@ -191,30 +271,34 @@ class PushNotifierTest {
                 },
             ).start(this)
 
-            env.store.emit(update("s1", SessionState.needs_approval))
+            env.store.emit(update("first", SessionState.needs_approval))
             firstDeliveryStarted.await()
 
-            // More than the fake SharedFlow's 64-slot DROP_OLDEST buffer, while the first network delivery
-            // is held open. The collector must still record both s2 edges and queue them for the worker.
-            for (next in listOf(
-                update("s2", SessionState.needs_approval),
-                update("s2", SessionState.running),
-                update("s2", SessionState.needs_approval),
-            )) {
-                env.store.emit(next)
-                yield()
+            // Every one is a real false -> true edge for a distinct session. The reliable source makes the
+            // collector observe all of them, but a payload-less push fetches the complete /sessions list, so
+            // retaining hundreds of stale ids while the endpoint is blocked adds no information.
+            val burstSize = 512
+            repeat(burstSize) { i ->
+                env.store.emit(update("burst-$i", SessionState.needs_approval))
             }
-            repeat(70) { i ->
-                env.store.emit(update("filler-$i", SessionState.running))
-                yield()
-            }
+            // Taking this following silent value proves the collector finished the previous callback, so
+            // the last burst id is already in the conflated slot before delivery is released.
+            env.store.emit(update("processed-barrier", SessionState.running))
 
             releaseFirstDelivery.complete(Unit)
-            assertEquals(SessionId("s1"), env.sent.receive())
-            assertEquals(SessionId("s2"), env.sent.receive(), "the first queued s2 edge survives")
-            assertEquals(SessionId("s2"), env.sent.receive(), "the re-entry edge survives too")
+            assertEquals(SessionId("first"), env.sent.receive())
+            assertEquals(
+                SessionId("burst-${burstSize - 1}"),
+                env.sent.receive(),
+                "only the latest pending wake survives the blocked delivery",
+            )
+
+            // This ordering assertion also proves the conflated slot was drained: an unlimited stale
+            // backlog would put another burst id ahead of this later edge.
+            env.store.emit(update("sentinel", SessionState.needs_approval))
+            assertEquals(SessionId("sentinel"), env.sent.receive(), "a later edge still wakes delivery normally")
             env.stop()
-            assertTrue(env.sent.tryReceive().isFailure, "non-attention filler updates never reach delivery")
+            assertTrue(env.sent.tryReceive().isFailure, "no stale burst remains queued")
         }
     }
 
@@ -227,9 +311,11 @@ class PushNotifierTest {
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
-            env.store.emit(update("s2", SessionState.needs_approval))
-
             assertEquals(SessionId("s1"), env.sent.receive(), "the failing send was still attempted")
+
+            // Do not let conflation legally replace s1 before the worker takes it: only after observing the
+            // throwing attempt do we prove its catch kept the worker alive for a later edge.
+            env.store.emit(update("s2", SessionState.needs_approval))
             assertEquals(SessionId("s2"), env.sent.receive(), "and the next update is still delivered")
             env.stop()
             assertTrue(
@@ -285,7 +371,7 @@ class PushNotifierTest {
         private val failListSessions: Boolean,
     ) : EventStore {
 
-        /** Matches the real store's shape: hot, `replay = 0`, buffered so an emit does not block. */
+        /** Matches the real UI signal: hot, replay-free, buffered, and allowed to drop old values. */
         private val updates = MutableSharedFlow<SessionUpdate>(
             replay = 0,
             extraBufferCapacity = 64,
@@ -293,18 +379,30 @@ class PushNotifierTest {
         )
         override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
 
+        /** Matches the notifier signal: replay-free and unbuffered, so an active subscriber backpressures. */
+        private val reliableUpdates = MutableSharedFlow<SessionUpdate>()
+        override val reliableSessionUpdates: SharedFlow<SessionUpdate> get() = reliableUpdates
+
         /** How many times the baseline was taken — one, for the lifetime of a collector. */
         var listCalls = 0
             private set
 
-        suspend fun emit(update: SessionUpdate) = updates.emit(update)
+        /** One production-shaped cache mutation publishes to both audiences in the same order. */
+        suspend fun emit(update: SessionUpdate) {
+            updates.tryEmit(update)
+            reliableUpdates.emit(update)
+        }
+
+        /** Test seams proving [PushNotifier] chooses the reliable stream, not the UI stream. */
+        suspend fun emitUiOnly(update: SessionUpdate) = updates.emit(update)
+        suspend fun emitReliableOnly(update: SessionUpdate) = reliableUpdates.emit(update)
 
         /** Suspend until the notifier has subscribed (i.e. until `onSubscription` is about to run). */
         suspend fun awaitSubscriber() {
-            updates.subscriptionCount.first { it > 0 }
+            reliableUpdates.subscriptionCount.first { it > 0 }
         }
 
-        fun subscriberCount(): Int = updates.subscriptionCount.value
+        fun subscriberCount(): Int = reliableUpdates.subscriptionCount.value
 
         override suspend fun listSessions(): List<SessionMeta> {
             listCalls++

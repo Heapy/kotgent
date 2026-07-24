@@ -2,7 +2,7 @@ package io.kotgent.transport
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.time.Clock
+import kotlin.time.TimeSource
 
 /**
  * The guessing budget on `POST /auth/exchange` — the compensating control that pays for the login code
@@ -54,14 +54,14 @@ import kotlin.time.Clock
  * handler constructs, because a per-call instance would count to one and start over on every request:
  * a silent no-op that no unit test of this class would ever notice.
  *
- * @param now injected wall clock (epoch millis) so the window and backward-clock handling can be asserted
- *   by moving a variable instead of sleeping a minute; `kotlin.system.getTimeMillis` is ERROR-level
- *   deprecated, hence [Clock].
+ * @param now injected monotonic elapsed milliseconds, so the window can be asserted by moving a variable
+ *   instead of sleeping a minute. Production never derives failure age from wall time: an NTP or
+ *   sleep/wake correction therefore cannot extend a lockout.
  * @param max how many failures may be recorded inside one window before attempts are refused.
  * @param windowMillis the width of the rolling window.
  */
 class ExchangeRateLimit(
-    private val now: () -> Long = ::rateLimitEpochMillis,
+    private val now: () -> Long = ::rateLimitMonotonicMillis,
     private val max: Int = EXCHANGE_FAILURE_LIMIT,
     private val windowMillis: Long = EXCHANGE_WINDOW_MILLIS,
 ) {
@@ -100,9 +100,9 @@ class ExchangeRateLimit(
     /**
      * One admitted exchange. Constructed only by [begin], and finishable exactly once.
      *
-     * The route creates this only after parsing a candidate code, keeps it across ticket redemption, then
+     * The route creates this before its bounded, timed body intake, keeps it across ticket redemption, then
      * calls [finish] in `finally`. Keeping the capability opaque prevents a caller from recording a failure
-     * it never reserved, while an incomplete request body cannot occupy limiter capacity.
+     * it never reserved; malformed, oversized, timed-out and cancelled requests release without charging.
      */
     class Attempt internal constructor(private val owner: ExchangeRateLimit) {
         /**
@@ -135,8 +135,10 @@ class ExchangeRateLimit(
      * `at - t < windowMillis`, so one sampled exactly [windowMillis] later is already gone — the window is
      * half-open, matching how [TicketStore] treats an expiry instant.
      *
-     * Wall clocks can move backwards (NTP or sleep/wake). That can put a future-dated entry before an older
-     * timestamp recorded later, so every expired entry is examined instead of stopping at the deque head.
+     * [at] comes from a monotonic source. This is stronger than trying to repair future-dated wall-clock
+     * failures after a rollback is observed: when no request arrives at the adjustment instant, a wall-only
+     * limiter cannot know how much of the interval before its next sample happened on either timeline.
+     *
      * Caller holds [mutex].
      */
     private fun pruneAged(at: Long) {
@@ -156,5 +158,8 @@ const val EXCHANGE_FAILURE_LIMIT: Int = 10
 /** The width of the rolling window the failures are counted in: one minute. */
 const val EXCHANGE_WINDOW_MILLIS: Long = 60_000L
 
-/** Wall clock in epoch millis — the production [ExchangeRateLimit.now]. */
-private fun rateLimitEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
+/** Process-local monotonic origin used by the production [ExchangeRateLimit.now]. */
+private val rateLimitMonotonicOrigin = TimeSource.Monotonic.markNow()
+
+/** Elapsed monotonic milliseconds — immune to wall-clock corrections. */
+private fun rateLimitMonotonicMillis(): Long = rateLimitMonotonicOrigin.elapsedNow().inWholeMilliseconds

@@ -30,7 +30,7 @@ class ExchangeRateLimitTest {
     /** Start of the fake clock. A real epoch value, so nothing accidentally depends on "time near zero". */
     private val start = 1_753_280_000_000L
 
-    /** A clock the tests advance by hand; [ExchangeRateLimit] only ever calls it, never sets it. */
+    /** Monotonic elapsed time the tests advance by hand; [ExchangeRateLimit] only ever samples it. */
     private var clock = start
 
     @BeforeTest
@@ -203,37 +203,45 @@ class ExchangeRateLimitTest {
     }
 
     @Test
-    fun aClockThatStepsBackwardsCannotResurrectAPrunedFailure() = runBlocking {
-        // NTP or a laptop waking up can move the clock; a pruned entry is REMOVED, not merely filtered, so it
-        // cannot come back and refuse an operator who is entitled to attempt.
+    fun aPrunedFailureCannotReturn() = runBlocking {
+        // A pruned entry is REMOVED, not merely filtered, so later samples cannot make it count again.
         val limit = limiter(max = 1)
         assertTrue(limit.completeFailure())
         clock = start + EXCHANGE_WINDOW_MILLIS
         assertTrue(limit.completeSuccess(), "aged out")
 
-        clock = start + 1
+        clock += 1
         assertTrue(limit.completeSuccess(), "the entry is gone for good")
         assertEquals(0, limit.failuresInWindow())
     }
 
     @Test
-    fun aFutureDatedHeadCannotBlockAExpiredFailureRecordedAfterIt() = runBlocking {
-        val limit = limiter(max = 3)
+    fun aBackwardWallClockStepBetweenSparseRequestsCannotExtendTheWindow() = runBlocking {
+        var elapsed = 0L
+        var wallClock = start + EXCHANGE_WINDOW_MILLIS * 2
+        val limit = ExchangeRateLimit(now = { elapsed }, max = 2)
 
-        // Record one failure, step backwards, then record another. In insertion order the future entry is
-        // now at the head even though the later-appended entry will expire first.
-        clock = start + EXCHANGE_WINDOW_MILLIS * 2
-        assertTrue(limit.completeFailure(), "future-dated failure")
-        clock = start
-        assertTrue(limit.completeFailure(), "older timestamp appended behind it")
+        // Saturate, then simulate an NTP/sleep-wake correction with NO limiter call at the adjustment
+        // instant. A wall-timestamp rebasing scheme cannot reconstruct that missing interval and would
+        // restart the newest failures' ages when the next request eventually arrived.
+        repeat(2) { assertTrue(limit.completeFailure()) }
+        assertNull(limit.begin(), "saturated before the adjustment")
 
-        clock = start + EXCHANGE_WINDOW_MILLIS
-        assertEquals(
-            1,
-            limit.failuresInWindow(),
-            "the expired entry is pruned even though a future-dated entry precedes it",
+        wallClock = start
+        elapsed = EXCHANGE_WINDOW_MILLIS / 2
+        wallClock += EXCHANGE_WINDOW_MILLIS / 2
+        assertNull(
+            limit.begin(),
+            "the first post-rollback request arrives halfway through the original monotonic window",
         )
-        assertTrue(limit.completeSuccess(), "the stale timestamp no longer extends the global lockout")
+        assertEquals(start + EXCHANGE_WINDOW_MILLIS / 2, wallClock)
+
+        elapsed = EXCHANGE_WINDOW_MILLIS - 1
+        assertNull(limit.begin(), "the failures still count for the rest of their monotonic window")
+
+        elapsed = EXCHANGE_WINDOW_MILLIS
+        assertTrue(limit.completeSuccess(), "capacity returns one elapsed window after the attacker stopped")
+        assertEquals(0, limit.failuresInWindow(), "no future-dated failure extends the lockout")
     }
 
     // --- configuration ------------------------------------------------------------------------------

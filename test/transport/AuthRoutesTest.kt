@@ -14,17 +14,27 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.parseServerSetCookieHeader
+import io.ktor.network.selector.SelectorManager
+import io.ktor.network.sockets.aSocket
+import io.ktor.network.sockets.openReadChannel
+import io.ktor.network.sockets.openWriteChannel
 import io.ktor.server.application.call
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -261,6 +271,102 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun exchangeBodyIntakeIsByteBoundedAndTimeBounded() = runBlocking {
+        withTimeout(20_000) {
+            val exact = "x".repeat(32)
+            assertEquals(
+                AuthExchangeBodyRead.Received(exact),
+                readAuthExchangeBody(ByteReadChannel(exact), maxBytes = exact.length, timeoutMillis = 1_000),
+                "an exactly-full body is not mistaken for overflow",
+            )
+            assertEquals(
+                AuthExchangeBodyRead.TooLarge,
+                readAuthExchangeBody(ByteReadChannel("$exact!"), maxBytes = exact.length, timeoutMillis = 1_000),
+                "only max+1 bytes are needed to reject an oversized streaming body",
+            )
+            val openOverflow = ByteChannel(autoFlush = true)
+            try {
+                openOverflow.writeFully("$exact!".encodeToByteArray())
+                assertEquals(
+                    AuthExchangeBodyRead.TooLarge,
+                    readAuthExchangeBody(openOverflow, maxBytes = exact.length, timeoutMillis = 1_000),
+                    "overflow is rejected without waiting for a chunked peer to close the request body",
+                )
+            } finally {
+                openOverflow.cancel(null)
+            }
+
+            val stalled = ByteChannel()
+            try {
+                assertEquals(
+                    AuthExchangeBodyRead.TimedOut,
+                    readAuthExchangeBody(stalled, maxBytes = exact.length, timeoutMillis = 50),
+                    "a peer that never finishes its body cannot hold an admitted connection forever",
+                )
+            } finally {
+                stalled.cancel(null)
+            }
+        }
+    }
+
+    @Test
+    fun oversizedExchangeBodyIs413AndReleasesItsReservationWithoutCharging() {
+        val limit = ExchangeRateLimit(now = { fixedNow }, max = 1)
+        withAuthServer(exchangeLimit = limit) { env ->
+            val response = env.client.req(
+                env.port,
+                AUTH_EXCHANGE_PATH,
+                HttpMethod.Post,
+                origin = "http://127.0.0.1:${env.port}",
+                jsonBody = "x".repeat(AUTH_EXCHANGE_MAX_BODY_BYTES + 1),
+            )
+            assertEquals(HttpStatusCode.PayloadTooLarge, response.status)
+            assertEquals(0, limit.failuresInWindow(), "an oversized non-guess spends no failure budget")
+            limit.awaitReleasedCapacity()
+            assertEquals(
+                HttpStatusCode.OK,
+                env.exchange(env.port, env.issueTicket()).status,
+                "the sole in-flight reservation was released",
+            )
+        }
+    }
+
+    @Test
+    fun unconsumedExchangeBodiesCloseTheRawConnectionAndReleaseLimiterCapacity() {
+        val limit = ExchangeRateLimit(now = { fixedNow }, max = 1)
+        withAuthServer(exchangeLimit = limit, exchangeBodyTimeoutMillis = 50) { env ->
+            val oversized = env.rawExchangeUntilClosed(contentLength = AUTH_EXCHANGE_MAX_BODY_BYTES + 1)
+            assertTrue(oversized.contains(" 413 "), "a declared oversized body is rejected before any bytes arrive")
+            assertTrue(
+                oversized.contains("Connection: close", ignoreCase = true),
+                "the early response tells a compliant peer the connection cannot be reused",
+            )
+
+            val timedOut = env.rawExchangeUntilClosed(contentLength = 1)
+            assertTrue(timedOut.contains(" 408 "), "a peer that withholds its one promised byte is timed out")
+            assertEquals(0, limit.failuresInWindow(), "unconsumed non-guesses spend no failure budget")
+            assertEquals(
+                HttpStatusCode.OK,
+                env.exchange(env.port, env.issueTicket()).status,
+                "both rejected sockets released the sole slot and did not cancel the server root",
+            )
+
+            val failed = assertNotNull(limit.begin())
+            failed.finish(failed = true)
+            val throttled = env.rawExchangeUntilClosed(contentLength = 1)
+            assertTrue(
+                throttled.contains(" 429 "),
+                "a saturated request is refused and closed without waiting for its promised body",
+            )
+            assertEquals(
+                HttpStatusCode.OK,
+                env.client.req(env.port, AUTH_PAGE_PATH).status,
+                "forcing the saturated connection closed leaves the server root healthy",
+            )
+        }
+    }
+
+    @Test
     fun anUnknownTicketIs400() = withAuthServer { env ->
         assertEquals(
             HttpStatusCode.BadRequest,
@@ -433,9 +539,9 @@ class AuthRoutesTest {
                 jsonBody = "not json",
             )
             assertEquals(
-                HttpStatusCode.BadRequest,
+                HttpStatusCode.TooManyRequests,
                 malformed.status,
-                "the body is parsed before limiter admission, so a malformed non-guess cannot hold capacity",
+                "a saturated limiter refuses before reading even a malformed body",
             )
 
             val throttled = env.exchange(env.port, ticket)
@@ -615,6 +721,24 @@ class AuthRoutesTest {
         )
     }
 
+    /**
+     * An early response is flushed before CIO's raw connection is cancelled, so the admitted reservation
+     * intentionally survives slightly beyond the client receiving 413/408. Probe until that bounded close
+     * finishes, releasing the probe immediately so the subsequent assertion sees the original capacity.
+     */
+    private suspend fun ExchangeRateLimit.awaitReleasedCapacity() {
+        withTimeout(1_000) {
+            while (true) {
+                val probe = begin()
+                if (probe != null) {
+                    probe.finish(failed = false)
+                    return@withTimeout
+                }
+                delay(5)
+            }
+        }
+    }
+
     // --- harness ----------------------------------------------------------------------------------
 
     /**
@@ -637,12 +761,55 @@ class AuthRoutesTest {
             port, AUTH_EXCHANGE_PATH, HttpMethod.Post,
             origin = "http://127.0.0.1:$port", jsonBody = """{"ticket":"$ticket"}""",
         )
+
+        /**
+         * Speak HTTP over a raw socket, deliberately leaving [contentLength] bytes unsent. Returning proves
+         * the server closed the socket; a route-only channel cancellation would leave this read suspended in
+         * CIO's raw body parser until the outer timeout failed the test.
+         */
+        suspend fun rawExchangeUntilClosed(contentLength: Int): String = withTimeout(2_000) {
+            val selector = SelectorManager(Dispatchers.Default)
+            val socket = aSocket(selector).tcp().connect("127.0.0.1", port)
+            try {
+                val input = socket.openReadChannel()
+                val output = socket.openWriteChannel(autoFlush = true)
+                val request = buildString {
+                    append("POST $AUTH_EXCHANGE_PATH HTTP/1.1\r\n")
+                    append("Host: 127.0.0.1:$port\r\n")
+                    append("Origin: http://127.0.0.1:$port\r\n")
+                    append("Content-Type: application/json\r\n")
+                    append("Content-Length: $contentLength\r\n")
+                    append("Connection: keep-alive\r\n")
+                    append("\r\n")
+                }
+                output.writeFully(request.encodeToByteArray())
+
+                val response = StringBuilder()
+                val buffer = ByteArray(1_024)
+                try {
+                    while (true) {
+                        val read = input.readAvailable(buffer)
+                        if (read < 0) break
+                        response.append(buffer.decodeToString(endIndex = read))
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // A reset is as decisive as EOF: either proves the accepted socket was reclaimed.
+                }
+                response.toString()
+            } finally {
+                socket.close()
+                selector.close()
+            }
+        }
     }
 
     private fun withAuthServer(
         publicUrl: String? = null,
         exchangeLimit: ExchangeRateLimit? = null,
         afterExchangeAdmitted: (suspend () -> Unit)? = null,
+        exchangeBodyTimeoutMillis: Long = AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS,
         block: suspend (Env) -> Unit,
     ) = runBlocking {
         withTimeout(30_000) {
@@ -663,9 +830,17 @@ class AuthRoutesTest {
                             { fixedNow },
                             exchangeLimit,
                             afterExchangeAdmitted ?: {},
+                            exchangeBodyTimeoutMillis,
                         )
                     } else {
-                        authRoutes(tokens, tickets, publicUrl, TRANSPORT_JSON, now = { fixedNow })
+                        authRoutes(
+                            tokens,
+                            tickets,
+                            publicUrl,
+                            TRANSPORT_JSON,
+                            now = { fixedNow },
+                            exchangeBodyTimeoutMillis = exchangeBodyTimeoutMillis,
+                        )
                     }
                     // The one gated route standing in for the whole control plane, so the login cookie can be
                     // shown to reach it (and to stop reaching it after a rotation).

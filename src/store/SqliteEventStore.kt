@@ -94,6 +94,20 @@ class SqliteEventStore private constructor(
     )
     override val sessionUpdates: SharedFlow<SessionUpdate> get() = _sessionUpdates
 
+    /**
+     * Correctness-oriented companion to [_sessionUpdates]. It is deliberately unbuffered: once a
+     * subscriber exists, a committed writer waits only until that subscriber receives the update, bounding
+     * memory without discarding an intermediate transition. With no subscriber, `MutableSharedFlow` drops
+     * the value without suspending; [PushNotifier][io.kotgent.push.PushNotifier] establishes its baseline
+     * from [listSessions] before subscribing.
+     *
+     * Every publish happens under [mutex], immediately after the matching database mutation, so subscribers
+     * observe the same total order as committed writes. The notifier's collector does only constant-time
+     * edge tracking before handing delivery to its separate, conflated worker.
+     */
+    private val _reliableSessionUpdates = MutableSharedFlow<SessionUpdate>()
+    override val reliableSessionUpdates: SharedFlow<SessionUpdate> get() = _reliableSessionUpdates
+
     init {
         // WAL at DB init (Technical Details): lets readers not block the single writer on a
         // file-backed DB. `PRAGMA journal_mode` returns a row (the resulting mode), so it must go
@@ -245,7 +259,7 @@ class SqliteEventStore private constructor(
             subscribers[sessionId]?.forEach { it.trySend(stored) }
             // Signal the (control-authoritative) cache change for the events-WS. Hand-built rather than
             // emitFromRow — see that helper's KDoc for why, and keep the two in step.
-            _sessionUpdates.tryEmit(
+            emitSessionUpdate(
                 SessionUpdate(
                     sessionId, cacheState, next.lastSeq,
                     unread(next.lastSeq.value, readCursor), (cachedRow?.archived ?: 0L) != 0L,
@@ -322,14 +336,30 @@ class SqliteEventStore private constructor(
      *
      * Uses `sessions.get` directly, NOT [getSession] — [mutex] is not reentrant and the caller holds it.
      */
-    private fun emitFromRow(sessionId: SessionId) {
+    private suspend fun emitFromRow(sessionId: SessionId) {
         val row = sessions.get(sessionId.value).executeAsOneOrNull() ?: return
-        _sessionUpdates.tryEmit(
+        emitSessionUpdate(
             SessionUpdate(
                 sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
                 unread(row.last_seq, row.read_cursor), row.archived != 0L,
             ),
         )
+    }
+
+    /**
+     * Publish one committed cache change to both audiences.
+     *
+     * The browser signal remains best-effort and non-blocking because its periodic snapshot self-heals.
+     * The notifier signal is lossless while subscribed, so its unbuffered [MutableSharedFlow.emit] applies
+     * bounded backpressure until the constant-time edge collector receives the update. Publishing is
+     * non-cancellable because the database change has already committed; cancellation must not make the
+     * caller observe a failed write while silently omitting its corresponding notification transition.
+     */
+    private suspend fun emitSessionUpdate(update: SessionUpdate) {
+        _sessionUpdates.tryEmit(update)
+        withContext(NonCancellable) {
+            _reliableSessionUpdates.emit(update)
+        }
     }
 
     private fun readLocked(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> =

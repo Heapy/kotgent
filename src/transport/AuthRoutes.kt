@@ -3,13 +3,24 @@ package io.kotgent.transport
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receiveText
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.request.contentLength
+import io.ktor.server.request.receiveChannel
+import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -92,6 +103,43 @@ data class ExchangeRequest(val ticket: String)
 @Serializable
 data class RotateResponse(val token: String)
 
+/** The bounded outcome of reading an unauthenticated `/auth/exchange` request body. */
+sealed interface AuthExchangeBodyRead {
+    data class Received(val text: String) : AuthExchangeBodyRead
+    data object TooLarge : AuthExchangeBodyRead
+    data object TimedOut : AuthExchangeBodyRead
+}
+
+/**
+ * Read one exchange body without allowing an unauthenticated peer to allocate or hold resources without
+ * bound.
+ *
+ * Reading [maxBytes] plus one distinguishes an exactly-full valid body from an oversized chunked body
+ * without ever buffering the rest. [withTimeoutOrNull] converts only this function's own timeout to
+ * [AuthExchangeBodyRead.TimedOut]; cancellation of the owning request still propagates.
+ */
+suspend fun readAuthExchangeBody(
+    channel: ByteReadChannel,
+    maxBytes: Int = AUTH_EXCHANGE_MAX_BODY_BYTES,
+    timeoutMillis: Long = AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS,
+): AuthExchangeBodyRead {
+    require(maxBytes > 0) { "the auth exchange body limit must be positive, got $maxBytes" }
+    require(maxBytes < Int.MAX_VALUE) { "the auth exchange body limit is too large to probe for overflow" }
+    require(timeoutMillis > 0) { "the auth exchange body timeout must be positive, got $timeoutMillis ms" }
+
+    return withTimeoutOrNull(timeoutMillis) {
+        val bytes = ByteArray(maxBytes + 1)
+        var size = 0
+        while (size < bytes.size) {
+            val read = channel.readAvailable(bytes, size, bytes.size - size)
+            if (read < 0) break
+            size += read
+        }
+        if (size > maxBytes) AuthExchangeBodyRead.TooLarge
+        else AuthExchangeBodyRead.Received(bytes.decodeToString(endIndex = size))
+    } ?: AuthExchangeBodyRead.TimedOut
+}
+
 /**
  * Mount the four login routes on [this] route.
  *
@@ -112,6 +160,8 @@ data class RotateResponse(val token: String)
  * @param afterExchangeAdmitted a lifecycle seam invoked after reserving capacity and inside the
  *   non-cancellable-cleanup `try/finally`; production leaves it empty, while tests use it to abort an
  *   admitted handler deterministically and prove the reservation is released.
+ * @param exchangeBodyTimeoutMillis maximum admitted body-intake time. Production uses the fixed public
+ *   limit; tests may shorten it to prove that a raw stalled socket is actually closed.
  */
 fun Route.authRoutes(
     tokens: TokenHolder,
@@ -121,6 +171,7 @@ fun Route.authRoutes(
     now: () -> Long = ::authEpochMillis,
     exchangeLimit: ExchangeRateLimit = ExchangeRateLimit(),
     afterExchangeAdmitted: suspend () -> Unit = {},
+    exchangeBodyTimeoutMillis: Long = AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS,
 ) {
     // Ticket issuance and rotation: an authenticated credential AND a loopback Host. Nesting the two gates
     // is the whole statement — the tunnel publishes the browser surface, never the surface that mints
@@ -227,32 +278,58 @@ fun Route.authRoutes(
         val facts = call.requestFacts()
         val decision = authorizeTicketExchange(facts, publicUrl)
         if (decision is AuthDecision.Deny) {
-            call.respondText(refusalBody(decision.status), status = decision.status)
+            call.respondToUnconsumedExchangeAndClose(refusalBody(decision.status), decision.status)
             return@post
         }
-        // Read and parse BEFORE reserving limiter capacity. A client may trickle an incomplete request body
-        // forever; letting that hold one of the ten in-flight reservations would turn ten idle sockets into
-        // a permanent global sign-in lockout. Parsing still spends no budget because it has not named a
-        // candidate the store can look up yet.
-        val presented = try {
-            json.decodeFromString(ExchangeRequest.serializer(), call.receiveText()).ticket.trim()
-        } catch (_: SerializationException) {
-            call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
-            return@post
-        }
-
-        // Reserve immediately before the actual lookup. Over the limit, the candidate is never redeemed,
-        // so a valid ticket survives until the rolling window opens again. The refusal is deliberately a
-        // 429 and not the 400 a wrong code gets — "you are being throttled" is not a secret, and the code
-        // form has to tell the operator to wait rather than to retype.
+        // Reserve BEFORE reading the unauthenticated body. The bounded, timed read below means a slow peer
+        // can hold one reservation only briefly, while admission limits how many such peers can consume a
+        // handler/connection at once. Over the limit no body or candidate code is inspected, so a valid
+        // ticket survives until the rolling window opens again.
         val attempt = exchangeLimit.begin()
         if (attempt == null) {
-            call.respondText("too many failed sign-in attempts", status = HttpStatusCode.TooManyRequests)
+            call.respondToUnconsumedExchangeAndClose(
+                "too many failed sign-in attempts",
+                HttpStatusCode.TooManyRequests,
+            )
             return@post
         }
         var failedExchange = false
         try {
             afterExchangeAdmitted()
+            val requestBody = call.receiveChannel()
+            val body = when {
+                (call.request.contentLength() ?: 0L) > AUTH_EXCHANGE_MAX_BODY_BYTES ->
+                    AuthExchangeBodyRead.TooLarge
+
+                else -> readAuthExchangeBody(requestBody, timeoutMillis = exchangeBodyTimeoutMillis)
+            }
+            val text = when (body) {
+                is AuthExchangeBodyRead.Received -> body.text
+                AuthExchangeBodyRead.TooLarge -> {
+                    call.respondToUnconsumedExchangeAndClose(
+                        "request body too large",
+                        HttpStatusCode.PayloadTooLarge,
+                        requestBody,
+                    )
+                    return@post
+                }
+                AuthExchangeBodyRead.TimedOut -> {
+                    call.respondToUnconsumedExchangeAndClose(
+                        "request body timed out",
+                        HttpStatusCode.RequestTimeout,
+                        requestBody,
+                    )
+                    return@post
+                }
+            }
+            val presented = try {
+                json.decodeFromString(ExchangeRequest.serializer(), text).ticket.trim()
+            } catch (_: SerializationException) {
+                // Not charged to the budget: a body that does not parse never names a code, so it is not a
+                // guess — only a real redemption attempt spends from the window.
+                call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+                return@post
+            }
             // Redeem returns the token the ticket was BOUND to at mint time (null for "never existed", "already
             // spent" or "expired" — one answer for all three, so a prober cannot learn which guess was ever real).
             // Sign the cookie with THAT token, not `tokens.current()`: a rotation between mint and redeem thus
@@ -272,12 +349,57 @@ fun Route.authRoutes(
             )
             call.respondText("ok")
         } finally {
-            // Cancellation (a client disappearing during redemption or response writing) must not leak a
-            // reservation and throttle sign-in forever. Finishing is tiny, but Mutex.lock is cancellable, so
-            // give this cleanup the same non-cancellable guarantee a resource release would have.
+            // Cancellation (a client disappearing during body intake, redemption or response writing) must
+            // not leak a reservation and throttle sign-in forever. Finishing is tiny, but Mutex.lock is
+            // cancellable, so give this cleanup the same non-cancellable guarantee a resource release would.
             withContext(NonCancellable) { attempt.finish(failedExchange) }
         }
     }
+}
+
+/**
+ * Answer an exchange request whose body was deliberately not drained, then tear down the underlying CIO
+ * connection. Merely setting `Connection: close` or cancelling [requestBody] is insufficient on Ktor CIO
+ * 3.4.x: its connection-pipeline coroutine can still be suspended reading the raw socket into that channel,
+ * retaining one file descriptor after the route and limiter reservation have finished.
+ */
+private suspend fun ApplicationCall.respondToUnconsumedExchangeAndClose(
+    text: String,
+    status: HttpStatusCode,
+    requestBody: ByteReadChannel? = null,
+) {
+    response.header(HttpHeaders.Connection, "close")
+    try {
+        respondText(text, status = status)
+    } finally {
+        requestBody?.cancel(null)
+        withContext(NonCancellable) { closePinnedCioConnectionAfterFlush() }
+    }
+}
+
+/**
+ * Close the client socket by cancelling CIO's per-connection pipeline after a tiny response-flush grace.
+ *
+ * This is intentionally isolated and pinned to the project's Ktor CIO 3.4.x engine layout. CIO creates the
+ * call in a `withContext` child of the request-handler job, itself a child of the connection pipeline; that
+ * pipeline owns `parseHttpBody(connection.input, ...)`, and its completion closes the accepted socket.
+ * Ktor exposes neither the socket nor a connection-close hook to an [ApplicationCall], so walking these two
+ * documented-by-source parents is the only way for an application route to interrupt a peer stalled in the
+ * raw parser. The raw-socket regression test guards both this hierarchy and against cancelling the server
+ * root when Ktor is upgraded.
+ *
+ * The pipeline's response writer is a sibling of the request handler. Cancelling their parent immediately
+ * can race away the already-produced 408/413/429 bytes, so this handler holds its limiter reservation (when
+ * it has one) for one short, fixed response-flush grace before cancellation. A compliant peer gets its
+ * response; a peer that never finishes the body retains a socket only for that bounded grace.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+private suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush() {
+    val callJob = coroutineContext[Job] ?: return
+    val requestHandlerJob = callJob.parent ?: return
+    val connectionPipelineJob = requestHandlerJob.parent ?: return
+    delay(AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS)
+    connectionPipelineJob.cancel(CancellationException("closing unconsumed /auth/exchange request body"))
 }
 
 /**
@@ -309,6 +431,15 @@ private fun ticketUrl(origin: String, ticket: String): String =
 
 /** Wall clock in epoch millis — the production [authRoutes] `now` (`getTimeMillis` is a hard error). */
 private fun authEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
+
+/** Maximum unauthenticated exchange-body bytes retained in memory (a normal body is about 21 bytes). */
+const val AUTH_EXCHANGE_MAX_BODY_BYTES: Int = 1_024
+
+/** Maximum time an admitted peer may spend delivering that tiny body. */
+const val AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS: Long = 5_000L
+
+/** Bounded grace for CIO's sibling writer to flush an early response before the raw socket is forced shut. */
+private const val AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS: Long = 100L
 
 /**
  * The login page, in its two shapes: spend the ticket out of `location.hash`, or — when there is no

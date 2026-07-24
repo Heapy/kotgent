@@ -23,6 +23,30 @@ class DaemonServer(
 )
 
 /**
+ * Run a suspending startup step after its resource has already been acquired, compensating if that step
+ * fails before an owner can be returned to the caller.
+ *
+ * Compensation is [NonCancellable] because shutdown cancellation is one of the failures this exists to
+ * handle. A cleanup failure is suppressed onto the startup failure so the original cause remains primary
+ * without hiding a leaked-resource diagnostic.
+ */
+suspend fun <T> withStartupCompensation(
+    compensate: suspend () -> Unit,
+    start: suspend () -> T,
+): T = try {
+    start()
+} catch (failure: Throwable) {
+    withContext(NonCancellable) {
+        try {
+            compensate()
+        } catch (compensationFailure: Throwable) {
+            if (compensationFailure !== failure) failure.addSuppressed(compensationFailure)
+        }
+    }
+    throw failure
+}
+
+/**
  * Assemble optional push first, await whatever readiness barrier that assembler owns, then build and bind
  * the server that receives its route dependencies.
  *
@@ -35,18 +59,9 @@ suspend fun startDaemonServer(
     createServer: (DaemonPush?) -> KotgentServer,
 ): DaemonServer {
     val push = assemblePush()
-    return try {
+    return withStartupCompensation(
+        compensate = { push?.close?.invoke() },
+    ) {
         DaemonServer(createServer(push).start(), push)
-    } catch (e: Throwable) {
-        withContext(NonCancellable) {
-            try {
-                push?.close?.invoke()
-            } catch (closeFailure: Throwable) {
-                // The bind/create failure remains primary, but a failed cleanup can leave the push
-                // transport open and must remain visible to diagnostics.
-                e.addSuppressed(closeFailure)
-            }
-        }
-        throw e
     }
 }

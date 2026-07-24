@@ -909,6 +909,24 @@ pin an old UI for a day).
       ➕ documentation-only task, so no new tests; `./kotlin build` and the full suite passed:
       **590 run / 590 passed / 0 skipped**
 
+### External adversarial follow-up
+
+- [x] supersede the earlier pre-admission body read with limiter admission followed by a 1024-byte,
+      five-second streaming cap; malformed, oversized and timed-out bodies release without charging, and
+      every unread early-response path force-closes the pinned CIO connection after a bounded flush grace
+- [x] age failures from monotonic elapsed time rather than wall timestamps, so even a backward adjustment
+      between sparse requests cannot extend recovery beyond one window
+- [x] compensate a `DarwinPushTransport` locally if suspending notifier startup fails before a
+      `DaemonPush` owner can be returned
+- [x] split the UI's lossy `sessionUpdates` signal from the notifier's ordered, unbuffered
+      `reliableSessionUpdates`; conflate delivery to one pending payload-less wake while a send is in flight
+- [x] version concurrent `/sessions` loads, fetch fresh bounded liveness before foreground reattachment,
+      replace browser subscriptions only for byte-proven VAPID mismatches, bound the worker fetch, and make
+      notification transitions deadline-, generation-, and cross-tab-aware; owned abort controllers keep
+      older notification loads and liveness reads from overwriting newer intent
+- [x] run `./kotlin build`, `./kotlin test`, and `node --check` for every changed JavaScript file
+      ➕ 7 net-new regressions: **612 run / 612 passed / 0 skipped** (branch baseline 605)
+
 ## Post-Completion
 
 *Items requiring manual intervention or external systems — no checkboxes, informational only*
