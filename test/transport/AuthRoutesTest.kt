@@ -19,6 +19,11 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -325,6 +330,35 @@ class AuthRoutesTest {
             HttpStatusCode.TooManyRequests,
             env.exchange(env.port, wrongCode).status,
             "the failures accumulated ACROSS requests — one limiter per daemon, not per call",
+        )
+    }
+
+    @Test
+    fun concurrentFailedExchangesCannotBurstPastTheGlobalBudget() = withAuthServer { env ->
+        // The old split `allow()` / `recordFailure()` route admitted every request in a concurrent burst:
+        // they all saw zero failures before any redemption had returned to record one. Start fifty requests
+        // at one gate and require the reservation itself — not scheduler luck — to hold the ten-guess cap.
+        val start = CompletableDeferred<Unit>()
+        val total = EXCHANGE_FAILURE_LIMIT * 5
+        val responses = coroutineScope {
+            val requests = List(total) {
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    start.await()
+                    env.exchange(env.port, wrongCode)
+                }
+            }
+            start.complete(Unit)
+            requests.awaitAll()
+        }
+        assertEquals(
+            EXCHANGE_FAILURE_LIMIT,
+            responses.count { it.status == HttpStatusCode.BadRequest },
+            "exactly the budget reached ticket redemption and failed",
+        )
+        assertEquals(
+            total - EXCHANGE_FAILURE_LIMIT,
+            responses.count { it.status == HttpStatusCode.TooManyRequests },
+            "every excess concurrent guess was throttled before lookup",
         )
     }
 

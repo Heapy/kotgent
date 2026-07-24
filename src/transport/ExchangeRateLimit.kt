@@ -44,9 +44,11 @@ import kotlin.time.Clock
  * unparseable body, because neither of those ever names a candidate code and so neither is a guess.
  *
  * ## Concurrency
- * [Mutex]-guarded, like [TicketStore]: route handlers run concurrently on the CIO engine, and both entry
- * points here are read-modify-writes over the same list. A plain field would be a data race, and a limiter
- * that miscounts under exactly the concurrency an attacker would use is not a limiter.
+ * [Mutex]-guarded, like [TicketStore]: route handlers run concurrently on the CIO engine, and every
+ * admitted attempt is reserved under the SAME lock that reads the failure count. The reservation stays in
+ * [inFlight] until [Attempt.finish], when it is atomically replaced by a failure or released as a success.
+ * Without that reservation, `max` concurrent requests could all observe an empty failure list before any
+ * one of them recorded its miss, and an attacker could exceed the advertised budget in every burst.
  *
  * One instance per daemon — it is a parameter of [authRoutes] with a default rather than something the
  * handler constructs, because a per-call instance would count to one and start over on every request:
@@ -76,28 +78,51 @@ class ExchangeRateLimit(
     private val failures = ArrayDeque<Long>()
 
     /**
-     * May another exchange attempt proceed? `false` once [max] failures have been recorded inside the
-     * current window.
-     *
-     * Consumes nothing on its own — the budget is spent by [recordFailure], so a caller that goes on to
-     * succeed leaves the limiter exactly as it found it.
+     * Attempts admitted but not yet completed. An [Attempt] uses identity equality, so the set is both the
+     * in-flight count and proof that [Attempt.finish] has not already been called for that reservation.
      */
-    suspend fun allow(): Boolean = mutex.withLock {
+    private val inFlight = mutableSetOf<Attempt>()
+
+    /**
+     * Reserve room for one exchange, or return `null` once failures plus concurrent attempts have filled
+     * the budget.
+     *
+     * Counting the reservation immediately is the concurrency guarantee: at most [max] candidates can be
+     * looked up before any result is known. The caller must finish every returned [Attempt] from a
+     * non-cancellable `finally` block; a success releases its reservation without consuming the rolling
+     * failure budget, while a failed redemption replaces it with one timestamped failure.
+     */
+    suspend fun begin(): Attempt? = mutex.withLock {
         val at = now()
         pruneAged(at)
-        failures.size < max
+        if (failures.size + inFlight.size >= max) return@withLock null
+        Attempt(this).also { inFlight.add(it) }
     }
 
     /**
-     * Charge one failed exchange to the current window.
+     * One admitted exchange. Constructed only by [begin], and finishable exactly once.
      *
-     * Called only after [allow] has already said yes, so the list cannot grow without bound: it is capped
-     * at [max] plus however many attempts were in flight concurrently when the cap was reached.
+     * The route keeps this object across body parsing and ticket redemption, then calls [finish] in
+     * `finally`. Keeping the capability opaque prevents a caller from recording a failure it never reserved.
      */
-    suspend fun recordFailure() = mutex.withLock {
+    class Attempt internal constructor(private val owner: ExchangeRateLimit) {
+        /**
+         * Release this reservation, charging it to the rolling window only when [failed] is true.
+         *
+         * A second call is a programming error: without the identity check it could accidentally release
+         * some other request's capacity and reopen the exact concurrency hole this type closes.
+         */
+        suspend fun finish(failed: Boolean) {
+            owner.finish(this, failed)
+        }
+    }
+
+    /** Complete [attempt] under the same lock that admits new ones. */
+    private suspend fun finish(attempt: Attempt, failed: Boolean) = mutex.withLock {
+        check(inFlight.remove(attempt)) { "exchange attempt has already been finished" }
         val at = now()
         pruneAged(at)
-        failures.addLast(at)
+        if (failed) failures.addLast(at)
     }
 
     /** How many failures still count against the budget right now (aged ones pruned). Tests and diagnostics. */

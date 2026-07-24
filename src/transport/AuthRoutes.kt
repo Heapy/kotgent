@@ -8,6 +8,8 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -226,36 +228,45 @@ fun Route.authRoutes(
         // looked at at all, so a saturated limiter cannot be used as an oracle either. The refusal is
         // deliberately a 429 and not the 400 a wrong code gets — "you are being throttled" is not a secret,
         // and the Task-15 code form has to be able to tell the operator to wait rather than to retype.
-        if (!exchangeLimit.allow()) {
+        val attempt = exchangeLimit.begin()
+        if (attempt == null) {
             call.respondText("too many failed sign-in attempts", status = HttpStatusCode.TooManyRequests)
             return@post
         }
-        val presented = try {
-            json.decodeFromString(ExchangeRequest.serializer(), call.receiveText()).ticket.trim()
-        } catch (_: SerializationException) {
-            // Not charged to the budget: a body that does not parse never names a code, so it is not a
-            // guess — only a real redemption attempt spends from the window.
-            call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
-            return@post
+        var failedExchange = false
+        try {
+            val presented = try {
+                json.decodeFromString(ExchangeRequest.serializer(), call.receiveText()).ticket.trim()
+            } catch (_: SerializationException) {
+                // Not charged to the budget: a body that does not parse never names a code, so it is not a
+                // guess — only a real redemption attempt spends from the window.
+                call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+                return@post
+            }
+            // Redeem returns the token the ticket was BOUND to at mint time (null for "never existed", "already
+            // spent" or "expired" — one answer for all three, so a prober cannot learn which guess was ever real).
+            // Sign the cookie with THAT token, not `tokens.current()`: a rotation between mint and redeem thus
+            // yields a cookie signed with the old token, which fails verification against the now-current one and
+            // is dead the instant it is set — rotation revokes it with zero cross-lock timing dependency.
+            val boundToken = if (presented.isEmpty()) null else tickets.redeem(presented)
+            failedExchange = boundToken == null
+            if (boundToken == null) {
+                // The one thing that spends from the window: an attempt that named a code and got it wrong.
+                // A SUCCESS charges nothing, so signing a stack of devices in never walks into the limit.
+                call.respondText("invalid or expired ticket", status = HttpStatusCode.BadRequest)
+                return@post
+            }
+            call.setSessionCookie(
+                issueSessionCookie(boundToken, now()),
+                secure = requiresSecureCookie(facts.host, publicUrl),
+            )
+            call.respondText("ok")
+        } finally {
+            // Cancellation (a client disappearing mid-body or mid-response) must not leak a reservation and
+            // throttle sign-in forever. Finishing is tiny, but Mutex.lock is cancellable, so give this cleanup
+            // the same non-cancellable guarantee a resource release would have.
+            withContext(NonCancellable) { attempt.finish(failedExchange) }
         }
-        // Redeem returns the token the ticket was BOUND to at mint time (null for "never existed", "already
-        // spent" or "expired" — one answer for all three, so a prober cannot learn which guess was ever real).
-        // Sign the cookie with THAT token, not `tokens.current()`: a rotation between mint and redeem thus
-        // yields a cookie signed with the old token, which fails verification against the now-current one and
-        // is dead the instant it is set — rotation revokes it with zero cross-lock timing dependency.
-        val boundToken = if (presented.isEmpty()) null else tickets.redeem(presented)
-        if (boundToken == null) {
-            // The one thing that spends from the window: an attempt that named a code and got it wrong.
-            // A SUCCESS charges nothing, so signing a stack of devices in never walks into the limit.
-            exchangeLimit.recordFailure()
-            call.respondText("invalid or expired ticket", status = HttpStatusCode.BadRequest)
-            return@post
-        }
-        call.setSessionCookie(
-            issueSessionCookie(boundToken, now()),
-            secure = requiresSecureCookie(facts.host, publicUrl),
-        )
-        call.respondText("ok")
     }
 }
 

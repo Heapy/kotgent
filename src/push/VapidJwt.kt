@@ -161,9 +161,10 @@ fun vapidAuthorizationHeader(jwt: String, publicKey: String): String =
 /**
  * One live VAPID token per push-service origin, re-signed only when it is close to expiring.
  *
- * Signing is a `posix_spawn` of `/usr/bin/openssl` (tens of milliseconds), and a burst of notifications
- * would otherwise pay it once per subscription. Keyed by origin because a token names its audience: Apple
- * and Google each get their own, minted on first use.
+ * Signing runs `/usr/bin/openssl` through [io.kotgent.tmux.ProcessRunner] (tens of milliseconds), so it
+ * inherits that spawn path's CLOEXEC sweep; a burst of notifications would otherwise pay it once per
+ * subscription. Keyed by origin because a token names its audience: Apple and Google each get their own,
+ * minted on first use.
  *
  * ## Concurrency
  * [Mutex]-guarded, the shape [VapidKey] and `TicketStore` use. The map is a read-modify-write and

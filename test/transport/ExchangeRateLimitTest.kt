@@ -1,11 +1,17 @@
 package io.kotgent.transport
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -37,12 +43,26 @@ class ExchangeRateLimitTest {
         windowMillis: Long = EXCHANGE_WINDOW_MILLIS,
     ) = ExchangeRateLimit(now = { clock }, max = max, windowMillis = windowMillis)
 
+    /** Drive one completed guess through the same reservation lifecycle the route uses. */
+    private suspend fun ExchangeRateLimit.completeFailure(): Boolean {
+        val attempt = begin() ?: return false
+        attempt.finish(failed = true)
+        return true
+    }
+
+    /** Drive one successful exchange: it occupies capacity while live, then releases it without a charge. */
+    private suspend fun ExchangeRateLimit.completeSuccess(): Boolean {
+        val attempt = begin() ?: return false
+        attempt.finish(failed = false)
+        return true
+    }
+
     // --- the cap ------------------------------------------------------------------------------------
 
     @Test
     fun aFreshLimiterAllows() = runBlocking {
         val limit = limiter()
-        assertTrue(limit.allow(), "nothing has failed yet")
+        assertNotNull(limit.begin(), "nothing has failed yet").finish(failed = false)
         assertEquals(0, limit.failuresInWindow())
     }
 
@@ -52,10 +72,9 @@ class ExchangeRateLimitTest {
         // open, or a human at the Task-15 form would be cut off before they had a real chance to get it right.
         val limit = limiter()
         repeat(EXCHANGE_FAILURE_LIMIT - 1) {
-            assertTrue(limit.allow(), "attempt ${it + 1} is under the cap")
-            limit.recordFailure()
+            assertTrue(limit.completeFailure(), "attempt ${it + 1} is under the cap")
         }
-        assertTrue(limit.allow(), "the ${EXCHANGE_FAILURE_LIMIT}th attempt is still allowed")
+        assertTrue(limit.completeSuccess(), "the ${EXCHANGE_FAILURE_LIMIT}th attempt is still allowed")
         assertEquals(EXCHANGE_FAILURE_LIMIT - 1, limit.failuresInWindow())
     }
 
@@ -65,31 +84,61 @@ class ExchangeRateLimitTest {
         // before it can name a code. This is the whole limiter — everything else is bookkeeping around it.
         val limit = limiter()
         repeat(EXCHANGE_FAILURE_LIMIT) {
-            assertTrue(limit.allow(), "failure ${it + 1} was still permitted to be attempted")
-            limit.recordFailure()
+            assertTrue(limit.completeFailure(), "failure ${it + 1} was still permitted to be attempted")
         }
-        assertFalse(limit.allow(), "the ${EXCHANGE_FAILURE_LIMIT + 1}th attempt inside the window is refused")
+        assertNull(limit.begin(), "the ${EXCHANGE_FAILURE_LIMIT + 1}th attempt inside the window is refused")
         assertEquals(EXCHANGE_FAILURE_LIMIT, limit.failuresInWindow())
+    }
+
+    @Test
+    fun concurrentAttemptsCannotReservePastTheCap() = runBlocking {
+        withTimeout(20_000) {
+            val limit = limiter()
+            val start = CompletableDeferred<Unit>()
+            val total = EXCHANGE_FAILURE_LIMIT * 5
+            val attempts = List(total) {
+                // Start every coroutine up to the same gate, then release the whole burst together. A split
+                // check/record API let every one through here before the first failure landed.
+                async(start = CoroutineStart.UNDISPATCHED) {
+                    start.await()
+                    limit.begin()
+                }
+            }
+
+            start.complete(Unit)
+            val results = attempts.awaitAll()
+            val admitted = results.filterNotNull()
+            assertEquals(
+                EXCHANGE_FAILURE_LIMIT,
+                admitted.size,
+                "in-flight reservations count against the same global budget as completed failures",
+            )
+            assertEquals(total - EXCHANGE_FAILURE_LIMIT, results.count { it == null }, "the rest are throttled")
+
+            admitted.forEach { it.finish(failed = true) }
+            assertEquals(EXCHANGE_FAILURE_LIMIT, limit.failuresInWindow())
+            assertNull(limit.begin(), "finishing the burst as failures keeps the budget saturated")
+        }
     }
 
     @Test
     fun aRefusalPersistsForTheRestOfTheWindow() = runBlocking {
         val limit = limiter()
-        repeat(EXCHANGE_FAILURE_LIMIT) { limit.recordFailure() }
+        repeat(EXCHANGE_FAILURE_LIMIT) { assertTrue(limit.completeFailure()) }
 
         clock = start + EXCHANGE_WINDOW_MILLIS - 1
-        assertFalse(limit.allow(), "one millisecond before the oldest failure ages out, still refused")
+        assertNull(limit.begin(), "one millisecond before the oldest failure ages out, still refused")
     }
 
     // --- successes ----------------------------------------------------------------------------------
 
     @Test
     fun aSuccessfulExchangeConsumesNoBudget() = runBlocking {
-        // [allow] is a question, not a withdrawal: only [recordFailure] spends. An operator signing a laptop,
-        // a phone and a tablet in back to back does hundreds of allowed exchanges and must never be throttled.
+        // A success releases its reservation without leaving a failure. An operator signing a laptop, a
+        // phone and a tablet back to back does hundreds of exchanges and must never be throttled.
         val limit = limiter()
         repeat(EXCHANGE_FAILURE_LIMIT * 100) {
-            assertTrue(limit.allow(), "a successful exchange leaves the limiter exactly as it found it")
+            assertTrue(limit.completeSuccess(), "a successful exchange leaves the limiter exactly as it found it")
         }
         assertEquals(0, limit.failuresInWindow(), "no budget was spent")
     }
@@ -98,12 +147,11 @@ class ExchangeRateLimitTest {
     fun successesInterleavedWithFailuresOnlyChargeTheFailures() = runBlocking {
         val limit = limiter()
         repeat(EXCHANGE_FAILURE_LIMIT - 1) {
-            assertTrue(limit.allow())
-            limit.recordFailure()
-            assertTrue(limit.allow(), "a success between two failures") // deliberately NOT recorded
+            assertTrue(limit.completeFailure())
+            assertTrue(limit.completeSuccess(), "a success between two failures")
         }
         assertEquals(EXCHANGE_FAILURE_LIMIT - 1, limit.failuresInWindow(), "only the failures counted")
-        assertTrue(limit.allow(), "so there is still budget left")
+        assertTrue(limit.completeSuccess(), "so there is still budget left")
     }
 
     // --- the sliding window -------------------------------------------------------------------------
@@ -113,24 +161,27 @@ class ExchangeRateLimitTest {
         // The denial-of-sign-in trade-off is only acceptable because it ends by itself: once the attacker
         // stops, the daemon is usable again one window later with nothing to reset.
         val limit = limiter()
-        repeat(EXCHANGE_FAILURE_LIMIT) { limit.recordFailure() }
-        assertFalse(limit.allow())
+        repeat(EXCHANGE_FAILURE_LIMIT) { assertTrue(limit.completeFailure()) }
+        assertNull(limit.begin())
 
         clock = start + EXCHANGE_WINDOW_MILLIS
-        assertTrue(limit.allow(), "a full window after the failures, the budget is back")
+        assertTrue(limit.completeSuccess(), "a full window after the failures, the budget is back")
         assertEquals(0, limit.failuresInWindow(), "and they are gone, not merely ignored")
     }
 
     @Test
     fun aFailureAgesOutAtExactlyTheWindowWidth() = runBlocking {
         val limit = limiter(max = 1)
-        limit.recordFailure()
+        assertTrue(limit.completeFailure())
 
         clock = start + EXCHANGE_WINDOW_MILLIS - 1
-        assertFalse(limit.allow(), "one millisecond short of the width it still counts")
+        assertNull(limit.begin(), "one millisecond short of the width it still counts")
 
         clock = start + EXCHANGE_WINDOW_MILLIS
-        assertTrue(limit.allow(), "the window is half-open — at exactly its width the failure is gone")
+        assertTrue(
+            limit.completeSuccess(),
+            "the window is half-open — at exactly its width the failure is gone",
+        )
     }
 
     @Test
@@ -138,17 +189,17 @@ class ExchangeRateLimitTest {
         // A fixed-bucket limiter would forget everything the moment the bucket flipped, letting 2 * max
         // guesses land across the boundary. Here a partial slide frees exactly the failures that aged out.
         val limit = limiter()
-        repeat(EXCHANGE_FAILURE_LIMIT - 2) { limit.recordFailure() } // 8 at `start`
+        repeat(EXCHANGE_FAILURE_LIMIT - 2) { assertTrue(limit.completeFailure()) } // 8 at `start`
         clock = start + EXCHANGE_WINDOW_MILLIS / 2
-        repeat(2) { limit.recordFailure() } // 2 at the half-way mark → at the cap
-        assertFalse(limit.allow(), "ten failures inside one window")
+        repeat(2) { assertTrue(limit.completeFailure()) } // 2 at the half-way mark → at the cap
+        assertNull(limit.begin(), "ten failures inside one window")
 
         clock = start + EXCHANGE_WINDOW_MILLIS
         assertEquals(2, limit.failuresInWindow(), "only the eight old ones aged out")
-        assertTrue(limit.allow(), "so there is budget again — but only what actually expired")
+        assertTrue(limit.completeSuccess(), "so there is budget again — but only what actually expired")
 
-        repeat(EXCHANGE_FAILURE_LIMIT - 2) { limit.recordFailure() }
-        assertFalse(limit.allow(), "and the two survivors still count towards the new cap")
+        repeat(EXCHANGE_FAILURE_LIMIT - 2) { assertTrue(limit.completeFailure()) }
+        assertNull(limit.begin(), "and the two survivors still count towards the new cap")
     }
 
     @Test
@@ -156,12 +207,12 @@ class ExchangeRateLimitTest {
         // NTP or a laptop waking up can move the clock; a pruned entry is REMOVED, not merely filtered, so it
         // cannot come back and refuse an operator who is entitled to attempt.
         val limit = limiter(max = 1)
-        limit.recordFailure()
+        assertTrue(limit.completeFailure())
         clock = start + EXCHANGE_WINDOW_MILLIS
-        assertTrue(limit.allow(), "aged out")
+        assertTrue(limit.completeSuccess(), "aged out")
 
         clock = start + 1
-        assertTrue(limit.allow(), "the entry is gone for good")
+        assertTrue(limit.completeSuccess(), "the entry is gone for good")
         assertEquals(0, limit.failuresInWindow())
     }
 
@@ -173,8 +224,8 @@ class ExchangeRateLimitTest {
         assertEquals(60_000L, EXCHANGE_WINDOW_MILLIS)
         // And the no-argument constructor really uses them (the shape [authRoutes] mounts by default).
         val limit = ExchangeRateLimit()
-        repeat(EXCHANGE_FAILURE_LIMIT) { limit.recordFailure() }
-        assertFalse(limit.allow(), "the default limiter refuses after ten failures")
+        repeat(EXCHANGE_FAILURE_LIMIT) { assertTrue(limit.completeFailure()) }
+        assertNull(limit.begin(), "the default limiter refuses after ten failures")
     }
 
     @Test

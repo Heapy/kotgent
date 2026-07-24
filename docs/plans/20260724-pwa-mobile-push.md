@@ -863,14 +863,26 @@ pin an old UI for a day).
 
 ### Task 20: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented (installable PWA, push on `needs_attention`,
+- [x] verify all requirements from Overview are implemented (installable PWA, push on `needs_attention`,
       code sign-in reachable *from inside* the installed PWA, usable mobile terminal)
-- [ ] verify edge cases: no subscriptions (silence, no errors), dead subscription pruned on `410`, daemon
+      ➕ audited the manifest/icons/root service worker, push subscription + `false → true` attention path,
+      first-load `401 → /auth` typed-code path, drawer/visual-viewport/special-key/reattach mobile path, and
+      their serving/route tests; real-device behaviour remains the explicit Post-Completion checklist
+      ➕ the audit found that the short-code limiter's split check/charge API could overbook the ten-guess
+      budget under concurrency. Replaced it with atomic in-flight reservations released from a
+      non-cancellable `finally`; limiter-level and real-route 50-request bursts now prove only ten guesses
+      reach redemption
+- [x] verify edge cases: no subscriptions (silence, no errors), dead subscription pruned on `410`, daemon
       restart does not re-notify, openssl missing → push disabled but daemon healthy
-- [ ] run the full suite: `./kotlin build && ./kotlin test` — expect ≥ 428 plus the new tests, 0 skipped
-- [ ] confirm no machine-specific path entered any YAML: `git grep '/Users/' -- '*.yaml'` stays empty
-- [ ] confirm `vapid.pem` is 0600 on a real run and that no new spawn path bypasses the CLOEXEC discipline
+- [x] run the full suite: `./kotlin build && ./kotlin test` — expect ≥ 428 plus the new tests, 0 skipped
+      ➕ `node --check` passed for all 20 shipped JavaScript modules; **590 run / 590 passed / 0 skipped**
+- [x] confirm no machine-specific path entered any YAML: `git grep '/Users/' -- '*.yaml'` stays empty
+- [x] confirm `vapid.pem` is 0600 on a real run and that no new spawn path bypasses the CLOEXEC discipline
       (openssl goes through `ProcessRunner`)
+      ➕ `VapidKeyTest.generatesA0600KeyOnceAndReusesIt` generated and stat-ed a real key with
+      `/usr/bin/openssl`; both key generation and signing default to `ProcessRunner`, whose real-child
+      CLOEXEC behaviour is covered by `CloexecTest`. Corrected one stale `posix_spawn` KDoc claim to match
+      the verified `ProcessRunner`/`popen` path
 
 ### Task 21: [Final] Update documentation
 
