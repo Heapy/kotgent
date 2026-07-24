@@ -23,6 +23,34 @@ immortal:
 - **Reboot the machine** — the process is gone, but the conversation is preserved by Claude on disk and
   is restored with `resume`.
 
+## Quick start
+
+Install from the Homebrew tap (macOS on Apple Silicon; the formula pulls in `tmux`):
+
+```shell
+brew install Heapy/tap/kotgent
+```
+
+The formula installs kotgent itself, **not** the agents: `claude` and/or `codex` have to be on your
+`PATH` already (see [Requirements](#requirements)). Then, from a normal login shell — `kotgent install`
+snapshots that shell's `PATH` into the launchd plist, and the daemon would otherwise start with a minimal
+env and fail to find the agent binaries:
+
+```shell
+kotgent install            # install + boot the daemon as a launchd agent (RunAtLoad + KeepAlive)
+kotgent start claude       # launch a Claude session inside tmux, in the current directory
+kotgent web                # open the Web UI (one-time ticket; no token ever lands in the URL)
+```
+
+That's the whole loop. From there, `kotgent list` shows every session and its state, `kotgent attach <id>`
+drops the terminal straight into your shell, and closing either client just detaches — the agent keeps
+running in `tmux`.
+
+Upgrades are `brew upgrade kotgent`, followed by **`kotgent install` again**: the plist records the
+binary's real (version-qualified) Cellar path, which a new release invalidates.
+
+To build from source instead, see [Build & test](#build--test).
+
 ## Requirements
 
 - **macOS on Apple Silicon (arm64).** The build targets `macosArm64` and links against macOS system
