@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Kotgent"
+  short_description: "Publish Kotgent and update the Homebrew tap"
+  default_prompt: "Use $release-kotgent to publish the next Kotgent release and update the Homebrew tap."
