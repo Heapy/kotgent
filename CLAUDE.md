@@ -242,14 +242,22 @@ propagates, which is right: the column really was missing and every session writ
 `archived` column was added this way; an `EventStoreTest` opens the store over a pre-`archived` schema and
 then re-opens over the migrated one to prove both paths.
 
-**Two orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
-`setArchived`) and `model` (best-effort provider model; `setModel`). Neither is a reducer/control-state
-concern, so both have their own targeted `EventStore` writes that leave `state`/`last_seq`/`provider_session_id`
-untouched. `model` is captured after launch — Claude from the hook payload's `transcript_path` (a
-default-wired `ClaudeModelCapture` behind `hookRoutes`' `onHookPayload` seam, so no `Server.kt` change), Codex
-by polling the rollout's `turn_context` (a `SessionManager.captureModelInBackground` seam). A miss just leaves
-`model` null. Only `archived` rides `SessionUpdate` (live+resync must agree, or the row flickers); `model`
-rides only the resync DTO and app.js patches it null-guarded.
+**Three orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
+`setArchived`), `model` (best-effort provider model; `setModel`) and `read_cursor` (the unread badge;
+`markRead`). None is a reducer/control-state concern, so each has its own targeted `EventStore` write that
+leaves `state`/`last_seq`/`provider_session_id` untouched. `model` is captured after launch — Claude from
+the hook payload's `transcript_path` (a default-wired `ClaudeModelCapture` behind `hookRoutes`'
+`onHookPayload` seam, so no `Server.kt` change), Codex by polling the rollout's `turn_context` (a
+`SessionManager.captureModelInBackground` seam). A miss just leaves `model` null. Only `archived` rides
+`SessionUpdate` (live+resync must agree, or the row flickers); `model` rides only the resync DTO and app.js
+patches it null-guarded. `read_cursor` is the only **client-driven** one: `app.js` POSTs
+`/sessions/{id}/read` for the session it displays, from three **imperative** triggers (selection, every
+`/events` frame for the active session — the 15 s resync doubles as the heartbeat that heals a lost POST —
+and `visibilitychange`), never a `useEffect` on `[id, lastSeq, unread]`, whose primitives are unchanged
+after a failed POST so an effect would never retry. Monotonicity and the clamp live in SQL
+(`setReadCursor`), which writes **no `updated_at`** (viewing is not activity; `kotgent list` sorts by it) —
+hence `markRead` takes no clock. Each rule has one home in the code: SQL semantics in `Sessions.sq`, the
+storage contract on `EventStore`, the browser trigger in `app.js`. The CLI marks nothing read.
 
 **PTY via `openpty` + `posix_spawn` (NOT `forkpty`).** `Pty` opens the master with `openpty` and spawns the
 child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before** the spawn. `forkpty`
@@ -315,7 +323,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **438 run / 438 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **456 run / 456 passed /
   0 skipped** (plus `ptycheck`'s 8 real-PTY checks, driven by `PtyTest` — keep its `EXPECTED_CHECKS`
   in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

@@ -173,6 +173,12 @@ The UI shows the session list with live state badges and a "Needs attention" que
 WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
 keyboard input, resize).
 
+A session row also carries an **unread pill** — how many events have arrived since you last looked at that
+session. Looking at it clears it: the browser posts the cursor it has displayed, so the count is
+**server-side** (it clears on the phone and the desktop together, and a second browser sees it clear with no
+reload) and **persistent** (restarting the daemon does not resurrect a cleared badge). Reading a session does
+not count as activity, so `kotgent list`'s ordering is unaffected.
+
 ![The kotgent Web UI: the sidebar's "Needs attention" queue and session list on the left, a live Claude
 session's terminal on the right, with Interrupt / Detach / Stop / Done controls.](docs/images/web-ui.png)
 
