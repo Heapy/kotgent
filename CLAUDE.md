@@ -176,6 +176,24 @@ forges that and would set a `Secure` cookie on loopback).
 event + updates the session cache in **one transaction**. A JSONL fallback was designed but not needed; the
 `EventStore` interface isolates the choice regardless.
 
+**Schema migrations: the `sqldelight-gen` plugin DROPS `.sqm` files.** It runs with
+`deriveSchemaFromMigrations = false` / `verifyMigrations = false`, and filters `MigrationFile`s out under
+exactly those flags, so a `.sqm` never contributes and the generated `Schema.migrate()` stays an empty
+body (`Schema.version` is 1). **Do not add a `.sqm` and expect it to run.** Additive columns are migrated
+by a hand-rolled idempotent `ALTER` in `SqliteEventStore.init` (`runCatching { ALTER TABLE … ADD COLUMN … }`
+swallowing "duplicate column name"): correct on a fresh DB (the column is already in `create()` from the
+`.sq`, so the ALTER is a caught no-op) and on an existing DB (it adds the column). The `archived` column was
+added this way; an `EventStoreTest` opens the store over a pre-`archived` schema to prove the path.
+
+**Two orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
+`setArchived`) and `model` (best-effort provider model; `setModel`). Neither is a reducer/control-state
+concern, so both have their own targeted `EventStore` writes that leave `state`/`last_seq`/`provider_session_id`
+untouched. `model` is captured after launch — Claude from the hook payload's `transcript_path` (a
+default-wired `ClaudeModelCapture` behind `hookRoutes`' `onHookPayload` seam, so no `Server.kt` change), Codex
+by polling the rollout's `turn_context` (a `SessionManager.captureModelInBackground` seam). A miss just leaves
+`model` null. Only `archived` rides `SessionUpdate` (live+resync must agree, or the row flickers); `model`
+rides only the resync DTO and app.js patches it null-guarded.
+
 **PTY via `openpty` + `posix_spawn` (NOT `forkpty`).** `Pty` opens the master with `openpty` and spawns the
 child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before** the spawn. `forkpty`
 (fork-without-exec) is unsafe for the Kotlin/Native runtime — Kotlin allocation / a GC safepoint in the
@@ -224,7 +242,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **361 run / 361 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **400 run / 400 passed /
   0 skipped**.
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly

@@ -1,5 +1,12 @@
 # CLI version, Done (kill+archive), model, and notifications
 
+> **Status: COMPLETED.** All four features landed as green commits on branch
+> `feat/version-done-model-notifications` (CLI version → Done → model → notifications), each keeping
+> `./kotlin build` + `./kotlin test` green. Final suite: **400 run / 400 passed / 0 skipped**. The
+> `.sqm` migration path was NOT used (the vendored plugin drops migration files) — the `archived` column
+> is added by an idempotent init-`ALTER` instead (see Task 4). Notifications are frontend-only, verified by
+> an ESM syntax check plus the green Kotlin build (no JS test harness exists).
+
 ## Overview
 
 Four backlog features for kotgent, shipped as four independent green commits in a safety-first order

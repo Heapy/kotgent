@@ -47,7 +47,7 @@ immortal:
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **361 run / 361 passed / 0 skipped**.
+The suite currently reports **400 run / 400 passed / 0 skipped**.
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
 binary, and `./kotlin test` on its own never links a main binary. If the binary is missing the test says
@@ -205,6 +205,9 @@ is and isn't here:
 - The full `start → Detach → browser → continue → needs-attention` path, session reconciliation on daemon
   restart (`running` / `stopped` / `crashed` / `resumable` classification), provider-id capture, and
   launchd install.
+- **Session metadata & lifecycle polish.** Each session shows its agent CLI version and, best-effort, the
+  model it is running; **Done** stops an agent and archives it off the sidebar (restorable, history kept);
+  and an opt-in, per-device **browser-notification toggle** pings you when a session needs attention.
 
 **Backlog (not built yet):**
 
@@ -216,20 +219,15 @@ is and isn't here:
   nothing in `core/`, the store, or the fan-out changing. Open questions to resolve first: whether it
   exposes per-launch hooks (like Codex's `-c 'hooks={…}'`) or forces a user-scoped config, how it reports
   approvals, and whether/how a session id can be preallocated or must be scanned after the fact.
-- **Show the provider version once a session is deployed** — capture the agent CLI's version
-  (`claude --version` / `codex --version`) at launch and surface it in the sidebar/session view, so it is
-  obvious which build is running (and, later, whether a session predates an upgrade).
 - **Mobile-native UX** (a PWA manifest + home-screen icon, an Esc/Ctrl/Tab/arrow key row for the soft
   keyboard, approve buttons) and **Web Push**. Remote phone access itself — the cloudflared tunnel +
   Access, sign-in by QR, and the cookie — is now in the slice (see [Sign in from your
   phone](#sign-in-from-your-phone)).
-- **Session archiving** — a way to hide a finished session from the sidebar without ending the agent or
-  losing its history, so the list stays the working set rather than every session ever started.
 - A **diff viewer**, external-session import, and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
-- A **prominent notification toggle** — one large, obvious control to turn notifications on and off per
-  device (phone / laptop).
+- **Web Push** — the current notification toggle is browser-`Notification`-only (fires while a tab is
+  open); server-driven push to a closed device is still backlog.
 - A browser e2e harness (Playwright).
 
 **Why the real-PTY checks live in their own binary.** A Kotlin Toolchain issue
