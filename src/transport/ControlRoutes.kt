@@ -48,6 +48,7 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Unit
  * ContentNegotiation plugin needed — matches the Task-12 hook route style).
  *
  * Endpoints:
+ *  - `GET  /version`                        — the running application's display version.
  *  - `GET  /sessions`                       — list all sessions (from the store cache).
  *  - `GET  /sessions/{id}`                  — one session, or `404`.
  *  - `POST /sessions`                       — start a new session (`{agent, cwd, name?, tags?}`) → `201`.
@@ -67,8 +68,16 @@ fun Route.controlRoutes(
     sessionManager: SessionManager,
     store: EventStore,
     input: TerminalInputSink,
+    currentVersion: String,
     json: Json = TRANSPORT_JSON,
 ) {
+    get("/version") {
+        call.respondText(
+            json.encodeToString(VersionDto.serializer(), VersionDto(currentVersion)),
+            ContentType.Application.Json,
+        )
+    }
+
     get("/sessions") {
         val dtos = store.listSessions().map { it.toDto() }
         call.respondText(
@@ -218,6 +227,10 @@ private fun sessionId(raw: String?): SessionId? =
     raw?.let { runCatching { SessionId(it) }.getOrNull() }
 
 // --- wire DTOs (transport owns its contract; core types are not exposed directly) ----------------
+
+/** Response body for `GET /version` — already formatted for direct display by thin clients. */
+@Serializable
+data class VersionDto(val version: String)
 
 /** Request body for `POST /sessions`. `name`/`tags` are optional. */
 @Serializable

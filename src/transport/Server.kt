@@ -1,5 +1,6 @@
 package io.kotgent.transport
 
+import io.kotgent.currentUiVersion
 import io.kotgent.daemon.SessionManager
 import io.kotgent.exe.NativeExe
 import io.kotgent.pty.PtyFactory
@@ -63,6 +64,7 @@ import platform.posix.access
  * @param terminalBridgeFactory builds the lazy [TerminalBridge] for a session id on a given scope; the
  *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
  *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
+ * @param currentVersion the running application's display version exposed by `GET /version`.
  * @param webUiDir directory served at `/` (the Task-17 SPA). `null` disables static serving (tests);
  *   the default serves whatever exists under `resources/webui` — nothing yet, i.e. `404`, until Task 17.
  * @param publicUrl the origin the daemon is published at through the cloudflared tunnel
@@ -76,6 +78,7 @@ class KotgentServer(
     private val store: EventStore,
     private val tokens: TokenHolder,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
+    private val currentVersion: String = currentUiVersion(),
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
     private val publicUrl: String? = null,
     private val tickets: TicketStore = TicketStore(),
@@ -99,7 +102,7 @@ class KotgentServer(
             authRoutes(tokens, tickets, publicUrl, json)
             // Token-gated control plane.
             authenticated(tokens::current, publicUrl) {
-                controlRoutes(sessionManager, store, inputSink, json)
+                controlRoutes(sessionManager, store, inputSink, currentVersion, json)
                 eventsWs(store, json)
                 terminalWs(registry, store, json)
             }
@@ -169,6 +172,7 @@ class KotgentServer(
             store: EventStore,
             tokens: TokenHolder,
             tmux: Tmux,
+            currentVersion: String = currentUiVersion(),
             ptyFactory: PtyFactory = realPtyFactory,
             webUiDir: String? = DEFAULT_WEBUI_DIR,
             publicUrl: String? = null,
@@ -179,6 +183,7 @@ class KotgentServer(
             store = store,
             tokens = tokens,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },
+            currentVersion = currentVersion,
             webUiDir = webUiDir?.let { resolveWebUiDir(it) },
             publicUrl = publicUrl,
             host = host,

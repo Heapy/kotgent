@@ -1,6 +1,7 @@
 package io.kotgent.cli
 
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
+import io.kotgent.currentUiVersion
 import io.kotgent.adapter.claude.ClaudeAdapter
 import io.kotgent.adapter.claude.ClaudeCli
 import io.kotgent.adapter.claude.ClaudeHookConfig
@@ -390,6 +391,7 @@ object Commands {
                 store,
                 tokenHolder,
                 tmux,
+                currentVersion = currentUiVersion(),
                 publicUrl = config.publicUrl,
                 port = port,
             ).start()

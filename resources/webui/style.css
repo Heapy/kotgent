@@ -378,13 +378,28 @@ select:focus-visible {
   .badge-resumable { background: #4a3610; color: #ffe0a3; }
 }
 
-.status-line {
+#sidebar-footer {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
   margin-top: auto;
   padding-top: 12px;
+}
+.status-line {
+  flex: 1 1 auto;
   font-size: 11px;
   color: var(--muted);
+  margin: 0;
+  min-width: 0;
 }
 .status-line.error { color: var(--attn); }
+#current-version {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
 
 /* --- Terminal pane --- */
 #terminal-pane {

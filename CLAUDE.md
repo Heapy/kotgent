@@ -29,11 +29,11 @@ plugins.
 
 ## Module structure
 
-Four modules (see `project.yaml`):
+Five modules (see `project.yaml`):
 
 - **root — `macos/app`, `macosArm64`** (`module.yaml`): the application. `src/` + `test/`, plus
   `sqldelight/*.sq` (schema) and `resources/webui/` (the SPA). Depends on `./sysnative`; enables the
-  `sqldelight-gen` plugin.
+  `build-info` and `sqldelight-gen` plugins.
 - **`sysnative/` — `kmp/lib`, `macosArm64`**: owns **ALL** raw POSIX/cinterop bindings and their thin
   Kotlin wrappers (`cinterop/pty.def`; `Pty`, `NativeTty`, `NativeExe`). The app depends on it, so the
   auto-discovered cinterop klib links into the app's **main** binary as a normal module dependency (this
@@ -52,12 +52,18 @@ Four modules (see `project.yaml`):
   Gradle-free `SqlDelightEnvironment` and contribute the output via `generated.sources`). It runs on the
   JVM at build time and is not linked into the native app, so it can depend on SQLDelight's heavy JVM
   compiler artifacts freely.
+- **`plugins/build-info/` — `jvm/amper-plugin`**: generates `VERSION` and embedded build metadata from
+  `version.txt` + Git HEAD. Ordinary source builds display `VERSION+<short-sha>` in the Web UI; the tagged
+  release workflow sets `KOTGENT_RELEASE_BUILD=true`, so its packaged/Homebrew binary displays `VERSION`
+  alone and keeps the CLI's `kotgent VERSION` contract. Its action deliberately disables execution
+  avoidance: in a linked worktree, `.git` is a stable indirection file while the changing branch ref lives
+  in the common Git directory outside the worktree.
 
 ## Core patterns & invariants
 
 **Host-free core vs. edges.** The domain, reducer, event store (behind an interface), and adapter
 normalization are **host-free** and fully unit-tested. The edges — cinterop/PTY, `tmux`, Ktor WS, tty-raw,
-the codegen plugin — are kept thin and behind interfaces so the logic above them is testable. Preserve
+the codegen plugins — are kept thin and behind interfaces so the logic above them is testable. Preserve
 this split: put pure logic in `core/`, and keep I/O at the boundary.
 
 **Event-sourcing is the backbone.** State is a **derived projection**, never stored as the truth:
@@ -323,9 +329,9 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **456 run / 456 passed /
-  0 skipped** (plus `ptycheck`'s 8 real-PTY checks, driven by `PtyTest` — keep its `EXPECTED_CHECKS`
-  in sync when adding one).
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **461 native tests passed /
+  0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 8 real-PTY checks, driven by
+  `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
   instead of silently passing when the binary is missing.
@@ -344,7 +350,8 @@ These are real and cost time to rediscover. Respect them.
 ## Where things live
 
 ```
-module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + plugin)
+module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + build plugins)
+version.txt                    single source of the application release version
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
 src/crypto/                    Sha256, Hmac, Hex — pure-Kotlin (KT-78062: no CommonCrypto in the test binary)
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
@@ -362,6 +369,7 @@ sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers
 ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062); driven by PtyTest
 sqldelight/io/kotgent/db/      Events.sq, Sessions.sq (schema + typed queries)
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
+plugins/build-info/            generates VERSION + an embedded Git revision at build time
 resources/webui/               static SPA (index.html, app.js, style.css, vendored xterm.js + qrcode.module.js, lib/qr.js; the /auth login page is a string constant in AuthRoutes.kt)
 docs/plans/                    implementation plans
 ```

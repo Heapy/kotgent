@@ -64,6 +64,7 @@ import kotlin.test.assertTrue
 class WebUiServingTest {
 
     private val token = "webui-serving-token-abc123"
+    private val currentVersion = "9.8.7+deadbee"
 
     @Test
     fun daemonServesIndexHtmlAtRoot() = withServer { ctx ->
@@ -94,7 +95,21 @@ class WebUiServingTest {
         assertTrue(body.contains("visibilitychange"), "…and re-checks when the tab becomes visible again")
         // The per-session throttle Map is module-level and long-lived; this page stays open for days.
         assertTrue(body.contains("pruneReadPosters"), "…and drops the throttle of a session that vanished")
+        assertTrue(body.contains("apiRequest(\"/version\")"), "app.js fetches the daemon version")
+        assertTrue(body.contains("currentVersion=\${currentVersion}"), "app.js passes the version to the sidebar")
         assertContentTypeContains(resp, "javascript")
+    }
+
+    @Test
+    fun webUiRendersTheCurrentVersionInTheSidebarFooter() = withServer { ctx ->
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(sidebar.contains("id=\"sidebar-footer\""), "the sidebar has a stable footer")
+        assertTrue(sidebar.contains("id=\"current-version\""), "the footer includes the current version")
+        assertTrue(sidebar.contains("\${currentVersion}"), "the version label renders the value from the API")
+
+        val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(css.contains("#sidebar-footer"), "the sidebar footer is styled")
+        assertTrue(css.contains("#current-version"), "the current version label is styled")
     }
 
     /**
@@ -271,6 +286,24 @@ class WebUiServingTest {
         assertEquals("[]", resp.bodyAsText().trim(), "the API (empty session list), not a static file, answered")
     }
 
+    @Test
+    fun versionApiIsAuthenticatedAndOutranksTheStaticCatchAll() = withServer { ctx ->
+        // No credential reaches the literal, authenticated API route and is rejected there. If the open
+        // static catch-all had won instead, this missing file would answer 404.
+        assertEquals(HttpStatusCode.Unauthorized, ctx.get("/version").status)
+
+        val resp = ctx.get("/version") { header(HttpHeaders.Authorization, "Bearer $token") }
+        assertEquals(HttpStatusCode.OK, resp.status, "the literal /version API route outranks the static catch-all")
+        assertContentTypeContains(resp, "json")
+        val body = resp.bodyAsText()
+        assertEquals("""{"version":"$currentVersion"}""", body, "the server returns the injected display version")
+        assertEquals(
+            VersionDto(currentVersion),
+            TRANSPORT_JSON.decodeFromString(VersionDto.serializer(), body),
+            "the response is the public VersionDto wire shape",
+        )
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     private inner class Ctx(val port: Int, val client: HttpClient) {
@@ -302,6 +335,7 @@ class WebUiServingTest {
                 tokens = TokenHolder(token),
                 // Never invoked in a serving test (no terminal WS connects); throwing makes that explicit.
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the serving test") },
+                currentVersion = currentVersion,
                 webUiDir = locateWebUiDir(),
                 port = 0,
             ).start()

@@ -99,7 +99,7 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
 }
 
 export function Sidebar({
-  sessions, activeId, prefs, status,
+  sessions, activeId, prefs, status, currentVersion,
   onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore,
 }) {
   const [showDone, setShowDone] = useState(false);
@@ -259,8 +259,13 @@ export function Sidebar({
         </section>
       `}
 
-      <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
-         role="status" aria-live="polite">${status.text}</p>
+      <footer id="sidebar-footer">
+        <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
+           role="status" aria-live="polite">${status.text}</p>
+        ${currentVersion && html`
+          <span id="current-version" title="Kotgent version">${currentVersion}</span>
+        `}
+      </footer>
     </aside>
   `;
 }

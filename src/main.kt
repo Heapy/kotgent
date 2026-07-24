@@ -3,10 +3,6 @@ package io.kotgent
 import io.kotgent.cli.runCli
 import kotlin.system.exitProcess
 
-const val VERSION = "0.1.2"
-
-fun versionLine(): String = "kotgent $VERSION"
-
 /**
  * CLI entry point (plan Task 15): dispatch `argv` to a subcommand (`daemon`, `start`, `list`, `stop`,
  * `resume`, `interrupt`, `attach`, `install`/`uninstall`), keeping `--version`. Parsing + dispatch live

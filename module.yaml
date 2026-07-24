@@ -3,6 +3,8 @@ product:
   platforms: [macosArm64]
 
 plugins:
+  # Generates VERSION + embedded build metadata from version.txt and Git HEAD.
+  build-info: enabled
   # Custom Kotlin Toolchain plugin (plugins/sqldelight-gen) that runs SQLDelight codegen from
   # sqldelight/*.sq into this module's compilation. See plugins/sqldelight-gen/plugin.yaml.
   sqldelight-gen: enabled

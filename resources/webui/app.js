@@ -118,6 +118,7 @@ function markReadIfViewing(id, unread, lastSeq) {
 
 function App() {
   const [sessions, setSessions] = useState([]);
+  const [currentVersion, setCurrentVersion] = useState("");
   const [activeId, setActiveId] = useState(null);
   const [attachedId, setAttachedId] = useState(null);   // the session whose terminal is open here
   const [pendingAction, setPendingAction] = useState(null);
@@ -176,6 +177,20 @@ function App() {
   }, [say]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  // Version metadata is independent of the session list: if this best-effort request fails, the
+  // working UI still loads normally and simply omits the footer label.
+  useEffect(() => {
+    let stopped = false;
+    apiRequest("/version")
+      .then((info) => {
+        if (!stopped && info && typeof info.version === "string") {
+          setCurrentVersion(info.version);
+        }
+      })
+      .catch(() => { /* the version label is optional */ });
+    return () => { stopped = true; };
+  }, []);
 
   // Live updates. The daemon re-sends a full snapshot on connect, so a reconnect resyncs cleanly.
   const loadRef = useRef(loadSessions);
@@ -353,6 +368,7 @@ function App() {
       activeId=${activeId}
       prefs=${prefs}
       status=${status}
+      currentVersion=${currentVersion}
       onSelect=${selectSession}
       onNewSession=${openNewSession}
       onOpenPrefs=${openPrefs}

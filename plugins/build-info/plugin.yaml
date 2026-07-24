@@ -1,0 +1,12 @@
+tasks:
+  generate:
+    action: !io.kotgent.buildinfo.generateBuildInfo
+      # A narrow, real file input. The action derives the repository root from its parent; declaring
+      # the whole project root would overlap taskOutputDir and snapshot every build artifact.
+      versionFile: ${project.rootDir}/version.txt
+      generatedSourceDir: ${taskOutputDir}
+
+generated:
+  sources:
+    - language: kotlin
+      directory: ${tasks.generate.action.generatedSourceDir}

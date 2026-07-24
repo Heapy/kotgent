@@ -28,6 +28,10 @@ jobs:
           restore-keys: kotlin-toolchain-${{ runner.os }}-
 
       - name: Build release binary
+        env:
+          # The build-info plugin otherwise identifies ordinary source builds as VERSION+Git SHA.
+          # Published artifacts (including the one Homebrew installs) intentionally show VERSION only.
+          KOTGENT_RELEASE_BUILD: "true"
         run: ./kotlin build -v release -p macosArm64 -m kotgent
 
       - name: Package
