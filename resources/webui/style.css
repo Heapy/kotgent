@@ -469,7 +469,16 @@ select:focus-visible {
   padding: 6px 8px;
   overflow: hidden;
 }
+/* visualViewport sets this ceiling while the software keyboard is open. Keeping it as a max-height
+   preserves the ordinary flex layout when that API is absent and leaves the keyboard-covered remainder
+   as terminal background instead of making the document scroll. */
+#terminal-host.visual-viewport-sized {
+  max-height: var(--terminal-visible-height);
+}
 #terminal-host .xterm { height: 100%; }
+/* Safari zooms the page when a focused input computes below 16px. xterm's real text size remains the
+   preference above; this only prevents its off-screen input shim from changing visualViewport geometry. */
+#terminal-host .xterm-helper-textarea { font-size: 16px !important; }
 .terminal-hint {
   color: var(--muted);
   font-size: 12px;

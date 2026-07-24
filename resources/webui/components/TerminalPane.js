@@ -15,10 +15,12 @@ import { displayName, isAliveState, stateBadge, tmuxAttachCommand } from "../lib
 
 function debounce(fn, ms) {
   let handle;
-  return function () {
+  const debounced = function () {
     clearTimeout(handle);
     handle = setTimeout(fn, ms);
   };
+  debounced.cancel = () => clearTimeout(handle);
+  return debounced;
 }
 
 function sendResize(ws, cols, rows) {
@@ -53,11 +55,16 @@ async function writeClipboard(text) {
 }
 
 export function TerminalPane({
-  session, attachedId, pendingAction, hint, drawerOpen,
+  session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen,
   onToggleDrawer, onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   const [copyResult, setCopyResult] = useState(null);
+  const terminalRef = useRef(null);
+  const fitRef = useRef(null);
+  const socketRef = useRef(null);
+  const fontSizeRef = useRef(terminalFontSize);
+  fontSizeRef.current = terminalFontSize;
   // The close callback is read through a ref so a re-render cannot re-run the effect (which would tear
   // down a live terminal) just because the parent handed us a fresh closure.
   const closedRef = useRef(onTerminalClosed);
@@ -72,7 +79,7 @@ export function TerminalPane({
       convertEol: false,
       cursorBlink: true,
       fontFamily: "Menlo, Monaco, \"Courier New\", monospace",
-      fontSize: 13,
+      fontSize: fontSizeRef.current,
       theme: { background: "#000000" },
       // When the pane's app turns on mouse reporting, xterm.js disables its selection service and the
       // only way back is shouldForceSelection() — Shift+drag elsewhere, but on macOS Alt+drag AND this
@@ -83,6 +90,35 @@ export function TerminalPane({
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(host);
+
+    // The layout viewport does not shrink reliably when a phone keyboard opens. Cap this flex item at
+    // the visual viewport's bottom before the first fit so even the WebSocket URL carries the correct
+    // OPEN geometry when a session is switched while the keyboard is still visible.
+    const viewport = window.visualViewport;
+    const sizeForVisualViewport = () => {
+      if (!viewport) return;
+      if (!Number.isFinite(viewport.height) || !Number.isFinite(viewport.offsetTop) ||
+          viewport.height <= 0) return;                  // Safari emits transient zeroes during rotation
+
+      // Measure the ordinary flex height, not yesterday's keyboard-constrained one. Restoring the prior
+      // cap on a bad measurement avoids collapsing the terminal during an in-progress viewport update.
+      const previousHeight = host.style.getPropertyValue("--terminal-visible-height");
+      host.classList.remove("visual-viewport-sized");
+      host.style.removeProperty("--terminal-visible-height");
+      const bounds = host.getBoundingClientRect();
+      const visibleBottom = viewport.offsetTop + viewport.height;
+      const visibleHeight = Math.floor(Math.min(bounds.height, visibleBottom - bounds.top));
+      if (!Number.isFinite(visibleHeight) || visibleHeight <= 0) {
+        if (previousHeight) {
+          host.classList.add("visual-viewport-sized");
+          host.style.setProperty("--terminal-visible-height", previousHeight);
+        }
+        return;
+      }
+      host.classList.add("visual-viewport-sized");
+      host.style.setProperty("--terminal-visible-height", visibleHeight + "px");
+    };
+    sizeForVisualViewport();
     try { fit.fit(); } catch (_) { /* host not laid out yet — the ResizeObserver below will fit */ }
 
     // The size travels in the URL, not only in the first resize frame: the daemon opens the upstream
@@ -97,10 +133,18 @@ export function TerminalPane({
     // reporting to the user and reflecting in the parent's state.
     let teardown = false;
 
-    ws.onopen = () => {
+    const fitAndReport = () => {
+      if (teardown) return;
+      // A Terminal opened before its host was laid out has no valid character measurement, and fit()
+      // silently bails on one; resizing to the current size is the public way to force a re-measure
+      // (it skips the actual resize path, so it costs nothing and fires no onResize).
+      try { term.resize(term.cols, term.rows); } catch (_) {}
       try { fit.fit(); } catch (_) {}
       sendResize(ws, term.cols, term.rows);
-      term.focus();
+    };
+
+    ws.onopen = () => {
+      fitAndReport();
     };
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") return;            // no server->client text frames defined
@@ -113,34 +157,79 @@ export function TerminalPane({
     };
 
     // Keystrokes / pastes -> UTF-8 binary frames (binary = input per the terminal WS protocol).
-    term.onData((data) => {
+    const dataSubscription = term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
     });
     // xterm-initiated resizes (including from fit) -> text resize control frame.
-    term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
+    const resizeSubscription = term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
 
     // Observe the HOST, not just the window: the pane also changes size without a window resize (the
     // hint paragraph appearing/disappearing, the sidebar collapsing at the mobile breakpoint), and the
     // observer's initial callback re-fits if `term.open()` ran before the host had been laid out — a
     // fit() on an unmeasured terminal is a silent no-op that would otherwise leave it at 80x24.
-    const refit = debounce(() => {
-      // A Terminal opened before its host was laid out has no valid character measurement, and fit()
-      // silently bails on one; resizing to the current size is the public way to force a re-measure
-      // (it skips the actual resize path, so it costs nothing and fires no onResize).
-      try { term.resize(term.cols, term.rows); } catch (_) {}
-      try { fit.fit(); } catch (_) {}
-    }, 120);
+    const refit = debounce(fitAndReport, 120);
     const observer = new ResizeObserver(refit);
     observer.observe(host);
 
+    // iOS only opens the software keyboard when the textarea is focused synchronously from a user
+    // gesture. In particular, never move this back to ws.onopen: asynchronous focus cannot summon the
+    // keyboard and steals focus from whichever control the operator was using. A click is the browser's
+    // completed-tap signal, so a swipe over the terminal does not open the keyboard on pointer-down.
+    const focusTerminal = () => term.focus();
+    host.addEventListener("click", focusTerminal);
+
+    const viewportChanged = () => {
+      sizeForVisualViewport();
+      // visualViewport fires throughout the keyboard animation. Move the host immediately, but wait
+      // for the settled metrics before reflowing tmux rather than sending every intermediate geometry.
+      refit();
+    };
+    if (viewport) {
+      viewport.addEventListener("resize", viewportChanged);
+      viewport.addEventListener("scroll", viewportChanged);
+    }
+
+    terminalRef.current = term;
+    fitRef.current = fit;
+    socketRef.current = ws;
+
     return () => {
       teardown = true;
+      refit.cancel();
       observer.disconnect();
+      host.removeEventListener("click", focusTerminal);
+      if (viewport) {
+        viewport.removeEventListener("resize", viewportChanged);
+        viewport.removeEventListener("scroll", viewportChanged);
+      }
+      host.classList.remove("visual-viewport-sized");
+      host.style.removeProperty("--terminal-visible-height");
+      dataSubscription.dispose();
+      resizeSubscription.dispose();
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
       try { ws.close(); } catch (_) {}
       try { term.dispose(); } catch (_) {}
       host.replaceChildren();
+      if (terminalRef.current === term) terminalRef.current = null;
+      if (fitRef.current === fit) fitRef.current = null;
+      if (socketRef.current === ws) socketRef.current = null;
     };
   }, [attachedId]);
+
+  // Font changes are a view preference, not a new terminal attachment. Updating the live xterm instance
+  // in a separate effect keeps the one upstream WebSocket intact, then re-fits and reports its new grid.
+  useEffect(() => {
+    const term = terminalRef.current;
+    const fit = fitRef.current;
+    const ws = socketRef.current;
+    if (!term || !fit || !ws) return;
+    term.options.fontSize = terminalFontSize;
+    try { term.resize(term.cols, term.rows); } catch (_) {}
+    try { fit.fit(); } catch (_) {}
+    sendResize(ws, term.cols, term.rows);
+  }, [terminalFontSize]);
 
   const badge = session ? stateBadge(session.state) : null;
   const alive = session ? isAliveState(session.state) : false;

@@ -13,7 +13,7 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { groupFor, joinPath, normalizePath, segmentsUnder } from "../lib/paths.js";
-import { MAX_GROUPING_LEVEL, sanitizePrefs } from "../lib/prefs.js";
+import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
 
@@ -238,6 +238,7 @@ const LEVEL_LABELS = [
 export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
   const [basePath, setBasePath] = useState(prefs.basePath);
   const [level, setLevel] = useState(String(prefs.groupingLevel));
+  const [fontSize, setFontSize] = useState(String(prefs.terminalFontSize));
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
 
@@ -250,10 +251,18 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
       setError("Base path must be absolute (start with /).");
       return;
     }
-    onSave(sanitizePrefs({ basePath: cleaned, groupingLevel: level }));
+    onSave(sanitizePrefs({
+      basePath: cleaned,
+      groupingLevel: level,
+      terminalFontSize: fontSize,
+    }));
   };
 
-  const preview = groupingPreview(sanitizePrefs({ basePath: basePath, groupingLevel: level }), sessions);
+  const preview = groupingPreview(sanitizePrefs({
+    basePath: basePath,
+    groupingLevel: level,
+    terminalFontSize: fontSize,
+  }), sessions);
 
   return html`
     <${Dialog} id="prefs-dialog" labelledBy="prefs-title" onClose=${onClose}>
@@ -285,6 +294,19 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
             `)}
           </select>
           <small id="prefs-grouping-preview" class="field-hint">${preview}</small>
+        </label>
+
+        <label class="field">
+          <span>Terminal font size</span>
+          <select id="prefs-terminal-font-size" value=${fontSize}
+                  onChange=${(e) => setFontSize(e.target.value)}>
+            ${TERMINAL_FONT_SIZES.map((size, index) => html`
+              <option key=${size} value=${String(size)}>
+                ${["Small", "Medium", "Large"][index] + " — " + size + " px"}
+              </option>
+            `)}
+          </select>
+          <small class="field-hint">Applied immediately to an attached terminal after you save.</small>
         </label>
 
         ${error && html`<p id="prefs-error" class="form-error" role="alert">${error}</p>`}

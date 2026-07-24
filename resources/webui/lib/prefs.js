@@ -1,5 +1,5 @@
 /*
- * Preferences: base path + grouping level.
+ * Preferences: base path, grouping level and terminal font size.
  *
  * These are a per-browser VIEW setting, not daemon state — they change how this page draws the session
  * list and what it pre-fills, nothing about the sessions themselves. So they live in localStorage and
@@ -10,16 +10,21 @@ import { normalizePath } from "./paths.js";
 
 export const PREFS_KEY = "kotgent.prefs.v1";
 export const MAX_GROUPING_LEVEL = 4;
-export const DEFAULT_PREFS = { basePath: "", groupingLevel: 1 };
+export const TERMINAL_FONT_SIZES = [11, 13, 16];
+export const DEFAULT_PREFS = { basePath: "", groupingLevel: 1, terminalFontSize: 13 };
 
 /** Coerce anything read back from localStorage into a valid prefs shape. */
 export function sanitizePrefs(raw) {
   const level = Number.parseInt(raw && raw.groupingLevel, 10);
+  const fontSize = Number.parseInt(raw && raw.terminalFontSize, 10);
   return {
     basePath: normalizePath(raw && raw.basePath),
     groupingLevel: Number.isFinite(level)
       ? Math.min(MAX_GROUPING_LEVEL, Math.max(0, level))
       : DEFAULT_PREFS.groupingLevel,
+    terminalFontSize: TERMINAL_FONT_SIZES.includes(fontSize)
+      ? fontSize
+      : DEFAULT_PREFS.terminalFontSize,
   };
 }
 

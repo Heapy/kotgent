@@ -462,6 +462,7 @@ function App() {
     <${TerminalPane}
       session=${activeSession}
       attachedId=${attachedId}
+      terminalFontSize=${prefs.terminalFontSize}
       pendingAction=${pendingAction}
       hint=${hint}
       drawerOpen=${drawerOpen}

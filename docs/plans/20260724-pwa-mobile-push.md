@@ -787,14 +787,33 @@ pin an old UI for a day).
 - Modify: `resources/webui/lib/prefs.js`
 - Modify: `resources/webui/components/dialogs.js`
 - Modify: `resources/webui/style.css`
+- ➕ Modify: `resources/webui/app.js` (threads the live preference into `TerminalPane`; loading storage from
+  the pane would hide the dependency and would not react to a save)
+- ➕ Modify: `test/transport/WebUiServingTest.kt` (pins the browser-only viewport/listener/CSS contract
+  that the native test binary cannot execute)
 
-- [ ] subscribe to `visualViewport` `resize`/`scroll`: shrink the terminal container to the visible area,
+- [x] subscribe to `visualViewport` `resize`/`scroll`: shrink the terminal container to the visible area,
       call `fit()`, and send the resulting size down the terminal WebSocket
-- [ ] focus xterm's hidden textarea only from a tap handler (iOS never opens the keyboard otherwise)
-- [ ] add a terminal font-size preference (three steps) to `prefs.js` (`sanitizePrefs` must coerce it) and
+      ➕ the max-height is calculated from `offsetTop + height - host.top`, bounded by the unconstrained
+      flex height, and applied before the first `fit()` / WebSocket URL so tmux opens at the right geometry.
+      Intermediate keyboard-animation events are debounced before `fit()` + resize reporting
+- [x] focus xterm's hidden textarea only from a tap handler (iOS never opens the keyboard otherwise)
+      ➕ focus is only in the host's completed `click` handler (not async `ws.onopen`, and not pointer-down
+      where a swipe would open the keyboard). The helper textarea computes to 16px to prevent Safari's
+      input auto-zoom from corrupting `visualViewport`
+- [x] add a terminal font-size preference (three steps) to `prefs.js` (`sanitizePrefs` must coerce it) and
       to `PreferencesDialog`, applied on mount and on change with a `fit()`
-- [ ] detach every listener on unmount (no leak when switching sessions)
-- [ ] syntax-check the changed modules; run `./kotlin build && ./kotlin test` — must pass before task 18
+      ➕ Small/Medium/Large are `11/13/16px`; `13px` preserves the old default. Numeric strings are
+      accepted, while missing/tampered values fall back to 13. A separate live-update effect changes
+      xterm's option and reports the re-fit grid without reconnecting the terminal WebSocket
+- [x] detach every listener on unmount (no leak when switching sessions)
+      ➕ both visualViewport listeners and the host click listener are removed, xterm subscriptions are
+      disposed, WebSocket callbacks are cleared, the observer is disconnected, the pending debounce is
+      cancelled, and the viewport class/property and live refs are reset
+- [x] syntax-check the changed modules; run `./kotlin build && ./kotlin test` — must pass before task 18
+      ➕ `node --check` passed for `app.js`, `TerminalPane.js`, `dialogs.js`, and `prefs.js`; the preference
+      coercion was also exercised directly under Node. 1 new serving-contract test: **586 run / 586 passed /
+      0 skipped** (branch baseline 585)
 
 ### Task 18: Special-keys bar
 

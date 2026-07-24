@@ -555,6 +555,96 @@ class WebUiServingTest {
         )
     }
 
+    /**
+     * The phone keyboard and xterm both live outside this native test process, so pin the complete
+     * browser-side contract: the visual viewport drives a bounded host and a fit/resize report, every
+     * listener has a matching teardown, focus is entered only through a tap, and the persisted three-step
+     * font preference reaches both a fresh and an already-open terminal.
+     */
+    @Test
+    fun theWebUiShipsKeyboardAwareTerminalSizingAndFontPreferences() = withServer { ctx ->
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        val css = ctx.get("/style.css").bodyAsText()
+
+        assertTrue(pane.contains("window.visualViewport"), "terminal sizing reads the visual viewport")
+        for (event in listOf("resize", "scroll")) {
+            assertTrue(
+                pane.contains("viewport.addEventListener(\"$event\", viewportChanged)"),
+                "visualViewport $event changes refit the terminal",
+            )
+            assertTrue(
+                pane.contains("viewport.removeEventListener(\"$event\", viewportChanged)"),
+                "visualViewport $event listener is detached with the terminal",
+            )
+        }
+        assertTrue(
+            pane.indexOf("sizeForVisualViewport();") < pane.indexOf("const ws = new WebSocket"),
+            "the visible height is applied before the terminal WebSocket captures its OPEN geometry",
+        )
+        assertTrue(pane.contains("fitAndReport();"), "viewport changes fit and report the resulting grid")
+        assertTrue(pane.contains("refit.cancel()"), "a pending debounced fit cannot run after unmount")
+        assertTrue(
+            pane.contains("host.addEventListener(\"click\", focusTerminal)") &&
+                pane.contains("host.removeEventListener(\"click\", focusTerminal)"),
+            "the tap-to-focus listener has a matching teardown",
+        )
+        assertEquals(
+            1,
+            Regex("""term\.focus\(\)""").findAll(pane).count(),
+            "xterm is focused only inside the synchronous tap handler, never when the socket opens",
+        )
+        assertTrue(
+            pane.contains("host.classList.add(\"visual-viewport-sized\")") &&
+                pane.contains("host.classList.remove(\"visual-viewport-sized\")"),
+            "the visual-viewport host state is applied and removed with the terminal",
+        )
+        assertTrue(
+            css.contains("#terminal-host.visual-viewport-sized") &&
+                css.contains("max-height: var(--terminal-visible-height)"),
+            "CSS caps the growing terminal host at the height calculated from visualViewport",
+        )
+        assertTrue(
+            css.contains(".xterm-helper-textarea { font-size: 16px !important; }"),
+            "Safari cannot auto-zoom xterm's hidden textarea and corrupt visualViewport geometry",
+        )
+
+        val prefs = ctx.get("/lib/prefs.js").bodyAsText()
+        assertTrue(
+            prefs.contains("TERMINAL_FONT_SIZES = [11, 13, 16]"),
+            "the terminal preference has exactly the three supported steps",
+        )
+        assertTrue(
+            prefs.contains("Number.parseInt(raw && raw.terminalFontSize, 10)") &&
+                prefs.contains("TERMINAL_FONT_SIZES.includes(fontSize)"),
+            "stored string values are coerced and accepted only when they are a supported step",
+        )
+        assertTrue(
+            prefs.contains(": DEFAULT_PREFS.terminalFontSize"),
+            "missing, corrupt and out-of-range stored values fall back to the default",
+        )
+
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(
+            dialogs.contains("id=\"prefs-terminal-font-size\"") &&
+                dialogs.contains("TERMINAL_FONT_SIZES.map"),
+            "Preferences exposes all three terminal font steps",
+        )
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("""terminalFontSize=${'$'}{prefs.terminalFontSize}"""),
+            "the sanitized preference is threaded into TerminalPane",
+        )
+        assertTrue(
+            pane.contains("fontSize: fontSizeRef.current"),
+            "a newly attached xterm starts at the preferred font size",
+        )
+        assertTrue(
+            pane.contains("term.options.fontSize = terminalFontSize") &&
+                pane.contains("}, [terminalFontSize]);"),
+            "changing the preference updates and re-fits the live xterm without reconnecting it",
+        )
+    }
+
     @Test
     fun aMissingStaticFileIs404() = withServer { ctx ->
         assertEquals(
