@@ -923,6 +923,11 @@ class SessionManagerTest {
             val ex = assertFailsWith<AgentBinaryNotFoundException> { mgr.resume(SessionId("nfr01")) }
             assertEquals("claude", ex.agentKind)
             assertTrue(tmux.newSessionCommands.isEmpty(), "resume must not spawn tmux for an unresolvable agent")
+            // create() throws before any state mutation, so the stored row keeps its pre-resume dead state.
+            assertEquals(
+                SessionState.crashed, store.getSession(SessionId("nfr01"))!!.state,
+                "the failed resume leaves the stored row unchanged (no phantom state transition)",
+            )
         }
     }
 

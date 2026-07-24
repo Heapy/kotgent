@@ -23,18 +23,19 @@ const val DAEMON_DEFAULT_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sb
  * Merge the caller's captured `PATH` with [DAEMON_DEFAULT_PATH] for use in the daemon's launchd plist.
  *
  * Pure, no I/O. The captured entries win position (they come first, in their captured order); the
- * default entries are appended; duplicates are dropped preserving first-seen order. Empty and blank
- * segments in [captured] (from `a::b`, leading/trailing `:`) are discarded.
+ * default entries are appended; duplicates are dropped preserving first-seen order. Only **absolute**
+ * segments survive: empty/blank segments (from `a::b`, leading/trailing `:`) and any non-absolute entry
+ * (a relative dir or a `.` — never useful, and a mild risk, in a daemon's PATH) are discarded.
  *
  * If [captured] is `null` or contributes no usable segment, [DAEMON_DEFAULT_PATH] is returned verbatim
  * (the backward-compatible fallback).
  */
 fun mergedDaemonPath(captured: String?): String {
-    val capturedEntries = (captured ?: "").split(':').filter { it.isNotBlank() }
+    val capturedEntries = (captured ?: "").split(':').filter { it.startsWith("/") }
     if (capturedEntries.isEmpty()) return DAEMON_DEFAULT_PATH
     val merged = LinkedHashSet<String>()
     merged.addAll(capturedEntries)
-    merged.addAll(DAEMON_DEFAULT_PATH.split(':').filter { it.isNotBlank() })
+    merged.addAll(DAEMON_DEFAULT_PATH.split(':'))
     return merged.joinToString(":")
 }
 

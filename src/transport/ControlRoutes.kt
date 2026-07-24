@@ -80,7 +80,8 @@ fun Route.controlRoutes(
         val meta = try {
             sessionManager.start(req.agent, req.cwd, req.name, req.tags)
         } catch (e: UnsupportedAgentException) {
-            // v1 supports only `claude` — a clear client error, not a silent Claude substitution or a 500.
+            // The requested kind is not one this daemon supports — a clear client error, not a silent
+            // substitution or a 500.
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
         } catch (e: AgentBinaryNotFoundException) {

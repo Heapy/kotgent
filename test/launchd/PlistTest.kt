@@ -143,6 +143,27 @@ class PlistTest {
         assertEquals(listOf("/Users/x/.local/bin", "/some/dir"), entries.take(2), "captured dirs, empties dropped")
     }
 
+    @Test
+    fun mergedDaemonPathDedupsRepeatsWithinTheCapturedPath() {
+        // A captured PATH that lists the same dir twice (`/a:/b:/a`) yields it once, at its first-seen slot.
+        val merged = mergedDaemonPath("/Users/x/.local/bin:/some/dir:/Users/x/.local/bin")
+        val entries = merged.split(':')
+        assertEquals(entries.distinct(), entries, "no duplicate PATH entries")
+        assertEquals(1, entries.count { it == "/Users/x/.local/bin" }, "the repeated dir appears exactly once")
+        assertEquals(listOf("/Users/x/.local/bin", "/some/dir"), entries.take(2), "first-seen order preserved")
+    }
+
+    @Test
+    fun mergedDaemonPathDropsNonAbsoluteSegmentsInCaptured() {
+        // Relative entries (a bare `.`, a relative dir) are never useful in a daemon's PATH — drop them.
+        val merged = mergedDaemonPath(".:/Users/x/.local/bin:relative/dir")
+        val entries = merged.split(':')
+        assertTrue("." !in entries, "a bare `.` is dropped")
+        assertTrue("relative/dir" !in entries, "a relative dir is dropped")
+        assertTrue(entries.all { it.startsWith("/") }, "every surviving entry is absolute")
+        assertEquals("/Users/x/.local/bin", entries.first(), "the absolute captured dir survives, first")
+    }
+
     // --- tiny XML field extractors (test-only, tolerant of the emitter's whitespace) ----------------
 
     private fun labelValue(x: String) = stringAfterKey(x, "Label")

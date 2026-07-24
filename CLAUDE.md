@@ -234,7 +234,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **361 run / 361 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **387 run / 387 passed /
   0 skipped**.
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly

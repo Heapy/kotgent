@@ -145,10 +145,10 @@ class InstallTest {
         // The plist PATH is exactly the merge of the captured PATH with the default floor.
         val expected = mergedDaemonPath(captured)
         assertTrue("<string>${expected}</string>" in content, "the merged PATH is written verbatim")
-        // The caller's custom dir is present, and the default entries are retained.
-        assertTrue(customDir in expected, "custom dir survives the merge")
-        assertTrue("/opt/homebrew/bin" in expected, "default homebrew bin retained")
-        assertTrue("/usr/bin" in expected, "default /usr/bin retained")
+        // The caller's custom dir is present in the written plist, and the default entries are retained.
+        assertTrue(customDir in content, "custom dir survives the merge into the plist")
+        assertTrue("/opt/homebrew/bin" in content, "default homebrew bin retained in the plist")
+        assertTrue("/usr/bin" in content, "default /usr/bin retained in the plist")
     }
 
     @Test

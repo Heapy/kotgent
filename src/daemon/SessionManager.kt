@@ -131,7 +131,7 @@ class UnsupportedAgentException(val agentKind: String, val supported: Set<String
 class AgentBinaryNotFoundException(val agentKind: String) :
     IllegalStateException(
         "agent '$agentKind' not found on the daemon's PATH — run `kotgent install` from a shell where " +
-            "`$agentKind` resolves, then create the session again",
+            "`$agentKind` is on your PATH (install `$agentKind` first if needed), then create the session again",
     )
 
 /**
@@ -246,8 +246,9 @@ class SessionManager(
         val sessionId = freshSessionId()
         val shortId = sessionId.value
         val tmuxSession = tmux.sessionName(shortId)
-        // create() rejects an unsupported agent kind (UnsupportedAgentException) BEFORE any tmux side
-        // effect, so a bad kind fails with nothing to clean up.
+        // create() rejects an unsupported or unresolvable agent kind (UnsupportedAgentException /
+        // AgentBinaryNotFoundException) BEFORE any tmux side effect, so a bad kind fails with nothing
+        // to clean up.
         val adapter = agentFactory.create(agentKind, cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.New)
 

@@ -360,6 +360,7 @@ class TransportTest {
         assertEquals(HttpStatusCode.BadRequest, resp.status, "a missing agent binary is a client error, not a 500")
         val body = resp.bodyAsText()
         assertTrue(body.contains("kotgent install"), "the 400 body carries the install hint: $body")
+        assertTrue(body.contains("claude"), "the 400 body names the agent kind: $body")
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
     }
 
