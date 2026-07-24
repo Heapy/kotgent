@@ -1,5 +1,6 @@
 package io.kotgent.transport
 
+import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.unread
@@ -53,9 +54,14 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Unit
  *  - `POST /sessions/{id}/{stop|resume|interrupt|detach|done|undone}` — a lifecycle control op
  *    (`done` = kill + archive off the sidebar; `undone` = un-archive).
  *  - `POST /sessions/{id}/input`            — write raw terminal input (`TerminalInput` only in the slice).
+ *  - `POST /sessions/{id}/read`             — advance the unread cursor (`{seq}`): "I have seen through
+ *    this seq". Monotonic + clamped in SQL; the recomputed `unread` reaches every client via the ordinary
+ *    `SessionUpdate`.
  *
- * `PATCH /sessions/{id}` is BACKLOG (omitted per the plan). Mounted inside [authenticated] by the server,
- * so every endpoint requires the shared token.
+ * `PATCH /sessions/{id}` is BACKLOG (omitted per the plan). Mounted inside [authenticated] by the server —
+ * NOT [loopbackOnly] — so every endpoint takes either credential (the CLI's master-token `Bearer` or the
+ * browser's session cookie) and is reachable through the tunnel. That is deliberate for `/read`, whose only
+ * real caller is the cookie-authenticated Web UI, on the phone as much as on the desktop.
  */
 fun Route.controlRoutes(
     sessionManager: SessionManager,
@@ -130,6 +136,29 @@ fun Route.controlRoutes(
         call.respondText("ok")
     }
 
+    // Literal `read` outranks the `{action}` param route below — the unread cursor is not a lifecycle op.
+    post("/sessions/{id}/read") {
+        val id = sessionId(call.parameters["id"]) ?: run {
+            call.respondText("malformed session id", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        if (store.getSession(id) == null) {
+            call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
+            return@post
+        }
+        val req = try {
+            json.decodeFromString(MarkReadRequest.serializer(), call.receiveText())
+        } catch (_: SerializationException) {
+            call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        // A negative seq is clamped rather than rejected — and the clamp is LOAD-BEARING, not cosmetic:
+        // `Seq`'s init requires value >= 0 (core/Ids.kt), so `Seq(-5)` would throw inside the handler and
+        // surface as a 500 long before SQL saw it. Clamping keeps a nonsense body a harmless no-op.
+        store.markRead(id, Seq(req.seq.coerceAtLeast(0)))
+        call.respondText("ok")
+    }
+
     post("/sessions/{id}/{action}") {
         val id = sessionId(call.parameters["id"]) ?: run {
             call.respondText("malformed session id", status = HttpStatusCode.BadRequest)
@@ -198,6 +227,14 @@ data class StartSessionRequest(
     val name: String? = null,
     val tags: List<String> = emptyList(),
 )
+
+/**
+ * Request body for `POST /sessions/{id}/read` — the highest seq the client has actually displayed. It is
+ * explicit (rather than "mark everything read") because the server may have moved ahead during the
+ * round-trip, and an implicit form would silently clear events the client never showed.
+ */
+@Serializable
+data class MarkReadRequest(val seq: Long)
 
 /**
  * The wire shape of a session — a transport-owned projection of [SessionMeta] (kept separate so the

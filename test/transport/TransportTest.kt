@@ -90,6 +90,14 @@ class TransportTest {
     private val providerId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     private val seed = "SEED-SCREEN\r\n".encodeToByteArray()
 
+    /**
+     * A published origin (as `~/.kotgent/config.json`'s `publicUrl`) for the through-the-tunnel cases, and
+     * the bare host a request arriving through the tunnel carries. Derived, so renaming the fixture origin
+     * cannot desynchronize the two and turn a gate test into an `Origin`-mismatch failure.
+     */
+    private val publicHost = "kotgent.example.com"
+    private val publicUrl = "https://$publicHost"
+
     // ---- 0. SessionDto mapping: cli version/path are carried through ----
 
     @Test
@@ -244,12 +252,154 @@ class TransportTest {
             val upstream = ctx.ptyFactory.opened.receive()
             receiveBinary() // consume the seed
 
-            val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
-                header(HttpHeaders.Authorization, "Bearer $token")
-                setBody("rest-typed")
-            }
+            val resp = ctx.postBody("/sessions/${created.id}/input", "rest-typed")
             assertEquals(HttpStatusCode.OK, resp.status)
             assertContentEquals("rest-typed".encodeToByteArray(), upstream.writes.receive(), "POST /input reaches the upstream")
+        }
+    }
+
+    // ---- 3c. POST /sessions/{id}/read advances the unread cursor ----
+
+    @Test
+    fun postReadAdvancesTheCursorAndClearsUnread() = withServer { ctx ->
+        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        assertEquals(1L, created.unread, "a fresh session starts with its whole log unread")
+
+        val resp = ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
+        // This also pins the route ORDERING: `read` must be handled by the literal route, not swallowed by
+        // `post("/sessions/{id}/{action}")` below it — which would answer 400 "unknown action" instead of
+        // this 200 "ok" (the same guarantee `/input` relies on).
+        assertEquals(HttpStatusCode.OK, resp.status, "marking read returns 200")
+        assertEquals("ok", resp.bodyAsText())
+
+        val after = ctx.getSession(created.id)
+        assertEquals(1L, after.readCursor, "the cursor moved to the seq the client displayed")
+        assertEquals(0L, after.unread, "so the badge is clear")
+    }
+
+    @Test
+    fun postReadOnAnUnknownSessionIs404AndAnUnparseableBodyIs400() = withServer { ctx ->
+        assertEquals(
+            HttpStatusCode.NotFound,
+            ctx.postBody("/sessions/no-such-id/read", """{"seq":1}""").status,
+            "an unknown session is a 404, not a silent no-op",
+        )
+        val created = ctx.startSession()
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            ctx.postBody("/sessions/${created.id}/read", "not-json-at-all").status,
+            "an undecodable body is a 400",
+        )
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            ctx.postBody("/sessions/${created.id}/read", "").status,
+            "an empty body is a 400 too",
+        )
+        // `seq` is deliberately NOT defaulted in MarkReadRequest: a body that omits it must fail rather
+        // than silently mark seq 0 read (which the SQL would then treat as a no-op, hiding the bug).
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            ctx.postBody("/sessions/${created.id}/read", "{}").status,
+            "a body missing the required seq is a 400, not an implicit 0",
+        )
+    }
+
+    @Test
+    fun postReadIsReachableThroughTheTunnelNotJustFromLoopback() = withServer(publicUrl = publicUrl) { ctx ->
+        // The phone case: /read is mounted inside `authenticated`, NOT `loopbackOnly`. Moving it under the
+        // local-only gate would 403 every request arriving under the published host — with the rest of the
+        // suite still green, since every other test drives it over 127.0.0.1.
+        val created = ctx.startSession()
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/read") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            header(HttpHeaders.Host, publicHost)
+            header(HttpHeaders.Origin, publicUrl)
+            setBody("""{"seq":1}""")
+        }
+        assertEquals(HttpStatusCode.OK, resp.status, "the published host reaches /read: ${resp.bodyAsText()}")
+        assertEquals(0L, ctx.getSession(created.id).unread, "and the cursor really moved")
+    }
+
+    @Test
+    fun postReadClampsANegativeSeqInsteadOfRejectingOrStoringIt() = withServer { ctx ->
+        val created = ctx.startSession()
+        val resp = ctx.postBody("/sessions/${created.id}/read", """{"seq":-5}""")
+        assertEquals(HttpStatusCode.OK, resp.status, "a negative seq is clamped, not rejected")
+
+        val after = ctx.getSession(created.id)
+        assertEquals(0L, after.readCursor, "and the negative value never reaches the stored cursor")
+        assertEquals(created.unread, after.unread, "so the badge is untouched")
+    }
+
+    @Test
+    fun postReadClearsTheBadgeInEveryOtherConnectedClientWithoutAReload() = withServer { ctx ->
+        // The second-device case: one browser marks the session read, and every OTHER client learns the new
+        // `unread` from the ordinary /events session_update — no reload, no new channel.
+        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            // Draining the baseline snapshot proves this "second client" is subscribed before the POST.
+            val snapshot = receiveUpdate()
+            assertEquals(created.id, snapshot.sessionId)
+            assertEquals(1L, snapshot.unread, "the second client starts out showing the badge")
+
+            ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
+
+            val update = awaitUpdate { it.sessionId == created.id && it.unread == 0L }
+            assertEquals(1L, update.lastSeq, "the cleared badge is reported against the same log position")
+            assertTrue(!update.archived, "a live session stays visible")
+        }
+    }
+
+    @Test
+    fun markingAnArchivedSessionReadDoesNotUnHideItInOtherClients() = withServer { ctx ->
+        // An archived ("done") session can still be the selected one, so the mark-read POST is reachable for
+        // it. SessionUpdateDto.archived defaults to false, and the client assigns it unconditionally — a
+        // signal that dropped the flag would make the row reappear in every sidebar until the next resync.
+        val created = ctx.startSession()
+        ctx.store.setArchived(SessionId(created.id), true, 2L)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            receiveUpdate() // the baseline snapshot
+            ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
+
+            val update = awaitUpdate { it.sessionId == created.id && it.unread == 0L }
+            assertTrue(update.archived, "the mark-read signal carries archived=true, so the row stays hidden")
+        }
+    }
+
+    @Test
+    fun anEventOrAControlStateWriteOnAnArchivedSessionAlsoKeepsItHidden() = withServer { ctx ->
+        // Mark-read is not the only emitter: a late hook append and a control-state write both broadcast for
+        // a done session too. What this test pins is the TRANSPORT half of that — SessionUpdate.toDto and
+        // the /events WS carry `archived` through for those two emitters as well, not just for mark-read.
+        // The store half (that SqliteEventStore's `append` and `emitFromRow` actually put the stored row's
+        // flag on the signal) cannot be observed here — withServer runs on FakeEventStore — so it is pinned
+        // against the real store by EventStoreTest.anAppendAndAControlStateWriteOnAnArchivedSessionAlsoCarryArchived.
+        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val sid = SessionId(created.id)
+        ctx.store.setArchived(sid, true, 2L)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            receiveUpdate() // the baseline snapshot
+
+            ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
+            val appended = awaitUpdate { it.sessionId == created.id && it.lastSeq == 2L }
+            assertTrue(appended.archived, "an append on a done session must not un-hide it")
+            assertEquals(2L, appended.unread, "and the badge still counts the unread event")
+
+            ctx.store.updateSessionState(sid, SessionState.stopped, EventSource.system, null, 3L)
+            val controlled = awaitUpdate { it.sessionId == created.id && it.state == "stopped" }
+            assertTrue(controlled.archived, "a control-state write on a done session must not un-hide it")
         }
     }
 
@@ -472,6 +622,12 @@ class TransportTest {
         suspend fun post(path: String) = client.post("http://127.0.0.1:$port$path") {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
+
+        /** An authenticated `POST` carrying a body — the no-body [post] helper cannot drive `/read`. */
+        suspend fun postBody(path: String, body: String) = client.post("http://127.0.0.1:$port$path") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody(body)
+        }
     }
 
     private fun withServer(
@@ -482,6 +638,9 @@ class TransportTest {
         factory: AgentFactory = agentFactoryOf(
             mapOf("claude" to { cwd: String -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) }),
         ),
+        // The published origin the daemon is reachable at through the cloudflared tunnel; `null` (the
+        // default) is the loopback-only daemon every other test drives.
+        publicUrl: String? = null,
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
         withTimeout(40_000) {
@@ -499,7 +658,10 @@ class TransportTest {
             val bridgeFactory: (String, CoroutineScope) -> TerminalBridge = { id, scope ->
                 TerminalBridge(listOf("fake-attach", id), { seed }, ptyFactory, scope)
             }
-            val server = KotgentServer(manager, store, TokenHolder(token), bridgeFactory, webUiDir = null, port = 0).start()
+            val server = KotgentServer(
+                manager, store, TokenHolder(token), bridgeFactory,
+                webUiDir = null, publicUrl = publicUrl, port = 0,
+            ).start()
             val client = HttpClient(CIO) { install(WebSockets) }
             try {
                 block(Ctx(server.port(), client, store, ptyFactory, tmux))
