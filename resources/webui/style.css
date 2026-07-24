@@ -44,6 +44,17 @@
 /* An author `display` (e.g. `.session-actions { display: flex }`) beats the UA's `[hidden]` rule whatever
    its specificity, so every `el.hidden = true` in app.js needs this to actually hide anything. */
 [hidden] { display: none !important; }
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
 button, input, select { font: inherit; }
 button { color: inherit; }
 
@@ -706,6 +717,7 @@ dialog::backdrop {
     margin-left: 0;
     width: 100%;
   }
+  .copy-tmux-button { display: none; }
 }
 
 /* "Done" / archived sessions */

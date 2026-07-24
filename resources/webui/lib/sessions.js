@@ -36,6 +36,11 @@ export function displayName(s) {
   return s.id;
 }
 
+/** The exact command a local terminal uses to join kotgent's dedicated tmux server. */
+export function tmuxAttachCommand(tmuxSession) {
+  return "tmux -u -L kotgent attach -t " + tmuxSession;
+}
+
 export function capitalize(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }

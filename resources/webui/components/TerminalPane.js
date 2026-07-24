@@ -9,9 +9,9 @@
  */
 
 import { html } from "htm/preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
-import { displayName, isAliveState, stateBadge } from "../lib/sessions.js";
+import { displayName, isAliveState, stateBadge, tmuxAttachCommand } from "../lib/sessions.js";
 
 function debounce(fn, ms) {
   let handle;
@@ -27,11 +27,37 @@ function sendResize(ws, cols, rows) {
   }
 }
 
+async function writeClipboard(text) {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (_) {
+      // A non-secure origin or browser permission can reject the modern API; the click still gives the
+      // legacy path the user gesture it needs.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    if (!document.execCommand("copy")) throw new Error("copy command was rejected");
+  } finally {
+    textarea.remove();
+  }
+}
+
 export function TerminalPane({
   session, attachedId, pendingAction, hint,
   onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
+  const [copyResult, setCopyResult] = useState(null);
   // The close callback is read through a ref so a re-render cannot re-run the effect (which would tear
   // down a live terminal) just because the parent handed us a fresh closure.
   const closedRef = useRef(onTerminalClosed);
@@ -115,6 +141,16 @@ export function TerminalPane({
   const alive = session ? isAliveState(session.state) : false;
   const attached = !!session && session.id === attachedId;
   const busy = pendingAction !== null;
+  const tmuxCommand = session && session.tmuxSession ? tmuxAttachCommand(session.tmuxSession) : "";
+  const copyState = copyResult && copyResult.command === tmuxCommand ? copyResult.state : "idle";
+  const copyTmuxCommand = async () => {
+    try {
+      await writeClipboard(tmuxCommand);
+      setCopyResult({ command: tmuxCommand, state: "copied" });
+    } catch (_) {
+      setCopyResult({ command: tmuxCommand, state: "failed" });
+    }
+  };
 
   return html`
     <main id="terminal-pane">
@@ -127,6 +163,17 @@ export function TerminalPane({
         </div>
         ${session && html`
           <div id="session-actions" class="session-actions">
+            ${alive && tmuxCommand && html`
+              <button id="copy-tmux-button" class="button button-quiet copy-tmux-button" type="button"
+                      title=${tmuxCommand} onClick=${copyTmuxCommand}>
+                ${copyState === "copied" ? "Copied tmux" :
+                  copyState === "failed" ? "Copy failed" : "Copy tmux"}
+              </button>
+              <span class="visually-hidden" role="status" aria-live="polite">
+                ${copyState === "copied" ? "Tmux command copied to clipboard." :
+                  copyState === "failed" ? "Could not copy the tmux command." : ""}
+              </span>
+            `}
             ${alive && !attached && html`
               <button id="attach-button" class="button button-primary" type="button"
                       disabled=${busy} onClick=${onAttach}>Attach</button>`}

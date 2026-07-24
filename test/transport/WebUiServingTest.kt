@@ -186,6 +186,24 @@ class WebUiServingTest {
         assertTrue(pane.contains("id=\"resume-button\""), "the UI includes resume")
         assertTrue(pane.contains("id=\"detach-button\""), "the UI includes detach")
         assertTrue(pane.contains("id=\"stop-button\""), "the UI includes stop")
+        assertTrue(pane.contains("id=\"copy-tmux-button\""), "the desktop UI includes copy tmux")
+        assertTrue(
+            pane.contains("\${alive && tmuxCommand && html`"),
+            "copy tmux is offered only while the tmux session is alive",
+        )
+        assertTrue(
+            pane.contains("tmuxAttachCommand(session.tmuxSession)"),
+            "copy tmux targets the selected session's canonical tmux name",
+        )
+        assertTrue(
+            ctx.get("/lib/sessions.js").bodyAsText()
+                .contains("\"tmux -u -L kotgent attach -t \" + tmuxSession"),
+            "copy tmux uses kotgent's dedicated socket and UTF-8 attach command",
+        )
+        assertTrue(
+            ctx.get("/style.css").bodyAsText().contains(".copy-tmux-button { display: none; }"),
+            "copy tmux is omitted from the mobile terminal head",
+        )
         assertTrue(
             ctx.get("/components/dialogs.js").bodyAsText().contains("id=\"new-session-form\""),
             "the UI includes the new-session form",
