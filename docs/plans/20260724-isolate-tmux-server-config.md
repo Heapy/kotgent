@@ -278,19 +278,23 @@ kotgent is the only thing that should touch that socket.
 - Modify: `src/tmux/Tmux.kt`
 - Modify: `test/tmux/TmuxTest.kt`
 
-- [ ] write the decoy integration test in `TmuxTest`: temp dir under `getenv("TMPDIR") ?: "/tmp"`, write
+- [x] write the decoy integration test in `TmuxTest`: temp dir under `getenv("TMPDIR") ?: "/tmp"`, write
       `set -g focus-events on` into `<tmp>/.tmux.conf`
-- [ ] write the **negative half first** — raw argv via
+- [x] write the **negative half first** — raw argv via
       `/usr/bin/env HOME=<tmp> <tmuxPath> -L kotgent-test new-session …` (no `-f`) leaves
       `show -g focus-events` at `on`, proving the decoy is loadable and the test can fail
-- [ ] write the **positive half** — the same raw argv **with** `-f /dev/null` leaves it at `off`
-- [ ] verify both halves kill the server between them and delete the temp dir on every path
-- [ ] modify `Tmux.tmux()` to delegate argv assembly to `tmuxCommand()`; the unit test from Task 1 is what
+      (observed `on` by hand on the throwaway socket before writing the assertion)
+- [x] write the **positive half** — the same raw argv **with** `-f /dev/null` leaves it at `off`
+- [x] verify both halves kill the server between them and delete the temp dir on every path
+      (the `killServer()` between halves is load-bearing: `-f` only applies to the invocation that
+      STARTS a server; the temp tree is removed in a `finally`)
+- [x] modify `Tmux.tmux()` to delegate argv assembly to `tmuxCommand()`; the unit test from Task 1 is what
       proves production carries `-f`
-- [ ] KDoc: record that `ensureServer()` (the production first-start) is covered transitively, that the
+- [x] KDoc: record that `ensureServer()` (the production first-start) is covered transitively, that the
       option chain is deliberately *not* applied there (a session-less server does not persist), and that
       `isAvailable()` needs no `-f` because `tmux -V` starts no server and reads no config
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 3
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 3
+      (448 run / 448 passed / 0 skipped; `tmux -L kotgent-test kill-server` reports "no server running")
 
 ### Task 3: Chain the options atomically with `new-session`, with degradation
 

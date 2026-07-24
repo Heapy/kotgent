@@ -25,8 +25,10 @@ data class TmuxPane(
 class TmuxException(message: String) : RuntimeException(message)
 
 /**
- * A thin, typed wrapper over `tmux -L <socket> <sub …>` (Task 8), built on [ProcessRunner]
- * (stock `platform.posix`, so it also runs from the test binary against a throwaway server).
+ * A thin, typed wrapper over `tmux -f /dev/null -L <socket> <sub …>` (Task 8), built on
+ * [ProcessRunner] (stock `platform.posix`, so it also runs from the test binary against a throwaway
+ * server). Every argv is assembled by [tmuxCommand]; see [TMUX_CONFIG_ISOLATION] for why `-L` alone
+ * is not enough isolation.
  *
  * ## Session identity
  * Callers address sessions by the **logical short id** (`id`); the wrapper maps it to the tmux
@@ -50,12 +52,26 @@ class Tmux(
     /** The tmux session name for a logical [id]. */
     override fun sessionName(id: String): String = "kt-$id"
 
-    /** True if the configured tmux binary is runnable (`tmux -V` succeeds) — the tests' skip-guard. */
+    /**
+     * True if the configured tmux binary is runnable (`tmux -V` succeeds) — the tests' skip-guard.
+     *
+     * Deliberately bypasses [tmux] and therefore carries no `-f /dev/null`: `tmux -V` prints the
+     * version and exits without starting a server or parsing any config, so there is nothing for the
+     * isolation flag to isolate. It is the one argv here that is not a control-plane call.
+     */
     fun isAvailable(): Boolean = ProcessRunner.run(listOf(tmuxPath, "-V")).isSuccess
 
-    /** Run `tmux -L <socket> <args…>`. */
+    /**
+     * Run `tmux -f /dev/null -L <socket> <args…>` — the single argv assembly point for every
+     * control-plane call, so [TMUX_CONFIG_ISOLATION] cannot be forgotten at a new call site.
+     *
+     * Assembly lives in the pure [tmuxCommand], which is where the isolation is asserted: the
+     * integration probe in `TmuxTest` can only measure raw tmux under a fake `$HOME` ([ProcessRunner]
+     * takes no env map), so the link from that measurement to production is this delegation plus
+     * [tmuxCommand]'s unit test, not an end-to-end run of [newSession].
+     */
     private fun tmux(vararg args: String): ProcessResult =
-        ProcessRunner.run(listOf(tmuxPath, "-L", socket) + args.toList())
+        ProcessRunner.run(tmuxCommand(tmuxPath, socket, args.toList()))
 
     /** True when a soft "there is nothing there" failure (no server / unknown target). */
     private fun ProcessResult.isAbsence(): Boolean {
@@ -72,6 +88,11 @@ class Tmux(
      * Start the tmux server for this socket (`start-server`). Best-effort: a server with no
      * sessions does not stay resident, so this mainly proves the socket is reachable; the real
      * server comes up when [newSession] creates the first session.
+     *
+     * This is the production first-start (called once from `Commands.kt`), and it goes through
+     * [tmux], so it carries `-f /dev/null` transitively — no separate test or call site. The
+     * forced-option chain is deliberately NOT applied here: it rides with `new-session` precisely
+     * because a session-less server does not persist, so options set on this one would die with it.
      */
     fun ensureServer() {
         val r = tmux("start-server")
