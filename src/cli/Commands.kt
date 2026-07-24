@@ -1,5 +1,6 @@
 package io.kotgent.cli
 
+import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import io.kotgent.currentUiVersion
 import io.kotgent.adapter.claude.ClaudeAdapter
@@ -26,6 +27,16 @@ import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.DAEMON_LABEL
 import io.kotgent.launchd.LaunchdInstaller
+import io.kotgent.push.DarwinPushTransport
+import io.kotgent.push.OpensslVapidSigner
+import io.kotgent.push.PushNotifier
+import io.kotgent.push.PushSender
+import io.kotgent.push.PushStore
+import io.kotgent.push.SqlitePushStore
+import io.kotgent.push.VapidKey
+import io.kotgent.push.VapidTokenCache
+import io.kotgent.push.vapidSubject
+import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.sys.installShutdownSignals
 import io.kotgent.sys.pendingShutdownSignal
@@ -385,6 +396,16 @@ object Commands {
         manager.rebuildRegistryFromStore()
         Reconciler(tmux, store, vendorProbe, registry).reconcile()
 
+        // Web Push (optional). It needs a subscription table, `/usr/bin/openssl` for the VAPID keypair and
+        // its ES256 signatures, and outbound HTTPS — none of which the daemon's actual job depends on. So
+        // every part of it degrades instead of failing: an unusable table leaves `push` null (the `/push`
+        // routes are then not mounted at all, which the page reads as "this daemon cannot do push"), and a
+        // missing openssl or an unwritable `~/.kotgent/vapid.pem` surfaces later as a 503 on the key route
+        // and one stderr line per attempted notification. The keypair is NOT generated here: it is minted
+        // lazily on the first `GET /push/vapid-key`, so a daemon nobody enables notifications on never
+        // shells out at all.
+        val push = startPush(driver, config.publicUrl, bgScope, store)
+
         val server = try {
             KotgentServer.production(
                 manager,
@@ -393,6 +414,8 @@ object Commands {
                 tmux,
                 currentVersion = currentUiVersion(),
                 publicUrl = config.publicUrl,
+                pushStore = push?.store,
+                vapidPublicKey = push?.publicKey,
                 port = port,
             ).start()
         } catch (e: ServerBindException) {
@@ -422,9 +445,65 @@ object Commands {
         println("kotgent daemon: ${shutdownSignalName(signo)} — shutting down")
         server.stop()
         bgScope.cancel()
+        // The push client owns an NSURLSession with pooled connections to Apple/Google; releasing it after
+        // the collector that uses it is cancelled keeps the teardown in dependency order.
+        push?.transport?.close()
         driver.close()
         0
     }
+
+    /**
+     * Assemble the Web Push stack over the daemon's existing [driver] and start its [PushNotifier] on
+     * [scope], returning what [KotgentServer] and the shutdown path need — or `null` when push cannot be
+     * wired at all.
+     *
+     * Push is an OPTIONAL capability, so this never throws: the only failure that can happen here and now
+     * is the subscription table (everything else is lazy), and it degrades to "no `/push` routes, no
+     * notifier" plus one line on stderr. A missing `/usr/bin/openssl` or an unwritable
+     * `~/.kotgent/vapid.pem` cannot be detected without generating the key, which would make every daemon
+     * pay for a feature most never enable — so those surface at first use instead: a `503` from
+     * `GET /push/vapid-key` (the browser then simply cannot turn notifications on) and one
+     * [PushSender] diagnostic per attempted send.
+     *
+     * @param events the store the notifier watches — the same [EventStore] the rest of the daemon uses.
+     */
+    private fun startPush(
+        driver: SqlDriver,
+        publicUrl: String?,
+        scope: CoroutineScope,
+        events: EventStore,
+    ): DaemonPush? {
+        val subscriptions = try {
+            SqlitePushStore(driver)
+        } catch (e: Throwable) {
+            eprintln("kotgent daemon: push notifications disabled (no subscription table): ${e.message}")
+            return null
+        }
+        val key = VapidKey()
+        // The signer is pointed at the key's PATH, not at a loaded key: the PEM is written by the first
+        // `publicKeyBase64Url()` call, and PushSender always resolves the public key before it asks for a
+        // token, so the file exists by the time openssl is asked to sign with it.
+        val signer = OpensslVapidSigner(keyPath = key.keyPath)
+        val tokens = VapidTokenCache(subject = vapidSubject(publicUrl), sign = signer::sign)
+        val transport = DarwinPushTransport()
+        val sender = PushSender(
+            store = subscriptions,
+            publicKey = key::publicKeyBase64Url,
+            vapidToken = tokens::tokenFor,
+            transport = transport,
+        )
+        // Started here — i.e. AFTER rebuildRegistryFromStore() + Reconciler.reconcile() — so the baseline
+        // it seeds from already contains the startup reclassifications instead of racing them.
+        PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
+        return DaemonPush(subscriptions, key::publicKeyBase64Url, transport)
+    }
+
+    /** What the daemon keeps hold of once push is wired: the two server params, plus the client to close. */
+    private class DaemonPush(
+        val store: PushStore,
+        val publicKey: suspend () -> String,
+        val transport: DarwinPushTransport,
+    )
 
     /**
      * Print who is holding [port] after a failed bind. Usually the answer is an **orphaned `tmux`

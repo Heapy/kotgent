@@ -459,19 +459,44 @@ pin an old UI for a day).
 - Modify: `src/transport/Server.kt`
 - Create: `test/push/PushNotifierTest.kt`
 
-- [ ] add `PushNotifier(store, tracker, sender)` collecting `EventStore.sessionUpdates` and seeding the
+- [x] add `PushNotifier(store, tracker, sender)` collecting `EventStore.sessionUpdates` and seeding the
       tracker from `listSessions()` **inside `.onSubscription { }`** — the `EventsWs.streamGlobalUpdates`
       idiom, required because `sessionUpdates` has `replay = 0`
-- [ ] construct `SqlitePushStore` over the same `driver` in `Commands.daemon` and pass it plus the VAPID
+      ➕ the third param is `send: suspend (SessionId) -> Unit`, not the `PushSender` type — the seam idiom
+      the package already uses (`PushSender(vapidToken = cache::tokenFor)`), and the ONLY way to test "a
+      throwing sender does not stop the collector": a real `PushSender` swallows everything by design. The
+      signature is `PushNotifier(store, send, tracker = AttentionTracker(), onError = ::eprintln)`
+- [x] construct `SqlitePushStore` over the same `driver` in `Commands.daemon` and pass it plus the VAPID
       public-key provider into `KotgentServer.production(...)`
-- [ ] start the notifier on `bgScope` **after** `rebuildRegistryFromStore()` + `Reconciler.reconcile()`, so
+      ➕ `Server.kt` needed NO change — Task 3 already added the two nullable params and the `production(...)`
+      forwarding. The whole assembly is one private `Commands.startPush(driver, publicUrl, scope, events)`
+      returning a `DaemonPush(store, publicKey, transport)` holder, so `daemon()` gains four lines rather
+      than twenty; the `DarwinPushTransport` is closed in the teardown (after `bgScope.cancel()`, before
+      `driver.close()`) instead of leaking an NSURLSession
+- [x] start the notifier on `bgScope` **after** `rebuildRegistryFromStore()` + `Reconciler.reconcile()`, so
       startup reconciliation writes are not evaluated against a half-built world
-- [ ] make a missing/unusable openssl or an unwritable `vapid.pem` degrade to "push disabled" with one
+- [x] make a missing/unusable openssl or an unwritable `vapid.pem` degrade to "push disabled" with one
       diagnostic line — never take the daemon down
-- [ ] write tests: a transition into attention triggers exactly one send with the right session id; an update
+      ➕ read as "a line, never a crash", NOT "one line per daemon lifetime": the key is minted lazily on the
+      first `GET /push/vapid-key`, so an eager startup probe would make every daemon generate a `vapid.pem`
+      for a feature most never enable. openssl failures therefore surface where they already did — a `503`
+      on the key route and one `PushSender` line per attempted send. What is new here is that NOTHING can
+      escape: `PushNotifier.run` guards the send, the seed and the whole collection separately (an exception
+      out of a `launch` on K/N reaches the unhandled-exception hook and would kill the daemon), and
+      `startPush` returns null on the one eager failure that exists (the subscription table)
+- [x] write tests: a transition into attention triggers exactly one send with the right session id; an update
       that is not a transition sends nothing; a session already in attention at seed time sends nothing
-- [ ] write test: a sender that throws does not cancel the collector (later updates still work)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 11
+      ➕ every "sends nothing" is an ORDERING assertion (emit the silent update, then a loud one, require the
+      loud one to arrive first) — a bare "the channel is empty" would also pass if the collector had simply
+      not run yet
+- [x] write test: a sender that throws does not cancel the collector (later updates still work)
+      ➕ plus an unreadable `listSessions()` (reported, collection continues with an empty baseline) and a
+      scope cancellation (ends the job, reports nothing)
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 11
+      ➕ 8 new tests: **546 run / 546 passed / 0 skipped** (branch baseline 538). The `onSubscription` test
+      is mutation-verified: moving the seed above `.collect` makes
+      `theBaselineIsTakenAfterSubscribingSoNoUpdateIsLost` fail (it times out on the update that a
+      subscribe-after-snapshot drops), so it genuinely pins the idiom rather than merely passing
 
 ### Task 11: Manifest, icons and static-serving headers
 

@@ -153,8 +153,12 @@ class PushSender(
     }
 }
 
-/** The one-line form of [this] for a diagnostic — never empty, so a message is never left dangling. */
-private fun Throwable.describe(): String = message ?: this::class.simpleName ?: "unknown failure"
+/**
+ * The one-line form of [this] for a diagnostic — never empty, so a message is never left dangling.
+ * `internal` rather than file-private because [PushNotifier] reports its own swallowed failures the same
+ * way; one rule for the whole package beats two copies that drift.
+ */
+internal fun Throwable.describe(): String = message ?: this::class.simpleName ?: "unknown failure"
 
 /**
  * The HTTP edge of the push sender: `POST <url>` with [headers] and an empty body, answering with the
