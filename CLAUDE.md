@@ -305,23 +305,61 @@ change is a POST, and the WS handshake — the one browser channel that bypasses
 ingress, ticket issuance and token rotation are additionally **loopback-only** (`Route.loopbackOnly {}`,
 gated on `Host` via `isLoopbackHost`, which ignores the port — harnesses bind `port = 0`).
 
-**No secret in a URL, ever.** The old `?token=`/`#token=` forms are gone. The browser signs in through a
-**one-time ticket** (`TicketStore`, 32 random bytes, 10-min TTL, in memory — a restart clears them) carried
-in the URL **fragment**: `GET /auth` never sees it (so no prefetcher/scanner/Cloudflare-log can burn or
-leak it), the page `POST`s it to `/auth/exchange` which burns it and sets the cookie, then
-`location.replace("/")`. Reintroducing a query/hash token defeats the whole point.
+**No master token in a URL; the one-time ticket is a short, rate-limited code.** The old
+`?token=`/`#token=` forms are gone. `TicketStore` issues one 8-character Crockford-base32 code (40 bits,
+alphabet without `I`/`L`/`O`/`U`), held in memory for 5 minutes and redeemable exactly once; input is
+case-insensitive, ignores spaces/dashes and normalizes `I`/`L` → `1`, `O` → `0`. The QR link and the typed
+form spend the **same** value — do not add a longer parallel ticket, because the record is only as strong
+as its shortest credential. In a link it rides only in the URL **fragment**: `GET /auth` never sees it
+(so no prefetcher/scanner/Cloudflare log can burn or leak it), and the page `POST`s it to
+`/auth/exchange`, which burns it and sets the cookie.
+
+Forty bits is acceptable only with the compensating `ExchangeRateLimit`: one daemon-wide,
+`Mutex`-guarded rolling budget of 10 failed redemptions per minute. It is global because cloudflared
+connects from loopback, so a per-IP key cannot identify the remote browser. An admitted attempt reserves
+capacity before lookup and is settled from a non-cancellable `finally`: a miss becomes a timestamped
+failure, while success releases the reservation. Without the in-flight reservation, concurrent guesses
+could all pass the check before any failure was charged. Only a real code miss spends the budget
+(successes, malformed bodies and requests rejected by Host/Origin do not). Keep this control with the
+short format.
+
+**An installed iOS PWA has a separate cookie jar from Safari.** Opening the QR link in Safari therefore
+does not sign in the home-screen app. On its first `/sessions` `401`, `app.js` uses
+`location.replace("/auth")`; that unauthenticated page lets the operator type the same 8-character code
+and exchanges it through the normal route. Only the first-load `401` redirects — a later rotation must
+leave the live UI and its terminal visible instead of navigating out from under it.
+
+**Web Push is payload-less and edge-triggered.** `PushNotifier` watches `sessionUpdates` only after startup
+reconciliation; `AttentionTracker` is seeded inside `onSubscription` and sends only a `false → true`
+waiting transition (`state.needsAttention && !archived`), so restart does not ring again and archived
+sessions are not targets. `PushSender` POSTs an empty RFC 8030 message with VAPID, TTL and a per-session
+`Topic`; this deliberately avoids RFC 8291 payload encryption (`p256dh`/`auth` are stored now for that
+future path). The service worker wakes, fetches `/sessions` with the session cookie and shows one
+notification per waiting session (or a generic notification when the fetch fails). Permanent `404`/`410`
+endpoints are pruned; other delivery failures are logged and never make the daemon unhealthy.
+
+**VAPID uses `/usr/bin/openssl`, but openssl never owns the private-key file.** `VapidKey` generates the
+P-256 PEM and `OpensslVapidSigner` signs ES256 through the existing CLOEXEC-safe `ProcessRunner`; the
+absolute system path avoids Homebrew/launchd PATH drift. Generation omits openssl's `-out` (which creates
+a private key under the process umask and was observed as `0644`): PEM bytes return on stdout and
+`createPrivateFileExclusive` persists `~/.kotgent/vapid.pem` as `0600`, first-writer-wins. Key creation and
+public-point extraction are lazy on the first `GET /push/vapid-key`; failures make push unavailable without
+stopping the daemon, and JWTs are cached per push-service origin.
 
 **SHA-256 and HMAC are pure Kotlin** (`src/crypto/`), *not* CommonCrypto via cinterop — because of KT-78062
 (custom cinterop does not link into the test binary), the same reason the PTY path is behind an interface.
 `randomBytes`/`hex` live once in `Auth.kt`/`Hex.kt`; don't add a second entropy source or hex encoder.
 
-**No TLS on native, hence the tunnel.** `ktor-server-cio` for `macosArm64` has **no `sslConnector`** (a
+**No CIO TLS on native — server OR client.** `ktor-server-cio` for `macosArm64` has no `sslConnector` (a
 JVM-only API — verified in the klib), so the daemon cannot terminate TLS itself. Remote/phone access goes
 through a **cloudflared named tunnel + Cloudflare Access** (the public host is `config.json`'s `publicUrl`,
 passed into `KotgentServer` by the constructor — transport never reads config files itself). The daemon
 trusts the inbound `Host` for the allowlist; if cloudflared ever rewrites it, switch to `X-Forwarded-Host`.
 `Secure` is derived from "Host matched the public host", **never** from `X-Forwarded-Proto` (a local client
-forges that and would set a `Secure` cookie on loopback).
+forges that and would set a `Secure` cookie on loopback). The client side has the same native constraint:
+`ktor-client-cio` reaches a hard "TLS sessions are not supported" path, while every Web Push endpoint is
+HTTPS. `DarwinPushTransport` therefore uses `HttpClient(Darwin)`/NSURLSession, a mandatory timeout and the
+macOS system trust store; do not switch the push edge to CIO.
 
 **Ktor's native `start()` HIJACKS SIGINT/SIGTERM — take them back, after it.** On Kotlin/Native
 `EmbeddedServer.start()` installs its shutdown hook as literal `signal(SIGINT, …)` / `signal(SIGTERM, …)`
@@ -360,6 +398,12 @@ printed that wall of red on **every** daemon start for a pure no-op. With the gu
 propagates, which is right: the column really was missing and every session write would fail anyway. The
 `archived` column was added this way; an `EventStoreTest` opens the store over a pre-`archived` schema and
 then re-opens over the migrated one to prove both paths.
+
+**A wholly new table uses `CREATE TABLE IF NOT EXISTS`, not the column-migration idiom.** A fresh database
+gets the table from its `.sq`, while the owning store's `init` repeats matching DDL for old databases.
+`SqlitePushStore` does this for `push_subscriptions`. `IF NOT EXISTS` is already idempotent and does not
+log an error for an already-present table, so it needs **no** `PRAGMA table_info` guard; keep the runtime
+DDL in sync with the `.sq`.
 
 **Three orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
 `setArchived`), `model` (best-effort provider model; `setModel`) and `read_cursor` (the unread badge;
@@ -459,7 +503,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **492 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **590 native tests passed /
   0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -492,15 +536,18 @@ src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen),
                                TmuxOptions (-f /dev/null isolation, forced server options, tmuxCommand argv builder)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes
-src/transport/                 Server, Auth (authenticated + loopbackOnly route gates), Authorization (pure authorize), SessionCookie, TokenHolder (atomic master token), Tickets (one-time login tickets), AuthRoutes (/auth ticket exchange, /auth/rotate), ControlRoutes, EventsWs, TerminalWs, HookRoutes
+src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
+src/transport/                 Server, Auth/Authorization, session cookies, tickets/rate limit,
+                               auth/push/control/event/terminal/hook routes
 src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands, Config (~/.kotgent/config.json)
 src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)
 sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers)
 ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062); driven by PtyTest
-sqldelight/io/kotgent/db/      Events.sq, Sessions.sq (schema + typed queries)
+sqldelight/io/kotgent/db/      Events.sq, Sessions.sq, PushSubscriptions.sq (schema + typed queries)
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
 plugins/build-info/            generates VERSION + an embedded Git revision at build time
-resources/webui/               static SPA (index.html, app.js, style.css, vendored xterm.js + qrcode.module.js, lib/qr.js; the /auth login page is a string constant in AuthRoutes.kt)
+resources/webui/               no-build Preact PWA, root service worker, manifest/icons, vendored ESM;
+                               /auth is a string constant in AuthRoutes.kt
 docs/plans/                    implementation plans
 ```

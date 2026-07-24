@@ -886,14 +886,17 @@ pin an old UI for a day).
 
 ### Task 21: [Final] Update documentation
 
-- [ ] update `CLAUDE.md`: the push architecture (payload-less + VAPID via `/usr/bin/openssl`, key persisted
+- [x] update `CLAUDE.md`: the push architecture (payload-less + VAPID via `/usr/bin/openssl`, key persisted
       by us rather than by openssl's `-out`), the "no TLS on native applies to the CLIENT too — hence
       `ktor-client-darwin`" note, the new-table migration idiom (`CREATE TABLE IF NOT EXISTS`, no PRAGMA
       guard), the short-code ticket format with its rate-limit compensation, and the iOS-PWA
       separate-cookie-jar fact with the `401 → /auth` routing it forces
-- [ ] update the test-count baseline in `CLAUDE.md` to the new figure
-- [ ] note in `resources/webui/icons/` that the PNGs are rendered from `logo.svg` (and how)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update the test-count baseline in `CLAUDE.md` to the new figure
+- [x] note in `resources/webui/icons/` that the PNGs are rendered from `logo.svg` (and how)
+- [x] move this plan to `docs/plans/completed/` **(skipped - not automatable; the execution harness owns
+      this move)**
+      ➕ documentation-only task, so no new tests; `./kotlin build` and the full suite passed:
+      **590 run / 590 passed / 0 skipped**
 
 ## Post-Completion
 
