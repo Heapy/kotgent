@@ -441,14 +441,24 @@ Verified inventory (revision 1 had this wrong — four sites are string-interpol
 
 ### Task 7: [Final] Update documentation
 
-- [ ] add a CLAUDE.md paragraph next to the tmux fan-out / `LANG` invariants: the kotgent tmux server
+- [x] add a CLAUDE.md paragraph next to the tmux fan-out / `LANG` invariants: the kotgent tmux server
       reads `~/.tmux.conf` unless `-f /dev/null` is passed; `set-option` cannot start a server so the
       chain rides with `new-session`; the chain degrades rather than failing session creation;
       `focus-events` is deliberately off and doubles as the isolation test's decoy
-- [ ] note in CLAUDE.md that any new tmux argv site must go through `tmuxCommand()`
-- [ ] update the "Where things live" map with `src/tmux/TmuxOptions.kt`
-- [ ] update the test-count baseline in CLAUDE.md to the new number
-- [ ] move this plan to `docs/plans/completed/`
+      (placed immediately after the `LANG` invariant and before "Session identity is `pane_id`" — the
+      two "force, never inherit" rules now sit adjacent, inside the tmux cluster; it also names the
+      exempt sites, `tmux -V` / `command -v tmux` / `kill-server`, so the rule below is not read as
+      absolute)
+- [x] note in CLAUDE.md that any new tmux argv site must go through `tmuxCommand()`
+      (bolded inside the same paragraph, naming the failure mode: a hand-rolled
+      `listOf(tmux, "-L", socket, …)` re-opens the hole)
+- [x] update the "Where things live" map with `src/tmux/TmuxOptions.kt`
+- [x] update the test-count baseline in CLAUDE.md to the new number
+      (438 → **454**; the 428 the plan quoted was already stale two revisions back, and the worktree's
+      CLAUDE.md had since been corrected to 438)
+- [x] move this plan to `docs/plans/completed/`
+      (deferred to the harness, which performs the move after the review phases — moving it here would
+      break every later phase that reads this path)
 
 ## Post-Completion
 

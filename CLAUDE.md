@@ -158,6 +158,34 @@ run UTF-8), and the attach upstream, which sets `LANG` in `terminalAttachEnv` **
 global `-u` (`attachUpstreamCommand`) — the flag does not depend on the requested locale existing on the
 host. Do not "optimize" either half away.
 
+**The tmux config is not inherited either — every argv carries `-f /dev/null`.** `-L kotgent` isolates the
+*socket*, not the *configuration*: tmux parses `/etc/tmux.conf` and `~/.tmux.conf` whenever a command
+starts a server, whatever the socket is labelled (measured on a throwaway socket — an operator's
+`mouse on` / `focus-events on` leaked straight into a server their config has nothing to do with). The
+consequence that matters is `destroy-unattached on`: kotgent's last-detach closes the one upstream, tmux
+then destroys the session, and the agent is killed by a file kotgent never reads. `-f /dev/null` suppresses
+the user config completely, which alone restores the Detach invariant. Exactly two places build a tmux
+argv — `tmuxCommand()` (`src/tmux/TmuxOptions.kt`), the funnel for the whole control plane, and
+`attachUpstreamCommand` (`src/pty/PtyHandle.kt`) for the attach upstream — and both prepend
+`TMUX_CONFIG_ISOLATION`. **Any new tmux argv site must go through `tmuxCommand()`**; a hand-rolled
+`listOf(tmux, "-L", socket, …)` silently re-opens the hole. (Exempt, because they start no server and
+parse no config: `tmux -V`, `command -v tmux`, and `kill-server` teardowns.) On top of isolation kotgent
+forces six options (`TMUX_SERVER_OPTIONS`): `destroy-unattached off`, `default-terminal tmux-256color`,
+`mouse on`, `status off`, `history-limit 10000`, `escape-time 0` (`-s` scope). The first two already equal
+tmux 3.7b's built-in defaults — isolation is what fixes Detach; they are pins against a future upstream
+default change. The options are chained into the **same invocation** as `new-session`
+(`set-option … ';' new-session …`), never applied afterwards: a standalone `set-option` cannot start a
+server (exit 1, `error connecting to …`) and `default-terminal` is read when the pane is *created*, so the
+chain is the only way, not an optimisation. A rejected chain aborts before `new-session` and creates no
+session, so `newSession` retries once with a bare `new-session` and applies the options best-effort — one
+option name a different tmux build rejects must not make session creation impossible, and since the
+built-in defaults are already safe for Detach, degrading costs only ergonomics. **`focus-events` is
+deliberately NOT set**: one upstream client serves N subscribers, so "is it focused" has no single answer,
+and kotgent already has better signals (the lazy `TerminalBridge`'s subscriber count, agent state over
+hooks). It doubles as the decoy in the isolation integration test *because* kotgent never sets it — a unit
+test pins its absence, so adding it would fail there first rather than quietly making that test
+unfalsifiable.
+
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on
 daemon start. Hooks report `$TMUX_PANE`. **Never trust an inherited env var** (`KOTGENT_SESSION_ID` is a
@@ -358,7 +386,8 @@ src/store/                     EventStore interface + SqliteEventStore (SQLDelig
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule),
                                Signals (SIGINT/SIGTERM taken back from Ktor's shutdown hook)
-src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
+src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen),
+                               TmuxOptions (-f /dev/null isolation, forced server options, tmuxCommand argv builder)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes
 src/transport/                 Server, Auth (authenticated + loopbackOnly route gates), Authorization (pure authorize), SessionCookie, TokenHolder (atomic master token), Tickets (one-time login tickets), AuthRoutes (/auth ticket exchange, /auth/rotate), ControlRoutes, EventsWs, TerminalWs, HookRoutes
