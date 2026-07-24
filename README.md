@@ -188,8 +188,8 @@ so the ticket never lands in history. From then on the cookie authenticates ever
 The UI shows the session list with live state badges and a "Needs attention" queue (fed by the events
 WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
 keyboard input, resize). The sidebar footer identifies the running daemon: local source builds show the
-release version plus their embedded short Git hash (for example `0.1.2+81c37fe`), while published
-Homebrew builds show the release version alone (`0.1.2`).
+release version plus their embedded short Git hash (for example `0.2.0+81c37fe`), while published
+Homebrew builds show the release version alone (`0.2.0`).
 
 A session row also carries an **unread pill** — how many events have arrived since you last looked at that
 session. Looking at it clears it: the browser posts the cursor it has displayed, so the count is
