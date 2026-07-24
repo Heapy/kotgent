@@ -343,16 +343,36 @@ pin an old UI for a day).
 - Create: `src/push/VapidJwt.kt`
 - Create: `test/push/VapidJwtTest.kt`
 
-- [ ] add pure `pushServiceOrigin(endpoint)` (scheme + host — the JWT `aud`) and
+- [x] add pure `pushServiceOrigin(endpoint)` (scheme + host — the JWT `aud`) and
       `vapidSigningInput(aud, exp, sub)` (header + claims, base64url, dot-joined)
-- [ ] add `vapidSubject(publicUrl: String?)`: the public origin when configured, else
+      ➕ `pushServiceOrigin` drops the path/query/fragment (a push endpoint's path IS the device
+      identity), lower-cases, drops a DEFAULT port so `:443` and the bare host share one token, and
+      refuses userinfo / whitespace / control characters / a non-`http(s)` scheme with a new
+      `VapidJwtException`. `vapidSigningInput` takes `exp` in epoch **seconds** (JWT NumericDate) and
+      refuses a claim value that JSON would have to escape, so a bypassed caller cannot ship a JWT whose
+      claims silently do not parse at the push service
+- [x] add `vapidSubject(publicUrl: String?)`: the public origin when configured, else
       `mailto:kotgent@localhost`
-- [ ] add `VapidTokenCache(now, sign, ttl = 12h, refreshBefore = 1h)` keyed by origin, plus
+      ➕ only an **https** public URL becomes the subject; an `http://` one (always loopback here — no TLS
+      on native) and an unparseable one both fall back rather than throw, so a bad `publicUrl` cannot
+      disable push
+- [x] add `VapidTokenCache(now, sign, ttl = 12h, refreshBefore = 1h)` keyed by origin, plus
       `vapidAuthorizationHeader(jwt, publicKey)`
-- [ ] write tests: claims are deterministic under an injected clock; Apple and Google endpoints produce
+      ➕ the constructor is `VapidTokenCache(subject, sign, now, ttlMillis, refreshBeforeMillis)` — the
+      `sub` claim has to come from somewhere and belongs with the cache, not with each call. `sign` is a
+      non-suspend `(String) -> ByteArray` so task 8's `VapidSigner::sign` binds directly; the map is
+      `Mutex`-guarded (a burst of sends collapses into one openssl run) and `init` rejects
+      `refreshBefore >= ttl`, which would re-sign on every call
+- [x] write tests: claims are deterministic under an injected clock; Apple and Google endpoints produce
       different `aud`; the cache returns the same token twice and re-signs once inside the refresh window
-- [ ] write test: the header string matches the `vapid t=…, k=…` shape exactly
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 8
+- [x] write test: the header string matches the `vapid t=…, k=…` shape exactly
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 8
+      ➕ 19 new tests: **515 run / 515 passed / 0 skipped**. The expected base64url segments are pinned
+      from an independent encoder (`python3 base64.urlsafe_b64encode`), and the header segment is the
+      well-known `eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9` every ES256 JWT carries. Extra paths covered: a
+      failing signer propagates and caches nothing (so a missing openssl degrades to "no push", not to a
+      poisoned cache), a malformed endpoint fails before anything is signed, and two devices on the same
+      push service share one token
 
 ### Task 8: OpensslVapidSigner (the signing edge)
 
