@@ -330,15 +330,18 @@ kotgent is the only thing that should touch that socket.
 - Modify: `src/pty/PtyHandle.kt`
 - Modify: `test/pty/AttachEnvTest.kt`
 
-- [ ] update `theAttachCommandForcesUtf8Output` to expect
+- [x] update `theAttachCommandForcesUtf8Output` to expect
       `[tmuxPath, -f, /dev/null, -u, -L, <socket>, attach, -t, <session>]`
-- [ ] write test: `-f` and its value precede the `attach` subcommand (same bug class as the existing `-u`
+- [x] write test: `-f` and its value precede the `attach` subcommand (same bug class as the existing `-u`
       ordering assertion)
-- [ ] modify `attachUpstreamCommand` to include `TMUX_CONFIG_ISOLATION`; KDoc notes the flag is inert when
+      (`theAttachCommandIsolatesTheUserConfig` — also asserts the argv carries `TMUX_CONFIG_ISOLATION`
+      verbatim rather than a re-spelled literal, so a future edit to the shared constant cannot drift)
+- [x] modify `attachUpstreamCommand` to include `TMUX_CONFIG_ISOLATION`; KDoc notes the flag is inert when
       the server is already up and is there for consistency and for the case where it is not
-- [ ] leave `test/pty/TerminalBridgeTest.kt:56,98` alone — that argv is the fake factory's own default
+- [x] leave `test/pty/TerminalBridgeTest.kt:56,98` alone — that argv is the fake factory's own default
       command, not a real tmux invocation (confirmed during review)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 5
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 5
+      (454 run / 454 passed / 0 skipped; `tmux -L kotgent-test kill-server` reports "no server running")
 
 ### Task 5: Give the ptycheck fixtures the same isolation
 

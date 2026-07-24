@@ -1,6 +1,7 @@
 package io.kotgent.pty
 
 import io.kotgent.sys.utf8LocaleOrDefault
+import io.kotgent.tmux.TMUX_CONFIG_ISOLATION
 import kotlinx.coroutines.channels.ReceiveChannel
 
 /**
@@ -90,16 +91,25 @@ const val ATTACH_FALLBACK_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/s
  * derived from inherited env.
  */
 /**
- * argv for the upstream attach client: `tmux -u -L <socket> attach -t <session>` — **pure**, so the
- * exact flags are unit-testable without a tmux server.
+ * argv for the upstream attach client: `tmux -f /dev/null -u -L <socket> attach -t <session>` —
+ * **pure**, so the exact flags are unit-testable without a tmux server (KT-78062: the cinterop that
+ * would actually run this does not link into the test binary, so the argv rule is asserted here).
  *
  * `-u` tells tmux to emit UTF-8 to this client whatever its locale says. It duplicates what a UTF-8
  * `LANG` in [terminalAttachEnv] already buys, on purpose: the locale route depends on the requested
  * locale existing on the host, the flag does not. Losing both means tmux rewrites every non-ASCII
  * cell as `_` (`tty_check_codeset`) and an agent's box-drawing TUI arrives as underscores.
+ *
+ * [TMUX_CONFIG_ISOLATION] rides along so every kotgent tmux argv looks the same, control-plane and
+ * attach alike. Be precise about what it buys **here**: `-f` only applies to the invocation that
+ * STARTS a server, and by the time an attach happens the daemon has normally already created the
+ * session (`Tmux.newSession`), so on that path the flag is **inert**. It matters in the case where
+ * this attach is what brings the server up, and it keeps a single rule rather than a per-call-site
+ * judgement about who started the server. Like `-L`, `-f` is a tmux **global** flag: it and its
+ * value must precede the `attach` subcommand or tmux reads them as `attach` arguments.
  */
 fun attachUpstreamCommand(tmuxPath: String, socket: String, session: String): List<String> =
-    listOf(tmuxPath, "-u", "-L", socket, "attach", "-t", session)
+    listOf(tmuxPath) + TMUX_CONFIG_ISOLATION + listOf("-u", "-L", socket, "attach", "-t", session)
 
 fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, String> {
     val env = LinkedHashMap<String, String>()

@@ -1,6 +1,7 @@
 package io.kotgent.pty
 
 import io.kotgent.sys.DEFAULT_UTF8_LOCALE
+import io.kotgent.tmux.TMUX_CONFIG_ISOLATION
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -75,11 +76,30 @@ class AttachEnvTest {
     fun theAttachCommandForcesUtf8Output() {
         val argv = attachUpstreamCommand("/opt/homebrew/bin/tmux", "kotgent", "kt-abc123")
         assertEquals(
-            listOf("/opt/homebrew/bin/tmux", "-u", "-L", "kotgent", "attach", "-t", "kt-abc123"),
+            listOf("/opt/homebrew/bin/tmux", "-f", "/dev/null", "-u", "-L", "kotgent", "attach", "-t", "kt-abc123"),
             argv,
-            "the upstream is `tmux -u -L <socket> attach -t <session>`",
+            "the upstream is `tmux -f /dev/null -u -L <socket> attach -t <session>`",
         )
         // -u must precede the subcommand: it is a tmux global flag, not an `attach` flag.
         assertTrue(argv.indexOf("-u") < argv.indexOf("attach"), "-u is a global flag, before the subcommand")
+    }
+
+    @Test
+    fun theAttachCommandIsolatesTheUserConfig() {
+        val argv = attachUpstreamCommand("/opt/homebrew/bin/tmux", "kotgent", "kt-abc123")
+
+        // The upstream must not re-spell the isolation flags — it reuses the one shared definition.
+        assertEquals(
+            TMUX_CONFIG_ISOLATION,
+            argv.subList(1, 1 + TMUX_CONFIG_ISOLATION.size),
+            "the attach argv carries TMUX_CONFIG_ISOLATION verbatim, right after the tmux path",
+        )
+
+        // Same bug class as the -u ordering assertion: -f AND its value are global, so both must
+        // land before the subcommand or tmux reads them as arguments of `attach`.
+        val f = argv.indexOf("-f")
+        assertTrue(f >= 0, "the attach upstream passes -f")
+        assertEquals("/dev/null", argv[f + 1], "-f is immediately followed by its value")
+        assertTrue(f + 1 < argv.indexOf("attach"), "-f /dev/null is global, before the subcommand")
     }
 }
