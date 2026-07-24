@@ -417,17 +417,39 @@ pin an old UI for a day).
 - Create: `src/push/DarwinPushTransport.kt`
 - Create: `test/push/PushSenderTest.kt`
 
-- [ ] add `io.ktor:ktor-client-darwin` to `module.yaml` dependencies (portable, no absolute paths)
-- [ ] add `interface PushTransport { suspend fun post(url: String, headers: Map<String,String>): Int }` and
+- [x] add `io.ktor:ktor-client-darwin` to `module.yaml` dependencies (portable, no absolute paths)
+      ➕ it resolved and linked with no trouble (3.4.3, from the same BOM as the other Ktor artifacts), so
+      the `curl`-through-`ProcessRunner` fallback in the risk fork was not needed
+- [x] add `interface PushTransport { suspend fun post(url: String, headers: Map<String,String>): Int }` and
       `DarwinPushTransport` — `HttpClient(Darwin)` with `HttpTimeout` (never an untimed request)
-- [ ] add `PushSender(store, publicKey, cache, transport)`: for each subscription build the VAPID header,
+      ➕ the status code is the whole return value (a push service's body carries nothing the daemon acts
+      on) and an implementation must NOT turn a transport failure into a fake status; `setBody(ByteArray(0))`
+      lets Ktor derive `Content-Length: 0`, which it refuses to let a caller set by hand
+- [x] add `PushSender(store, publicKey, cache, transport)`: for each subscription build the VAPID header,
       `TTL: 1800`, `Topic: <short hash of session id>`, POST an empty body
-- [ ] handle results: `200/201` ok, `404/410` → `store.remove(endpoint)`, `429/5xx` → skip, no retry queue;
+      ➕ the third parameter is `vapidToken: suspend (String) -> String` (production passes
+      `VapidTokenCache::tokenFor`) rather than the cache object — the seam idiom the rest of the push
+      package already uses (`VapidTokenCache(sign = signer::sign)`, `authenticated(tokens::current)`), and
+      it keeps the JWT format out of this class's tests instead of re-asserting `VapidJwtTest`. The key is
+      resolved only when there is at least one subscription, so a daemon nobody enabled push on never
+      shells out to openssl. `Topic` is `base64Url(sha256(id)).take(16)`: hashed because a session id is
+      kotgent's own identifier and there is no reason for Apple to learn it, and because a `Topic` is
+      syntactically restricted to the URL-safe base64 alphabet
+- [x] handle results: `200/201` ok, `404/410` → `store.remove(endpoint)`, `429/5xx` → skip, no retry queue;
       a transport exception must not propagate into the caller's coroutine
-- [ ] write tests with a fake transport: success keeps the row; `410` deletes it; `429` keeps it; a throwing
+      ➕ success is the whole `2xx` range (services differ on `200` vs `201`); every failure — an unreadable
+      store, a failing key provider, a failing token, a throwing transport, a failing prune — is caught and
+      reported through an injected `onError` (stderr in production), and `CancellationException` is the one
+      exception re-thrown, since swallowing it would detach the send from the scope that owns it
+- [x] write tests with a fake transport: success keeps the row; `410` deletes it; `429` keeps it; a throwing
       transport is swallowed and the other subscriptions are still attempted
-- [ ] write test: the outgoing header set is exactly what the RFC needs (`Authorization` shape, `TTL`, `Topic`)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 10
+- [x] write test: the outgoing header set is exactly what the RFC needs (`Authorization` shape, `TTL`, `Topic`)
+      ➕ asserted as an exact key SET, so a stray header is a failure too; the expected `Topic` is pinned
+      from an independent digest (`python3 hashlib.sha256` + `base64.urlsafe_b64encode`), never recomputed
+      with `pushTopic`
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 10
+      ➕ 12 new tests: **538 run / 538 passed / 0 skipped** (the branch baseline was 526, not the 428 this
+      plan quotes)
 
 ### Task 10: PushNotifier and daemon wiring
 

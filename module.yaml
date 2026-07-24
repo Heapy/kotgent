@@ -27,6 +27,12 @@ dependencies:
   # test-dependencies into the main dependencies (still visible to the test compilation).
   - io.ktor:ktor-client-cio
   - io.ktor:ktor-client-websockets
+  # Ktor Darwin (NSURLSession) client engine — the ONLY way the daemon can speak HTTPS. Ktor's CIO
+  # client cannot do TLS on Kotlin/Native at all (`openTLSSession` for non-JVM is a hard
+  # `error("TLS sessions are not supported on Native platform.")`), and every Web Push endpoint is
+  # https, so the push sender runs on NSURLSession and inherits the system trust store. Third-party
+  # klib with its own cinterop, so it links into the test binary fine (the Ktor/sqliter precedent).
+  - io.ktor:ktor-client-darwin
   # SQLDelight runtime native SQLite driver (Task 4 storage spike). The toolchain resolves the
   # macosArm64 variant (native-driver-macosarm64.klib) via Gradle Module Metadata, exactly like
   # Ktor's native artifacts. It is a THIRD-PARTY klib (its own sqliter-driver cinterop to sqlite3),
