@@ -399,6 +399,12 @@ class EventStoreTest {
 
             store.setArchived(sid, true, 2L)
             assertTrue(store.getSession(sid)!!.archived, "…and is writable after the migration")
+
+            // Re-opening over the now-migrated DB must be a clean no-op — init sees the column via
+            // PRAGMA table_info and skips the ALTER instead of firing one that sqliter logs as a
+            // SQLITE_ERROR stack trace on every daemon start.
+            val reopened = SqliteEventStore.using(driver, now = { 3L })
+            assertTrue(reopened.getSession(sid)!!.archived, "a second open over the migrated DB still reads")
         }
     }
 

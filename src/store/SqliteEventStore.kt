@@ -111,10 +111,14 @@ class SqliteEventStore private constructor(
         // Additive, idempotent migration for the `archived` column. The vendored sqldelight-gen plugin
         // drops `.sqm` files (deriveSchemaFromMigrations/verifyMigrations are off) and leaves the
         // generated `Schema.migrate()` empty, so a schema-version bump would NOT alter an existing table.
-        // Instead add the column here: on a fresh DB `create()` already added it, so this ALTER fails with
-        // "duplicate column name" and is swallowed; on a pre-`archived` DB it adds it. `ALTER … ADD COLUMN`
-        // returns no rows, so use execute(), not executeQuery().
-        runCatching {
+        // Instead add the column here — but ONLY when it is actually missing. On a fresh DB `create()`
+        // already added it, and letting the ALTER run-and-fail there is not free: sqliter logs the
+        // SQLITE_ERROR ("duplicate column name: archived") with a full stack trace before the throw ever
+        // reaches us, so every single daemon start printed a scary-looking failure for a no-op. Asking
+        // `PRAGMA table_info` first is exact and cheap. A genuine ALTER failure now propagates: the column
+        // really is missing, and every session write after it would fail with "no such column" anyway.
+        // `ALTER … ADD COLUMN` returns no rows, so use execute(), not executeQuery().
+        if (!driver.hasColumn("sessions", "archived")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }
     }
@@ -390,6 +394,24 @@ class SqliteEventStore private constructor(
         ): SqliteEventStore = SqliteEventStore(driver, json, now)
     }
 }
+
+/**
+ * True when [table] already has a column named [column], per `PRAGMA table_info` (row layout:
+ * `cid, name, type, notnull, dflt_value, pk` — hence index 1). An unknown table yields no rows, i.e.
+ * false. The names are interpolated because a PRAGMA takes no bind parameters; both call sites pass
+ * literals from this file, never user input.
+ */
+private fun SqlDriver.hasColumn(table: String, column: String): Boolean =
+    executeQuery(
+        identifier = null,
+        sql = "PRAGMA table_info($table)",
+        mapper = { cursor ->
+            var found = false
+            while (!found && cursor.next().value) found = cursor.getString(1) == column
+            QueryResult.Value(found)
+        },
+        parameters = 0,
+    ).value
 
 /** Default wall-clock for event timestamps: epoch millis. Injectable so tests stay deterministic. */
 @OptIn(ExperimentalTime::class)

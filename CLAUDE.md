@@ -214,10 +214,15 @@ event + updates the session cache in **one transaction**. A JSONL fallback was d
 `deriveSchemaFromMigrations = false` / `verifyMigrations = false`, and filters `MigrationFile`s out under
 exactly those flags, so a `.sqm` never contributes and the generated `Schema.migrate()` stays an empty
 body (`Schema.version` is 1). **Do not add a `.sqm` and expect it to run.** Additive columns are migrated
-by a hand-rolled idempotent `ALTER` in `SqliteEventStore.init` (`runCatching { ALTER TABLE … ADD COLUMN … }`
-swallowing "duplicate column name"): correct on a fresh DB (the column is already in `create()` from the
-`.sq`, so the ALTER is a caught no-op) and on an existing DB (it adds the column). The `archived` column was
-added this way; an `EventStoreTest` opens the store over a pre-`archived` schema to prove the path.
+by a hand-rolled `ALTER` in `SqliteEventStore.init`, **guarded by a `PRAGMA table_info` existence check**
+(`driver.hasColumn("sessions", "archived")`): on a fresh DB the column is already in `create()` from the
+`.sq`, so nothing runs; on a pre-existing DB the `ALTER` adds it. **Do not "simplify" the guard back into
+a `runCatching { ALTER … }`** — sqliter *logs* a failing statement (`error while compiling: … duplicate
+column name`, plus a full stack trace) before the exception is ever thrown, so the swallow-it version
+printed that wall of red on **every** daemon start for a pure no-op. With the guard, a failing `ALTER`
+propagates, which is right: the column really was missing and every session write would fail anyway. The
+`archived` column was added this way; an `EventStoreTest` opens the store over a pre-`archived` schema and
+then re-opens over the migrated one to prove both paths.
 
 **Two orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
 `setArchived`) and `model` (best-effort provider model; `setModel`). Neither is a reducer/control-state
