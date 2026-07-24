@@ -2,10 +2,13 @@ package io.kotgent
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class SmokeTest {
     @Test
     fun reportsVersion() {
-        assertEquals("kotgent 0.1.0-SNAPSHOT", versionLine())
+        // Assert the shape, not the literal, so a version bump never breaks this.
+        assertEquals("kotgent $VERSION", versionLine())
+        assertTrue(VERSION.isNotBlank(), "VERSION must be set")
     }
 }
