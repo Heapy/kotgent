@@ -25,6 +25,15 @@ class LaunchdException(message: String) : RuntimeException(message)
 @OptIn(ExperimentalForeignApi::class)
 fun currentUid(): UInt = getuid()
 
+/**
+ * The caller's current `PATH` (`$PATH`), or `null` when unset/empty. `kotgent install` runs in the user's
+ * login shell, so this is the full interactive PATH — snapshotted into the daemon's plist so launched
+ * agents inherit the same environment a terminal has. Top-level (like [currentUid]/[defaultLogDir]) so the
+ * `getenv` opt-in stays off the class surface.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun currentPath(): String? = getenv("PATH")?.toKString()?.ifEmpty { null }
+
 /** `~/Library/LaunchAgents` (per-user launchd agents live here); cwd-relative if `$HOME` is unset. */
 @OptIn(ExperimentalForeignApi::class)
 fun defaultLaunchAgentsDir(): String {
@@ -57,7 +66,9 @@ private fun homeDir(): String? = getenv("HOME")?.toKString()?.trimEnd('/')
  * ## Injection (so it is unit-testable, and so the daemon is never really started in a test)
  * The `launchctl` invocations go through the injected [runner] (default [ProcessRunner], the stock
  * `platform.posix` `popen` runner). Tests inject a fake runner to assert the exact argv without
- * executing, and inject [launchAgentsDir] / [logDir] / [uid] to write under a throwaway temp path.
+ * executing, and inject [launchAgentsDir] / [logDir] / [uid] to write under a throwaway temp path. The
+ * `pathProvider` seam (default [currentPath]) lets a test supply a deterministic captured `PATH` that
+ * `install` merges (via [mergedDaemonPath]) into the plist's `EnvironmentVariables.PATH`.
  * `install` returns after bootstrapping — it does **not** run the daemon in-process (that is the
  * separate `daemon` subcommand the plist's `ProgramArguments` points at).
  */
@@ -67,6 +78,7 @@ class LaunchdInstaller(
     private val logDir: String = defaultLogDir(),
     private val label: String = DAEMON_LABEL,
     private val uid: UInt = currentUid(),
+    private val pathProvider: () -> String? = ::currentPath,
 ) {
     /** Absolute path of the LaunchAgent plist this installer manages. */
     val plistPath: String get() = "${launchAgentsDir.trimEnd('/')}/$label.plist"
@@ -80,7 +92,15 @@ class LaunchdInstaller(
     fun install(binaryPath: String): String {
         mkdirs(launchAgentsDir)
         mkdirs(logDir)
-        writeFile(plistPath, launchAgentPlist(binaryPath = binaryPath, logDir = logDir, label = label))
+        writeFile(
+            plistPath,
+            launchAgentPlist(
+                binaryPath = binaryPath,
+                logDir = logDir,
+                label = label,
+                path = mergedDaemonPath(pathProvider()),
+            ),
+        )
 
         // Best-effort unload of any prior instance so bootstrap does not fail with "already bootstrapped".
         runner(listOf("launchctl", "bootout", domainTarget, plistPath))

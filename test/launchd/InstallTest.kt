@@ -132,10 +132,45 @@ class InstallTest {
         assertEquals("bootout", fake.calls[0][1])
     }
 
+    @Test
+    fun installSnapshotsTheCallersPathIntoThePlist() {
+        val fake = FakeRunner()
+        val customDir = "/Users/tester/.local/bin"
+        val captured = "$customDir:/usr/local/bin"
+        val (installer, _) = newInstaller(fake, uid = 501u, pathProvider = { captured })
+
+        val plistPath = installer.install("/bin/kotgent")
+        val content = readFile(plistPath)
+
+        // The plist PATH is exactly the merge of the captured PATH with the default floor.
+        val expected = mergedDaemonPath(captured)
+        assertTrue("<string>${expected}</string>" in content, "the merged PATH is written verbatim")
+        // The caller's custom dir is present, and the default entries are retained.
+        assertTrue(customDir in expected, "custom dir survives the merge")
+        assertTrue("/opt/homebrew/bin" in expected, "default homebrew bin retained")
+        assertTrue("/usr/bin" in expected, "default /usr/bin retained")
+    }
+
+    @Test
+    fun installFallsBackToTheDefaultPathWhenNoPathIsCaptured() {
+        val fake = FakeRunner()
+        val (installer, _) = newInstaller(fake, uid = 501u, pathProvider = { null })
+
+        val plistPath = installer.install("/bin/kotgent")
+        val content = readFile(plistPath)
+
+        // A null captured PATH → the plist PATH is exactly DAEMON_DEFAULT_PATH (backward compatible).
+        assertTrue("<string>$DAEMON_DEFAULT_PATH</string>" in content, "falls back to DAEMON_DEFAULT_PATH")
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** A [LaunchdInstaller] wired to [fake], writing under a fresh throwaway temp base (also returned). */
-    private fun newInstaller(fake: FakeRunner, uid: UInt): Pair<LaunchdInstaller, String> {
+    private fun newInstaller(
+        fake: FakeRunner,
+        uid: UInt,
+        pathProvider: () -> String? = { null },
+    ): Pair<LaunchdInstaller, String> {
         val base = uniqueTempBase()
         bases += base
         val installer = LaunchdInstaller(
@@ -143,6 +178,7 @@ class InstallTest {
             launchAgentsDir = "$base/LaunchAgents",
             logDir = "$base/Logs/kotgent",
             uid = uid,
+            pathProvider = pathProvider,
         )
         return installer to base
     }

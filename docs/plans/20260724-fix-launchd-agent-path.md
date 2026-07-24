@@ -157,16 +157,16 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - Modify: `src/launchd/Install.kt`
 - Modify: `test/launchd/InstallTest.kt`
 
-- [ ] write test: with an injected `pathProvider` returning a PATH containing a custom dir, the written
+- [x] write test: with an injected `pathProvider` returning a PATH containing a custom dir, the written
       plist's `EnvironmentVariables.PATH` equals `mergedDaemonPath(<that PATH>)` (assert the custom dir is
       present and the defaults are retained)
-- [ ] write test: with `pathProvider` returning `null`, the plist PATH equals `DAEMON_DEFAULT_PATH`
+- [x] write test: with `pathProvider` returning `null`, the plist PATH equals `DAEMON_DEFAULT_PATH`
       (backward-compatible fallback)
-- [ ] add a top-level `@OptIn(ExperimentalForeignApi::class) fun currentPath(): String? =
+- [x] add a top-level `@OptIn(ExperimentalForeignApi::class) fun currentPath(): String? =
       getenv("PATH")?.toKString()?.ifEmpty { null }` (mirrors `currentUid`/`defaultLogDir`) and the
       constructor seam `pathProvider: () -> String? = ::currentPath` on `LaunchdInstaller`
-- [ ] change `install()` to pass `path = mergedDaemonPath(pathProvider())` into `launchAgentPlist(...)`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 3
+- [x] change `install()` to pass `path = mergedDaemonPath(pathProvider())` into `launchAgentPlist(...)`
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 3
 
 ### Task 3: `AgentBinaryNotFoundException` + fail-fast in the agent factory
 
