@@ -92,6 +92,21 @@ function responseKey(response) {
   return key;
 }
 
+/**
+ * Read the application-server key when push is available. A failed request is the daemon's documented
+ * capability downgrade (notably its 503 when openssl/key persistence is unavailable); a malformed successful
+ * response still throws from responseKey because that is a broken server contract.
+ */
+async function vapidKeyOrNull() {
+  let response;
+  try {
+    response = await apiRequest(VAPID_KEY_URL);
+  } catch (_) {
+    return null;
+  }
+  return responseKey(response);
+}
+
 /** Hand an existing browser subscription to the daemon, which is what makes this device reachable. */
 async function registerSubscription(subscription) {
   const json = subscription.toJSON();
@@ -118,7 +133,8 @@ export async function subscribe(permissionRequest = null) {
   if (!(await permission)) return false;
 
   const registration = await activeRegistration();
-  const key = responseKey(await apiRequest(VAPID_KEY_URL));
+  const key = await vapidKeyOrNull();
+  if (!key) return false;
   const subscription = await subscribeWith(registration, key);
   await registerSubscription(subscription);
   setPushActive(true);
@@ -162,7 +178,8 @@ export async function refreshActive() {
     const existing = registration ? await registration.pushManager.getSubscription() : null;
     if (!registration || !existing) return false;
 
-    const key = responseKey(await apiRequest(VAPID_KEY_URL));
+    const key = await vapidKeyOrNull();
+    if (!key) return false;
     const subscription = await subscribeWith(registration, key);
     await registerSubscription(subscription);
     setPushActive(true);

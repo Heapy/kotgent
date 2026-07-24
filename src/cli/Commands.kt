@@ -31,7 +31,6 @@ import io.kotgent.push.DarwinPushTransport
 import io.kotgent.push.OpensslVapidSigner
 import io.kotgent.push.PushNotifier
 import io.kotgent.push.PushSender
-import io.kotgent.push.PushStore
 import io.kotgent.push.SqlitePushStore
 import io.kotgent.push.VapidKey
 import io.kotgent.push.VapidTokenCache

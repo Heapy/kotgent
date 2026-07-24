@@ -12,12 +12,15 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.toKString
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import platform.posix.S_IRUSR
 import platform.posix.S_IWUSR
 import platform.posix.chmod
+import platform.posix.errno
 import platform.posix.stat
+import platform.posix.strerror
 
 /**
  * The daemon's VAPID identity: one P-256 keypair in `~/.kotgent/vapid.pem`, and the uncompressed public
@@ -122,20 +125,28 @@ class VapidKey(
     private fun existingPem(): ByteArray? {
         val bytes = readFileBytesOrNull(keyPath) ?: return null
         if (chmod(keyPath, VAPID_KEY_MODE_0600.convert()) != 0) {
+            val chmodError = errno
             throw VapidKeyException(
-                "cannot secure VAPID key file $keyPath with mode 0600 — refusing to use a private key " +
-                    "that may be readable by other users",
+                "cannot secure VAPID key file $keyPath (chmod 0600 failed: ${errnoText(chmodError)}) — " +
+                    "refusing to use a private key that may be readable by other users",
             )
         }
         val mode = memScoped {
             val metadata = alloc<stat>()
-            if (stat(keyPath, metadata.ptr) != 0) null else metadata.st_mode.toInt() and PERMISSION_MASK
+            if (stat(keyPath, metadata.ptr) != 0) {
+                val statError = errno
+                throw VapidKeyException(
+                    "cannot verify VAPID key file $keyPath permissions " +
+                        "(stat failed: ${errnoText(statError)}) — refusing to use a private key whose " +
+                        "mode could not be confirmed 0600",
+                )
+            }
+            metadata.st_mode.toInt() and PERMISSION_MASK
         }
         if (mode != VAPID_KEY_MODE_0600) {
-            val shown = mode?.toString(8)?.padStart(3, '0') ?: "unknown"
             throw VapidKeyException(
-                "VAPID key file $keyPath is still mode $shown after chmod 0600 — refusing to use a " +
-                    "private key that may be readable by other users",
+                "VAPID key file $keyPath is still mode ${mode.toString(8).padStart(3, '0')} after chmod " +
+                    "0600 — refusing to use a private key that may be readable by other users",
             )
         }
         val text = bytes.decodeToString()
@@ -214,6 +225,10 @@ private const val PEM_BEGIN_MARKER: String = "-----BEGIN"
 private const val PEM_PRIVATE_KEY_MARKER: String = "PRIVATE KEY-----"
 private const val VAPID_KEY_MODE_0600: Int = S_IRUSR or S_IWUSR
 private const val PERMISSION_MASK: Int = 0b111_111_111
+
+/** `strerror` for [code], or a numeric fallback — for actionable key-permission failures. */
+@OptIn(ExperimentalForeignApi::class)
+private fun errnoText(code: Int): String = strerror(code)?.toKString() ?: "errno=$code"
 
 /**
  * The 65-byte uncompressed point inside a P-256 `SubjectPublicKeyInfo` ([der], as

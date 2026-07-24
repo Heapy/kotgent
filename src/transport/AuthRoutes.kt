@@ -303,7 +303,7 @@ fun authorizeTicketExchange(facts: RequestFacts, publicUrl: String?): AuthDecisi
     return AuthDecision.Allow
 }
 
-/** `<origin>/auth#ticket=<value>` — the shape both the CLI and the QR code hand to a browser. */
+/** `<origin>/auth#ticket=<value>` — the credentialed link only `kotgent web --print` hands off intact. */
 private fun ticketUrl(origin: String, ticket: String): String =
     "${origin.trimEnd('/')}$AUTH_PAGE_PATH#ticket=$ticket"
 

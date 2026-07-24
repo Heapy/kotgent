@@ -511,9 +511,19 @@ class WebUiServingTest {
             permissionAt >= 0 && permissionAwaitAt > permissionAt && registrationAt > permissionAwaitAt,
             "notification permission is requested before the first service-worker/network await (required by iOS)",
         )
+        val vapidKey = body.substringAfter("async function vapidKeyOrNull() {")
+            .substringBefore("\n}\n\n/**")
         assertTrue(
-            subscribe.contains("apiRequest(VAPID_KEY_URL)"),
-            "subscribe obtains the application-server key from the daemon route",
+            vapidKey.contains("await apiRequest(VAPID_KEY_URL)") &&
+                vapidKey.contains("catch (_)") &&
+                vapidKey.contains("return null") &&
+                vapidKey.indexOf("return responseKey(response)") > vapidKey.indexOf("catch (_)"),
+            "an unavailable VAPID route downgrades to no push while a malformed success remains an error",
+        )
+        assertTrue(
+            subscribe.contains("const key = await vapidKeyOrNull()") &&
+                subscribe.contains("if (!key) return false"),
+            "subscribe reports the daemon's unavailable-push response as false instead of rejecting",
         )
         val register = body.substringAfter("async function registerSubscription(subscription) {")
             .substringBefore("\n}\n\n/**")
@@ -747,7 +757,8 @@ class WebUiServingTest {
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(
             dialogs.contains("id=\"prefs-terminal-font-size\"") &&
-                dialogs.contains("TERMINAL_FONT_SIZES.map"),
+                dialogs.contains("TERMINAL_FONT_SIZES.map") &&
+                dialogs.contains("TERMINAL_FONT_LABELS.get(size)"),
             "Preferences exposes all three terminal font steps",
         )
         val app = ctx.get("/app.js").bodyAsText()
@@ -818,6 +829,12 @@ class WebUiServingTest {
                 "$name sends the planned raw terminal bytes",
             )
         }
+        assertTrue(
+            keyBar.contains("const NAVIGATION_KEYS") &&
+                keyBar.contains("const CONTROL_KEYS") &&
+                !keyBar.contains("SPECIAL_KEYS.slice"),
+            "the keys around the Ctrl modifier are explicit groups rather than a hidden array index",
+        )
         assertTrue(
             keyBar.contains("Uint8Array.from(key.bytes)"),
             "the toolbar sends binary data, not WebSocket text frames reserved for resize controls",

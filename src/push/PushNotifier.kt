@@ -96,10 +96,10 @@ class PushNotifier(
     /**
      * Seed, then collect until the flow ends or the coroutine is cancelled.
      *
-     * [onSubscribed] is the readiness edge used by [start]. A caller invoking this directly owes the same
-     * contract: no live producer may write between the baseline and subscription.
+     * [onSubscribed] is the readiness edge used by [start]. Keeping this collector private prevents callers
+     * from bypassing that method's seeded-and-subscribed readiness barrier.
      */
-    suspend fun run(onSubscribed: () -> Unit = {}) = coroutineScope {
+    private suspend fun run(onSubscribed: () -> Unit) = coroutineScope {
         seed()
 
         // Edge detection must never wait for an endpoint. One delivery can spend 20 seconds per device;

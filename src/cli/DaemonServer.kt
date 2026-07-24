@@ -2,6 +2,8 @@ package io.kotgent.cli
 
 import io.kotgent.push.PushStore
 import io.kotgent.transport.KotgentServer
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /**
  * The optional push pieces retained for one daemon run: the route dependencies plus their transport
@@ -36,11 +38,14 @@ suspend fun startDaemonServer(
     return try {
         DaemonServer(createServer(push).start(), push)
     } catch (e: Throwable) {
-        try {
-            push?.close?.invoke()
-        } catch (_: Throwable) {
-            // Preserve the bind/create failure: push is optional, and cleanup diagnostics cannot replace
-            // the error the daemon is about to report as its reason for not starting.
+        withContext(NonCancellable) {
+            try {
+                push?.close?.invoke()
+            } catch (closeFailure: Throwable) {
+                // The bind/create failure remains primary, but a failed cleanup can leave the push
+                // transport open and must remain visible to diagnostics.
+                e.addSuppressed(closeFailure)
+            }
         }
         throw e
     }

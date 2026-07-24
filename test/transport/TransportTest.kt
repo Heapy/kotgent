@@ -50,8 +50,10 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -64,11 +66,14 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.serialization.builtins.ListSerializer
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -145,6 +150,50 @@ class TransportTest {
                 SessionId(created.id),
                 sent.receive(),
                 "the notifier assembled before bind observes the first post-bind attention transition",
+            )
+        }
+    }
+
+    @Test
+    fun failedServerStartupCompletesPushCleanupAndPreservesItsFailure() = runBlocking {
+        withTimeout(20_000) {
+            val primary = IllegalStateException("server creation failed")
+            val closeFailure = IllegalArgumentException("push close failed")
+            val cleanupCompleted = CompletableDeferred<Unit>()
+            val observed = CompletableDeferred<Throwable>()
+            val startup = launch {
+                try {
+                    startDaemonServer(
+                        assemblePush = {
+                            currentCoroutineContext()[Job]!!.cancel()
+                            DaemonPush(
+                                store = object : PushStore {
+                                    override suspend fun list(): List<PushSubscription> = emptyList()
+                                    override suspend fun save(subscription: PushSubscription) {}
+                                    override suspend fun remove(endpoint: String) {}
+                                },
+                                publicKey = { "unused" },
+                                close = {
+                                    yield()
+                                    cleanupCompleted.complete(Unit)
+                                    throw closeFailure
+                                },
+                            )
+                        },
+                        createServer = { throw primary },
+                    )
+                } catch (e: Throwable) {
+                    observed.complete(e)
+                }
+            }
+
+            val failure = observed.await()
+            startup.join()
+            assertTrue(cleanupCompleted.isCompleted, "suspending cleanup completes in a cancelled startup coroutine")
+            assertTrue(failure === primary, "the server startup failure remains primary")
+            assertTrue(
+                failure.suppressedExceptions.any { it === closeFailure },
+                "the push cleanup failure is attached to the primary error: ${failure.suppressedExceptions}",
             )
         }
     }

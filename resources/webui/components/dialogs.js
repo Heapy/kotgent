@@ -235,6 +235,12 @@ const LEVEL_LABELS = [
   "4 — four levels deep",
 ];
 
+const TERMINAL_FONT_LABELS = new Map([
+  [11, "Small"],
+  [13, "Medium"],
+  [16, "Large"],
+]);
+
 export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
   const [basePath, setBasePath] = useState(prefs.basePath);
   const [level, setLevel] = useState(String(prefs.groupingLevel));
@@ -300,9 +306,9 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
           <span>Terminal font size</span>
           <select id="prefs-terminal-font-size" value=${fontSize}
                   onChange=${(e) => setFontSize(e.target.value)}>
-            ${TERMINAL_FONT_SIZES.map((size, index) => html`
+            ${TERMINAL_FONT_SIZES.map((size) => html`
               <option key=${size} value=${String(size)}>
-                ${["Small", "Medium", "Large"][index] + " — " + size + " px"}
+                ${(TERMINAL_FONT_LABELS.get(size) || "Custom") + " — " + size + " px"}
               </option>
             `)}
           </select>

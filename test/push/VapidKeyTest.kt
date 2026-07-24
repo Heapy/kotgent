@@ -10,8 +10,10 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import platform.posix.fclose
+import platform.posix.UF_IMMUTABLE
+import platform.posix.chflags
 import platform.posix.chmod
+import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fputs
 import platform.posix.getenv
@@ -152,6 +154,30 @@ class VapidKeyTest {
             assertEquals(keyPath, VapidKey(keyPath = keyPath).ensureKeyFile())
 
             assertEquals(0b110_000_000, fileMode(keyPath), "adopting an old PEM restores the 0600 invariant")
+        }
+    }
+
+    @Test
+    fun anExistingPemReportsWhyItCannotBeHardened() = runBlocking {
+        withTimeout(20_000) {
+            writeFile(
+                keyPath,
+                "-----BEGIN EC PRIVATE KEY-----\nexisting\n-----END EC PRIVATE KEY-----\n",
+            )
+            assertEquals(0, chmod(keyPath, 0b110_100_100.convert()), "precondition: chmod existing PEM to 0644")
+            if (chflags(keyPath, UF_IMMUTABLE.convert()) != 0) return@withTimeout
+            try {
+                assertTrue(chmod(keyPath, 0b110_000_000.convert()) != 0, "precondition: chmod fails")
+                val failure = assertFailsWith<VapidKeyException> {
+                    VapidKey(keyPath = keyPath).ensureKeyFile()
+                }
+                assertTrue(
+                    failure.message!!.contains("chmod 0600 failed:"),
+                    "the syscall failure is preserved for diagnosis: ${failure.message}",
+                )
+            } finally {
+                chflags(keyPath, 0.convert())
+            }
         }
     }
 
