@@ -6,6 +6,7 @@ import io.kotgent.pty.Subscriber
 import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.tmux.Tmux
+import io.kotgent.tmux.tmuxCommand
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
@@ -154,19 +155,29 @@ private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits onl
  *
  * Uses the throwaway `-L kotgent-test` socket (never the real `kotgent` one), like the tmux tests
  * in the suite, and kills its session in teardown.
+ *
+ * **This check is what starts the ptycheck run's tmux server**, so its isolation is the one that
+ * decides the whole file's. `-L` labels the SOCKET, not the CONFIG: without `-f /dev/null` this
+ * `new-session` would parse the developer's `~/.tmux.conf`, and one with `set -g destroy-unattached
+ * on` would have tmux tear the session down the instant the attach below closes — failing the
+ * "should outlive the attach" assertion on a machine-specific setting the fixture never mentions.
+ * `main()` runs this check first and `-f` only applies to the invocation that STARTS a server, so
+ * the `-f` on every later call here is inert while this server lives; they carry it so no call site
+ * has to know which one came first.
  */
 private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spawned pts") {
     val tmux = which("tmux") ?: skip("tmux is not on PATH")
     val socket = TEST_SOCKET
     val session = "kt-ptycheck"
+    val target = "${q(tmux)} -f /dev/null -L $socket"
 
-    sh("${q(tmux)} -L $socket kill-session -t $session")
-    val created = sh("${q(tmux)} -L $socket new-session -d -s $session -x 80 -y 24 /bin/cat")
+    sh("$target kill-session -t $session")
+    val created = sh("$target new-session -d -s $session -x 80 -y 24 /bin/cat")
     expect(created == 0) { "could not create the tmux fixture session (exit=$created)" }
 
     try {
         val pty = Pty.open(
-            command = listOf(tmux, "-L", socket, "attach", "-t", session),
+            command = tmuxCommand(tmux, socket, listOf("attach", "-t", session)),
             // tmux needs a usable TERM and a PATH; Pty.open defaults to an EMPTY environment.
             env = mapOf("TERM" to "xterm-256color", "PATH" to "/usr/bin:/bin:/usr/sbin:/sbin"),
         )
@@ -179,10 +190,10 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
         }
 
         // Detaching (closing the attach) must leave the tmux session — and its `cat` — alive.
-        val alive = sh("${q(tmux)} -L $socket has-session -t $session")
+        val alive = sh("$target has-session -t $session")
         expect(alive == 0) { "the tmux session should outlive the attach (has-session exit=$alive)" }
     } finally {
-        sh("${q(tmux)} -L $socket kill-session -t $session")
+        sh("$target kill-session -t $session")
     }
 }
 
@@ -197,11 +208,13 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
  * only a size set before the client's startup `TIOCGWINSZ` ever took effect.
  *
  * Needs a real pty AND a real tmux client, so it cannot live in the suite. Throwaway `-L kotgent-test`
- * socket, session killed in teardown.
+ * socket, session killed in teardown. `-f /dev/null` rides along for the same reason as everywhere
+ * else; here it is normally inert, because [tmuxAttachRunsOnTheSpawnedPts] runs first and has already
+ * started the server (see its KDoc).
  */
 private fun resizeReachesARunningTmuxAttach() = check("a resize reaches a running tmux attach") {
     val tmux = which("tmux") ?: skip("tmux is not on PATH")
-    val target = "${q(tmux)} -L $TEST_SOCKET"
+    val target = "${q(tmux)} -f /dev/null -L $TEST_SOCKET"
     val session = "kt-ptycheck-resize"
 
     sh("$target kill-session -t $session")
@@ -210,7 +223,7 @@ private fun resizeReachesARunningTmuxAttach() = check("a resize reaches a runnin
 
     try {
         val pty = Pty.open(
-            command = listOf(tmux, "-L", TEST_SOCKET, "attach", "-t", session),
+            command = tmuxCommand(tmux, TEST_SOCKET, listOf("attach", "-t", session)),
             env = mapOf("TERM" to "xterm-256color", "PATH" to "/usr/bin:/bin:/usr/sbin:/sbin"),
             cols = 80,
             rows = 24,

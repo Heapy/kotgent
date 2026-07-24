@@ -360,14 +360,21 @@ Verified inventory (revision 1 had this wrong — four sites are string-interpol
 | 169, 213 | `Pty.open(command = listOf(tmux, "-L", …))` | add |
 | 249 | `Tmux(socket = TEST_SOCKET)` | **leave — covered transitively by Task 2** |
 
-- [ ] hoist a `val target = "${q(tmux)} -f /dev/null -L $socket"` in `tmuxAttachRunsOnTheSpawnedPts` and use
+- [x] hoist a `val target = "${q(tmux)} -f /dev/null -L $socket"` in `tmuxAttachRunsOnTheSpawnedPts` and use
       it for lines 163/164/182/185
-- [ ] add `-f /dev/null` to the `target` at 204 and to both `Pty.open` argv lists (169, 213)
-- [ ] comment the motive: `main()` runs `tmuxAttachRunsOnTheSpawnedPts` first, so line 164 is what starts
+- [x] add `-f /dev/null` to the `target` at 204 and to both `Pty.open` argv lists (169, 213)
+      (the two argv lists now go through `tmuxCommand(tmux, socket, listOf("attach", "-t", session))`
+      rather than re-spelling the flags — same argv, and the fixture cannot drift from the shared
+      constant; ptycheck already depends on the root module)
+- [x] comment the motive: `main()` runs `tmuxAttachRunsOnTheSpawnedPts` first, so line 164 is what starts
       the server; a developer with `destroy-unattached on` fails the "session outlives the attach"
       assertion at line 183, and a later `-f` is inert while that server lives
-- [ ] run the binary directly (terminates, only touches `-L kotgent-test`) and confirm every check passes
-- [ ] run `./kotlin build && ./kotlin test` — `PtyTest` must still exec ptycheck and see exit 0
+      (recorded in that check's KDoc, with a back-reference from `resizeReachesARunningTmuxAttach`)
+- [x] run the binary directly (terminates, only touches `-L kotgent-test`) and confirm every check passes
+      (`build/tasks/_ptycheck_linkMacosArm64Debug/ptycheck.kexe` — `SUMMARY total=8 failed=0 skipped=0`,
+      exit 0)
+- [x] run `./kotlin build && ./kotlin test` — `PtyTest` must still exec ptycheck and see exit 0
+      (454 run / 454 passed / 0 skipped; `tmux -L kotgent-test kill-server` reports "no server running")
 
 ### Task 6: Verify acceptance criteria
 
