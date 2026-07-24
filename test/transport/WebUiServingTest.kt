@@ -87,6 +87,13 @@ class WebUiServingTest {
         assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
         assertTrue(body.contains("startSession"), "app.js can create sessions")
         assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
+        // The unread-badge wiring. There is no JS harness, so these greps are what stops the whole feature
+        // from being deleted with a green suite: the guard, its POST target, and the visibility trigger.
+        assertTrue(body.contains("markReadIfViewing"), "app.js marks the viewed session read")
+        assertTrue(body.contains("/read"), "…by POSTing the displayed seq to the mark-read route")
+        assertTrue(body.contains("visibilitychange"), "…and re-checks when the tab becomes visible again")
+        // The per-session throttle Map is module-level and long-lived; this page stays open for days.
+        assertTrue(body.contains("pruneReadPosters"), "…and drops the throttle of a session that vanished")
         assertContentTypeContains(resp, "javascript")
     }
 
@@ -133,6 +140,7 @@ class WebUiServingTest {
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
+            "/lib/throttle.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/dialogs.js",
         )) {
             val resp = ctx.get(path)
@@ -146,6 +154,12 @@ class WebUiServingTest {
         assertTrue(
             ctx.get("/lib/prefs.js").bodyAsText().contains("export function loadPrefs"),
             "the stored preferences are exported",
+        )
+        // app.js imports this by name — a rename (or an empty file) would break the entire SPA at load
+        // time, which the 200 + content-type loop above cannot see.
+        assertTrue(
+            ctx.get("/lib/throttle.js").bodyAsText().contains("export function throttleLeading"),
+            "the mark-read throttle is exported under the name app.js imports",
         )
     }
 

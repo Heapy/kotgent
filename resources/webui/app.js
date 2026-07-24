@@ -32,6 +32,7 @@ import { apiRequest, errorMessage, wsUrl } from "./lib/api.js";
 import { loadPrefs, persistPrefs } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
 import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
+import { throttleLeading } from "./lib/throttle.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
 import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./components/dialogs.js";
@@ -43,6 +44,76 @@ function deadHint(state) {
   return state === "resumable"
     ? "This session can be resumed."
     : "This session is " + stateBadge(state).label + ". Resume it to continue.";
+}
+
+/**
+ * One throttled poster PER session id. A single shared throttle would silently drop a pending mark for
+ * session A the moment a call for B superseded it inside the window, leaving A with a residual badge until
+ * it is selected again — the /events heartbeat only re-fires for the ACTIVE session.
+ *
+ * Bounded by [pruneReadPosters] whenever the session list is refreshed: this page is meant to stay open for
+ * days on a machine that keeps creating sessions, and each entry can hold a live `setTimeout`.
+ */
+const readPosters = new Map();
+
+/**
+ * Drop the posters of sessions GET /sessions no longer lists. Insurance, not a live path: nothing removes a
+ * session row today (marking one "done" archives it, and the list returns archived rows too), so this
+ * normally deletes nothing — it mirrors the setActiveId/setAttachedId guards at its call site so the Map
+ * cannot grow without bound if that ever changes. A pruned poster's pending timer fires at most once more,
+ * into a request [postRead] swallows.
+ */
+function pruneReadPosters(ids) {
+  for (const id of readPosters.keys()) {
+    if (!ids.has(id)) readPosters.delete(id);
+  }
+}
+
+/**
+ * "I have seen this session through [seq]" — fire-and-forget, throttled to one request per window.
+ *
+ * The daemon persists the cursor and broadcasts the recomputed `unread` as an ordinary session_update, so
+ * nothing is zeroed locally: the server stays the single source of truth and every other client (phone,
+ * second browser) clears the same badge. A failed POST is swallowed on purpose — the next /events frame
+ * re-evaluates the guard and retries.
+ */
+function postRead(id, seq) {
+  let post = readPosters.get(id);
+  if (!post) {
+    post = throttleLeading((atSeq) => {
+      apiRequest("/sessions/" + encodeURIComponent(id) + "/read", {
+        method: "POST",
+        body: JSON.stringify({ seq: atSeq }),
+      }).catch(() => { /* the next /events frame retries */ });
+    });
+    readPosters.set(id, post);
+  }
+  post(seq);
+}
+
+/**
+ * Mark the session the user is looking at as read. Takes the three values the guard reads rather than a row,
+ * because two of its three callers do not have one: a `session_update` frame carries newer numbers than
+ * `sessionsRef` (which has not re-rendered yet), and only the visibility trigger looks a row up.
+ *
+ * Archived ("done") sessions are marked too — their rows are selectable and still draw the pill, so
+ * excluding them would leave a badge no click could ever clear; the emitted signal carries `archived`, which
+ * is what keeps them hidden (pinned by
+ * TransportTest.markingAnArchivedSessionReadDoesNotUnHideItInOtherClients).
+ *
+ * Called imperatively from the three triggers rather than from a `useEffect` on `[id, lastSeq, unread]`:
+ * when a POST fails those primitives do not change, so the 15 s resync re-sends EQUAL numbers and preact's
+ * `Object.is` dep check would skip the effect — a lost POST would never be retried, exactly when it matters
+ * most (a `needs_approval` session may emit no further event). Checking on every frame instead turns the
+ * existing resync into a heartbeat.
+ */
+function markReadIfViewing(id, unread, lastSeq) {
+  if (!id || !(unread > 0)) return;
+  // `visible` is the closest the platform gets: it stays true for an unfocused or occluded window, so a
+  // badge can clear while the user is in another app. `document.hasFocus()` would be stricter but also
+  // false whenever devtools has focus, which would look broken while debugging.
+  if (document.visibilityState !== "visible") return;
+  postRead(id, lastSeq);
 }
 
 function App() {
@@ -79,6 +150,8 @@ function App() {
       setAttachedId(null);
       setHint(deadHint(session.state));
     }
+    // From the row we were handed: `sessionsRef` may not list it yet (startSession selects what it created).
+    markReadIfViewing(session.id, session.unread, session.lastSeq);
   }, []);
 
   const selectSession = useCallback((id) => {
@@ -91,10 +164,12 @@ function App() {
       const list = await apiRequest("/sessions");
       setSessions(list);
       say(list.length + " session(s).");
-      // A session that vanished server-side must not stay selected or attached.
+      // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
+      // nor keep a mark-read throttle (and its timer) alive for the rest of the page's life.
       const ids = new Set(list.map((s) => s.id));
       setActiveId((id) => (id && !ids.has(id) ? null : id));
       setAttachedId((id) => (id && !ids.has(id) ? null : id));
+      pruneReadPosters(ids);
     } catch (e) {
       say("Could not load sessions: " + errorMessage(e), true);
     }
@@ -143,6 +218,12 @@ function App() {
               archived: msg.archived,
             }, msg.model != null ? { model: msg.model } : {}) // only the resync carries model; never blank it
           : s)));
+        // Both a live update and the 15 s resync land here, which makes this the mark-read heartbeat: a
+        // POST that was lost heals on the next frame. Judged on the frame's own numbers — `sessionsRef`
+        // has not caught up with the setSessions above yet.
+        if (msg.sessionId === activeRef.current) {
+          markReadIfViewing(msg.sessionId, msg.unread, msg.lastSeq);
+        }
       };
       socket.onclose = () => { if (!stopped) timer = setTimeout(connect, 2000); };
       socket.onerror = () => { /* surfaced via onclose */ };
@@ -158,6 +239,17 @@ function App() {
       }
     };
   }, [say]);
+
+  // Coming back to the tab is the third trigger: while it was hidden the guard suppressed every POST, so
+  // the badge kept counting — as it should — and now clears. Registered once; the handler reads refs.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+      if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   // --- actions ---------------------------------------------------------------------------------
 
