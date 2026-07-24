@@ -110,14 +110,12 @@ class KotgentServer(
             val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
             // Programmatic input: cancel copy-mode first (a wheel scroll by ANY viewer parks the shared
             // pane there, where tmux silently eats every keystroke), then write into the one upstream.
-            // The interactive terminal WS deliberately does NOT do this — see `Tmux.leaveCopyMode`.
+            // BOTH halves answer: `&&` short-circuits, so a pane that would eat the bytes is never written
+            // to, and a write that found no upstream (the lazy bridge with zero subscribers — the more
+            // common drop of the two) is reported instead of being answered `ok`. The interactive terminal
+            // WS deliberately does neither — see `Tmux.leaveCopyMode`.
             val inputSink: TerminalInputSink = { id, bytes ->
-                if (!sessionManager.leaveCopyMode(id)) {
-                    false
-                } else {
-                    registry.getOrCreate(id.value).write(bytes)
-                    true
-                }
+                sessionManager.leaveCopyMode(id) && registry.getOrCreate(id.value).write(bytes)
             }
             install(WebSockets)
             routing {

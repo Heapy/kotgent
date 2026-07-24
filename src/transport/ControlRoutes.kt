@@ -10,6 +10,7 @@ import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.UnsupportedAgentException
 import io.kotgent.store.EventStore
+import io.kotgent.tmux.TmuxCopyModeException
 import io.kotgent.tmux.TmuxException
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -39,13 +40,18 @@ val TRANSPORT_JSON: Json = Json {
  * [KotgentServer] (leave copy-mode, then write into the session's shared upstream), so [controlRoutes]
  * stays decoupled from the terminal fan-out plumbing (and unit tests can supply a recording sink).
  *
- * Returns **whether the bytes could actually be delivered**. This is a REST endpoint, so the caller
- * gets one answer and no terminal to look at: with `mouse on` forced, one wheel scroll by ANY viewer
- * puts the shared pane into copy-mode, where tmux routes every keystroke — including bytes written
- * into the attached client's pty — to the copy-mode key table and drops them. Answering `ok` there
- * would be the same silent swallow `Tmux.sendKeys`' cancel exists to prevent. So the sink cancels
- * copy-mode first and reports `false` when it provably could not, which [controlRoutes] turns into a
- * `409`.
+ * Returns **whether the bytes could actually be delivered**, over BOTH ways this path drops input
+ * silently. This is a REST endpoint, so the caller gets one answer and no terminal to look at:
+ *  - **no upstream** — the bridge is lazy, so with no terminal subscriber attached (no browser tab, no
+ *    `kotgent attach`) there is no `tmux attach` pty to write into and the bytes go nowhere. This is
+ *    the *common* drop, and [io.kotgent.pty.TerminalBridge.write] reports it;
+ *  - **copy-mode** — with `mouse on` forced, one wheel scroll by ANY viewer puts the shared pane into
+ *    copy-mode, where tmux routes every keystroke (including bytes written into the attached client's
+ *    pty) to the copy-mode key table and drops them, the same silent swallow `Tmux.sendKeys`' cancel
+ *    exists to prevent. The sink cancels copy-mode first and reports `false` when it provably could not.
+ *
+ * [controlRoutes] turns a `false` from either half into a `409` naming both — the sink answers one
+ * Boolean, so the endpoint does not pretend to know which of the two it was.
  */
 typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
 
@@ -149,12 +155,24 @@ fun Route.controlRoutes(
             return@post
         }
         // Raw terminal input. Read as text (UTF-8) — the primary binary input path is the terminal WS.
-        // `false` = the pane is stuck in copy-mode and tmux would have discarded the bytes; a caller
-        // with no terminal to look at must hear that instead of an unconditional `ok`.
-        if (!input(id, call.receiveText().encodeToByteArray())) {
+        val bytes = call.receiveText().encodeToByteArray()
+        // An empty body has nothing to deliver, so it must not reach the sink: the sink's copy-mode
+        // cancel is a SHARED-pane side effect, and running it here would yank every viewer of that pane
+        // out of their scrollback for a write that is a guaranteed no-op. `Tmux.sendKeys` guards the
+        // same way; this is the REST seam's half of that rule.
+        if (bytes.isEmpty()) {
+            call.respondText("ok")
+            return@post
+        }
+        // `false` = the bytes were provably NOT delivered — no terminal is attached (the upstream is
+        // lazy) or the pane is stuck in copy-mode and tmux discarded them. A caller with no terminal to
+        // look at must hear that instead of an unconditional `ok`. The two are not distinguished on the
+        // wire: the sink answers one Boolean, and both are fixed by the operator, not by the request.
+        if (!input(id, bytes)) {
             call.respondText(
-                "session ${id.value} is in tmux copy-mode and input was not delivered; " +
-                    "scroll the pane back to the bottom or press q in the terminal",
+                "input for session ${id.value} was not delivered: either no terminal is attached to it " +
+                    "or its pane is in tmux copy-mode; open a terminal for the session, scroll the pane " +
+                    "back to the bottom (or press q), then retry",
                 status = HttpStatusCode.Conflict,
             )
             return@post
@@ -224,6 +242,19 @@ fun Route.controlRoutes(
             // `resume` rebuilds the adapter from the stored kind; if that binary is no longer on the
             // daemon's PATH the builder throws this — same 400 + `kotgent install` hint as start, not a 500.
             call.respondText("action '$action' failed: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (_: TmuxCopyModeException) {
+            // `interrupt`'s Ctrl-C went to the copy-mode key table instead of the process (any viewer's
+            // wheel scroll parks the SHARED pane there). Caught BEFORE the TmuxException branch below —
+            // it is a subtype, and the two must not share a status: 400 tells a programmatic client the
+            // request was malformed and must not be retried, whereas this is transient and retryable, so
+            // it gets the same 409 + operator hint as `/input`. `interrupt` throws before it persists any
+            // derived state, so nothing was recorded for the keystroke tmux ate.
+            call.respondText(
+                "action '$action' was not delivered: session ${id.value}'s pane is in tmux copy-mode; " +
+                    "scroll the pane back to the bottom (or press q), then retry",
+                status = HttpStatusCode.Conflict,
+            )
             return@post
         } catch (e: TmuxException) {
             // e.g. resume's tmux new-session fails on a stale cwd: a bad request, not a 500.

@@ -138,6 +138,35 @@ class TerminalBridgeTest {
         b.close()
     }
 
+    /**
+     * [TerminalBridge.write] is the `POST /sessions/{id}/input` seam, and its Boolean is the whole
+     * reason that endpoint can answer honestly: the bridge is LAZY, so with no terminal subscriber
+     * attached there is no `tmux attach` upstream to write into and the bytes are dropped — the
+     * COMMON drop, more common than the copy-mode one. It used to be silent, with the REST caller
+     * told `ok`; it must be reported so the route can answer `409`.
+     */
+    @Test
+    fun theRestWriteSeamReportsWhetherTheBytesReachedAnUpstream() = bridgeTest { bridge, factory ->
+        assertFalse(bridge.write("nobody-home".encodeToByteArray()), "no subscriber = no upstream = not delivered")
+        assertEquals(0, factory.openCount, "and a bare write never opens one — only a subscriber does")
+
+        val a = bridge.subscribe()
+        assertTrue(bridge.write("landed".encodeToByteArray()), "with an upstream open the bytes are delivered")
+        assertEquals(listOf("landed"), factory.current.written.map { it.decodeToString() })
+
+        // A close racing the write makes the underlying pty write throw. The guard keeps that a clean
+        // `false` (not a 500), but it is still a drop and must not read as delivered.
+        factory.current.failWrites = true
+        assertFalse(bridge.write("thrown".encodeToByteArray()), "a write that threw was not delivered either")
+
+        // Empty input is vacuously delivered: there was nothing to lose. (The REST seam refuses an
+        // empty body even earlier, so it never gets here — see ControlRoutes.)
+        factory.current.failWrites = false
+        assertTrue(bridge.write(ByteArray(0)), "an empty write has nothing to deliver and nothing to lose")
+
+        a.close()
+    }
+
     @Test
     fun resizeUsesTheLastActivePolicy() = bridgeTest { bridge, factory ->
         val a = bridge.subscribe()

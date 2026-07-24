@@ -30,6 +30,13 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
     var closed: Boolean = false
         private set
 
+    /**
+     * When true, [write] throws — the stand-in for a pty whose master fd lost its child (a close racing
+     * the write). [Broadcaster.writeInput] guards the write, so this exercises the "not delivered"
+     * answer rather than a propagated exception.
+     */
+    var failWrites: Boolean = false
+
     /** Simulate the child writing [bytes] to the pty. */
     fun emit(bytes: ByteArray) {
         channel.trySend(bytes)
@@ -41,6 +48,7 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
     }
 
     override fun write(bytes: ByteArray) {
+        if (failWrites) throw IllegalStateException("fake pty write failed (closed master fd)")
         written.add(bytes)
     }
 

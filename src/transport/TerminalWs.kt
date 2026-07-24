@@ -68,6 +68,23 @@ class TerminalRegistry(
  *
  * [decision] Binary = terminal I/O, text = control. Keeping the two on distinct frame types avoids any
  * in-band escaping of raw pty bytes and matches xterm.js's natural binary transport.
+ *
+ * ## This path deliberately does NOT cancel copy-mode — and its known residual
+ * Input here goes straight into the shared upstream pty. Unlike the programmatic
+ * `POST /sessions/{id}/input` seam ([TerminalInputSink]), it does **not** call
+ * `Tmux.leaveCopyMode` first: this is a human at a terminal, and someone who scrolled back and then
+ * typed expects tmux's own behaviour, not to be yanked back to the bottom.
+ *
+ * **Recorded, NOT fixed here:** copy-mode is *shared pane* state, not per-client, and kotgent forces
+ * `mouse on` ([io.kotgent.tmux.TMUX_SERVER_OPTIONS]) — so one wheel scroll in browser tab A parks THE
+ * pane in copy-mode and every keystroke typed in tab B, or in `kotgent attach`, is routed to the
+ * copy-mode key table and dropped. Silent input loss, on the primary input path, with no error
+ * anywhere: the pty write succeeds, tmux exits 0, and nothing on this path can observe it (the
+ * `#{pane_in_mode}` read-back that makes `Tmux.sendKeys` safe is a tmux call, not something a pty write
+ * can carry). Cancelling unconditionally here is not the fix — it would break the deliberate behaviour
+ * above for the very operator who scrolled. A real fix needs the fan-out to know WHICH subscriber is in
+ * copy-mode (per-subscriber state in [io.kotgent.pty.Broadcaster], which is subscriber-agnostic about
+ * input today) so it can cancel for everyone else's keystrokes and not for theirs.
  */
 fun Route.terminalWs(registry: TerminalRegistry, store: EventStore, json: Json = TRANSPORT_JSON) {
     webSocket("/sessions/{id}/terminal") {

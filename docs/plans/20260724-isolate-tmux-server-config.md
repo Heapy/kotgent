@@ -113,6 +113,58 @@
 > tests' decoy `new-session` into the previous test's still-live server; it now uses
 > `killServerAndWait()` (bounded at 2 s, then silently gives up — the caller's own assertion is the
 > better error).
+>
+> **Revision 6 — the `/input` and `interrupt` contracts are made honest** (third review round,
+> critical-only; `mouse on` is unchanged and stays). Every finding was about *reporting*, not about the
+> option: each path could answer success for input tmux never delivered.
+>
+> 1. **`leaveCopyMode` reported "provably clear" for ANY non-zero exit** (`if (!r.isSuccess) return
+>    true`), conflating "nothing there" with "the call failed" — a wrong `tmuxPath`, a permission error,
+>    a half-dead server or an unparseable `display-message` all read as clear, and `/input` then answered
+>    `200 ok` for bytes tmux discarded. The parse path had the same hole (`paneModeFrom(r) == null` also
+>    yielded `true` via `!= true`). Now it routes the distinction through `isAbsence()` like every other
+>    method on the class: soft absence → `true`, any other failure → `false`, and only an ANSWERED `0`
+>    counts as clear.
+> 2. **The `TerminalInputSink` hardcoded `true` after the write.** `TerminalBridge.write` →
+>    `Broadcaster.writeInput` silently no-ops when NO subscriber is attached (the lazy bridge's default)
+>    and swallowed write errors with `runCatching` — a drop far more common than the copy-mode one, and
+>    `/input` still answered `ok`. Both now return `Boolean` (upstream present AND write succeeded) and
+>    the sink `&&`s it with the copy-mode cancel. The `409` names both causes, because the sink answers
+>    one Boolean and the endpoint does not pretend to know which it was. `Subscriber.write` deliberately
+>    keeps ignoring the answer: a subscriber holds the upstream open by existing.
+> 3. **An empty `POST /input` body still ran the copy-mode cancel** — a shared-pane side effect that
+>    yanks EVERY viewer out of their scrollback for a write `Broadcaster.writeInput` then drops on
+>    `bytes.isEmpty()` anyway. It now short-circuits to `ok` before the sink, the same guard
+>    `Tmux.sendKeys` already had.
+> 4. **The same tmux condition had two wire contracts**: `/input` answered `409` + hint, while
+>    `sendKeys`' copy-mode throw reached `POST /sessions/{id}/interrupt` as a plain `TmuxException` →
+>    `400`, which tells a programmatic client the request was malformed and must not be retried, and
+>    lost the operator hint. `sendKeys` now throws `TmuxCopyModeException : TmuxException`, caught ahead
+>    of the generic branch and mapped to `409` with the same hint.
+>
+> **Known residuals — recorded, deliberately NOT fixed in this branch.** Both follow from copy-mode and
+> client geometry being *pane/client* state under an N-subscriber fan-out with exactly ONE upstream
+> client, so neither is a local defect; both need per-subscriber state in `Broadcaster` (which is
+> subscriber-agnostic about input today), and the second also a rethink of the "last active" resize
+> policy. Written up in `TMUX_SERVER_OPTIONS`' KDoc ("Known residuals"), `terminalSeed`, `terminalWs`
+> and the CLAUDE.md tmux paragraph:
+>
+> - **(a) A wheel scroll in one viewer silently swallows another viewer's typing.** The interactive
+>   terminal WS deliberately does not cancel copy-mode (a human who scrolled back and then typed expects
+>   tmux's own behaviour), but copy-mode is *shared pane* state — so once browser tab A scrolls back,
+>   every keystroke typed in tab B or in `kotgent attach` goes to the copy-mode key table and is dropped
+>   with no error anywhere: the pty write succeeds and tmux exits 0. Silent input loss on the PRIMARY
+>   input path. Cancelling unconditionally there is not the fix — it breaks the deliberate behaviour for
+>   the operator who scrolled; a fix must know WHICH subscriber is in copy-mode.
+> - **(b) Only the subscriber that resized last has a fully live wheel.** `terminalSeed` arms mouse
+>   reporting for every subscriber, but tmux resolves a mouse event by (x,y) against the one upstream
+>   client's window and discards out-of-range ones; under "last active" resize that window belongs to
+>   whoever resized most recently, so a larger tab's wheel is dead over the lower/right part of its
+>   viewport.
+>
+> Suite: 460 → **465 run / 465 passed / 0 skipped** (a falsifying test per fix: `leaveCopyMode`'s four
+> unanswered shapes against `tmux` stubs, the bridge's delivery Boolean, the empty body that must not
+> touch the shared pane, and 409-vs-400 on `interrupt`); the CLAUDE.md baseline is updated to match.
 
 ## Overview
 

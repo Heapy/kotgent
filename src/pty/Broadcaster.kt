@@ -149,14 +149,23 @@ class Broadcaster(
     }
 
     /**
-     * Route input from a subscriber to the single shared upstream (dropped if none is open). The
-     * [PtyHandle.write] runs OUTSIDE the lock (it can block on a full pty), so a concurrent close may
-     * race it; the write is guarded so a closed upstream is a clean no-op rather than a thrown 500.
+     * Route input from a subscriber to the single shared upstream. The [PtyHandle.write] runs OUTSIDE
+     * the lock (it can block on a full pty), so a concurrent close may race it; the write is guarded so
+     * a closed upstream is a clean no-op rather than a thrown 500.
+     *
+     * **Returns whether the bytes reached the upstream** — `false` when there was no upstream to write
+     * to (the lazy bridge's default: with zero subscribers no `tmux attach` is open, see
+     * [TerminalBridge.write]) or when the write itself threw (a racing close). Both are silent drops,
+     * and the programmatic `POST /sessions/{id}/input` seam must answer for them rather than report
+     * `ok` for input nothing ever received; the interactive terminal WS ignores the answer, because a
+     * subscriber writing always has its own upstream open. Empty input is a vacuous `true`: there was
+     * nothing to deliver, so nothing was lost (and the REST seam refuses an empty body before it gets
+     * here).
      */
-    suspend fun writeInput(bytes: ByteArray) {
-        if (bytes.isEmpty()) return
-        val up = mutex.withLock { upstream } ?: return
-        runCatching { up.write(bytes) }
+    suspend fun writeInput(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return true
+        val up = mutex.withLock { upstream } ?: return false
+        return runCatching { up.write(bytes) }.isSuccess
     }
 
     /** Apply a subscriber resize with the "last active" policy and remember it for re-opens. */
@@ -236,8 +245,16 @@ class Subscriber internal constructor(private val broadcaster: Broadcaster) {
     /** Terminal output for this client: the capture-pane seed first, then live deltas. */
     val output: ReceiveChannel<ByteArray> get() = sink
 
-    /** Send terminal input from this client to the shared upstream. */
-    suspend fun write(bytes: ByteArray): Unit = broadcaster.writeInput(bytes)
+    /**
+     * Send terminal input from this client to the shared upstream.
+     *
+     * Deliberately drops [Broadcaster.writeInput]'s delivery answer: a subscriber holds the upstream
+     * open by existing, so the "no upstream" case this client could act on cannot happen to it. The
+     * REST seam, which writes without being a subscriber, is the caller that needs the Boolean.
+     */
+    suspend fun write(bytes: ByteArray) {
+        broadcaster.writeInput(bytes)
+    }
 
     /** Resize the shared upstream (last-active policy). */
     suspend fun resize(cols: Int, rows: Int): Unit = broadcaster.applyResize(cols, rows)

@@ -218,9 +218,27 @@ on a pane in no mode so it can be chained at all, and there is deliberately no r
 quits some agent TUIs. Do not weaken that chain while `mouse on` is set;
 `TmuxTest.sendKeysReachesTheProcessEvenFromCopyMode` and `…FailsLoudlyWhenTheCopyModeCancelIsDefeated` are
 its two halves, and copy-mode auto-exiting when the wheel reaches the bottom covers only the operator who
-scrolls back down. The same hazard reaches `POST /sessions/{id}/input`, which cannot chain (its bytes go
-into the shared upstream pty), so it calls `Tmux.leaveCopyMode` first and answers **409** when that
-provably fails instead of `ok` for discarded input; the interactive terminal WS deliberately does neither.
+scrolls back down. A swallowed `send-keys` throws `TmuxCopyModeException` — a **subtype** of
+`TmuxException` so the action route can answer it **409 + hint** (transient, retryable) instead of the
+plain `TmuxException`'s 400 ("malformed, do not retry"); catch it *before* the `TmuxException` branch.
+The same hazard reaches `POST /sessions/{id}/input`, which cannot chain (its bytes go into the shared
+upstream pty), so it calls `Tmux.leaveCopyMode` first and answers **409** when that provably fails instead
+of `ok` for discarded input; the interactive terminal WS deliberately does neither. Two rules keep that
+endpoint honest: `leaveCopyMode` answers `true` **only** for an answered `#{pane_in_mode}` of `0` or a
+soft absence — a wrong `tmuxPath`, a half-dead server or unparseable output is `false`, because an
+unanswered cancel is not proof the pane will deliver — and the sink `&&`s that with
+`TerminalBridge.write`, which now returns whether the bytes reached an upstream at all (the bridge is
+lazy: with **no** terminal subscriber attached there is nothing to write to, and that drop is far more
+common than the copy-mode one). An EMPTY body short-circuits to `ok` before either runs: cancelling
+copy-mode is a shared-pane side effect that would yank every viewer out of their scrollback for a
+guaranteed no-op (`Tmux.sendKeys` guards the same way).
+**Two residuals are recorded, not fixed** (`TMUX_SERVER_OPTIONS`' "Known residuals", plus `terminalSeed`
+and `terminalWs`): (1) because copy-mode is shared *pane* state and the WS deliberately does not cancel,
+a wheel scroll in browser tab A silently swallows everything typed in tab B or `kotgent attach` — silent
+loss on the primary input path; (2) tmux resolves a mouse event against the ONE upstream client's window,
+so under "last active" resize only the subscriber that resized last has a fully live wheel and a larger
+tab's is dead over the lower/right of its viewport. Both need per-subscriber state in `Broadcaster`
+(subscriber-agnostic about input today) — and (2) also a resize-policy rethink — so neither is a local fix.
 Two smaller obligations ride along: `kotgent attach` writes `TERMINAL_MODE_RESET` in the same `finally` as
 `tty.restore()` — all three mouse trackers (`1003`/`1002`/`1000`) **before** the SGR encoding `1006`, or a
 surviving tracker degrades to the legacy X10 encoding, plus `2004`/`2031`/`1049`/`25` which a tmux client

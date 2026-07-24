@@ -187,7 +187,10 @@ class TmuxTest {
                 assertEquals("1", paneFormat("kt-cm2", "#{pane_in_mode}"), "the pane must be in copy-mode first")
 
                 val defeated = Tmux(socket = tmux.socket, tmuxPath = writeCancelDroppingWrapper(dir))
-                val thrown = assertFailsWith<TmuxException> {
+                // The SUBTYPE is pinned here, not just `TmuxException`: the transport's action route
+                // keys its 409-instead-of-400 on exactly this type (a swallowed send is transient and
+                // retryable, unlike every other tmux failure).
+                val thrown = assertFailsWith<TmuxCopyModeException> {
                     defeated.sendKeys("cm2", "COPYMODE-LOST\n".encodeToByteArray())
                 }
                 assertTrue(
@@ -227,6 +230,56 @@ class TmuxTest {
             assertEquals("0", paneFormat("kt-lcm", "#{pane_in_mode}"), "and it really left copy-mode")
 
             assertTrue(tmux.leaveCopyMode("no-such-session"), "an unknown session on a live server is graceful")
+        }
+    }
+
+    /**
+     * The fourth answer, and the one that used to be wrong: a call that **failed** is not evidence the
+     * pane is clear. `leaveCopyMode` returned `true` on ANY non-zero exit, so a wrong `tmuxPath`, a
+     * permission error, a half-dead server or an unparseable `display-message` all read as "provably
+     * clear" — and `POST /sessions/{id}/input` then answered `200 ok` for bytes tmux discarded. Only a
+     * SOFT absence (the `isAbsence()` set every other method here normalizes) may read as `true`.
+     *
+     * Runs against `tmux` stand-ins rather than a real server, so it needs no tmux and no skip-guard:
+     * each stub reproduces one exit-status/stdout shape the real binary can produce.
+     */
+    @Test
+    fun leaveCopyModeRefusesWhenTheCancelWasNotAnswered() {
+        val dir = makeTempDir()
+        try {
+            val hardFailure = "echo 'tmux: connection failed' >&2\nexit 1\n"
+            assertFalse(
+                Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-broken", hardFailure))
+                    .leaveCopyMode("lcm-fail"),
+                "a real failure proves nothing about the pane and must not be reported as clear",
+            )
+
+            assertFalse(
+                Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-mute", "exit 0\n"))
+                    .leaveCopyMode("lcm-mute"),
+                "exit 0 with no #{pane_in_mode} answer is unanswered, not clear",
+            )
+
+            assertFalse(
+                Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-noise", "echo not-a-mode\nexit 0\n"))
+                    .leaveCopyMode("lcm-noise"),
+                "unparseable read-back output is unanswered, not clear",
+            )
+
+            val absence = "echo 'no server running on /tmp/tmux-501/kotgent-test' >&2\nexit 1\n"
+            assertTrue(
+                Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-absent", absence))
+                    .leaveCopyMode("lcm-gone"),
+                "a soft absence stays graceful — there is no pane left to swallow anything",
+            )
+
+            assertTrue(
+                Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-clear", "echo 0\nexit 0\n"))
+                    .leaveCopyMode("lcm-clear"),
+                "an ANSWERED 0 is the one positive case",
+            )
+        } finally {
+            removeTempDir(dir)
         }
     }
 
@@ -559,6 +612,18 @@ class TmuxTest {
             "exec $real \"$@\"\n"
         writeFile(path, script)
         assertTrue(ProcessRunner.run(listOf("chmod", "0700", path)).isSuccess, "chmod on the tmux wrapper failed")
+        return path
+    }
+
+    /**
+     * A `tmux` stand-in that runs [body] instead of tmux, so a single exit-status/stdout shape can be
+     * driven through production [Tmux] code without a server. Ignores its argv on purpose — what is
+     * under test is how the wrapper's RESULT is classified, not what was asked of it.
+     */
+    private fun writeStubTmux(dir: String, name: String, body: String): String {
+        val path = "$dir/$name"
+        writeFile(path, "#!/bin/sh\n$body")
+        assertTrue(ProcessRunner.run(listOf("chmod", "0700", path)).isSuccess, "chmod on the tmux stub failed")
         return path
     }
 

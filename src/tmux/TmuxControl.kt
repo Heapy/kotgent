@@ -32,9 +32,10 @@ interface TmuxControl {
     fun sendKeys(id: String, bytes: ByteArray)
 
     /**
-     * Leave copy-mode on `kt-<id>`'s active pane and verify it; `true` when the pane is afterwards
-     * provably not in a mode (or there is no pane left to ask about), `false` when it still is and
-     * input would be swallowed by the copy-mode key table.
+     * Leave copy-mode on `kt-<id>`'s active pane and verify it; `true` only when the pane afterwards
+     * *answered* that it is not in a mode (or there is no pane left to ask about), `false` when it
+     * still is — and equally when the question could not be answered at all, because an unanswered
+     * cancel is not evidence that input will land.
      *
      * On the seam because it guards **every programmatic input path**, not just [sendKeys]: the
      * `POST /sessions/{id}/input` REST endpoint writes into the shared upstream pty and would

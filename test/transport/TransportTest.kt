@@ -447,6 +447,85 @@ class TransportTest {
         }
     }
 
+    /**
+     * The OTHER way this endpoint drops input, and the more common one: the terminal bridge is lazy, so
+     * with no subscriber attached there is no `tmux attach` upstream and the bytes go nowhere. The sink
+     * used to hardcode `ok` after the write, so a `POST /input` at a session nobody is watching was
+     * answered `200` and silently discarded.
+     */
+    @Test
+    fun postInputRefusesWhenNoTerminalIsAttachedToTheSession() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody("nobody-is-watching")
+        }
+        assertEquals(HttpStatusCode.Conflict, resp.status, "input with no upstream to reach must not answer ok")
+        assertTrue("not delivered" in resp.bodyAsText(), "and it must say so: ${resp.bodyAsText()}")
+        assertTrue(
+            ctx.ptyFactory.opened.tryReceive().isFailure,
+            "and a write never opens an upstream — only a terminal subscriber does",
+        )
+    }
+
+    /**
+     * An empty body has nothing to deliver, so it must not reach the sink at all: the copy-mode cancel
+     * is a SHARED-pane side effect that yanks every viewer of that pane out of their scrollback, and
+     * running it for a write that is a guaranteed no-op is pure collateral damage. (`Tmux.sendKeys`
+     * guards the same way; this is the REST seam's half of that rule.)
+     */
+    @Test
+    fun postInputWithAnEmptyBodyNeverTouchesTheSharedPane() = withServer { ctx ->
+        val created = ctx.startSession()
+        // Both failure modes armed: no terminal attached AND a pane that cannot be cleared. An empty
+        // body must still answer ok, because neither one can lose anything that was never sent.
+        ctx.tmux.copyModeStuck = true
+
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody("")
+        }
+        assertEquals(HttpStatusCode.OK, resp.status, "an empty write has nothing to fail to deliver")
+        assertEquals(
+            emptyList(),
+            ctx.tmux.copyModeCancels,
+            "and it never ran the shared-pane copy-mode cancel",
+        )
+    }
+
+    /**
+     * One tmux condition, one wire contract. A swallowed `send-keys` reaching `interrupt` used to be a
+     * plain `TmuxException` → **400**, which tells a programmatic client the request was malformed and
+     * must not be retried — while the identical condition on `/input` answered **409** with an operator
+     * hint. The copy-mode case now has its own exception type and gets the 409 + hint on both routes;
+     * every other tmux failure stays a 400.
+     */
+    @Test
+    fun interruptAnswers409ForCopyModeAnd400ForAnyOtherTmuxFailure() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        ctx.tmux.sendKeysCopyModeStuck = true
+        val conflict = ctx.post("/sessions/${created.id}/interrupt")
+        assertEquals(HttpStatusCode.Conflict, conflict.status, "a swallowed Ctrl-C is retryable, not malformed")
+        assertTrue("copy-mode" in conflict.bodyAsText(), "and it must carry the operator hint: ${conflict.bodyAsText()}")
+        assertEquals(
+            "running",
+            ctx.getSession(created.id).state,
+            "and the projection must NOT record an interrupt tmux never delivered",
+        )
+
+        ctx.tmux.sendKeysCopyModeStuck = false
+        ctx.tmux.sendKeysFailure = "tmux send-keys for '${created.id}' failed: bad target"
+        val badRequest = ctx.post("/sessions/${created.id}/interrupt")
+        assertEquals(HttpStatusCode.BadRequest, badRequest.status, "an ordinary tmux failure stays a 400")
+
+        ctx.tmux.sendKeysFailure = null
+        val ok = ctx.post("/sessions/${created.id}/interrupt")
+        assertEquals(HttpStatusCode.OK, ok.status, "and a delivered interrupt still succeeds")
+        assertEquals("ready", ctx.getSession(created.id).state, "which is when the projection may record it")
+    }
+
     // ---- 4. missing / wrong token → 401 on a control call AND on a WS handshake ----
 
     @Test

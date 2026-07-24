@@ -113,6 +113,31 @@ data class TmuxOption(
  * `macOptionClickForcesSelection` so text selection survives — Option-drag on macOS, Shift-drag
  * elsewhere.
  *
+ * ## Known residuals — recorded, NOT fixed here
+ * Both follow from the same root: copy-mode and the client geometry are **pane/client state under an
+ * N-subscriber fan-out**, and kotgent holds exactly ONE upstream client for all of them. Neither is an
+ * implementation defect that a local change fixes; both would need per-subscriber state in
+ * [io.kotgent.pty.Broadcaster] (which today is deliberately subscriber-agnostic about input) plus, for
+ * the second, a rethink of the "last active" resize policy. Alongside the `1003h` residual on
+ * [io.kotgent.pty.TERMINAL_MOUSE_ENABLE]:
+ *
+ *  1. **A wheel scroll in one viewer silently swallows another viewer's typing.** The interactive
+ *     terminal WS deliberately does not cancel copy-mode (see above), but copy-mode is *shared pane*
+ *     state — so once browser tab A scrolls back, every keystroke typed in tab B or in `kotgent attach`
+ *     goes to the copy-mode key table and is dropped, with no error anywhere. That is silent input loss
+ *     on the PRIMARY input path, worse than the `/input` case this option's guards cover, and the
+ *     reason it is not simply "cancel on the WS too" is that doing so would yank the scrolled-back
+ *     human out of their own scrollback the moment anyone else types. A fix has to know WHICH
+ *     subscriber scrolled — i.e. per-subscriber mode state in the fan-out — before it can cancel for
+ *     everyone else and not for them. See [io.kotgent.transport.terminalWs].
+ *  2. **Only the subscriber that resized last has a fully live wheel.** The seed arms mouse reporting
+ *     for every subscriber ([io.kotgent.pty.terminalSeed]), but tmux resolves a mouse event by (x,y)
+ *     against the ONE upstream client's window and discards out-of-range ones. Under "last active"
+ *     resize that window is the geometry of whoever resized most recently, so a larger tab's wheel is
+ *     dead over the lower/right part of its viewport. A fix needs a resize policy that does not make
+ *     one subscriber's geometry authoritative (or per-subscriber clients, which would break the
+ *     single-upstream invariant outright).
+ *
  * **`focus-events` is deliberately NOT here.** Focus tracking is meaningless under kotgent's fan-out
  * — one upstream client serves N subscribers (browser, IDE, CLI), so "is the terminal focused" has
  * no single answer, and kotgent already has strictly better signals (the bridge's subscriber count,

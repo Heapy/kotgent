@@ -89,19 +89,24 @@ class TerminalBridge(
      * Routes through the same [Broadcaster] as attached subscribers' input, so it reaches the one shared
      * `tmux attach` upstream and stays consistent with the terminal-WS input path.
      *
-     * [decision] Because the upstream is lazy, this reaches the agent only while a terminal is attached
-     * (a subscriber is present); with none attached it is a no-op — the browser's normal flow keeps a
-     * terminal-WS attached, and terminal input over that WS is the primary path. (`tmux send-keys` would
-     * deliver subscriber-independently, but bypasses the single-upstream fan-out; the Broadcaster path is
-     * chosen so `/input` and terminal-WS input are one channel.)
+     * **Returns whether the bytes reached the upstream.** [decision] Because the upstream is lazy, this
+     * reaches the agent only while a terminal is attached (a subscriber is present); with none attached
+     * there is nothing to write to and this answers `false` rather than dropping silently — that is the
+     * COMMON drop, far more common than copy-mode, and `POST /sessions/{id}/input` turns it into a `409`
+     * instead of `ok`. The browser's normal flow keeps a terminal-WS attached, and terminal input over
+     * that WS is the primary path. (`tmux send-keys` would deliver subscriber-independently, but bypasses
+     * the single-upstream fan-out; the Broadcaster path is chosen so `/input` and terminal-WS input are
+     * one channel.)
      *
      * Leaving copy-mode is the CALLER's job, not this method's: bytes written into the upstream pty are
      * routed to tmux's copy-mode key table and dropped whenever the shared pane is in a mode (one wheel
-     * scroll by any viewer, since kotgent forces `mouse on`). The programmatic REST seam calls
-     * `Tmux.leaveCopyMode` before it gets here and refuses when that fails; the interactive terminal WS
-     * deliberately does not — a human who scrolled back and then typed expects tmux's own behaviour.
+     * scroll by any viewer, since kotgent forces `mouse on`) — and tmux gives the *pty* write no way to
+     * see that, which is why the cancel is a separate, verified tmux call. The programmatic REST seam
+     * calls `Tmux.leaveCopyMode` before it gets here and refuses when that fails; the interactive
+     * terminal WS deliberately does not — a human who scrolled back and then typed expects tmux's own
+     * behaviour.
      */
-    suspend fun write(bytes: ByteArray): Unit = broadcaster.writeInput(bytes)
+    suspend fun write(bytes: ByteArray): Boolean = broadcaster.writeInput(bytes)
 
     /** Tear the bridge down regardless of subscribers (daemon shutdown / test teardown). */
     suspend fun shutdown(): Unit = broadcaster.shutdown()

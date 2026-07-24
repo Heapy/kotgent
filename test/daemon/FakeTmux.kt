@@ -2,6 +2,8 @@ package io.kotgent.daemon
 
 import io.kotgent.core.PaneId
 import io.kotgent.tmux.TmuxControl
+import io.kotgent.tmux.TmuxCopyModeException
+import io.kotgent.tmux.TmuxException
 import io.kotgent.tmux.TmuxPane
 
 /**
@@ -37,6 +39,16 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
      */
     var copyModeStuck: Boolean = false
 
+    /**
+     * When true, [sendKeys] throws [TmuxCopyModeException] — the real wrapper's `#{pane_in_mode}`
+     * read-back catching a send that went to the copy-mode key table. Distinct from [sendKeysFailure]
+     * because the two carry different wire contracts (409 retryable vs 400 malformed).
+     */
+    var sendKeysCopyModeStuck: Boolean = false
+
+    /** When non-null, [sendKeys] throws a plain [TmuxException] with this message (an ordinary failure). */
+    var sendKeysFailure: String? = null
+
     override fun sessionName(id: String): String = "kt-$id"
 
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
@@ -59,6 +71,12 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
     }
 
     override fun sendKeys(id: String, bytes: ByteArray) {
+        if (sendKeysCopyModeStuck) {
+            throw TmuxCopyModeException(
+                "tmux send-keys for '$id' was not delivered: ${sessionName(id)} is in copy-mode",
+            )
+        }
+        sendKeysFailure?.let { throw TmuxException(it) }
         sentKeys.add(id to bytes)
     }
 

@@ -22,7 +22,18 @@ data class TmuxPane(
 )
 
 /** Thrown when a tmux command fails in a way that is not an expected "not found"/"no server". */
-class TmuxException(message: String) : RuntimeException(message)
+open class TmuxException(message: String) : RuntimeException(message)
+
+/**
+ * The one tmux failure that is **transient and retryable**: the pane was in copy-mode, so tmux routed
+ * the keys to the copy-mode key table instead of to the process ([Tmux.sendKeys]'s read-back caught it).
+ *
+ * A subtype rather than a message convention because the wire contract differs: a plain [TmuxException]
+ * is a `400` ("this request was malformed, do not retry"), while this one is a `409` carrying the same
+ * operator hint `POST /sessions/{id}/input` gives ("scroll the pane back to the bottom"). Nothing about
+ * the request was wrong — a viewer's wheel scroll was, and scrolling back down fixes it.
+ */
+class TmuxCopyModeException(message: String) : TmuxException(message)
 
 /**
  * A thin, typed wrapper over `tmux -f /dev/null -L <socket> <sub …>`, built on
@@ -225,9 +236,17 @@ class Tmux(
         }
 
     /**
-     * Leave copy-mode on `kt-<id>`'s active pane and **verify it**: `true` when the pane is afterwards
-     * provably not in a mode (or the question is moot — no server / unknown session), `false` only
-     * when it is still in one and input would therefore be swallowed.
+     * Leave copy-mode on `kt-<id>`'s active pane and **verify it**: `true` only when the pane afterwards
+     * *answered* "not in a mode", or when the question is moot (a soft absence — no server / unknown
+     * session, [isAbsence]); `false` for everything else, including a failure that never answered.
+     *
+     * "Provably clear or a soft absence" is the whole contract, and the asymmetry is deliberate: the one
+     * caller ([io.kotgent.transport.TerminalInputSink]) turns `false` into a refusal, so guessing `true`
+     * would report `ok` for bytes tmux discarded — the exact silent swallow this method exists to
+     * prevent. A wrong `tmuxPath`, a permission error, a half-dead server or an unparseable
+     * `display-message` are therefore all `false`: none of them proves the pane is delivering keys. Only
+     * the *soft* failures every other method here normalizes ([listPanes], [capturePane], [killSession],
+     * [sendKeys]) read as `true` — there is no pane left to swallow anything.
      *
      * A pane in copy-mode routes every keystroke — whether it arrives via `send-keys` or by being
      * written into an attached client's pty — to the **copy-mode key table** instead of the process.
@@ -252,8 +271,9 @@ class Tmux(
     override fun leaveCopyMode(id: String): Boolean {
         val target = sessionName(id)
         val r = tmux("copy-mode", "-q", "-t", target, ";", "display-message", "-p", "-t", target, PANE_IN_MODE)
-        if (!r.isSuccess) return true // no server / unknown pane / unanswerable: nothing to refuse over
-        return paneModeFrom(r) != true
+        if (r.isAbsence()) return true // no server / unknown pane: there is nothing left to refuse over
+        if (!r.isSuccess) return false // a real failure proves nothing about the pane — do not claim clear
+        return paneModeFrom(r) == false // only an ANSWERED "0" counts as clear; `null` is unanswered
     }
 
     /**
@@ -280,7 +300,9 @@ class Tmux(
      *  3. `display-message -p '#{pane_in_mode}'` — the proof, read with nothing able to intervene.
      *
      * A trailing `1` means the keys went to the copy-mode key table, and this **fails loudly** with a
-     * [TmuxException] rather than letting the caller reduce to `ready`. There is deliberately no retry:
+     * [TmuxCopyModeException] — its own subtype, because that condition is transient and retryable and
+     * the transport answers it with a `409` + hint rather than a `400` — instead of letting the caller
+     * reduce to `ready`. Any OTHER non-zero exit stays a plain [TmuxException]. There is no retry:
      * a duplicated `0x03` is not harmless (a second Ctrl-C quits some agent TUIs outright), and with
      * the chain atomic a retry would only be papering over a tmux that no longer behaves as measured.
      * This is what makes `mouse on` safe; do not weaken it while that option is set.
@@ -296,7 +318,7 @@ class Tmux(
         // Checked BEFORE the exit status: a swallowed send can also fail the invocation for an unrelated
         // reason (a copy-mode binding reporting "no current client"), and copy-mode is the real diagnosis.
         if (paneModeFrom(r) == true) {
-            throw TmuxException(
+            throw TmuxCopyModeException(
                 "tmux send-keys for '$id' was not delivered: $target is in copy-mode, so the keys went " +
                     "to the copy-mode key table instead of the process",
             )

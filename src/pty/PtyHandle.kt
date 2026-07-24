@@ -153,6 +153,18 @@ const val TERMINAL_MOUSE_ENABLE: String = "\u001b[?1000h\u001b[?1002h\u001b[?100
  * `Broadcaster.attach` treats an empty seed as "nothing to send" — a client attaching to a session
  * that is not there should not be handed a stray mode change.
  *
+ * ## Known residual — recorded, NOT fixed here
+ * Arming a subscriber's terminal is necessary but not sufficient: **only the subscriber that resized
+ * last has a fully live wheel.** The events this enable produces are resolved by tmux against the ONE
+ * upstream client's window — it maps a mouse report's (x,y) onto that client's geometry and discards
+ * anything out of range — and under [Broadcaster]'s "last active" resize policy that geometry belongs
+ * to whichever subscriber resized most recently. So a *larger* tab reports coordinates the upstream
+ * client's window does not contain, and its wheel is dead over the lower/right part of its viewport
+ * while the smaller, last-resizing viewer scrolls fine. Not fixed here because it is not a seed bug: it
+ * follows from one shared client serving N geometries, so a fix means changing the resize policy so no
+ * single subscriber's size is authoritative (per-subscriber tmux clients would fix it too, and would
+ * break the single-upstream invariant outright). See [io.kotgent.tmux.TMUX_SERVER_OPTIONS]' residuals.
+ *
  * Pure, so the rule is unit-testable without tmux or cinterop (KT-78062).
  */
 fun terminalSeed(capturedPane: String, mouseForced: Boolean): ByteArray = when {
