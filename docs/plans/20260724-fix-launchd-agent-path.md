@@ -53,7 +53,13 @@ message pointing at `kotgent install` rather than a silent `1006`.
   complete guarantee for `claude`, but only partial for `codex` — `locate()` proving `codex` resolves does
   not prove `node` (its `#!/usr/bin/env node` shebang) resolves, so a codex with `node` off the daemon PATH
   could pass the pre-check yet still die at exec. The A1 full-PATH snapshot closes this in the fixed state;
-  don't over-trust the pre-check for node-based providers.
+  don't over-trust the pre-check for node-based providers. (Forcing PATH per-pane via tmux `new-session -e
+  PATH=…` was evaluated as a further mitigation and rejected: tmux spawns the pane as a login shell, so
+  `/etc/zprofile`'s `path_helper -s` rebuilds PATH from `/etc/paths*` and discards the `-e` value — verified
+  empirically; a non-PATH `-e` var propagates but PATH does not. The pane's PATH therefore comes from the
+  tmux server's env plus the user's shell rc files. When a stale server is the problem, the normal recovery
+  — its empty session set tears the server down, so the next daemon start brings a fresh, snapshotted env —
+  restores it.)
 
 ### Related patterns to mirror
 - `src/tmux/Tmux.kt:defaultTmuxPath()` — precedent for resolving a tool to an absolute path so the tmux
@@ -123,8 +129,11 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
   on the daemon's PATH — run `kotgent install` from a shell where `<kind>` resolves, then create the
   session again``.
 - `Commands.kt`: `val claudePath: String? = claudeCli.locate()`, `val codexPath: String? = CodexCli().locate()`;
-  each `agentFactoryOf` builder throws `AgentBinaryNotFoundException(kind)` when its path is `null`,
-  otherwise builds the adapter with `binaryName = <resolvedPath>`.
+  each `agentFactoryOf` builder routes the resolved path through `requireAbsoluteBinary(kind, path)`, which
+  throws `AgentBinaryNotFoundException(kind)` when the path is `null` **or non-absolute** (a name resolved via
+  a relative PATH dir, or a name containing a slash — tmux `cd`s into the session cwd before exec, so a
+  relative path would exec a wrong cwd-local binary or die at exec); an absolute path builds the adapter with
+  `binaryName = <resolvedPath>`.
 - `ControlRoutes.kt`: add `catch (e: AgentBinaryNotFoundException)` to the start handler and the
   action/resume handler → `BadRequest`, mirroring each handler's existing body prefix
   (`"cannot start session: ${e.message}"` in start; `"action '$action' failed: ${e.message}"` in action).
@@ -211,7 +220,7 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - [x] run `./kotlin build && ./kotlin test` — must pass before Task 5
 
 ### Task 5: Verify acceptance criteria
-- [x] `mergedDaemonPath` correctly merges/dedups and falls back (Task 1 green — 5 PlistTest cases pass)
+- [x] `mergedDaemonPath` correctly merges/dedups and falls back (Task 1 green — 7 `mergedDaemonPath` PlistTest cases pass)
 - [x] a fresh install writes a plist whose PATH includes the caller's PATH (Task 2 green — InstallTest
       `installSnapshotsTheCallersPathIntoThePlist` + null-fallback case pass)
 - [x] an unresolvable agent fails fast with a clear 400 + `kotgent install` hint and **no** phantom
