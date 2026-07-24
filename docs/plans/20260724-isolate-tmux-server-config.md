@@ -255,20 +255,22 @@ kotgent is the only thing that should touch that socket.
 - Create: `src/tmux/TmuxOptions.kt`
 - Create: `test/tmux/TmuxOptionsTest.kt`
 
-- [ ] write `test/tmux/TmuxOptionsTest.kt` first: `TMUX_CONFIG_ISOLATION == listOf("-f", "/dev/null")`
-- [ ] write test: `TMUX_SERVER_OPTIONS` holds exactly the six rows of the option table, with `escape-time`
+- [x] write `test/tmux/TmuxOptionsTest.kt` first: `TMUX_CONFIG_ISOLATION == listOf("-f", "/dev/null")`
+- [x] write test: `TMUX_SERVER_OPTIONS` holds exactly the six rows of the option table, with `escape-time`
       carrying the `-s` scope and the rest `-g`
-- [ ] write test: `TMUX_SERVER_OPTIONS` does **not** mention `focus-events` — records the fan-out decision
+- [x] write test: `TMUX_SERVER_OPTIONS` does **not** mention `focus-events` — records the fan-out decision
       *and* keeps the Task 2 decoy valid (a future author adding it would fail here first)
-- [ ] write test: `tmuxOptionCommands()` emits `set-option <scope> <name> <value> ';'` per option and ends
+- [x] write test: `tmuxOptionCommands()` emits `set-option <scope> <name> <value> ';'` per option and ends
       with a trailing `';'`, so it can be prefixed to any subcommand
-- [ ] write test: `tmuxCommand(tmuxPath, socket, args)` returns
+- [x] write test: `tmuxCommand(tmuxPath, socket, args)` returns
       `[tmuxPath, -f, /dev/null, -L, socket, *args]` — the isolation flags precede `-L`, and both precede
       the subcommand
-- [ ] create `src/tmux/TmuxOptions.kt` with `TMUX_CONFIG_ISOLATION`, a `TmuxOption(scope, name, value)`
+- [x] create `src/tmux/TmuxOptions.kt` with `TMUX_CONFIG_ISOLATION`, a `TmuxOption(scope, name, value)`
       data class, `TMUX_SERVER_OPTIONS`, `tmuxOptionCommands()` and `tmuxCommand()`; all `public`
       (no friend-module relationship between a module and its tests)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 2
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 2
+      (447 run / 447 passed / 0 skipped — the pre-change count was 438, not the 428 CLAUDE.md still
+      records; Task 7 updates that baseline)
 
 ### Task 2: Route every control-plane call through the isolated builder
 
