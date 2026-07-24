@@ -1,12 +1,15 @@
 package io.kotgent.cli
 
+import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
+import io.kotgent.transport.TICKET_TTL_MILLIS
 import io.kotgent.transport.TRANSPORT_JSON
 import io.kotgent.transport.TicketResponse
+import io.kotgent.transport.normalizeTicketCode
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -264,6 +267,37 @@ class CliTest {
         assertTrue("needs_approval" in out, "state renders")
         assertTrue("*" in out, "a needs-attention session is flagged")
         assertEquals("no sessions\n", renderSessions(emptyList()))
+    }
+
+    @Test
+    fun theWebOutputCarriesTheCodeAndAHintAboutTheInstalledApp() {
+        // `kotgent web` printing only a URL is a dead end for the one client that needs it most: an installed
+        // home-screen app opens at its own start_url with its own cookie jar and cannot be handed a fragment.
+        // So the block must show the CODE, and say what it is for — otherwise nobody knows to type it.
+        val code = "A1B2C3D4"
+        val out = renderSignInCode(
+            TicketResponse(
+                ticket = code,
+                localUrl = "http://127.0.0.1:27508$AUTH_PAGE_PATH#ticket=$code",
+                publicUrl = null,
+                expiresAt = 1_753_280_000_000L + TICKET_TTL_MILLIS,
+            ),
+        )
+        assertTrue("A1B2 C3D4" in out, "the code is printed, grouped for reading: $out")
+        assertTrue("home screen" in out, "with the reason an installed app needs it")
+        assertTrue("${TICKET_TTL_MILLIS / 60_000} minutes" in out, "and its life, derived from the TTL")
+
+        // The printed (grouped) form is what someone retypes, so it must survive the daemon's own
+        // normalisation back to the exact value that was minted — the display cannot break the redemption.
+        assertEquals(code, normalizeTicketCode("A1B2 C3D4"), "the grouped form redeems as the minted code")
+    }
+
+    @Test
+    fun groupingLeavesACodeItCannotSplitEvenlyAlone() {
+        assertEquals("A1B2 C3D4", groupLoginCode("A1B2C3D4"))
+        assertEquals("ABC", groupLoginCode("ABC"), "too short to split")
+        assertEquals("ABCDEFX", groupLoginCode("ABCDEFX"), "odd length: split nowhere rather than lopsided")
+        assertEquals("", groupLoginCode(""), "and an empty value is not a crash")
     }
 
     // ---- 4. AttachClient smoke (no real tty, no socket) -----------------------------------------

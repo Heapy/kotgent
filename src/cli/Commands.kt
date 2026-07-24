@@ -46,6 +46,8 @@ import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
 import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.SessionDto
+import io.kotgent.transport.TICKET_TTL_MILLIS
+import io.kotgent.transport.TicketResponse
 import io.kotgent.transport.TokenHolder
 import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readOrCreateToken
@@ -123,11 +125,18 @@ object Commands {
      * `--print` prints the URL instead of opening it (a headless host, or pasting the link somewhere by
      * hand). If `open` cannot launch a browser, the URL is printed as a fallback so the flow is never a
      * dead end.
+     *
+     * The same ticket is ALSO printed as a typable code ([renderSignInCode]), because a link cannot reach an
+     * installed home-screen app: it launches at its own `start_url` with its own cookie jar, so the code
+     * typed into `/auth` is the only way to sign that app in. Under `--print` the code goes to stderr so
+     * stdout stays exactly the URL and `kotgent web --print | pbcopy` keeps working; the operator still sees
+     * it on the terminal.
      */
     fun web(print: Boolean): Int = withApi { api ->
         val ticket = api.issueTicket()
         if (print) {
             println(ticket.localUrl)
+            eprintln(renderSignInCode(ticket))
             return@withApi 0
         }
         val result = ProcessRunner.run(listOf("open", ticket.localUrl))
@@ -137,6 +146,7 @@ object Commands {
             eprintln("could not launch a browser (open exited ${result.exitCode}); open this link yourself:")
             println(ticket.localUrl)
         }
+        println(renderSignInCode(ticket))
         0
     }
 
@@ -606,6 +616,30 @@ object Commands {
         return path
     }
 }
+
+/**
+ * The sign-in code block `kotgent web` prints under the URL. Pure so it is unit-testable without a daemon.
+ *
+ * The URL alone is not enough any more: an installed home-screen app opens at its `start_url` with its own
+ * empty cookie jar and cannot be handed a link fragment, so the code — the same credential, in the form a
+ * human can retype — has to be on screen next to it. The value is grouped ([groupLoginCode]) for reading;
+ * the daemon strips whitespace before looking it up, so what is typed back can carry the space or not.
+ */
+fun renderSignInCode(ticket: TicketResponse): String =
+    "sign-in code: ${groupLoginCode(ticket.ticket)}\n" +
+        "  type it into an app already installed on a home screen — it opens with its own empty cookie jar,\n" +
+        "  so opening the link on that phone does not sign the installed app in.\n" +
+        "  one-time, and good for ${TICKET_TTL_MILLIS / 60_000} minutes."
+
+/**
+ * Split a login code in the middle (`A1B2C3D4` → `A1B2 C3D4`), the way a human reads eight symbols anyway.
+ * Display only: [io.kotgent.transport.normalizeTicketCode] drops whitespace before the lookup, so the
+ * grouped form redeems exactly like the ungrouped one. An odd or very short value is left alone rather than
+ * split at a place that would just look wrong.
+ */
+fun groupLoginCode(code: String): String =
+    if (code.length < 6 || code.length % 2 != 0) code
+    else code.substring(0, code.length / 2) + " " + code.substring(code.length / 2)
 
 /**
  * Render sessions as a compact human table (the `list` output). Pure so it is unit-testable without a

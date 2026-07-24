@@ -167,6 +167,23 @@ class AuthRoutesTest {
         )
     }
 
+    @Test
+    fun getAuthRendersTheTypedCodeFormForAnAppThatHasNoLink() = withAuthServer { env ->
+        // The gap this closes: an installed home-screen PWA launches at start_url with its OWN cookie jar and
+        // no way to be handed a `#ticket=` fragment, so the ONLY way in is typing the code here. If this form
+        // is missing (or posts somewhere else) that launch dead-ends — and nothing else in the suite looks.
+        val page = env.client.req(env.port, AUTH_PAGE_PATH).bodyAsText()
+        assertTrue(page.contains("""id="code-form""""), "the page carries the code form")
+        assertTrue(page.contains("""id="code""""), "with an input to type the code into")
+        assertTrue(page.contains(AUTH_EXCHANGE_PATH), "posting to the same exchange the link path uses")
+        assertTrue(page.contains("$TICKET_CODE_LENGTH characters"), "and states the code's length")
+        assertTrue(
+            page.contains("${TICKET_TTL_MILLIS / 60_000} minutes"),
+            "and its life, derived from the constant so the copy cannot drift from the TTL",
+        )
+        assertTrue(page.contains("429"), "the throttle is told apart from a wrong code — waiting is the remedy")
+    }
+
     // --- the exchange -----------------------------------------------------------------------------
 
     @Test
@@ -199,6 +216,36 @@ class AuthRoutesTest {
         val ticket = env.issueTicket()
         val typed = " " + ticket.take(4).lowercase() + "-" + ticket.drop(4).lowercase() + " "
         assertEquals(HttpStatusCode.OK, env.exchange(env.port, typed).status, "as typed: '$typed'")
+    }
+
+    @Test
+    fun aCodeTypedIntoTheFormSignsThatBrowserIn() = withAuthServer { env ->
+        // The whole PWA story in one test: the code the CLI/QR dialog shows is minted by the ticket route,
+        // typed into the /auth form by a browser that holds NOTHING, and comes back as a cookie that reaches
+        // the control plane. Distinct from the link path — no fragment is involved anywhere here.
+        val code = env.issueTicket()
+        val resp = env.exchange(env.port, groupedAndLowercased(code))
+        assertEquals(HttpStatusCode.OK, resp.status, "the typed code exchanges")
+
+        val setCookie = resp.headers[HttpHeaders.SetCookie]
+        assertNotNull(setCookie, "and the exchange sets the session cookie")
+        val cookie = parseServerSetCookieHeader(setCookie).value
+        assertTrue(verifySessionCookie(token, cookie), "which verifies against the master token")
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(env.port, "/sessions", cookie = cookie).status,
+            "so the installed app is signed in with no link and no CLI on that device",
+        )
+    }
+
+    @Test
+    fun aWrongCodeIs400AndPlantsNoCookie() = withAuthServer { env ->
+        val resp = env.exchange(env.port, wrongCode)
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "a code that was never issued is refused")
+        assertNull(
+            resp.headers[HttpHeaders.SetCookie],
+            "and nothing is planted — a mistyped code must not leave a half-credential in the browser",
+        )
     }
 
     @Test
@@ -488,6 +535,14 @@ class AuthRoutesTest {
     }
 
     // --- harness ----------------------------------------------------------------------------------
+
+    /**
+     * The code exactly as it leaves a human: split in the middle the way `PhoneDialog`/`kotgent web` print
+     * it, and lower-cased the way a phone keyboard hands it over. Both are folded away by
+     * [normalizeTicketCode]; using the display form here is what proves the printed shape is redeemable.
+     */
+    private fun groupedAndLowercased(code: String): String =
+        (code.substring(0, code.length / 2) + " " + code.substring(code.length / 2)).lowercase()
 
     private inner class Env(val port: Int, val client: HttpClient, val tokens: TokenHolder) {
         /** Mint a ticket the loopback way and return its opaque value. */

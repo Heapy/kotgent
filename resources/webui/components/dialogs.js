@@ -342,6 +342,18 @@ export function PhoneDialog({ onClose }) {
   `;
 }
 
+/**
+ * Split a login code in the middle (`A1B2C3D4` → `A1B2 C3D4`) — the way a human reads eight symbols off a
+ * screen anyway. The daemon strips whitespace before it looks the code up (`normalizeTicketCode`), so the
+ * space is display-only and typing it back changes nothing.
+ */
+function groupCode(code) {
+  const value = String(code || "");
+  if (value.length < 6 || value.length % 2 !== 0) return value;
+  const half = value.length / 2;
+  return value.slice(0, half) + " " + value.slice(half);
+}
+
 /** Render the changing part of [PhoneDialog] for the current fetch state. */
 function phoneBody(state, issue, onClose) {
   if (state.status === "loading") {
@@ -363,9 +375,15 @@ function phoneBody(state, issue, onClose) {
   return html`
     <div id="phone-qr" class="phone-qr" dangerouslySetInnerHTML=${{ __html: qrSvg(ticket.publicUrl) }}></div>
     <p class="phone-url"><code>${ticket.publicUrl}</code></p>
+    ${ticket.ticket && html`
+      <p id="phone-code" class="phone-code">${groupCode(ticket.ticket)}</p>
+      <p class="phone-code-hint">
+        Or type this code into an app already installed on the home screen — it has its own cookie jar, so
+        scanning the QR in Safari does not sign it in.
+      </p>`}
     <p class="phone-warn" role="note">
-      One-time link · expires in 5 minutes · full terminal access. Whoever opens it first is signed in,
-      so refresh it if you did not just scan it yourself.
+      One-time · expires in 5 minutes · full terminal access. The link and the code are the same credential,
+      and whoever spends it first is signed in — so refresh it if you did not just use it yourself.
     </p>
     <div class="dialog-actions">
       <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>

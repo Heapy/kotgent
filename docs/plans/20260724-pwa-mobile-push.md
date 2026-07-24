@@ -688,21 +688,53 @@ pin an old UI for a day).
 - Modify: `resources/webui/components/dialogs.js`
 - Modify: `src/cli/Commands.kt`
 - Modify: `test/transport/AuthRoutesTest.kt`
+- ➕ Modify: `resources/webui/style.css` (the `.phone-code` type scale — "large type" is a style, and the
+  page's other copy classes all live here)
+- ➕ Modify: `test/cli/CliTest.kt` (the CLI-output test)
 
-- [ ] extend `AUTH_PAGE_HTML`: with no `#ticket=` fragment, render a code input + submit that POSTs to the
+- [x] extend `AUTH_PAGE_HTML`: with no `#ticket=` fragment, render a code input + submit that POSTs to the
       same `/auth/exchange`, then `location.replace("/")`; state the 5-minute life and show a clear error for
       `400`/`429`
-- [ ] route an unauthenticated launch to that form: on a `401` from the initial `/sessions` load,
+      ➕ the length and the TTL in the copy are INTERPOLATED from `TICKET_CODE_LENGTH` / `TICKET_TTL_MILLIS`
+      (both `const`, so the page is still a compile-time constant), so the one page that must work when
+      nothing else does cannot drift from the format it is describing. A FAILED link falls through to the
+      same form instead of dead-ending — a stale QR then leaves the operator one typed code away. `400`,
+      `410`-style refusals and "never existed" all read as one message (the remedy is identical); only `429`
+      is told apart, because retyping a good code cannot help there and waiting can, plus a network-failure
+      message for a `fetch` that never got a status at all
+- [x] route an unauthenticated launch to that form: on a `401` from the initial `/sessions` load,
       `location.replace("/auth")`, and reword `api.js`'s "run `kotgent web`" message — an installed PWA opens
       at `start_url` with an empty cookie jar and cannot run a CLI command, so without this the form built
       above is unreachable
-- [ ] show the code in `PhoneDialog` in large type next to the QR (the ticket response already carries it)
-- [ ] print the code in `kotgent web` alongside the URL, with a one-line hint that this is what an installed
+      ➕ `api.js` flags the error (`error.unauthenticated`, read through the exported `isUnauthenticated`)
+      and exports `AUTH_PATH` rather than navigating itself — the module is used by dialogs and control
+      calls too, and a redirect buried in the transport would fire from any of them. Only the FIRST
+      `/sessions` load routes (a `firstLoadRef` claimed up front so a concurrent load is never "first"
+      either): a later `401` (a rotated token) means a live page with an attached terminal on screen, and
+      navigating out from under it would throw that away silently
+- [x] show the code in `PhoneDialog` in large type next to the QR (the ticket response already carries it)
+      ➕ shown split in the middle (`A1B2 C3D4`) — the daemon strips whitespace before the lookup, so the
+      grouping is display-only and the grouped form redeems unchanged — with one line saying WHY an
+      installed app needs it (its own cookie jar). The QR copy stopped calling the ticket a "link": it is
+      one credential in two forms now
+- [x] print the code in `kotgent web` alongside the URL, with a one-line hint that this is what an installed
       home-screen app asks for
-- [ ] write tests: `GET /auth` HTML contains the code form; a code minted by the ticket route exchanges and
+      ➕ the block is the pure, public `renderSignInCode(ticket)` (+ `groupLoginCode`) so it is unit-testable
+      without a daemon, the `renderSessions` idiom. Under `--print` it goes to **stderr** — stdout stays
+      exactly the URL, so `kotgent web --print | pbcopy` keeps working while the operator still sees the code
+- [x] write tests: `GET /auth` HTML contains the code form; a code minted by the ticket route exchanges and
       sets the cookie; a wrong code returns `400` and sets none
-- [ ] syntax-check the changed modules; write a test that the CLI output contains the code
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 16
+      ➕ the form test pins the input, the POST target (against the `AUTH_EXCHANGE_PATH` constant) and both
+      interpolated copy values, so a format change that forgets the page fails here. The exchange test drives
+      the code through the route in its DISPLAY shape (grouped and lower-cased) and then uses the resulting
+      cookie on the gated control plane — the whole PWA path, with no fragment anywhere in it. The wrong-code
+      test asserts the absence of `Set-Cookie`, not just the status
+- [x] syntax-check the changed modules; write a test that the CLI output contains the code
+      ➕ `node --check` on `app.js`, `lib/api.js`, `components/dialogs.js`. The CLI test cross-checks the
+      printed grouping against the REAL `normalizeTicketCode`, so a display change that made the code
+      unredeemable would fail rather than merely look different
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 16
+      ➕ 5 new tests: **584 run / 584 passed / 0 skipped** (branch baseline 579)
 
 ### Task 16: Mobile layout — drawer sidebar, compact header, viewport units
 

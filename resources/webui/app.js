@@ -28,7 +28,7 @@ import { render } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { html } from "htm/preact";
 
-import { apiRequest, errorMessage, wsUrl } from "./lib/api.js";
+import { AUTH_PATH, apiRequest, errorMessage, isUnauthenticated, wsUrl } from "./lib/api.js";
 import { loadPrefs, persistPrefs } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
 import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
@@ -164,6 +164,9 @@ function App() {
   // The session a notification tap asked for, honoured once the first /sessions load has landed (the id
   // means nothing until the list exists). Read at mount so a later reload cannot resurrect it.
   const deepLinkRef = useRef(deepLinkSessionId());
+  // Whether the /sessions load about to run is the FIRST one — the only one whose 401 means "this browser
+  // was never signed in" rather than "the credential died under a running page" (see loadSessions).
+  const firstLoadRef = useRef(true);
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
 
@@ -189,6 +192,8 @@ function App() {
   }, [showSession]);
 
   const loadSessions = useCallback(async () => {
+    const isFirstLoad = firstLoadRef.current;
+    firstLoadRef.current = false;   // claimed up front, so a concurrent load is never "first" too
     try {
       const list = await apiRequest("/sessions");
       setSessions(list);
@@ -208,6 +213,15 @@ function App() {
         if (target) showSession(target);
       }
     } catch (e) {
+      // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
+      // its very first request is a 401 and there is no link to hand it. Send it to the sign-in page, where
+      // the code form is the only way in. `replace` so the back button does not bounce straight back into
+      // this dead page. Only the FIRST load routes: a 401 later (a rotated token) leaves a live page with
+      // an attached terminal on screen, and navigating out from under it would throw that away silently.
+      if (isFirstLoad && isUnauthenticated(e)) {
+        window.location.replace(AUTH_PATH);
+        return;
+      }
       say("Could not load sessions: " + errorMessage(e), true);
     }
   }, [say, showSession]);

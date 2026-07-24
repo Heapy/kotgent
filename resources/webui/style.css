@@ -615,6 +615,25 @@ dialog::backdrop {
   font-size: 11.5px;
   padding: 2px 6px;
 }
+/* The typed sign-in code: read off this screen and keyed into an installed home-screen app, so it is set
+   big enough to read from arm's length and spaced so the grouping halves are obvious. */
+.phone-code {
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  line-height: 1.2;
+  margin: 0 0 6px;
+  text-align: center;
+  user-select: all;
+}
+.phone-code-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0 0 12px;
+  text-align: center;
+}
 .phone-warn {
   background: var(--attn-bg);
   border-radius: 7px;

@@ -7,6 +7,19 @@
  * to make the cookie ride along, and the WebSocket URLs are plain same-origin URLs.
  */
 
+/**
+ * The login page (`AUTH_PAGE_PATH` in `src/transport/AuthRoutes.kt`) — where a browser holding no valid
+ * cookie has to go. With no `#ticket=` fragment it renders the typed-code form, which is the ONLY way into
+ * an installed home-screen app: it launches at `start_url` with its own empty cookie jar and cannot be
+ * handed a link fragment.
+ */
+export const AUTH_PATH = "/auth";
+
+/** True for the error [apiRequest] throws on a `401` — the caller decides whether to route to [AUTH_PATH]. */
+export function isUnauthenticated(error) {
+  return !!(error && error.unauthenticated);
+}
+
 /** Build a same-origin WebSocket URL for [path]. The session cookie authenticates the handshake. */
 export function wsUrl(path, base) {
   const loc = base || window.location;
@@ -31,7 +44,14 @@ export async function apiRequest(path, options) {
 
   const resp = await fetch(path, opts);
   const text = await resp.text();
-  if (resp.status === 401) throw new Error("Session expired — run `kotgent web` to sign in again.");
+  if (resp.status === 401) {
+    // Not "run `kotgent web`": on a phone — the case this message exists for — there is no shell to run it
+    // in. What every client CAN do is open the sign-in page and type a code, so that is what it says, and
+    // the flag lets a caller (app.js, on its first load) navigate there instead of only reporting it.
+    const expired = new Error("Signed out — open " + AUTH_PATH + " and enter a sign-in code.");
+    expired.unauthenticated = true;
+    throw expired;
+  }
   if (!resp.ok) throw new Error(text || ("HTTP " + resp.status));
   if (!text) return null;
   try { return JSON.parse(text); } catch (_) { return text; }

@@ -23,6 +23,10 @@ import kotlin.time.Clock
  *   the page's script           POST /auth/exchange (the ticket IS the credential) → Set-Cookie, then "/"
  * ```
  *
+ * The same page has a second entrance with no link at all: an installed PWA launches at `start_url` with
+ * its own empty cookie jar, so the SPA routes its first `401` to `GET /auth`, where the operator TYPES the
+ * code into a form that posts the very same `/auth/exchange` (see [AUTH_PAGE_HTML]).
+ *
  * ## Why the ticket rides in the FRAGMENT
  * `GET /auth` carries no ticket at all: a fragment is never put on the wire. So the server cannot see the
  * ticket on the page load, which means nothing that merely FOLLOWS the link can spend it — a mail scanner,
@@ -286,24 +290,37 @@ private fun ticketUrl(origin: String, ticket: String): String =
 private fun authEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
 
 /**
- * The login page: read the ticket out of `location.hash`, spend it, land on the SPA.
+ * The login page, in its two shapes: spend the ticket out of `location.hash`, or — when there is no
+ * fragment at all — let the operator TYPE the code instead. Either way it ends on the SPA.
  *
  * Self-contained by design — no stylesheet, no module import, no vendored dependency. It is the page that
  * has to render when the browser holds nothing and the static UI may not even be configured, so anything it
  * had to fetch first would be one more way for a login to fail.
  *
+ * ## Why a typed code, and not only a link
+ * An installed iOS home-screen app has its OWN cookie jar. Scanning the QR signs SAFARI in; the installed
+ * app then launches at `start_url` holding nothing, and there is no way to hand it a fragment — it opens the
+ * URL the manifest names, not a link. So the one path into an installed PWA is a code the operator reads off
+ * one screen and types into another, which is exactly what [TICKET_CODE_ALPHABET] made typable. The SPA
+ * routes a `401` on its first load here, so that launch lands on this form instead of a wall of errors.
+ *
  * `location.replace("/")` rather than an assignment: replacing the history entry means the ticket URL is
  * never left in the phone's back stack (or its history sync), which is the last place the value could
  * linger after being spent.
  *
- * A failure says only that the link is not valid — never whether it expired, was already used, or was never
- * a ticket at all. The remedy is the same in every case and is printed right under it.
+ * A refused code says only that it is not valid — never whether it expired, was already used, or was never
+ * a code at all; the remedy is the same in all three. The ONE distinction the page does draw is the `429`
+ * from [ExchangeRateLimit]: "you are being throttled" is not a secret, and an operator who is one window
+ * away from getting in must be told to WAIT rather than to retype a code that is perfectly good.
+ *
+ * A failed link falls through to the same form rather than dead-ending, so a stale QR still leaves the
+ * operator one typed code away from being signed in.
  */
 const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kotgent — sign in</title>
 <style>
   :root { color-scheme: light dark; }
@@ -316,35 +333,98 @@ const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
          padding: .1em .4em; border-radius: 4px; background: rgba(127, 127, 127, .18); }
   .error { color: #c0392b; }
   .hint { opacity: .7; font-size: .9em; }
+  form { margin: 1.4rem 0 .6rem; }
+  input { font: 1.6rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .18em;
+          text-align: center; text-transform: uppercase; width: 100%; box-sizing: border-box;
+          padding: .6rem .4rem; border: 1px solid rgba(127, 127, 127, .5); border-radius: 8px;
+          background: transparent; color: inherit; }
+  button { font: inherit; margin-top: .8rem; width: 100%; padding: .7rem 1rem; border: 0;
+           border-radius: 8px; background: #2f6feb; color: #fff; cursor: pointer; }
+  button[disabled] { opacity: .6; cursor: default; }
 </style>
 </head>
 <body>
 <main>
   <h1>Kotgent</h1>
   <p id="status">Signing in…</p>
-  <p id="hint" class="hint" hidden>Issue a fresh link with <code>kotgent web</code>.</p>
+  <form id="code-form" hidden>
+    <label for="code" class="hint">Sign-in code</label>
+    <input id="code" name="code" type="text" required autocomplete="one-time-code"
+           autocapitalize="characters" autocorrect="off" spellcheck="false" inputmode="latin"
+           enterkeyhint="go" aria-describedby="code-help">
+    <button id="code-submit" type="submit">Sign in</button>
+    <p id="code-help" class="hint">$TICKET_CODE_LENGTH characters, one-time, good for
+      ${TICKET_TTL_MILLIS / 60_000} minutes.</p>
+  </form>
+  <p id="hint" class="hint" hidden>Get a code with <code>kotgent web</code>.</p>
 </main>
 <script>
 (function () {
   var status = document.getElementById("status");
   var hint = document.getElementById("hint");
-  function fail() {
-    status.textContent = "This sign-in link is not valid.";
-    status.className = "error";
-    hint.hidden = false;
+  var form = document.getElementById("code-form");
+  var input = document.getElementById("code");
+  var submit = document.getElementById("code-submit");
+
+  function say(text, isError) {
+    status.textContent = text;
+    status.className = isError ? "error" : "";
   }
+
+  function reveal() {
+    form.hidden = false;
+    hint.hidden = false;
+    try { input.focus(); } catch (e) { /* a browser that refuses focus is not a failure */ }
+  }
+
+  // One message for every way a code can be wrong (expired, spent, never existed) — the remedy is the
+  // same and the difference is not the operator's business. The throttle IS told apart: retyping a good
+  // code cannot help there, waiting can.
+  function refusal(code) {
+    if (code === 429) return "Too many attempts. Wait a minute, then try again.";
+    if (code === 0) return "Could not reach kotgent. Check the connection and try again.";
+    return "That code is not valid. It may have expired or already been used.";
+  }
+
+  function exchange(value) {
+    return fetch("/auth/exchange", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket: value })
+    }).then(function (response) {
+      if (response.ok) { window.location.replace("/"); return true; }
+      say(refusal(response.status), true);
+      return false;
+    }).catch(function () {
+      say(refusal(0), true);
+      return false;
+    });
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var typed = input.value.trim();
+    if (!typed) { input.focus(); return; }
+    submit.disabled = true;
+    say("Signing in…", false);
+    exchange(typed).then(function (ok) {
+      if (ok) return;               // navigating away; leave the button disabled
+      submit.disabled = false;
+      input.select();
+    });
+  });
+
   var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   var ticket = params.get("ticket");
-  if (!ticket) { fail(); return; }
-  fetch("/auth/exchange", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ticket: ticket })
-  }).then(function (response) {
-    if (!response.ok) { fail(); return; }
-    window.location.replace("/");
-  }).catch(fail);
+  if (!ticket) {
+    // No link — an installed home-screen app opening at its start_url with an empty cookie jar, or a
+    // browser sent here by the SPA's 401 routing. Typing the code is the whole way in.
+    say("Enter your sign-in code.", false);
+    reveal();
+    return;
+  }
+  exchange(ticket).then(function (ok) { if (!ok) reveal(); });
 })();
 </script>
 </body>
