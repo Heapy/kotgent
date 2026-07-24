@@ -6,6 +6,44 @@
 > meant to check. The `mouse on` rationale was also re-derived from measurements — the original one was
 > wrong in both directions.
 
+> **Revision 3 — post-implementation code review.** Four decisions below SUPERSEDE the option table and
+> the "Failure mode" section further down. They are recorded here rather than rewritten inline so the
+> reasoning that produced the original design stays readable.
+>
+> 1. **`mouse on` is dropped from the forced set.** Measured after implementation: with `mouse on`, a
+>    wheel scroll from *any* subscriber puts the shared pane into copy-mode, and while `pane_in_mode=1`
+>    every `send-keys` — including the exact `0x03` `SessionManager.interrupt` sends — is routed to the
+>    copy-mode key table and never reaches the process, while tmux still exits **0**. `Tmux.sendKeys`
+>    reports success and `interrupt` then persists `ready` for an interrupt that never happened. Two more
+>    consequences: the mouse-reporting DECSET is only ever seen by the subscriber that *opened* the
+>    upstream (a browser tab joining an existing bridge gets the capture-pane seed and nothing else), and
+>    xterm.js disables text selection whenever mouse reporting is active. The plan's "copy-mode exits by
+>    itself" note is true only for a wheel-down; it does not hold for the copy-mode a scroll leaves behind.
+>    Client-side scrollback covers the ergonomics. `Tmux.sendKeys` additionally cancels copy-mode first
+>    (best-effort, separate invocation — chained it aborts the whole call with "not in a mode"), which
+>    also closes the pre-existing prefix-typed copy-mode case.
+> 2. **`escape-time` is pinned at `10`, not `0`.** tmux 3.x's built-in is already 10 ms, so `0` buys back
+>    10 ms of ESC latency; against that, a zero escape-time is what mis-splits an escape sequence that
+>    arrives fragmented, which is the normal case for the remote/tunnel path kotgent explicitly supports.
+> 3. **The degradation path is deleted; a rejected chain now fails loudly.** The bare retry fired on
+>    *every* chained-invocation failure (duplicate session name, bad `-c` cwd, dead socket), so a genuine
+>    error was reported twice and misattributed to the option chain, and the best-effort re-application
+>    swallowed every per-option failure with no log — against this repo's documented fail-fast
+>    convention. It also could not restore `default-terminal`/`history-limit`, both read at pane creation.
+>    `newSession` now raises `TmuxException` carrying tmux's stderr, which already names the option.
+>    `Tmux.serverOptions` **stays** — its justification changes from "makes degradation testable" to
+>    "makes the before-the-pane guarantee testable" (see 4).
+> 4. **Two tests were unfalsifiable and are replaced.** `theForcedOptionsApplyBeforeThePaneExists`
+>    asserted `T=tmux-256color`, which is tmux 3.7b's own default — it passed with the entire option
+>    chain deleted; it now drives `default-terminal=screen-256color` through `Tmux(serverOptions = …)`.
+>    Nothing tested that `Tmux` actually *uses* `tmuxCommand()`; the plan called that unimplementable, but
+>    `tmuxPath` is a public constructor parameter and `ProcessRunner` execs through `/bin/sh`, so a
+>    wrapper script that re-execs tmux under a fake `$HOME` makes it a plain end-to-end assertion
+>    (`productionNewSessionCarriesTheConfigIsolation`). The decoy config also gained a
+>    `display-time 4321` line so a broken `HOME` override cannot masquerade as a pass by reading the
+>    developer's real `~/.tmux.conf` (which contains literally `set -g focus-events on`). All three
+>    mutations — isolation removed, chain removed, copy-mode cancel removed — were verified to fail.
+
 ## Overview
 
 The daemon's tmux server (`-L kotgent`) **reads the user's `~/.tmux.conf`**. The `-L` socket label

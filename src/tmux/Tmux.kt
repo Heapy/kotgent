@@ -25,7 +25,7 @@ data class TmuxPane(
 class TmuxException(message: String) : RuntimeException(message)
 
 /**
- * A thin, typed wrapper over `tmux -f /dev/null -L <socket> <sub …>` (Task 8), built on
+ * A thin, typed wrapper over `tmux -f /dev/null -L <socket> <sub …>`, built on
  * [ProcessRunner] (stock `platform.posix`, so it also runs from the test binary against a throwaway
  * server). Every argv is assembled by [tmuxCommand]; see [TMUX_CONFIG_ISOLATION] for why `-L` alone
  * is not enough isolation.
@@ -51,10 +51,14 @@ class Tmux(
     /**
      * The options forced onto this socket's server, chained ahead of every [newSession].
      *
-     * A constructor parameter rather than a direct read of [TMUX_SERVER_OPTIONS] purely so the
-     * degradation path is testable without a second tmux build: a test passes an option this tmux
-     * rejects and asserts a session is still created. Deliberately **not** on [TmuxControl] — no
-     * caller of the daemon-facing seam has any business choosing tmux options.
+     * A constructor parameter rather than a direct read of [TMUX_SERVER_OPTIONS] because it is the
+     * only seam that makes the design's central claim falsifiable: the integration test builds a
+     * `Tmux` whose `default-terminal` is a NON-default value and reads `$TERM` back out of the pane,
+     * proving the chain took effect *before the pane existed*. With the production list every value
+     * that a pane can report also happens to be tmux's own built-in, so the same assertion would
+     * pass with the whole option chain deleted. Do not "tidy" this into a direct read.
+     * Deliberately **not** on [TmuxControl] — no caller of the daemon-facing seam has any business
+     * choosing tmux options.
      */
     val serverOptions: List<TmuxOption> = TMUX_SERVER_OPTIONS,
 ) : TmuxControl {
@@ -121,19 +125,22 @@ class Tmux(
      * optimisation, it is the only ordering that works. Re-applying on every session is intended: it
      * is idempotent, and a server that came up some other way converges to kotgent's options.
      *
-     * ## Degradation
-     * Every command in a tmux chain must succeed or the whole invocation fails, so a single option
-     * name or scope that a different tmux build rejects would take `new-session` down with it and no
-     * session could be created at all — a cosmetic option bricking the product on that host. Since
-     * tmux's built-in defaults are already safe for the Detach invariant (`destroy-unattached off`),
-     * degrading costs only ergonomics: on a failed chain this retries **once** with a bare
-     * `new-session` and then applies the options individually, ignoring failures, on the now-running
-     * server. `default-terminal` is lost for that pane on the degraded path (it was read at pane
-     * creation) — the accepted trade against not starting at all. The retry cannot collide with a
-     * half-created session: a rejected chain aborts before `new-session` runs, so nothing exists yet.
+     * ## Failure is loud, not degraded
+     * Every command in a tmux chain must succeed or the whole invocation fails, so an option name a
+     * different tmux build rejected would take `new-session` down with it. That is deliberate: it
+     * raises [TmuxException] carrying tmux's own stderr, which already names the culprit
+     * (`invalid option: …`), the same fail-fast shape as `AgentBinaryNotFoundException`. A bare
+     * retry plus best-effort re-application was tried and removed — it fired on *every* failure
+     * (duplicate session name, bad `-c` cwd, dead socket), doubling the spawn count and
+     * misattributing the real error to the option chain, and it lost `history-limit` and
+     * `default-terminal` for the pane anyway (both are read at pane creation) while reporting
+     * nothing. Every forced option predates tmux 2.1 (2015) and macOS ships no tmux at all, so the
+     * binary is a current Homebrew/MacPorts build; the one plausible failure — a typo in
+     * [TMUX_SERVER_OPTIONS] — is caught by `newSessionForcesEveryServerOption` at build time.
+     * A rejected chain aborts *before* `new-session` runs, so a failure leaves nothing half-created.
      */
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
-        val create = arrayOf(
+        val argv = tmuxOptionCommands(serverOptions) + listOf(
             "new-session", "-d",
             "-s", sessionName(id),
             "-c", cwd,
@@ -143,32 +150,11 @@ class Tmux(
             "-P", "-F", "#{pane_id}",
             cmd,
         )
-        val chained = tmux(*(tmuxOptionCommands(serverOptions).toTypedArray() + create))
-        val r = if (chained.isSuccess) {
-            chained
-        } else {
-            val bare = tmux(*create)
-            if (!bare.isSuccess) {
-                throw TmuxException(
-                    "tmux new-session for '$id' failed: ${bare.stderr.trim()} " +
-                        "(the option chain failed first: ${chained.stderr.trim()})",
-                )
-            }
-            applyServerOptionsBestEffort()
-            bare
-        }
+        val r = tmux(*argv.toTypedArray())
+        if (!r.isSuccess) throw TmuxException("tmux new-session for '$id' failed: ${r.stderr.trim()}")
         val paneId = r.stdout.trim()
         if (paneId.isEmpty()) throw TmuxException("tmux new-session for '$id' returned no pane id")
         return PaneId(paneId)
-    }
-
-    /**
-     * Set each of [serverOptions] on the already-running server, one call per option, swallowing
-     * every failure. Only reached on the degraded path, where the point is precisely that one
-     * rejected option must not cost the others (or the session).
-     */
-    private fun applyServerOptionsBestEffort() {
-        serverOptions.forEach { tmux("set-option", it.scope, it.name, it.value) }
     }
 
     /** List all panes across all sessions on this socket. A torn-down socket reads as empty. */
@@ -227,9 +213,21 @@ class Tmux(
      * Send raw [bytes] to session `kt-<id>`'s active pane, byte-exact, via `send-keys -H` (hex).
      * `-H` avoids any key-name interpretation, so arbitrary terminal input (control chars, UTF-8)
      * round-trips unchanged. Empty input is a no-op.
+     *
+     * ## Copy-mode is cancelled first, and that is load-bearing
+     * A pane in copy-mode (the operator hit the tmux prefix, or an app/mouse put it there) routes
+     * `send-keys` to the **copy-mode key table**, not to the process — measured: the bytes vanish,
+     * the pane is unchanged, and tmux still exits **0**. The one caller is
+     * `SessionManager.interrupt`, which sends `0x03` and then reduces the session to `ready`, so a
+     * swallowed send would record an interrupt in the projection that never happened. `send-keys -X
+     * cancel` leaves copy-mode first (measured: `pane_in_mode` → 0 and the following send lands).
+     * It is a SEPARATE invocation on purpose: chained with `';'` it aborts the whole call with
+     * "not in a mode" whenever the pane was *not* in copy-mode, taking the real send with it. Its
+     * result is ignored for the same reason — "not in a mode" is the normal case.
      */
     override fun sendKeys(id: String, bytes: ByteArray) {
         if (bytes.isEmpty()) return
+        tmux("send-keys", "-X", "-t", sessionName(id), "cancel")
         val hex = bytes.map { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
         val r = tmux(*(arrayOf("send-keys", "-t", sessionName(id), "-H") + hex))
         if (!r.isSuccess && !r.isAbsence()) {

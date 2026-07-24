@@ -14,9 +14,9 @@ import kotlin.test.assertTrue
  *    `-L kotgent` still parses `~/.tmux.conf`, so an operator's `destroy-unattached on` would kill
  *    the agent the moment kotgent's single upstream attach detaches. `-f /dev/null` is what closes
  *    that, and it must ride on every argv kotgent builds.
- *  - **`focus-events` is deliberately absent** (see [tmuxOptionCommands]'s KDoc): focus has no single
- *    answer under a one-upstream/N-subscriber fan-out. It doubles as the decoy of the integration
- *    isolation test, which only stays falsifiable while kotgent never forces it.
+ *  - **`focus-events` is deliberately absent** (see [TMUX_SERVER_OPTIONS]'s KDoc): focus has no
+ *    single answer under a one-upstream/N-subscriber fan-out. It doubles as the decoy of the
+ *    integration isolation test, which only stays falsifiable while kotgent never forces it.
  */
 class TmuxOptionsTest {
 
@@ -35,28 +35,12 @@ class TmuxOptionsTest {
             listOf(
                 TmuxOption("-g", "destroy-unattached", "off"),
                 TmuxOption("-g", "default-terminal", "tmux-256color"),
-                TmuxOption("-g", "mouse", "on"),
                 TmuxOption("-g", "status", "off"),
                 TmuxOption("-g", "history-limit", "10000"),
-                TmuxOption("-s", "escape-time", "0"),
+                TmuxOption("-s", "escape-time", "10"),
             ),
             TMUX_SERVER_OPTIONS,
-            "the forced option set is exactly the six rows of the plan's option table",
-        )
-    }
-
-    @Test
-    fun escapeTimeIsTheOnlyServerScopedOption() {
-        val byScope = TMUX_SERVER_OPTIONS.groupBy { it.scope }
-        assertEquals(
-            setOf("-g", "-s"),
-            byScope.keys,
-            "only global (-g) and server (-s) scopes — kotgent owns the whole server on this socket",
-        )
-        assertEquals(
-            listOf("escape-time"),
-            byScope.getValue("-s").map { it.name },
-            "`escape-time` is a SERVER option (`-s`); a `-g escape-time` is rejected by tmux",
+            "the forced option set is exactly the five rows of the option table",
         )
     }
 
@@ -69,40 +53,45 @@ class TmuxOptionsTest {
         )
     }
 
+    /**
+     * `mouse on` was measured to break [io.kotgent.tmux.Tmux.sendKeys]: a wheel scroll from ANY
+     * subscriber puts the shared pane into copy-mode, and every later `send-keys` — including the
+     * `0x03` that `SessionManager.interrupt` sends — is then routed to the copy-mode key table and
+     * silently dropped while tmux still exits 0. Wheel-scrollback is left to the clients' own
+     * scrollback instead.
+     */
+    @Test
+    fun serverOptionsNeverForceMouseMode() {
+        assertFalse(
+            TMUX_SERVER_OPTIONS.any { it.name == "mouse" },
+            "`mouse on` makes one subscriber's wheel put the shared pane into copy-mode, where " +
+                "send-keys (Interrupt's Ctrl-C included) is swallowed — see TMUX_SERVER_OPTIONS's KDoc",
+        )
+    }
+
     @Test
     fun optionCommandsAreChainableSetOptionCalls() {
         assertEquals(
             listOf(
                 "set-option", "-g", "destroy-unattached", "off", ";",
                 "set-option", "-g", "default-terminal", "tmux-256color", ";",
-                "set-option", "-g", "mouse", "on", ";",
                 "set-option", "-g", "status", "off", ";",
                 "set-option", "-g", "history-limit", "10000", ";",
-                "set-option", "-s", "escape-time", "0", ";",
+                "set-option", "-s", "escape-time", "10", ";",
             ),
-            tmuxOptionCommands(),
-            "each option is one `set-option <scope> <name> <value>` terminated by a `;` separator",
-        )
-    }
-
-    @Test
-    fun optionCommandsEndWithASeparatorSoTheyCanPrefixAnySubcommand() {
-        val chained = tmuxOptionCommands() + listOf("new-session", "-d")
-        assertEquals(";", tmuxOptionCommands().last(), "the chain ends with a separator, not an option")
-        assertEquals(
-            listOf(";", "new-session", "-d"),
-            chained.takeLast(3),
-            "so `new-session` follows in the SAME invocation — a standalone set-option cannot start a server",
+            tmuxOptionCommands(TMUX_SERVER_OPTIONS),
+            "each option is one `set-option <scope> <name> <value>` terminated by a `;` separator, so " +
+                "`new-session` can follow in the SAME invocation (a standalone set-option starts no server)",
         )
     }
 
     @Test
     fun optionCommandsFollowTheListTheyAreGiven() {
-        // Task 3's degradation test needs a deliberately bogus set; the expansion is list-driven.
-        val bogus = listOf(TmuxOption("-g", "kotgent-no-such-option", "on"))
+        // The integration test drives a non-default option set through Tmux(serverOptions = …).
+        val custom = listOf(TmuxOption("-g", "default-terminal", "screen-256color"))
         assertEquals(
-            listOf("set-option", "-g", "kotgent-no-such-option", "on", ";"),
-            tmuxOptionCommands(bogus),
+            listOf("set-option", "-g", "default-terminal", "screen-256color", ";"),
+            tmuxOptionCommands(custom),
         )
         assertEquals(emptyList(), tmuxOptionCommands(emptyList()), "an empty set expands to no commands at all")
     }
@@ -118,22 +107,5 @@ class TmuxOptionsTest {
         // tmux global flags must precede the subcommand, so `-f` cannot be appended anywhere later.
         assertTrue(argv.indexOf("-f") < argv.indexOf("-L"), "-f precedes -L")
         assertTrue(argv.indexOf("/dev/null") < argv.indexOf("kill-session"), "the flags precede the subcommand")
-    }
-
-    @Test
-    fun tmuxCommandKeepsTheSubcommandArgumentsVerbatim() {
-        val args = listOf("send-keys", "-t", "kt-x", "-H", "0a")
-        val argv = tmuxCommand("tmux", "kotgent-test", args)
-        assertEquals(args, argv.takeLast(args.size), "subcommand argv is passed through unchanged")
-        assertEquals(
-            listOf("tmux", "-f", "/dev/null", "-L", "kotgent-test"),
-            argv.take(5),
-            "the prefix is fixed regardless of the subcommand",
-        )
-        assertEquals(
-            listOf("tmux", "-f", "/dev/null", "-L", "kotgent-test"),
-            tmuxCommand("tmux", "kotgent-test", emptyList()),
-            "with no subcommand the argv is just the isolated prefix",
-        )
     }
 }

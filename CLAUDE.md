@@ -159,32 +159,53 @@ global `-u` (`attachUpstreamCommand`) — the flag does not depend on the reques
 host. Do not "optimize" either half away.
 
 **The tmux config is not inherited either — every argv carries `-f /dev/null`.** `-L kotgent` isolates the
-*socket*, not the *configuration*: tmux parses `/etc/tmux.conf` and `~/.tmux.conf` whenever a command
-starts a server, whatever the socket is labelled (measured on a throwaway socket — an operator's
+*socket*, not the *configuration*: tmux parses its system config and the user's (`~/.tmux.conf`, also
+`$XDG_CONFIG_HOME/tmux/tmux.conf`; the system one sits next to the binary, e.g.
+`/opt/homebrew/etc/tmux.conf` for the Homebrew tmux `defaultTmuxPath()` prefers) whenever a command
+**starts a server**, whatever the socket is labelled (measured on a throwaway socket — an operator's
 `mouse on` / `focus-events on` leaked straight into a server their config has nothing to do with). The
 consequence that matters is `destroy-unattached on`: kotgent's last-detach closes the one upstream, tmux
 then destroys the session, and the agent is killed by a file kotgent never reads. `-f /dev/null` suppresses
-the user config completely, which alone restores the Detach invariant. Exactly two places build a tmux
-argv — `tmuxCommand()` (`src/tmux/TmuxOptions.kt`), the funnel for the whole control plane, and
-`attachUpstreamCommand` (`src/pty/PtyHandle.kt`) for the attach upstream — and both prepend
-`TMUX_CONFIG_ISOLATION`. **Any new tmux argv site must go through `tmuxCommand()`**; a hand-rolled
-`listOf(tmux, "-L", socket, …)` silently re-opens the hole. (Exempt, because they start no server and
-parse no config: `tmux -V`, `command -v tmux`, and `kill-server` teardowns.) On top of isolation kotgent
-forces six options (`TMUX_SERVER_OPTIONS`): `destroy-unattached off`, `default-terminal tmux-256color`,
-`mouse on`, `status off`, `history-limit 10000`, `escape-time 0` (`-s` scope). The first two already equal
-tmux 3.7b's built-in defaults — isolation is what fixes Detach; they are pins against a future upstream
-default change. The options are chained into the **same invocation** as `new-session`
+the user config completely, which alone restores the Detach invariant. **`-f` only affects the invocation
+that STARTS a server** — on every later call it is inert, so a `-L kotgent` server that something *else*
+brought up has already loaded the user's config and no later flag undoes it (the option chain still
+re-converges the option *values* on the next `newSession`, but bindings/hooks/plugins stay). Two places in
+*production* build a tmux argv — `tmuxCommand()` (`src/tmux/TmuxOptions.kt`), the funnel for the whole
+control plane, and `attachUpstreamCommand` (`src/pty/PtyHandle.kt`) for the attach upstream — and both
+prepend `TMUX_CONFIG_ISOLATION`. **Any new tmux argv site must go through `tmuxCommand()`**; a hand-rolled
+`listOf(tmux, "-L", socket, …)` silently re-opens the hole. Outside production two fixtures build their own:
+`ptycheck/src/Main.kt` hand-rolls `"${q(tmux)} -f /dev/null -L $socket"` as a shell string (it cannot use
+`ProcessRunner`), and `TmuxTest.rawTmux` builds a deliberately *un*-isolated argv — that one **is** the
+isolation probe. (Exempt, because they start no server and parse no config: `tmux -V`, `command -v tmux`,
+and `kill-server` teardowns.) On top of isolation kotgent forces five options (`TMUX_SERVER_OPTIONS`):
+`destroy-unattached off`, `default-terminal tmux-256color`, `status off`, `history-limit 10000`,
+`escape-time 10` (`-s`). Three of them already equal tmux 3.7b's built-in defaults — isolation is what
+fixes Detach; they are pins against a future upstream default change. `TmuxOption.scope` is documentation
+plus the read-back flag, **not** a correctness gate: tmux resolves an option's scope from its *name* and
+ignores a mismatched flag (`set-option -g escape-time 55` exits 0 and sets the server option). Note
+`default-terminal` is the `TERM` the agent sees *inside* the pane; `ATTACH_TERM` (`xterm-256color`,
+`src/pty/PtyHandle.kt`) is the `TERM` of the attach *client* kotgent presents to tmux — different ends of
+the pipe, correctly different values. The options are chained into the **same invocation** as `new-session`
 (`set-option … ';' new-session …`), never applied afterwards: a standalone `set-option` cannot start a
 server (exit 1, `error connecting to …`) and `default-terminal` is read when the pane is *created*, so the
 chain is the only way, not an optimisation. A rejected chain aborts before `new-session` and creates no
-session, so `newSession` retries once with a bare `new-session` and applies the options best-effort — one
-option name a different tmux build rejects must not make session creation impossible, and since the
-built-in defaults are already safe for Detach, degrading costs only ergonomics. **`focus-events` is
-deliberately NOT set**: one upstream client serves N subscribers, so "is it focused" has no single answer,
-and kotgent already has better signals (the lazy `TerminalBridge`'s subscriber count, agent state over
-hooks). It doubles as the decoy in the isolation integration test *because* kotgent never sets it — a unit
-test pins its absence, so adding it would fail there first rather than quietly making that test
-unfalsifiable.
+session, and `newSession` then **fails loudly** with tmux's stderr (which names the option) — fail-fast,
+like `AgentBinaryNotFoundException`. A bare-retry + best-effort fallback was tried and removed: it fired on
+*every* failure (duplicate session, bad cwd, dead socket), doubled the spawn count, misattributed the real
+error, and silently lost the pane-creation-time options anyway. `Tmux.serverOptions` is a constructor
+parameter (deliberately **not** on `TmuxControl`) purely as a test seam: it is the only way to drive a
+*non-default* `default-terminal` through `newSession` and prove from the pane's `$TERM` that the chain
+landed before the pane existed — with the production values that assertion would pass with the whole chain
+deleted. **`focus-events` and `mouse` are deliberately NOT set.** Focus has no single answer when one
+upstream client serves N subscribers, and kotgent has better signals (the lazy `TerminalBridge`'s
+subscriber count, agent state over hooks); `focus-events` doubles as the decoy in the isolation
+integration test *because* kotgent never sets it. `mouse on` was measured to **break Interrupt**: a wheel
+scroll from any subscriber puts the shared pane into copy-mode, where every `send-keys` — including
+`SessionManager.interrupt`'s `0x03` — is routed to the copy-mode key table and dropped while tmux still
+exits 0, so the projection would record an interrupt that never happened. `Tmux.sendKeys` therefore issues
+a best-effort `send-keys -X … cancel` first (a separate call: chained, it aborts the whole invocation with
+"not in a mode" whenever the pane was not in copy-mode). Unit tests pin the absence of both options, so
+adding either fails there first rather than quietly making the isolation test unfalsifiable.
 
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on

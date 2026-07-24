@@ -115,6 +115,21 @@ fun terminalWsUrl(baseUrl: String, sessionId: String, size: WinSize? = null): St
 }
 
 /**
+ * The terminal modes `attach` must switch back off on exit, in one write: SGR / button / normal mouse
+ * reporting, the alternate screen, and cursor visibility.
+ *
+ * [LocalTty.restore] only restores **termios** — it knows nothing about the private DEC modes the
+ * remote side turned on. Those arrive as ordinary bytes in the stream: the upstream `tmux attach`
+ * (and any TUI running inside the pane) emits e.g. `\e[?1049h` / `\e[?1006h` and they are broadcast
+ * straight to this client's stdout. The matching disable sequences are written into the *upstream*
+ * pty AFTER the last subscriber has gone (`TerminalBridge` closes the upstream on 1→0), so they can
+ * never reach the operator's terminal. Without this reset the terminal is left on the alternate
+ * screen or emitting `\e[<…M` on every click until the user runs `reset`.
+ */
+const val TERMINAL_MODE_RESET: String =
+    "\u001b[?1006l\u001b[?1002l\u001b[?1000l\u001b[?1049l\u001b[?25h"
+
+/**
  * Encode a terminal resize as the text control frame the server's terminal WS expects (see
  * [io.kotgent.transport.terminalWs]): `{"type":"resize","cols":C,"rows":R}`. Kept as a tiny pure
  * function so the exact wire shape is unit-testable without a live socket.
@@ -198,6 +213,10 @@ class AttachClient(
                 runCatching { session.close() }
             }
         } finally {
+            // Order matters: the mode reset is terminal OUTPUT, so it goes out while the tty is still
+            // ours, before termios is handed back. See TERMINAL_MODE_RESET for why restore() alone
+            // leaves the terminal reporting mouse events / stuck on the alternate screen.
+            writeStdout(TERMINAL_MODE_RESET.encodeToByteArray())
             tty.restore()
             client.close()
             stdinCtx.close()

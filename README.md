@@ -77,7 +77,15 @@ To build from source instead, see [Build & test](#build--test).
   You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.11.1) on
   first run. A JDK is required for the toolchain and the build-time SQLDelight codegen plugin.
 - **`tmux`** — sessions live on a dedicated server socket (`tmux -L kotgent`), isolated from your normal
-  `tmux`. Developed against tmux 3.7b.
+  `tmux` **and from your `~/.tmux.conf`**: kotgent passes `-f /dev/null` on every invocation, so none of
+  your config is loaded into an agent's pane — not your prefix key, bindings, plugins, `status-format` or
+  `default-terminal`. This is deliberate. A `~/.tmux.conf` is written for a terminal *you* drive, and one
+  line of it (`set -g destroy-unattached on`) would kill the agent every time the last viewer detaches.
+  In its place kotgent forces its own small set: `destroy-unattached off`, `default-terminal
+  tmux-256color`, `status off`, `history-limit 10000`, `escape-time 10`. `mouse` and `focus-events` stay
+  off — with one tmux client fanned out to many viewers, mouse mode puts the *shared* pane into copy-mode
+  and swallows the Ctrl-C that Interrupt sends. Scroll back with your terminal's own scrollback (or the
+  browser's). Developed against tmux 3.7b.
 - **`claude`** — the Claude Code CLI, on your `PATH`. Session-id preallocation (`claude --session-id`)
   needs a recent version; kotgent version-gates it and falls back to a `SessionStart` hook on older CLIs.
   Developed against claude 2.1.x.
@@ -228,6 +236,12 @@ the first question is almost always "does the plist still match my shell?".
   come from a long-lived `tmux` server started by an *older* kotgent, which is still holding the listening
   socket the daemon that spawned it left behind. `tmux -L kotgent kill-server` releases it — note that this
   also stops every agent running under that server.
+- **My tmux settings do nothing inside a kotgent pane.** Expected: kotgent runs every tmux command with
+  `-f /dev/null`, so `~/.tmux.conf` is never loaded on its socket (see [Requirements](#requirements) for
+  what it forces instead). Your own `tmux` on the default socket is untouched. There is no user-facing
+  override — the option set lives in `src/tmux/TmuxOptions.kt`. Note the flag only affects the command
+  that *starts* a server: if something else already started one on `-L kotgent`, that server has your
+  config until it is restarted (`tmux -L kotgent kill-server`, which also stops every agent on it).
 - **Inspecting the daemon itself.** It is a normal LaunchAgent: `launchctl print gui/$UID/io.kotgent.daemon`
   shows its state, and the plist at `~/Library/LaunchAgents/io.kotgent.daemon.plist` shows the exact `PATH`
   and `LANG` that were snapshotted.
@@ -275,7 +289,7 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `core/` | Host-free domain: `AgentEvent`, `SessionState`, `SessionMeta`, `Reducer`, `Projection`. No I/O. |
 | `store/` | `EventStore` interface + SQLDelight-backed `SqliteEventStore` (single-writer, WAL, append+cache in one transaction). |
 | `pty/` | `TerminalBridge` + `Broadcaster` — the lazy single-upstream `tmux attach` fan-out. |
-| `tmux/` | Thin wrapper over `tmux -L kotgent` via a `popen`-based `ProcessRunner`. |
+| `tmux/` | Thin wrapper over `tmux -f /dev/null -L kotgent` via a `popen`-based `ProcessRunner`: one argv builder that isolates the server from `~/.tmux.conf`, plus the small option set kotgent forces in its place. |
 | `adapter/` | `AgentAdapter` contract + the Claude and Codex adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
 | `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), the `/auth` ticket exchange, hook ingress, static Web UI. |

@@ -78,19 +78,6 @@ const val ATTACH_TERM: String = "xterm-256color"
 const val ATTACH_FALLBACK_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 /**
- * The environment handed to the `tmux attach` upstream child — **pure**, built from the daemon's own
- * [lang] / [home] / [path] (the `getenv` reads live in the no-arg overload in `RealPtyHandle.kt`).
- *
- * `tmux attach` needs at least [ATTACH_TERM] to build a terminal description — with an empty
- * environment it fails ("missing or unsuitable terminal"), the child exits immediately and the
- * browser/CLI terminal shows "[terminal disconnected]".
- *
- * `LANG` is **always set**, falling back to a UTF-8 locale via [utf8LocaleOrDefault] rather than
- * being passed through only when inherited: a tmux client that reads as non-UTF-8 rewrites every
- * non-ASCII cell as `_`, and under launchd there is no inherited `LANG` at all. Identity is never
- * derived from inherited env.
- */
-/**
  * argv for the upstream attach client: `tmux -f /dev/null -u -L <socket> attach -t <session>` —
  * **pure**, so the exact flags are unit-testable without a tmux server (KT-78062: the cinterop that
  * would actually run this does not link into the test binary, so the argv rule is asserted here).
@@ -111,6 +98,19 @@ const val ATTACH_FALLBACK_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/s
 fun attachUpstreamCommand(tmuxPath: String, socket: String, session: String): List<String> =
     listOf(tmuxPath) + TMUX_CONFIG_ISOLATION + listOf("-u", "-L", socket, "attach", "-t", session)
 
+/**
+ * The environment handed to the `tmux attach` upstream child — **pure**, built from the daemon's own
+ * [lang] / [home] / [path] (the `getenv` reads live in the no-arg overload in `RealPtyHandle.kt`).
+ *
+ * `tmux attach` needs at least [ATTACH_TERM] to build a terminal description — with an empty
+ * environment it fails ("missing or unsuitable terminal"), the child exits immediately and the
+ * browser/CLI terminal shows "[terminal disconnected]".
+ *
+ * `LANG` is **always set**, falling back to a UTF-8 locale via [utf8LocaleOrDefault] rather than
+ * being passed through only when inherited: a tmux client that reads as non-UTF-8 rewrites every
+ * non-ASCII cell as `_`, and under launchd there is no inherited `LANG` at all. Identity is never
+ * derived from inherited env.
+ */
 fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, String> {
     val env = LinkedHashMap<String, String>()
     env["TERM"] = ATTACH_TERM

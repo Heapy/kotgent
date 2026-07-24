@@ -156,14 +156,15 @@ private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits onl
  * Uses the throwaway `-L kotgent-test` socket (never the real `kotgent` one), like the tmux tests
  * in the suite, and kills its session in teardown.
  *
- * **This check is what starts the ptycheck run's tmux server**, so its isolation is the one that
- * decides the whole file's. `-L` labels the SOCKET, not the CONFIG: without `-f /dev/null` this
- * `new-session` would parse the developer's `~/.tmux.conf`, and one with `set -g destroy-unattached
- * on` would have tmux tear the session down the instant the attach below closes — failing the
- * "should outlive the attach" assertion on a machine-specific setting the fixture never mentions.
- * `main()` runs this check first and `-f` only applies to the invocation that STARTS a server, so
- * the `-f` on every later call here is inert while this server lives; they carry it so no call site
- * has to know which one came first.
+ * **This check's `new-session` starts a tmux server**, so its isolation is load-bearing. `-L` labels
+ * the SOCKET, not the CONFIG: without `-f /dev/null` this `new-session` would parse the developer's
+ * `~/.tmux.conf`, and one with `set -g destroy-unattached on` would have tmux tear the session down
+ * the instant the attach below closes — failing the "should outlive the attach" assertion on a
+ * machine-specific setting the fixture never mentions. It is the first of the three tmux checks in
+ * `main()` (the 6th check overall), and `-f` only applies to the invocation that STARTS a server —
+ * so the flag on the later calls *of this check* is inert while this server lives. Each of the other
+ * tmux checks starts its own server (an empty tmux server does not persist, and the `finally` below
+ * kills the last session), so their `-f` is load-bearing too, not inert.
  */
 private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spawned pts") {
     val tmux = which("tmux") ?: skip("tmux is not on PATH")
@@ -174,6 +175,14 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
     sh("$target kill-session -t $session")
     val created = sh("$target new-session -d -s $session -x 80 -y 24 /bin/cat")
     expect(created == 0) { "could not create the tmux fixture session (exit=$created)" }
+
+    // The assertion behind `-f /dev/null`: on an isolated server this reads tmux's own default. A
+    // developer whose ~/.tmux.conf sets `destroy-unattached on` fails HERE, naming the cause, rather
+    // than failing the "outlives the attach" check below with a message that blames the pty.
+    val destroyUnattached = capture("$target show-options -gv destroy-unattached")
+    expect(destroyUnattached == "off") {
+        "an isolated server must report destroy-unattached off, got <$destroyUnattached> — is -f /dev/null still there?"
+    }
 
     try {
         val pty = Pty.open(
@@ -208,9 +217,10 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
  * only a size set before the client's startup `TIOCGWINSZ` ever took effect.
  *
  * Needs a real pty AND a real tmux client, so it cannot live in the suite. Throwaway `-L kotgent-test`
- * socket, session killed in teardown. `-f /dev/null` rides along for the same reason as everywhere
- * else; here it is normally inert, because [tmuxAttachRunsOnTheSpawnedPts] runs first and has already
- * started the server (see its KDoc).
+ * socket, session killed in teardown. `-f /dev/null` is **load-bearing here too**: an empty tmux
+ * server does not persist, and [tmuxAttachRunsOnTheSpawnedPts] kills its only session in its
+ * `finally`, so the server is gone by the time this runs (verified: `has-session` afterwards reports
+ * "no server running") and the `new-session` below starts a fresh one. Do not drop the flag.
  */
 private fun resizeReachesARunningTmuxAttach() = check("a resize reaches a running tmux attach") {
     val tmux = which("tmux") ?: skip("tmux is not on PATH")

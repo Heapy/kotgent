@@ -303,6 +303,23 @@ class CliTest {
         assertEquals(40, obj.getValue("rows").jsonPrimitive.int)
     }
 
+    /**
+     * `attach` must hand the terminal back the way it found it. `LocalTty.restore()` only covers
+     * termios; the private DEC modes (mouse reporting, alternate screen, cursor) were turned on by
+     * bytes the *remote* side sent, and their disable sequences are written into the upstream pty
+     * only after the last subscriber has gone — so they never reach the operator. Hence an explicit
+     * reset written to stdout on exit; this pins its exact contents.
+     */
+    @Test
+    fun theTerminalModeResetDisablesEveryModeTheRemoteSideCanTurnOn() {
+        val esc = "\u001b"
+        assertEquals(
+            listOf("$esc[?1006l", "$esc[?1002l", "$esc[?1000l", "$esc[?1049l", "$esc[?25h"),
+            TERMINAL_MODE_RESET.split(esc).filter { it.isNotEmpty() }.map { esc + it },
+            "SGR + button + normal mouse reporting off, alternate screen off, cursor shown",
+        )
+    }
+
     @Test
     fun withRawModeSavesThenRestoresOnSuccess() {
         val tty = FakeTty()

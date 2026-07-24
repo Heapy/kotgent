@@ -74,6 +74,11 @@ export function TerminalPane({
       fontFamily: "Menlo, Monaco, \"Courier New\", monospace",
       fontSize: 13,
       theme: { background: "#000000" },
+      // When the pane's app turns on mouse reporting, xterm.js disables its selection service and the
+      // only way back is shouldForceSelection() — Shift+drag elsewhere, but on macOS Alt+drag AND this
+      // option, which defaults to false. Without it a macOS browser cannot select terminal text at all
+      // while a mouse-reporting TUI is running, and there is no copy button to fall back on.
+      macOptionClickForcesSelection: true,
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
