@@ -16,6 +16,7 @@ import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
+import io.kotgent.daemon.requireAbsoluteBinary
 import io.kotgent.daemon.byAgentVendorStoreProbe
 import io.kotgent.daemon.claudeVendorStoreProbe
 import io.kotgent.daemon.codexVendorStoreProbe
@@ -301,13 +302,17 @@ object Commands {
         val codexCli = CodexCli()
         val codexVersion = codexCli.detectVersion()
         // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
-        // does not depend on the child shell's PATH under launchd's minimal env. Falls back to the bare
-        // name (found via the child's PATH) if it cannot be located; the located path (nullable) is what
-        // we persist as `cliPath` metadata (the bare-name fallback is a launch detail, not a real path).
-        val claudeLocated = claudeCli.locate()
-        val claudePath = claudeLocated ?: CLAUDE_AGENT_KIND
-        val codexLocated = codexCli.locate()
-        val codexPath = codexLocated ?: CODEX_AGENT_KIND
+        // does not depend on the child shell's PATH under launchd's minimal env. `locate()` returns null
+        // when the agent is NOT resolvable on the daemon's PATH; it can also return a NON-absolute path
+        // (a name resolved via a relative PATH dir, or a name with a slash). Both are unusable: tmux does
+        // `new-session -c <cwd>` (cd into the session cwd) before exec, so a relative path would exec a
+        // wrong cwd-local binary or die at exec (127) after a `running` row was persisted — a phantom
+        // session and the 1006 attach failure this path exists to prevent. So `requireAbsoluteBinary`
+        // fails fast with AgentBinaryNotFoundException (from the factory builder, BEFORE any tmux side
+        // effect) unless the path is absolute, pointing the user at `kotgent install` (which snapshots the
+        // shell PATH into the plist). The same located path is what we persist as `cliPath` metadata.
+        val claudePath: String? = claudeCli.locate()
+        val codexPath: String? = codexCli.locate()
         // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
         // instead of silently building some other provider's adapter for it (which would launch the wrong
         // agent while persisting the requested name).
@@ -319,9 +324,9 @@ object Commands {
                         settingsPath = settingsPath,
                         events = emptyFlow(),
                         sessionIdSupported = sessionIdSupported,
-                        binaryName = claudePath,
+                        binaryName = requireAbsoluteBinary(CLAUDE_AGENT_KIND, claudePath),
                         cliVersion = claudeVersion?.toString(),
-                        cliPath = claudeLocated,
+                        cliPath = claudePath,
                     )
                 },
                 CODEX_AGENT_KIND to { cwd: String ->
@@ -329,9 +334,9 @@ object Commands {
                         cwd = cwd,
                         hookScriptPath = codexHookScriptPath,
                         events = emptyFlow(),
-                        binaryName = codexPath,
+                        binaryName = requireAbsoluteBinary(CODEX_AGENT_KIND, codexPath),
                         cliVersion = codexVersion?.toString(),
-                        cliPath = codexLocated,
+                        cliPath = codexPath,
                     )
                 },
             ),

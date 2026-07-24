@@ -3,6 +3,7 @@ package io.kotgent.transport
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.unread
+import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.NoSuchSessionException
 import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
@@ -80,7 +81,13 @@ fun Route.controlRoutes(
         val meta = try {
             sessionManager.start(req.agent, req.cwd, req.name, req.tags)
         } catch (e: UnsupportedAgentException) {
-            // v1 supports only `claude` — a clear client error, not a silent Claude substitution or a 500.
+            // The requested kind is not one this daemon supports — a clear client error, not a silent
+            // substitution or a 500.
+            call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (e: AgentBinaryNotFoundException) {
+            // The kind is supported but its binary did not resolve on the daemon's PATH (launchd's minimal
+            // env) — a client-fixable misconfiguration carrying a `kotgent install` hint, not a 500.
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
         } catch (e: TmuxException) {
@@ -156,6 +163,11 @@ fun Route.controlRoutes(
             // `resume` rebuilds the adapter from the STORED agent kind, so a legacy/foreign row (e.g. a
             // `codex` session persisted before the kind was gated) throws the same exception the start
             // route maps to 400. Map it here too — it is a client error, not a 500.
+            call.respondText("action '$action' failed: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (e: AgentBinaryNotFoundException) {
+            // `resume` rebuilds the adapter from the stored kind; if that binary is no longer on the
+            // daemon's PATH the builder throws this — same 400 + `kotgent install` hint as start, not a 500.
             call.respondText("action '$action' failed: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
         } catch (e: TmuxException) {

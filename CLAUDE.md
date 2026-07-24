@@ -118,6 +118,19 @@ macOS's `POSIX_SPAWN_CLOEXEC_DEFAULT`, which closes everything not named in its 
 orphan accepts and then stays silent, so `ApiClient` sets `HttpTimeout` and `AttachClient` bounds the WS
 *handshake* with `withTimeout` (a finite `requestTimeoutMillis` would kill a healthy long-lived attach).
 
+**The daemon's PATH is snapshotted at `kotgent install`.** launchd starts the daemon with a minimal env,
+so `kotgent install` captures the caller's login `getenv("PATH")` and merges it with the
+`DAEMON_DEFAULT_PATH` fallback (`mergedDaemonPath` in `src/launchd/Plist.kt` — dedup, captured entries
+first) into the plist's `EnvironmentVariables.PATH`. Agents inherit that PATH — that is how a launchd-run
+daemon finds `claude`/`codex` (and, for codex's `env node` shebang, `node`) outside the system bins;
+re-run `kotgent install` from a full shell whenever the PATH goes stale. (Forcing PATH per-pane via tmux
+`new-session -e PATH=…` was tried and does **not** work on macOS: tmux spawns the pane as a login shell, so
+`/etc/zprofile`'s `path_helper -s` rebuilds PATH from `/etc/paths*` and discards the injected value — the
+pane's PATH comes from the server's env plus the user's shell rc files, not from `-e`.) An agent binary that
+does **not** resolve on the daemon's PATH **fails fast**: the factory's `create()` throws
+`AgentBinaryNotFoundException` before any tmux side-effect (no phantom `running` row), which `ControlRoutes`
+maps to a **400 carrying a `kotgent install` hint** — not a silent attach `1006`.
+
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on
 daemon start. Hooks report `$TMUX_PANE`. **Never trust an inherited env var** (`KOTGENT_SESSION_ID` is a
@@ -242,7 +255,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **400 run / 400 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **414 run / 414 passed /
   0 skipped**.
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly

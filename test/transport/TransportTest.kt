@@ -14,6 +14,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.reduce
 import io.kotgent.core.replay
+import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
@@ -375,6 +376,46 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
     }
 
+    @Test
+    fun startingAnAgentWhoseBinaryIsMissingIs400WithInstallHint() = withServer(
+        // The kind IS supported, but its binary did not resolve on the daemon's PATH (launchd's minimal
+        // env), so the factory builder throws AgentBinaryNotFoundException — a client-fixable
+        // misconfiguration, not a 500, carrying the actionable `kotgent install` hint.
+        factory = agentFactoryOf(mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") })),
+    ) { ctx ->
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody("""{"agent":"claude","cwd":"/tmp"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "a missing agent binary is a client error, not a 500")
+        val body = resp.bodyAsText()
+        assertTrue(body.contains("kotgent install"), "the 400 body carries the install hint: $body")
+        assertTrue(body.contains("claude"), "the 400 body names the agent kind: $body")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
+    }
+
+    @Test
+    fun resumingASessionWhoseAgentBinaryIsMissingIs400WithInstallHint() = withServer(
+        // `resume` rebuilds the adapter from the STORED kind; if that binary is no longer on the daemon's
+        // PATH the builder throws AgentBinaryNotFoundException. The action route must map it to the same
+        // 400 + install hint as the start route, not surface a 500.
+        factory = agentFactoryOf(mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") })),
+    ) { ctx ->
+        ctx.store.upsertSession(
+            SessionMeta(
+                id = SessionId("miss01"), name = "miss01", agent = "claude", providerSessionId = providerId,
+                cwd = "/tmp", tmuxSession = "kt-miss01", state = SessionState.resumable,
+                createdAt = 1L, updatedAt = 1L,
+            ),
+        )
+        val resp = ctx.post("/sessions/miss01/resume")
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "a missing agent binary is a client error, not a 500")
+        val body = resp.bodyAsText()
+        assertTrue(body.contains("kotgent install"), "the 400 body carries the install hint: $body")
+        assertTrue(body.contains("claude"), "the 400 body names the agent kind: $body")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** The wired-up server + client + fakes handed to each test body. */
@@ -416,7 +457,16 @@ class TransportTest {
         }
     }
 
-    private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
+    private fun withServer(
+        // Wired as the daemon does (Commands.daemon), narrowed to one kind: an agent kind the factory
+        // does not know — on start OR on resume of a stored row — surfaces as the UnsupportedAgentException
+        // both routes must map to 400. Overridable so a test can inject a builder that throws (e.g.
+        // AgentBinaryNotFoundException for the missing-binary paths).
+        factory: AgentFactory = agentFactoryOf(
+            mapOf("claude" to { cwd: String -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) }),
+        ),
+        block: suspend (Ctx) -> Unit,
+    ) = runBlocking {
         withTimeout(40_000) {
             val store = FakeEventStore(now = { 1L })
             val tmux = FakeTmux()
@@ -424,10 +474,7 @@ class TransportTest {
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
                 tmux, store, registry,
-                // Wired as the daemon does (Commands.daemon), narrowed to one kind: an agent kind the
-                // factory does not know — on start OR on resume of a stored row — surfaces as the
-                // UnsupportedAgentException both routes must map to 400.
-                agentFactoryOf(mapOf("claude" to { cwd: String -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) })),
+                factory,
                 ProviderIdCapture(store, idScope),
                 now = { 1L },
             )

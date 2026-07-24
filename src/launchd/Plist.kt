@@ -7,12 +7,37 @@ package io.kotgent.launchd
 const val DAEMON_LABEL: String = "io.kotgent.daemon"
 
 /**
- * The `PATH` handed to the daemon under launchd. A launchd agent starts with a *minimal* environment
- * (no login shell has run), so the daemon would not otherwise find `tmux` or `claude`. This lists the
- * Apple-silicon Homebrew prefix (`/opt/homebrew/bin`, where tmux/claude typically live) plus the
- * standard system bins.
+ * The **fallback minimum** `PATH` for the daemon under launchd — the Apple-silicon Homebrew prefix
+ * (`/opt/homebrew/bin`) plus the standard system bins. A launchd agent starts with a *minimal*
+ * environment (no login shell has run), so without an explicit `PATH` the daemon would find almost
+ * nothing.
+ *
+ * This is **not** the PATH normally shipped: `kotgent install` snapshots the caller's real login `PATH`
+ * and merges it in via [mergedDaemonPath], so kotgent-launched agents inherit the same environment a
+ * terminal has (finding `~/.local/bin`, an nvm dir, `~/go/bin`, etc.). This constant is only the floor
+ * used when the captured PATH is null or empty.
  */
 const val DAEMON_DEFAULT_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+/**
+ * Merge the caller's captured `PATH` with [DAEMON_DEFAULT_PATH] for use in the daemon's launchd plist.
+ *
+ * Pure, no I/O. The captured entries win position (they come first, in their captured order); the
+ * default entries are appended; duplicates are dropped preserving first-seen order. Only **absolute**
+ * segments survive: empty/blank segments (from `a::b`, leading/trailing `:`) and any non-absolute entry
+ * (a relative dir or a `.` — never useful, and a mild risk, in a daemon's PATH) are discarded.
+ *
+ * If [captured] is `null` or contributes no usable segment, [DAEMON_DEFAULT_PATH] is returned verbatim
+ * (the backward-compatible fallback).
+ */
+fun mergedDaemonPath(captured: String?): String {
+    val capturedEntries = (captured ?: "").split(':').filter { it.startsWith("/") }
+    if (capturedEntries.isEmpty()) return DAEMON_DEFAULT_PATH
+    val merged = LinkedHashSet<String>()
+    merged.addAll(capturedEntries)
+    merged.addAll(DAEMON_DEFAULT_PATH.split(':'))
+    return merged.joinToString(":")
+}
 
 /**
  * Default `ThrottleInterval` (seconds). `KeepAlive` relaunches the daemon if it exits; this floor keeps
