@@ -7,7 +7,6 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.codex.CodexAdapter
 import io.kotgent.adapter.codex.CodexCli
 import io.kotgent.adapter.codex.CodexHookConfig
-import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.CodexRolloutScan
@@ -17,6 +16,7 @@ import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
+import io.kotgent.daemon.requireAbsoluteBinary
 import io.kotgent.daemon.byAgentVendorStoreProbe
 import io.kotgent.daemon.claudeVendorStoreProbe
 import io.kotgent.daemon.codexVendorStoreProbe
@@ -294,11 +294,15 @@ object Commands {
         val claudeCli = ClaudeCli()
         val sessionIdSupported = claudeCli.supportsSessionId()
         // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
-        // does not depend on the child shell's PATH under launchd's minimal env. A null path means the
-        // agent is NOT resolvable on the daemon's PATH; rather than falling back to a bare name that would
-        // die at exec (127) and leave a phantom `running` session, the factory builder fails fast with
-        // AgentBinaryNotFoundException (thrown from create(), BEFORE any tmux side effect), pointing the
-        // user at `kotgent install` (which snapshots the shell PATH into the plist).
+        // does not depend on the child shell's PATH under launchd's minimal env. `locate()` returns null
+        // when the agent is NOT resolvable on the daemon's PATH; it can also return a NON-absolute path
+        // (a name resolved via a relative PATH dir, or a name with a slash). Both are unusable: tmux does
+        // `new-session -c <cwd>` (cd into the session cwd) before exec, so a relative path would exec a
+        // wrong cwd-local binary or die at exec (127) after a `running` row was persisted — a phantom
+        // session and the 1006 attach failure this path exists to prevent. So `requireAbsoluteBinary`
+        // fails fast with AgentBinaryNotFoundException (from the factory builder, BEFORE any tmux side
+        // effect) unless the path is absolute, pointing the user at `kotgent install` (which snapshots the
+        // shell PATH into the plist).
         val claudePath: String? = claudeCli.locate()
         val codexPath: String? = CodexCli().locate()
         // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
@@ -312,7 +316,7 @@ object Commands {
                         settingsPath = settingsPath,
                         events = emptyFlow(),
                         sessionIdSupported = sessionIdSupported,
-                        binaryName = claudePath ?: throw AgentBinaryNotFoundException(CLAUDE_AGENT_KIND),
+                        binaryName = requireAbsoluteBinary(CLAUDE_AGENT_KIND, claudePath),
                     )
                 },
                 CODEX_AGENT_KIND to { cwd: String ->
@@ -320,7 +324,7 @@ object Commands {
                         cwd = cwd,
                         hookScriptPath = codexHookScriptPath,
                         events = emptyFlow(),
-                        binaryName = codexPath ?: throw AgentBinaryNotFoundException(CODEX_AGENT_KIND),
+                        binaryName = requireAbsoluteBinary(CODEX_AGENT_KIND, codexPath),
                     )
                 },
             ),

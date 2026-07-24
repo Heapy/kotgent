@@ -135,6 +135,20 @@ class AgentBinaryNotFoundException(val agentKind: String) :
     )
 
 /**
+ * Resolve a `command -v` result ([located]) to an **absolute** agent binary path, or fail fast with
+ * [AgentBinaryNotFoundException]. `locate()` returns whatever `command -v <kind>` prints, which is only
+ * absolute when the name resolved against an absolute PATH dir; a non-absolute result (a name resolved
+ * via a relative dir / `.` on PATH, or a name that itself contains a slash) is a real hole here: tmux
+ * runs `new-session -c <cwd>` — cd into the session cwd — *before* exec, so a relative path would exec a
+ * wrong cwd-local binary, or fail at exec only after a `running` row was persisted, recreating the
+ * phantom-session / 1006 failure the fail-fast exists to prevent. So a `null` OR non-absolute path is
+ * treated exactly like "not found". Called from the factory builders (see [SessionManager.start] /
+ * [SessionManager.resume]) so the throw lands before any tmux side effect.
+ */
+fun requireAbsoluteBinary(agentKind: String, located: String?): String =
+    located?.takeIf { it.startsWith("/") } ?: throw AgentBinaryNotFoundException(agentKind)
+
+/**
  * One cleanup step of a compensation that itself failed (e.g. the `kill-session` that should have
  * removed a just-launched agent, or the state write that should have erased a phantom row).
  *

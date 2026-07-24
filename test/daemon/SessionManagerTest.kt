@@ -902,6 +902,47 @@ class SessionManagerTest {
     }
 
     @Test
+    fun agentFactoryFailsFastWhenTheResolvedBinaryPathIsNotAbsoluteBeforeAnyTmuxSideEffect() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            // `locate()` (command -v) can print a NON-absolute path (a name resolved via a relative PATH
+            // dir / `.`, or a name with a slash). tmux does `new-session -c <cwd>` (cd into the session
+            // cwd) before exec, so a relative binaryName would exec a wrong cwd-local binary. The daemon
+            // bootstrap runs its `locate()` result through requireAbsoluteBinary, so treat non-absolute
+            // exactly like not-found.
+            val direct = assertFailsWith<AgentBinaryNotFoundException> { requireAbsoluteBinary("claude", "claude") }
+            assertEquals("claude", direct.agentKind)
+            assertTrue(direct.message!!.contains("kotgent install"), "the message points at `kotgent install`")
+            // A relative-with-slash path is rejected too (the cwd-relative exec hole this closes).
+            assertFailsWith<AgentBinaryNotFoundException> { requireAbsoluteBinary("claude", "./claude") }
+            // An absolute path passes through unchanged.
+            assertEquals("/opt/homebrew/bin/claude", requireAbsoluteBinary("claude", "/opt/homebrew/bin/claude"))
+
+            // The bootstrap factory shape: the builder resolves via requireAbsoluteBinary, so a non-absolute
+            // resolved path fails fast with NO tmux side-effect and NO phantom `running` row.
+            val factory = agentFactoryOf(
+                mapOf(
+                    "claude" to { cwd: String ->
+                        // requireAbsoluteBinary is the daemon's binaryName resolution — a non-absolute
+                        // path throws here, before the adapter is built (mirrors the bootstrap).
+                        requireAbsoluteBinary("claude", "claude")
+                        StubAgentFactory(cat, null).create("claude", cwd)
+                    },
+                ),
+            )
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), factory,
+                ProviderIdCapture(store, this),
+                newSessionId = { SessionId("na000001") }, now = { 1L },
+            )
+            assertFailsWith<AgentBinaryNotFoundException> { mgr.start("claude", "/tmp") }
+            assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux session is created for a non-absolute agent path")
+            assertNull(store.getSession(SessionId("na000001")), "no phantom `running` row is persisted")
+        }
+    }
+
+    @Test
     fun resumePropagatesAgentBinaryNotFoundBeforeAnyTmuxSideEffect() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })

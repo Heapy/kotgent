@@ -104,8 +104,10 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 
 ## Technical Details
 - `mergedDaemonPath(captured: String?): String` (pure, in `Plist.kt`):
-  - split `captured` on `:`, drop empty segments; append `DAEMON_DEFAULT_PATH` segments; dedup preserving
-    first-seen order (captured entries win position); rejoin with `:`.
+  - split `captured` on `:`, keeping only **absolute** segments (this drops empty/blank segments from
+    `a::b`/leading/trailing `:` AND any non-absolute entry, e.g. a relative dir or `.`); append
+    `DAEMON_DEFAULT_PATH` segments; dedup preserving first-seen order (captured entries win position);
+    rejoin with `:`.
   - `captured` null or (after cleaning) empty → return `DAEMON_DEFAULT_PATH` unchanged.
 - `LaunchdInstaller` gains a seam `pathProvider: () -> String? = ::currentPath`, where `currentPath()` is a
   new top-level `@OptIn(ExperimentalForeignApi::class) fun currentPath(): String? =
@@ -216,7 +218,7 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
       `running` row / orphan pane (Tasks 3-4 green — SessionManagerTest asserts no tmux side-effect + no
       persisted row + hint message; TransportTest asserts 400 + hint for start and resume/action)
 - [x] run the full suite: `./kotlin build && ./kotlin test` — 0 failures, **0 skips**, count ≥ prior 361
-      (actual: 385 run / 385 passed / 0 skips)
+      (actual: 388 run / 388 passed / 0 skips)
 - [x] no machine-specific absolute path leaked into any `*.yaml` (`git grep '/Users/' -- '*.yaml'` empty)
 
 ### Task 6: Update documentation

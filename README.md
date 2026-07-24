@@ -47,7 +47,7 @@ immortal:
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **361 run / 361 passed / 0 skipped**.
+The suite currently reports **388 run / 388 passed / 0 skipped**.
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
 binary, and `./kotlin test` on its own never links a main binary. If the binary is missing the test says
