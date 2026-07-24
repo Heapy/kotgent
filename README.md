@@ -215,6 +215,8 @@ is and isn't here:
   keyboard, approve buttons) and **Web Push**. Remote phone access itself — the cloudflared tunnel +
   Access, sign-in by QR, and the cookie — is now in the slice (see [Sign in from your
   phone](#sign-in-from-your-phone)).
+- **Session archiving** — a way to hide a finished session from the sidebar without ending the agent or
+  losing its history, so the list stays the working set rather than every session ever started.
 - A **diff viewer**, external-session import, and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
