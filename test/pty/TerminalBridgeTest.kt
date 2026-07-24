@@ -142,26 +142,38 @@ class TerminalBridgeTest {
      * [TerminalBridge.write] is the `POST /sessions/{id}/input` seam, and its Boolean is the whole
      * reason that endpoint can answer honestly: the bridge is LAZY, so with no terminal subscriber
      * attached there is no `tmux attach` upstream to write into and the bytes are dropped — the
-     * COMMON drop, more common than the copy-mode one. It used to be silent, with the REST caller
-     * told `ok`; it must be reported so the route can answer `409`.
+     * COMMON failure, more common than the copy-mode one. It used to be silent, with the REST caller
+     * told `ok`; it must be reported so the route can answer `409`. A pty exception is different:
+     * full pty write completion was not observed, but a prefix may already have been written.
      */
     @Test
-    fun theRestWriteSeamReportsWhetherTheBytesReachedAnUpstream() = bridgeTest { bridge, factory ->
-        assertFalse(bridge.write("nobody-home".encodeToByteArray()), "no subscriber = no upstream = not delivered")
+    fun theRestWriteSeamReportsWhetherTheFullPtyWriteCompleted() = bridgeTest { bridge, factory ->
+        assertFalse(bridge.write("nobody-home".encodeToByteArray()), "no subscriber = no upstream write")
         assertEquals(0, factory.openCount, "and a bare write never opens one — only a subscriber does")
 
         val a = bridge.subscribe()
-        assertTrue(bridge.write("landed".encodeToByteArray()), "with an upstream open the bytes are delivered")
+        assertTrue(bridge.write("landed".encodeToByteArray()), "the full pty write returned normally")
         assertEquals(listOf("landed"), factory.current.written.map { it.decodeToString() })
 
         // A close racing the write makes the underlying pty write throw. The guard keeps that a clean
-        // `false` (not a 500), but it is still a drop and must not read as delivered.
+        // `false` (not a 500), but full pty write completion was not observed.
         factory.current.failWrites = true
-        assertFalse(bridge.write("thrown".encodeToByteArray()), "a write that threw was not delivered either")
+        assertFalse(bridge.write("thrown".encodeToByteArray()), "a thrown write did not confirm full completion")
+
+        // The real pty loops over partial writes: one syscall can land a prefix and a later one throw.
+        // `false` must therefore never be interpreted as "zero delivered, safe to retry everything".
+        factory.current.failWrites = false
+        factory.current.failWritesAfterBytes = 4
+        assertFalse(bridge.write("prefix-tail".encodeToByteArray()), "a partial pty write did not complete")
+        assertEquals(
+            "pref",
+            factory.current.written.last().decodeToString(),
+            "the false result can coexist with a prefix already present upstream",
+        )
 
         // Empty input is vacuously delivered: there was nothing to lose. (The REST seam refuses an
         // empty body even earlier, so it never gets here — see ControlRoutes.)
-        factory.current.failWrites = false
+        factory.current.failWritesAfterBytes = null
         assertTrue(bridge.write(ByteArray(0)), "an empty write has nothing to deliver and nothing to lose")
 
         a.close()

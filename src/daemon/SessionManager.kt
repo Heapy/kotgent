@@ -429,7 +429,9 @@ class SessionManager(
     /**
      * Interrupt a stuck session: send Ctrl-C to un-stick a `running` that will not budge (Claude emits
      * no hook on Esc/Ctrl-C) AND apply [ControlSignal.Interrupt] to the projection (alive → `ready`,
-     * approvals cleared). The session stays alive, so its pane stays registered.
+     * approvals cleared). The projection is persisted only after [TmuxControl.sendKeys] returns with
+     * verified delivery; an absent target or any other send failure leaves it unchanged. The session
+     * stays alive, so its pane stays registered.
      */
     suspend fun interrupt(sessionId: SessionId): Unit = withControlLock(sessionId) {
         // The read (getSession) must happen INSIDE the lock: reading a live row outside it and then

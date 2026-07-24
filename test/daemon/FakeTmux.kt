@@ -35,14 +35,14 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
 
     /**
      * When true, [leaveCopyMode] reports failure — the fake stand-in for a pane a wheel scroll keeps
-     * dragging back into copy-mode, which is what makes the "input was NOT delivered" path testable.
+     * dragging back into copy-mode, which makes the "input write did not proceed" path testable.
      */
     var copyModeStuck: Boolean = false
 
     /**
      * When true, [sendKeys] throws [TmuxCopyModeException] — the real wrapper's `#{pane_in_mode}`
      * read-back catching a send that went to the copy-mode key table. Distinct from [sendKeysFailure]
-     * because the two carry different wire contracts (409 retryable vs 400 malformed).
+     * because the two carry different wire contracts (retryable 409 vs generic failure 400).
      */
     var sendKeysCopyModeStuck: Boolean = false
 

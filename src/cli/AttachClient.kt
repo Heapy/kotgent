@@ -117,7 +117,7 @@ fun terminalWsUrl(baseUrl: String, sessionId: String, size: WinSize? = null): St
 /**
  * The terminal modes `attach` must switch back off on exit, in one write: the three mouse **trackers**
  * (any-motion / button / normal), then the SGR mouse **encoding**, then bracketed paste, theme-change
- * reporting, the alternate screen, and cursor visibility.
+ * reporting, the alternate screen, cursor visibility, and application-keypad mode.
  *
  * [LocalTty.restore] only restores **termios** — it knows nothing about the private DEC modes the
  * remote side turned on. Those arrive as ordinary bytes in the stream: the upstream `tmux attach`
@@ -129,8 +129,9 @@ fun terminalWsUrl(baseUrl: String, sessionId: String, size: WinSize? = null): St
  *
  * ## What the remote side actually turns on (measured, tmux 3.7b, real pty attach)
  * A `tmux attach` client emits at startup, unconditionally: `\e[?1049h` (alternate screen),
- * `\e[?2004h` (bracketed paste), `\e[?2031h` (theme-change reporting), `\e[?25h`, and — because
- * kotgent forces `mouse on` — `\e[?1006h\e[?1000h\e[?1002h`. When the pane's own app enables
+ * `\e[?2004h` (bracketed paste), `\e[?2031h` (theme-change reporting), `\e[?25h`, and terminfo's
+ * `smkx` (`\e[?1h\e=`, application cursor keys + application keypad). Because kotgent forces
+ * `mouse on`, it also emits `\e[?1006h\e[?1000h\e[?1002h`. When the pane's own app enables
  * **any-motion** tracking (`\e[?1003h`, exactly what crossterm/ratatui's `EnableMouseCapture` sends,
  * i.e. the codex TUI), tmux propagates it and the client emits `\e[?1003h` as well — measured with
  * the `mouse` option both on and off.
@@ -142,13 +143,15 @@ fun terminalWsUrl(baseUrl: String, sessionId: String, size: WinSize? = null): St
  * move, strictly worse than no reset at all. So all three trackers go off first and the SGR encoding
  * last.
  *
- * Deliberately NOT undone: `\e[?1` (DECCKM application cursor keys, which tmux sets via `smkx` —
- * both `\eOA` and `\e[A` are bound in every shell's readline) and `\e[?12` (cursor blink, cosmetic).
+ * The two `smkx` halves are treated deliberately rather than conflated. DECCKM `\e[?1h` (application
+ * cursor keys) remains untouched — both `\eOA` and `\e[A` are bound in every shell's readline. Its
+ * application-keypad half `\e=` is undone with `\e>`: leaving it set makes numeric keypad keys keep
+ * emitting SS3 sequences after kotgent exits. Cursor blink (`\e[?12`, cosmetic) also remains untouched.
  * The pinning test therefore names the modes this constant covers instead of claiming completeness.
  */
 const val TERMINAL_MODE_RESET: String =
     "\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?1006l" +
-        "\u001b[?2004l\u001b[?2031l\u001b[?1049l\u001b[?25h"
+        "\u001b[?2004l\u001b[?2031l\u001b[?1049l\u001b[?25h\u001b>"
 
 /**
  * Encode a terminal resize as the text control frame the server's terminal WS expects (see

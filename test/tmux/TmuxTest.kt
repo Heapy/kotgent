@@ -287,9 +287,12 @@ class TmuxTest {
 
     /**
      * `sendKeys` must accept only an answered `0`: empty or noisy exit-0 stdout is not proof the send
-     * landed. Otherwise `SessionManager.interrupt` would persist `ready` without knowing its `0x03`
-     * reached the process. Both unanswered shapes are plain [TmuxException] failures; only an answered
-     * `1` proves the pane remains in a mode and warrants [TmuxCopyModeException].
+     * landed, and a soft absence positively proves there was no process to receive it. Otherwise
+     * `SessionManager.interrupt` would persist `ready` without knowing its `0x03` reached the process.
+     * All three shapes are plain [TmuxException] failures; only an answered `1` proves the pane remains
+     * in a mode and warrants [TmuxCopyModeException]. In contrast, [Tmux.leaveCopyMode] treats the same
+     * absence as a successful clearance because there is no pane left in a mode; its caller separately
+     * proves the upstream write.
      *
      * Runs against `tmux` stand-ins, so it needs no real server and no skip-guard.
      */
@@ -324,6 +327,29 @@ class TmuxTest {
                 "could not verify delivery" in noisySend.message.orEmpty(),
                 "the noisy read-back failure must explain that delivery was unverified: ${noisySend.message}",
             )
+
+            val absenceShapes = listOf(
+                "server" to "echo 'no server running on /tmp/tmux-501/kotgent-test' >&2\nexit 1\n",
+                "session" to "echo \"can't find session: kt-send-session\" >&2\nexit 1\n",
+                "pane" to "echo \"can't find pane: kt-send-pane\" >&2\nexit 1\n",
+            )
+            for ((shape, body) in absenceShapes) {
+                val absentSend = assertFailsWith<TmuxException> {
+                    Tmux(
+                        socket = tmux.socket,
+                        tmuxPath = writeStubTmux(dir, "tmux-send-absent-$shape", body),
+                    ).sendKeys("send-$shape", byteArrayOf(0x03))
+                }
+                assertFalse(
+                    absentSend is TmuxCopyModeException,
+                    "an absent $shape is not the transient copy-mode condition",
+                )
+                assertTrue(
+                    "was not delivered" in absentSend.message.orEmpty() &&
+                        "kt-send-$shape" in absentSend.message.orEmpty(),
+                    "$shape absence must fail the delivery contract and name the target: ${absentSend.message}",
+                )
+            }
         } finally {
             removeTempDir(dir)
         }

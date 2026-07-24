@@ -31,11 +31,18 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
         private set
 
     /**
-     * When true, [write] throws — the stand-in for a pty whose master fd lost its child (a close racing
-     * the write). [Broadcaster.writeInput] guards the write, so this exercises the "not delivered"
-     * answer rather than a propagated exception.
+     * When true, [write] throws before recording a byte — the stand-in for a pty whose master fd lost
+     * its child before the write began. [Broadcaster.writeInput] guards the write, so this exercises
+     * its unconfirmed-completion answer rather than a propagated exception.
      */
     var failWrites: Boolean = false
+
+    /**
+     * When non-null, [write] records this many prefix bytes and then throws. The real [Pty.write] loops
+     * over partial POSIX writes and can fail on a later syscall, so a caught exception cannot prove
+     * zero delivery. Unit tests use this to pin that ambiguity.
+     */
+    var failWritesAfterBytes: Int? = null
 
     /** Simulate the child writing [bytes] to the pty. */
     fun emit(bytes: ByteArray) {
@@ -49,6 +56,11 @@ class FakePtyHandle(val command: List<String>) : PtyHandle {
 
     override fun write(bytes: ByteArray) {
         if (failWrites) throw IllegalStateException("fake pty write failed (closed master fd)")
+        failWritesAfterBytes?.let { count ->
+            val prefixSize = count.coerceIn(0, bytes.size)
+            if (prefixSize > 0) written.add(bytes.copyOfRange(0, prefixSize))
+            throw IllegalStateException("fake pty write failed after $prefixSize bytes")
+        }
         written.add(bytes)
     }
 

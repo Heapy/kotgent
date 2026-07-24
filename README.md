@@ -90,8 +90,9 @@ To build from source instead, see [Build & test](#build--test).
   Two other things to know: selecting text in the web terminal needs Option-drag on macOS (Shift-drag
   elsewhere), because a mouse-reporting terminal otherwise sends the drag to the app; and a wheel scroll
   puts the pane into tmux copy-mode, which every viewer shares — kotgent leaves copy-mode before
-  programmatic Interrupt/REST input and verifies delivery, so those controls reach the agent or fail
-  loudly instead of being silently swallowed. `focus-events` stays off: with one tmux client
+  programmatic Interrupt/REST input. Interrupt returns only after tmux verifies delivery; REST input
+  reports when full PTY write completion was not observed. A PTY error may have written a prefix, so
+  inspect the terminal before resending to avoid duplicated input. `focus-events` stays off: with one tmux client
   fanned out to many viewers, "is the terminal focused" has no single answer. Developed against tmux 3.7b.
 - **`claude`** — the Claude Code CLI, on your `PATH`. Session-id preallocation (`claude --session-id`)
   needs a recent version; kotgent version-gates it and falls back to a `SessionStart` hook on older CLIs.

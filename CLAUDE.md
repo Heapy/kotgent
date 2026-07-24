@@ -203,20 +203,24 @@ deleted. **`mouse on` is the one forced row that flips a real default, and it is
 `kotgent attach`) — that history lives in the tmux pane, not in xterm.js, and a subscriber joining an
 existing bridge is seeded from `capture-pane`, so without it nothing older than the current screen is
 reachable; an app that requested SGR mouse reporting still gets its own events (measured), so alt-screen
-TUIs are unaffected. **A joiner does not get that for free**: `capture-pane -p -e` carries zero
-private-mode sequences (measured) and the upstream's own mouse-enable went out as a live delta when the
-upstream *opened*, so the per-subscriber seed itself prepends `TERMINAL_MOUSE_ENABLE`
-(`terminalSeed` in `src/pty/PtyHandle.kt`, gated on `forcesMouseOn`). Do not "simplify" the seed back to a
-bare `capturePane` — tmux only re-emits the mode set on a repaint that a *geometry change* triggers, and
-macOS raises `SIGWINCH` solely on an actual size change, so a second tab at the same size would silently
-lose the wheel. It costs this: copy-mode is *shared pane state*, so any subscriber's wheel puts **the**
+TUIs are unaffected. **A joiner does not get client modes for free**: `capture-pane -p -e` carries zero
+private-mode sequences (measured) and the upstream's enables went out as live deltas when it *opened*.
+So every non-empty per-subscriber seed prepends `TERMINAL_BRACKETED_PASTE_ENABLE` (tmux enables `2004`
+for every client; without it xterm.js sends multiline paste as executable ordinary input) and, when
+`forcesMouseOn` is true, `TERMINAL_MOUSE_ENABLE`. Do not "simplify" the seed back to a bare `capturePane`
+— tmux only re-emits the mode set on a repaint that a *geometry change* triggers, and macOS raises
+`SIGWINCH` solely on an actual size change, so a second tab at the same size would silently lose both
+paste safety and the wheel. App-owned modes are deliberately not synthesized. It costs this: copy-mode
+is *shared pane state*, so any subscriber's wheel puts **the**
 pane into it, and while `pane_in_mode=1` every keystroke — `send-keys` and bytes written into an attached
 client's pty alike, including `SessionManager.interrupt`'s `0x03` — is routed to the copy-mode key table
 and dropped while tmux still exits 0, which would make the projection record an interrupt that never
 happened. That is why **`Tmux.sendKeys` chains `copy-mode -q` + the send + a `#{pane_in_mode}` read-back
 into ONE tmux invocation** and accepts only an answered `0`: an answered `1` throws
-`TmuxCopyModeException`, while an empty or unparseable answer throws a plain `TmuxException`. Separate
-invocations
+`TmuxCopyModeException`, while an empty/unparseable answer or a missing server/session/pane throws a
+plain `TmuxException`. A soft absence makes `leaveCopyMode`'s clearance question moot (`true`), but it
+can never satisfy `sendKeys`' delivery contract; therefore `SessionManager.interrupt` persists `ready`
+only after verified delivery. Separate invocations
 leave a window a wheel event can land in, `copy-mode -q` (unlike `send-keys -X cancel`) is a silent no-op
 on a pane in no mode so it can be chained at all, and there is deliberately no retry — a duplicated `0x03`
 quits some agent TUIs. Do not weaken that chain while `mouse on` is set;
@@ -224,16 +228,20 @@ quits some agent TUIs. Do not weaken that chain while `mouse on` is set;
 its two halves, and copy-mode auto-exiting when the wheel reaches the bottom covers only the operator who
 scrolls back down. A swallowed `send-keys` throws `TmuxCopyModeException` — a **subtype** of
 `TmuxException` so the action route can answer it **409 + hint** (transient, retryable) instead of the
-plain `TmuxException`'s 400 ("malformed, do not retry"); catch it *before* the `TmuxException` branch.
+plain `TmuxException`'s generic operation-failure 400; catch it *before* the `TmuxException` branch.
 The same hazard reaches `POST /sessions/{id}/input`, which cannot chain (its bytes go into the shared
 upstream pty), so it calls `Tmux.leaveCopyMode` first and answers **409** when that provably fails instead
 of `ok` for discarded input; the interactive terminal WS deliberately does neither. Two rules keep that
 endpoint honest: `leaveCopyMode` answers `true` **only** for an answered `#{pane_in_mode}` of `0` or a
 soft absence — a wrong `tmuxPath`, a half-dead server or unparseable output is `false`, because an
 unanswered cancel is not proof the pane will deliver — and the sink `&&`s that with
-`TerminalBridge.write`, which now returns whether the bytes reached an upstream at all (the bridge is
-lazy: with **no** terminal subscriber attached there is nothing to write to, and that drop is far more
-common than the copy-mode one). An EMPTY body short-circuits to `ok` before either runs: cancelling
+`TerminalBridge.write`, which returns whether the **full pty write completed without throwing**. The
+bridge is lazy, so with no subscriber there is no upstream and definitely no write; a pty write error is
+different because the real loop may have written a prefix before a later syscall failed. The shared
+Boolean therefore means “full pty write completion observed,” not “the agent consumed the body,” and the
+`409` warns callers to inspect before resending because a whole-body retry can duplicate commands or
+paste content. An EMPTY body short-circuits to `ok` before
+either runs: cancelling
 copy-mode is a shared-pane side effect that would yank every viewer out of their scrollback for a
 guaranteed no-op (`Tmux.sendKeys` guards the same way).
 **Two residuals are recorded, not fixed** (`TMUX_SERVER_OPTIONS`' "Known residuals", plus `terminalSeed`
@@ -245,8 +253,9 @@ tab's is dead over the lower/right of its viewport. Both need per-subscriber sta
 (subscriber-agnostic about input today) — and (2) also a resize-policy rethink — so neither is a local fix.
 Two smaller obligations ride along: `kotgent attach` writes `TERMINAL_MODE_RESET` in the same `finally` as
 `tty.restore()` — all three mouse trackers (`1003`/`1002`/`1000`) **before** the SGR encoding `1006`, or a
-surviving tracker degrades to the legacy X10 encoding, plus `2004`/`2031`/`1049`/`25` which a tmux client
-always sets — and the browser terminal sets `macOptionClickForcesSelection: true` (xterm.js disables
+surviving tracker degrades to the legacy X10 encoding, plus `2004`/`2031`/`1049`/`25` and application
+keypad reset `ESC >` for the `ESC =` xterm-256color enables — and the browser terminal sets
+`macOptionClickForcesSelection: true` (xterm.js disables
 selection under mouse reporting — Option-drag on macOS, Shift-drag elsewhere). **`focus-events` is deliberately NOT set.** Focus has no single answer when
 one upstream client serves N subscribers, and kotgent has better signals (the lazy `TerminalBridge`'s
 subscriber count, agent state over hooks); it doubles as the decoy in the isolation integration test

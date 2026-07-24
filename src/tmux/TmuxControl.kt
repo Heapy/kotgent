@@ -28,7 +28,11 @@ interface TmuxControl {
     /** Kill session `kt-<id>`; `true` if a session was removed, `false` if there was nothing to kill. */
     fun killSession(id: String): Boolean
 
-    /** Send raw [bytes] to `kt-<id>`'s active pane, byte-exact (used for Ctrl-C interrupt). */
+    /**
+     * Send raw [bytes] to `kt-<id>`'s active pane, byte-exact (used for Ctrl-C interrupt).
+     * Returning from a non-empty send means delivery was verified; an absent target or unanswered
+     * verification throws [TmuxException].
+     */
     fun sendKeys(id: String, bytes: ByteArray)
 
     /**

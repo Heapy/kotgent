@@ -305,34 +305,36 @@ class CliTest {
 
     /**
      * `attach` must hand the terminal back the way it found it. `LocalTty.restore()` only covers
-     * termios; the private DEC modes (mouse reporting, bracketed paste, theme reporting, alternate
-     * screen, cursor) were turned on by bytes the *remote* side sent, and their disable sequences are
-     * written into the upstream pty only after the last subscriber has gone — so they never reach the
-     * operator. Hence an explicit reset written to stdout on exit; this pins its contents AND order.
+     * termios; the terminal modes (mouse reporting, bracketed paste, theme reporting, alternate screen,
+     * cursor and application keypad) were turned on by bytes the *remote* side sent, and their disable
+     * sequences are written into the upstream pty only after the last subscriber has gone — so they
+     * never reach the operator. Hence an explicit reset written to stdout on exit; this pins its
+     * contents AND order.
      *
      * Measured against a real pty attach (tmux 3.7b): the client unconditionally turns on `1049`,
-     * `2004`, `2031` and `25`; it turns on `1006`+`1000`+`1002` because kotgent forces `mouse on`;
-     * and it additionally forwards `1003` whenever the pane's own app asks for any-motion tracking
+     * `2004`, `2031`, `25`, and terminfo's `smkx` (`?1h` + `ESC =`); it turns on
+     * `1006`+`1000`+`1002` because kotgent forces `mouse on`; and it additionally forwards `1003`
+     * whenever the pane's own app asks for any-motion tracking
      * (crossterm/ratatui's `EnableMouseCapture`, i.e. the codex TUI). **Every tracker must go off
      * BEFORE the SGR encoding** — on terminals that model the three trackers as independent flags,
      * clearing `1006` first downgrades a surviving tracker to the legacy X10 encoding and sprays
      * bytes above 127 into the operator's shell, which is worse than not resetting at all.
      *
-     * The name is scoped to what the constant really covers: DECCKM (`?1`) and cursor blink (`?12`)
-     * are also set by tmux and are deliberately left alone (see [TERMINAL_MODE_RESET]'s KDoc), so
-     * this is not a completeness claim.
+     * The name is scoped to what the constant really covers: DECCKM (`?1`, the cursor-key half of
+     * `smkx`) and cursor blink (`?12`) are deliberately left alone, while application keypad
+     * (`ESC =`, the other `smkx` half) is reset with `ESC >`; see [TERMINAL_MODE_RESET]'s KDoc.
      */
     @Test
-    fun theTerminalModeResetDisablesTheMouseBracketedPasteThemeAndAltScreenModes() {
+    fun theTerminalModeResetDisablesMousePasteThemeAltScreenAndApplicationKeypadModes() {
         val esc = "\u001b"
         assertEquals(
             listOf(
                 "$esc[?1003l", "$esc[?1002l", "$esc[?1000l", "$esc[?1006l",
-                "$esc[?2004l", "$esc[?2031l", "$esc[?1049l", "$esc[?25h",
+                "$esc[?2004l", "$esc[?2031l", "$esc[?1049l", "$esc[?25h", "$esc>",
             ),
             TERMINAL_MODE_RESET.split(esc).filter { it.isNotEmpty() }.map { esc + it },
-            "all three mouse trackers off, then the SGR encoding, bracketed paste, theme reporting " +
-                "and the alternate screen; cursor shown",
+            "all three mouse trackers off, then the SGR encoding, bracketed paste, theme reporting, " +
+                "the alternate screen and application keypad; cursor shown",
         )
         assertTrue(
             TERMINAL_MODE_RESET.indexOf("$esc[?1003l") < TERMINAL_MODE_RESET.indexOf("$esc[?1006l"),

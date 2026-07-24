@@ -84,13 +84,14 @@ data class TmuxOption(
  * not intercept), so an alt-screen TUI keeps behaving exactly as it did.
  *
  * That benefit does not arrive on its own for a **joining** subscriber: `capture-pane -p -e` carries
- * zero private-mode sequences (measured), and the mouse-enable the upstream `tmux attach` emitted was
- * broadcast when the upstream *opened*, to whoever was subscribed then. tmux re-emits the whole mode
- * set only on a repaint that a geometry change triggers, and macOS raises `SIGWINCH` solely on an
- * actual size change — so a second browser tab at the same geometry would get nothing. Hence the
- * per-subscriber seed itself carries the enable ([io.kotgent.pty.TERMINAL_MOUSE_ENABLE], applied by
- * [io.kotgent.pty.terminalSeed] and gated on [forcesMouseOn]); without it the paragraph above would
- * be a claim about the first viewer only.
+ * zero private-mode sequences (measured), and the enables the upstream `tmux attach` emitted were
+ * broadcast when the upstream *opened*, to whoever was subscribed then. tmux re-emits its mode set
+ * only on a repaint that a geometry change triggers, and macOS raises `SIGWINCH` solely on an actual
+ * size change — so a second browser tab at the same geometry would get nothing. Hence every non-empty
+ * per-subscriber seed carries tmux's unconditional bracketed-paste enable
+ * ([io.kotgent.pty.TERMINAL_BRACKETED_PASTE_ENABLE]), while its mouse enable
+ * ([io.kotgent.pty.TERMINAL_MOUSE_ENABLE]) is gated on [forcesMouseOn]. Without the latter, the
+ * paragraph above would be a claim about the first viewer only.
  *
  * What it costs, also measured: **copy-mode is shared *pane* state, not per-client** — one
  * subscriber's wheel puts *the* pane into copy-mode for everyone, and while `pane_in_mode=1` tmux
@@ -103,14 +104,17 @@ data class TmuxOption(
  * eaten. Do not weaken that chain; it is what makes this row safe, and it covers prefix-typed
  * copy-mode too. (Copy-mode also auto-exits on its own once the wheel scrolls back to the bottom, but
  * that only handles the operator who scrolls back down — the cancel is what handles the one who does
- * not.) The same hazard reaches the programmatic `POST /sessions/{id}/input`, which cannot chain its
+ * not.) A missing target is also a loud plain [TmuxException]: absence can make a copy-mode clearance
+ * question moot, but it cannot prove a non-empty send reached a process. The same hazard reaches the
+ * programmatic `POST /sessions/{id}/input`, which cannot chain its
  * bytes through tmux (they go into the shared upstream pty), so it calls [Tmux.leaveCopyMode] first
- * and answers `409` when that provably fails rather than reporting `ok` for discarded input. The
- * interactive terminal WebSocket deliberately does neither: a human who scrolled back and then typed
- * expects tmux's own behaviour. Two smaller consequences are accepted: `kotgent attach` must undo the
- * mouse-reporting DECSET on exit (`TERMINAL_MODE_RESET`, written in the same `finally` as the tty
- * restore, and covering all three trackers before the SGR encoding) and the browser terminal needs
- * `macOptionClickForcesSelection` so text selection survives — Option-drag on macOS, Shift-drag
+ * and answers `409` when full pty write completion cannot be observed. A pty write can write a prefix
+ * before throwing, so that `409` warns against blindly retrying the whole body. The interactive terminal
+ * WebSocket deliberately does neither: a human who scrolled back and then typed expects tmux's own
+ * behaviour. Two smaller consequences are accepted: `kotgent attach` must undo the terminal modes on
+ * exit (`TERMINAL_MODE_RESET`, written in the same `finally` as the tty restore, with all three mouse
+ * trackers before the SGR encoding and application-keypad `ESC >` included) and the browser terminal
+ * needs `macOptionClickForcesSelection` so text selection survives — Option-drag on macOS, Shift-drag
  * elsewhere.
  *
  * ## Known residuals — recorded, NOT fixed here

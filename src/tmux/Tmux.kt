@@ -21,7 +21,11 @@ data class TmuxPane(
     val height: Int,
 )
 
-/** Thrown when a tmux command fails in a way that is not an expected "not found"/"no server". */
+/**
+ * Thrown when a tmux operation cannot satisfy its contract. Observational operations may normalize an
+ * expected "not found"/"no server"; delivery-bearing [Tmux.sendKeys] throws because absence proves the
+ * bytes reached no process.
+ */
 open class TmuxException(message: String) : RuntimeException(message)
 
 /**
@@ -29,9 +33,9 @@ open class TmuxException(message: String) : RuntimeException(message)
  * the keys to the copy-mode key table instead of to the process ([Tmux.sendKeys]'s read-back caught it).
  *
  * A subtype rather than a message convention because the wire contract differs: a plain [TmuxException]
- * is a `400` ("this request was malformed, do not retry"), while this one is a `409` carrying the same
- * operator hint `POST /sessions/{id}/input` gives ("scroll the pane back to the bottom"). Nothing about
- * the request was wrong — a viewer's wheel scroll was, and scrolling back down fixes it.
+ * keeps the action route's generic `400` operation-failure response, while this one is a `409` carrying
+ * the same operator hint `POST /sessions/{id}/input` gives ("scroll the pane back to the bottom").
+ * Nothing about the request was wrong — a viewer's wheel scroll was, and scrolling back down fixes it.
  */
 class TmuxCopyModeException(message: String) : TmuxException(message)
 
@@ -49,10 +53,12 @@ class TmuxCopyModeException(message: String) : TmuxException(message)
  *
  * ## Robustness
  * Argument construction goes through [ProcessRunner]'s strict quoting, so cwd paths, commands,
- * and env labels cannot be re-split by the shell. "Soft" tmux failures are normalized rather than
- * thrown: a missing session/pane or a torn-down server reads as an empty list / `false` / `null`
- * (an empty tmux server does not persist, so a fresh socket legitimately reports "no server
- * running"). Genuinely unexpected non-zero exits raise [TmuxException] with tmux's stderr.
+ * and env labels cannot be re-split by the shell. Observational/idempotent operations normalize
+ * "soft" tmux failures: a missing session/pane or a torn-down server reads as an empty list /
+ * `false` / `null` (an empty tmux server does not persist, so a fresh socket legitimately reports
+ * "no server running"). A delivery operation cannot make that substitution: non-empty [sendKeys]
+ * throws when its target is absent, because no process received the bytes. Genuinely unexpected
+ * non-zero exits also raise [TmuxException] with tmux's stderr.
  */
 class Tmux(
     /** The `-L` socket label, e.g. `kotgent` (prod) or `kotgent-test` (throwaway in tests). */
@@ -226,7 +232,8 @@ class Tmux(
      * question was not answered (no server, unknown pane, unparseable output).
      *
      * `null` is deliberately distinct from `false`: it is not evidence either way. Callers may treat a
-     * separately classified soft absence as moot, but an otherwise unanswered verification fails closed.
+     * separately classified soft absence as moot for a clearance-only question, but an otherwise
+     * unanswered verification fails closed. Absence is never delivery proof; [sendKeys] throws for it.
      */
     private fun paneModeFrom(r: ProcessResult): Boolean? =
         when (r.stdout.trim().lineSequence().lastOrNull()?.trim()) {
@@ -242,11 +249,14 @@ class Tmux(
      *
      * "Provably clear or a soft absence" is the whole contract, and the asymmetry is deliberate: the one
      * caller ([io.kotgent.transport.TerminalInputSink]) turns `false` into a refusal, so guessing `true`
-     * would report `ok` for bytes tmux discarded — the exact silent swallow this method exists to
+     * would report success for bytes tmux might discard — the exact silent swallow this method exists to
      * prevent. A wrong `tmuxPath`, a permission error, a half-dead server or an unparseable
-     * `display-message` are therefore all `false`: none of them proves the pane is delivering keys. Only
-     * the *soft* failures every other method here normalizes ([listPanes], [capturePane], [killSession],
-     * [sendKeys]) read as `true` — there is no pane left to swallow anything.
+     * `display-message` are therefore all `false`: none of them proves the pane is delivering keys.
+     *
+     * This clearance predicate and [sendKeys]' delivery contract intentionally answer a genuine absence
+     * differently. Here it means there is no pane left in copy-mode to block a later pty write, so `true`
+     * is accurate (the caller still has to prove an upstream write completed). For [sendKeys] it proves
+     * the opposite of delivery — no process existed to receive the bytes — so the same absence throws.
      *
      * A pane in copy-mode routes every keystroke — whether it arrives via `send-keys` or by being
      * written into an attached client's pty — to the **copy-mode key table** instead of the process.
@@ -302,8 +312,10 @@ class Tmux(
      * Only an answered trailing `0` proves delivery. A trailing `1` means the keys went to the copy-mode
      * key table, and this **fails loudly** with a [TmuxCopyModeException] — its own subtype, because that
      * condition is transient and retryable and the transport answers it with a `409` + hint rather than
-     * a `400` — instead of letting the caller reduce to `ready`. An empty or unparseable read-back and
-     * any OTHER non-zero exit stay plain [TmuxException] failures. There is no retry:
+     * a `400` — instead of letting the caller reduce to `ready`. A missing server/session/pane is also a
+     * failure here, unlike the clearance-only [leaveCopyMode]: it positively proves there was no process
+     * to receive the bytes and throws a plain [TmuxException]. An empty or unparseable read-back and any
+     * OTHER non-zero exit stay plain [TmuxException] failures. There is no retry:
      * a duplicated `0x03` is not harmless (a second Ctrl-C quits some agent TUIs outright), and with
      * the chain atomic a retry would only be papering over a tmux that no longer behaves as measured.
      * This is what makes `mouse on` safe; do not weaken it while that option is set.
@@ -315,7 +327,12 @@ class Tmux(
             bytes.map { (it.toInt() and 0xff).toString(16).padStart(2, '0') } +
             listOf(";", "display-message", "-p", "-t", target, PANE_IN_MODE)
         val r = tmux(*argv.toTypedArray())
-        if (r.isAbsence()) return // no server / unknown session: graceful, as everywhere else here
+        if (r.isAbsence()) {
+            throw TmuxException(
+                "tmux send-keys for '$id' was not delivered: $target has no live server/session/pane " +
+                    "(${r.stderr.trim()})",
+            )
+        }
         val paneMode = paneModeFrom(r)
         // Checked BEFORE the exit status: a swallowed send can also fail the invocation for an unrelated
         // reason (a copy-mode binding reporting "no current client"), and copy-mode is the real diagnosis.

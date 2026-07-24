@@ -16,9 +16,10 @@ import kotlin.test.assertTrue
  *    that, and it must ride on every argv kotgent builds.
  *  - **`mouse on` is deliberately present** (see [TMUX_SERVER_OPTIONS]'s KDoc): it is the one forced
  *    row that changes a real tmux default, and it is what makes the wheel reach a pane's history
- *    from the browser and from `kotgent attach`. `Tmux.sendKeys`' atomic cancel→send→verify chain
- *    applies unconditionally; [forcesMouseOn] gates only the mouse-enable a joining subscriber's seed
- *    carries ([io.kotgent.pty.terminalSeed]) because `capture-pane` emits no private-mode sequences.
+     *    from the browser and from `kotgent attach`. `Tmux.sendKeys`' atomic cancel→send→verify chain
+     *    applies unconditionally; [forcesMouseOn] gates only the mouse part of a joining subscriber's
+     *    seed ([io.kotgent.pty.terminalSeed]) because `capture-pane` emits no private-mode sequences.
+     *    Bracketed paste is tmux-owned and therefore re-armed unconditionally by that seed.
  *  - **`focus-events` is deliberately absent** (see [TMUX_SERVER_OPTIONS]'s KDoc): focus has no
  *    single answer under a one-upstream/N-subscriber fan-out. It doubles as the decoy of the
  *    integration isolation test, which only stays falsifiable while kotgent never forces it.

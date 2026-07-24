@@ -462,7 +462,9 @@ class TransportTest {
             setBody("nobody-is-watching")
         }
         assertEquals(HttpStatusCode.Conflict, resp.status, "input with no upstream to reach must not answer ok")
-        assertTrue("not delivered" in resp.bodyAsText(), "and it must say so: ${resp.bodyAsText()}")
+        val body = resp.bodyAsText()
+        assertTrue("could not be confirmed" in body, "the result is uncertainty, not proof of zero delivery: $body")
+        assertTrue("prefix" in body && "duplicate" in body, "the 409 must warn against a blind whole-body retry: $body")
         assertTrue(
             ctx.ptyFactory.opened.tryReceive().isFailure,
             "and a write never opens an upstream — only a terminal subscriber does",
@@ -496,10 +498,9 @@ class TransportTest {
 
     /**
      * One tmux condition, one wire contract. A swallowed `send-keys` reaching `interrupt` used to be a
-     * plain `TmuxException` → **400**, which tells a programmatic client the request was malformed and
-     * must not be retried — while the identical condition on `/input` answered **409** with an operator
-     * hint. The copy-mode case now has its own exception type and gets the 409 + hint on both routes;
-     * every other tmux failure stays a 400.
+     * plain `TmuxException` → generic **400**, while the identical condition on `/input` answered
+     * retryable **409** with an operator hint. The copy-mode case now has its own exception type and gets
+     * the 409 + hint on both routes; every other tmux failure stays a 400.
      */
     @Test
     fun interruptAnswers409ForCopyModeAnd400ForAnyOtherTmuxFailure() = withServer { ctx ->
@@ -519,6 +520,11 @@ class TransportTest {
         ctx.tmux.sendKeysFailure = "tmux send-keys for '${created.id}' failed: bad target"
         val badRequest = ctx.post("/sessions/${created.id}/interrupt")
         assertEquals(HttpStatusCode.BadRequest, badRequest.status, "an ordinary tmux failure stays a 400")
+        assertEquals(
+            "running",
+            ctx.getSession(created.id).state,
+            "and any failed/absent send must leave the projection unchanged",
+        )
 
         ctx.tmux.sendKeysFailure = null
         val ok = ctx.post("/sessions/${created.id}/interrupt")

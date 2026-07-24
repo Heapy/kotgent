@@ -91,31 +91,38 @@ class AttachEnvTest {
 
     /**
      * The per-subscriber seed is what a client joining an **existing** bridge gets, and it is the only
-     * thing it gets — the upstream's own mouse-enable was broadcast as a live delta back when the
-     * upstream opened. `capture-pane -p -e` carries ZERO private-mode sequences (measured), so with
-     * `mouse on` forced the seed has to arm mouse reporting itself or that viewer's wheel never
-     * reaches tmux and the pane history — the whole point of the option — stays unreachable for it.
+     * thing it gets — the upstream's private-mode enables were broadcast as live deltas back when the
+     * upstream opened. `capture-pane -p -e` carries ZERO private-mode sequences (measured), so every
+     * non-empty seed must restore tmux's unconditional bracketed-paste mode; otherwise xterm.js sends
+     * multiline paste as ordinary input and a shell can execute it line by line. With `mouse on`
+     * forced the seed additionally arms mouse reporting or that viewer's wheel never reaches tmux and
+     * the pane history — the whole point of the option — stays unreachable for it.
      *
      * The enable comes FIRST (armed before the repaint) and an empty capture stays empty (an unknown
      * session must not be answered with a stray mode change).
      */
     @Test
-    fun theSeedArmsMouseReportingWheneverTmuxForcesMouseOn() {
+    fun theSeedRestoresBracketedPasteAndConditionallyArmsMouseReporting() {
         val esc = "\u001b"
+        assertEquals(
+            "$esc[?2004h",
+            TERMINAL_BRACKETED_PASTE_ENABLE,
+            "tmux's unconditional bracketed-paste mode is replayed to every joiner",
+        )
         assertEquals(
             "$esc[?1006h$esc[?1000h$esc[?1002h",
             TERMINAL_MOUSE_ENABLE,
             "SGR encoding, then normal + button tracking — the order tmux emits for `mouse on`",
         )
         assertEquals(
-            (TERMINAL_MOUSE_ENABLE + "pane text").encodeToByteArray().toList(),
+            (TERMINAL_BRACKETED_PASTE_ENABLE + TERMINAL_MOUSE_ENABLE + "pane text").encodeToByteArray().toList(),
             terminalSeed("pane text", mouseForced = true).toList(),
-            "the enable is prepended to the capture, so the joining terminal is armed before the repaint",
+            "bracketed paste and forced mouse reporting are armed before the repaint",
         )
         assertEquals(
-            "pane text".encodeToByteArray().toList(),
+            (TERMINAL_BRACKETED_PASTE_ENABLE + "pane text").encodeToByteArray().toList(),
             terminalSeed("pane text", mouseForced = false).toList(),
-            "without the forced option the seed is the bare capture — no unsolicited mode change",
+            "bracketed paste is tmux-owned and unconditional; mouse remains off without the forced option",
         )
     }
 

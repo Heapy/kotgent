@@ -39,7 +39,13 @@ interface PtyHandle {
      */
     val output: ReceiveChannel<ByteArray>
 
-    /** Write [bytes] to the master fd (terminal input). A no-op for empty input. */
+    /**
+     * Write [bytes] to the master fd (terminal input). A no-op for empty input.
+     *
+     * A thrown failure does **not** prove that zero bytes were written: the real implementation loops
+     * over partial POSIX writes, so an earlier prefix may have reached the pty before a later syscall
+     * failed. Normal return means the full array was written.
+     */
     fun write(bytes: ByteArray)
 
     /** Set the terminal window size ([cols] x [rows]) — `ioctl(TIOCSWINSZ)` on the real handle. */
@@ -145,10 +151,24 @@ fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, 
 const val TERMINAL_MOUSE_ENABLE: String = "\u001b[?1006h\u001b[?1000h\u001b[?1002h"
 
 /**
+ * The bracketed-paste DECSET every non-empty subscriber seed carries. A `tmux attach` client enables
+ * this unconditionally (measured on tmux 3.7b), but `capture-pane -p -e` carries no private-mode state.
+ * Without replaying it to a late same-size subscriber, xterm.js sends a multiline paste as ordinary
+ * input and the shell may execute each line independently. [io.kotgent.cli.TERMINAL_MODE_RESET]
+ * carries the symmetric `2004l` for the CLI terminal on exit.
+ */
+const val TERMINAL_BRACKETED_PASTE_ENABLE: String = "\u001b[?2004h"
+
+/**
  * Compose one subscriber's terminal seed: the `capture-pane -p -e` snapshot [capturedPane], preceded
- * by [TERMINAL_MOUSE_ENABLE] when the session's tmux server forces `mouse on` ([mouseForced]).
+ * unconditionally by [TERMINAL_BRACKETED_PASTE_ENABLE] and, when the session's tmux server forces
+ * `mouse on` ([mouseForced]), by [TERMINAL_MOUSE_ENABLE].
  *
- * The enable goes **first** so the joining terminal is armed before the repaint lands. An EMPTY
+ * These are client modes tmux itself enables, not guesses about what the pane's app requested:
+ * bracketed paste is always on for a tmux client, while mouse reporting is conditional on kotgent's
+ * forced server option. App-owned modes such as any-motion tracking are deliberately not synthesized.
+ *
+ * The enables go **first** so the joining terminal is armed before the repaint lands. An EMPTY
  * capture stays empty: `capturePane` returns `""` for an unknown session or a torn-down server, and
  * `Broadcaster.attach` treats an empty seed as "nothing to send" — a client attaching to a session
  * that is not there should not be handed a stray mode change.
@@ -169,6 +189,7 @@ const val TERMINAL_MOUSE_ENABLE: String = "\u001b[?1006h\u001b[?1000h\u001b[?100
  */
 fun terminalSeed(capturedPane: String, mouseForced: Boolean): ByteArray = when {
     capturedPane.isEmpty() -> ByteArray(0)
-    mouseForced -> (TERMINAL_MOUSE_ENABLE + capturedPane).encodeToByteArray()
-    else -> capturedPane.encodeToByteArray()
+    mouseForced ->
+        (TERMINAL_BRACKETED_PASTE_ENABLE + TERMINAL_MOUSE_ENABLE + capturedPane).encodeToByteArray()
+    else -> (TERMINAL_BRACKETED_PASTE_ENABLE + capturedPane).encodeToByteArray()
 }

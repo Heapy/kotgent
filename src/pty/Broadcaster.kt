@@ -153,14 +153,17 @@ class Broadcaster(
      * the lock (it can block on a full pty), so a concurrent close may race it; the write is guarded so
      * a closed upstream is a clean no-op rather than a thrown 500.
      *
-     * **Returns whether the bytes reached the upstream** — `false` when there was no upstream to write
-     * to (the lazy bridge's default: with zero subscribers no `tmux attach` is open, see
-     * [TerminalBridge.write]) or when the write itself threw (a racing close). Both are silent drops,
-     * and the programmatic `POST /sessions/{id}/input` seam must answer for them rather than report
-     * `ok` for input nothing ever received; the interactive terminal WS ignores the answer, because a
-     * subscriber writing always has its own upstream open. Empty input is a vacuous `true`: there was
-     * nothing to deliver, so nothing was lost (and the REST seam refuses an empty body before it gets
-     * here).
+     * **Returns whether the full pty write completed without throwing** — `false` when there was no
+     * upstream to write to (the lazy bridge's default: with zero subscribers no `tmux attach` is open,
+     * see [TerminalBridge.write]) or when the write threw (for example, on a racing close). Those two
+     * false cases are not equivalent: no upstream means zero bytes were written, while
+     * [PtyHandle.write] may successfully write a prefix before a later syscall throws. Thus `false`
+     * means "full pty write completion was not observed", never "safe to retry the whole body".
+     * Normal return proves only that the pty accepted the full body, not that the pane's process
+     * consumed it. The programmatic
+     * `POST /sessions/{id}/input` seam reports that uncertainty; the interactive terminal WS ignores
+     * the answer because a subscriber writing always has its own upstream open. Empty input is a
+     * vacuous `true`: there was nothing to deliver (and the REST seam refuses it even earlier).
      */
     suspend fun writeInput(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return true
@@ -248,7 +251,7 @@ class Subscriber internal constructor(private val broadcaster: Broadcaster) {
     /**
      * Send terminal input from this client to the shared upstream.
      *
-     * Deliberately drops [Broadcaster.writeInput]'s delivery answer: a subscriber holds the upstream
+     * Deliberately drops [Broadcaster.writeInput]'s completion answer: a subscriber holds the upstream
      * open by existing, so the "no upstream" case this client could act on cannot happen to it. The
      * REST seam, which writes without being a subscriber, is the caller that needs the Boolean.
      */

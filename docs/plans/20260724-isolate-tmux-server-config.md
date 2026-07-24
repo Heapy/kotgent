@@ -138,9 +138,9 @@
 >    `Tmux.sendKeys` already had.
 > 4. **The same tmux condition had two wire contracts**: `/input` answered `409` + hint, while
 >    `sendKeys`' copy-mode throw reached `POST /sessions/{id}/interrupt` as a plain `TmuxException` →
->    `400`, which tells a programmatic client the request was malformed and must not be retried, and
->    lost the operator hint. `sendKeys` now throws `TmuxCopyModeException : TmuxException`, caught ahead
->    of the generic branch and mapped to `409` with the same hint.
+>    generic operation-failure `400` and lost the retry hint. `sendKeys` now throws
+>    `TmuxCopyModeException : TmuxException`, caught ahead of the generic branch and mapped to `409`
+>    with the same hint.
 >
 > **Known residuals — recorded, deliberately NOT fixed in this branch.** Both follow from copy-mode and
 > client geometry being *pane/client* state under an N-subscriber fan-out with exactly ONE upstream
@@ -185,6 +185,32 @@
 > 4. The README now records the accepted last-resizing-viewer wheel limitation and the reconciled
 >    **465 run / 465 passed / 0 skipped** baseline. Test count stays 465: the redundant attach-argv
 >    test was consolidated while the unanswered-`sendKeys` regression gained its own test.
+
+> **Revision 8 — external-review delivery and terminal-state contracts** (`mouse on` and both accepted
+> residuals remain unchanged). All four findings were confirmed:
+>
+> 1. **A soft absence is clearance, not delivery.** `sendKeys` used to return normally for the same
+>    `isAbsence()` shapes that observational operations normalize, so `SessionManager.interrupt`
+>    persisted `ready` after Ctrl-C reached no process. A non-empty send now throws a plain
+>    `TmuxException` for a missing server/session/pane; only an answered `0` returns. `leaveCopyMode`
+>    deliberately keeps absence as `true`: no pane remains in copy-mode, and its caller separately
+>    checks the pty write. The KDocs and a no-tmux stub regression pin this semantic distinction.
+> 2. **Every non-empty join seed restores bracketed paste.** `capture-pane -p -e` contains no
+>    private-mode state, not merely no mouse state. tmux enables `2004` for every client, so a late
+>    same-size subscriber now receives `TERMINAL_BRACKETED_PASTE_ENABLE` unconditionally; the mouse
+>    enable remains gated on `forcesMouseOn`. App-owned modes are not synthesized, and an empty capture
+>    remains empty. This is symmetric with `TERMINAL_MODE_RESET`'s existing `2004l`.
+> 3. **A pty exception means “full pty write unconfirmed,” not “zero written.”** The real write loops
+>    over partial POSIX writes and can throw after a prefix was written. The Boolean seam and `409` remain
+>    (the smaller change), but KDocs and wire text no longer promise a safe whole-body retry; callers are
+>    warned to inspect first because resending may duplicate commands or paste content. Normal return
+>    proves only that the pty accepted the body, not that the agent consumed it. The fake now models
+>    prefix-then-throw and pins that `false` can coexist with a partially written body.
+> 4. **Attach resets application-keypad mode.** `xterm-256color`'s `smkx` includes `ESC =`; the reset
+>    now appends its `ESC >` counterpart, while preserving the load-bearing tracker-before-SGR ordering.
+>    DECCKM `?1` and cursor blink `?12` remain deliberately untouched. `CliTest` pins the exact sequence.
+>
+> Suite remains **465 run / 465 passed / 0 skipped**; direct `ptycheck` remains 8/8.
 
 ## Overview
 

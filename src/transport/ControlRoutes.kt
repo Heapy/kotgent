@@ -40,8 +40,8 @@ val TRANSPORT_JSON: Json = Json {
  * [KotgentServer] (leave copy-mode, then write into the session's shared upstream), so [controlRoutes]
  * stays decoupled from the terminal fan-out plumbing (and unit tests can supply a recording sink).
  *
- * Returns **whether the bytes could actually be delivered**, over BOTH ways this path drops input
- * silently. This is a REST endpoint, so the caller gets one answer and no terminal to look at:
+ * Returns whether a **full pty write completed without throwing** across the ways this path can fail.
+ * This is a REST endpoint, so the caller gets one answer and may have no terminal to look at:
  *  - **no upstream** — the bridge is lazy, so with no terminal subscriber attached (no browser tab, no
  *    `kotgent attach`) there is no `tmux attach` pty to write into and the bytes go nowhere. This is
  *    the *common* drop, and [io.kotgent.pty.TerminalBridge.write] reports it;
@@ -50,8 +50,13 @@ val TRANSPORT_JSON: Json = Json {
  *    pty) to the copy-mode key table and drops them, the same silent swallow `Tmux.sendKeys`' cancel
  *    exists to prevent. The sink cancels copy-mode first and reports `false` when it provably could not.
  *
- * [controlRoutes] turns a `false` from either half into a `409` naming both — the sink answers one
- * Boolean, so the endpoint does not pretend to know which of the two it was.
+ *  - **pty write failure** — the real write loops over partial POSIX writes, so a later error may follow
+ *    a successfully written prefix. `false` therefore means full pty write completion was not observed,
+ *    not that zero bytes arrived or that retrying the whole body is safe. A normal return proves only
+ *    that the pty accepted the full body, not that the pane's process consumed it.
+ *
+ * [controlRoutes] turns a `false` into a conservative `409` naming all three possibilities — the sink
+ * answers one Boolean, so the endpoint does not pretend to know whether zero bytes or a prefix arrived.
  */
 typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
 
@@ -164,15 +169,16 @@ fun Route.controlRoutes(
             call.respondText("ok")
             return@post
         }
-        // `false` = the bytes were provably NOT delivered — no terminal is attached (the upstream is
-        // lazy) or the pane is stuck in copy-mode and tmux discarded them. A caller with no terminal to
-        // look at must hear that instead of an unconditional `ok`. The two are not distinguished on the
-        // wire: the sink answers one Boolean, and both are fixed by the operator, not by the request.
+        // `false` = full pty write completion was NOT observed. No-terminal/copy-mode-preflight failures
+        // write nothing, but a pty write can write a prefix and then throw. The sink collapses those
+        // cases into one Boolean, so the wire response must warn about partial delivery and must not
+        // prescribe a blind whole-body retry that could duplicate commands or paste content.
         if (!input(id, bytes)) {
             call.respondText(
-                "input for session ${id.value} was not delivered: either no terminal is attached to it " +
-                    "or its pane is in tmux copy-mode; open a terminal for the session, scroll the pane " +
-                    "back to the bottom (or press q), then retry",
+                "input delivery for session ${id.value} could not be confirmed: no terminal may be " +
+                    "attached, tmux copy-mode clearance may have failed, or the pty write may have " +
+                    "stopped after delivering a prefix; inspect the session before resending because " +
+                    "retrying the whole body can duplicate input",
                 status = HttpStatusCode.Conflict,
             )
             return@post
@@ -246,10 +252,10 @@ fun Route.controlRoutes(
         } catch (_: TmuxCopyModeException) {
             // `interrupt`'s Ctrl-C went to the copy-mode key table instead of the process (any viewer's
             // wheel scroll parks the SHARED pane there). Caught BEFORE the TmuxException branch below —
-            // it is a subtype, and the two must not share a status: 400 tells a programmatic client the
-            // request was malformed and must not be retried, whereas this is transient and retryable, so
-            // it gets the same 409 + operator hint as `/input`. `interrupt` throws before it persists any
-            // derived state, so nothing was recorded for the keystroke tmux ate.
+            // it is a subtype, and the two must not share a status: ordinary operation failures keep the
+            // generic 400 mapping, whereas this condition is transient and retryable, so it gets the same
+            // 409 + operator hint as `/input`. `interrupt` throws before it persists any derived state,
+            // so nothing was recorded for the keystroke tmux ate.
             call.respondText(
                 "action '$action' was not delivered: session ${id.value}'s pane is in tmux copy-mode; " +
                     "scroll the pane back to the bottom (or press q), then retry",

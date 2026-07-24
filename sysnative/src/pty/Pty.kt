@@ -113,7 +113,13 @@ class Pty private constructor(
         }
     }
 
-    /** Write [bytes] to the master fd, looping over partial writes. */
+    /**
+     * Write [bytes] to the master fd, looping over partial writes.
+     *
+     * Normal return means every byte was written. If a later syscall fails after one or more successful
+     * partial writes, this throws even though that prefix has already reached the pty; POSIX cannot roll
+     * it back, and the exception therefore must not be interpreted as proof of zero delivery.
+     */
     fun write(bytes: ByteArray) {
         if (bytes.isEmpty()) return
         bytes.usePinned { pinned ->

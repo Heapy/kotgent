@@ -87,17 +87,20 @@ class TerminalBridge(
 
     /**
      * Write terminal input to the shared upstream — the `POST /sessions/{id}/input` REST seam (Task 14).
-     * Routes through the same [Broadcaster] as attached subscribers' input, so it reaches the one shared
-     * `tmux attach` upstream and stays consistent with the terminal-WS input path.
+     * Routes through the same [Broadcaster] as attached subscribers' input, so it writes through the one
+     * shared `tmux attach` upstream and stays consistent with the terminal-WS input path.
      *
-     * **Returns whether the bytes reached the upstream.** [decision] Because the upstream is lazy, this
-     * reaches the agent only while a terminal is attached (a subscriber is present); with none attached
-     * there is nothing to write to and this answers `false` rather than dropping silently — that is the
-     * COMMON drop, far more common than copy-mode, and `POST /sessions/{id}/input` turns it into a `409`
-     * instead of `ok`. The browser's normal flow keeps a terminal-WS attached, and terminal input over
-     * that WS is the primary path. (`tmux send-keys` would deliver subscriber-independently, but bypasses
-     * the single-upstream fan-out; the Broadcaster path is chosen so `/input` and terminal-WS input are
-     * one channel.)
+     * **Returns whether the full pty write completed without throwing.** [decision] Because the upstream
+     * is lazy, this path exists only while a terminal is attached (a subscriber is present); with none
+     * attached there is nothing to write to and this answers `false` rather than dropping silently —
+     * that is the COMMON failure, far more common than copy-mode, and `POST /sessions/{id}/input` turns
+     * it into a `409` instead of `ok`. A `false` after [PtyHandle.write] throws is less definite: the
+     * real write loops, and a prefix may have landed before a later failure, so the caller must not
+     * promise that retrying the whole body is safe. A normal return proves only that the pty accepted
+     * the full body, not that the pane's process consumed it. The browser's normal flow keeps a
+     * terminal-WS attached, and terminal input over that WS is the primary path. (`tmux send-keys`
+     * would deliver subscriber-independently, but bypasses the single-upstream fan-out; the Broadcaster
+     * path is chosen so `/input` and terminal-WS input are one channel.)
      *
      * Leaving copy-mode is the CALLER's job, not this method's: bytes written into the upstream pty are
      * routed to tmux's copy-mode key table and dropped whenever the shared pane is in a mode (one wheel
