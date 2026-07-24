@@ -241,19 +241,29 @@ pin an old UI for a day).
 - Modify: `src/transport/Server.kt`
 - Create: `test/transport/PushRoutesTest.kt`
 
-- [ ] add `Route.pushRoutes(store: PushStore, vapidPublicKey: suspend () -> String, json: Json)` with
+- [x] add `Route.pushRoutes(store: PushStore, vapidPublicKey: suspend () -> String, json: Json)` with
       `GET /push/vapid-key`, `POST /push/subscribe`, `POST /push/unsubscribe`
-- [ ] validate the subscribe body: absolute `https://` endpoint, non-empty `p256dh`/`auth`, else `400`
-- [ ] mount inside `authenticated { }` in the `KotgentServer` constructor behind new nullable params
+      ➕ a fourth param `now: () -> Long = ::pushEpochMillis` stamps `createdAt`, so the store write is
+      deterministic in tests (the `authRoutes(…, now =)` idiom)
+- [x] validate the subscribe body: absolute `https://` endpoint, non-empty `p256dh`/`auth`, else `400`
+      ➕ the rule is the pure, public `validateSubscribeRequest(req): String?` (unit-testable without a
+      server); it also refuses whitespace/control characters (a CRLF the sender would put on the wire
+      unattended) and caps `endpoint` at 2048 / the keys at 512 characters
+- [x] mount inside `authenticated { }` in the `KotgentServer` constructor behind new nullable params
       (`pushStore`, `vapidPublicKey`); when either is null the routes are not mounted, so existing harnesses
       are unaffected
-- [ ] give `KotgentServer.production(...)` the same two nullable params and forward them — that companion
+- [x] give `KotgentServer.production(...)` the same two nullable params and forward them — that companion
       factory, not the constructor, is what `Commands.daemon` calls
-- [ ] write tests: subscribe with a cookie and with a Bearer both succeed; the row lands in the store;
+- [x] write tests: subscribe with a cookie and with a Bearer both succeed; the row lands in the store;
       unsubscribe removes it; `GET /push/vapid-key` returns the injected key
-- [ ] write tests: no credential → `401`; `POST` without an `Origin` → refused by the existing rule;
+- [x] write tests: no credential → `401`; `POST` without an `Origin` → refused by the existing rule;
       malformed endpoint → `400`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 4
+      ➕ also: a foreign `Origin` → `403`, an unparseable body → `400`, unsubscribing an unknown endpoint is
+      still `200` (the store's remove is idempotent), and a THROWING key provider → `503` on that one route
+      with the other push routes still answering (the "openssl missing → push disabled, daemon healthy"
+      path Task 10 relies on)
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 4
+      ➕ 12 new tests: **462 run / 462 passed / 0 skipped**
 
 ### Task 4: Base64Url encoder
 

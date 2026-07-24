@@ -3,6 +3,7 @@ package io.kotgent.transport
 import io.kotgent.currentUiVersion
 import io.kotgent.daemon.SessionManager
 import io.kotgent.exe.NativeExe
+import io.kotgent.push.PushStore
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
@@ -74,6 +75,11 @@ import platform.posix.access
  *   (`~/.kotgent/config.json`), or `null` for loopback-only. Passed IN by the daemon rather than read here:
  *   the dependency runs cli → transport, and the transport does not read configuration files.
  * @param tickets the outstanding one-shot login tickets; in-memory and per-daemon-run by design.
+ * @param pushStore where Web Push subscriptions live, or `null` to leave the `/push` routes unmounted.
+ * @param vapidPublicKey the base64url VAPID application server key provider, or `null` for no push. Both
+ *   this and [pushStore] must be present for [pushRoutes] to be mounted at all — push is an optional
+ *   capability (it needs `openssl` and a writable `~/.kotgent`), so a daemon without it, and every test
+ *   harness that does not pass them, behaves exactly as before.
  * @param port `0` binds an ephemeral port (tests); [port] reports the resolved one.
  */
 class KotgentServer(
@@ -86,6 +92,8 @@ class KotgentServer(
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
     private val publicUrl: String? = null,
     private val tickets: TicketStore = TicketStore(),
+    private val pushStore: PushStore? = null,
+    private val vapidPublicKey: (suspend () -> String)? = null,
     host: String = "127.0.0.1",
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
@@ -132,6 +140,13 @@ class KotgentServer(
                     directoryCompletionRoutes(directoryCompleter, json)
                     eventsWs(store, json)
                     terminalWs(registry, store, json)
+                    // Web Push registration, only when the daemon actually has push wired (a store AND a key
+                    // provider). Absent either, the routes simply do not exist — a 404 the page reads as "this
+                    // daemon cannot do push", rather than a half-mounted surface that accepts subscriptions
+                    // nothing will ever send to.
+                    val subscriptions = pushStore
+                    val key = vapidPublicKey
+                    if (subscriptions != null && key != null) pushRoutes(subscriptions, key, json)
                 }
                 // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
                 staticWebUi(webUiDir)
@@ -204,6 +219,9 @@ class KotgentServer(
          * cinterop `Pty`). The web UI directory is resolved to an ABSOLUTE path ([resolveWebUiDir]) so
          * an installed daemon (launchd sets no `WorkingDirectory`, so its cwd is `/`) still serves the
          * SPA instead of 404ing on a cwd-relative default.
+         *
+         * [pushStore] and [vapidPublicKey] are forwarded verbatim: this factory, not the constructor, is
+         * what `Commands.daemon` calls, so push has to be reachable from here to be reachable at all.
          */
         fun production(
             sessionManager: SessionManager,
@@ -214,6 +232,8 @@ class KotgentServer(
             ptyFactory: PtyFactory = realPtyFactory,
             webUiDir: String? = DEFAULT_WEBUI_DIR,
             publicUrl: String? = null,
+            pushStore: PushStore? = null,
+            vapidPublicKey: (suspend () -> String)? = null,
             host: String = "127.0.0.1",
             port: Int = 0,
         ): KotgentServer = KotgentServer(
@@ -224,6 +244,8 @@ class KotgentServer(
             currentVersion = currentVersion,
             webUiDir = webUiDir?.let { resolveWebUiDir(it) },
             publicUrl = publicUrl,
+            pushStore = pushStore,
+            vapidPublicKey = vapidPublicKey,
             host = host,
             port = port,
         )
