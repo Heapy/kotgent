@@ -221,15 +221,18 @@ pin an old UI for a day).
 - Create: `src/push/AttentionTracker.kt`
 - Create: `test/push/AttentionTrackerTest.kt`
 
-- [ ] add `AttentionTracker` holding `SessionId → Boolean`, with `seed(sessions: List<SessionMeta>)` and
+- [x] add `AttentionTracker` holding `SessionId → Boolean`, with `seed(sessions: List<SessionMeta>)` and
       `isNewAttention(update: SessionUpdate): Boolean` (true only on `false → true`)
-- [ ] make it host-free: no store, no I/O, no clock
-- [ ] write tests: a single transition fires once; staying in attention does not re-fire; leaving and
+- [x] make it host-free: no store, no I/O, no clock
+- [x] write tests: a single transition fires once; staying in attention does not re-fire; leaving and
       re-entering fires again
-- [ ] write test: seeding from an already-attention session makes the next identical update **not** fire
+- [x] write test: seeding from an already-attention session makes the next identical update **not** fire
       (the daemon-restart case)
-- [ ] write test: an unknown session id whose first update is already `needsAttention` fires exactly once
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 3
+- [x] write test: an unknown session id whose first update is already `needsAttention` fires exactly once
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 3
+      ➕ "waiting" is `state.needsAttention && !archived`, matching the service worker's `/sessions`
+      filter, so an archived row never rings; 3 extra tests (archived, per-session independence, seed
+      replaces prior state) bring the suite to **450 run / 450 passed / 0 skipped**
 
 ### Task 3: /push routes and server wiring
 
