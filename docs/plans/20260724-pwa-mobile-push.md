@@ -380,17 +380,34 @@ pin an old UI for a day).
 - Create: `src/push/VapidSigner.kt`
 - Create: `test/push/OpensslVapidSignerTest.kt`
 
-- [ ] add `interface VapidSigner { fun sign(input: String): ByteArray }`
-- [ ] add `OpensslVapidSigner(keyPath, opensslPath = "/usr/bin/openssl", runner)`: signing input → temp file
+- [x] add `interface VapidSigner { fun sign(input: String): ByteArray }`
+      ➕ non-suspend on purpose, so `signer::sign` binds straight into `VapidTokenCache`'s `sign` param
+- [x] add `OpensslVapidSigner(keyPath, opensslPath = "/usr/bin/openssl", runner)`: signing input → temp file
       (popen has no writable stdin) → `openssl dgst -sha256 -sign <pem> <tmp>` → DER from `stdoutBytes` →
       `derToRawSignature`; the input temp file is removed in a `finally`
-- [ ] surface a non-zero exit with openssl's stderr in the message (this is the "push disabled" diagnostic
+      ➕ the temp is `mkstemp` (atomic, 0600, collision-free under a concurrent fan-out) and the bytes go
+      through the returned fd — never a second `fopen` by name — with a short-write loop, because a
+      truncated input would be signed happily and verify against nothing. A blank input is refused before
+      anything is spawned
+- [x] surface a non-zero exit with openssl's stderr in the message (this is the "push disabled" diagnostic
       the daemon later relies on)
-- [ ] write test: the signature is 64 bytes and `openssl dgst -sha256 -verify <pubkey>` accepts it —
+      ➕ every failure is one `VapidSignerException` (distinct from `VapidKeyException`: a key problem
+      means "push cannot be enabled", a signing problem means "this send failed"); an exit-0-with-empty-
+      stdout and an `EcdsaDerException` over openssl's own bytes are both re-attributed to openssl so the
+      operator does not go looking in the caller
+- [x] write test: the signature is 64 bytes and `openssl dgst -sha256 -verify <pubkey>` accepts it —
       an outside verifier, not our own code agreeing with itself
-- [ ] write tests: a missing key file and a bogus openssl path both fail with a clear error, leaving no temp
+      ➕ the test re-encodes the raw `r||s` back to DER itself (the verifier only speaks DER) and also
+      asserts that two signatures over the same input DIFFER — ECDSA is randomised, which is what proves
+      nothing is cached at this layer — with both still verifying
+- [x] write tests: a missing key file and a bogus openssl path both fail with a clear error, leaving no temp
       file behind
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 9
+      ➕ "no temp file behind" is asserted on EVERY failure path (and on the success path) as a
+      before/after diff of `$TMPDIR` entries matching the signer's prefix, so a stale file from an earlier
+      crashed run cannot fail an unrelated test; the argv seen by a spy runner also proves the command
+      shape and that openssl sees the signing input byte for byte
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 9
+      ➕ 11 new tests: **526 run / 526 passed / 0 skipped**
 
 ### Task 9: Push sender over NSURLSession
 
