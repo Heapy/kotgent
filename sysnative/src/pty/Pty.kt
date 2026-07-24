@@ -44,6 +44,7 @@ import platform.posix.EINTR
 import platform.posix.O_RDWR
 import platform.posix.SIGKILL
 import platform.posix.SIGTERM
+import platform.posix.SIGWINCH
 import platform.posix.WNOHANG
 import platform.posix.errno
 import platform.posix.fflush
@@ -128,10 +129,31 @@ class Pty private constructor(
         }
     }
 
-    /** Set the terminal window size (ioctl TIOCSWINSZ on the master fd). */
+    /**
+     * Set the terminal window size (`ioctl(TIOCSWINSZ)` on the master fd) and then hand the child the
+     * `SIGWINCH` that the kernel will NOT send for this pty.
+     *
+     * That signal is load-bearing, not belt-and-braces. `TIOCSWINSZ` raises `SIGWINCH` on the tty's
+     * **foreground process group**, and this pty has none: under `POSIX_SPAWN_SETSID` the child is a
+     * fresh session leader, but it acquires the pts through a posix_spawn **file action**, and the
+     * kernel's file-action open does not run `open(2)`'s implicit `TIOCSCTTY` — so the child never
+     * takes the pts as its controlling terminal (`ps` reports `TT ??`, and no process owns the pts)
+     * and there is no pgrp to signal. Verified on macOS 15: without this `kill`, a resize applied
+     * while `tmux attach` is already RUNNING is silently lost — only a size set *before* the child
+     * reads `TIOCGWINSZ` at startup ever took effect, which is why a freshly attached terminal used
+     * to sit at the pty's birth size until it was detached and re-attached.
+     *
+     * The signal goes to the child's process **group** (== its pid under `POSIX_SPAWN_SETSID`), which
+     * is what the kernel's foreground-pgrp delivery would have done. Failures are ignored: a child
+     * that already exited is `ESRCH`, and a duplicate `SIGWINCH` would be harmless anyway (readers
+     * respond by re-reading `TIOCGWINSZ`).
+     */
     fun resize(cols: Int, rows: Int) {
         val rc = kotgent_set_winsize(masterFd, rows.toUShort(), cols.toUShort())
         if (rc != 0) throw PtyException("resize (TIOCSWINSZ) failed: ${errnoMessage(errno)}")
+        // Guarded on the child still being ours to signal: once reaped, the pid (hence the pgid) can be
+        // recycled by an unrelated process group.
+        if (!reaped && pid > 1) kill(-pid, SIGWINCH)
     }
 
     /** Block until the child exits and return its exit code (128 + signal if killed). */
@@ -251,8 +273,8 @@ class Pty private constructor(
                 // Initial window size on the master; the slave inherits it.
                 kotgent_set_winsize(master, rows.toUShort(), cols.toUShort())
 
-                // Resolve the slave's pts path so the CHILD can open it itself and thereby acquire
-                // it as its controlling terminal (see the file actions below).
+                // Resolve the slave's pts path so the CHILD opens the tty itself rather than inheriting
+                // a dup of our slave fd (see the file actions below).
                 val ptsBuf = allocArray<ByteVar>(PTS_PATH_CAP)
                 if (kotgent_ptsname(master, ptsBuf, PTS_PATH_CAP.convert()) != 0) {
                     posixClose(master)
@@ -261,12 +283,14 @@ class Pty private constructor(
                 }
                 val ptsPath = ptsBuf.toKString()
 
-                // File actions. CONTROLLING TERMINAL: under POSIX_SPAWN_SETSID the child is a fresh
-                // session leader with no controlling tty, and the FIRST tty it opens (without
-                // O_NOCTTY) becomes its controlling terminal. A dup2 of an *inherited* slave fd does
-                // NOT do this — so we have the child OPEN the slave by its pts path as fd 0, then
-                // wire that same tty to stdout/stderr. `tmux attach` requires a controlling tty; with
-                // only dup2 it fails ("open terminal failed: not a terminal") and exits immediately.
+                // File actions. The child OPENS the slave by its pts path as fd 0 and wires that same
+                // tty to stdout/stderr, rather than getting a dup2 of our *inherited* slave fd: with
+                // only dup2, `tmux attach` fails ("open terminal failed: not a terminal") and exits
+                // immediately. NOTE this does NOT give the child a controlling terminal — the kernel
+                // runs the file-action open without open(2)'s implicit TIOCSCTTY, so the pts ends up
+                // with no session and no foreground pgrp (`ps` shows `TT ??` for the child). Nothing
+                // here needs one, but it means TIOCSWINSZ raises no SIGWINCH, so [resize] sends the
+                // signal itself — see its KDoc.
                 // Finally drop the inherited master/slave fds so closing our master yields a clean EOF.
                 // Each posix_spawn_file_actions_* / posix_spawnattr_* call returns an errno on failure;
                 // ignoring them would feed a half-built structure to posix_spawn (fd leaks / a child with

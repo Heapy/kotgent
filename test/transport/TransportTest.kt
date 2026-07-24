@@ -213,6 +213,23 @@ class TransportTest {
         }
     }
 
+    @Test
+    fun terminalWsOpensTheUpstreamAtTheGeometryTheClientDeclaresInItsQuery() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        // The browser/CLI knows its size before it can send a frame, and `tmux attach` only reads its
+        // geometry once, at startup — so the size must reach the upstream at OPEN. Regression guard for
+        // "a freshly attached terminal renders 80x24 until you detach and re-attach".
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal?cols=143&rows=53",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            val upstream = ctx.ptyFactory.opened.receive()
+            assertEquals(143 to 53, upstream.resizes.receive(), "the query geometry sizes the upstream at open")
+            assertContentEquals(seed, receiveBinary(), "the seed still arrives before any live delta")
+        }
+    }
+
     // ---- 3b. POST /sessions/{id}/input reaches the shared upstream via the Broadcaster ----
 
     @Test

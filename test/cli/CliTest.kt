@@ -280,6 +280,16 @@ class CliTest {
             "wss://host:8443/sessions/s/terminal",
             terminalWsUrl("https://host:8443/", "s"),
         )
+        // A known geometry rides in the query so the daemon can open the upstream attach at OUR size
+        // instead of the pty default; a bogus one is omitted rather than sent as `?cols=0`.
+        assertEquals(
+            "ws://127.0.0.1:27508/sessions/sess1/terminal?cols=143&rows=53",
+            terminalWsUrl("http://127.0.0.1:27508", "sess1", WinSize(143, 53)),
+        )
+        assertEquals(
+            "ws://h/sessions/s/terminal",
+            terminalWsUrl("http://h", "s", WinSize(0, 24)),
+        )
     }
 
     @Test

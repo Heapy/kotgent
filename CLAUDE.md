@@ -104,6 +104,14 @@ the agent lives on in `tmux`). Input from any subscriber goes to the one upstrea
 Do not open a second `tmux attach` or route input via `tmux send-keys` — it breaks the single-upstream
 invariant.
 
+**A subscriber's geometry must be known at OPEN, not only after the first resize frame.** A `tmux` client
+reads its size from `TIOCGWINSZ` exactly once, at startup, so a size that lands later is a *reflow* of the
+agent's TUI (and, before the `SIGWINCH` fix below, was silently lost). So the terminal WS carries
+`?cols=&rows=` (browser: after `fit()`; `kotgent attach`: the tty's size) → `TerminalBridge.subscribe(cols,
+rows)` → `Broadcaster.attach(size)`, which records it as the new "last active" size **before** opening the
+upstream, where the existing "re-apply `lastSize` on open" path applies it. Non-positive/absent values are
+ignored (open at the pty default, correct via the first resize frame) — never trust them into the ioctl.
+
 **Spawned children inherit stdio and NOTHING else.** Every process the daemon starts outlives it —
 `tmux` daemonizes, and the agent lives on inside `tmux` — so an inherited descriptor is an inherited
 descriptor *forever*. The listening socket is created inside Ktor CIO (macOS `socket(2)` has no
@@ -226,6 +234,22 @@ child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before
 forked child can deadlock. A dedicated reader thread does the blocking `read()` into a `Channel`
 (there is no `Dispatchers.IO` on native).
 
+**A `posix_spawn`ed child gets NO controlling terminal, so `Pty.resize` must send `SIGWINCH` itself.**
+`ioctl(TIOCSWINSZ)` raises `SIGWINCH` on the tty's **foreground process group** — and this pty has none:
+the child opens the pts through a posix_spawn **file action**, and the kernel runs that open *without*
+`open(2)`'s implicit `TIOCSCTTY`, so the pts ends up with no session and no pgrp (`ps` shows `TT ??` for
+the child; `ps -t <pts>` lists nobody). Nothing needs a ctty — `tmux attach` runs fine on fd 0/1/2 (that
+is what the pts-by-path file action is really for; a dup2 of an inherited slave fd fails with "open
+terminal failed: not a terminal") — but it means a `TIOCSWINSZ` alone reaches **no one**: a resize applied
+while `tmux attach` is already running was silently dropped, and only a size set before the client's
+startup `TIOCGWINSZ` ever took effect. That was the "a new session's terminal renders 80x24 until you
+detach and re-attach" bug: the browser's size arrived milliseconds too late, was remembered as `lastSize`,
+and only got applied on the *next* attach. `Pty.resize` therefore does the ioctl **and** `kill(-pid,
+SIGWINCH)` (the child's pgid == its pid under `POSIX_SPAWN_SETSID`, mirroring the kernel's foreground-pgrp
+delivery; skipped once reaped, since a pid can be recycled). Guarded by the `ptycheck` check "a resize
+reaches a running tmux attach" — verified to FAIL (`window is still 80x23`) with the `kill` removed. Any
+new pty path owes the same signal.
+
 ## Load-bearing toolchain gotchas
 
 These are real and cost time to rediscover. Respect them.
@@ -268,8 +292,9 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **428 run / 428 passed /
-  0 skipped**.
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **431 run / 431 passed /
+  0 skipped** (plus `ptycheck`'s 8 real-PTY checks, driven by `PtyTest` — keep its `EXPECTED_CHECKS`
+  in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
   instead of silently passing when the binary is missing.

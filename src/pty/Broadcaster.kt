@@ -68,8 +68,16 @@ class Broadcaster(
      * Attach a new subscriber. If it is the first, the upstream is opened first (and the last
      * known size re-applied). The subscriber is pre-seeded with the current [seedProvider] snapshot
      * before any live delta, then added to the fan-out set.
+     *
+     * [size] is the joining client's own geometry, when it knows it up front (the terminal WS carries
+     * it as `?cols=&rows=`). Recorded as the new "last active" size **before** the upstream is opened,
+     * so a `tmux attach` reads the subscriber's real size from `TIOCGWINSZ` at startup instead of
+     * being born at the pty's default and reflowing the agent's TUI a few milliseconds later. A client
+     * that cannot declare a size still gets the old behaviour: open at the default, correct via the
+     * first resize frame.
      */
-    suspend fun attach(): Subscriber = mutex.withLock {
+    suspend fun attach(size: Pair<Int, Int>? = null): Subscriber = mutex.withLock {
+        if (size != null) lastSize = size
         val opened = subscribers.isEmpty()
         if (opened) {
             val up = openUpstream()

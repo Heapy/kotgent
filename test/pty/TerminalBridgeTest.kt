@@ -155,6 +155,36 @@ class TerminalBridgeTest {
     }
 
     @Test
+    fun aSubscriberThatDeclaresItsSizeGetsTheUpstreamOpenedAtThatGeometry() = bridgeTest { bridge, factory ->
+        // The declared size must be applied to the upstream BEFORE anything else — `tmux attach` reads
+        // its geometry from TIOCGWINSZ at startup, so a size that lands after that startup is a reflow
+        // (or, when SIGWINCH cannot be delivered, no resize at all).
+        val a = bridge.subscribe(cols = 143, rows = 53)
+        assertEquals(
+            listOf(143 to 53),
+            factory.current.resizes,
+            "the declared geometry is applied to the upstream at open, not after the first frame",
+        )
+
+        // It also becomes the remembered last-active size, so a re-open reuses it.
+        a.close()
+        val b = bridge.subscribe()
+        assertEquals(listOf(143 to 53), factory.current.resizes)
+        b.close()
+    }
+
+    @Test
+    fun aSubscriberWithoutAUsableDeclaredSizeLeavesTheUpstreamAtItsDefault() = bridgeTest { bridge, factory ->
+        // A client that cannot know its size up front (or reports a bogus one) must not push a garbage
+        // geometry onto the upstream; it corrects itself with a resize frame instead.
+        val a = bridge.subscribe(cols = 0, rows = 53)
+        val b = bridge.subscribe(cols = 100, rows = null)
+        assertEquals(emptyList(), factory.current.resizes)
+        a.close()
+        b.close()
+    }
+
+    @Test
     fun theLastActiveSizeIsReappliedWhenTheUpstreamReopens() = bridgeTest { bridge, factory ->
         val a = bridge.subscribe()
         a.resize(133, 42)

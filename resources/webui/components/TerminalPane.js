@@ -52,9 +52,15 @@ export function TerminalPane({
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    try { fit.fit(); } catch (_) { /* host not laid out yet — a later resize will fit */ }
+    try { fit.fit(); } catch (_) { /* host not laid out yet — the ResizeObserver below will fit */ }
 
-    const ws = new WebSocket(wsUrl("/sessions/" + encodeURIComponent(attachedId) + "/terminal"));
+    // The size travels in the URL, not only in the first resize frame: the daemon opens the upstream
+    // `tmux attach` at this geometry, so the first bytes we receive are already the right shape
+    // instead of the pty's default 80x24 reflowing to ours a moment later.
+    const ws = new WebSocket(wsUrl(
+      "/sessions/" + encodeURIComponent(attachedId) + "/terminal" +
+      "?cols=" + term.cols + "&rows=" + term.rows,
+    ));
     ws.binaryType = "arraybuffer";
     // Distinguishes "we tore this down" from "the daemon dropped us": only the latter is worth
     // reporting to the user and reflecting in the parent's state.
@@ -82,12 +88,23 @@ export function TerminalPane({
     // xterm-initiated resizes (including from fit) -> text resize control frame.
     term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
 
-    const onWinResize = debounce(() => { try { fit.fit(); } catch (_) {} }, 120);
-    window.addEventListener("resize", onWinResize);
+    // Observe the HOST, not just the window: the pane also changes size without a window resize (the
+    // hint paragraph appearing/disappearing, the sidebar collapsing at the mobile breakpoint), and the
+    // observer's initial callback re-fits if `term.open()` ran before the host had been laid out — a
+    // fit() on an unmeasured terminal is a silent no-op that would otherwise leave it at 80x24.
+    const refit = debounce(() => {
+      // A Terminal opened before its host was laid out has no valid character measurement, and fit()
+      // silently bails on one; resizing to the current size is the public way to force a re-measure
+      // (it skips the actual resize path, so it costs nothing and fires no onResize).
+      try { term.resize(term.cols, term.rows); } catch (_) {}
+      try { fit.fit(); } catch (_) {}
+    }, 120);
+    const observer = new ResizeObserver(refit);
+    observer.observe(host);
 
     return () => {
       teardown = true;
-      window.removeEventListener("resize", onWinResize);
+      observer.disconnect();
       try { ws.close(); } catch (_) {}
       try { term.dispose(); } catch (_) {}
       host.replaceChildren();

@@ -100,13 +100,18 @@ class PosixTty(private val fd: Int = STDIN_FILENO) : LocalTty {
 
 /** Build the terminal WebSocket URL for [sessionId] on [baseUrl] (an `http(s)://…` origin). The token is
  *  no longer carried in the URL — [AttachClient] presents it as an `Authorization: Bearer` handshake header
- *  (a native client, unlike a browser, can set headers on a WebSocket handshake). */
-fun terminalWsUrl(baseUrl: String, sessionId: String): String {
+ *  (a native client, unlike a browser, can set headers on a WebSocket handshake).
+ *
+ *  [size], when known, rides along as `?cols=&rows=`: the daemon then opens the upstream `tmux attach`
+ *  at our geometry, so the first bytes are already the right shape instead of the pty default reflowing
+ *  to ours once the initial resize frame lands. A non-positive dimension is omitted. */
+fun terminalWsUrl(baseUrl: String, sessionId: String, size: WinSize? = null): String {
     val origin = baseUrl
         .replaceFirst("https://", "wss://")
         .replaceFirst("http://", "ws://")
         .trimEnd('/')
-    return "$origin/sessions/$sessionId/terminal"
+    val query = size?.takeIf { it.cols > 0 && it.rows > 0 }?.let { "?cols=${it.cols}&rows=${it.rows}" } ?: ""
+    return "$origin/sessions/$sessionId/terminal$query"
 }
 
 /**
@@ -142,7 +147,7 @@ class AttachClient(
     private val clientFactory: () -> HttpClient = { HttpClient(CIO) { install(WebSockets) } },
 ) {
     /** The WebSocket URL this client connects to (also the unit-tested URL-construction seam). */
-    val wsUrl: String get() = terminalWsUrl(baseUrl, sessionId)
+    val wsUrl: String get() = terminalWsUrl(baseUrl, sessionId, tty.windowSize())
 
     /**
      * Connect and pump until the terminal ends (server closes / EOF) or the process is interrupted. The

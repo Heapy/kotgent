@@ -73,8 +73,13 @@ class TerminalBridge(
      * Attach a new client. Opens (or re-opens) the upstream if this is the first subscriber, seeds
      * the client with the current screen, and returns its [Subscriber] handle (output stream +
      * input/resize + detach).
+     *
+     * [cols] x [rows] is the client's geometry when it already knows it (the terminal WS carries it as
+     * a query string); it becomes the upstream's size *at open*, so the attach starts at the right
+     * geometry instead of the pty default. Omit it and the first resize frame corrects the size.
      */
-    suspend fun subscribe(): Subscriber = broadcaster.attach()
+    suspend fun subscribe(cols: Int? = null, rows: Int? = null): Subscriber =
+        broadcaster.attach(if (cols != null && rows != null && cols > 0 && rows > 0) cols to rows else null)
 
     /** Current number of attached subscribers (observability / test synchronization). */
     suspend fun subscriberCount(): Int = broadcaster.subscriberCount()

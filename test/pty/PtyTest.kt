@@ -11,8 +11,8 @@ import platform.posix.access
 
 /**
  * Drives the real-PTY integration checks for [Pty] — the `cat` round-trip, `resize`, the child's
- * exit code, a failing spawn, a real `tmux attach` acquiring a controlling terminal, and
- * [TerminalBridge]'s fan-out over that real attach.
+ * exit code, a failing spawn, a real `tmux attach` running on the spawned pts, a resize reaching that
+ * attach *while it runs*, and [TerminalBridge]'s fan-out over the real attach.
  *
  * ## Why they run out-of-process instead of here
  * [Pty] calls the `sysnative` cinterop (`openpty`, `posix_spawn`), and Kotlin Toolchain 0.11.x never
@@ -65,6 +65,6 @@ class PtyTest {
 
     private companion object {
         /** Number of checks `ptycheck` reports; keep in sync with `ptycheck/src/Main.kt`. */
-        const val EXPECTED_CHECKS = 7
+        const val EXPECTED_CHECKS = 8
     }
 }

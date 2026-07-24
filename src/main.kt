@@ -3,7 +3,7 @@ package io.kotgent
 import io.kotgent.cli.runCli
 import kotlin.system.exitProcess
 
-const val VERSION = "0.1.1"
+const val VERSION = "0.1.2"
 
 fun versionLine(): String = "kotgent $VERSION"
 

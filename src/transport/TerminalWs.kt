@@ -84,7 +84,13 @@ fun Route.terminalWs(registry: TerminalRegistry, store: EventStore, json: Json =
             return@webSocket
         }
         val bridge = registry.getOrCreate(id)
-        val sub = bridge.subscribe()
+        // `?cols=&rows=` (optional) is the client's geometry, known before the first resize frame can
+        // arrive. Handing it to subscribe() opens the upstream `tmux attach` at that size instead of at
+        // the pty default, so the very first paint is already the right shape.
+        val sub = bridge.subscribe(
+            cols = call.request.queryParameters["cols"]?.toIntOrNull(),
+            rows = call.request.queryParameters["rows"]?.toIntOrNull(),
+        )
         val ws = this
         // server → client: pump the subscriber's output (seed, then deltas) out as binary frames.
         val pump = launch {

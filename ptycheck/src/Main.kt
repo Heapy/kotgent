@@ -16,6 +16,7 @@ import kotlinx.cinterop.readBytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.system.exitProcess
@@ -47,7 +48,8 @@ fun main() {
     exitCodeIsCaptured()
     spawnNonexistentCommandFails()
     spawnedChildInheritsOnlyTheTty()
-    tmuxAttachAcquiresControllingTty()
+    tmuxAttachRunsOnTheSpawnedPts()
+    resizeReachesARunningTmuxAttach()
     terminalBridgeFansOutRealTmuxAttach()
 
     println("SUMMARY total=$total failed=$failed skipped=$skipped")
@@ -143,15 +145,17 @@ private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits onl
 }
 
 /**
- * The controlling-terminal path, which only a real `tmux attach` exercises: under
- * `POSIX_SPAWN_SETSID` the child is a fresh session leader, and [Pty.open] has it *open the pts by
- * path* so that tty becomes its controlling terminal. Without that, `tmux attach` fails with
- * "open terminal failed: not a terminal" and exits immediately.
+ * The tty-wiring path, which only a real `tmux attach` exercises: [Pty.open] has the child *open the
+ * pts by path* as its stdio rather than inheriting a dup of our slave fd. Without that, `tmux attach`
+ * fails with "open terminal failed: not a terminal" and exits immediately.
+ *
+ * (It does NOT make the pts the child's controlling terminal — the kernel skips `open(2)`'s implicit
+ * `TIOCSCTTY` for a posix_spawn file action — which is why [resizeReachesARunningTmuxAttach] exists.)
  *
  * Uses the throwaway `-L kotgent-test` socket (never the real `kotgent` one), like the tmux tests
  * in the suite, and kills its session in teardown.
  */
-private fun tmuxAttachAcquiresControllingTty() = check("tmux attach acquires a controlling tty") {
+private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spawned pts") {
     val tmux = which("tmux") ?: skip("tmux is not on PATH")
     val socket = TEST_SOCKET
     val session = "kt-ptycheck"
@@ -179,6 +183,56 @@ private fun tmuxAttachAcquiresControllingTty() = check("tmux attach acquires a c
         expect(alive == 0) { "the tmux session should outlive the attach (has-session exit=$alive)" }
     } finally {
         sh("${q(tmux)} -L $socket kill-session -t $session")
+    }
+}
+
+/**
+ * A resize applied while `tmux attach` is **already running** must reach it.
+ *
+ * This is the check that would have caught "a freshly attached terminal renders at the pty's birth size
+ * until you detach and re-attach": `ioctl(TIOCSWINSZ)` raises `SIGWINCH` only on the tty's FOREGROUND
+ * PROCESS GROUP, and a child spawned by [Pty.open] has no controlling terminal at all (the kernel runs
+ * the posix_spawn file-action open without `open(2)`'s implicit `TIOCSCTTY`), so the pts has no such
+ * group and the signal reaches nobody. [Pty.resize] therefore sends `SIGWINCH` itself; without that,
+ * only a size set before the client's startup `TIOCGWINSZ` ever took effect.
+ *
+ * Needs a real pty AND a real tmux client, so it cannot live in the suite. Throwaway `-L kotgent-test`
+ * socket, session killed in teardown.
+ */
+private fun resizeReachesARunningTmuxAttach() = check("a resize reaches a running tmux attach") {
+    val tmux = which("tmux") ?: skip("tmux is not on PATH")
+    val target = "${q(tmux)} -L $TEST_SOCKET"
+    val session = "kt-ptycheck-resize"
+
+    sh("$target kill-session -t $session")
+    val created = sh("$target new-session -d -s $session -x 80 -y 24 /bin/cat")
+    expect(created == 0) { "could not create the tmux fixture session (exit=$created)" }
+
+    try {
+        val pty = Pty.open(
+            command = listOf(tmux, "-L", TEST_SOCKET, "attach", "-t", session),
+            env = mapOf("TERM" to "xterm-256color", "PATH" to "/usr/bin:/bin:/usr/sbin:/sbin"),
+            cols = 80,
+            rows = 24,
+        )
+        try {
+            // Wait until the client is up *and* tmux has read its 80-column size — only then is what
+            // follows a genuine "while running" resize instead of one the client picks up at startup.
+            val attached = waitUntil { capture("$target list-clients -t $session -F '#{client_width}'") == "80" }
+            expect(attached) { "the attach client never came up at 80 columns" }
+
+            pty.resize(cols = 143, rows = 53)
+
+            val resized = waitUntil { capture("$target display -p -t $session '#{window_width}'") == "143" }
+            expect(resized) {
+                "the running tmux client ignored the resize — window is still " +
+                    capture("$target display -p -t $session '#{window_width}x#{window_height}'")
+            }
+        } finally {
+            pty.close()
+        }
+    } finally {
+        sh("$target kill-session -t $session")
     }
 }
 
@@ -304,10 +358,10 @@ private fun sh(command: String): Int {
     return decodeExitCode(pclose(fp))
 }
 
-/** Absolute path of [program] as resolved by the shell, or null when it is not installed. */
+/** Run [command] via `/bin/sh -c` and return its trimmed stdout (empty when it produced none). */
 @OptIn(ExperimentalForeignApi::class)
-private fun which(program: String): String? {
-    val fp = popen("command -v ${q(program)} 2>/dev/null", "r") ?: return null
+private fun capture(command: String): String {
+    val fp = popen("$command 2>/dev/null", "r") ?: return ""
     val out = StringBuilder()
     memScoped {
         val bufSize = 4096
@@ -319,8 +373,26 @@ private fun which(program: String): String? {
         }
     }
     pclose(fp)
-    return out.toString().trim().ifEmpty { null }
+    return out.toString().trim()
 }
+
+/** Absolute path of [program] as resolved by the shell, or null when it is not installed. */
+private fun which(program: String): String? =
+    capture("command -v ${q(program)}").ifEmpty { null }
+
+/**
+ * Poll [condition] until it holds, or give up. For tmux state that a signal/IPC round trip settles
+ * asynchronously (a client resize reaches the server, which then resizes the window), so the check
+ * neither races nor hangs.
+ */
+private fun waitUntil(attempts: Int = 50, delayMs: Long = 100, condition: () -> Boolean): Boolean =
+    runBlocking {
+        repeat(attempts) {
+            if (condition()) return@runBlocking true
+            delay(delayMs)
+        }
+        condition()
+    }
 
 /** wait(2)-format status (as returned by `pclose`) -> conventional exit code. */
 private fun decodeExitCode(status: Int): Int = when {
