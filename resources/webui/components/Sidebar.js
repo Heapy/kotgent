@@ -7,9 +7,9 @@
  */
 
 import { html } from "htm/preact";
-import { useState } from "preact/hooks";
+import { useCallback, useEffect, useState } from "preact/hooks";
 import { groupSessions } from "../lib/paths.js";
-import { groupingEnabled } from "../lib/prefs.js";
+import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
 
@@ -57,12 +57,27 @@ function SessionRow({ session, active, onSelect, onRestore }) {
   `;
 }
 
-function SessionGroup({ group, activeId, onSelect, onNewSession }) {
+function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSession }) {
+  // The head is a toggle BUTTON with the group's "+" as its sibling, not a child — a button inside a
+  // button is invalid, and the "+" must not double as an expand.
+  const hidingAttention = collapsed && group.sessions.some((s) => isNeedsAttention(s.state));
+
   return html`
-    <li class="session-group">
+    <li class=${"session-group" + (collapsed ? " collapsed" : "")}>
       <div class="group-head">
-        <span class="group-title" title=${group.path}>${group.label}</span>
-        <span class="group-count">${group.sessions.length}</span>
+        <button
+          type="button"
+          class="group-toggle"
+          aria-expanded=${collapsed ? "false" : "true"}
+          title=${(collapsed ? "Expand " : "Collapse ") + (group.path || group.label)}
+          onClick=${() => onToggle(group.path)}
+        >
+          <span class="group-chevron" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>
+          <span class="group-title">${group.label}</span>
+          <span class="group-count">${group.sessions.length}</span>
+          ${hidingAttention &&
+            html`<span class="attn-dot" title="A session in this group needs attention"></span>`}
+        </button>
         ${group.path &&
           html`<button
             type="button"
@@ -72,11 +87,13 @@ function SessionGroup({ group, activeId, onSelect, onNewSession }) {
             onClick=${() => onNewSession(group.path)}
           >+</button>`}
       </div>
-      <ul class="session-list group-sessions">
-        ${group.sessions.map((s) => html`
-          <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
-        `)}
-      </ul>
+      ${!collapsed && html`
+        <ul class="session-list group-sessions">
+          ${group.sessions.map((s) => html`
+            <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
+          `)}
+        </ul>
+      `}
     </li>
   `;
 }
@@ -86,7 +103,16 @@ export function Sidebar({
   onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore,
 }) {
   const [showDone, setShowDone] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
+  useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
+  const toggleGroup = useCallback((path) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(path)) next.add(path);
+      return next;   // a new Set every time: Preact compares state by identity
+    });
+  }, []);
   const toggleNotifications = async () => {
     const next = !notifyOn;
     if (next) await ensurePermission(); // prompt once when turning on; notifyAttention guards on the result
@@ -190,7 +216,9 @@ export function Sidebar({
                   key=${g.path}
                   group=${g}
                   activeId=${activeId}
+                  collapsed=${collapsedGroups.has(g.path)}
                   onSelect=${onSelect}
+                  onToggle=${toggleGroup}
                   onNewSession=${onNewSession}
                 />
               `)

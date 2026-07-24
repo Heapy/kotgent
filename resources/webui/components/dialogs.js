@@ -424,7 +424,8 @@ export function HelpDialog({ onClose }) {
               is missed. The blue pill is the number of events appended since you last read the session,
               and the badge is its current state. With a base path set in Preferences, rows are grouped
               by working directory; anything outside that base path is grouped under its own path at the
-              end.
+              end. Click a group's header to collapse it — the collapsed groups are remembered in this
+              browser, and one keeps its dot while it hides a session that needs attention.
             </p>
           </section>
 

@@ -42,3 +42,27 @@ export function persistPrefs(next) {
 export function groupingEnabled(prefs) {
   return prefs.basePath.length > 0;
 }
+
+/*
+ * Which directory groups are collapsed, by group path. Deliberately NOT part of the prefs object: it
+ * changes on a click in the sidebar, while prefs are rebuilt wholesale by the Preferences dialog — one
+ * save there would drop it. A path that no longer has sessions keeps its entry, so a group the user
+ * collapsed comes back collapsed when a session reappears under it.
+ */
+export const COLLAPSED_GROUPS_KEY = "kotgent.collapsedGroups.v1";
+
+export function loadCollapsedGroups() {
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.filter((p) => typeof p === "string") : []);
+  } catch (_) {
+    return new Set(); // unreadable / disabled storage — every group starts expanded
+  }
+}
+
+export function persistCollapsedGroups(paths) {
+  try {
+    window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Array.from(paths)));
+  } catch (_) { /* private mode / quota — the collapse still applies to this page load */ }
+}
