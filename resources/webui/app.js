@@ -141,6 +141,13 @@ function markReadIfViewing(id, unread, lastSeq) {
   postRead(id, lastSeq);
 }
 
+/** The same detached copy is used for an explicit detach and for a terminal socket that failed. */
+function detachedHint(session) {
+  return session
+    ? "Detached from " + displayName(session) + ". The agent keeps running."
+    : "Terminal detached.";
+}
+
 function App() {
   const [sessions, setSessions] = useState([]);
   const [currentVersion, setCurrentVersion] = useState("");
@@ -172,6 +179,21 @@ function App() {
   // Whether the /sessions load about to run is the FIRST one — the only one whose 401 means "this browser
   // was never signed in" rather than "the credential died under a running page" (see loadSessions).
   const firstLoadRef = useRef(true);
+  // An unexpected terminal close leaves one reattach candidate. The timer is a deliberate render
+  // boundary: setting attachedId null and straight back to the same id in one turn can be batched into no
+  // change, so TerminalPane's keyed effect would never build a replacement socket.
+  const reattachIdRef = useRef(null);
+  const reattachTimerRef = useRef(null);
+  const reattachPendingRef = useRef(false);
+
+  const cancelReattach = useCallback(() => {
+    reattachIdRef.current = null;
+    reattachPendingRef.current = false;
+    if (reattachTimerRef.current !== null) {
+      clearTimeout(reattachTimerRef.current);
+      reattachTimerRef.current = null;
+    }
+  }, []);
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
 
@@ -179,6 +201,7 @@ function App() {
 
   /** Select [session]: attach its terminal when it is alive, explain why not when it is not. */
   const showSession = useCallback((session) => {
+    cancelReattach();
     setActiveId(session.id);
     // Picking a session is the drawer's whole purpose, so it closes itself — on a phone the terminal is
     // behind it. This covers every entry point (a tap in the list, a freshly started session, a
@@ -193,7 +216,7 @@ function App() {
     }
     // From the row we were handed: `sessionsRef` may not list it yet (startSession selects what it created).
     markReadIfViewing(session.id, session.unread, session.lastSeq);
-  }, []);
+  }, [cancelReattach]);
 
   const selectSession = useCallback((id) => {
     const session = sessionsRef.current.find((s) => s.id === id);
@@ -213,6 +236,7 @@ function App() {
       setActiveId((id) => (id && !ids.has(id) ? null : id));
       setAttachedId((id) => (id && !ids.has(id) ? null : id));
       pruneReadPosters(ids);
+      if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
       // A deep link from a notification tap: select it now that the list is here, once.
       const wanted = deepLinkRef.current;
       if (wanted) {
@@ -233,7 +257,7 @@ function App() {
       }
       say("Could not load sessions: " + errorMessage(e), true);
     }
-  }, [say, showSession]);
+  }, [cancelReattach, say, showSession]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
@@ -339,6 +363,57 @@ function App() {
     return () => navigator.serviceWorker.removeEventListener("message", onMessage);
   }, [selectSession]);
 
+  // Mobile browsers commonly discard a terminal WebSocket while the page is suspended. The events
+  // socket heals itself, but the terminal is intentionally one-shot, so a return to the foreground gets
+  // exactly one reattach attempt. Schedule even when the close callback has not landed yet: browsers may
+  // deliver visibilitychange just before the queued WebSocket close event, and the timer catches that
+  // ordering while also forcing Preact to render the detached state first.
+  useEffect(() => {
+    const reconnectWhenVisible = () => {
+      if (document.visibilityState !== "visible" || reattachPendingRef.current) return;
+      reattachPendingRef.current = true;
+      reattachTimerRef.current = setTimeout(() => {
+        reattachTimerRef.current = null;
+        const id = reattachIdRef.current;
+        if (!id || document.visibilityState !== "visible") {
+          reattachPendingRef.current = false;
+          return;
+        }
+
+        // Re-read every value after the render boundary. A session may have died, been stopped, or been
+        // replaced while the app was hidden; none of those may resurrect an old terminal attachment.
+        const s = sessionsRef.current.find((session) => session.id === id);
+        if (activeRef.current !== id || !s) {
+          reattachIdRef.current = null;
+          reattachPendingRef.current = false;
+          return;
+        }
+        if (!isAliveState(s.state)) {
+          reattachIdRef.current = null;
+          reattachPendingRef.current = false;
+          setHint(deadHint(s.state));
+          return;
+        }
+        if (pendingRef.current) {
+          reattachIdRef.current = null;
+          reattachPendingRef.current = false;
+          return;
+        }
+
+        reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
+        reattachPendingRef.current = false;
+        setAttachedId(id);
+        setHint(null);
+      }, 0);
+    };
+
+    document.addEventListener("visibilitychange", reconnectWhenVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", reconnectWhenVisible);
+      cancelReattach();
+    };
+  }, [cancelReattach]);
+
   // --- actions ---------------------------------------------------------------------------------
 
   const startSession = useCallback(async (body) => {
@@ -364,6 +439,7 @@ function App() {
         !window.confirm("Mark " + displayName(s) + " done? This stops the agent and hides the session.")) {
       return;
     }
+    if (action === "stop" || action === "done" || action === "resume") cancelReattach();
 
     setPendingAction(action);
     say(capitalize(action) + " in progress…");
@@ -390,22 +466,29 @@ function App() {
     } finally {
       setPendingAction(null);
     }
-  }, [say]);
+  }, [cancelReattach, say]);
 
   const attach = useCallback(() => {
     if (!activeRef.current) return;
+    cancelReattach();
     setAttachedId(activeRef.current);
     setHint(null);
-  }, []);
+  }, [cancelReattach]);
 
   const detach = useCallback(() => {
     const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+    cancelReattach();
     setAttachedId(null);
-    setHint(s ? "Detached from " + displayName(s) + ". The agent keeps running." : "Terminal detached.");
-  }, []);
+    setHint(detachedHint(s));
+  }, [cancelReattach]);
 
   /** The daemon dropped our terminal socket — this is not our own teardown. */
-  const onTerminalClosed = useCallback(() => setAttachedId(null), []);
+  const onTerminalClosed = useCallback((id) => {
+    const s = sessionsRef.current.find((session) => session.id === id);
+    reattachIdRef.current = id;
+    setAttachedId((current) => (current === id ? null : current));
+    if (activeRef.current === id) setHint(detachedHint(s));
+  }, []);
 
   const savePreferences = useCallback((next) => {
     setPrefs(next);

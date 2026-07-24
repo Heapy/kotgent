@@ -852,13 +852,14 @@ pin an old UI for a day).
 - Modify: `resources/webui/components/TerminalPane.js`
 - Modify: `resources/webui/app.js`
 
-- [ ] on `visibilitychange` → visible, if the terminal socket is closed and the session is still alive,
+- [x] on `visibilitychange` → visible, if the terminal socket is closed and the session is still alive,
       reconnect it (the `/events` socket already self-heals via its `onclose` retry)
-- [ ] guard against double reconnects (a pending reconnect must not be scheduled twice) and against
+- [x] guard against double reconnects (a pending reconnect must not be scheduled twice) and against
       reconnecting a session that died while backgrounded
-- [ ] make the failure path explicit: if the reattach fails, show the existing "detached" hint rather than a
+- [x] make the failure path explicit: if the reattach fails, show the existing "detached" hint rather than a
       blank pane
-- [ ] syntax-check the changed modules; run `./kotlin build && ./kotlin test` — must pass before task 20
+- [x] syntax-check the changed modules; run `./kotlin build && ./kotlin test` — must pass before task 20
+      ➕ `node --check` passed for both changed modules; **588 run / 588 passed / 0 skipped**
 
 ### Task 20: Verify acceptance criteria
 

@@ -205,7 +205,9 @@ export function TerminalPane({
     ws.onclose = () => {
       if (teardown) return;
       term.write("\r\n[terminal disconnected]\r\n");
-      closedRef.current();
+      // Name the socket that closed: the parent may already be rendering another selected session by
+      // the time this callback runs, and must never tear that replacement attachment down by mistake.
+      closedRef.current(attachedId);
     };
 
     // Keystrokes / pastes -> UTF-8 binary frames (binary = input per the terminal WS protocol).

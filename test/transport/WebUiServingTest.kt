@@ -761,6 +761,94 @@ class WebUiServingTest {
         )
     }
 
+    /**
+     * A suspended mobile page can lose only its terminal WebSocket while the events stream later heals
+     * itself. There is no browser runner in this native suite, so pin the complete source-side lifecycle:
+     * the exact closed attachment is remembered, foregrounding schedules one render-separated attempt,
+     * and the attempt rechecks selection/liveness before it can open a replacement.
+     */
+    @Test
+    fun theWebUiReattachesAClosedAliveTerminalAfterBackgrounding() = withServer { ctx ->
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        val app = ctx.get("/app.js").bodyAsText()
+
+        assertTrue(
+            pane.contains("closedRef.current(attachedId)"),
+            "a terminal close reports the socket's id instead of whichever session is active later",
+        )
+        assertTrue(
+            app.contains("const reattachIdRef = useRef(null)") &&
+                app.contains("const reattachTimerRef = useRef(null)") &&
+                app.contains("const reattachPendingRef = useRef(false)"),
+            "the app keeps one explicit closed-socket candidate and one pending reconnect",
+        )
+        assertTrue(
+            app.contains("document.addEventListener(\"visibilitychange\", reconnectWhenVisible)") &&
+                app.contains("document.removeEventListener(\"visibilitychange\", reconnectWhenVisible)"),
+            "the foreground listener has a matching teardown",
+        )
+
+        val visible = app.substringAfter("const reconnectWhenVisible = () => {")
+            .substringBefore("\n    document.addEventListener")
+        val attachAt = visible.indexOf("setAttachedId(id)")
+        assertTrue(attachAt >= 0, "a valid foreground retry restores the attachment")
+        for (guard in listOf(
+            "document.visibilityState !== \"visible\"",
+            "reattachPendingRef.current",
+            "const id = reattachIdRef.current",
+            "activeRef.current !== id",
+            "!isAliveState(s.state)",
+            "pendingRef.current",
+        )) {
+            assertTrue(
+                visible.indexOf(guard) in 0 until attachAt,
+                "$guard is checked before a replacement terminal is attached",
+            )
+        }
+        assertTrue(
+            visible.indexOf("reattachPendingRef.current = true") <
+                visible.indexOf("setTimeout(() => {"),
+            "the duplicate guard is raised before the reconnect is scheduled",
+        )
+        assertTrue(
+            Regex("""(?s)if \(!isAliveState\(s\.state\)\) \{.*?setHint\(deadHint\(s\.state\)\);.*?return;""")
+                .containsMatchIn(visible),
+            "a session that died while hidden is explained and never reattached",
+        )
+        assertTrue(
+            visible.indexOf("reattachIdRef.current = null") in 0 until attachAt,
+            "the one-shot candidate is consumed before opening its replacement",
+        )
+
+        val cancel = app.substringAfter("const cancelReattach = useCallback(() => {")
+            .substringBefore("\n  }, []);")
+        assertTrue(
+            cancel.contains("clearTimeout(reattachTimerRef.current)") &&
+                cancel.contains("reattachPendingRef.current = false") &&
+                cancel.contains("reattachIdRef.current = null"),
+            "explicit intent and unmount cancel both the timer and its stale attachment candidate",
+        )
+
+        val closed = app.substringAfter("const onTerminalClosed = useCallback((id) => {")
+            .substringBefore("\n  }, []);")
+        assertTrue(
+            closed.contains("sessionsRef.current.find((session) => session.id === id)") &&
+                closed.contains("setAttachedId((current) => (current === id ? null : current))"),
+            "a stale close can clear only its own attachment",
+        )
+        assertTrue(
+            closed.contains("reattachIdRef.current = id") &&
+                closed.contains("setHint(detachedHint(s))"),
+            "a failed reattach becomes an explicit detached hint and waits for another foreground cycle",
+        )
+        assertTrue(
+            app.contains("setHint(detachedHint(s))") &&
+                app.contains("\"Detached from \"") &&
+                app.contains("\"Terminal detached.\""),
+            "manual and failed detaches share the existing user-facing hint",
+        )
+    }
+
     @Test
     fun aMissingStaticFileIs404() = withServer { ctx ->
         assertEquals(
