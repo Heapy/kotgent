@@ -54,8 +54,9 @@ import kotlin.time.Clock
  * handler constructs, because a per-call instance would count to one and start over on every request:
  * a silent no-op that no unit test of this class would ever notice.
  *
- * @param now injected clock (epoch millis) so the window can be asserted by moving a variable instead of
- *   sleeping a minute; `kotlin.system.getTimeMillis` is ERROR-level deprecated, hence [Clock].
+ * @param now injected wall clock (epoch millis) so the window and backward-clock handling can be asserted
+ *   by moving a variable instead of sleeping a minute; `kotlin.system.getTimeMillis` is ERROR-level
+ *   deprecated, hence [Clock].
  * @param max how many failures may be recorded inside one window before attempts are refused.
  * @param windowMillis the width of the rolling window.
  */
@@ -71,10 +72,7 @@ class ExchangeRateLimit(
 
     private val mutex = Mutex()
 
-    /**
-     * When each still-counting failure happened, oldest first. Append-only at the tail and pruned from the
-     * head, which is what makes an [ArrayDeque] the right shape: entries leave in the order they arrived.
-     */
+    /** When each still-counting failure happened. */
     private val failures = ArrayDeque<Long>()
 
     /**
@@ -102,8 +100,9 @@ class ExchangeRateLimit(
     /**
      * One admitted exchange. Constructed only by [begin], and finishable exactly once.
      *
-     * The route keeps this object across body parsing and ticket redemption, then calls [finish] in
-     * `finally`. Keeping the capability opaque prevents a caller from recording a failure it never reserved.
+     * The route creates this only after parsing a candidate code, keeps it across ticket redemption, then
+     * calls [finish] in `finally`. Keeping the capability opaque prevents a caller from recording a failure
+     * it never reserved, while an incomplete request body cannot occupy limiter capacity.
      */
     class Attempt internal constructor(private val owner: ExchangeRateLimit) {
         /**
@@ -136,11 +135,12 @@ class ExchangeRateLimit(
      * `at - t < windowMillis`, so one sampled exactly [windowMillis] later is already gone — the window is
      * half-open, matching how [TicketStore] treats an expiry instant.
      *
-     * The list is ordered by insertion (the clock only moves forward within a run), so pruning stops at the
-     * first entry that is still young. Caller holds [mutex].
+     * Wall clocks can move backwards (NTP or sleep/wake). That can put a future-dated entry before an older
+     * timestamp recorded later, so every expired entry is examined instead of stopping at the deque head.
+     * Caller holds [mutex].
      */
     private fun pruneAged(at: Long) {
-        while (failures.isNotEmpty() && at - failures.first() >= windowMillis) failures.removeFirst()
+        failures.removeAll { failureAt -> at - failureAt >= windowMillis }
     }
 }
 

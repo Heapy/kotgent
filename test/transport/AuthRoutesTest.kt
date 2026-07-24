@@ -19,6 +19,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -181,6 +182,12 @@ class AuthRoutesTest {
         assertTrue(page.contains("""id="code-form""""), "the page carries the code form")
         assertTrue(page.contains("""id="code""""), "with an input to type the code into")
         assertTrue(page.contains(AUTH_EXCHANGE_PATH), "posting to the same exchange the link path uses")
+        assertTrue(
+            page.contains("""rel="manifest" href="/manifest.webmanifest"""") &&
+                page.contains("""rel="apple-touch-icon"""") &&
+                page.contains("""name="apple-mobile-web-app-capable""""),
+            "the credential-free QR landing page remains installable before the code is spent",
+        )
         assertTrue(page.contains("$TICKET_CODE_LENGTH characters"), "and states the code's length")
         assertTrue(
             page.contains("${TICKET_TTL_MILLIS / 60_000} minutes"),
@@ -363,6 +370,33 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun cancellingAnAdmittedExchangeReleasesItsReservation() {
+        val limit = ExchangeRateLimit(now = { fixedNow }, max = 1)
+        val abortOnce = CompletableDeferred<Unit>()
+        withAuthServer(
+            exchangeLimit = limit,
+            afterExchangeAdmitted = {
+                if (abortOnce.complete(Unit)) throw CancellationException("test abort after admission")
+            },
+        ) { env ->
+            // The test seam aborts after begin() but before redemption. Depending on the CIO boundary the
+            // client may see an error response or a closed call; either is an aborted exchange.
+            runCatching { env.exchange(env.port, wrongCode) }
+            assertTrue(abortOnce.isCompleted, "the request reached the admitted section")
+
+            val probe = assertNotNull(limit.begin(), "the cancelled handler returned its sole reservation")
+            probe.finish(failed = false)
+            assertEquals(0, limit.failuresInWindow(), "an aborted non-guess does not spend failure budget")
+
+            assertEquals(
+                HttpStatusCode.OK,
+                env.exchange(env.port, env.issueTicket()).status,
+                "a legitimate exchange is admitted immediately after the cancellation",
+            )
+        }
+    }
+
+    @Test
     fun aValidCodeStillRedeemsWhileTheLimiterIsWarmAndTheSuccessSpendsNothing() = withAuthServer { env ->
         val ticket = env.issueTicket()
         repeat(EXCHANGE_FAILURE_LIMIT - 1) {
@@ -390,6 +424,19 @@ class AuthRoutesTest {
         withAuthServer(exchangeLimit = limit) { env ->
             val ticket = env.issueTicket()
             repeat(EXCHANGE_FAILURE_LIMIT) { env.exchange(env.port, wrongCode) }
+
+            val malformed = env.client.req(
+                env.port,
+                AUTH_EXCHANGE_PATH,
+                HttpMethod.Post,
+                origin = "http://127.0.0.1:${env.port}",
+                jsonBody = "not json",
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                malformed.status,
+                "the body is parsed before limiter admission, so a malformed non-guess cannot hold capacity",
+            )
 
             val throttled = env.exchange(env.port, ticket)
             assertEquals(HttpStatusCode.TooManyRequests, throttled.status, "a valid code is throttled too")
@@ -595,6 +642,7 @@ class AuthRoutesTest {
     private fun withAuthServer(
         publicUrl: String? = null,
         exchangeLimit: ExchangeRateLimit? = null,
+        afterExchangeAdmitted: (suspend () -> Unit)? = null,
         block: suspend (Env) -> Unit,
     ) = runBlocking {
         withTimeout(30_000) {
@@ -607,7 +655,15 @@ class AuthRoutesTest {
                     // not once per request (a per-call instance would count to one and start over: a
                     // limiter that silently does nothing).
                     if (exchangeLimit != null) {
-                        authRoutes(tokens, tickets, publicUrl, TRANSPORT_JSON, { fixedNow }, exchangeLimit)
+                        authRoutes(
+                            tokens,
+                            tickets,
+                            publicUrl,
+                            TRANSPORT_JSON,
+                            { fixedNow },
+                            exchangeLimit,
+                            afterExchangeAdmitted ?: {},
+                        )
                     } else {
                         authRoutes(tokens, tickets, publicUrl, TRANSPORT_JSON, now = { fixedNow })
                     }

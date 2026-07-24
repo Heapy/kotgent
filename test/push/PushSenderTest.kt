@@ -12,10 +12,8 @@ import kotlin.test.assertTrue
  * [PushSender] policy: what goes on the wire, and what each answer from a push service does to the
  * subscription table.
  *
- * Everything here runs against a fake [PushTransport] — **no test in this suite may make a real outbound
- * call**, and the whole reason the transport is an interface is that the interesting behaviour (pruning a
- * dead endpoint, surviving a throwing transport, the exact header set) is policy, not networking.
- * [DarwinPushTransport] itself is left to the manual checklist: exercising it would mean POSTing to Apple.
+ * The sender policy runs against a fake [PushTransport] — **no test in this suite may make a real outbound
+ * call**. [DarwinPushTransportTest] covers the HTTP adapter itself with Ktor's no-network `MockEngine`.
  *
  * The token provider is a stub returning `jwt-for-<endpoint>` rather than the real [VapidTokenCache]: the
  * JWT format is pinned by `VapidJwtTest` against an independent encoder, and re-asserting it here would
@@ -52,7 +50,7 @@ class PushSenderTest {
             val env = Env(statuses = mapOf(apple to 201, google to 200))
             env.store.seed(sub(apple), sub(google))
 
-            assertEquals(2, env.sender.send(session), "both push services accepted the message")
+            env.sender.send(session)
             assertEquals(listOf(apple, google), env.transport.urls(), "one POST per subscription, in store order")
             assertEquals(listOf(apple, google), env.store.endpoints(), "a 2xx is not a reason to touch the table")
             assertTrue(env.errors.isEmpty(), "a clean fan-out reports nothing: ${env.errors}")
@@ -65,7 +63,7 @@ class PushSenderTest {
             var keyCalls = 0
             val env = Env(publicKey = { keyCalls++; publicKey })
 
-            assertEquals(0, env.sender.send(session), "nothing to deliver to")
+            env.sender.send(session)
             assertTrue(env.transport.calls.isEmpty(), "an empty table must not produce a request")
             // The key provider shells out to openssl on its first call; a daemon nobody enabled push on
             // must never pay that, and must never fail on a machine without openssl either.
@@ -151,7 +149,7 @@ class PushSenderTest {
             val env = Env(statuses = mapOf(apple to 410, google to 201))
             env.store.seed(sub(apple), sub(google))
 
-            assertEquals(1, env.sender.send(session), "only the live subscription was accepted")
+            env.sender.send(session)
             assertEquals(listOf(apple, google), env.transport.urls(), "the dead one is discovered by trying it")
             assertEquals(
                 listOf(google),
@@ -168,8 +166,34 @@ class PushSenderTest {
             val env = Env(statuses = mapOf(apple to 404))
             env.store.seed(sub(apple))
 
-            assertEquals(0, env.sender.send(session))
+            env.sender.send(session)
             assertTrue(env.store.endpoints().isEmpty(), "404 is the other permanent answer (RFC 8030 §7.3)")
+        }
+    }
+
+    @Test
+    fun aFailedPruneIsReportedAndDoesNotAbortTheFanOut() = runBlocking {
+        withTimeout(20_000) {
+            val store = FakePushStore(failRemoveFor = setOf(apple))
+            val env = Env(statuses = mapOf(apple to 410, google to 201), store = store)
+            env.store.seed(sub(apple), sub(google))
+
+            env.sender.send(session)
+
+            assertEquals(
+                listOf(apple, google),
+                env.transport.urls(),
+                "a database failure pruning the first endpoint does not deprive the healthy device",
+            )
+            assertEquals(
+                listOf(apple, google),
+                env.store.endpoints(),
+                "the failed removal leaves the dead row in place for a later retry",
+            )
+            assertTrue(
+                env.errors.any { "cannot remove the dead subscription $apple" in it },
+                "the failed cleanup is diagnosed: ${env.errors}",
+            )
         }
     }
 
@@ -179,7 +203,7 @@ class PushSenderTest {
             val env = Env(statuses = mapOf(apple to 429, google to 503))
             env.store.seed(sub(apple), sub(google))
 
-            assertEquals(0, env.sender.send(session), "neither was accepted")
+            env.sender.send(session)
             assertEquals(
                 listOf(apple, google),
                 env.store.endpoints(),
@@ -200,7 +224,7 @@ class PushSenderTest {
 
             // The sender runs on the daemon's background scope: an exception here would kill the collector
             // and silently end push for the rest of the daemon's life.
-            assertEquals(1, env.sender.send(session), "the reachable device still got its banner")
+            env.sender.send(session)
             assertEquals(listOf(apple, google), env.transport.urls(), "the failure did not abort the fan-out")
             assertEquals(listOf(apple, google), env.store.endpoints(), "a transport failure proves nothing")
             assertTrue(env.errors.any { apple in it }, "the failure is reported, not hidden: ${env.errors}")
@@ -213,7 +237,7 @@ class PushSenderTest {
             val env = Env(publicKey = { throw VapidKeyException("no openssl at /usr/bin/openssl") })
             env.store.seed(sub(apple))
 
-            assertEquals(0, env.sender.send(session), "no key means no VAPID header means no push")
+            env.sender.send(session)
             assertTrue(env.transport.calls.isEmpty(), "nothing is sent unsigned")
             assertEquals(listOf(apple), env.store.endpoints(), "the device is fine — the daemon is not")
             assertTrue(
@@ -232,7 +256,7 @@ class PushSenderTest {
             )
             env.store.seed(sub(apple), sub(google))
 
-            assertEquals(1, env.sender.send(session), "the service whose token signed still got its message")
+            env.sender.send(session)
             assertEquals(listOf(apple), env.transport.urls(), "the unsignable service is skipped, not faked")
             assertEquals(listOf(apple, google), env.store.endpoints(), "a signing fault is ours, not the device's")
             assertTrue(env.errors.any { google in it }, "the signing failure is reported: ${env.errors}")
@@ -244,7 +268,7 @@ class PushSenderTest {
         withTimeout(20_000) {
             val env = Env(store = FakePushStore(failList = true))
 
-            assertEquals(0, env.sender.send(session), "a broken database must not take the collector down")
+            env.sender.send(session)
             assertTrue(env.transport.calls.isEmpty())
             assertTrue(env.errors.single().contains("subscription list"), env.errors.toString())
         }
@@ -271,8 +295,11 @@ class PushSenderTest {
         fun urls(): List<String> = calls.map { it.url }
     }
 
-    /** In-memory [PushStore] preserving insertion order, with an optional failing `list()`. */
-    private class FakePushStore(private val failList: Boolean = false) : PushStore {
+    /** In-memory [PushStore] preserving insertion order, with optional failing reads/removals. */
+    private class FakePushStore(
+        private val failList: Boolean = false,
+        private val failRemoveFor: Set<String> = emptySet(),
+    ) : PushStore {
         private val rows = mutableMapOf<String, PushSubscription>()
 
         fun seed(vararg subscriptions: PushSubscription) {
@@ -291,6 +318,9 @@ class PushSenderTest {
         }
 
         override suspend fun remove(endpoint: String) {
+            if (endpoint in failRemoveFor) {
+                throw IllegalStateException("the subscription table is locked")
+            }
             rows.remove(endpoint)
         }
     }

@@ -28,8 +28,9 @@ import kotlin.time.Clock
  * `src/transport/Authorization.kt` has its own origin canonicaliser, but it is private and its rules are
  * deliberately browser-shaped — loopback origins are stored port-less, and `http://` is a first-class
  * citizen. Neither is right for a push endpoint, where the value is an `https://` URL from a third party
- * and the `aud` must be its literal origin. Duplicating ~15 lines is cheaper than coupling the push
- * package to the transport's browser-allowlist semantics.
+ * and the `aud` must be its literal origin. Keeping the stricter authority grammar here avoids coupling
+ * VAPID to the transport's browser allowlist; [io.kotgent.transport.validateSubscribeRequest] reuses it
+ * at the registration boundary rather than maintaining a second, weaker URL check.
  */
 
 /** The fixed JWS header for VAPID: ES256, the only algorithm RFC 8292 allows. */
@@ -66,43 +67,45 @@ const val VAPID_AUTH_SCHEME: String = "vapid"
 class VapidJwtException(message: String) : IllegalArgumentException(message)
 
 /**
- * The origin of push endpoint [endpoint] — `scheme://host[:port]`, lower-cased, with a default port
- * dropped. This is the JWT's `aud`, and the key [VapidTokenCache] stores tokens under.
+ * The origin of push endpoint [endpoint] — `https://host[:port]`, lower-cased, with port 443 dropped.
+ * This is the JWT's `aud`, and the key [VapidTokenCache] stores tokens under.
  *
  * Everything after the authority is discarded: the path of a push endpoint IS the device's subscription
- * identity, so leaving it in `aud` would both leak it into every token and guarantee rejection. Userinfo,
- * whitespace and control characters are refused rather than stripped — a push endpoint never has them, and
- * a value that odd is a corrupt row, not something to guess at.
+ * identity, so leaving it in `aud` would both leak it into every token and guarantee rejection. The
+ * authority is parsed here rather than sliced: userinfo, invalid hosts, malformed bracketed IPv6 literals,
+ * and empty, non-numeric, or out-of-range ports are refused rather than handed to the transport as a row
+ * that can never be delivered.
  *
- * @throws VapidJwtException if [endpoint] is not an absolute `http(s)://` URL with a host.
+ * @throws VapidJwtException if [endpoint] is not an absolute `https://` URL with a valid authority.
  */
 fun pushServiceOrigin(endpoint: String): String {
-    val value = endpoint.trim()
+    val value = endpoint
+    if (value.any { it.isWhitespace() || it.code < 0x20 || it.code == 0x7f }) {
+        throw VapidJwtException("push endpoint '$value' has whitespace or control characters")
+    }
     val separator = value.indexOf("://")
     if (separator <= 0) {
         throw VapidJwtException("push endpoint '$value' is not an absolute URL")
     }
     val scheme = value.substring(0, separator).lowercase()
-    if (scheme != "https" && scheme != "http") {
-        throw VapidJwtException("push endpoint scheme must be http(s), got '$scheme'")
+    if (scheme != "https") {
+        throw VapidJwtException("push endpoint scheme must be https, got '$scheme'")
     }
     val authority = value.substring(separator + 3)
         .substringBefore('/')
         .substringBefore('?')
         .substringBefore('#')
-        .lowercase()
-    // `:443` as an authority is empty-host-with-a-port; it survives the emptiness check but would leave
-    // `https://` as the aud once the default port is dropped.
-    if (authority.isEmpty() || authority.startsWith(":")) {
-        throw VapidJwtException("push endpoint '$value' has no host")
-    }
+    if (authority.isEmpty()) throw VapidJwtException("push endpoint '$value' has no host")
     if (authority.contains('@')) {
         throw VapidJwtException("push endpoint '$value' carries userinfo")
     }
-    if (authority.any { it.isWhitespace() || it.code < 0x20 || it.code == 0x7f }) {
-        throw VapidJwtException("push endpoint '$value' has whitespace or control characters in its host")
+
+    val (host, port) = parsePushAuthority(authority, value)
+    return buildString {
+        append("https://")
+        append(host)
+        if (port != null && port != HTTPS_DEFAULT_PORT) append(':').append(port)
     }
-    return "$scheme://${withoutDefaultPort(scheme, authority)}"
 }
 
 /**
@@ -123,7 +126,7 @@ fun vapidSubject(publicUrl: String?): String {
     } catch (_: VapidJwtException) {
         return VAPID_FALLBACK_SUBJECT
     }
-    return if (origin.startsWith("https://")) origin else VAPID_FALLBACK_SUBJECT
+    return origin
 }
 
 /**
@@ -253,16 +256,124 @@ private fun requireJsonSafe(value: String, name: String) {
     }
 }
 
-/**
- * [authority] with a trailing default port for [scheme] removed, so `https://host:443` and `https://host`
- * produce the same `aud` (RFC 6454 serializes an origin without its default port, and a push service
- * compares strings).
- */
-private fun withoutDefaultPort(scheme: String, authority: String): String {
-    val defaultPort = if (scheme == "https") ":443" else ":80"
-    // A bracketed IPv6 literal keeps its own colons inside the brackets, so only a suffix match is safe.
-    return if (authority.endsWith(defaultPort)) authority.removeSuffix(defaultPort) else authority
+/** HTTPS's default port, omitted when serializing an origin per RFC 6454. */
+private const val HTTPS_DEFAULT_PORT: Int = 443
+
+/** Parse and canonicalize the host and optional port of one push endpoint authority. */
+private fun parsePushAuthority(authority: String, endpoint: String): Pair<String, Int?> {
+    if (authority.startsWith('[')) {
+        val closingBracket = authority.indexOf(']')
+        if (closingBracket <= 1 ||
+            authority.indexOf('[', startIndex = 1) >= 0 ||
+            authority.indexOf(']', startIndex = closingBracket + 1) >= 0
+        ) {
+            throw VapidJwtException("push endpoint '$endpoint' has a malformed IPv6 host")
+        }
+        val literal = authority.substring(1, closingBracket)
+        if (!isValidIpv6Literal(literal)) {
+            throw VapidJwtException("push endpoint '$endpoint' has an invalid IPv6 host")
+        }
+        val port = parsePushPort(authority.substring(closingBracket + 1), endpoint)
+        return "[${literal.lowercase()}]" to port
+    }
+
+    if (authority.contains('[') || authority.contains(']')) {
+        throw VapidJwtException("push endpoint '$endpoint' has a malformed IPv6 host")
+    }
+    val firstColon = authority.indexOf(':')
+    if (firstColon != authority.lastIndexOf(':')) {
+        throw VapidJwtException("push endpoint '$endpoint' has an unbracketed IPv6 host")
+    }
+    val host = if (firstColon < 0) authority else authority.substring(0, firstColon)
+    if (!isValidPushHost(host)) {
+        throw VapidJwtException("push endpoint '$endpoint' has an invalid host")
+    }
+    val port = if (firstColon < 0) null else parsePushPort(authority.substring(firstColon), endpoint)
+    return host.lowercase() to port
 }
+
+/** Parse `:<digits>`, rejecting empty, non-decimal, zero, and out-of-range ports. */
+private fun parsePushPort(suffix: String, endpoint: String): Int? {
+    if (suffix.isEmpty()) return null
+    val digits = suffix.removePrefix(":")
+    if (!suffix.startsWith(':') || digits.isEmpty() || digits.any { it !in '0'..'9' }) {
+        throw VapidJwtException("push endpoint '$endpoint' has an invalid port")
+    }
+    val port = digits.toIntOrNull()
+    if (port == null || port !in 1..65535) {
+        throw VapidJwtException("push endpoint '$endpoint' has an invalid port")
+    }
+    return port
+}
+
+/** DNS-style ASCII host (including a dotted IPv4 address), as emitted by browser push services. */
+private fun isValidPushHost(host: String): Boolean {
+    if (host.isEmpty() || host.length > 253) return false
+    val labels = host.split('.')
+    if (labels.any { label ->
+            label.isEmpty() ||
+                label.length > 63 ||
+                label.first() !in ASCII_ALPHANUMERIC ||
+                label.last() !in ASCII_ALPHANUMERIC ||
+                label.any { it !in ASCII_ALPHANUMERIC && it != '-' }
+        }
+    ) {
+        return false
+    }
+    if (host.all { it == '.' || it in '0'..'9' }) return isValidIpv4Address(host)
+    return true
+}
+
+/** Strict dotted-decimal IPv4; legacy integer/octal spellings are intentionally not endpoint syntax. */
+private fun isValidIpv4Address(value: String): Boolean {
+    val octets = value.split('.')
+    return octets.size == 4 && octets.all { octet ->
+        octet.isNotEmpty() &&
+            (octet.length == 1 || octet.first() != '0') &&
+            octet.all { it in '0'..'9' } &&
+            octet.toIntOrNull()?.let { it in 0..255 } == true
+    }
+}
+
+/** RFC 4291 textual IPv6, including `::` compression and an optional final dotted IPv4 address. */
+private fun isValidIpv6Literal(value: String): Boolean {
+    if (value.isEmpty() || '%' in value) return false
+    val compression = value.indexOf("::")
+    if (compression >= 0 && value.indexOf("::", startIndex = compression + 2) >= 0) return false
+
+    if (compression < 0) {
+        return ipv6Units(value, allowIpv4Tail = true) == IPV6_UNIT_COUNT
+    }
+
+    val left = value.substring(0, compression)
+    val right = value.substring(compression + 2)
+    val leftUnits = ipv6Units(left, allowIpv4Tail = false) ?: return false
+    val rightUnits = ipv6Units(right, allowIpv4Tail = true) ?: return false
+    return leftUnits + rightUnits < IPV6_UNIT_COUNT
+}
+
+/** Count 16-bit units in one non-compressed side of an IPv6 literal. */
+private fun ipv6Units(value: String, allowIpv4Tail: Boolean): Int? {
+    if (value.isEmpty()) return 0
+    val groups = value.split(':')
+    if (groups.any { it.isEmpty() }) return null
+    var units = 0
+    for ((index, group) in groups.withIndex()) {
+        if ('.' in group) {
+            if (!allowIpv4Tail || index != groups.lastIndex || !isValidIpv4Address(group)) return null
+            units += 2
+        } else {
+            if (group.length !in 1..4 || group.any { it !in ASCII_HEX }) return null
+            units++
+        }
+    }
+    return units
+}
+
+private const val IPV6_UNIT_COUNT: Int = 8
+private const val ASCII_ALPHANUMERIC: String =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+private const val ASCII_HEX: String = "0123456789abcdefABCDEF"
 
 /** Wall clock in epoch millis — the production [VapidTokenCache.now]. */
 private fun vapidEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

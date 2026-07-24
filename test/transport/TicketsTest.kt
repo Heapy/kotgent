@@ -1,5 +1,12 @@
 package io.kotgent.transport
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -172,10 +179,26 @@ class TicketsTest {
     @Test
     fun redeemingTheSameTicketTwiceFailsTheSecondTime() = runBlocking {
         val store = store()
-        val ticket = store.issue("test-bound-token")
+        val boundToken = "test-bound-token"
+        val ticket = store.issue(boundToken)
+        val gate = CompletableDeferred<Unit>()
+        val ready = Channel<Unit>(capacity = 2)
 
-        assertNotNull(store.redeem(ticket.value))
-        assertNull(store.redeem(ticket.value), "a replay of the same fragment must not log anyone in again")
+        val results = coroutineScope {
+            val redemptions = List(2) {
+                async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+                    ready.send(Unit)
+                    gate.await()
+                    store.redeem(ticket.value)
+                }
+            }
+            repeat(2) { ready.receive() }
+            gate.complete(Unit)
+            redemptions.awaitAll()
+        }
+
+        assertEquals(1, results.count { it == boundToken }, "exactly one simultaneous redemption wins")
+        assertEquals(1, results.count { it == null }, "the other concurrent replay is refused")
     }
 
     @Test

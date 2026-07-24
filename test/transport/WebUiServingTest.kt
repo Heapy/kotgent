@@ -103,6 +103,17 @@ class WebUiServingTest {
         assertTrue(body.contains("pruneReadPosters"), "…and drops the throttle of a session that vanished")
         assertTrue(body.contains("apiRequest(\"/version\")"), "app.js fetches the daemon version")
         assertTrue(body.contains("currentVersion=\${currentVersion}"), "app.js passes the version to the sidebar")
+        val loadStart = body.indexOf("const loadSessions = useCallback(async () => {")
+        val loadEnd = body.indexOf("\n  }, [cancelReattach", startIndex = loadStart.coerceAtLeast(0))
+        assertTrue(loadStart >= 0 && loadEnd > loadStart, "the session loader is present and bounded")
+        val loadSessions = body.substring(loadStart, loadEnd)
+        assertTrue(
+            Regex(
+                """(?s)if \(isFirstLoad && isUnauthenticated\(e\)\) \{\s*""" +
+                    """window\.location\.replace\(AUTH_PATH\);\s*return;""",
+            ).containsMatchIn(loadSessions),
+            "only the first unauthenticated /sessions load redirects an unsigned installed PWA to /auth",
+        )
         assertContentTypeContains(resp, "javascript")
     }
 
@@ -273,7 +284,13 @@ class WebUiServingTest {
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(dialogs.contains("id=\"phone-dialog\""), "the UI includes the phone sign-in screen")
         assertTrue(dialogs.contains("/auth/ticket"), "the phone dialog mints a one-time ticket")
-        assertTrue(dialogs.contains("qrSvg"), "the phone dialog renders the ticket URL as a QR code")
+        assertTrue(dialogs.contains("qrSvg"), "the phone dialog renders the public install URL as a QR code")
+        assertTrue(
+            dialogs.contains("String(ticketUrl || \"\").split(\"#\", 1)[0]") &&
+                dialogs.contains("qrSvg(publicInstallUrl)") &&
+                !dialogs.contains("qrSvg(ticket.publicUrl)"),
+            "the QR opens the credential-free /auth install page instead of spending the displayed code in Safari",
+        )
 
         // The QR is drawn by the vendored generator through the `lib/qr.js` wrapper — prove both are
         // served and wired, since neither can run in this test binary.
@@ -431,9 +448,26 @@ class WebUiServingTest {
             body.contains("needsAttention") && body.contains("archived"),
             "it filters on the same needsAttention && !archived rule the daemon's tracker uses",
         )
-        // userVisibleOnly: true — a push that ends without a banner is a broken promise to the browser,
-        // so the "we could not ask" path must still show something rather than stay silent.
-        assertTrue(body.contains("showNotification"), "every push ends in a shown notification")
+        // userVisibleOnly: true — a push that ends without a banner is a broken promise to the browser.
+        val pushHandler = body.substringAfter("self.addEventListener(\"push\", (event) => {")
+            .substringBefore("\n});")
+        assertTrue(
+            pushHandler.contains("event.waitUntil(showAttention());"),
+            "the push event keeps the worker alive until its notification path completes",
+        )
+        val showAttention = body.substringAfter("async function showAttention() {")
+            .substringBefore("\n}\n\n/**")
+        assertTrue(
+            Regex(
+                """(?s)if \(waiting\.length === 0\) \{.*?""" +
+                    """self\.registration\.showNotification\(TITLE, \{.*?body: GENERIC_BODY,.*?return;""",
+            ).containsMatchIn(showAttention),
+            "an empty/error session lookup still produces the required generic notification",
+        )
+        assertTrue(
+            showAttention.contains("waiting.map((s) => self.registration.showNotification"),
+            "known waiting sessions each produce their own notification",
+        )
         assertTrue(body.contains("renotify: false"), "repeat pushes for one session replace quietly")
         assertTrue(
             body.contains("/?session=") && body.contains("openWindow"),
@@ -468,10 +502,61 @@ class WebUiServingTest {
         )
         assertTrue(body.contains("applicationServerKey"), "the VAPID key is passed as applicationServerKey")
 
+        val subscribe = body.substringAfter("export async function subscribe(")
+            .substringBefore("\n}\n\n/**")
+        val permissionAt = subscribe.indexOf("ensurePermission()")
+        val permissionAwaitAt = subscribe.indexOf("await permission")
+        val registrationAt = subscribe.indexOf("await activeRegistration()")
+        assertTrue(
+            permissionAt >= 0 && permissionAwaitAt > permissionAt && registrationAt > permissionAwaitAt,
+            "notification permission is requested before the first service-worker/network await (required by iOS)",
+        )
+        assertTrue(
+            subscribe.contains("apiRequest(VAPID_KEY_URL)"),
+            "subscribe obtains the application-server key from the daemon route",
+        )
+        val register = body.substringAfter("async function registerSubscription(subscription) {")
+            .substringBefore("\n}\n\n/**")
+        assertTrue(
+            register.contains("apiRequest(SUBSCRIBE_URL") &&
+                register.contains("endpoint: json.endpoint") &&
+                register.contains("p256dh: keys.p256dh") &&
+                register.contains("auth: keys.auth"),
+            "registration POSTs its endpoint and both browser keys to the subscribe route",
+        )
+        val unsubscribe = body.substringAfter("export async function unsubscribe() {")
+            .substringBefore("\n}\n\n/**")
+        assertTrue(
+            unsubscribe.contains("apiRequest(UNSUBSCRIBE_URL") &&
+                unsubscribe.contains("endpoint: subscription.endpoint"),
+            "unsubscribe POSTs the browser endpoint to the unsubscribe route before dropping it",
+        )
+        val refresh = body.substringAfter("export async function refreshActive() {")
+            .substringBefore("\n}")
+        assertTrue(
+            refresh.indexOf("await registerSubscription(subscription)") in
+                0 until refresh.indexOf("setPushActive(true)"),
+            "reload marks push active only after the daemon has accepted the browser subscription",
+        )
+
         // The toggle that drives it is the sidebar's, and the two notification paths must not both fire.
         val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
         assertTrue(sidebar.contains("id=\"notify-toggle\""), "the toggle lives in the sidebar")
         assertTrue(sidebar.contains("../lib/push.js"), "the toggle drives the push subscription")
+        val toggle = sidebar.substringAfter("const toggleNotifications = () => {")
+            .substringBefore("\n  };")
+        assertTrue(
+            toggle.indexOf("const permission = next ? ensurePermission() : null") in
+                0 until toggle.indexOf("pushTransitionRef.current = pushTransitionRef.current"),
+            "an enable click claims notification permission synchronously before entering the transition queue",
+        )
+        assertTrue(
+            sidebar.contains("const pushTransitionRef = useRef(Promise.resolve())") &&
+                toggle.contains("transition !== pushTransitionIdRef.current") &&
+                toggle.contains("await pushSubscribe(permission)") &&
+                toggle.contains("await pushUnsubscribe()"),
+            "opposing notification clicks are serialized and stale queued transitions are skipped",
+        )
         val notify = ctx.get("/lib/notify.js").bodyAsText()
         assertTrue(
             notify.contains("isPushActive"),
@@ -482,6 +567,22 @@ class WebUiServingTest {
         val app = ctx.get("/app.js").bodyAsText()
         assertTrue(app.contains("DEEP_LINK_PARAM = \"session\""), "app.js reads ?session= on load")
         assertTrue(app.contains("select-session"), "app.js honours the worker's focus-and-switch message")
+        val workerMessage = app.substringAfter("const onMessage = (event) => {")
+            .substringBefore("\n    };")
+        assertTrue(
+            workerMessage.contains("deepLinkRef.current = msg.sessionId") &&
+                workerMessage.contains("loadRef.current()"),
+            "a notification target missing from a stale snapshot is retained and selected after a reload",
+        )
+        val reloadSelection = app.substringAfter("const wanted = deepLinkRef.current;")
+            .substringBefore("\n    } catch (e) {")
+        val targetGuard = reloadSelection.indexOf("if (target) {")
+        assertTrue(
+            targetGuard >= 0 &&
+                reloadSelection.indexOf("deepLinkRef.current = null") > targetGuard &&
+                reloadSelection.indexOf("showSession(target)") > targetGuard,
+            "an older in-flight list cannot discard the retained target before a refreshed list contains it",
+        )
     }
 
     @Test
@@ -531,8 +632,15 @@ class WebUiServingTest {
         // Every lifecycle control must carry BOTH halves of that collapse: the icon the narrow layout
         // draws, and an aria-label so the accessible name survives the label being sized to 0.
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
-        assertTrue(pane.contains("id=\"drawer-toggle\""), "the terminal header carries the drawer opener")
         val buttons = pane.split("<button")
+        val drawerButton = assertNotNull(
+            buttons.firstOrNull { it.contains("id=\"drawer-toggle\"") },
+            "the terminal header carries the drawer opener",
+        )
+        assertTrue(
+            drawerButton.contains("onClick=\${onToggleDrawer}"),
+            "the visible drawer opener is bound to the handler supplied by App",
+        )
         for (id in listOf("attach-button", "interrupt-button", "resume-button",
                           "detach-button", "stop-button", "done-button")) {
             val markup = assertNotNull(
@@ -550,6 +658,10 @@ class WebUiServingTest {
 
         val app = ctx.get("/app.js").bodyAsText()
         assertTrue(app.contains("drawer-scrim"), "a tap outside the drawer closes it")
+        assertTrue(
+            app.contains("onToggleDrawer=\${toggleDrawer}"),
+            "App connects its drawer state transition to TerminalPane's opener prop",
+        )
         assertTrue(
             app.contains("setDrawerOpen(false)"),
             "selecting a session closes the drawer — the terminal is behind it",
@@ -578,11 +690,19 @@ class WebUiServingTest {
                 "visualViewport $event listener is detached with the terminal",
             )
         }
+        val initialSizingAt = pane.indexOf("sizeForVisualViewport();")
+        val socketAt = pane.indexOf("const ws = new WebSocket")
         assertTrue(
-            pane.indexOf("sizeForVisualViewport();") < pane.indexOf("const ws = new WebSocket"),
+            initialSizingAt >= 0 && socketAt >= 0 && initialSizingAt < socketAt,
             "the visible height is applied before the terminal WebSocket captures its OPEN geometry",
         )
-        assertTrue(pane.contains("fitAndReport();"), "viewport changes fit and report the resulting grid")
+        val viewportChanged = pane.substringAfter("const viewportChanged = () => {")
+            .substringBefore("\n    };")
+        assertTrue(
+            viewportChanged.contains("sizeForVisualViewport();") &&
+                viewportChanged.contains("refit();"),
+            "each visualViewport change reapplies the height and schedules a terminal fit/report",
+        )
         assertTrue(pane.contains("refit.cancel()"), "a pending debounced fit cannot run after unmount")
         assertTrue(
             pane.contains("host.addEventListener(\"click\", focusTerminal)") &&
@@ -779,8 +899,9 @@ class WebUiServingTest {
         assertTrue(
             app.contains("const reattachIdRef = useRef(null)") &&
                 app.contains("const reattachTimerRef = useRef(null)") &&
-                app.contains("const reattachPendingRef = useRef(false)"),
-            "the app keeps one explicit closed-socket candidate and one pending reconnect",
+                app.contains("const reattachAvailableRef = useRef(false)") &&
+                !app.contains("reattachPendingRef"),
+            "the app keeps one candidate, uses the timer itself as the pending guard, and grants one attempt",
         )
         assertTrue(
             app.contains("document.addEventListener(\"visibilitychange\", reconnectWhenVisible)") &&
@@ -788,49 +909,62 @@ class WebUiServingTest {
             "the foreground listener has a matching teardown",
         )
 
-        val visible = app.substringAfter("const reconnectWhenVisible = () => {")
-            .substringBefore("\n    document.addEventListener")
-        val attachAt = visible.indexOf("setAttachedId(id)")
+        val schedule = app.substringAfter("const scheduleReattach = useCallback(() => {")
+            .substringBefore("\n  }, []);")
+        val attachAt = schedule.indexOf("setAttachedId(id)")
         assertTrue(attachAt >= 0, "a valid foreground retry restores the attachment")
         for (guard in listOf(
             "document.visibilityState !== \"visible\"",
-            "reattachPendingRef.current",
+            "!reattachAvailableRef.current",
+            "reattachTimerRef.current !== null",
             "const id = reattachIdRef.current",
             "activeRef.current !== id",
             "!isAliveState(s.state)",
             "pendingRef.current",
         )) {
             assertTrue(
-                visible.indexOf(guard) in 0 until attachAt,
+                schedule.indexOf(guard) in 0 until attachAt,
                 "$guard is checked before a replacement terminal is attached",
             )
         }
         assertTrue(
-            visible.indexOf("reattachPendingRef.current = true") <
-                visible.indexOf("setTimeout(() => {"),
-            "the duplicate guard is raised before the reconnect is scheduled",
+            schedule.indexOf("reattachTimerRef.current = setTimeout(() => {") >= 0,
+            "the timer handle itself records that a reconnect is already pending",
+        )
+        assertTrue(
+            schedule.indexOf("if (!id || document.visibilityState !== \"visible\") return") in
+                0 until schedule.indexOf("reattachAvailableRef.current = false"),
+            "a foreground timer that wins the race with the close callback preserves the one available retry",
         )
         assertTrue(
             Regex("""(?s)if \(!isAliveState\(s\.state\)\) \{.*?setHint\(deadHint\(s\.state\)\);.*?return;""")
-                .containsMatchIn(visible),
+                .containsMatchIn(schedule),
             "a session that died while hidden is explained and never reattached",
         )
         assertTrue(
-            visible.indexOf("reattachIdRef.current = null") in 0 until attachAt,
+            schedule.indexOf("reattachIdRef.current = null") in 0 until attachAt,
             "the one-shot candidate is consumed before opening its replacement",
+        )
+
+        val visible = app.substringAfter("const reconnectWhenVisible = () => {")
+            .substringBefore("\n    };")
+        assertTrue(
+            visible.contains("reattachAvailableRef.current = document.visibilityState === \"visible\"") &&
+                visible.contains("scheduleReattach()"),
+            "foregrounding grants one attempt and schedules it across a render boundary",
         )
 
         val cancel = app.substringAfter("const cancelReattach = useCallback(() => {")
             .substringBefore("\n  }, []);")
         assertTrue(
             cancel.contains("clearTimeout(reattachTimerRef.current)") &&
-                cancel.contains("reattachPendingRef.current = false") &&
+                cancel.contains("reattachAvailableRef.current = false") &&
                 cancel.contains("reattachIdRef.current = null"),
             "explicit intent and unmount cancel both the timer and its stale attachment candidate",
         )
 
         val closed = app.substringAfter("const onTerminalClosed = useCallback((id) => {")
-            .substringBefore("\n  }, []);")
+            .substringBefore("\n  }, [scheduleReattach]);")
         assertTrue(
             closed.contains("sessionsRef.current.find((session) => session.id === id)") &&
                 closed.contains("setAttachedId((current) => (current === id ? null : current))"),
@@ -838,8 +972,14 @@ class WebUiServingTest {
         )
         assertTrue(
             closed.contains("reattachIdRef.current = id") &&
-                closed.contains("setHint(detachedHint(s))"),
-            "a failed reattach becomes an explicit detached hint and waits for another foreground cycle",
+                closed.contains("setHint(detachedHint(s))") &&
+                closed.contains("document.visibilityState === \"visible\"") &&
+                closed.contains("scheduleReattach()"),
+            "a close arriving after the foreground timer fills the candidate and schedules the retained retry",
+        )
+        assertTrue(
+            app.contains("onTerminalClosed=\${onTerminalClosed}"),
+            "App connects TerminalPane's close callback to the foreground reattachment handler",
         )
         assertTrue(
             app.contains("setHint(detachedHint(s))") &&

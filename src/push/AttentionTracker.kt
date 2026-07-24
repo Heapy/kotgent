@@ -18,9 +18,10 @@ import io.kotgent.store.SessionUpdate
  * whole rule is unit-testable and the transition logic never depends on a live daemon.
  *
  * ## Concurrency
- * Deliberately NOT synchronized: the tracker is confined to the single collector coroutine that drains
- * `sessionUpdates` ([PushNotifier]), which calls [seed] once and then [isNewAttention] sequentially.
- * Sharing an instance across coroutines would be a data race — construct one per collector.
+ * Deliberately NOT synchronized: [PushNotifier] seeds this tracker before launching its collector, then
+ * confines every [isNewAttention] call to that one collector coroutine. Delivery runs on a separate
+ * coroutine but receives only session ids, never this mutable tracker. Sharing an instance across
+ * notifiers would be a data race — construct one per notifier.
  */
 class AttentionTracker {
 
@@ -35,10 +36,10 @@ class AttentionTracker {
      * Establish the baseline from the store's current rows, discarding anything learned before.
      *
      * This is what stops a daemon restart from re-notifying: without it, the first update about a
-     * session that was *already* waiting before the restart would look like a fresh transition. Call it
-     * inside `.onSubscription { }` — after subscribing to the non-replaying `sessionUpdates`, so no
-     * update can slip between the snapshot and the first collected item — and before any
-     * [isNewAttention] call.
+     * session that was *already* waiting before the restart would look like a fresh transition.
+     * [PushNotifier.start] calls this before subscribing, then waits for the subscription before the
+     * server binds; that startup ordering prevents a live update from entering the seed-to-subscribe gap.
+     * It must run before every [isNewAttention] call.
      */
     fun seed(sessions: List<SessionMeta>) {
         waiting.clear()

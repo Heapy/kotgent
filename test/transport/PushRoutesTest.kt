@@ -210,6 +210,14 @@ class PushRoutesTest {
             """{"endpoint":"/push/relative","p256dh":"k","auth":"a"}""" to "a relative path",
             """{"endpoint":"http://web.push.apple.com/x","p256dh":"k","auth":"a"}""" to "plain http",
             """{"endpoint":"https://","p256dh":"k","auth":"a"}""" to "no host",
+            """{"endpoint":"https://#fragment","p256dh":"k","auth":"a"}""" to "a fragment without a host",
+            """{"endpoint":"https://:443/x","p256dh":"k","auth":"a"}""" to "a port without a host",
+            """{"endpoint":"https://host:/x","p256dh":"k","auth":"a"}""" to "an empty port",
+            """{"endpoint":"https://host:abc/x","p256dh":"k","auth":"a"}""" to "a nonnumeric port",
+            """{"endpoint":"https://host:65536/x","p256dh":"k","auth":"a"}""" to "an out-of-range port",
+            """{"endpoint":"https://[2001:db8::1/x","p256dh":"k","auth":"a"}""" to "an unclosed IPv6 host",
+            """{"endpoint":"https://2001:db8::1/x","p256dh":"k","auth":"a"}""" to "an unbracketed IPv6 host",
+            """{"endpoint":"https://user@host/x","p256dh":"k","auth":"a"}""" to "userinfo",
             """{"endpoint":"https://a.example/x","p256dh":"","auth":"a"}""" to "blank p256dh",
             """{"endpoint":"https://a.example/x","p256dh":"k","auth":""}""" to "blank auth",
         )
@@ -262,6 +270,21 @@ class PushRoutesTest {
             validateSubscribeRequest(SubscribeRequest("https://a.example/x\r\nHost: evil", "p", "a")) != null,
             "a CRLF payload cannot be stored — the sender would put this on the wire unattended",
         )
+        for (endpoint in listOf(
+            "https://#fragment",
+            "https://:443/x",
+            "https://host:/x",
+            "https://host:nonnumeric/x",
+            "https://host:65536/x",
+            "https://[2001:db8::1/x",
+            "https://2001:db8::1/x",
+            "https://user@host/x",
+        )) {
+            assertTrue(
+                validateSubscribeRequest(SubscribeRequest(endpoint, "p", "a")) != null,
+                "the route rejects the same malformed authority the sender would reject: $endpoint",
+            )
+        }
         assertTrue(
             validateSubscribeRequest(SubscribeRequest("https://a.example/" + "x".repeat(4000), "p", "a")) != null,
             "an absurdly long endpoint is refused rather than written to the database",

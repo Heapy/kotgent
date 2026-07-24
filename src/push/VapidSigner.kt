@@ -19,30 +19,11 @@ import platform.posix.mkstemp
 import platform.posix.unlink
 import platform.posix.write
 
-/**
- * Produces the ES256 signature over a VAPID JWT's signing input: the 64-byte raw `r || s` RFC 7515 §3.4
- * requires, NOT the DER openssl emits.
- *
- * An interface with exactly one method so [VapidTokenCache] can be handed `signer::sign` in production and
- * a lambda in tests — the whole reason the token/claim logic in `VapidJwt.kt` is pure. Deliberately NOT
- * `suspend`: signing is a bounded, short subprocess call and [VapidTokenCache] invokes it under its lock.
- */
-interface VapidSigner {
-    /**
-     * The raw `r || s` signature over [input] (`base64url(header).base64url(claims)`), exactly
-     * [P256_RAW_SIGNATURE_LENGTH] bytes.
-     *
-     * @throws VapidSignerException if the signature cannot be produced for any reason. There is no
-     *   "partial" outcome: a caller either gets 64 valid bytes or an explanation.
-     */
-    fun sign(input: String): ByteArray
-}
-
 /** Every signing failure: no openssl, an unreadable key, a temp file that cannot be written, junk DER. */
 class VapidSignerException(message: String) : IllegalStateException(message)
 
 /**
- * [VapidSigner] backed by the system openssl — the signing edge of the push feature, and the only place in
+ * ES256 signing backed by the system openssl — the signing edge of the push feature, and the only place in
  * `src/push/` that spawns a process besides [VapidKey].
  *
  * ## Why a temp file for the input
@@ -75,9 +56,16 @@ class OpensslVapidSigner(
     private val keyPath: String,
     private val opensslPath: String = VapidKey.DEFAULT_OPENSSL_PATH,
     private val runner: (List<String>) -> ProcessResult = { ProcessRunner.run(it) },
-) : VapidSigner {
+) {
 
-    override fun sign(input: String): ByteArray {
+    /**
+     * The raw `r || s` signature over [input] (`base64url(header).base64url(claims)`), exactly
+     * [P256_RAW_SIGNATURE_LENGTH] bytes.
+     *
+     * @throws VapidSignerException if the signature cannot be produced for any reason. There is no
+     *   "partial" outcome: a caller either gets 64 valid bytes or an explanation.
+     */
+    fun sign(input: String): ByteArray {
         if (input.isBlank()) {
             // Only reachable by bypassing vapidSigningInput; signing nothing would yield a JWT whose
             // signature covers no claims, which a push service rejects with an opaque 401.

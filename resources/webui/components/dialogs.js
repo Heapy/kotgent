@@ -325,9 +325,10 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
 
 /**
  * Sign in on a second device. Minting a ticket here is the same `POST /auth/ticket` the CLI's
- * `kotgent web` uses; the difference is the QR, drawn over the returned `publicUrl` so a phone can
- * scan it. When no public URL is configured the daemon returns `publicUrl: null` — there is nothing a
- * phone could reach, so the dialog explains how to set the tunnel up instead of drawing a dead QR.
+ * `kotgent web` uses; the difference is the QR, drawn over the returned `publicUrl` WITHOUT its credential
+ * fragment so Safari can install the PWA without spending the code that PWA needs. When no public URL is
+ * configured the daemon returns `publicUrl: null` — there is nothing a phone could reach, so the dialog
+ * explains how to set the tunnel up instead of drawing a dead QR.
  *
  * The ticket is a full-access, one-time credential with a short life. That is stated plainly under the
  * code, and "Refresh" mints a new one (each minting leaves the previous ticket to expire on its own).
@@ -376,14 +377,22 @@ function groupCode(code) {
   return value.slice(0, half) + " " + value.slice(half);
 }
 
+/**
+ * The public `/auth` page is the install surface; its fragment is the one-shot credential. The QR must stop
+ * before `#` so opening it in Safari cannot spend the code the newly installed PWA still needs.
+ */
+function installUrl(ticketUrl) {
+  return String(ticketUrl || "").split("#", 1)[0];
+}
+
 /** Render the changing part of [PhoneDialog] for the current fetch state. */
 function phoneBody(state, issue, onClose) {
   if (state.status === "loading") {
-    return html`<p id="phone-status" class="phone-status">Minting a one-time link…</p>`;
+    return html`<p id="phone-status" class="phone-status">Minting a one-time sign-in code…</p>`;
   }
   if (state.status === "error") {
     return html`
-      <p id="phone-error" class="form-error" role="alert">Could not mint a link: ${state.message}</p>
+      <p id="phone-error" class="form-error" role="alert">Could not mint a sign-in code: ${state.message}</p>
       <div class="dialog-actions">
         <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>
         <button class="button button-primary" type="button" onClick=${issue}>Try again</button>
@@ -393,19 +402,24 @@ function phoneBody(state, issue, onClose) {
 
   const ticket = state.ticket || {};
   if (!ticket.publicUrl) return phoneSetup(onClose);
+  const publicInstallUrl = installUrl(ticket.publicUrl);
 
   return html`
-    <div id="phone-qr" class="phone-qr" dangerouslySetInnerHTML=${{ __html: qrSvg(ticket.publicUrl) }}></div>
-    <p class="phone-url"><code>${ticket.publicUrl}</code></p>
+    <div id="phone-qr" class="phone-qr"
+         dangerouslySetInnerHTML=${{ __html: qrSvg(publicInstallUrl) }}></div>
+    <p class="phone-url"><code>${publicInstallUrl}</code></p>
+    <p class="phone-code-hint">
+      Scan this credential-free page in Safari, add Kotgent to the home screen, then launch the installed app.
+    </p>
     ${ticket.ticket && html`
       <p id="phone-code" class="phone-code">${groupCode(ticket.ticket)}</p>
       <p class="phone-code-hint">
-        Or type this code into an app already installed on the home screen — it has its own cookie jar, so
-        scanning the QR in Safari does not sign it in.
+        Type this code into the installed app. It has its own cookie jar, and the QR deliberately does not
+        spend the code in Safari.
       </p>`}
     <p class="phone-warn" role="note">
-      One-time · expires in 5 minutes · full terminal access. The link and the code are the same credential,
-      and whoever spends it first is signed in — so refresh it if you did not just use it yourself.
+      The code is one-time · expires in 5 minutes · grants full terminal access. Refresh it if you did not
+      just use it yourself.
     </p>
     <div class="dialog-actions">
       <button class="button button-quiet" type="button" onClick=${onClose}>Close</button>

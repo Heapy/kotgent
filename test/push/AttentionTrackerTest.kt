@@ -100,9 +100,10 @@ class AttentionTrackerTest {
     @Test
     fun anArchivedSessionNeverCountsAsWaiting() {
         // The service worker filters /sessions by `needsAttention && !archived`, so a push for an
-        // archived row would wake the phone only to show the generic filler.
+        // archived row would wake the phone only to show the generic filler. Seed the archived level
+        // explicitly: this guards the SessionMeta half of the rule as well as the live-update half.
         val tracker = AttentionTracker()
-        tracker.seed(emptyList())
+        tracker.seed(listOf(meta("s1", SessionState.needs_approval, archived = true)))
 
         assertFalse(
             tracker.isNewAttention(update("s1", SessionState.needs_approval, archived = true)),

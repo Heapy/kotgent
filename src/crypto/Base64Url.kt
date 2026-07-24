@@ -1,5 +1,7 @@
 package io.kotgent.crypto
 
+import kotlin.io.encoding.Base64
+
 /**
  * Base64url encoding (RFC 4648 §5) — the alphabet the Web Push stack speaks.
  *
@@ -18,37 +20,8 @@ package io.kotgent.crypto
 /**
  * Base64url of [bytes] — RFC 4648 §5 alphabet (`-` and `_` for index 62/63), **no `=` padding**.
  *
- * The tail is the whole trick: a 1-byte remainder yields 2 characters and a 2-byte remainder yields 3,
- * carrying the leftover bits left-shifted into the next sextet rather than dropped.
+ * Kotlin's canonical RFC 4648 encoder owns the alphabet and tail handling; the padding mode is explicit
+ * because JWT and Web Push values must not carry `=`.
  */
-fun base64Url(bytes: ByteArray): String {
-    val out = StringBuilder((bytes.size + 2) / 3 * 4)
-    var i = 0
-    while (i + 3 <= bytes.size) {
-        val word = (bytes[i].toInt() and 0xff shl 16) or
-            (bytes[i + 1].toInt() and 0xff shl 8) or
-            (bytes[i + 2].toInt() and 0xff)
-        out.append(BASE64_URL_DIGITS[word ushr 18 and 0x3f])
-        out.append(BASE64_URL_DIGITS[word ushr 12 and 0x3f])
-        out.append(BASE64_URL_DIGITS[word ushr 6 and 0x3f])
-        out.append(BASE64_URL_DIGITS[word and 0x3f])
-        i += 3
-    }
-    when (bytes.size - i) {
-        1 -> {
-            val word = bytes[i].toInt() and 0xff shl 16
-            out.append(BASE64_URL_DIGITS[word ushr 18 and 0x3f])
-            out.append(BASE64_URL_DIGITS[word ushr 12 and 0x3f])
-        }
-        2 -> {
-            val word = (bytes[i].toInt() and 0xff shl 16) or (bytes[i + 1].toInt() and 0xff shl 8)
-            out.append(BASE64_URL_DIGITS[word ushr 18 and 0x3f])
-            out.append(BASE64_URL_DIGITS[word ushr 12 and 0x3f])
-            out.append(BASE64_URL_DIGITS[word ushr 6 and 0x3f])
-        }
-    }
-    return out.toString()
-}
-
-private const val BASE64_URL_DIGITS: String =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+fun base64Url(bytes: ByteArray): String =
+    Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT).encode(bytes)

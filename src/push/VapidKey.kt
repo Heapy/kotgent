@@ -7,8 +7,17 @@ import io.kotgent.tmux.ProcessResult
 import io.kotgent.tmux.ProcessRunner
 import io.kotgent.transport.createPrivateFileExclusive
 import io.kotgent.transport.readFileBytesOrNull
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import platform.posix.S_IRUSR
+import platform.posix.S_IWUSR
+import platform.posix.chmod
+import platform.posix.stat
 
 /**
  * The daemon's VAPID identity: one P-256 keypair in `~/.kotgent/vapid.pem`, and the uncompressed public
@@ -16,7 +25,8 @@ import kotlinx.coroutines.sync.withLock
  *
  * ## Why openssl, and why `/usr/bin/openssl`
  * Kotlin/Native has no `BigInteger` and no bundled EC implementation, and CommonCrypto is out of reach
- * from a test binary (KT-78062 — the same reason `src/crypto/` is hand-written). macOS always ships
+ * from a test binary (KT-78062 — the same reason the hash primitives in `src/crypto/` are common Kotlin).
+ * macOS always ships
  * `/usr/bin/openssl` (LibreSSL), so the keypair and — later, in the signer — the ES256 signature are
  * delegated to it through the existing [ProcessRunner] (`popen` with the CLOEXEC sweep, the one spawn
  * path a test binary can use). The absolute path is PINNED rather than resolved on `PATH`: on a dev
@@ -108,8 +118,26 @@ class VapidKey(
      * overwriting it might destroy a key whose subscriptions are still live, and using it would produce a
      * half-broken push path that only fails at send time. The operator is told to delete it explicitly.
      */
+    @OptIn(ExperimentalForeignApi::class)
     private fun existingPem(): ByteArray? {
         val bytes = readFileBytesOrNull(keyPath) ?: return null
+        if (chmod(keyPath, VAPID_KEY_MODE_0600.convert()) != 0) {
+            throw VapidKeyException(
+                "cannot secure VAPID key file $keyPath with mode 0600 — refusing to use a private key " +
+                    "that may be readable by other users",
+            )
+        }
+        val mode = memScoped {
+            val metadata = alloc<stat>()
+            if (stat(keyPath, metadata.ptr) != 0) null else metadata.st_mode.toInt() and PERMISSION_MASK
+        }
+        if (mode != VAPID_KEY_MODE_0600) {
+            val shown = mode?.toString(8)?.padStart(3, '0') ?: "unknown"
+            throw VapidKeyException(
+                "VAPID key file $keyPath is still mode $shown after chmod 0600 — refusing to use a " +
+                    "private key that may be readable by other users",
+            )
+        }
         val text = bytes.decodeToString()
         if (text.isBlank()) {
             throw VapidKeyException(
@@ -184,6 +212,8 @@ const val UNCOMPRESSED_POINT_TAG: Byte = 0x04
 
 private const val PEM_BEGIN_MARKER: String = "-----BEGIN"
 private const val PEM_PRIVATE_KEY_MARKER: String = "PRIVATE KEY-----"
+private const val VAPID_KEY_MODE_0600: Int = S_IRUSR or S_IWUSR
+private const val PERMISSION_MASK: Int = 0b111_111_111
 
 /**
  * The 65-byte uncompressed point inside a P-256 `SubjectPublicKeyInfo` ([der], as

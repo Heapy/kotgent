@@ -86,8 +86,13 @@ class VapidJwtTest {
     fun aDefaultPortIsDroppedSoBothSpellingsShareOneToken() {
         // RFC 6454 serializes an origin without its default port and the push service compares strings.
         assertEquals("https://push.example.com", pushServiceOrigin("https://push.example.com:443/send"))
-        assertEquals("http://push.example.com", pushServiceOrigin("http://push.example.com:80/send"))
         assertEquals("https://push.example.com:8443", pushServiceOrigin("https://push.example.com:8443"))
+    }
+
+    @Test
+    fun aBracketedIpv6HostIsValidatedAndKeepsItsBrackets() {
+        assertEquals("https://[2001:db8::1]", pushServiceOrigin("https://[2001:DB8::1]:443/send"))
+        assertEquals("https://[::ffff:192.0.2.1]:8443", pushServiceOrigin("https://[::FFFF:192.0.2.1]:8443/x"))
     }
 
     @Test
@@ -100,6 +105,9 @@ class VapidJwtTest {
         }
         assertFailsWith<VapidJwtException>("a non-http scheme is refused") {
             pushServiceOrigin("ftp://push.example.com/x")
+        }
+        assertFailsWith<VapidJwtException>("plain HTTP is refused") {
+            pushServiceOrigin("http://push.example.com/x")
         }
         assertFailsWith<VapidJwtException>("an empty authority is refused") {
             pushServiceOrigin("https:///3/device/x")
@@ -114,6 +122,38 @@ class VapidJwtTest {
             pushServiceOrigin("https://push.example.com\r\nX-Evil: 1/x")
         }
         assertFailsWith<VapidJwtException>("an empty string is refused") { pushServiceOrigin("") }
+    }
+
+    @Test
+    fun invalidPortsAreRefusedInsteadOfBecomingUndeliverableRows() {
+        for (endpoint in listOf(
+            "https://push.example.com:/x",
+            "https://push.example.com:abc/x",
+            "https://push.example.com:+443/x",
+            "https://push.example.com:-1/x",
+            "https://push.example.com:0/x",
+            "https://push.example.com:65536/x",
+            "https://push.example.com:443:444/x",
+        )) {
+            assertFailsWith<VapidJwtException>(endpoint) { pushServiceOrigin(endpoint) }
+        }
+    }
+
+    @Test
+    fun malformedIpv6AuthoritiesAreRefused() {
+        for (endpoint in listOf(
+            "https://[]/x",
+            "https://[2001:db8::1/x",
+            "https://2001:db8::1/x",
+            "https://[2001:db8::1]garbage/x",
+            "https://[2001:db8::gg]/x",
+            "https://[1:2:3:4:5:6:7:8:9]/x",
+            "https://[1::2::3]/x",
+            "https://[::ffff:999.1.1.1]/x",
+            "https://[::ffff:192.168.001.1]/x",
+        )) {
+            assertFailsWith<VapidJwtException>(endpoint) { pushServiceOrigin(endpoint) }
+        }
     }
 
     // ---- vapidSubject ------------------------------------------------------------------------------

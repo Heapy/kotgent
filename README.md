@@ -5,17 +5,19 @@
 
 **kotgent** is a local-first, restart-safe control plane for coding-agent sessions.
 
-Agent processes (Claude and Codex today) run inside `tmux`, independent of any user interface. The IDE terminal,
-the browser, and — later — a phone are interchangeable clients over one daemon. `tmux` is the transport
-and the process-survival mechanism, **not** the source of truth: state is derived by replaying an
-append-only event log, so it survives a daemon restart.
+Agent processes (Claude and Codex today) run inside `tmux`, independent of any user interface. The IDE
+terminal, desktop Web UI, and installable mobile PWA are interchangeable clients over one daemon. On a
+phone, server-sent Web Push can wake the PWA's service worker when a session needs attention, even after
+the app is closed. `tmux` is the transport and the process-survival mechanism, **not** the source of
+truth: state is derived by replaying an append-only event log, so it survives a daemon restart.
 
 ```text
-IDE terminal ───────┐
-Desktop Web UI ─────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex
-(mobile PWA — later)┘          │
-                               ├── SQLite (event log + session cache)
-                               └── provider adapter (hooks → canonical events, approvals)
+IDE terminal ──────┐
+Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex
+Mobile PWA ────────┘          │        │
+                              │        └──▶ browser push service ──▶ service worker
+                              ├── SQLite (event log, session cache, push subscriptions)
+                              └── provider adapter (hooks → canonical events, approvals)
 ```
 
 There are two distinct kinds of durability, and kotgent leans on both instead of trying to make `tmux`
@@ -57,7 +59,7 @@ daemon with a minimal env and no locale at all:
 ```shell
 kotgent install            # install + boot the daemon as a launchd agent (RunAtLoad + KeepAlive)
 kotgent start claude       # launch a Claude session inside tmux, in the current directory
-kotgent web                # open the Web UI (one-time ticket; no token ever lands in the URL)
+kotgent web                # open the sign-in form and print its one-time code
 ```
 
 That's the whole loop. From there, `kotgent list` shows every session and its state, `kotgent attach <id>`
@@ -101,6 +103,11 @@ To build from source instead, see [Build & test](#build--test).
   per launch (`codex -c 'hooks={…}'`), so your `~/.codex` is never modified. Codex has no session-id
   preallocation, so the id is captured afterwards — from the `SessionStart` hook, or by reading the
   rollout file Codex writes under `~/.codex/sessions`. Developed against codex-cli 0.145.
+- **`/usr/bin/openssl` and NSURLSession (Web Push only).** kotgent lazily uses macOS's system
+  `/usr/bin/openssl` to generate and sign its VAPID P-256 credential; outbound HTTPS delivery uses
+  the Darwin HTTP client backed by NSURLSession and the system trust store. Both are macOS runtime
+  facilities, not packages to install. If VAPID setup fails, the daemon and in-tab notifications keep
+  working; only server-sent push is unavailable.
 
 ## Build & test
 
@@ -109,7 +116,7 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **492 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
+The suite currently reports **603 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
 plugin and the 11 real-PTY checks `ptycheck` runs (see below).
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
@@ -169,33 +176,53 @@ The daemon binds `127.0.0.1` only. Two distinct keys guard it:
   session table** — the cookie verifies by recomputing the HMAC, so "sign out every device" is just
   `kotgent token rotate` (every HMAC dies at once).
 
-`~/.kotgent` also holds the generated hook settings, the optional `config.json` (public URL), and the
-SQLite database.
+`~/.kotgent` also holds the generated hook settings, the optional `config.json` (public URL), and
+`kotgent.db` (including device push subscriptions). Web Push lazily creates the VAPID private key at
+`~/.kotgent/vapid.pem` with mode `0600`; deleting or replacing it invalidates existing browser
+subscriptions, so notifications must be re-enabled on each device afterwards.
 
 ### Web UI — `kotgent web`
 
 ```shell
-kotgent web            # mint a one-time ticket and open the Web UI in your browser
-kotgent web --print    # print the login URL instead of opening it
+kotgent web            # open the sign-in form and print a code to type into it
+kotgent web --print    # print a credentialed login URL for scripting or copying
 ```
 
-No copy-pasting a token into a URL. `kotgent web` issues a **one-time ticket** (32 bytes, 10-minute TTL,
-kept in memory) and opens `http://127.0.0.1:<port>/auth#ticket=…`. The ticket lives in the URL
-**fragment**, which the browser never sends to the server: the `/auth` page reads it from `location.hash`,
-`POST`s it to `/auth/exchange` (which burns the ticket and sets the cookie), then `location.replace("/")`
-so the ticket never lands in history. From then on the cookie authenticates every request and WebSocket.
+No master token is copied into a URL. `kotgent web` issues one **single-use, 8-character Crockford
+Base32 code** (40 bits, held in memory for five minutes), opens the bare
+`http://127.0.0.1:<port>/auth` form, and prints the still-valid code. Type it into that browser or an
+already-installed PWA. The exchange is protected by a daemon-wide rolling budget of ten failed attempts
+per minute in addition to the short lifetime and single-use rule.
+
+`kotgent web --print` is the non-interactive form: stdout contains exactly
+`http://127.0.0.1:<port>/auth#ticket=…`, while the equivalent grouped code and human hint go to stderr,
+so piping the URL remains safe. The fragment and typed code are two representations of the **same**
+credential; spending either invalidates the other. A browser opening the fragment reads it locally,
+`POST`s it to `/auth/exchange`, and then uses `location.replace("/")`, so neither the server's initial
+`GET /auth` nor browser history receives the live fragment.
 
 The UI shows the session list with live state badges and a "Needs attention" queue (fed by the events
 WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
-keyboard input, resize). The sidebar footer identifies the running daemon: local source builds show the
-release version plus their embedded short Git hash (for example `0.3.0+81c37fe`), while published
-Homebrew builds show the release version alone (`0.3.0`).
+keyboard input, resize). Its installable PWA layout adds a mobile sidebar drawer, safe-area handling,
+terminal sizing from `visualViewport`, and a phone-only row for Esc, Tab, Shift-Tab, arrows, Ctrl, and
+Ctrl-C. Terminal taps focus the software keyboard without Safari zooming the helper textarea, and a
+terminal socket lost while the app is backgrounded gets one liveness-checked reattach attempt on return.
+
+The sidebar footer identifies the running daemon: local source builds show the release version plus their
+embedded short Git hash (for example `0.3.0+81c37fe`), while published Homebrew builds show the release
+version alone (`0.3.0`).
 
 A session row also carries an **unread pill** — how many events have arrived since you last looked at that
 session. Looking at it clears it: the browser posts the cursor it has displayed, so the count is
 **server-side** (it clears on the phone and the desktop together, and a second browser sees it clear with no
 reload) and **persistent** (restarting the daemon does not resurrect a cleared badge). Reading a session does
 not count as activity, so `kotgent list`'s ordering is unaffected.
+
+The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
+`false → true` attention transition sends a payload-less push; the service worker fetches `/sessions`,
+shows one notification per waiting, non-archived session, and opens or focuses that session when tapped.
+If the fetch fails it still shows a generic attention notification. If Web Push is unsupported, denied,
+or unavailable on the daemon, the live tab falls back to ordinary in-tab notifications.
 
 ![The kotgent Web UI: the sidebar's "Needs attention" queue and session list on the left, a live Claude
 session's terminal on the right, with Interrupt / Detach / Stop / Done controls.](docs/images/web-ui.png)
@@ -210,12 +237,18 @@ Cloudflare Access, not by exposing the port. Point kotgent at the public host:
 kotgent config set public-url https://kotgent.example.com
 ```
 
-The Web UI's **phone** button (📱) then issues a ticket and renders a QR of
-`https://kotgent.example.com/auth#ticket=…`; scan it on a phone that has passed Access and the same
-one-time-ticket exchange sets a cookie there. Without a configured `public-url` the dialog prints the
-`cloudflared` ingress snippet to add instead of a QR. Setting up the tunnel and the Access policy is a
-one-time host-side step (ingress rule → `http://127.0.0.1:27508`, DNS route, a strict Access policy on
-your own identity — the host fronts a terminal that can run anything on the Mac).
+The Web UI's **phone** button (📱) then issues a code and renders a credential-free QR for
+`https://kotgent.example.com/auth`. Scan it on a phone that has passed Access, choose **Add to Home
+Screen**, launch Kotgent, and type the displayed code into that form. The `/auth` landing page carries the
+PWA install metadata but the QR intentionally does not carry or spend the credential: Safari and an
+installed iOS PWA have separate cookie jars, so signing Safari in would not sign in the home-screen app.
+An unsigned PWA that launches at `/` also routes its first `/sessions` `401` to the same form; a later
+expired credential leaves the live terminal visible and reports the error instead.
+
+Without a configured `public-url` the dialog prints the `cloudflared` ingress snippet to add instead of a
+QR. Setting up the tunnel and the Access policy is a one-time host-side step (ingress rule →
+`http://127.0.0.1:27508`, DNS route, a strict Access policy on your own identity — the host fronts a
+terminal that can run anything on the Mac).
 
 Authorization is one rule for both surfaces: the `Host` must be in the allowlist (loopback or the
 configured public host), and an `Origin`, **required on any non-GET request and on every WebSocket
@@ -256,6 +289,15 @@ the first question is almost always "does the plist still match my shell?".
   Option and drag on macOS, or Shift and drag elsewhere. The wheel puts the pane into tmux copy-mode —
   shared by every viewer of that session — which scrolls back down to the bottom to exit, and kotgent
   cancels it anyway before sending keys, so Interrupt is never swallowed by it.
+- **Notifications stay in the open tab instead of reaching the phone.** On iOS, Web Push requires iOS
+  16.4 or later and an installed home-screen app; enable it from that app's sidebar so the permission
+  prompt runs from the tap itself. A missing/unusable `/usr/bin/openssl`, denied browser permission, or an
+  unreachable push service disables only server-sent push, and kotgent falls back to live-tab
+  notifications.
+- **Push stopped after `vapid.pem` was deleted, replaced, or regenerated.** A browser subscription is
+  bound to the VAPID public key it was created with. Toggle notifications off and on in each installed
+  browser/PWA to register a fresh subscription with the daemon. The key at
+  `~/.kotgent/vapid.pem` should remain mode `0600`.
 - **Inspecting the daemon itself.** It is a normal LaunchAgent: `launchctl print gui/$UID/io.kotgent.daemon`
   shows its state, and the plist at `~/Library/LaunchAgents/io.kotgent.daemon.plist` shows the exact `PATH`
   and `LANG` that were snapshotted.
@@ -265,7 +307,7 @@ the first question is almost always "does the plist still match my shell?".
 ```shell
 kotgent uninstall                  # bootout + remove the LaunchAgent plist
 tmux -L kotgent kill-server        # stop every agent still living in tmux
-rm -rf ~/.kotgent                  # token, config.json, hook settings, SQLite database
+rm -rf ~/.kotgent                  # token, config/hooks, SQLite data/subscriptions, VAPID private key
 brew uninstall kotgent             # if installed from the tap
 ```
 
@@ -285,9 +327,9 @@ Concretely:
 2. Attaching from the IDE terminal and then closing it (Detach) drops one WebSocket subscriber. The
    daemon holds the **single** upstream `tmux attach` client and fans it out, so the agent keeps running
    with no client attached.
-3. Running `kotgent web` opens the browser (over a one-time ticket, no token in the URL) and clicking the
-   session re-attaches to the very same live process — the browser is just another client of the same
-   fan-out.
+3. Running `kotgent web` opens the credential-free sign-in form and prints a one-time code; after signing
+   in, clicking the session re-attaches to the very same live process — the browser is just another client
+   of the same fan-out.
 4. When Claude hits a permission prompt, its `Notification` hook posts to the daemon, which normalizes it
    into an `ApprovalRequested` event; the reducer moves the session to `needs_approval`, and the events
    WebSocket lights the session up in the browser's "Needs attention" queue.
@@ -306,11 +348,18 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `tmux/` | Thin wrapper over `tmux -f /dev/null -L kotgent` via a `popen`-based `ProcessRunner`: one argv builder that isolates the server from `~/.tmux.conf`, plus the small option set kotgent forces in its place. |
 | `adapter/` | `AgentAdapter` contract + the Claude and Codex adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
-| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), the `/auth` ticket exchange, hook ingress, static Web UI. |
+| `push/` | Attention-edge tracking, SQLite subscription store, VAPID key/JWT signing, Darwin/NSURLSession delivery, and notifier lifecycle. |
+| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. |
 | `cli/` | Subcommands + the raw `attach` passthrough. |
 | `launchd/` | `plist` generation + install/uninstall. |
 | `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |
 | `plugins/sqldelight-gen/` (build plugin) | Runs SQLDelight codegen from `sqldelight/*.sq` at build time. |
+
+The authenticated push HTTP surface is `GET /push/vapid-key`, `POST /push/subscribe`, and
+`POST /push/unsubscribe`. The GET returns the VAPID application-server key; the POSTs persist or remove
+the browser endpoint and its keys. Both POST routes inherit the transport's required, same-origin
+`Origin` check. They are not loopback-only, because a PWA must register through the configured public
+host.
 
 For deeper conventions and the toolchain gotchas, see [CLAUDE.md](CLAUDE.md).
 
@@ -333,7 +382,12 @@ is and isn't here:
   launchd install.
 - **Session metadata & lifecycle polish.** Each session shows its agent CLI version and, best-effort, the
   model it is running; **Done** stops an agent and archives it off the sidebar (restorable, history kept);
-  and an opt-in, per-device **browser-notification toggle** pings you when a session needs attention.
+  and an opt-in, per-device **notification toggle** registers server-sent Web Push for attention edges,
+  with live-tab notification fallback.
+- **Installable mobile PWA.** The manifest, root service worker, home-screen icons, responsive drawer,
+  visual-viewport terminal sizing, software-keyboard focus handling, special-key toolbar, foreground
+  terminal reattachment, and notification deep links are all shipped. The service worker is network-only:
+  there is deliberately no offline shell when the local daemon cannot serve useful state.
 
 **Backlog (not built yet):**
 
@@ -345,15 +399,11 @@ is and isn't here:
   nothing in `core/`, the store, or the fan-out changing. Open questions to resolve first: whether it
   exposes per-launch hooks (like Codex's `-c 'hooks={…}'`) or forces a user-scoped config, how it reports
   approvals, and whether/how a session id can be preallocated or must be scanned after the fact.
-- **Mobile-native UX** (a PWA manifest + home-screen icon, an Esc/Ctrl/Tab/arrow key row for the soft
-  keyboard, approve buttons) and **Web Push**. Remote phone access itself — the cloudflared tunnel +
-  Access, sign-in by QR, and the cookie — is now in the slice (see [Sign in from your
-  phone](#sign-in-from-your-phone)).
+- Structured mobile actions such as native approve/deny buttons outside the agent's terminal. Approvals
+  remain interactive TUI operations today.
 - A **diff viewer**, external-session import, and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
-- **Web Push** — the current notification toggle is browser-`Notification`-only (fires while a tab is
-  open); server-driven push to a closed device is still backlog.
 - A browser e2e harness (Playwright).
 
 **Why the real-PTY checks live in their own binary.** A Kotlin Toolchain issue
@@ -389,6 +439,9 @@ Issues and pull requests are welcome. A few things worth knowing before you open
 - **Keep `./kotlin build` and `./kotlin test` green**, and run `build` before `test` (see
   [Build & test](#build--test)). New tests are expected to come with the change; the suite has no skips and
   should stay that way.
+- **Syntax-check changed Web UI modules with `node --check`.** This is a no-build Preact app with no
+  JavaScript test harness; add newly served modules to `WebUiServingTest` and manually verify browser
+  behavior.
 - **Read [CLAUDE.md](CLAUDE.md) first** if you are touching the build, native code, or the event model. It
   documents the invariants (host-free core, single-upstream `tmux` fan-out, the event-sourcing rules) and
   the toolchain gotchas that are expensive to rediscover.

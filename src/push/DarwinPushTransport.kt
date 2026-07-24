@@ -5,7 +5,6 @@ import io.ktor.client.engine.darwin.Darwin
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.header
 import io.ktor.client.request.post
-import io.ktor.client.request.setBody
 
 /**
  * [PushTransport] over NSURLSession — the daemon's only outbound HTTPS client.
@@ -37,9 +36,8 @@ class DarwinPushTransport(
         val response = client.post(url) {
             for ((name, value) in headers) header(name, value)
             // RFC 8030 allows a bodyless push message, and the whole payload-less design rests on it: an
-            // empty body means no RFC 8291 encryption is needed. Ktor derives `Content-Length: 0` from
-            // this — setting that header by hand is refused as an unsafe header.
-            setBody(EMPTY_BODY)
+            // absent body means no RFC 8291 encryption and no misleading application/octet-stream
+            // Content-Type. Ktor's default NoContent still emits the zero-length request correctly.
         }
         return response.status.value
     }
@@ -49,10 +47,6 @@ class DarwinPushTransport(
      * for its whole life, which is the point of a session that pools connections to Apple and Google.
      */
     override fun close(): Unit = client.close()
-
-    private companion object {
-        val EMPTY_BODY = ByteArray(0)
-    }
 }
 
 /**

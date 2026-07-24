@@ -308,11 +308,14 @@ gated on `Host` via `isLoopbackHost`, which ignores the port — harnesses bind 
 **No master token in a URL; the one-time ticket is a short, rate-limited code.** The old
 `?token=`/`#token=` forms are gone. `TicketStore` issues one 8-character Crockford-base32 code (40 bits,
 alphabet without `I`/`L`/`O`/`U`), held in memory for 5 minutes and redeemable exactly once; input is
-case-insensitive, ignores spaces/dashes and normalizes `I`/`L` → `1`, `O` → `0`. The QR link and the typed
-form spend the **same** value — do not add a longer parallel ticket, because the record is only as strong
-as its shortest credential. In a link it rides only in the URL **fragment**: `GET /auth` never sees it
-(so no prefetcher/scanner/Cloudflare log can burn or leak it), and the page `POST`s it to
-`/auth/exchange`, which burns it and sets the cookie.
+case-insensitive, ignores spaces/dashes and normalizes `I`/`L` → `1`, `O` → `0`. A typed code and the
+credentialed link returned by `kotgent web --print` spend the **same** value — do not add a longer parallel
+ticket, because the record is only as strong as its shortest credential. In a link it rides only in the
+URL **fragment**: `GET /auth` never sees it (so no prefetcher/scanner/Cloudflare log can burn or leak it),
+and the page `POST`s it to `/auth/exchange`, which burns it and sets the cookie. Normal `kotgent web`
+opens the bare local `/auth` form and prints the unspent code. The phone dialog's QR is also deliberately
+credential-free: it points at the public `/auth` page, whose install metadata lets Safari add the app to
+the home screen without spending the code the installed PWA will need.
 
 Forty bits is acceptable only with the compensating `ExchangeRateLimit`: one daemon-wide,
 `Mutex`-guarded rolling budget of 10 failed redemptions per minute. It is global because cloudflared
@@ -323,20 +326,47 @@ could all pass the check before any failure was charged. Only a real code miss s
 (successes, malformed bodies and requests rejected by Host/Origin do not). Keep this control with the
 short format.
 
-**An installed iOS PWA has a separate cookie jar from Safari.** Opening the QR link in Safari therefore
-does not sign in the home-screen app. On its first `/sessions` `401`, `app.js` uses
-`location.replace("/auth")`; that unauthenticated page lets the operator type the same 8-character code
-and exchanges it through the normal route. Only the first-load `401` redirects — a later rotation must
-leave the live UI and its terminal visible instead of navigating out from under it.
+**An installed iOS PWA has a separate cookie jar from Safari.** The phone QR therefore opens the
+credential-free public `/auth` page: Safari can add it to the home screen without being signed in, and
+cannot accidentally spend the one code the installed PWA needs. The manifest's `start_url` is `/`, so the
+installed app launches there with an empty cookie jar; its first `/sessions` `401` uses
+`location.replace("/auth")` to reach the form and exchange the typed 8-character code. Only the first-load
+`401` redirects — a later rotation must leave the live UI and its terminal visible instead of navigating
+out from under it.
 
-**Web Push is payload-less and edge-triggered.** `PushNotifier` watches `sessionUpdates` only after startup
-reconciliation; `AttentionTracker` is seeded inside `onSubscription` and sends only a `false → true`
-waiting transition (`state.needsAttention && !archived`), so restart does not ring again and archived
-sessions are not targets. `PushSender` POSTs an empty RFC 8030 message with VAPID, TTL and a per-session
-`Topic`; this deliberately avoids RFC 8291 payload encryption (`p256dh`/`auth` are stored now for that
-future path). The service worker wakes, fetches `/sessions` with the session cookie and shows one
-notification per waiting session (or a generic notification when the fetch fails). Permanent `404`/`410`
-endpoints are pruned; other delivery failures are logged and never make the daemon unhealthy.
+**Web Push is payload-less and edge-triggered.** After startup reconciliation, `PushNotifier.start` seeds
+`AttentionTracker` from the settled session list, installs the `sessionUpdates` subscription, and returns
+only when both are ready; `Commands.daemon` awaits that barrier before binding the server, so no accepted
+hook can land in the seed-to-subscribe handoff. The tracker records only a `false → true` waiting
+transition (`state.needsAttention && !archived`), so restart does not ring again and archived sessions are
+not targets. It queues those edges immediately and performs potentially slow network delivery in a
+separate worker, keeping the `DROP_OLDEST` store flow drained. `PushSender` POSTs an empty RFC 8030 message
+with VAPID, TTL and a per-session `Topic`; this deliberately avoids RFC 8291 payload encryption
+(`p256dh`/`auth` are stored now for that future path). The service worker wakes, fetches `/sessions` with
+the session cookie and shows one notification per waiting session (or a generic notification when the
+fetch fails). Permanent `404`/`410` endpoints are pruned; other delivery failures are logged and never
+make the daemon unhealthy.
+
+**Push permission ordering is a user-gesture invariant on iOS.** The notifications toggle must call
+`Notification.requestPermission()` before its first `await`; only after permission resolves may it await
+root service-worker registration, `GET /push/vapid-key`, `pushManager.subscribe`, and
+`POST /push/subscribe`, in that order. Awaiting worker readiness or any other async operation before the
+permission request leaves the click's user-activation task and prevents iOS from showing the prompt.
+
+**The PWA is network-only, and its root files always revalidate.** `/sw.js` stays at the origin root so its
+scope covers the whole app and its push permission; its `fetch` handler deliberately does not call
+`respondWith`, because an offline shell cannot show useful daemon state. Both `index.html` and `sw.js`
+are served with `Cache-Control: no-cache` ("revalidate", not "never store") so an old shell or push handler
+cannot remain pinned after an upgrade. Keep the root scope, network-only fetch contract, and the targeted
+cache rule together.
+
+**The mobile terminal lifecycle has four coupled invariants.** Initial xterm geometry is computed from
+`window.visualViewport` before fitting and opening the terminal WebSocket, so the upstream starts at the
+visible keyboard-constrained size. A terminal tap focuses xterm's helper textarea synchronously from that
+gesture, and the textarea stays at `16px` to prevent Safari auto-zoom from corrupting viewport geometry.
+The phone key bar sends binary terminal bytes and preserves xterm focus (special keys never become resize
+text frames). Finally, a terminal socket lost while hidden gets at most one foreground reattach attempt,
+and that attempt must re-check the active id, session liveness, and pending control action before opening.
 
 **VAPID uses `/usr/bin/openssl`, but openssl never owns the private-key file.** `VapidKey` generates the
 P-256 PEM and `OpensslVapidSigner` signs ES256 through the existing CLOEXEC-safe `ProcessRunner`; the
@@ -349,6 +379,9 @@ stopping the daemon, and JWTs are cached per push-service origin.
 **SHA-256 and HMAC are pure Kotlin** (`src/crypto/`), *not* CommonCrypto via cinterop — because of KT-78062
 (custom cinterop does not link into the test binary), the same reason the PTY path is behind an interface.
 `randomBytes`/`hex` live once in `Auth.kt`/`Hex.kt`; don't add a second entropy source or hex encoder.
+`base64Url` in `Base64Url.kt` is the sole wrapper around Kotlin's standard unpadded RFC 4648 §5 encoder
+(browser VAPID keys, JWT parts, push topics). Do not add another implementation; decoding stays
+browser-side until an encrypted-payload path actually needs it in Kotlin.
 
 **No CIO TLS on native — server OR client.** `ktor-server-cio` for `macosArm64` has no `sslConnector` (a
 JVM-only API — verified in the klib), so the daemon cannot terminate TLS itself. Remote/phone access goes
@@ -503,12 +536,15 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **590 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **603 native tests passed /
   0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
   instead of silently passing when the binary is missing.
+- Changed JavaScript ES modules must pass `node --check <file>`. There is deliberately no JavaScript test
+  harness: source/serving contracts live in `test/transport/WebUiServingTest.kt`, every newly served
+  module must be registered there, and browser behavior remains part of the manual verification checklist.
 - Bound every Flow/WS/PTY test with `withTimeout(...)` (anti-hang) — the suite does this consistently.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
@@ -527,7 +563,8 @@ These are real and cost time to rediscover. Respect them.
 module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + build plugins)
 version.txt                    single source of the application release version
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
-src/crypto/                    Sha256, Hmac, Hex — pure-Kotlin (KT-78062: no CommonCrypto in the test binary)
+src/crypto/                    Sha256, Hmac, Hex, Base64Url — canonical pure-Kotlin encoders/digests
+                               (KT-78062: no CommonCrypto in the test binary)
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule),
@@ -547,7 +584,8 @@ ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062)
 sqldelight/io/kotgent/db/      Events.sq, Sessions.sq, PushSubscriptions.sq (schema + typed queries)
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
 plugins/build-info/            generates VERSION + an embedded Git revision at build time
-resources/webui/               no-build Preact PWA, root service worker, manifest/icons, vendored ESM;
-                               /auth is a string constant in AuthRoutes.kt
+resources/webui/               no-build Preact PWA, network-only root service worker, manifest/icons,
+                               mobile terminal controls/lifecycle, vendored ESM; /auth is a string
+                               constant in AuthRoutes.kt
 docs/plans/                    implementation plans
 ```

@@ -2,6 +2,8 @@ package io.kotgent.transport
 
 import io.kotgent.push.PushStore
 import io.kotgent.push.PushSubscription
+import io.kotgent.push.VapidJwtException
+import io.kotgent.push.pushServiceOrigin
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receiveText
@@ -172,20 +174,20 @@ fun validateSubscribeRequest(req: SubscribeRequest): String? {
     val endpoint = req.endpoint.trim()
     if (endpoint.isEmpty()) return "endpoint must not be blank"
     if (endpoint.length > PUSH_ENDPOINT_MAX_LENGTH) return "endpoint is too long"
-    if (!endpoint.startsWith(HTTPS_PREFIX)) return "endpoint must be an absolute https:// URL"
     if (endpoint.any { it.isWhitespace() || it.code < 0x20 || it.code == 0x7f }) {
         return "endpoint must not contain whitespace or control characters"
     }
-    val authority = endpoint.removePrefix(HTTPS_PREFIX).substringBefore('/').substringBefore('?')
-    if (authority.isEmpty()) return "endpoint must have a host"
+    try {
+        pushServiceOrigin(endpoint)
+    } catch (_: VapidJwtException) {
+        return "endpoint must be an absolute https:// URL with a valid host, port, and no userinfo"
+    }
     if (req.p256dh.isBlank() || req.auth.isBlank()) return "p256dh and auth must not be blank"
     if (req.p256dh.length > PUSH_KEY_MAX_LENGTH || req.auth.length > PUSH_KEY_MAX_LENGTH) {
         return "p256dh and auth are too long"
     }
     return null
 }
-
-private const val HTTPS_PREFIX: String = "https://"
 
 /** Wall clock in epoch millis — the production [pushRoutes] `now` (`getTimeMillis` is a hard error). */
 private fun pushEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

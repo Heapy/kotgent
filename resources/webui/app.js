@@ -173,8 +173,9 @@ function App() {
   pendingRef.current = pendingAction;
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
-  // The session a notification tap asked for, honoured once the first /sessions load has landed (the id
-  // means nothing until the list exists). Read at mount so a later reload cannot resurrect it.
+  // The session a notification tap asked for, honoured once a /sessions load contains it (the id means
+  // nothing until the list exists). Seeded from the URL at mount; a focused stale client can replace it
+  // with the worker's message and trigger a refresh.
   const deepLinkRef = useRef(deepLinkSessionId());
   // Whether the /sessions load about to run is the FIRST one — the only one whose 401 means "this browser
   // was never signed in" rather than "the credential died under a running page" (see loadSessions).
@@ -184,11 +185,13 @@ function App() {
   // change, so TerminalPane's keyed effect would never build a replacement socket.
   const reattachIdRef = useRef(null);
   const reattachTimerRef = useRef(null);
-  const reattachPendingRef = useRef(false);
+  // A foreground transition grants one attempt. It remains available when the zero-delay timer wins the
+  // race against the socket's close callback, then is consumed as soon as a real candidate is evaluated.
+  const reattachAvailableRef = useRef(false);
 
   const cancelReattach = useCallback(() => {
     reattachIdRef.current = null;
-    reattachPendingRef.current = false;
+    reattachAvailableRef.current = false;
     if (reattachTimerRef.current !== null) {
       clearTimeout(reattachTimerRef.current);
       reattachTimerRef.current = null;
@@ -240,10 +243,12 @@ function App() {
       // A deep link from a notification tap: select it now that the list is here, once.
       const wanted = deepLinkRef.current;
       if (wanted) {
-        deepLinkRef.current = null;
-        clearDeepLink();
         const target = list.find((s) => s.id === wanted);
-        if (target) showSession(target);
+        if (target) {
+          deepLinkRef.current = null;
+          clearDeepLink();
+          showSession(target);
+        }
       }
     } catch (e) {
       // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
@@ -357,11 +362,53 @@ function App() {
     const onMessage = (event) => {
       const msg = event.data;
       if (!msg || msg.type !== "select-session" || !msg.sessionId) return;
-      selectSession(msg.sessionId);
+      if (sessionsRef.current.some((session) => session.id === msg.sessionId)) {
+        selectSession(msg.sessionId);
+        return;
+      }
+      // A backgrounded page can hold an older snapshot than the worker that woke it. Retain the target so
+      // loadSessions selects it from the refreshed list instead of silently discarding the notification tap.
+      deepLinkRef.current = msg.sessionId;
+      loadRef.current();
     };
     navigator.serviceWorker.addEventListener("message", onMessage);
     return () => navigator.serviceWorker.removeEventListener("message", onMessage);
   }, [selectSession]);
+
+  const scheduleReattach = useCallback(() => {
+    if (document.visibilityState !== "visible" ||
+        !reattachAvailableRef.current ||
+        reattachTimerRef.current !== null) return;
+    reattachTimerRef.current = setTimeout(() => {
+      reattachTimerRef.current = null;
+      const id = reattachIdRef.current;
+      // If visibility won the race with the queued WebSocket close, leave this foreground's one attempt
+      // available. onTerminalClosed will fill the candidate and schedule this same check again.
+      if (!id || document.visibilityState !== "visible") return;
+      reattachAvailableRef.current = false;
+
+      // Re-read every value after the render boundary. A session may have died, been stopped, or been
+      // replaced while the app was hidden; none of those may resurrect an old terminal attachment.
+      const s = sessionsRef.current.find((session) => session.id === id);
+      if (activeRef.current !== id || !s) {
+        reattachIdRef.current = null;
+        return;
+      }
+      if (!isAliveState(s.state)) {
+        reattachIdRef.current = null;
+        setHint(deadHint(s.state));
+        return;
+      }
+      if (pendingRef.current) {
+        reattachIdRef.current = null;
+        return;
+      }
+
+      reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
+      setAttachedId(id);
+      setHint(null);
+    }, 0);
+  }, []);
 
   // Mobile browsers commonly discard a terminal WebSocket while the page is suspended. The events
   // socket heals itself, but the terminal is intentionally one-shot, so a return to the foreground gets
@@ -370,41 +417,8 @@ function App() {
   // ordering while also forcing Preact to render the detached state first.
   useEffect(() => {
     const reconnectWhenVisible = () => {
-      if (document.visibilityState !== "visible" || reattachPendingRef.current) return;
-      reattachPendingRef.current = true;
-      reattachTimerRef.current = setTimeout(() => {
-        reattachTimerRef.current = null;
-        const id = reattachIdRef.current;
-        if (!id || document.visibilityState !== "visible") {
-          reattachPendingRef.current = false;
-          return;
-        }
-
-        // Re-read every value after the render boundary. A session may have died, been stopped, or been
-        // replaced while the app was hidden; none of those may resurrect an old terminal attachment.
-        const s = sessionsRef.current.find((session) => session.id === id);
-        if (activeRef.current !== id || !s) {
-          reattachIdRef.current = null;
-          reattachPendingRef.current = false;
-          return;
-        }
-        if (!isAliveState(s.state)) {
-          reattachIdRef.current = null;
-          reattachPendingRef.current = false;
-          setHint(deadHint(s.state));
-          return;
-        }
-        if (pendingRef.current) {
-          reattachIdRef.current = null;
-          reattachPendingRef.current = false;
-          return;
-        }
-
-        reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
-        reattachPendingRef.current = false;
-        setAttachedId(id);
-        setHint(null);
-      }, 0);
+      reattachAvailableRef.current = document.visibilityState === "visible";
+      scheduleReattach();
     };
 
     document.addEventListener("visibilitychange", reconnectWhenVisible);
@@ -412,7 +426,7 @@ function App() {
       document.removeEventListener("visibilitychange", reconnectWhenVisible);
       cancelReattach();
     };
-  }, [cancelReattach]);
+  }, [cancelReattach, scheduleReattach]);
 
   // --- actions ---------------------------------------------------------------------------------
 
@@ -488,7 +502,10 @@ function App() {
     reattachIdRef.current = id;
     setAttachedId((current) => (current === id ? null : current));
     if (activeRef.current === id) setHint(detachedHint(s));
-  }, []);
+    // visibilitychange can run just before this queued close callback. Its timer deliberately leaves the
+    // one-shot attempt available when no id exists; now that the candidate is known, schedule it again.
+    if (document.visibilityState === "visible") scheduleReattach();
+  }, [scheduleReattach]);
 
   const savePreferences = useCallback((next) => {
     setPrefs(next);

@@ -1,23 +1,30 @@
 # PWA on mobile + server-sent push notifications
 
+## Completed status
+
+Completed on 2026-07-24. Implementation Tasks 1–20 shipped, and the final verification completed with
+**590 run / 590 passed / 0 skipped** (plus the separately driven real-PTY checks). This plan now lives
+under `docs/plans/completed/`; the manual real-device checks below remain post-completion verification,
+not unfinished implementation tasks.
+
 ## Overview
 
 Turn the kotgent Web UI into an installable PWA that is usable as a full terminal on a phone, and add
 **server-sent Web Push** so a session entering `needs_attention` reaches the operator when the tab (or the
 whole app) is closed.
 
-Today `resources/webui/lib/notify.js` raises a `Notification` only while the page is alive and the `/events`
-WebSocket is open — a phone with the screen locked never learns that an agent is waiting for an approval.
-Web Push fixes exactly that: the daemon POSTs to the browser's push service (Apple / Google), the OS wakes
-the service worker, and the service worker raises a real system notification.
+Before this plan, `resources/webui/lib/notify.js` raised a `Notification` only while the page was alive and
+the `/events` WebSocket was open — a phone with the screen locked never learned that an agent was waiting
+for an approval. Web Push fixes exactly that: the daemon POSTs to the browser's push service (Apple /
+Google), the OS wakes the service worker, and the service worker raises a real system notification.
 
 Three things make this one plan rather than three:
 
 1. **Push on iOS exists only inside an installed PWA** (iOS 16.4+). So the manifest + service worker are not
    polish, they are the precondition for the notification half.
-2. **An installed iOS PWA has its own cookie jar** — the QR sign-in link opened in Safari does not carry the
-   session cookie into the home-screen app, so the login flow needs a form the PWA itself can complete, and
-   the SPA needs to *route* an unauthenticated launch to that form.
+2. **An installed iOS PWA has its own cookie jar** — signing Safari in does not carry the session cookie
+   into the home-screen app, so the credential-free QR lands on an installable `/auth` form the PWA itself
+   can complete, and the SPA also needs to *route* an unauthenticated root launch to that form.
 3. A notification that opens a UI unusable on a phone is pointless, so the mobile terminal layout ships with
    it.
 
@@ -78,7 +85,7 @@ than `needs_attention`; resolving the "resize is last-active" conflict between a
     `WebUiServingTest`'s served-module list, and rely on the manual checklist in Post-Completion for
     behaviour. Do not fake a JS test into existence.
 - **CRITICAL: all tests must pass before starting next task** — `./kotlin build` then `./kotlin test`
-  (build first: `PtyTest` execs the `ptycheck` binary). Baseline: **428 run / 428 passed / 0 skipped**.
+  (build first: `PtyTest` execs the `ptycheck` binary). Baseline: **438 run / 438 passed / 0 skipped**.
 - **CRITICAL: update this plan file when scope changes during implementation**
 - maintain backward compatibility: an existing `~/.kotgent/kotgent.db` must keep working (new table via
   `CREATE TABLE IF NOT EXISTS`), and a daemon with no push subscriptions must behave exactly as today.
@@ -127,12 +134,12 @@ remains — so openssl runs about twice a day, not once per notification.
 validates the certificate chain. `ktor-client-cio` is not an option on native.
 
 **Detection is a pure function.** `AttentionTracker` holds `SessionId → wasNeedingAttention` and answers "is
-this a `false → true` transition?". It is seeded from `store.listSessions()` **inside `onSubscription`** —
-the same idiom `EventsWs.streamGlobalUpdates` uses, because `sessionUpdates` has `replay = 0` and anything
-emitted between subscribe and snapshot would otherwise be lost. Without the seed, the first update after a
-restart about an already-waiting session would look like a fresh transition and ring the phone for nothing.
-`PushNotifier` is the thin edge: it collects `sessionUpdates` on `bgScope`, started *after* the reconciler
-has finished its startup writes.
+this a `false → true` transition?". After the reconciler settles startup state, `PushNotifier.start` seeds
+from `store.listSessions()`, subscribes to the replay-free `sessionUpdates`, and reports ready. The daemon
+awaits that barrier before binding its HTTP server, so no accepted hook can write in the seed-to-subscribe
+handoff. Without the seed, the first update after a restart about an already-waiting session would look like
+a fresh transition and ring the phone for nothing. Edge tracking drains the shared flow immediately;
+potentially slow network delivery runs through a separate queue.
 
 **Sign-in inside the PWA.** The ticket becomes an 8-character Crockford-base32 code (alphabet without
 `I`/`L`/`O`/`U`, case-insensitive with `I`/`L` → `1`, `O` → `0` normalisation), TTL cut to 5 minutes, still
@@ -212,8 +219,8 @@ pin an old UI for a day).
 - [x] write test: opening the store over a driver whose schema predates the table (create the DB from a
       schema without it, like `EventStoreTest` does for `archived`) still works
 - [x] run `./kotlin build && ./kotlin test` — must pass before task 2
-      ➕ actual baseline on this branch is **438**, not the 428 the plan quotes; with the 4 new tests the
-      suite is **442 run / 442 passed / 0 skipped**
+      ➕ the verified branch baseline is **438**; with the 4 new tests the suite is
+      **442 run / 442 passed / 0 skipped**
 
 ### Task 2: AttentionTracker (pure transition detection)
 
@@ -360,7 +367,7 @@ pin an old UI for a day).
       `vapidAuthorizationHeader(jwt, publicKey)`
       ➕ the constructor is `VapidTokenCache(subject, sign, now, ttlMillis, refreshBeforeMillis)` — the
       `sub` claim has to come from somewhere and belongs with the cache, not with each call. `sign` is a
-      non-suspend `(String) -> ByteArray` so task 8's `VapidSigner::sign` binds directly; the map is
+      non-suspend `(String) -> ByteArray` so task 8's `OpensslVapidSigner::sign` binds directly; the map is
       `Mutex`-guarded (a burst of sends collapses into one openssl run) and `init` rejects
       `refreshBefore >= ttl`, which would re-sign on every call
 - [x] write tests: claims are deterministic under an injected clock; Apple and Google endpoints produce
@@ -380,9 +387,9 @@ pin an old UI for a day).
 - Create: `src/push/VapidSigner.kt`
 - Create: `test/push/OpensslVapidSignerTest.kt`
 
-- [x] add `interface VapidSigner { fun sign(input: String): ByteArray }`
-      ➕ non-suspend on purpose, so `signer::sign` binds straight into `VapidTokenCache`'s `sign` param
-- [x] add `OpensslVapidSigner(keyPath, opensslPath = "/usr/bin/openssl", runner)`: signing input → temp file
+- [x] add `OpensslVapidSigner(keyPath, opensslPath = "/usr/bin/openssl", runner)` directly (its producer-only
+      interface was removed in final simplification); non-suspend `sign` binds straight into
+      `VapidTokenCache`'s function parameter: signing input → temp file
       (popen has no writable stdin) → `openssl dgst -sha256 -sign <pem> <tmp>` → DER from `stdoutBytes` →
       `derToRawSignature`; the input temp file is removed in a `finally`
       ➕ the temp is `mkstemp` (atomic, 0600, collision-free under a concurrent fan-out) and the bytes go
@@ -448,8 +455,8 @@ pin an old UI for a day).
       from an independent digest (`python3 hashlib.sha256` + `base64.urlsafe_b64encode`), never recomputed
       with `pushTopic`
 - [x] run `./kotlin build && ./kotlin test` — must pass before task 10
-      ➕ 12 new tests: **538 run / 538 passed / 0 skipped** (the branch baseline was 526, not the 428 this
-      plan quotes)
+      ➕ 12 new tests: **538 run / 538 passed / 0 skipped** (the branch had advanced to 526 from the
+      original 438 baseline)
 
 ### Task 10: PushNotifier and daemon wiring
 
@@ -459,9 +466,9 @@ pin an old UI for a day).
 - Modify: `src/transport/Server.kt`
 - Create: `test/push/PushNotifierTest.kt`
 
-- [x] add `PushNotifier(store, tracker, sender)` collecting `EventStore.sessionUpdates` and seeding the
-      tracker from `listSessions()` **inside `.onSubscription { }`** — the `EventsWs.streamGlobalUpdates`
-      idiom, required because `sessionUpdates` has `replay = 0`
+- [x] add `PushNotifier(store, tracker, sender)` collecting `EventStore.sessionUpdates`; after the
+      post-reconciliation baseline it installs the replay-free subscription and exposes an awaited
+      seeded-and-subscribed readiness barrier before the server bind
       ➕ the third param is `send: suspend (SessionId) -> Unit`, not the `PushSender` type — the seam idiom
       the package already uses (`PushSender(vapidToken = cache::tokenFor)`), and the ONLY way to test "a
       throwing sender does not stop the collector": a real `PushSender` swallows everything by design. The
@@ -473,8 +480,9 @@ pin an old UI for a day).
       returning a `DaemonPush(store, publicKey, transport)` holder, so `daemon()` gains four lines rather
       than twenty; the `DarwinPushTransport` is closed in the teardown (after `bgScope.cancel()`, before
       `driver.close()`) instead of leaking an NSURLSession
-- [x] start the notifier on `bgScope` **after** `rebuildRegistryFromStore()` + `Reconciler.reconcile()`, so
-      startup reconciliation writes are not evaluated against a half-built world
+- [x] start the notifier on `bgScope` **after** `rebuildRegistryFromStore()` + `Reconciler.reconcile()`, and
+      await readiness before the server binds, so startup writes form the baseline and the first accepted
+      hook update cannot be lost or absorbed into it
 - [x] make a missing/unusable openssl or an unwritable `vapid.pem` degrade to "push disabled" with one
       diagnostic line — never take the daemon down
       ➕ read as "a line, never a crash", NOT "one line per daemon lifetime": the key is minted lazily on the
@@ -490,13 +498,13 @@ pin an old UI for a day).
       loud one to arrive first) — a bare "the channel is empty" would also pass if the collector had simply
       not run yet
 - [x] write test: a sender that throws does not cancel the collector (later updates still work)
-      ➕ plus an unreadable `listSessions()` (reported, collection continues with an empty baseline) and a
-      scope cancellation (ends the job, reports nothing)
+      ➕ plus an unreadable `listSessions()` (reported, collection continues with an empty baseline), parent
+      scope cancellation, readiness waiting on the baseline/subscription, and slow delivery unable to
+      overflow away tracked attention edges
 - [x] run `./kotlin build && ./kotlin test` — must pass before task 11
-      ➕ 8 new tests: **546 run / 546 passed / 0 skipped** (branch baseline 538). The `onSubscription` test
-      is mutation-verified: moving the seed above `.collect` makes
-      `theBaselineIsTakenAfterSubscribingSoNoUpdateIsLost` fail (it times out on the update that a
-      subscribe-after-snapshot drops), so it genuinely pins the idiom rather than merely passing
+      ➕ 8 new tests: **546 run / 546 passed / 0 skipped** (branch baseline 538). A post-completion review
+      replaced the original `onSubscription` seed with the explicit pre-bind readiness barrier above and
+      added the focused lifecycle/backpressure regressions.
 
 ### Task 11: Manifest, icons and static-serving headers
 
@@ -677,7 +685,8 @@ pin an old UI for a day).
       to move its clock). Also pinned end to end: a throttled request plants no cookie AND does not burn the
       valid ticket it carried (the refusal precedes the lookup), so the denial costs no credential
 - [x] run `./kotlin build && ./kotlin test` — must pass before task 15
-      ➕ 16 new tests: **579 run / 579 passed / 0 skipped** (branch baseline 563, not the 428 this plan quotes)
+      ➕ 16 new tests: **579 run / 579 passed / 0 skipped** (the branch had advanced to 563 from the
+      original 438 baseline)
 
 ### Task 15: Code entry on /auth, unauthenticated routing, and showing the code
 
@@ -697,8 +706,8 @@ pin an old UI for a day).
       `400`/`429`
       ➕ the length and the TTL in the copy are INTERPOLATED from `TICKET_CODE_LENGTH` / `TICKET_TTL_MILLIS`
       (both `const`, so the page is still a compile-time constant), so the one page that must work when
-      nothing else does cannot drift from the format it is describing. A FAILED link falls through to the
-      same form instead of dead-ending — a stale QR then leaves the operator one typed code away. `400`,
+      nothing else does cannot drift from the format it is describing. A FAILED credentialed link falls
+      through to the same form instead of dead-ending. `400`,
       `410`-style refusals and "never existed" all read as one message (the remedy is identical); only `429`
       is told apart, because retyping a good code cannot help there and waiting can, plus a network-failure
       message for a `fetch` that never got a status at all
@@ -712,16 +721,19 @@ pin an old UI for a day).
       `/sessions` load routes (a `firstLoadRef` claimed up front so a concurrent load is never "first"
       either): a later `401` (a rotated token) means a live page with an attached terminal on screen, and
       navigating out from under it would throw that away silently
-- [x] show the code in `PhoneDialog` in large type next to the QR (the ticket response already carries it)
+- [x] show the code in `PhoneDialog` in large type next to a credential-free `/auth` QR (the ticket
+      response already carries both values)
       ➕ shown split in the middle (`A1B2 C3D4`) — the daemon strips whitespace before the lookup, so the
       grouping is display-only and the grouped form redeems unchanged — with one line saying WHY an
-      installed app needs it (its own cookie jar). The QR copy stopped calling the ticket a "link": it is
-      one credential in two forms now
-- [x] print the code in `kotgent web` alongside the URL, with a one-line hint that this is what an installed
-      home-screen app asks for
+      installed app needs it (its own cookie jar). Post-review hardening strips the ticket fragment from
+      the QR and gives the `/auth` page install metadata, so opening/installing in Safari cannot spend the
+      code before the home-screen PWA uses it
+- [x] print the code in `kotgent web`, with a one-line hint that this is what an installed home-screen app
+      asks for
       ➕ the block is the pure, public `renderSignInCode(ticket)` (+ `groupLoginCode`) so it is unit-testable
-      without a daemon, the `renderSessions` idiom. Under `--print` it goes to **stderr** — stdout stays
-      exactly the URL, so `kotgent web --print | pbcopy` keeps working while the operator still sees the code
+      without a daemon, the `renderSessions` idiom. Normal `web` opens bare `/auth`, leaving that displayed
+      code valid; under `--print` the credentialed URL stays on **stdout** and the equivalent code goes to
+      **stderr**, so `kotgent web --print | pbcopy` keeps working while the operator still sees the code
 - [x] write tests: `GET /auth` HTML contains the code form; a code minted by the ticket route exchanges and
       sets the cookie; a wrong code returns `400` and sets none
       ➕ the form test pins the input, the POST target (against the `AUTH_EXCHANGE_PATH` constant) and both
@@ -874,7 +886,7 @@ pin an old UI for a day).
       reach redemption
 - [x] verify edge cases: no subscriptions (silence, no errors), dead subscription pruned on `410`, daemon
       restart does not re-notify, openssl missing → push disabled but daemon healthy
-- [x] run the full suite: `./kotlin build && ./kotlin test` — expect ≥ 428 plus the new tests, 0 skipped
+- [x] run the full suite: `./kotlin build && ./kotlin test` — expect ≥ 438 plus the new tests, 0 skipped
       ➕ `node --check` passed for all 20 shipped JavaScript modules; **590 run / 590 passed / 0 skipped**
 - [x] confirm no machine-specific path entered any YAML: `git grep '/Users/' -- '*.yaml'` stays empty
 - [x] confirm `vapid.pem` is 0600 on a real run and that no new spawn path bypasses the CLOEXEC discipline
@@ -893,8 +905,7 @@ pin an old UI for a day).
       separate-cookie-jar fact with the `401 → /auth` routing it forces
 - [x] update the test-count baseline in `CLAUDE.md` to the new figure
 - [x] note in `resources/webui/icons/` that the PNGs are rendered from `logo.svg` (and how)
-- [x] move this plan to `docs/plans/completed/` **(skipped - not automatable; the execution harness owns
-      this move)**
+- [x] move this plan to `docs/plans/completed/`
       ➕ documentation-only task, so no new tests; `./kotlin build` and the full suite passed:
       **590 run / 590 passed / 0 skipped**
 

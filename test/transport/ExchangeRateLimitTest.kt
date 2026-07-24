@@ -216,6 +216,26 @@ class ExchangeRateLimitTest {
         assertEquals(0, limit.failuresInWindow())
     }
 
+    @Test
+    fun aFutureDatedHeadCannotBlockAExpiredFailureRecordedAfterIt() = runBlocking {
+        val limit = limiter(max = 3)
+
+        // Record one failure, step backwards, then record another. In insertion order the future entry is
+        // now at the head even though the later-appended entry will expire first.
+        clock = start + EXCHANGE_WINDOW_MILLIS * 2
+        assertTrue(limit.completeFailure(), "future-dated failure")
+        clock = start
+        assertTrue(limit.completeFailure(), "older timestamp appended behind it")
+
+        clock = start + EXCHANGE_WINDOW_MILLIS
+        assertEquals(
+            1,
+            limit.failuresInWindow(),
+            "the expired entry is pruned even though a future-dated entry precedes it",
+        )
+        assertTrue(limit.completeSuccess(), "the stale timestamp no longer extends the global lockout")
+    }
+
     // --- configuration ------------------------------------------------------------------------------
 
     @Test

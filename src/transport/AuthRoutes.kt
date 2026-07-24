@@ -21,8 +21,9 @@ import kotlin.time.Clock
  *
  * ```
  *   kotgent web                 POST /auth/ticket   (Bearer, loopback-only)  → {ticket, localUrl, publicUrl}
- *   browser opens localUrl      GET  /auth#ticket=… (no auth, NO parameters) → the page below
- *   the page's script           POST /auth/exchange (the ticket IS the credential) → Set-Cookie, then "/"
+ *   normal browser opens /auth  GET  /auth (no credential) → operator types the still-unused code
+ *   web --print link opens URL  GET  /auth#ticket=… (fragment stays client-side)
+ *   the page's script           POST /auth/exchange (code/ticket IS the credential) → Set-Cookie, then "/"
  * ```
  *
  * The same page has a second entrance with no link at all: an installed PWA launches at `start_url` with
@@ -68,8 +69,9 @@ const val AUTH_EXCHANGE_PATH: String = "/auth/exchange"
 const val AUTH_ROTATE_PATH: String = "/auth/rotate"
 
 /**
- * The body of `POST /auth/ticket`. Both URLs already carry the ticket in their fragment, so the CLI (and
- * the Task-11 QR dialog) can hand them over verbatim without knowing the flow's shape.
+ * The body of `POST /auth/ticket`. Both URLs carry the ticket in their fragment for an intentional
+ * credentialed-link hand-off (`kotgent web --print`). Normal `kotgent web` and the phone QR strip the
+ * fragment and present the same credential as a code instead, leaving it unused until the form submits.
  *
  * [publicUrl] is `null` when no public origin is configured — that is the signal for the UI to explain how
  * to set one up instead of drawing a QR code that could only ever be scanned by this machine.
@@ -107,6 +109,9 @@ data class RotateResponse(val token: String)
  *   daemon shares one counter. Constructing it per call would reset it on every request — a limiter that
  *   silently does nothing, which is the one failure mode a unit test of [ExchangeRateLimit] cannot see.
  *   It is what pays for the login code carrying 40 bits instead of 256 (see [TicketStore]).
+ * @param afterExchangeAdmitted a lifecycle seam invoked after reserving capacity and inside the
+ *   non-cancellable-cleanup `try/finally`; production leaves it empty, while tests use it to abort an
+ *   admitted handler deterministically and prove the reservation is released.
  */
 fun Route.authRoutes(
     tokens: TokenHolder,
@@ -115,6 +120,7 @@ fun Route.authRoutes(
     json: Json = TRANSPORT_JSON,
     now: () -> Long = ::authEpochMillis,
     exchangeLimit: ExchangeRateLimit = ExchangeRateLimit(),
+    afterExchangeAdmitted: suspend () -> Unit = {},
 ) {
     // Ticket issuance and rotation: an authenticated credential AND a loopback Host. Nesting the two gates
     // is the whole statement — the tunnel publishes the browser surface, never the surface that mints
@@ -224,10 +230,21 @@ fun Route.authRoutes(
             call.respondText(refusalBody(decision.status), status = decision.status)
             return@post
         }
-        // The guessing budget, checked BEFORE the body is even read: over the limit, no candidate code is
-        // looked at at all, so a saturated limiter cannot be used as an oracle either. The refusal is
-        // deliberately a 429 and not the 400 a wrong code gets — "you are being throttled" is not a secret,
-        // and the Task-15 code form has to be able to tell the operator to wait rather than to retype.
+        // Read and parse BEFORE reserving limiter capacity. A client may trickle an incomplete request body
+        // forever; letting that hold one of the ten in-flight reservations would turn ten idle sockets into
+        // a permanent global sign-in lockout. Parsing still spends no budget because it has not named a
+        // candidate the store can look up yet.
+        val presented = try {
+            json.decodeFromString(ExchangeRequest.serializer(), call.receiveText()).ticket.trim()
+        } catch (_: SerializationException) {
+            call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+
+        // Reserve immediately before the actual lookup. Over the limit, the candidate is never redeemed,
+        // so a valid ticket survives until the rolling window opens again. The refusal is deliberately a
+        // 429 and not the 400 a wrong code gets — "you are being throttled" is not a secret, and the code
+        // form has to tell the operator to wait rather than to retype.
         val attempt = exchangeLimit.begin()
         if (attempt == null) {
             call.respondText("too many failed sign-in attempts", status = HttpStatusCode.TooManyRequests)
@@ -235,14 +252,7 @@ fun Route.authRoutes(
         }
         var failedExchange = false
         try {
-            val presented = try {
-                json.decodeFromString(ExchangeRequest.serializer(), call.receiveText()).ticket.trim()
-            } catch (_: SerializationException) {
-                // Not charged to the budget: a body that does not parse never names a code, so it is not a
-                // guess — only a real redemption attempt spends from the window.
-                call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
-                return@post
-            }
+            afterExchangeAdmitted()
             // Redeem returns the token the ticket was BOUND to at mint time (null for "never existed", "already
             // spent" or "expired" — one answer for all three, so a prober cannot learn which guess was ever real).
             // Sign the cookie with THAT token, not `tokens.current()`: a rotation between mint and redeem thus
@@ -262,9 +272,9 @@ fun Route.authRoutes(
             )
             call.respondText("ok")
         } finally {
-            // Cancellation (a client disappearing mid-body or mid-response) must not leak a reservation and
-            // throttle sign-in forever. Finishing is tiny, but Mutex.lock is cancellable, so give this cleanup
-            // the same non-cancellable guarantee a resource release would have.
+            // Cancellation (a client disappearing during redemption or response writing) must not leak a
+            // reservation and throttle sign-in forever. Finishing is tiny, but Mutex.lock is cancellable, so
+            // give this cleanup the same non-cancellable guarantee a resource release would have.
             withContext(NonCancellable) { attempt.finish(failedExchange) }
         }
     }
@@ -304,16 +314,19 @@ private fun authEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
  * The login page, in its two shapes: spend the ticket out of `location.hash`, or — when there is no
  * fragment at all — let the operator TYPE the code instead. Either way it ends on the SPA.
  *
- * Self-contained by design — no stylesheet, no module import, no vendored dependency. It is the page that
- * has to render when the browser holds nothing and the static UI may not even be configured, so anything it
- * had to fetch first would be one more way for a login to fail.
+ * Self-contained by design — no REQUIRED stylesheet, module import, or vendored dependency. It is the page
+ * that has to render when the browser holds nothing and the static UI may not even be configured, so login
+ * cannot depend on anything it has to fetch first. The optional manifest/icon links make the credential-free
+ * QR landing page installable; their failure does not affect the form.
  *
  * ## Why a typed code, and not only a link
- * An installed iOS home-screen app has its OWN cookie jar. Scanning the QR signs SAFARI in; the installed
- * app then launches at `start_url` holding nothing, and there is no way to hand it a fragment — it opens the
- * URL the manifest names, not a link. So the one path into an installed PWA is a code the operator reads off
- * one screen and types into another, which is exactly what [TICKET_CODE_ALPHABET] made typable. The SPA
- * routes a `401` on its first load here, so that launch lands on this form instead of a wall of errors.
+ * An installed iOS home-screen app has its OWN cookie jar. The Phone dialog's QR therefore opens this page
+ * WITHOUT the ticket fragment: Safari can install it without spending the credential the installed app
+ * still needs. The app then launches at `start_url` holding nothing, and there is no way to hand it a
+ * fragment — it opens the URL the manifest names, not a link. So the path into an installed PWA is a code
+ * the operator reads off one screen and types into another, which is exactly what
+ * [TICKET_CODE_ALPHABET] made typable. The SPA routes a `401` on its first load here, so that launch lands
+ * on this form instead of a wall of errors.
  *
  * `location.replace("/")` rather than an assignment: replacing the history entry means the ticket URL is
  * never left in the phone's back stack (or its history sync), which is the last place the value could
@@ -332,6 +345,13 @@ const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kotgent">
+<meta name="theme-color" content="#14171c">
 <title>Kotgent — sign in</title>
 <style>
   :root { color-scheme: light dark; }

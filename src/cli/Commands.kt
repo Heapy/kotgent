@@ -46,6 +46,7 @@ import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
 import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.SessionDto
+import io.kotgent.transport.TICKET_CODE_LENGTH
 import io.kotgent.transport.TICKET_TTL_MILLIS
 import io.kotgent.transport.TicketResponse
 import io.kotgent.transport.TokenHolder
@@ -56,6 +57,7 @@ import io.kotgent.transport.writePrivateFile
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
@@ -117,14 +119,14 @@ object Commands {
     // --- web / token / config (Task 10) ----------------------------------------------------------
 
     /**
-     * `web [--print]` — mint a one-shot login ticket from the daemon and open the local Web UI in the
-     * default browser (`open <localUrl>` via [ProcessRunner], whose cloexec sweep keeps `open` from
-     * inheriting any daemon descriptor). The ticket rides in the URL fragment, so it lands the browser on a
-     * page that trades it for a session cookie — no token ever appears in the address bar.
+     * `web [--print]` — mint a one-shot login ticket from the daemon and open the local sign-in form in the
+     * default browser (`open <formUrl>` via [ProcessRunner], whose cloexec sweep keeps `open` from inheriting
+     * any daemon descriptor). The form has no credential in its URL: the code printed below it stays unused,
+     * so it can be typed into that browser or an installed home-screen app.
      *
-     * `--print` prints the URL instead of opening it (a headless host, or pasting the link somewhere by
-     * hand). If `open` cannot launch a browser, the URL is printed as a fallback so the flow is never a
-     * dead end.
+     * `--print` deliberately prints the credentialed URL instead of opening it (a headless host, or pasting
+     * the one-shot link somewhere by hand). If `open` cannot launch a browser, the credential-free form URL
+     * is printed as a fallback so the code remains the one thing to type.
      *
      * The same ticket is ALSO printed as a typable code ([renderSignInCode]), because a link cannot reach an
      * installed home-screen app: it launches at its own `start_url` with its own cookie jar, so the code
@@ -133,21 +135,13 @@ object Commands {
      * it on the terminal.
      */
     fun web(print: Boolean): Int = withApi { api ->
-        val ticket = api.issueTicket()
-        if (print) {
-            println(ticket.localUrl)
-            eprintln(renderSignInCode(ticket))
-            return@withApi 0
-        }
-        val result = ProcessRunner.run(listOf("open", ticket.localUrl))
-        if (result.isSuccess) {
-            println("opening the kotgent web UI in your browser…")
-        } else {
-            eprintln("could not launch a browser (open exited ${result.exitCode}); open this link yourself:")
-            println(ticket.localUrl)
-        }
-        println(renderSignInCode(ticket))
-        0
+        runWebCommand(
+            print = print,
+            issueTicket = api::issueTicket,
+            open = { url -> ProcessRunner.run(listOf("open", url)).exitCode },
+            stdout = ::println,
+            stderr = ::eprintln,
+        )
     }
 
     /**
@@ -414,25 +408,31 @@ object Commands {
         // and one stderr line per attempted notification. The keypair is NOT generated here: it is minted
         // lazily on the first `GET /push/vapid-key`, so a daemon nobody enables notifications on never
         // shells out at all.
-        val push = startPush(driver, config.publicUrl, bgScope, store)
-
-        val server = try {
-            KotgentServer.production(
-                manager,
-                store,
-                tokenHolder,
-                tmux,
-                currentVersion = currentUiVersion(),
-                publicUrl = config.publicUrl,
-                pushStore = push?.store,
-                vapidPublicKey = push?.publicKey,
-                port = port,
-            ).start()
+        val runtime = try {
+            startDaemonServer(
+                assemblePush = { startPush(driver, config.publicUrl, bgScope, store) },
+                createServer = { push ->
+                    KotgentServer.production(
+                        manager,
+                        store,
+                        tokenHolder,
+                        tmux,
+                        currentVersion = currentUiVersion(),
+                        publicUrl = config.publicUrl,
+                        pushStore = push?.store,
+                        vapidPublicKey = push?.publicKey,
+                        port = port,
+                    )
+                },
+            )
         } catch (e: ServerBindException) {
             eprintln("kotgent daemon: ${e.message}")
             reportPortHolder(port)
+            bgScope.cancel()
+            driver.close()
             return@runBlocking 1
         }
+        val server = runtime.server
         println("kotgent daemon listening on http://127.0.0.1:$port  (tmux -L $TMUX_SOCKET)")
         config.publicUrl?.let { println("  also reachable at $it  (Host + Origin allowlisted)") }
 
@@ -457,7 +457,7 @@ object Commands {
         bgScope.cancel()
         // The push client owns an NSURLSession with pooled connections to Apple/Google; releasing it after
         // the collector that uses it is cancelled keeps the teardown in dependency order.
-        push?.transport?.close()
+        runtime.push?.close?.invoke()
         driver.close()
         0
     }
@@ -477,7 +477,7 @@ object Commands {
      *
      * @param events the store the notifier watches — the same [EventStore] the rest of the daemon uses.
      */
-    private fun startPush(
+    private suspend fun startPush(
         driver: SqlDriver,
         publicUrl: String?,
         scope: CoroutineScope,
@@ -503,17 +503,18 @@ object Commands {
             transport = transport,
         )
         // Started here — i.e. AFTER rebuildRegistryFromStore() + Reconciler.reconcile() — so the baseline
-        // it seeds from already contains the startup reclassifications instead of racing them.
-        PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
-        return DaemonPush(subscriptions, key::publicKeyBase64Url, transport)
+        // already contains the startup reclassifications. start() is a readiness barrier: do not return
+        // until the flow is subscribed, because the server binds immediately after this helper.
+        val notifier = PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
+        return DaemonPush(
+            subscriptions,
+            key::publicKeyBase64Url,
+            close = {
+                notifier.cancelAndJoin()
+                transport.close()
+            },
+        )
     }
-
-    /** What the daemon keeps hold of once push is wired: the two server params, plus the client to close. */
-    private class DaemonPush(
-        val store: PushStore,
-        val publicKey: suspend () -> String,
-        val transport: DarwinPushTransport,
-    )
 
     /**
      * Print who is holding [port] after a failed bind. Usually the answer is an **orphaned `tmux`
@@ -618,28 +619,61 @@ object Commands {
 }
 
 /**
- * The sign-in code block `kotgent web` prints under the URL. Pure so it is unit-testable without a daemon.
+ * The sign-in code block `kotgent web` prints after opening the form (or to stderr beside the `--print`
+ * URL). Pure so it is unit-testable without a daemon.
  *
- * The URL alone is not enough any more: an installed home-screen app opens at its `start_url` with its own
- * empty cookie jar and cannot be handed a link fragment, so the code — the same credential, in the form a
- * human can retype — has to be on screen next to it. The value is grouped ([groupLoginCode]) for reading;
- * the daemon strips whitespace before looking it up, so what is typed back can carry the space or not.
+ * An installed home-screen app opens at its `start_url` with its own empty cookie jar and cannot be handed
+ * a link fragment, so the credential must also be shown in a form a human can retype. The value is grouped
+ * ([groupLoginCode]) for reading; the daemon strips whitespace before looking it up, so what is typed back
+ * can carry the space or not.
  */
 fun renderSignInCode(ticket: TicketResponse): String =
     "sign-in code: ${groupLoginCode(ticket.ticket)}\n" +
-        "  type it into an app already installed on a home screen — it opens with its own empty cookie jar,\n" +
-        "  so opening the link on that phone does not sign the installed app in.\n" +
+        "  type it into the browser form, or into an app already installed on a home screen — it has its\n" +
+        "  own cookie jar, so signing in another browser does not sign the installed app in.\n" +
         "  one-time, and good for ${TICKET_TTL_MILLIS / 60_000} minutes."
 
 /**
- * Split a login code in the middle (`A1B2C3D4` → `A1B2 C3D4`), the way a human reads eight symbols anyway.
- * Display only: [io.kotgent.transport.normalizeTicketCode] drops whitespace before the lookup, so the
- * grouped form redeems exactly like the ungrouped one. An odd or very short value is left alone rather than
- * split at a place that would just look wrong.
+ * Split the fixed-width login code in the middle (`A1B2C3D4` → `A1B2 C3D4`), the way a human reads eight
+ * symbols anyway. Display only: [io.kotgent.transport.normalizeTicketCode] drops whitespace before the
+ * lookup, so the grouped form redeems exactly like the ungrouped one.
  */
-fun groupLoginCode(code: String): String =
-    if (code.length < 6 || code.length % 2 != 0) code
-    else code.substring(0, code.length / 2) + " " + code.substring(code.length / 2)
+fun groupLoginCode(code: String): String {
+    require(code.length == TICKET_CODE_LENGTH) { "login code must be $TICKET_CODE_LENGTH characters" }
+    val half = TICKET_CODE_LENGTH / 2
+    return code.substring(0, half) + " " + code.substring(half)
+}
+
+/**
+ * Execute the `web` handler through explicit seams so all output/open branches are testable without a real
+ * daemon or GUI process. Normal mode opens only the credential-free form; `--print` is the one mode that
+ * emits the credentialed ticket URL for intentional hand-off.
+ */
+suspend fun runWebCommand(
+    print: Boolean,
+    issueTicket: suspend () -> TicketResponse,
+    open: (String) -> Int,
+    stdout: (String) -> Unit,
+    stderr: (String) -> Unit,
+): Int {
+    val ticket = issueTicket()
+    if (print) {
+        stdout(ticket.localUrl)
+        stderr(renderSignInCode(ticket))
+        return 0
+    }
+
+    val formUrl = ticket.localUrl.substringBefore('#')
+    val exitCode = open(formUrl)
+    if (exitCode == 0) {
+        stdout("opening the kotgent sign-in form in your browser…")
+    } else {
+        stderr("could not launch a browser (open exited $exitCode); open this form yourself:")
+        stdout(formUrl)
+    }
+    stdout(renderSignInCode(ticket))
+    return 0
+}
 
 /**
  * Render sessions as a compact human table (the `list` output). Pure so it is unit-testable without a

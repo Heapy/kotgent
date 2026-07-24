@@ -293,11 +293,73 @@ class CliTest {
     }
 
     @Test
-    fun groupingLeavesACodeItCannotSplitEvenlyAlone() {
+    fun groupingRequiresTheTicketStoresFixedWidth() {
         assertEquals("A1B2 C3D4", groupLoginCode("A1B2C3D4"))
-        assertEquals("ABC", groupLoginCode("ABC"), "too short to split")
-        assertEquals("ABCDEFX", groupLoginCode("ABCDEFX"), "odd length: split nowhere rather than lopsided")
-        assertEquals("", groupLoginCode(""), "and an empty value is not a crash")
+        assertFailsWith<IllegalArgumentException> { groupLoginCode("ABC") }
+        assertFailsWith<IllegalArgumentException> { groupLoginCode("") }
+    }
+
+    @Test
+    fun webPrintKeepsStdoutPipeableAndDoesNotOpenAnything() = runBlocking {
+        val ticket = webTicket()
+        val stdout = mutableListOf<String>()
+        val stderr = mutableListOf<String>()
+        val opened = mutableListOf<String>()
+
+        val exit = runWebCommand(
+            print = true,
+            issueTicket = { ticket },
+            open = { opened += it; 0 },
+            stdout = stdout::add,
+            stderr = stderr::add,
+        )
+
+        assertEquals(0, exit)
+        assertEquals(listOf(ticket.localUrl), stdout, "stdout remains exactly the credentialed URL for piping")
+        assertTrue(stderr.single().contains("A1B2 C3D4"), "the human-readable code stays on stderr")
+        assertTrue(opened.isEmpty(), "--print never launches a browser")
+    }
+
+    @Test
+    fun webOpenLeavesTheCodeUnspentForTheBrowserFormOrInstalledApp() = runBlocking {
+        val ticket = webTicket()
+        val stdout = mutableListOf<String>()
+        val stderr = mutableListOf<String>()
+        val opened = mutableListOf<String>()
+
+        val exit = runWebCommand(
+            print = false,
+            issueTicket = { ticket },
+            open = { opened += it; 0 },
+            stdout = stdout::add,
+            stderr = stderr::add,
+        )
+
+        assertEquals(0, exit)
+        assertEquals(listOf("http://127.0.0.1:27508/auth"), opened, "normal mode opens no ticket fragment")
+        assertTrue(stdout.any { "opening" in it })
+        assertTrue(stdout.any { "A1B2 C3D4" in it }, "the still-valid code is printed")
+        assertTrue(stderr.isEmpty())
+    }
+
+    @Test
+    fun webOpenFailurePrintsTheCredentialFreeFallbackAndCode() = runBlocking {
+        val ticket = webTicket()
+        val stdout = mutableListOf<String>()
+        val stderr = mutableListOf<String>()
+
+        val exit = runWebCommand(
+            print = false,
+            issueTicket = { ticket },
+            open = { 7 },
+            stdout = stdout::add,
+            stderr = stderr::add,
+        )
+
+        assertEquals(0, exit)
+        assertEquals("http://127.0.0.1:27508/auth", stdout.first(), "fallback cannot consume the code")
+        assertTrue(stdout.last().contains("A1B2 C3D4"))
+        assertTrue(stderr.single().contains("open exited 7"))
     }
 
     // ---- 4. AttachClient smoke (no real tty, no socket) -----------------------------------------
@@ -492,6 +554,13 @@ class CliTest {
         unread = 1,
         createdAt = 1,
         updatedAt = 1,
+    )
+
+    private fun webTicket() = TicketResponse(
+        ticket = "A1B2C3D4",
+        localUrl = "http://127.0.0.1:27508/auth#ticket=A1B2C3D4",
+        publicUrl = "https://kotgent.example.com/auth#ticket=A1B2C3D4",
+        expiresAt = 42,
     )
 
     /** A pure fake [LocalTty] recording enter/restore order — never touches a real terminal. */

@@ -11,6 +11,7 @@ import kotlinx.cinterop.toKString
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.fclose
+import platform.posix.chmod
 import platform.posix.fopen
 import platform.posix.fputs
 import platform.posix.getenv
@@ -135,6 +136,22 @@ class VapidKeyTest {
 
             assertEquals(keyPath, key.ensureKeyFile(), "a second call is a no-op")
             assertContentEquals(pem, readFileBytesOrNull(keyPath), "the existing key is left alone")
+        }
+    }
+
+    @Test
+    fun anExistingPemIsReHardenedTo0600BeforeUse() = runBlocking {
+        withTimeout(20_000) {
+            writeFile(
+                keyPath,
+                "-----BEGIN EC PRIVATE KEY-----\nexisting\n-----END EC PRIVATE KEY-----\n",
+            )
+            assertEquals(0, chmod(keyPath, 0b110_100_100.convert()), "precondition: chmod existing PEM to 0644")
+            assertEquals(0b110_100_100, fileMode(keyPath), "precondition: the PEM is group/world-readable")
+
+            assertEquals(keyPath, VapidKey(keyPath = keyPath).ensureKeyFile())
+
+            assertEquals(0b110_000_000, fileMode(keyPath), "adopting an old PEM restores the 0600 invariant")
         }
     }
 

@@ -4,8 +4,8 @@
  * The daemon can only reach a locked phone through the browser's push service, and it can only do that if
  * this page hands it a subscription first. That handshake is:
  *
- *   1. register `/sw.js`            — the worker that will be woken; its scope must be `/`
- *   2. Notification.requestPermission — iOS refuses this outside a user gesture (see the ordering note)
+ *   1. Notification.requestPermission — iOS refuses this outside a user gesture (see the ordering note)
+ *   2. register `/sw.js`            — the worker that will be woken; its scope must be `/`
  *   3. GET /push/vapid-key          — the daemon's P-256 public point; the browser will not subscribe
  *                                     without an applicationServerKey, so the KEY call comes first
  *   4. pushManager.subscribe        — userVisibleOnly: true, i.e. every push MUST end in a banner
@@ -18,12 +18,12 @@
  *
  * ## Failure is a downgrade, never an error the user has to read
  * A browser without push (desktop Safari outside an installed PWA, a private window), a denied prompt, a
- * daemon with no `openssl` (`GET /push/vapid-key` answers 503) — all of these leave `subscribe()` returning
- * false, and the caller falls back to the in-tab notifications `lib/notify.js` has always raised.
+ * daemon with no `openssl` (`GET /push/vapid-key` answers 503) — all of these leave the active flag false,
+ * and the caller falls back to the in-tab notifications `lib/notify.js` has always raised.
  */
 
 import { apiRequest } from "./api.js";
-import { ensurePermission, isPushActive, setPushActive } from "./notify.js";
+import { ensurePermission, setPushActive } from "./notify.js";
 
 /** The worker script — served from the root so its scope is the whole origin. */
 export const SW_URL = "/sw.js";
@@ -43,11 +43,6 @@ export function supported() {
     "serviceWorker" in navigator &&
     "PushManager" in window &&
     "Notification" in window;
-}
-
-/** Whether a push subscription is believed to be active (see `notify.js`, which owns the flag). */
-export function isActive() {
-  return isPushActive();
 }
 
 /**
@@ -88,29 +83,44 @@ async function subscribeWith(registration, key) {
   }
 }
 
-/**
- * Make this device a push target. Returns whether it now is — false (not a throw) for every "this browser
- * / this daemon cannot do push" case, so a caller can simply fall back to in-tab notifications. A genuine
- * fault (the daemon refusing the subscription) does throw, so the UI can log it.
- *
- * Must be called from a user gesture: the permission prompt is requested before anything is awaited.
- */
-export async function subscribe() {
-  if (!supported()) return false;
-  if (!(await ensurePermission())) return false;
-
-  const registration = await activeRegistration();
-  const response = await apiRequest(VAPID_KEY_URL);
+/** A successful VAPID response always carries a non-empty key; anything else is a broken server contract. */
+function responseKey(response) {
   const key = response && response.key;
-  if (!key) return false;   // the daemon has no VAPID key (no openssl) — push stays off, the tab still works
+  if (typeof key !== "string" || key.length === 0) {
+    throw new Error("kotgent: /push/vapid-key returned no key");
+  }
+  return key;
+}
 
-  const subscription = await subscribeWith(registration, key);
+/** Hand an existing browser subscription to the daemon, which is what makes this device reachable. */
+async function registerSubscription(subscription) {
   const json = subscription.toJSON();
   const keys = json.keys || {};
   await apiRequest(SUBSCRIBE_URL, {
     method: "POST",
     body: JSON.stringify({ endpoint: json.endpoint, p256dh: keys.p256dh || "", auth: keys.auth || "" }),
   });
+}
+
+/**
+ * Make this device a push target. Returns whether it now is — false (not a throw) for every "this browser
+ * / this daemon cannot do push" case, so a caller can simply fall back to in-tab notifications. A genuine
+ * fault (the daemon refusing the subscription) does throw, so the UI can log it.
+ *
+ * Must be called from a user gesture: the permission prompt is requested before anything is awaited.
+ * [permissionRequest] lets a serialized UI transition start that prompt synchronously in its click handler,
+ * then wait for an older on/off transition before it performs the subscription I/O.
+ */
+export async function subscribe(permissionRequest = null) {
+  if (!supported()) return false;
+  setPushActive(false);
+  const permission = permissionRequest || ensurePermission();
+  if (!(await permission)) return false;
+
+  const registration = await activeRegistration();
+  const key = responseKey(await apiRequest(VAPID_KEY_URL));
+  const subscription = await subscribeWith(registration, key);
+  await registerSubscription(subscription);
   setPushActive(true);
   return true;
 }
@@ -137,21 +147,26 @@ export async function unsubscribe() {
 }
 
 /**
- * Reconcile the mirror flag with the browser's real subscription, and return it. Called once on load: a
- * subscription can disappear without this page being told (the browser drops it, the user clears site
- * data), and a stale `true` would silence BOTH paths — the worker no longer fires and `notifyAttention`
- * stands down for a subscription that is gone. Every uncertain answer therefore resolves to false.
+ * Reconcile the mirror flag with BOTH halves of the subscription, and return it. A browser-side subscription
+ * alone is not enough: the daemon may have lost its row after a failed POST, database replacement, or key
+ * regeneration. Re-subscribe with the current VAPID key and POST the endpoint again before standing down the
+ * in-tab path. Every uncertain answer resolves to false.
  */
 export async function refreshActive() {
+  setPushActive(false);
   if (!supported()) {
-    setPushActive(false);
     return false;
   }
   try {
     const registration = await navigator.serviceWorker.getRegistration();
-    const subscription = registration ? await registration.pushManager.getSubscription() : null;
-    setPushActive(!!subscription);
-    return !!subscription;
+    const existing = registration ? await registration.pushManager.getSubscription() : null;
+    if (!registration || !existing) return false;
+
+    const key = responseKey(await apiRequest(VAPID_KEY_URL));
+    const subscription = await subscribeWith(registration, key);
+    await registerSubscription(subscription);
+    setPushActive(true);
+    return true;
   } catch (_) {
     setPushActive(false);
     return false;

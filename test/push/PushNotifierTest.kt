@@ -13,7 +13,10 @@ import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -30,9 +33,10 @@ import kotlin.test.assertTrue
 /**
  * [PushNotifier] is the plumbing between [AttentionTracker] (which decides *whether* to notify, and is
  * tested on its own) and [PushSender] (which decides *what goes on the wire*, likewise). So these tests
- * assert only what this class adds: that the baseline is taken **after** subscribing, that exactly the
- * edges reach the sender, and that nothing — a throwing sender, an unreadable store — can end the
- * collection or escape into the daemon's background scope.
+ * assert only what this class adds: startup does not become ready until the baseline and subscription are
+ * both installed, edge tracking does not wait for delivery, exactly the edges reach the sender, and
+ * nothing — a throwing sender, an unreadable store — can end the collection or escape into the daemon's
+ * background scope.
  *
  * The sender is a lambda writing into a [Channel] rather than a real [PushSender]: a real one swallows
  * every failure by design, so "a throwing sender does not stop the collector" would be untestable through
@@ -59,7 +63,7 @@ class PushNotifierTest {
     @Test
     fun aTransitionIntoAttentionSendsExactlyOnceForThatSession() = runBlocking {
         withTimeout(20_000) {
-            val env = Env(this, sessions = listOf(meta("s1", SessionState.running)))
+            val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
@@ -78,7 +82,7 @@ class PushNotifierTest {
     @Test
     fun anUpdateThatIsNotATransitionSendsNothing() = runBlocking {
         withTimeout(20_000) {
-            val env = Env(this, sessions = listOf(meta("s1", SessionState.running)))
+            val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
             env.awaitSeeded()
 
             // Neither of these is an edge into "waiting on the human".
@@ -102,9 +106,8 @@ class PushNotifierTest {
             // The daemon-restart case: `s1` was blocked on an approval before the restart, and the
             // reconciler's startup write re-emits that same level. Without the seed it would ring.
             val env = Env(
-                this,
                 sessions = listOf(meta("s1", SessionState.needs_approval), meta("s2", SessionState.running)),
-            )
+            ).start(this)
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
@@ -116,38 +119,44 @@ class PushNotifierTest {
         }
     }
 
-    // --- the onSubscription idiom -------------------------------------------------------------------
+    // --- startup handoff ----------------------------------------------------------------------------
 
     @Test
-    fun theBaselineIsTakenAfterSubscribingSoNoUpdateIsLost() = runBlocking {
+    fun startReturnsOnlyAfterTheBaselineAndSubscriptionAreReady() = runBlocking {
         withTimeout(20_000) {
-            // `sessionUpdates` has replay = 0. This holds the seed open, emits while it is still running,
-            // and requires both updates to be delivered afterwards: with the seed OUTSIDE onSubscription
-            // there is no subscriber yet at that moment and both emissions would vanish.
+            val seedStarted = CompletableDeferred<Unit>()
             val gate = CompletableDeferred<Unit>()
             val env = Env(
-                this,
-                sessions = listOf(meta("s1", SessionState.needs_approval)),
-                beforeListSessions = { gate.await() },
+                sessions = listOf(meta("s1", SessionState.running)),
+                beforeListSessions = {
+                    seedStarted.complete(Unit)
+                    gate.await()
+                },
             )
-            env.store.awaitSubscriber()
+            val scope = this
+            val starting = async(start = CoroutineStart.UNDISPATCHED) { env.start(scope) }
 
-            env.store.emit(update("s1", SessionState.needs_approval))
-            env.store.emit(update("s2", SessionState.needs_approval))
+            seedStarted.await()
+            assertTrue(!starting.isCompleted, "startup cannot report ready while the baseline is still blocked")
+            assertEquals(0, env.store.subscriberCount(), "subscription is installed only after the baseline")
             gate.complete(Unit)
+            starting.await()
 
-            // s1 is silent (the baseline says it was already waiting) and s2 fires — which together prove
-            // the buffered updates were delivered AND evaluated against the seed, not against an empty map.
-            assertEquals(SessionId("s2"), env.sent.receive(), "an update emitted during the seed is not lost")
+            env.store.awaitSubscriber()
+            env.store.emit(update("s1", SessionState.needs_approval))
+            assertEquals(
+                SessionId("s1"),
+                env.sent.receive(),
+                "the first update accepted after readiness is evaluated against the completed baseline",
+            )
             env.stop()
-            assertTrue(env.sent.tryReceive().isFailure, "and the seeded session stayed silent")
         }
     }
 
     @Test
     fun theBaselineIsTakenExactlyOnce() = runBlocking {
         withTimeout(20_000) {
-            val env = Env(this, sessions = listOf(meta("s1", SessionState.running)))
+            val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
@@ -162,12 +171,59 @@ class PushNotifierTest {
         }
     }
 
+    @Test
+    fun slowDeliveryCannotOverflowAwayAttentionEdges() = runBlocking {
+        withTimeout(20_000) {
+            val firstDeliveryStarted = CompletableDeferred<Unit>()
+            val releaseFirstDelivery = CompletableDeferred<Unit>()
+            var first = true
+            val env = Env(
+                sessions = listOf(
+                    meta("s1", SessionState.running),
+                    meta("s2", SessionState.running),
+                ),
+                beforeSend = { id ->
+                    if (first && id == SessionId("s1")) {
+                        first = false
+                        firstDeliveryStarted.complete(Unit)
+                        releaseFirstDelivery.await()
+                    }
+                },
+            ).start(this)
+
+            env.store.emit(update("s1", SessionState.needs_approval))
+            firstDeliveryStarted.await()
+
+            // More than the fake SharedFlow's 64-slot DROP_OLDEST buffer, while the first network delivery
+            // is held open. The collector must still record both s2 edges and queue them for the worker.
+            for (next in listOf(
+                update("s2", SessionState.needs_approval),
+                update("s2", SessionState.running),
+                update("s2", SessionState.needs_approval),
+            )) {
+                env.store.emit(next)
+                yield()
+            }
+            repeat(70) { i ->
+                env.store.emit(update("filler-$i", SessionState.running))
+                yield()
+            }
+
+            releaseFirstDelivery.complete(Unit)
+            assertEquals(SessionId("s1"), env.sent.receive())
+            assertEquals(SessionId("s2"), env.sent.receive(), "the first queued s2 edge survives")
+            assertEquals(SessionId("s2"), env.sent.receive(), "the re-entry edge survives too")
+            env.stop()
+            assertTrue(env.sent.tryReceive().isFailure, "non-attention filler updates never reach delivery")
+        }
+    }
+
     // --- nothing may end the collector --------------------------------------------------------------
 
     @Test
     fun aThrowingSenderDoesNotStopTheCollector() = runBlocking {
         withTimeout(20_000) {
-            val env = Env(this, sessions = emptyList(), failSendFor = setOf(SessionId("s1")))
+            val env = Env(sessions = emptyList(), failSendFor = setOf(SessionId("s1"))).start(this)
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
@@ -188,7 +244,7 @@ class PushNotifierTest {
         withTimeout(20_000) {
             // A failing baseline is reported and collection continues with an empty one: at worst one
             // spurious notification per already-waiting session, which beats no notifications at all.
-            val env = Env(this, failListSessions = true)
+            val env = Env(failListSessions = true).start(this)
             env.store.awaitSubscriber()
 
             env.store.emit(update("s1", SessionState.needs_approval))
@@ -205,12 +261,14 @@ class PushNotifierTest {
     @Test
     fun cancellingTheScopeEndsTheCollector() = runBlocking {
         withTimeout(20_000) {
-            val env = Env(this, sessions = emptyList())
+            val parent = Job()
+            val env = Env(sessions = emptyList()).start(CoroutineScope(parent))
             env.awaitSeeded()
 
-            env.stop()
+            parent.cancel()
+            env.job.join()
 
-            assertTrue(env.job.isCancelled, "the daemon cancels its background scope on shutdown")
+            assertTrue(env.job.isCancelled, "cancelling the supplied parent scope cancels and joins the collector")
             assertTrue(env.errors.isEmpty(), "an ordinary cancellation is not a failure: ${env.errors}")
         }
     }
@@ -228,7 +286,11 @@ class PushNotifierTest {
     ) : EventStore {
 
         /** Matches the real store's shape: hot, `replay = 0`, buffered so an emit does not block. */
-        private val updates = MutableSharedFlow<SessionUpdate>(replay = 0, extraBufferCapacity = 64)
+        private val updates = MutableSharedFlow<SessionUpdate>(
+            replay = 0,
+            extraBufferCapacity = 64,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
         override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
 
         /** How many times the baseline was taken — one, for the lifetime of a collector. */
@@ -241,6 +303,8 @@ class PushNotifierTest {
         suspend fun awaitSubscriber() {
             updates.subscriptionCount.first { it > 0 }
         }
+
+        fun subscriberCount(): Int = updates.subscriptionCount.value
 
         override suspend fun listSessions(): List<SessionMeta> {
             listCalls++
@@ -268,11 +332,11 @@ class PushNotifierTest {
 
     /** A running [PushNotifier] over a fake store, with its sends and its diagnostics captured. */
     private class Env(
-        scope: CoroutineScope,
         sessions: List<SessionMeta> = emptyList(),
         beforeListSessions: suspend () -> Unit = {},
         failListSessions: Boolean = false,
         failSendFor: Set<SessionId> = emptySet(),
+        beforeSend: suspend (SessionId) -> Unit = {},
     ) {
         val store = FakeUpdatesStore(sessions, beforeListSessions, failListSessions)
 
@@ -281,21 +345,28 @@ class PushNotifierTest {
 
         val errors = mutableListOf<String>()
 
-        val job: Job = PushNotifier(
+        private val notifier = PushNotifier(
             store = store,
             send = { id ->
+                beforeSend(id)
                 sent.send(id)
                 if (id in failSendFor) throw IllegalStateException("push service unreachable")
             },
             onError = { errors += it },
-        ).start(scope)
+        )
+
+        lateinit var job: Job
+            private set
+
+        suspend fun start(scope: CoroutineScope): Env {
+            job = notifier.start(scope)
+            return this
+        }
 
         /** Suspend until the baseline has been taken, so a test can emit into a fully-started collector. */
         suspend fun awaitSeeded() {
             store.awaitSubscriber()
-            // The seed runs inside onSubscription, i.e. immediately after the subscription is visible;
-            // yielding until listSessions has been counted removes the last bit of start-up ordering.
-            while (store.listCalls == 0) yield()
+            assertEquals(1, store.listCalls, "readiness includes exactly one completed baseline")
         }
 
         fun stop() {

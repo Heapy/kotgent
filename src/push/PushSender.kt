@@ -50,7 +50,6 @@ import kotlinx.coroutines.CancellationException
  *   of this class's tests entirely, so they assert which token went to which service, not how one is built.
  * @param transport the HTTP edge ([DarwinPushTransport] in production, a fake in tests). Nothing in the
  *   suite may make a real outbound call.
- * @param ttlSeconds the `TTL` header: how long the push service may hold an undelivered message.
  * @param onError where a swallowed failure is reported; stderr in production, a collector in tests.
  */
 class PushSender(
@@ -58,28 +57,25 @@ class PushSender(
     private val publicKey: suspend () -> String,
     private val vapidToken: suspend (String) -> String,
     private val transport: PushTransport,
-    private val ttlSeconds: Int = PUSH_TTL_SECONDS,
     private val onError: (String) -> Unit = ::eprintln,
 ) {
 
     /**
-     * Push "[sessionId] needs your attention" to every registered device, returning how many push services
-     * accepted it (`0` when there are no subscriptions, which is the normal state of a daemon nobody has
-     * enabled notifications on).
+     * Push "[sessionId] needs your attention" to every registered device.
      *
      * The VAPID key is resolved only when there is at least one subscription, so a daemon without push
      * never shells out to openssl at all.
      */
-    suspend fun send(sessionId: SessionId): Int {
+    suspend fun send(sessionId: SessionId) {
         val subscriptions = try {
             store.list()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             onError("push: cannot read the subscription list: ${e.describe()}")
-            return 0
+            return
         }
-        if (subscriptions.isEmpty()) return 0
+        if (subscriptions.isEmpty()) return
 
         val key = try {
             publicKey()
@@ -87,24 +83,22 @@ class PushSender(
             throw e
         } catch (e: Throwable) {
             onError("push: no VAPID key, notifications are disabled: ${e.describe()}")
-            return 0
+            return
         }
 
         val topic = pushTopic(sessionId)
-        var accepted = 0
         for (subscription in subscriptions) {
-            if (deliver(subscription, key, topic, sessionId)) accepted++
+            deliver(subscription, key, topic, sessionId)
         }
-        return accepted
     }
 
-    /** One subscription: mint/reuse its token, POST, act on the status. True when it was accepted. */
+    /** One subscription: mint/reuse its token, POST, and act on the status. */
     private suspend fun deliver(
         subscription: PushSubscription,
         key: String,
         topic: String,
         sessionId: SessionId,
-    ): Boolean {
+    ) {
         val jwt = try {
             vapidToken(subscription.endpoint)
         } catch (e: CancellationException) {
@@ -112,29 +106,27 @@ class PushSender(
         } catch (e: Throwable) {
             // A bad endpoint or a missing openssl. Nothing is cached on failure, so the next send retries.
             onError("push: cannot build a VAPID token for ${subscription.endpoint}: ${e.describe()}")
-            return false
+            return
         }
 
         val status = try {
-            transport.post(subscription.endpoint, pushRequestHeaders(jwt, key, topic, ttlSeconds))
+            transport.post(subscription.endpoint, pushRequestHeaders(jwt, key, topic))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             onError("push: ${subscription.endpoint} did not answer: ${e.describe()}")
-            return false
+            return
         }
 
-        return when {
-            status in PUSH_SUCCESS_STATUSES -> true
+        when {
+            status in PUSH_SUCCESS_STATUSES -> Unit
             status in PUSH_GONE_STATUSES -> {
                 prune(subscription.endpoint, status)
-                false
             }
             else -> {
                 // 429 (rate limited) and 5xx (the service is having a bad day) are transient: keep the row
                 // and drop this one message. The session id names what was lost, not what is wrong.
                 onError("push: ${subscription.endpoint} returned HTTP $status for session ${sessionId.value}")
-                false
             }
         }
     }

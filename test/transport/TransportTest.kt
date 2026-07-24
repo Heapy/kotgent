@@ -3,6 +3,8 @@ package io.kotgent.transport
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.cli.DaemonPush
+import io.kotgent.cli.startDaemonServer
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -21,6 +23,9 @@ import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.agentFactoryOf
+import io.kotgent.push.PushStore
+import io.kotgent.push.PushSubscription
+import io.kotgent.push.PushNotifier
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
@@ -28,6 +33,7 @@ import io.kotgent.store.EventStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
+import io.kotgent.tmux.Tmux
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
@@ -97,6 +103,51 @@ class TransportTest {
      */
     private val publicHost = "kotgent.example.com"
     private val publicUrl = "https://$publicHost"
+
+    @Test
+    fun productionPushAssemblerIsReadyBeforeTheRealServerFactoryBinds() {
+        val sent = Channel<SessionId>(Channel.UNLIMITED)
+        var assembled = false
+        withServer(
+            productionFactory = true,
+            pushAssembler = { events, scope ->
+                val subscriptions = object : PushStore {
+                    override suspend fun list(): List<PushSubscription> = emptyList()
+                    override suspend fun save(subscription: PushSubscription) {}
+                    override suspend fun remove(endpoint: String) {}
+                }
+                PushNotifier(events, send = { sent.send(it) }).start(scope)
+                assembled = true
+                DaemonPush(subscriptions, { "production-forwarded-vapid-key" }, close = {})
+            },
+        ) { ctx ->
+            assertTrue(assembled, "the push assembler completed its notifier readiness barrier before bind")
+            val response = ctx.client.get("http://127.0.0.1:${ctx.port}$PUSH_VAPID_KEY_PATH") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(
+                HttpStatusCode.OK,
+                response.status,
+                "the real production factory mounts the dependencies returned by the assembler",
+            )
+            assertEquals(
+                "production-forwarded-vapid-key",
+                TRANSPORT_JSON.decodeFromString(VapidKeyResponse.serializer(), response.bodyAsText()).key,
+            )
+
+            val created = ctx.startSession()
+            ctx.store.append(
+                SessionId(created.id),
+                AgentEvent.ApprovalRequested("production-push"),
+                EventSource.hook,
+            )
+            assertEquals(
+                SessionId(created.id),
+                sent.receive(),
+                "the notifier assembled before bind observes the first post-bind attention transition",
+            )
+        }
+    }
 
     // ---- 0. SessionDto mapping: cli version/path are carried through ----
 
@@ -833,6 +884,8 @@ class TransportTest {
         // default) is the loopback-only daemon every other test drives.
         publicUrl: String? = null,
         directoryCompleter: DirectoryCompleter = DirectoryCompleter { _, _ -> emptyList() },
+        productionFactory: Boolean = false,
+        pushAssembler: (suspend (EventStore, CoroutineScope) -> DaemonPush?)? = null,
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
         withTimeout(40_000) {
@@ -850,11 +903,39 @@ class TransportTest {
             val bridgeFactory: (String, CoroutineScope) -> TerminalBridge = { id, scope ->
                 TerminalBridge(listOf("fake-attach", id), { seed }, ptyFactory, scope)
             }
-            val server = KotgentServer(
-                manager, store, TokenHolder(token), bridgeFactory,
-                directoryCompleter = directoryCompleter,
-                webUiDir = null, publicUrl = publicUrl, port = 0,
-            ).start()
+            var push: DaemonPush? = null
+            val server = if (productionFactory) {
+                // No daemon and no tmux process: the production factory only captures this edge until a
+                // terminal is actually attached, which this push-route test never does.
+                startDaemonServer(
+                    assemblePush = { pushAssembler?.invoke(store, idScope) },
+                    createServer = { assembled ->
+                        KotgentServer.production(
+                            manager,
+                            store,
+                            TokenHolder(token),
+                            Tmux(socket = "kotgent-production-factory-test", tmuxPath = "/usr/bin/false"),
+                            ptyFactory = ptyFactory,
+                            webUiDir = null,
+                            publicUrl = publicUrl,
+                            pushStore = assembled?.store,
+                            vapidPublicKey = assembled?.publicKey,
+                            port = 0,
+                        )
+                    },
+                ).also { push = it.push }.server
+            } else {
+                KotgentServer(
+                    manager,
+                    store,
+                    TokenHolder(token),
+                    bridgeFactory,
+                    directoryCompleter = directoryCompleter,
+                    webUiDir = null,
+                    publicUrl = publicUrl,
+                    port = 0,
+                ).start()
+            }
             val client = HttpClient(CIO) { install(WebSockets) }
             try {
                 block(Ctx(server.port(), client, store, ptyFactory, tmux))
@@ -862,6 +943,7 @@ class TransportTest {
                 client.close()
                 server.stop()
                 idScope.cancel()
+                push?.close?.invoke()
             }
         }
     }

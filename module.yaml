@@ -41,6 +41,10 @@ dependencies:
   # plugin (2.3.2, built with Kotlin 2.3.10 — klib-compatible with our 2.4.10).
   - app.cash.sqldelight:native-driver:2.3.2
 
+test-dependencies:
+  # No-network verification of DarwinPushTransport's exact request method, headers, body, and status.
+  - io.ktor:ktor-client-mock
+
 settings:
   kotlin:
     version: 2.4.10

@@ -3,10 +3,13 @@ package io.kotgent.push
 import io.kotgent.cli.eprintln
 import io.kotgent.core.SessionId
 import io.kotgent.store.EventStore
-import io.kotgent.store.SessionUpdate
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 
@@ -18,15 +21,17 @@ import kotlinx.coroutines.launch
  * `false → true` edge detection) and [PushSender] (the wire format and the store pruning) — so all it owns
  * is the *plumbing*: subscribe, seed, and never let a failure escape.
  *
- * ## Why the seed lives inside `onSubscription`
+ * ## Startup is a barrier, not a fire-and-forget launch
  * [EventStore.sessionUpdates] is a hot `SharedFlow` with **`replay = 0`**: nothing emitted before this
- * collector subscribed is ever delivered. Taking the [EventStore.listSessions] baseline *before*
- * subscribing would open a window in which an update is both missing from the snapshot and already gone
- * from the flow — the session would then look like it had never been waiting, and its next level re-emit
- * (the `/events` resync writes one every few seconds) would read as a fresh edge and ring the phone about
- * something the operator answered ages ago. `onSubscription` runs *after* the subscription exists, so
- * anything emitted meanwhile is buffered and delivered right after the seed. This is verbatim the idiom
- * `EventsWs.streamGlobalUpdates` uses for the browser's snapshot, and for the same reason.
+ * collector subscribed is ever delivered. Conversely, taking the [EventStore.listSessions] baseline from
+ * inside `onSubscription` lets a write land in the shared-flow buffer *before* the snapshot read; that
+ * write is then already reflected by the snapshot and its genuine `false → true` edge is suppressed when
+ * the buffered level is collected.
+ *
+ * [start] closes both windows by being a suspending readiness barrier: it seeds first, subscribes second,
+ * and returns only once the subscription is installed. The daemon awaits it before binding the HTTP
+ * server, so no hook can write in the seed-to-subscribe interval and every hook accepted after the bind
+ * has a live collector waiting for it.
  *
  * Without any seed at all the failure is the daemon-restart one: the reconciler's startup writes about a
  * session that was ALREADY blocked before the restart would each look like a new approval.
@@ -43,9 +48,9 @@ import kotlinx.coroutines.launch
  *
  * @param store the source of both the baseline ([EventStore.listSessions]) and the live signal
  *   ([EventStore.sessionUpdates]).
- * @param send delivers the notification for one session — `PushSender::send` in production, wrapped so its
- *   accepted-count return value is discarded. A function seam rather than the [PushSender] type itself,
- *   matching how the rest of this package injects its edges (`VapidTokenCache(sign = signer::sign)`,
+ * @param send delivers the notification for one session — `PushSender::send` in production. A function
+ *   seam rather than the [PushSender] type itself, matching how the rest of this package injects its
+ *   edges (`VapidTokenCache(sign = signer::sign)`,
  *   `PushSender(vapidToken = cache::tokenFor)`): it keeps the wire format out of these tests, and it is the
  *   only way to exercise "a throwing sender does not stop the collector" — a real [PushSender] swallows
  *   everything by design.
@@ -61,27 +66,63 @@ class PushNotifier(
 ) {
 
     /**
-     * Launch the collector on [scope] and return its [Job] (the daemon cancels it by cancelling the scope).
+     * Launch the collector on [scope], await its seeded-and-subscribed readiness point, and return its
+     * [Job] (the daemon cancels it by cancelling the scope).
      *
      * Start this AFTER the daemon's startup reconciliation has finished writing: those writes are evaluated
-     * against the world as it was found, and the baseline this takes must already include them.
+     * against the world as it was found, and the baseline this takes must already include them. The server
+     * must be bound only AFTER this function returns: that ordering is what makes the seed-before-subscribe
+     * handoff lossless for hook updates.
      */
-    fun start(scope: CoroutineScope): Job = scope.launch { run() }
+    suspend fun start(scope: CoroutineScope): Job {
+        val subscribed = CompletableDeferred<Unit>()
+        val job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            run(onSubscribed = { subscribed.complete(Unit) })
+        }
+        job.invokeOnCompletion { cause ->
+            subscribed.completeExceptionally(
+                cause ?: IllegalStateException("the push notification watcher ended before subscribing"),
+            )
+        }
+        try {
+            subscribed.await()
+        } catch (e: Throwable) {
+            job.cancel()
+            throw e
+        }
+        return job
+    }
 
     /**
-     * Collect until the flow ends or the coroutine is cancelled. Public so a test can drive it directly on
-     * its own scope instead of guessing at [start]'s timing.
+     * Seed, then collect until the flow ends or the coroutine is cancelled.
+     *
+     * [onSubscribed] is the readiness edge used by [start]. A caller invoking this directly owes the same
+     * contract: no live producer may write between the baseline and subscription.
      */
-    suspend fun run() {
+    suspend fun run(onSubscribed: () -> Unit = {}) = coroutineScope {
+        seed()
+
+        // Edge detection must never wait for an endpoint. One delivery can spend 20 seconds per device;
+        // keeping those waits on a separate queue lets the shared-flow collector record every level
+        // transition promptly instead of overflowing the store's DROP_OLDEST buffer.
+        val deliveries = Channel<SessionId>(Channel.UNLIMITED)
+        launch {
+            for (sessionId in deliveries) deliver(sessionId)
+        }
+
         try {
             store.sessionUpdates
-                .onSubscription { seed() }
-                .collect { update -> deliver(update) }
+                .onSubscription { onSubscribed() }
+                .collect { update ->
+                    if (tracker.isNewAttention(update)) deliveries.send(update.sessionId)
+                }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             // The store's own signal broke. Push stops until the next daemon start; everything else lives on.
             onError("push: the notification watcher stopped, no further notifications will be sent: ${e.describe()}")
+        } finally {
+            deliveries.close()
         }
     }
 
@@ -98,15 +139,14 @@ class PushNotifier(
         tracker.seed(sessions)
     }
 
-    /** One update: notify only on the edge, and never let the notification's failure end the collection. */
-    private suspend fun deliver(update: SessionUpdate) {
-        if (!tracker.isNewAttention(update)) return
+    /** One queued edge: deliver it without ever letting a notification failure end the worker. */
+    private suspend fun deliver(sessionId: SessionId) {
         try {
-            send(update.sessionId)
+            send(sessionId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            onError("push: cannot notify about session ${update.sessionId.value}: ${e.describe()}")
+            onError("push: cannot notify about session ${sessionId.value}: ${e.describe()}")
         }
     }
 }

@@ -7,7 +7,7 @@
  */
 
 import { html } from "htm/preact";
-import { useCallback, useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { groupSessions } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
@@ -110,6 +110,9 @@ export function Sidebar({
   const [showDone, setShowDone] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
+  const notifyOnRef = useRef(notifyOn);
+  const pushTransitionRef = useRef(Promise.resolve());
+  const pushTransitionIdRef = useRef(0);
   useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
   const toggleGroup = useCallback((path) => {
     setCollapsedGroups((prev) => {
@@ -119,27 +122,36 @@ export function Sidebar({
     });
   }, []);
   // A subscription can vanish without this page being told (the browser drops it, site data is cleared),
-  // and a stale "push is on" belief would silence the in-tab notifications too — so reconcile once on load.
-  useEffect(() => { refreshPush(); }, []);
-  const toggleNotifications = async () => {
-    const next = !notifyOn;
+  // and a stale "push is on" belief would silence the in-tab notifications too. Put this reconciliation
+  // through the same queue as clicks so it cannot overwrite a newer subscribe/unsubscribe transition.
+  useEffect(() => {
+    const transition = ++pushTransitionIdRef.current;
+    pushTransitionRef.current = pushTransitionRef.current
+      .then(() => {
+        if (transition !== pushTransitionIdRef.current) return undefined;
+        return notifyOnRef.current ? refreshPush() : pushUnsubscribe();
+      })
+      .catch((e) => console.warn("kotgent: push subscription refresh failed", e));
+  }, []);
+  const toggleNotifications = () => {
+    const next = !notifyOnRef.current;
+    notifyOnRef.current = next;
     // Flip the stored preference first: the toggle is the per-device in-tab setting and must land whatever
     // the push handshake does. Push is the upgrade on top of it, not a precondition.
     setNotifyEnabled(next);
     setNotifyOn(next);
-    try {
-      if (next) {
-        // Everything below runs inside this click: iOS refuses the permission prompt outside a user
-        // gesture. subscribe() prompts first and returns false when this browser/daemon cannot do push at
-        // all — then we still prompt for the in-tab path, which notifyAttention guards on.
-        if (!(await pushSubscribe())) await ensurePermission();
-      } else {
-        await pushUnsubscribe();
-      }
-    } catch (e) {
+    // Claim the iOS permission prompt synchronously in THIS click, before queueing behind an older network
+    // transition. Awaiting the queue first would lose the user gesture and Safari would refuse to prompt.
+    const permission = next ? ensurePermission() : null;
+    const transition = ++pushTransitionIdRef.current;
+    pushTransitionRef.current = pushTransitionRef.current
+      .then(async () => {
+        if (transition !== pushTransitionIdRef.current) return;
+        if (next) await pushSubscribe(permission);
+        else await pushUnsubscribe();
+      })
       // A failed subscribe is a downgrade, not an error the operator must act on: the tab keeps notifying.
-      console.warn("kotgent: push subscription failed", e);
-    }
+      .catch((e) => console.warn("kotgent: push subscription transition failed", e));
   };
   // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
   // and every count — and only surfaced under an explicit "Show done" toggle.
