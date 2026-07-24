@@ -24,11 +24,13 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlin.concurrent.Volatile
 import platform.posix.F_OK
 import platform.posix.access
 
@@ -89,37 +91,55 @@ class KotgentServer(
     /** The terminal bridge registry, captured so [stop] can tear its bridges (and their ptys) down. */
     private var terminalRegistry: TerminalRegistry? = null
 
-    private val server: EmbeddedServer<*, *> = embeddedServer(CIO, port = port, host = host) {
-        // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
-        val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
-        val inputSink: TerminalInputSink = { id, bytes -> registry.getOrCreate(id.value).write(bytes) }
-        install(WebSockets)
-        routing {
-            // Hook ingress, one route per provider: same token, their own header check (Task 12).
-            claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
-            codexHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
-            // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
-            authRoutes(tokens, tickets, publicUrl, json)
-            // Token-gated control plane.
-            authenticated(tokens::current, publicUrl) {
-                controlRoutes(sessionManager, store, inputSink, currentVersion, json)
-                eventsWs(store, json)
-                terminalWs(registry, store, json)
-            }
-            // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
-            staticWebUi(webUiDir)
-        }
+    /**
+     * Ktor starts CIO in a root `launch`. On Kotlin/Native an expected bind failure is therefore also
+     * sent to the process-wide uncaught-exception handler, which aborts before [start] can wrap it.
+     * Suppress that duplicate delivery only while startup is in progress; [start] observes the same
+     * failure through Ktor's startup deferred and reports it as [ServerBindException]. Once startup
+     * succeeds, an unexpected engine failure keeps Ktor's existing fail-fast behavior.
+     */
+    @Volatile
+    private var startupInProgress: Boolean = true
+    private val engineExceptionHandler = CoroutineExceptionHandler { _, cause ->
+        if (!startupInProgress) throw cause
     }
+
+    private val server: EmbeddedServer<*, *> =
+        CoroutineScope(engineExceptionHandler).embeddedServer(CIO, port = port, host = host) {
+            // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
+            val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
+            val inputSink: TerminalInputSink = { id, bytes -> registry.getOrCreate(id.value).write(bytes) }
+            install(WebSockets)
+            routing {
+                // Hook ingress, one route per provider: same token, their own header check (Task 12).
+                claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                codexHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
+                authRoutes(tokens, tickets, publicUrl, json)
+                // Token-gated control plane.
+                authenticated(tokens::current, publicUrl) {
+                    controlRoutes(sessionManager, store, inputSink, currentVersion, json)
+                    eventsWs(store, json)
+                    terminalWs(registry, store, json)
+                }
+                // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
+                staticWebUi(webUiDir)
+            }
+        }.also {
+            // CIO defaults this to false. After serving a browser/WebSocket client, stopping the daemon
+            // can leave the old local endpoint in TCP teardown state on macOS; without SO_REUSEADDR an
+            // immediate restart then fails with EADDRINUSE even though no process owns the listener.
+            it.engineConfig.reuseAddress = true
+        }
 
     /**
      * Start the engine without serving on the caller's thread, returning once the listening socket is
      * actually bound.
      *
-     * Waiting for the bind is what makes a failure reportable: `start(wait = false)` binds on an engine
-     * coroutine, so an `EADDRINUSE` would otherwise surface asynchronously (or not at all) and the
-     * daemon would go on to print "listening on …" about a server that never came up. Resolving the
-     * connectors here rethrows that failure as [ServerBindException], which the CLI turns into a
-     * diagnosis (`Commands.daemon`).
+     * Binding happens on a CIO engine coroutine. On Native, `start(wait = false)` waits for that startup
+     * job, while [io.ktor.server.engine.ApplicationEngine.resolvedConnectors] is the explicit
+     * bound-socket contract needed for `port = 0`. Keeping both inside one startup boundary turns any
+     * bind failure into [ServerBindException], which the CLI turns into a diagnosis (`Commands.daemon`).
      *
      * With the socket bound, [markOpenFdsCloexec] flags it close-on-exec **before** any `tmux` can be
      * spawned, so it can never be inherited by a `tmux` server that outlives this daemon — the
@@ -127,19 +147,25 @@ class KotgentServer(
      * [io.kotgent.tmux.ProcessRunner] covers descriptors opened later.
      */
     fun start(): KotgentServer {
-        server.start(wait = false)
-        runBlocking {
-            try {
+        try {
+            server.start(wait = false)
+            runBlocking {
                 withTimeout(BIND_TIMEOUT_MS) { server.engine.resolvedConnectors() }
-            } catch (e: TimeoutCancellationException) {
-                throw ServerBindException("timed out after ${BIND_TIMEOUT_MS}ms waiting for the bind", e)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                throw ServerBindException(e.message ?: e::class.simpleName ?: "bind failed", e)
             }
+        } catch (e: TimeoutCancellationException) {
+            throw ServerBindException("timed out after ${BIND_TIMEOUT_MS}ms waiting for the bind", e)
+        } catch (e: CancellationException) {
+            // CIO reports a failed root server job as JobCancellationException and keeps the actual
+            // bind error as its cause. Preserve genuine caller cancellation, but unwrap this startup
+            // failure so the CLI receives the promised ServerBindException.
+            val cause = e.cause
+            if (cause == null || cause === e) throw e
+            throw ServerBindException(cause.message ?: cause::class.simpleName ?: "bind failed", cause)
+        } catch (e: Throwable) {
+            throw ServerBindException(e.message ?: e::class.simpleName ?: "bind failed", e)
         }
         markOpenFdsCloexec()
+        startupInProgress = false
         return this
     }
 
