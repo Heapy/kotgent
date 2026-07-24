@@ -204,6 +204,24 @@ trusts the inbound `Host` for the allowlist; if cloudflared ever rewrites it, sw
 `Secure` is derived from "Host matched the public host", **never** from `X-Forwarded-Proto` (a local client
 forges that and would set a `Secure` cookie on loopback).
 
+**Ktor's native `start()` HIJACKS SIGINT/SIGTERM — take them back, after it.** On Kotlin/Native
+`EmbeddedServer.start()` installs its shutdown hook as literal `signal(SIGINT, …)` / `signal(SIGTERM, …)`
+(`ShutdownHookNative.kt` in `ktor-server-core`; visible in our own linked binary as two bridge calls
+passing `2` and `15`), and its handler **only calls `EmbeddedServer.stop()` — it never exits**. So the
+kernel's default "terminate" disposition is gone the moment the server starts, and a Ctrl+C on a
+foreground `kotgent daemon` used to stop the HTTP engine and then leave the process parked forever in
+`awaitCancellation()`: no `LISTEN` descriptor, only CLOSED accepted sockets, SQLite and the tty still
+held, serving nothing — while a later daemon happily took the freed port. (Observed in the wild; `kill
+-HUP` was the only thing that still killed it, because SIGHUP is not one of the two Ktor grabs.)
+`Commands.daemon` therefore calls `installShutdownSignals()` (`src/sys/Signals.kt`) **after**
+`KotgentServer.start()` — `signal(2)` keeps the last handler, so the order IS the fix — and parks in a
+100ms poll of the flag instead of `awaitCancellation()`, then tears down in order (server → `bgScope` →
+driver). The handler only stores an int (nothing else is async-signal-safe — same idiom as
+`AttachClient`'s SIGWINCH flag) and restores `SIG_DFL` for the signal it took, so a second Ctrl+C hard-kills
+a wedged teardown. `SignalsTest` raises the real signals; `transport/ShutdownSignalsTest` guards the
+ordering by asserting the server still serves after a SIGINT. **Any future `start()` of a Ktor server in a
+long-lived process owes the same re-installation.**
+
 **Storage = SQLDelight via the custom plugin + `native-driver`.** Schema is `sqldelight/*.sq`; the
 `sqldelight-gen` plugin generates the typed API at build time; the runtime driver is
 `app.cash.sqldelight:native-driver`. `SqliteEventStore` is single-writer (a `Mutex`), WAL, and appends the
@@ -297,7 +315,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **431 run / 431 passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **438 run / 438 passed /
   0 skipped** (plus `ptycheck`'s 8 real-PTY checks, driven by `PtyTest` — keep its `EXPECTED_CHECKS`
   in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -323,7 +341,8 @@ src/core/                      host-free domain: AgentEvent, SessionState, Sessi
 src/crypto/                    Sha256, Hmac, Hex — pure-Kotlin (KT-78062: no CommonCrypto in the test binary)
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
-src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule)
+src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule),
+                               Signals (SIGINT/SIGTERM taken back from Ktor's shutdown hook)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes

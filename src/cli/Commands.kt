@@ -26,6 +26,9 @@ import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.DAEMON_LABEL
 import io.kotgent.launchd.LaunchdInstaller
 import io.kotgent.store.SqliteEventStore
+import io.kotgent.sys.installShutdownSignals
+import io.kotgent.sys.pendingShutdownSignal
+import io.kotgent.sys.shutdownSignalName
 import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.Tmux
 import io.kotgent.transport.KotgentServer
@@ -38,11 +41,11 @@ import io.kotgent.transport.readTokenOrNull
 import io.kotgent.transport.writePrivateFile
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 
@@ -232,10 +235,12 @@ object Commands {
 
     /**
      * `daemon [--port N]` — assemble and run the production [KotgentServer]. This is the launchd entry
-     * point (Task 16 will `ProgramArguments = [<binary>, daemon]`). It NEVER returns: after wiring the
-     * store / tmux / session manager and reconciling on start, it starts the server and parks forever.
+     * point (`ProgramArguments = [<binary>, daemon]`). After wiring the store / tmux / session manager and
+     * reconciling on start, it starts the server and parks until SIGINT or SIGTERM ([installShutdownSignals]
+     * — which must be called AFTER the server starts, because Ktor's native `start()` hijacks both
+     * signals), then tears everything down and returns 0.
      *
-     * ⚠️ Never invoke this from a test or a shell — the awaiting server blocks by design.
+     * ⚠️ Never invoke this from a test or a shell — it blocks for the daemon's whole lifetime by design.
      */
     @OptIn(ExperimentalForeignApi::class)
     fun daemon(port: Int): Int = runBlocking {
@@ -270,18 +275,18 @@ object Commands {
         }
         val token = tokenHolder.current()
 
-        // File-backed store (restart-safety = the whole point of the control plane).
-        val store = SqliteEventStore.using(
-            NativeSqliteDriver(
-                schema = KotgentDatabase.Schema,
-                name = DB_FILENAME,
-                onConfiguration = { config ->
-                    config.copy(
-                        extendedConfig = config.extendedConfig.copy(basePath = kotgentHome()),
-                    )
-                },
-            ),
+        // File-backed store (restart-safety = the whole point of the control plane). The driver is a local
+        // so the shutdown path can close it (WAL checkpoint) instead of relying on process death.
+        val driver = NativeSqliteDriver(
+            schema = KotgentDatabase.Schema,
+            name = DB_FILENAME,
+            onConfiguration = { config ->
+                config.copy(
+                    extendedConfig = config.extendedConfig.copy(basePath = kotgentHome()),
+                )
+            },
         )
+        val store = SqliteEventStore.using(driver)
         val tmux = Tmux(TMUX_SOCKET)
         tmux.ensureServer()
 
@@ -379,7 +384,7 @@ object Commands {
         manager.rebuildRegistryFromStore()
         Reconciler(tmux, store, vendorProbe, registry).reconcile()
 
-        try {
+        val server = try {
             KotgentServer.production(
                 manager,
                 store,
@@ -395,7 +400,28 @@ object Commands {
         }
         println("kotgent daemon listening on http://127.0.0.1:$port  (tmux -L $TMUX_SOCKET)")
         config.publicUrl?.let { println("  also reachable at $it  (Host + Origin allowlisted)") }
-        awaitCancellation()
+
+        // ORDER MATTERS: this must come AFTER the server started. Ktor's native `EmbeddedServer.start()`
+        // installs its own SIGINT/SIGTERM handlers that only stop the engine and never exit the process —
+        // so before this line Ctrl+C silently killed the HTTP server and left the daemon running as a
+        // useless husk. `signal(2)` keeps the last handler, so installing ours here takes them back; see
+        // [installShutdownSignals].
+        installShutdownSignals()
+        var signo = pendingShutdownSignal()
+        while (signo == 0) {
+            delay(SHUTDOWN_POLL_MILLIS)
+            signo = pendingShutdownSignal()
+        }
+
+        // Graceful teardown, in dependency order: stop accepting (and tear the terminal bridges down, so
+        // their `tmux attach` upstreams end instead of being orphaned), then stop the background jobs that
+        // can still write, then close the database so its WAL is checkpointed. The agents themselves live
+        // on inside tmux — that is the whole point of the design.
+        println("kotgent daemon: ${shutdownSignalName(signo)} — shutting down")
+        server.stop()
+        bgScope.cancel()
+        driver.close()
+        0
     }
 
     /**
@@ -429,6 +455,13 @@ object Commands {
 
     /** Delay between codex model-capture polls (10 × 3s ≈ 30s covers a promptly-started first turn). */
     private const val MODEL_CAPTURE_INTERVAL_MILLIS: Long = 3_000
+
+    /**
+     * How often the parked daemon checks the shutdown flag. A signal handler cannot resume a coroutine
+     * (nothing allocating is async-signal-safe), so the wait is a poll; 100ms is imperceptible to an
+     * operator pressing Ctrl+C and costs ten wakeups a second on an otherwise idle process.
+     */
+    private const val SHUTDOWN_POLL_MILLIS: Long = 100
 
     /**
      * The reconciler's vendor-store transcript probe (Task 18), dispatched per provider: for a dead
