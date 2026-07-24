@@ -721,6 +721,59 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
     }
 
+    // ---- 7. working-directory completion --------------------------------------------------------
+
+    @Test
+    fun directoryCompletionReturnsServerPathsAndRejectsARelativeInputWithoutBasePath() {
+        val requests = Channel<Pair<String?, String>>(capacity = 1)
+        val completer = DirectoryCompleter { basePath, input ->
+            requests.trySend(basePath to input)
+            listOf("/Users/me/dev/kotbot", "/Users/me/dev/kotgent")
+        }
+
+        withServer(directoryCompleter = completer) { ctx ->
+            val response = ctx.postBody(
+                "/directories/complete",
+                """{"basePath":"/Users/me/dev","input":"kot"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                CompleteDirectoryResponse(listOf("/Users/me/dev/kotbot", "/Users/me/dev/kotgent")),
+                TRANSPORT_JSON.decodeFromString(
+                    CompleteDirectoryResponse.serializer(),
+                    response.bodyAsText(),
+                ),
+            )
+            assertEquals("/Users/me/dev" to "kot", requests.receive())
+
+            val invalid = ctx.postBody("/directories/complete", """{"input":"relative"}""")
+            assertEquals(HttpStatusCode.BadRequest, invalid.status)
+            assertTrue(requests.tryReceive().isFailure, "an invalid request never reaches the filesystem completer")
+        }
+    }
+
+    @Test
+    fun directoryCompletionIsReachableThroughThePublicHost() {
+        val completer = DirectoryCompleter { _, _ -> listOf("/work/kotgent") }
+        withServer(publicUrl = publicUrl, directoryCompleter = completer) { ctx ->
+            val response = ctx.client.post("http://127.0.0.1:${ctx.port}/directories/complete") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                header(HttpHeaders.Host, publicHost)
+                header(HttpHeaders.Origin, publicUrl)
+                setBody("""{"basePath":"/work","input":"kot"}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                CompleteDirectoryResponse(listOf("/work/kotgent")),
+                TRANSPORT_JSON.decodeFromString(
+                    CompleteDirectoryResponse.serializer(),
+                    response.bodyAsText(),
+                ),
+            )
+        }
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** The wired-up server + client + fakes handed to each test body. */
@@ -779,6 +832,7 @@ class TransportTest {
         // The published origin the daemon is reachable at through the cloudflared tunnel; `null` (the
         // default) is the loopback-only daemon every other test drives.
         publicUrl: String? = null,
+        directoryCompleter: DirectoryCompleter = DirectoryCompleter { _, _ -> emptyList() },
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
         withTimeout(40_000) {
@@ -798,6 +852,7 @@ class TransportTest {
             }
             val server = KotgentServer(
                 manager, store, TokenHolder(token), bridgeFactory,
+                directoryCompleter = directoryCompleter,
                 webUiDir = null, publicUrl = publicUrl, port = 0,
             ).start()
             val client = HttpClient(CIO) { install(WebSockets) }

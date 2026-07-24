@@ -205,8 +205,17 @@ class WebUiServingTest {
             "copy tmux is omitted from the mobile terminal head",
         )
         assertTrue(
-            ctx.get("/components/dialogs.js").bodyAsText().contains("id=\"new-session-form\""),
-            "the UI includes the new-session form",
+            ctx.get("/components/dialogs.js").bodyAsText().let { dialogs ->
+                dialogs.contains("id=\"new-session-form\"") &&
+                    dialogs.contains("role=\"combobox\"") &&
+                    dialogs.contains("id=\"session-cwd-options\"") &&
+                    dialogs.contains("/directories/complete")
+            },
+            "the new-session form includes the working-directory autocomplete",
+        )
+        assertTrue(
+            ctx.get("/style.css").bodyAsText().contains(".path-suggestions"),
+            "the autocomplete dropdown is styled",
         )
     }
 

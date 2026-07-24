@@ -390,7 +390,8 @@ function App() {
       onTerminalClosed=${onTerminalClosed}
     />
     ${dialog && dialog.kind === "new" && html`
-      <${NewSessionDialog} initialCwd=${dialog.cwd} onStart=${startSession} onClose=${closeDialog} />`}
+      <${NewSessionDialog} initialCwd=${dialog.cwd} basePath=${prefs.basePath}
+                           onStart=${startSession} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "prefs" && html`
       <${PreferencesDialog} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}

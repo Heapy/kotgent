@@ -66,6 +66,7 @@ import platform.posix.access
  * @param terminalBridgeFactory builds the lazy [TerminalBridge] for a session id on a given scope; the
  *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
  *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
+ * @param directoryCompleter lists one directory level for the working-directory autocomplete.
  * @param currentVersion the running application's display version exposed by `GET /version`.
  * @param webUiDir directory served at `/` (the Task-17 SPA). `null` disables static serving (tests);
  *   the default serves whatever exists under `resources/webui` — nothing yet, i.e. `404`, until Task 17.
@@ -80,6 +81,7 @@ class KotgentServer(
     private val store: EventStore,
     private val tokens: TokenHolder,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
+    private val directoryCompleter: DirectoryCompleter = posixDirectoryCompleter,
     private val currentVersion: String = currentUiVersion(),
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
     private val publicUrl: String? = null,
@@ -127,6 +129,7 @@ class KotgentServer(
                 // Token-gated control plane.
                 authenticated(tokens::current, publicUrl) {
                     controlRoutes(sessionManager, store, inputSink, currentVersion, json)
+                    directoryCompletionRoutes(directoryCompleter, json)
                     eventsWs(store, json)
                     terminalWs(registry, store, json)
                 }

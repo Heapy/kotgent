@@ -38,9 +38,15 @@ function Dialog({ id, labelledBy, onClose, children }) {
 
 // --- New session -----------------------------------------------------------------------------------
 
-export function NewSessionDialog({ initialCwd, onStart, onClose }) {
+const DIRECTORY_COMPLETION_DELAY_MS = 150;
+
+export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
   const [agent, setAgent] = useState("claude");
   const [cwd, setCwd] = useState(initialCwd || "");
+  const [completionQuery, setCompletionQuery] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [cwdFocused, setCwdFocused] = useState(false);
   const [name, setName] = useState("");
   const [tags, setTags] = useState("");
   const [error, setError] = useState(null);
@@ -48,6 +54,73 @@ export function NewSessionDialog({ initialCwd, onStart, onClose }) {
   const cwdRef = useRef(null);
 
   useEffect(() => { if (cwdRef.current) cwdRef.current.focus(); }, []);
+
+  useEffect(() => {
+    if (completionQuery === null) return undefined;
+
+    const typed = completionQuery.trim();
+    const normalizedBase = normalizePath(basePath);
+    setSuggestions([]);
+    setActiveSuggestion(-1);
+    if (!typed || (typed.charAt(0) !== "/" && normalizedBase.charAt(0) !== "/")) return undefined;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      apiRequest("/directories/complete", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ basePath: normalizedBase || null, input: typed }),
+      })
+        .then((response) => {
+          if (controller.signal.aborted) return;
+          const paths = response && Array.isArray(response.paths)
+            ? response.paths.filter((path) => typeof path === "string")
+            : [];
+          setSuggestions(paths);
+        })
+        .catch((e) => {
+          if (!controller.signal.aborted && (!e || e.name !== "AbortError")) setSuggestions([]);
+        });
+    }, DIRECTORY_COMPLETION_DELAY_MS);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [completionQuery, basePath]);
+
+  const chooseSuggestion = (path) => {
+    setCwd(path);
+    setCompletionQuery(null); // selecting is not another typing event: keep the just-closed list closed
+    setSuggestions([]);
+    setActiveSuggestion(-1);
+    if (cwdRef.current) cwdRef.current.focus();
+  };
+
+  const cwdInput = (event) => {
+    const value = event.target.value;
+    setCwd(value);
+    setCompletionQuery(value);
+  };
+
+  const cwdKeyDown = (event) => {
+    if (!cwdFocused || suggestions.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveSuggestion((index) => (index + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveSuggestion((index) => (index <= 0 ? suggestions.length - 1 : index - 1));
+    } else if (event.key === "Enter" && activeSuggestion >= 0) {
+      event.preventDefault();
+      chooseSuggestion(suggestions[activeSuggestion]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setCompletionQuery(null);
+      setSuggestions([]);
+      setActiveSuggestion(-1);
+    }
+  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -86,12 +159,34 @@ export function NewSessionDialog({ initialCwd, onStart, onClose }) {
           </select>
         </label>
 
-        <label class="field">
-          <span>Working directory</span>
-          <input id="session-cwd" type="text" required spellcheck="false"
-                 placeholder="/path/to/project" ref=${cwdRef}
-                 value=${cwd} onInput=${(e) => setCwd(e.target.value)} />
-        </label>
+        <div class="field">
+          <label for="session-cwd">Working directory</label>
+          <div class="path-autocomplete">
+            <input id="session-cwd" type="text" required spellcheck="false" autocomplete="off"
+                   role="combobox" aria-autocomplete="list"
+                   aria-expanded=${cwdFocused && suggestions.length > 0 ? "true" : "false"}
+                   aria-controls="session-cwd-options"
+                   aria-activedescendant=${activeSuggestion >= 0
+                     ? "session-cwd-option-" + activeSuggestion
+                     : null}
+                   placeholder="/path/to/project" ref=${cwdRef}
+                   value=${cwd} onInput=${cwdInput} onKeyDown=${cwdKeyDown}
+                   onFocus=${() => setCwdFocused(true)} onBlur=${() => setCwdFocused(false)} />
+            ${cwdFocused && suggestions.length > 0 && html`
+              <ul id="session-cwd-options" class="path-suggestions" role="listbox">
+                ${suggestions.map((path, index) => html`
+                  <li id=${"session-cwd-option-" + index} key=${path} role="option"
+                      class=${"path-suggestion" + (index === activeSuggestion ? " active" : "")}
+                      aria-selected=${index === activeSuggestion ? "true" : "false"}
+                      title=${path}
+                      onMouseDown=${(event) => event.preventDefault()}
+                      onMouseEnter=${() => setActiveSuggestion(index)}
+                      onClick=${() => chooseSuggestion(path)}>${path}</li>
+                `)}
+              </ul>
+            `}
+          </div>
+        </div>
 
         <label class="field">
           <span>Name <small>optional</small></span>
