@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The project targets macosArm64 only and builds with the committed ./kotlin
+# wrapper (JetBrains Kotlin Toolchain, not Gradle), so CI runs on Apple-silicon
+# macOS runners. PtyTest execs the ptycheck binary, which drives real tmux over a
+# throwaway `-L kotgent-test` socket, so tmux must be present.
+jobs:
+  build-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux (real-PTY integration checks)
+        run: brew install tmux
+
+      - name: Cache the Kotlin toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.kotlin
+            .kotlin
+          key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'project.yaml', 'module.yaml') }}
+          restore-keys: kotlin-toolchain-${{ runner.os }}-
+
+      - name: Build
+        run: ./kotlin build
+
+      - name: Test
+        run: ./kotlin test

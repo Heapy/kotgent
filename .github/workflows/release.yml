@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# On a v* tag: build the optimized macosArm64 binary and publish it as a GitHub
+# Release asset. The tarball carries the `kotgent` binary next to `resources/webui`
+# so the daemon's webUiDir resolution (which walks up from the executable) finds
+# the SPA — the Homebrew formula unpacks this layout into libexec. arm64 only:
+# the module targets macosArm64, which is what Kotlin/Native links here.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the Kotlin toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.kotlin
+            .kotlin
+          key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'project.yaml', 'module.yaml') }}
+          restore-keys: kotlin-toolchain-${{ runner.os }}-
+
+      - name: Build release binary
+        run: ./kotlin build -v release -p macosArm64 -m kotgent
+
+      - name: Package
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          stage="kotgent-${version}-macos-arm64"
+          mkdir -p "$stage/resources"
+          cp build/tasks/_kotgent_linkMacosArm64Release/kotgent.kexe "$stage/kotgent"
+          chmod +x "$stage/kotgent"
+          cp -R resources/webui "$stage/resources/webui"
+          tar -czf "${stage}.tar.gz" "$stage"
+          shasum -a 256 "${stage}.tar.gz" | tee "${stage}.tar.gz.sha256"
+          echo "tarball=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.tarball }}.sha256
