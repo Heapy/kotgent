@@ -1,5 +1,8 @@
 # kotgent
 
+[![CI](https://github.com/Heapy/kotgent/actions/workflows/ci.yml/badge.svg)](https://github.com/Heapy/kotgent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **kotgent** is a local-first, restart-safe control plane for coding-agent sessions.
 
 Agent processes (Claude and Codex today) run inside `tmux`, independent of any user interface. The IDE terminal,
@@ -20,8 +23,22 @@ immortal:
 
 - **Close the IDE / reload the browser** — the agent keeps running in `tmux` (a client detached, the
   process did not die).
-- **Reboot the machine** — the process is gone, but the conversation is preserved by Claude on disk and
-  is restored with `resume`.
+- **Reboot the machine** — the process is gone, but the conversation is preserved on disk by the provider
+  itself (Claude's per-project transcripts, Codex's rollout files) and is restored with `resume`.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Requirements](#requirements)
+- [Build & test](#build--test)
+- [The CLI](#the-cli) — [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web),
+  [sign in from your phone](#sign-in-from-your-phone)
+- [Troubleshooting](#troubleshooting)
+- [The first vertical slice](#the-first-vertical-slice)
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Status & limitations](#status--limitations)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Quick start
 
@@ -32,9 +49,10 @@ brew install Heapy/tap/kotgent
 ```
 
 The formula installs kotgent itself, **not** the agents: `claude` and/or `codex` have to be on your
-`PATH` already (see [Requirements](#requirements)). Then, from a normal login shell — `kotgent install`
-snapshots that shell's `PATH` into the launchd plist, and the daemon would otherwise start with a minimal
-env and fail to find the agent binaries:
+`PATH` already (see [Requirements](#requirements)). Then run the rest **from a normal login shell** —
+`kotgent install` snapshots that shell's environment (`PATH`, so the daemon can find the agent binaries,
+and `LANG`, so the TUI renders as UTF-8) into the launchd plist, and launchd would otherwise start the
+daemon with a minimal env and no locale at all:
 
 ```shell
 kotgent install            # install + boot the daemon as a launchd agent (RunAtLoad + KeepAlive)
@@ -75,7 +93,8 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **414 run / 414 passed / 0 skipped**.
+The suite currently reports **431 run / 431 passed / 0 skipped**, plus the 8 real-PTY checks `ptycheck`
+runs (see below).
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
 binary, and `./kotlin test` on its own never links a main binary. If the binary is missing the test says
@@ -110,11 +129,11 @@ kotgent <command> [args]
   running daemon on. This is the process launchd runs on login.
 - **`install` / `uninstall`** write `~/Library/LaunchAgents/io.kotgent.daemon.plist`
   (`RunAtLoad` + `KeepAlive`, so the daemon comes up on login and is restarted if it dies) and
-  `launchctl bootstrap` / `bootout` it. `install` also **snapshots your shell's `PATH`** into the plist so
-  the launchd-run daemon — which otherwise gets a minimal env — and the agents it spawns can find
-  `claude`/`codex`; re-run it from a full shell if your `PATH` changes. An agent that can't be resolved on
-  the daemon's `PATH` fails fast with a clear error pointing at `kotgent install`, not a silent attach
-  failure.
+  `launchctl bootstrap` / `bootout` it. `install` also **snapshots your shell's `PATH` and `LANG`** into
+  the plist: launchd starts the daemon with a minimal env and *no* locale, so the snapshot is what lets the
+  daemon and the agents it spawns find `claude`/`codex` and render a UTF-8 TUI. Re-run it from a full shell
+  whenever either goes stale. An agent that can't be resolved on the daemon's `PATH` fails fast with a
+  clear error pointing at `kotgent install`, not a silent attach failure.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the agent in it, and records the session.
 - **`attach`** is **not** a direct `tmux attach`. It is a raw-terminal passthrough over the daemon's
   terminal WebSocket (tty put in raw mode via `termios`, stdin → WS, WS → stdout, `SIGWINCH` → resize,
@@ -132,7 +151,7 @@ The daemon binds `127.0.0.1` only. Two distinct keys guard it:
 - **A session cookie** — the *browser* key. A stateless `HttpOnly; SameSite=Strict; Path=/` cookie of the
   form `v1.<issuedAt>.<hmac>` where `hmac = HMAC-SHA256(master-token, "v1|" + issuedAt)`. There is **no
   session table** — the cookie verifies by recomputing the HMAC, so "sign out every device" is just
-  `kotgent token rotate` (every HMAC dies at once). It is never in a URL.
+  `kotgent token rotate` (every HMAC dies at once).
 
 `~/.kotgent` also holds the generated hook settings, the optional `config.json` (public URL), and the
 SQLite database.
@@ -180,6 +199,42 @@ handshake and checked for a match whenever it is present**, keeps a cookie from 
 (`SameSite` alone would not — sibling `*.example.com` hosts are the same site). Hook ingress, ticket
 issuance and token rotation are additionally **loopback-only**: only the browser surface is ever published
 outward.
+
+## Troubleshooting
+
+Most real-world breakage traces back to the daemon's launchd environment, which is minimal by design — so
+the first question is almost always "does the plist still match my shell?".
+
+- **`start` fails with `agent '…' not found on the daemon's PATH`.** The daemon's `PATH` is a
+  snapshot taken at `kotgent install`, not your live shell's. If `claude`/`codex` moved (a version manager,
+  a new Homebrew prefix, a fresh `nvm` install for codex's `env node` shebang), re-run `kotgent install`
+  from a full login shell. kotgent fails fast here on purpose: the error names the fix instead of leaving a
+  phantom `running` row.
+- **The TUI renders as a wall of underscores.** The tmux client decided it may not emit UTF-8, which
+  happens when the daemon runs without a UTF-8 `LANG` — again a stale plist. Re-run `kotgent install` from
+  a shell where `locale` reports a UTF-8 setting.
+- **After `brew upgrade kotgent` the daemon does not come back.** The plist records the binary's
+  version-qualified Cellar path, which the upgrade invalidates. Re-run `kotgent install`.
+- **The port is bound but nothing answers** (a rebind fails with `EADDRINUSE`, or a client connects and
+  then hangs). Current builds close every spawn path against descriptor inheritance, so this should only
+  come from a long-lived `tmux` server started by an *older* kotgent, which is still holding the listening
+  socket the daemon that spawned it left behind. `tmux -L kotgent kill-server` releases it — note that this
+  also stops every agent running under that server.
+- **Inspecting the daemon itself.** It is a normal LaunchAgent: `launchctl print gui/$UID/io.kotgent.daemon`
+  shows its state, and the plist at `~/Library/LaunchAgents/io.kotgent.daemon.plist` shows the exact `PATH`
+  and `LANG` that were snapshotted.
+
+### Uninstall
+
+```shell
+kotgent uninstall                  # bootout + remove the LaunchAgent plist
+tmux -L kotgent kill-server        # stop every agent still living in tmux
+rm -rf ~/.kotgent                  # token, config.json, hook settings, SQLite database
+brew uninstall kotgent             # if installed from the tap
+```
+
+`kotgent uninstall` only removes the launchd entry — the agents in `tmux` and the state under `~/.kotgent`
+outlive it by design, so drop them explicitly if you mean to.
 
 ## The first vertical slice
 
@@ -236,7 +291,7 @@ is and isn't here:
 - **Two keys, browser-friendly auth.** The daemon still binds `127.0.0.1` only, but browsers authenticate
   with a stateless, no-secret-in-URL session cookie (`kotgent web` mints a one-time ticket), and a phone
   can sign in through a **cloudflared** tunnel + Cloudflare Access. The CLI and hooks keep using the master
-  token; `kotgent token rotate` invalidates every cookie at once. No secret ever appears in a URL.
+  token; `kotgent token rotate` invalidates every cookie at once.
 - The full `start → Detach → browser → continue → needs-attention` path, session reconciliation on daemon
   restart (`running` / `stopped` / `crashed` / `resumable` classification), provider-id capture, and
   launchd install.
@@ -267,20 +322,45 @@ is and isn't here:
 
 **Why the real-PTY checks live in their own binary.** A Kotlin Toolchain issue
 ([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)) means **our own** raw-cinterop path cannot be
-called from a test binary at all: the toolchain registers the cinterop-klib task for the non-test fragment
-only, while the test link asks for a test-fragment cinterop artifact, so nothing matches and partial
-linkage turns every call into a stub that throws `IrLinkageError`. It is still the case on toolchain
-0.11.0, 0.11.1 and 0.12.0-dev, and nothing in the YAML can work around it (a relative `-library` path
-cannot resolve — the compiler runs with `workingDir = kotlinNativeHome` — and `module.yaml` has no
-variable interpolation).
+called from a test binary at all — partial linkage turns every such call into a stub that throws
+`IrLinkageError`, and nothing in the YAML works around it. Main binaries *do* link the cinterop, so the
+affected assertions live in the **`ptycheck`** module, whose `main()` runs all 8 for real:
 
-Main binaries *do* link the cinterop, so the affected assertions live in the **`ptycheck`** module, whose
-`main()` runs them for real: the `cat` round-trip, `resize`, the child exit code, a failing spawn, a real
-`tmux attach` acquiring a controlling terminal, and `TerminalBridge`'s fan-out over that attach. The suite
-runs them through `PtyTest`, which executes that binary and asserts it exits 0 — so these are real,
-non-skipped tests. Everything around the cinterop is still tested directly via interface fakes
-(`FakePtyHandle`, `FakeTty`).
+1. a `cat` round-trip through the pty,
+2. `resize` (`TIOCSWINSZ`) succeeds,
+3. the child's exit code is captured,
+4. spawning a nonexistent command throws,
+5. the spawned child inherits **only** its tty (the `POSIX_SPAWN_CLOEXEC_DEFAULT` guarantee — an
+   inherited listening socket would keep the port bound after the daemon dies),
+6. `tmux attach` runs on the spawned pts,
+7. a resize **reaches a running `tmux attach`** (the child gets no controlling terminal, so `Pty.resize`
+   must deliver `SIGWINCH` itself — see [CLAUDE.md](CLAUDE.md)),
+8. `TerminalBridge` fans out over that real attach.
 
-Third-party klibs that happen to contain cinterop (Ktor, the SQLite `native-driver`) and the stock
-`platform.posix` bindings are **not** affected — they link into test binaries normally — so the transport,
-store, and `tmux` layers are fully tested in CI.
+The suite runs them through `PtyTest`, which executes that binary and asserts it exits 0 — so these are
+real, non-skipped tests. Everything around the cinterop is still tested directly via interface fakes
+(`FakePtyHandle`, `FakeTty`). Third-party klibs that happen to contain cinterop (Ktor, the SQLite
+`native-driver`) and the stock `platform.posix` bindings are **not** affected — they link into test
+binaries normally — so the transport, store, and `tmux` layers are fully tested in CI. The full root-cause
+write-up is in [CLAUDE.md](CLAUDE.md).
+
+## Contributing
+
+Issues and pull requests are welcome. A few things worth knowing before you open one:
+
+- **The build is the JetBrains Kotlin Toolchain, not Gradle.** Use the committed `./kotlin` wrapper; there
+  is no `build.gradle`. Dependencies and module wiring live in `module.yaml` / `project.yaml`.
+- **Keep `./kotlin build` and `./kotlin test` green**, and run `build` before `test` (see
+  [Build & test](#build--test)). New tests are expected to come with the change; the suite has no skips and
+  should stay that way.
+- **Read [CLAUDE.md](CLAUDE.md) first** if you are touching the build, native code, or the event model. It
+  documents the invariants (host-free core, single-upstream `tmux` fan-out, the event-sourcing rules) and
+  the toolchain gotchas that are expensive to rediscover.
+- **The target is `macosArm64` only.** CI runs on Apple-silicon macOS runners with `tmux` installed.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this work
+shall be licensed as above, without any additional terms or conditions.
