@@ -48,6 +48,15 @@ class Tmux(
     val socket: String,
     /** Path to the tmux binary; resolved from common locations by default. */
     val tmuxPath: String = defaultTmuxPath(),
+    /**
+     * The options forced onto this socket's server, chained ahead of every [newSession].
+     *
+     * A constructor parameter rather than a direct read of [TMUX_SERVER_OPTIONS] purely so the
+     * degradation path is testable without a second tmux build: a test passes an option this tmux
+     * rejects and asserts a session is still created. Deliberately **not** on [TmuxControl] — no
+     * caller of the daemon-facing seam has any business choosing tmux options.
+     */
+    val serverOptions: List<TmuxOption> = TMUX_SERVER_OPTIONS,
 ) : TmuxControl {
     /** The tmux session name for a logical [id]. */
     override fun sessionName(id: String): String = "kt-$id"
@@ -103,9 +112,28 @@ class Tmux(
      * Create a detached session named `kt-<id>` running [cmd] in [cwd] at [cols]x[rows], and
      * return its pane id (`new-session -P -F '#{pane_id}'`). `KOTGENT_SESSION_ID=<id>` is set as
      * a **debug label only** via `-e` (env-poisoning is never trusted for identity).
+     *
+     * ## Why [serverOptions] ride in this one invocation
+     * A standalone `set-option` does **not** start a server (measured: `error connecting to …`,
+     * exit 1, nothing applied), so the options cannot be applied before `new-session` in a call of
+     * their own — and `default-terminal` is read when the pane is CREATED, so applying them after
+     * `new-session` would already be too late for the agent running in that pane. Chaining is not an
+     * optimisation, it is the only ordering that works. Re-applying on every session is intended: it
+     * is idempotent, and a server that came up some other way converges to kotgent's options.
+     *
+     * ## Degradation
+     * Every command in a tmux chain must succeed or the whole invocation fails, so a single option
+     * name or scope that a different tmux build rejects would take `new-session` down with it and no
+     * session could be created at all — a cosmetic option bricking the product on that host. Since
+     * tmux's built-in defaults are already safe for the Detach invariant (`destroy-unattached off`),
+     * degrading costs only ergonomics: on a failed chain this retries **once** with a bare
+     * `new-session` and then applies the options individually, ignoring failures, on the now-running
+     * server. `default-terminal` is lost for that pane on the degraded path (it was read at pane
+     * creation) — the accepted trade against not starting at all. The retry cannot collide with a
+     * half-created session: a rejected chain aborts before `new-session` runs, so nothing exists yet.
      */
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
-        val r = tmux(
+        val create = arrayOf(
             "new-session", "-d",
             "-s", sessionName(id),
             "-c", cwd,
@@ -115,10 +143,32 @@ class Tmux(
             "-P", "-F", "#{pane_id}",
             cmd,
         )
-        if (!r.isSuccess) throw TmuxException("tmux new-session for '$id' failed: ${r.stderr.trim()}")
+        val chained = tmux(*(tmuxOptionCommands(serverOptions).toTypedArray() + create))
+        val r = if (chained.isSuccess) {
+            chained
+        } else {
+            val bare = tmux(*create)
+            if (!bare.isSuccess) {
+                throw TmuxException(
+                    "tmux new-session for '$id' failed: ${bare.stderr.trim()} " +
+                        "(the option chain failed first: ${chained.stderr.trim()})",
+                )
+            }
+            applyServerOptionsBestEffort()
+            bare
+        }
         val paneId = r.stdout.trim()
         if (paneId.isEmpty()) throw TmuxException("tmux new-session for '$id' returned no pane id")
         return PaneId(paneId)
+    }
+
+    /**
+     * Set each of [serverOptions] on the already-running server, one call per option, swallowing
+     * every failure. Only reached on the degraded path, where the point is precisely that one
+     * rejected option must not cost the others (or the session).
+     */
+    private fun applyServerOptionsBestEffort() {
+        serverOptions.forEach { tmux("set-option", it.scope, it.name, it.value) }
     }
 
     /** List all panes across all sessions on this socket. A torn-down socket reads as empty. */

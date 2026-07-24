@@ -302,21 +302,27 @@ kotgent is the only thing that should touch that socket.
 - Modify: `src/tmux/Tmux.kt`
 - Modify: `test/tmux/TmuxTest.kt`
 
-- [ ] write test: after `newSession`, `show -g` reports every value from `TMUX_SERVER_OPTIONS`
+- [x] write test: after `newSession`, `show -g` reports every value from `TMUX_SERVER_OPTIONS`
       (`show -s` for `escape-time`), driven off the list rather than hardcoded
-- [ ] write test: `newSession` still returns a non-blank pane id (the chain must not disturb `-P -F` stdout)
-- [ ] write test: a **second** session on the same server succeeds and leaves the options intact
-- [ ] write test: the options are in effect **before the pane exists** — launch
+      (`newSessionForcesEveryServerOption`, read back via `show-options <scope>v <name>` — the option's
+      own scope flag works verbatim for both `-g` and `-s`, verified on the throwaway socket)
+- [x] write test: `newSession` still returns a non-blank pane id (the chain must not disturb `-P -F` stdout)
+- [x] write test: a **second** session on the same server succeeds and leaves the options intact
+- [x] write test: the options are in effect **before the pane exists** — launch
       `sh -c 'echo T=$TERM; cat'` and assert `capturePane` shows `T=tmux-256color` (this is the evidence
       for the whole "chain, don't set afterwards" design)
-- [ ] write test: with a deliberately bogus `serverOptions`, `newSession` still creates the session
-      (degradation path)
-- [ ] add the `serverOptions` constructor parameter (defaulting to `TMUX_SERVER_OPTIONS`) — not on the
+- [x] write test: with a deliberately bogus `serverOptions`, `newSession` still creates the session
+      (degradation path) — the bogus option is paired with a valid `history-limit 12345` so the test also
+      proves the best-effort second half lands on the now-running server
+- [x] add the `serverOptions` constructor parameter (defaulting to `TMUX_SERVER_OPTIONS`) — not on the
       `TmuxControl` interface
-- [ ] modify `newSession` to prepend `tmuxOptionCommands()` in one invocation, and on failure retry a bare
+- [x] modify `newSession` to prepend `tmuxOptionCommands()` in one invocation, and on failure retry a bare
       `new-session` then apply the options best-effort; KDoc must state that a standalone `set-option`
       cannot start a server (exit 1) and that `default-terminal` is read at pane creation
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 4
+      (re-measured: a rejected chain aborts **before** `new-session` runs and creates no session, so the
+      bare retry cannot collide with a half-created one — recorded in the KDoc)
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 4
+      (453 run / 453 passed / 0 skipped; `tmux -L kotgent-test kill-server` reports "no server running")
 
 ### Task 4: Isolate the attach upstream
 

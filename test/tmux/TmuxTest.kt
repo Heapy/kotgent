@@ -203,6 +203,134 @@ class TmuxTest {
         }
     }
 
+    /**
+     * The forced options are in effect on the server the moment the first session exists — because
+     * they ride in the SAME invocation as `new-session` (a standalone `set-option` cannot start a
+     * server at all: `error connecting to …`, exit 1).
+     *
+     * Driven off [TMUX_SERVER_OPTIONS] rather than a hardcoded copy, so adding an option to the list
+     * extends this assertion for free. Two of the six equal tmux's own built-in default today, so
+     * this test is only partly falsifiable by construction — [theForcedOptionsApplyBeforeThePaneExists]
+     * and the `mouse`/`status`/`history-limit`/`escape-time` rows carry the real signal.
+     */
+    @Test
+    fun newSessionForcesEveryServerOption() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking
+        withTimeout(20_000) {
+            tmux.newSession(id = "opt1", cwd = "/tmp", cmd = "cat", cols = 100, rows = 40)
+            assertEquals(
+                emptyList(),
+                mismatchedOptions(),
+                "every option of TMUX_SERVER_OPTIONS must read back from the live server",
+            )
+        }
+    }
+
+    /**
+     * Prefixing the option chain must not disturb `new-session -P -F '#{pane_id}'`: the pane id is
+     * still the ONLY thing on stdout (a `set-option` that printed would land in the same capture and
+     * be rejected by [PaneId]'s `%<n>` format check).
+     */
+    @Test
+    fun theOptionChainLeavesThePaneIdAloneOnStdout() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking
+        withTimeout(20_000) {
+            val pane = tmux.newSession(id = "opt2", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            assertTrue(pane.value.isNotBlank(), "the chained form must still print a pane id")
+            assertTrue(
+                Regex("^%\\d+$").matches(pane.value),
+                "stdout carries the pane id and nothing the option chain added, was <${pane.value}>",
+            )
+        }
+    }
+
+    /**
+     * Re-applying the chain on every [Tmux.newSession] is intended and idempotent: the second
+     * session lands on a server that already has the options, succeeds, and leaves them unchanged.
+     */
+    @Test
+    fun aSecondSessionSucceedsAndLeavesTheOptionsIntact() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking
+        withTimeout(20_000) {
+            tmux.newSession(id = "opt3a", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            tmux.newSession(id = "opt3b", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val sessions = tmux.listPanes().map { it.session }
+            assertTrue("kt-opt3a" in sessions && "kt-opt3b" in sessions, "both sessions exist, was $sessions")
+            assertEquals(emptyList(), mismatchedOptions(), "the re-applied chain converges, it does not drift")
+        }
+    }
+
+    /**
+     * The evidence for the whole "chain, don't set afterwards" design: `default-terminal` is read
+     * when a pane is CREATED, so the pane's `$TERM` proves the option was already in effect before
+     * the agent process existed. Setting it after `new-session` would be too late for exactly this.
+     */
+    @Test
+    fun theForcedOptionsApplyBeforeThePaneExists() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking
+        withTimeout(20_000) {
+            // `cat` keeps the pane alive after the echo so capture-pane still has something to read.
+            tmux.newSession(id = "term1", cwd = "/tmp", cmd = "sh -c 'echo T=\$TERM; cat'", cols = 80, rows = 24)
+            val out = captureUntil("term1", "T=")
+            assertTrue(
+                "T=tmux-256color" in out,
+                "the pane's TERM comes from the forced default-terminal, captured:\n<$out>",
+            )
+        }
+    }
+
+    /**
+     * Degradation: every command in a tmux chain must succeed or the WHOLE invocation fails, so one
+     * option name a different tmux build rejects would take `new-session` down with it and no session
+     * could be created at all. [Tmux] therefore retries once, bare, then applies the options
+     * best-effort on the now-running server.
+     *
+     * The bogus option stands in for that foreign tmux build (measured: `invalid option: …`, exit 1,
+     * and — load-bearing for the retry — **no session is created**, so the bare retry cannot collide
+     * with a half-created one). The valid option alongside it proves the best-effort second half
+     * still lands.
+     */
+    @Test
+    fun aRejectedOptionChainDegradesToABareNewSession() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking
+        withTimeout(20_000) {
+            val survivor = TmuxOption("-g", "history-limit", "12345")
+            val degraded = Tmux(
+                socket = "kotgent-test",
+                serverOptions = listOf(TmuxOption("-g", "kotgent-no-such-option", "on"), survivor),
+            )
+            val pane = degraded.newSession(id = "deg1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            assertTrue(
+                Regex("^%\\d+$").matches(pane.value),
+                "a rejected option must not cost the session, was <${pane.value}>",
+            )
+            assertTrue(degraded.listPanes().any { it.session == "kt-deg1" }, "the degraded session really exists")
+            assertEquals(
+                emptyList(),
+                mismatchedOptions(listOf(survivor)),
+                "the options that tmux does accept are still applied, best-effort, after the retry",
+            )
+        }
+    }
+
+    /**
+     * Read every option in [options] back off the live throwaway server (`show-options <scope>v
+     * <name>`, the same scope flag the option is set with) and report the ones that do not match.
+     * Returns an empty list when all agree, so a failure message names the culprits.
+     */
+    private fun mismatchedOptions(options: List<TmuxOption> = TMUX_SERVER_OPTIONS): List<String> =
+        options.mapNotNull { opt ->
+            val r = ProcessRunner.run(
+                tmuxCommand(tmux.tmuxPath, "kotgent-test", listOf("show-options", "${opt.scope}v", opt.name)),
+            )
+            val actual = r.stdout.trim()
+            if (r.isSuccess && actual == opt.value) {
+                null
+            } else {
+                "${opt.scope} ${opt.name} is <$actual> want <${opt.value}> ${r.stderr.trim()}".trim()
+            }
+        }
+
     // --- isolation-probe harness (throwaway $TMPDIR fake $HOME; NEVER the operator's real one) -------
 
     /**
