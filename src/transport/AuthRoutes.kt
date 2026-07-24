@@ -96,6 +96,11 @@ data class RotateResponse(val token: String)
  * @param publicUrl the configured public origin, or `null` for loopback-only. Decides the `publicUrl` in a
  *   ticket response, the `Origin` allowlist on the exchange, and whether the cookie is `Secure`.
  * @param now epoch millis, stamped into the issued cookie (injected so tests are deterministic).
+ * @param exchangeLimit the guessing budget on `/auth/exchange`. A PARAMETER with a default, not something
+ *   the handler makes: the default is evaluated once, here, when the routes are mounted, so the whole
+ *   daemon shares one counter. Constructing it per call would reset it on every request — a limiter that
+ *   silently does nothing, which is the one failure mode a unit test of [ExchangeRateLimit] cannot see.
+ *   It is what pays for the login code carrying 40 bits instead of 256 (see [TicketStore]).
  */
 fun Route.authRoutes(
     tokens: TokenHolder,
@@ -103,6 +108,7 @@ fun Route.authRoutes(
     publicUrl: String? = null,
     json: Json = TRANSPORT_JSON,
     now: () -> Long = ::authEpochMillis,
+    exchangeLimit: ExchangeRateLimit = ExchangeRateLimit(),
 ) {
     // Ticket issuance and rotation: an authenticated credential AND a loopback Host. Nesting the two gates
     // is the whole statement — the tunnel publishes the browser surface, never the surface that mints
@@ -212,9 +218,19 @@ fun Route.authRoutes(
             call.respondText(refusalBody(decision.status), status = decision.status)
             return@post
         }
+        // The guessing budget, checked BEFORE the body is even read: over the limit, no candidate code is
+        // looked at at all, so a saturated limiter cannot be used as an oracle either. The refusal is
+        // deliberately a 429 and not the 400 a wrong code gets — "you are being throttled" is not a secret,
+        // and the Task-15 code form has to be able to tell the operator to wait rather than to retype.
+        if (!exchangeLimit.allow()) {
+            call.respondText("too many failed sign-in attempts", status = HttpStatusCode.TooManyRequests)
+            return@post
+        }
         val presented = try {
             json.decodeFromString(ExchangeRequest.serializer(), call.receiveText()).ticket.trim()
         } catch (_: SerializationException) {
+            // Not charged to the budget: a body that does not parse never names a code, so it is not a
+            // guess — only a real redemption attempt spends from the window.
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
@@ -225,6 +241,9 @@ fun Route.authRoutes(
         // is dead the instant it is set — rotation revokes it with zero cross-lock timing dependency.
         val boundToken = if (presented.isEmpty()) null else tickets.redeem(presented)
         if (boundToken == null) {
+            // The one thing that spends from the window: an attempt that named a code and got it wrong.
+            // A SUCCESS charges nothing, so signing a stack of devices in never walks into the limit.
+            exchangeLimit.recordFailure()
             call.respondText("invalid or expired ticket", status = HttpStatusCode.BadRequest)
             return@post
         }

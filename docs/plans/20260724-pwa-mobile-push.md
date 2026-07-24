@@ -641,20 +641,43 @@ pin an old UI for a day).
 - Create: `src/transport/ExchangeRateLimit.kt`
 - Modify: `src/transport/AuthRoutes.kt`
 - Create: `test/transport/ExchangeRateLimitTest.kt`
+- ➕ Modify: `test/transport/AuthRoutesTest.kt` (the route-level wiring tests — a unit test of the limiter
+  class cannot see a per-call instance, which is the whole failure mode this task exists to avoid)
 
-- [ ] add `ExchangeRateLimit(now: () -> Long, max = 10, windowMillis = 60_000)` counting **failed** exchanges
+- [x] add `ExchangeRateLimit(now: () -> Long, max = 10, windowMillis = 60_000)` counting **failed** exchanges
       globally, guarded by a `Mutex` like `TicketStore` (route handlers run concurrently; a plain field would
       be a data race). Per-IP is not an option: every tunnelled request arrives from loopback
-- [ ] thread one instance through `authRoutes(...)` as a parameter with a default, so it is constructed once
+      ➕ the API is `allow()` (a question — consumes nothing) + `recordFailure()` (the only withdrawal) +
+      `failuresInWindow()` for tests/diagnostics, over an `ArrayDeque<Long>` of failure instants pruned from
+      the head. The window is ROLLING, not a bucket that resets wholesale (a fixed bucket would let `2 * max`
+      guesses land across its boundary), and half-open like `TicketStore`'s expiry — a failure sampled exactly
+      `windowMillis` later has already aged out. `init` refuses a non-positive `max`/`window` (a zero budget
+      would refuse every sign-in; a zero window would make the limiter a no-op). Named constants
+      `EXCHANGE_FAILURE_LIMIT` / `EXCHANGE_WINDOW_MILLIS` sit next to the class
+- [x] thread one instance through `authRoutes(...)` as a parameter with a default, so it is constructed once
       per daemon and injectable (with its clock) in tests — a per-call instance would be a silent no-op
-- [ ] apply it in `POST /auth/exchange`: over the limit → `429` before the code is looked at; a successful
+      ➕ appended after `now`, so every existing call site (`Server.kt`, both test harnesses) is source-
+      compatible and the daemon picks the limiter up with no `Server.kt` change at all
+- [x] apply it in `POST /auth/exchange`: over the limit → `429` before the code is looked at; a successful
       exchange consumes no budget
-- [ ] record the accepted trade-off in the KDoc: an attacker who can reach `/auth/exchange` can deny sign-in
+      ➕ the check sits AFTER the `Host`/`Origin` decision and BEFORE the body is read, so a saturated limiter
+      is not an oracle either; only a failed *redemption* charges the budget — an unparseable body never names
+      a candidate code, so counting it would just be a cheaper way to deny sign-in
+- [x] record the accepted trade-off in the KDoc: an attacker who can reach `/auth/exchange` can deny sign-in
       in rolling 60-second windows; Cloudflare Access fronts the public surface, and the alternative
       (unbounded guessing against 40 bits) is worse
-- [ ] write tests: the 11th failure in a window is refused; the window slides; successes never trip it; a
+      ➕ the KDoc also spells out why per-IP is not merely unimplemented but impossible here (cloudflared
+      connects from loopback, so every phone on earth shares one address — the same reason `loopbackOnly` is a
+      `Host` check), and that the denial self-heals one window after the attacker stops
+- [x] write tests: the 11th failure in a window is refused; the window slides; successes never trip it; a
       valid code still redeems while the limiter is warm but under the cap
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 15
+      ➕ 12 unit tests plus 4 through the REAL route in `AuthRoutesTest` — the wiring is where the silent
+      no-op would live, so the "one limiter per daemon" claim is pinned by failures accumulating ACROSS
+      requests, driven through the route's OWN default (the harness only injects a limiter when a test needs
+      to move its clock). Also pinned end to end: a throttled request plants no cookie AND does not burn the
+      valid ticket it carried (the refusal precedes the lookup), so the denial costs no credential
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 15
+      ➕ 16 new tests: **579 run / 579 passed / 0 skipped** (branch baseline 563, not the 428 this plan quotes)
 
 ### Task 15: Code entry on /auth, unauthenticated routing, and showing the code
 

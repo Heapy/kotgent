@@ -46,6 +46,13 @@ class AuthRoutesTest {
     private val publicUrl = "https://kotgent.example.com"
     private val fixedNow = 1_753_280_000_000L
 
+    /**
+     * A code that CANNOT have been minted: `U` is outside [TICKET_CODE_ALPHABET] and, unlike `I`/`L`/`O`,
+     * has no Crockford substitution, so [normalizeTicketCode] leaves it alone and the lookup always misses.
+     * Using a random-looking value instead would be a 1-in-2^40 flake.
+     */
+    private val wrongCode = "U".repeat(TICKET_CODE_LENGTH)
+
     // --- ticket issuance --------------------------------------------------------------------------
 
     @Test
@@ -252,6 +259,88 @@ class AuthRoutesTest {
         assertEquals(HttpStatusCode.Forbidden, resp.status, "a host we do not serve cannot exchange a ticket")
     }
 
+    // --- the guessing budget ----------------------------------------------------------------------
+
+    @Test
+    fun failedExchangesAreCountedAcrossRequestsAndRefusedWith429() = withAuthServer { env ->
+        // The control that pays for a 40-bit login code. Driven through the REAL route with the route's own
+        // default limiter, because the failure this guards against is a WIRING one: a limiter constructed
+        // per call would count to one and start over, so every request would pass and no unit test of
+        // [ExchangeRateLimit] would ever notice. Ten wrong codes are answered 400; the eleventh is 429.
+        repeat(EXCHANGE_FAILURE_LIMIT) {
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                env.exchange(env.port, wrongCode).status,
+                "guess ${it + 1} is a plain wrong code",
+            )
+        }
+        assertEquals(
+            HttpStatusCode.TooManyRequests,
+            env.exchange(env.port, wrongCode).status,
+            "the failures accumulated ACROSS requests — one limiter per daemon, not per call",
+        )
+    }
+
+    @Test
+    fun aValidCodeStillRedeemsWhileTheLimiterIsWarmAndTheSuccessSpendsNothing() = withAuthServer { env ->
+        val ticket = env.issueTicket()
+        repeat(EXCHANGE_FAILURE_LIMIT - 1) {
+            assertEquals(HttpStatusCode.BadRequest, env.exchange(env.port, wrongCode).status)
+        }
+
+        assertEquals(
+            HttpStatusCode.OK,
+            env.exchange(env.port, ticket).status,
+            "an operator whose earlier attempts were mistypes still gets in under the cap",
+        )
+
+        // And that success charged nothing: there is still exactly one guess of budget left.
+        assertEquals(HttpStatusCode.BadRequest, env.exchange(env.port, wrongCode).status, "the tenth failure")
+        assertEquals(HttpStatusCode.TooManyRequests, env.exchange(env.port, wrongCode).status, "the eleventh")
+    }
+
+    @Test
+    fun aSaturatedLimiterRefusesBeforeTheCodeIsLookedAtSoAValidTicketSurvives() {
+        // The refusal happens ahead of the redemption, which has two consequences worth pinning: a throttled
+        // request plants no cookie, and — because the code was never looked at — a legitimate ticket caught
+        // by someone else's guessing burst is NOT consumed. It still redeems once the window rolls forward.
+        var limiterClock = fixedNow
+        val limit = ExchangeRateLimit(now = { limiterClock })
+        withAuthServer(exchangeLimit = limit) { env ->
+            val ticket = env.issueTicket()
+            repeat(EXCHANGE_FAILURE_LIMIT) { env.exchange(env.port, wrongCode) }
+
+            val throttled = env.exchange(env.port, ticket)
+            assertEquals(HttpStatusCode.TooManyRequests, throttled.status, "a valid code is throttled too")
+            assertNull(throttled.headers[HttpHeaders.SetCookie], "and no session cookie is planted")
+
+            limiterClock = fixedNow + EXCHANGE_WINDOW_MILLIS
+            assertEquals(
+                HttpStatusCode.OK,
+                env.exchange(env.port, ticket).status,
+                "the ticket was never spent — the denial is temporary, not a lost credential",
+            )
+        }
+    }
+
+    @Test
+    fun anUnparseableBodyIsRefusedWithoutSpendingBudget() = withAuthServer { env ->
+        // A body that does not parse never names a candidate code, so it is not a guess. Spending budget on
+        // it would hand an attacker a cheaper way to deny sign-in than actually guessing.
+        repeat(EXCHANGE_FAILURE_LIMIT * 2) {
+            val resp = env.client.req(
+                env.port, AUTH_EXCHANGE_PATH, HttpMethod.Post,
+                origin = "http://127.0.0.1:${env.port}", jsonBody = "not json at all",
+            )
+            assertEquals(HttpStatusCode.BadRequest, resp.status, "an unparseable body is a 400")
+        }
+        assertEquals(
+            HttpStatusCode.OK,
+            env.exchange(env.port, env.issueTicket()).status,
+            "and the budget is untouched — a real code still exchanges",
+        )
+    }
+
     // --- the cookie composes with the real gate ---------------------------------------------------
 
     @Test
@@ -414,13 +503,25 @@ class AuthRoutesTest {
         )
     }
 
-    private fun withAuthServer(publicUrl: String? = null, block: suspend (Env) -> Unit) = runBlocking {
+    private fun withAuthServer(
+        publicUrl: String? = null,
+        exchangeLimit: ExchangeRateLimit? = null,
+        block: suspend (Env) -> Unit,
+    ) = runBlocking {
         withTimeout(30_000) {
             val tokens = TokenHolder(token)
             val tickets = TicketStore(now = { fixedNow })
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing {
-                    authRoutes(tokens, tickets, publicUrl, TRANSPORT_JSON, now = { fixedNow })
+                    // Two mount shapes on purpose. Without an injected limiter the route's OWN default is
+                    // used — which is what pins that the default is evaluated once, HERE at mount time, and
+                    // not once per request (a per-call instance would count to one and start over: a
+                    // limiter that silently does nothing).
+                    if (exchangeLimit != null) {
+                        authRoutes(tokens, tickets, publicUrl, TRANSPORT_JSON, { fixedNow }, exchangeLimit)
+                    } else {
+                        authRoutes(tokens, tickets, publicUrl, TRANSPORT_JSON, now = { fixedNow })
+                    }
                     // The one gated route standing in for the whole control plane, so the login cookie can be
                     // shown to reach it (and to stop reaching it after a rotation).
                     authenticated(tokens::current, publicUrl) {
