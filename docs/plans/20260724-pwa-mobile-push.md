@@ -602,20 +602,38 @@ pin an old UI for a day).
 - Modify: `resources/webui/components/dialogs.js`
 - Modify: `test/transport/TicketsTest.kt`
 
-- [ ] replace the hex ticket value with 8 characters of Crockford base32 (alphabet without `I`,`L`,`O`,`U`)
+- [x] replace the hex ticket value with 8 characters of Crockford base32 (alphabet without `I`,`L`,`O`,`U`)
       encoded from `randomBytes(5)` — 40 bits mapping onto exactly 8 symbols, no padding and no modulo bias
-- [ ] add `normalizeTicketCode(raw)`: trim, strip spaces/dashes, upper-case, map `I`/`i`/`L`/`l` → `1` and
+      ➕ the encoding is the pure, public `crockfordBase32(bytes)` (unit-testable without a store) next to
+      the named `TICKET_CODE_ALPHABET` / `TICKET_CODE_BYTES` / `TICKET_CODE_LENGTH`; it `require`s exactly 5
+      bytes rather than silently truncating or short-coding a wrong-sized input
+- [x] add `normalizeTicketCode(raw)`: trim, strip spaces/dashes, upper-case, map `I`/`i`/`L`/`l` → `1` and
       `O`/`o` → `0` (both Crockford substitutions, not just `I`); `redeem` normalises before lookup
-- [ ] cut `TICKET_TTL_MILLIS` to 5 minutes and rewrite the KDoc that the format change invalidates: the
+      ➕ strips ANY whitespace (a pasted code carries `\t`/`\n` as readily as a space), not only `' '`, and
+      deliberately does NOT map `U` — it is excluded from the alphabet but has no Crockford substitution, so
+      inventing one would let a typo redeem a different code
+- [x] cut `TICKET_TTL_MILLIS` to 5 minutes and rewrite the KDoc that the format change invalidates: the
       "lives ten minutes" prose, and the `redeem` rationale that justifies a plain map lookup by "256 bits of
       entropy" — at 40 bits the compensating control is the global rate limit (task 14), single use and the
       5-minute TTL
-- [ ] update the user-facing copy in `dialogs.js` (`phoneBody`: "expires in 10 minutes") to 5 minutes
-- [ ] write tests: issued codes are 8 chars from the alphabet only; lower-case, spaced, `L`-for-`1`,
+      ➕ the `redeem` KDoc now says outright that the old argument DIED with the hex format, and rests the
+      plain lookup on the narrower true claim (a hash bucket is not a prefix, so there is no per-character
+      hill to climb) with the rate limit named as what actually protects 40 bits. `SECRET_BYTES`' KDoc in
+      `Auth.kt` also claimed to cover "token, ticket" and no longer does
+- [x] update the user-facing copy in `dialogs.js` (`phoneBody`: "expires in 10 minutes") to 5 minutes
+- [x] write tests: issued codes are 8 chars from the alphabet only; lower-case, spaced, `L`-for-`1`,
       `I`-for-`1` and `O`-for-`0` input all redeem the same ticket; a code cannot be redeemed twice
-- [ ] write tests: expiry at exactly 5 minutes; an unknown code returns null; update the "same strength as
+      ➕ the digit-substitution test mints until it gets a code that actually CONTAINS both `1` and `0`, so
+      the substitution is exercised rather than passing vacuously on a code that has neither
+- [x] write tests: expiry at exactly 5 minutes; an unknown code returns null; update the "same strength as
       the master token" assertion/comment in `TicketsTest`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 14
+      ➕ also pinned: the alphabet has 32 unique symbols and none of `I`/`L`/`O`/`U`; the encoding matches an
+      independent encoder (`python3`, same alphabet applied by hand) on seven vectors including both ends and
+      an MSB-first check; it is injective over all 256 values of a byte; and `AuthRoutesTest` asserts the code
+      shape it used to assert as 64 hex chars, plus a new end-to-end "typed the way a human types it"
+      exchange through the real route (the route's own `trim`/empty guard sits between the wire and `redeem`)
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 14
+      ➕ 11 new tests: **563 run / 563 passed / 0 skipped** (branch baseline 552)
 
 ### Task 14: Global rate limit on ticket exchange
 

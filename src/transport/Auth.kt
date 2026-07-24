@@ -399,7 +399,11 @@ private fun stagePrivateTemp(path: String, bytes: ByteArray, publish: (String) -
 fun readTokenOrNull(path: String = defaultTokenPath()): String? =
     readFileTextOrNull(path)?.trim()?.ifEmpty { null }
 
-/** How many bytes of entropy every secret this daemon mints carries (token, ticket): 256 bits. */
+/**
+ * How many bytes of entropy the master token carries: 256 bits. The one-shot login codes are deliberately
+ * NOT this long — they have to be typed on a phone, so they carry [TICKET_CODE_BYTES] and pay for the
+ * difference with single use, a five-minute TTL and a rate limit (see [TicketStore]).
+ */
 const val SECRET_BYTES: Int = 32
 
 /**

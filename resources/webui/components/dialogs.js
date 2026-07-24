@@ -364,7 +364,7 @@ function phoneBody(state, issue, onClose) {
     <div id="phone-qr" class="phone-qr" dangerouslySetInnerHTML=${{ __html: qrSvg(ticket.publicUrl) }}></div>
     <p class="phone-url"><code>${ticket.publicUrl}</code></p>
     <p class="phone-warn" role="note">
-      One-time link · expires in 10 minutes · full terminal access. Whoever opens it first is signed in,
+      One-time link · expires in 5 minutes · full terminal access. Whoever opens it first is signed in,
       so refresh it if you did not just scan it yourself.
     </p>
     <div class="dialog-actions">

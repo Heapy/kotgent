@@ -58,7 +58,10 @@ class AuthRoutesTest {
         val ok = env.client.req(env.port, AUTH_TICKET_PATH, HttpMethod.Post, bearer = token)
         assertEquals(HttpStatusCode.OK, ok.status, "a loopback Bearer mints one")
         val body = TRANSPORT_JSON.decodeFromString(TicketResponse.serializer(), ok.bodyAsText())
-        assertTrue(body.ticket.length == 64, "the ticket is 32 bytes of entropy, hex-encoded")
+        assertTrue(
+            body.ticket.length == TICKET_CODE_LENGTH && body.ticket.all { it in TICKET_CODE_ALPHABET },
+            "the ticket is a typable Crockford base32 code: ${body.ticket}",
+        )
         assertTrue(
             body.localUrl == "http://127.0.0.1:${env.port}$AUTH_PAGE_PATH#ticket=${body.ticket}",
             "the local URL carries the ticket in its fragment on the port it arrived on",
@@ -179,6 +182,16 @@ class AuthRoutesTest {
         val ticket = env.issueTicket()
         assertEquals(HttpStatusCode.OK, env.exchange(env.port, ticket).status, "spent once")
         assertEquals(HttpStatusCode.BadRequest, env.exchange(env.port, ticket).status, "and not twice")
+    }
+
+    @Test
+    fun aCodeTypedTheWayAHumanTypesItExchanges() = withAuthServer { env ->
+        // The route trims and then hands the raw string to [TicketStore.redeem], which normalises. Asserted
+        // through the real route rather than only at the store, because the trim/empty guard in between is
+        // exactly the kind of thing that could swallow a grouped, lower-cased code before it ever gets there.
+        val ticket = env.issueTicket()
+        val typed = " " + ticket.take(4).lowercase() + "-" + ticket.drop(4).lowercase() + " "
+        assertEquals(HttpStatusCode.OK, env.exchange(env.port, typed).status, "as typed: '$typed'")
     }
 
     @Test

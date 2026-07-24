@@ -12,15 +12,21 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * [TicketStore] — the one-shot login tickets (plan Task 6).
+ * [TicketStore] — the one-shot login tickets (plan Task 6, reshaped into a typable code in Task 13).
  *
  * The two properties the login flow leans on are pinned here directly: a ticket is redeemable EXACTLY once
  * (a fragment left in a phone's history, a QR someone photographed off a screen, a double-tapped link — all
  * of them are replays), and it stops being redeemable when its TTL runs out. Everything else the store does
  * is bookkeeping in service of those two.
  *
+ * A third property joined them with the short code: what the operator TYPES has to reach the value that was
+ * MINTED. A code read off a screen arrives lower-cased, split by spaces or dashes, and with the letters
+ * Crockford deliberately left out substituted back in (`I`/`l` for `1`, `O` for `0`) — every one of those
+ * shapes is asserted to redeem, because a code that only works when transcribed perfectly is a code that
+ * does not work on a phone.
+ *
  * Time is injected, so expiry is asserted by moving a variable rather than by sleeping — the suite never
- * pays ten minutes of wall clock, and the boundary instant can be hit exactly.
+ * pays five minutes of wall clock, and the boundary instant can be hit exactly.
  */
 class TicketsTest {
 
@@ -41,13 +47,95 @@ class TicketsTest {
     // --- issuing ------------------------------------------------------------------------------------
 
     @Test
-    fun anIssuedTicketCarries32BytesOfEntropyHexEncoded() = runBlocking {
+    fun anIssuedTicketIsEightCrockfordBase32Symbols() = runBlocking {
+        // NOT the master token's 256 bits — deliberately 40, because this value has to be typed into a phone
+        // that has its own empty cookie jar. What pays for the missing bits is elsewhere: single use, the
+        // five-minute TTL, and the global failed-exchange rate limit. What is pinned here is that the format
+        // is exactly what a human can transcribe — 8 symbols, none of them the ones that get misread.
         val ticket = store().issue("test-bound-token")
 
-        // Same strength as the master token: for its ten minutes a ticket buys the same access, so it must
-        // not be the cheap end of the flow.
-        assertEquals(SECRET_BYTES * 2, ticket.value.length, "32 bytes, hex-encoded")
-        assertTrue(ticket.value.all { it in '0'..'9' || it in 'a'..'f' }, "lowercase hex: ${ticket.value}")
+        assertEquals(8, TICKET_CODE_LENGTH, "40 bits over a 32-symbol alphabet is 8 symbols exactly")
+        assertEquals(TICKET_CODE_LENGTH, ticket.value.length, "the code is ${TICKET_CODE_LENGTH} symbols")
+        assertTrue(
+            ticket.value.all { it in TICKET_CODE_ALPHABET },
+            "every symbol comes from the Crockford alphabet: ${ticket.value}",
+        )
+    }
+
+    @Test
+    fun theAlphabetOmitsTheSymbolsAHumanMisreads() {
+        // The whole point of Crockford's alphabet: I/L cannot be confused with 1, O cannot be confused with 0,
+        // because they are not in the set at all. U is out so a random code cannot spell something unfortunate.
+        assertEquals(32, TICKET_CODE_ALPHABET.length, "exactly 32 symbols — five bits each, no modulo bias")
+        assertEquals(32, TICKET_CODE_ALPHABET.toSet().size, "no symbol appears twice")
+        for (excluded in "ILOU") {
+            assertFalse(excluded in TICKET_CODE_ALPHABET, "$excluded must not be issuable")
+        }
+        assertTrue(TICKET_CODE_ALPHABET.all { it in '0'..'9' || it in 'A'..'Z' }, "digits and upper-case only")
+    }
+
+    @Test
+    fun theEncodingIsAStraightRegroupingOfTheBits() {
+        // Expected values from an independent encoder (python3, the same alphabet applied by hand), not from
+        // this code agreeing with itself. All-zero and all-one pin the ends; 0x80… pins that the FIRST symbol
+        // carries the HIGH bits (an little-endian mistake would put the G at the other end).
+        assertEquals("00000000", crockfordBase32(byteArrayOf(0, 0, 0, 0, 0)))
+        assertEquals("ZZZZZZZZ", crockfordBase32(ByteArray(5) { 0xFF.toByte() }))
+        assertEquals("G0000000", crockfordBase32(byteArrayOf(0x80.toByte(), 0, 0, 0, 0)))
+        assertEquals("00000001", crockfordBase32(byteArrayOf(0, 0, 0, 0, 1)))
+        assertEquals("04HMASW9", crockfordBase32(byteArrayOf(0x01, 0x23, 0x45, 0x67, 0x89.toByte())))
+        assertEquals("VTPVXVR1", crockfordBase32(byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte(), 0x01)))
+        assertEquals("ZW000000", crockfordBase32(byteArrayOf(0xFF.toByte(), 0, 0, 0, 0)))
+    }
+
+    @Test
+    fun theEncodingIsInjectiveOverEveryValueOfAByte() = runBlocking {
+        // 40 bits divides evenly into 8 five-bit symbols, so the map is a bijection: 256 distinct inputs must
+        // produce 256 distinct codes. A regrouping that dropped or reused a bit would collide here.
+        val codes = (0..255).map { crockfordBase32(byteArrayOf(0, 0, it.toByte(), 0, 0)) }
+        assertEquals(256, codes.toSet().size, "no two inputs share a code")
+        assertTrue(codes.all { it.length == TICKET_CODE_LENGTH }, "every code is full length")
+    }
+
+    @Test
+    fun encodingRefusesAnythingThatIsNotFortyBits() {
+        // A short or long input would either lose entropy silently or produce a code of the wrong length —
+        // both are worse than a loud failure at the one call site that mints.
+        assertFailsWith<IllegalArgumentException> { crockfordBase32(ByteArray(4)) }
+        assertFailsWith<IllegalArgumentException> { crockfordBase32(ByteArray(6)) }
+        assertFailsWith<IllegalArgumentException> { crockfordBase32(ByteArray(0)) }
+    }
+
+    // --- normalising what a human types -------------------------------------------------------------
+
+    @Test
+    fun normalizationFoldsCaseSeparatorsAndTheOmittedLetters() {
+        assertEquals("A1B2C3D4", normalizeTicketCode("a1b2c3d4"), "lower-case is upper-cased")
+        assertEquals("A1B2C3D4", normalizeTicketCode(" A1B2 C3D4 "), "spaces are dropped, inside and outside")
+        assertEquals("A1B2C3D4", normalizeTicketCode("A1B2-C3D4"), "a dash is a grouping character, not a symbol")
+        assertEquals("A1B2C3D4", normalizeTicketCode("\ta1b2\nc3d4\r\n"), "any whitespace, not just the space bar")
+        // Crockford's substitutions, both directions of case. None of I/L/O is issuable, so this cannot
+        // collide with a code that was actually minted — it only rescues input that could never be valid.
+        assertEquals("11110000", normalizeTicketCode("ILil OoOo"))
+        assertEquals("1", normalizeTicketCode("I"))
+        assertEquals("1", normalizeTicketCode("l"))
+        assertEquals("0", normalizeTicketCode("o"))
+    }
+
+    @Test
+    fun normalizationLeavesAnAlreadyCanonicalCodeAlone() = runBlocking {
+        // The value the store hands out must be a fixed point, or issue and redeem would disagree.
+        val ticket = store().issue("test-bound-token")
+        assertEquals(ticket.value, normalizeTicketCode(ticket.value))
+    }
+
+    @Test
+    fun normalizationDoesNotInventASymbol() {
+        // `U` is excluded from the alphabet but has no substitution — it stays a `U` and therefore fails the
+        // lookup, which is correct: silently mapping it onto something would let one typo redeem another code.
+        assertEquals("U", normalizeTicketCode("u"))
+        assertEquals("", normalizeTicketCode("  - - "), "separators alone normalise to nothing")
+        assertEquals("", normalizeTicketCode(""))
     }
 
     @Test
@@ -95,8 +183,56 @@ class TicketsTest {
         val store = store()
         store.issue("test-bound-token") // there IS something outstanding — the refusal is about the value, not about emptiness
 
-        assertNull(store.redeem("f".repeat(64)), "a value this store never minted")
+        assertNull(store.redeem("ZZZZZZZZ"), "a well-formed code this store never minted")
+        assertNull(store.redeem("f".repeat(64)), "a value of the wrong shape entirely")
         assertNull(store.redeem(""), "the empty string is not a ticket")
+        assertNull(store.redeem("  -  "), "and neither is a handful of separators")
+    }
+
+    @Test
+    fun aCodeRedeemsHoweverAHumanTypedIt() = runBlocking {
+        // The reason the format changed at all: an installed iOS PWA has its own cookie jar, so the operator
+        // READS this code off one screen and TYPES it into another. Every transcription a phone keyboard
+        // produces has to land on the same ticket, or the sign-in path built on top of it is unusable.
+        val typed = listOf<Pair<String, (String) -> String>>(
+            "lower-case" to { code -> code.lowercase() },
+            "grouped with a space" to { code -> code.take(4) + " " + code.drop(4) },
+            "grouped with a dash" to { code -> code.take(4) + "-" + code.drop(4) },
+            "padded by the keyboard" to { code -> "  $code " },
+            "mixed case with spaces" to { code -> code.take(2).lowercase() + " " + code.drop(2) },
+        )
+        for ((label, mangle) in typed) {
+            val store = store()
+            val ticket = store.issue("test-bound-token")
+            assertNotNull(store.redeem(mangle(ticket.value)), "$label must redeem: ${mangle(ticket.value)}")
+        }
+    }
+
+    @Test
+    fun theLettersCrockfordDroppedAreTypedBackOntoTheirDigits() = runBlocking {
+        // A code containing 1 or 0 is the one a reader gets wrong: they see the digit and type the letter.
+        // Both Crockford substitutions are honoured — I AND L for 1, O for 0 — in either case. Each variant
+        // gets a code that actually CONTAINS both digits, so the substitution is exercised rather than
+        // vacuously passing on a code that has neither.
+        val variants = listOf<Pair<String, (String) -> String>>(
+            "I for 1, O for 0" to { code -> code.replace('1', 'I').replace('0', 'O') },
+            "l for 1, o for 0" to { code -> code.replace('1', 'l').replace('0', 'o') },
+            "L for 1" to { code -> code.replace('1', 'L') },
+        )
+        for ((label, mangle) in variants) {
+            val store = store()
+            val ticket = issueWithBothDigits(store)
+            assertNotNull(store.redeem(mangle(ticket.value)), "$label must redeem: ${mangle(ticket.value)}")
+        }
+    }
+
+    /** Mint until the code carries both `1` and `0` — 40 bits of randomness gets there in a handful of tries. */
+    private suspend fun issueWithBothDigits(store: TicketStore): Ticket {
+        repeat(500) {
+            val ticket = store.issue("test-bound-token")
+            if ('1' in ticket.value && '0' in ticket.value) return ticket
+        }
+        throw AssertionError("no code with both digits in 500 tries — the encoder is not random")
     }
 
     @Test
@@ -187,9 +323,26 @@ class TicketsTest {
     }
 
     @Test
-    fun theDefaultTtlIsTenMinutes() = runBlocking {
-        assertEquals(10L * 60 * 1000, TICKET_TTL_MILLIS)
+    fun theDefaultTtlIsFiveMinutes() = runBlocking {
+        // Halved along with the format change: the TTL IS the window in which a 40-bit code can be guessed
+        // at, so it is kept to the span an operator needs to carry a code from a screen to a phone.
+        assertEquals(5L * 60 * 1000, TICKET_TTL_MILLIS)
         assertEquals(start + TICKET_TTL_MILLIS, store().issue("test-bound-token").expiresAt)
+    }
+
+    @Test
+    fun aTicketDiesAtExactlyFiveMinutes() = runBlocking {
+        val store = store()
+        val ticket = store.issue("test-bound-token")
+
+        clock = start + TICKET_TTL_MILLIS - 1
+        assertNotNull(store.redeem(ticket.value), "one millisecond before the deadline it still works")
+
+        clock = start
+        val other = store()
+        val second = other.issue("test-bound-token")
+        clock = start + TICKET_TTL_MILLIS
+        assertNull(other.redeem(second.value), "at five minutes exactly it is gone")
     }
 
     // --- token binding ------------------------------------------------------------------------------
@@ -210,7 +363,7 @@ class TicketsTest {
         val store = store(ttlMillis = 60_000)
         val ticket = store.issue(boundToken = "tok")
 
-        assertNull(store.redeem("f".repeat(64)), "a value never issued → null")
+        assertNull(store.redeem("ZZZZZZZZ"), "a value never issued → null")
         assertEquals("tok", store.redeem(ticket.value), "the first redemption yields the bound token")
         assertNull(store.redeem(ticket.value), "a replay yields null, never the token a second time")
 
