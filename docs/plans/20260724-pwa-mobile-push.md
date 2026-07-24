@@ -556,22 +556,44 @@ pin an old UI for a day).
 - Modify: `resources/webui/components/Sidebar.js`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] add `sw.js` with the three handlers (`push` → fetch `/sessions` → one notification per session with
+- [x] add `sw.js` with the three handlers (`push` → fetch `/sessions` → one notification per session with
       `needsAttention && !archived`, `tag` = id, generic fallback text when the fetch fails;
       `notificationclick` → focus or `openWindow("/?session=<id>")`; pass-through `fetch`)
-- [ ] add `lib/push.js`: `supported()`, `subscribe()` (register `/sw.js`, `Notification.requestPermission`,
+      ➕ the generic fallback also covers "the fetch SUCCEEDED but nothing is waiting any more" (a resolved
+      approval), which is the same `userVisibleOnly` obligation; plus `skipWaiting` + `clients.claim` so a
+      deploy does not leave yesterday's push handler in charge, and a classic (non-module) worker with no
+      imports — pinned by a test that no line starts with `import `
+- [x] add `lib/push.js`: `supported()`, `subscribe()` (register `/sw.js`, `Notification.requestPermission`,
       `GET /push/vapid-key`, `pushManager.subscribe({userVisibleOnly:true, applicationServerKey})`,
       `POST /push/subscribe`), `unsubscribe()` — every call reachable from a click handler, since iOS
       refuses the permission prompt outside a user gesture
-- [ ] extend the existing `#notify-toggle` handler in **`components/Sidebar.js`** (this is where the toggle
+      ➕ the permission prompt is requested BEFORE any other await (awaiting the worker registration first
+      loses the iOS gesture); `subscribeWith` drops and re-takes a subscription minted under a different
+      application server key (a regenerated `vapid.pem` makes `subscribe()` throw and would otherwise leave
+      the device permanently unreachable); `decodeBase64Url` converts the key rather than trusting the
+      DOMString form; `refreshActive()` reconciles the mirror flag on load, since a stale `true` would
+      silence BOTH paths
+- [x] extend the existing `#notify-toggle` handler in **`components/Sidebar.js`** (this is where the toggle
       lives, not in `PreferencesDialog`): turning it on subscribes, off unsubscribes; when a push
       subscription is active, `notify.js` stops raising its own notification (no duplicate on an open tab)
-- [ ] make `app.js` read `?session=` on load and select that session (this is what makes the notification
+      ➕ the mirror flag (`kotgent.push.v1`) lives in `notify.js`, not `push.js`: `notifyAttention` stays
+      synchronous and the dependency runs one way (`push.js → notify.js`) instead of a cycle. The stored
+      toggle is written before the handshake — push is an upgrade on top of the in-tab path, not a
+      precondition — and a failed subscribe degrades to in-tab notifications with a `console.warn`
+- [x] make `app.js` read `?session=` on load and select that session (this is what makes the notification
       tap useful)
-- [ ] syntax-check the new/changed ES modules (`node --check`); add `/lib/push.js` to
+      ➕ honoured once, after the first `/sessions` load (the id means nothing before the list exists), then
+      `?session=` is stripped with `history.replaceState` so a reload cannot resurrect it. Added the other
+      half too: the worker `postMessage`s `select-session` to an already-open window it focuses — a bare
+      focus would leave whatever session was on screen, which is the common case on a phone
+- [x] syntax-check the new/changed ES modules (`node --check`); add `/lib/push.js` to
       `WebUiServingTest`'s served-module list and a case that `/sw.js` is served as JavaScript with
       `Cache-Control: no-cache`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 13
+      ➕ `/lib/notify.js` was missing from that list too and is now in it; the push-flow test asserts the
+      page's route strings against the Kotlin constants (`PUSH_VAPID_KEY_PATH` &c.), so renaming a route
+      server-side and forgetting the page fails here rather than in a browser nobody is watching
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 13
+      ➕ 2 new tests: **552 run / 552 passed / 0 skipped** (branch baseline 550)
 
 ### Task 13: Short login code (format + 5-minute TTL)
 

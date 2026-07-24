@@ -160,7 +160,7 @@ class WebUiServingTest {
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
-            "/lib/throttle.js",
+            "/lib/throttle.js", "/lib/notify.js", "/lib/push.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/dialogs.js",
         )) {
             val resp = ctx.get(path)
@@ -395,6 +395,91 @@ class WebUiServingTest {
                 "GET $path keeps the default caching — the no-cache rule is targeted",
             )
         }
+    }
+
+    /**
+     * The service worker (plan Task 12) — the half of the notification path that runs when no tab does.
+     * Three things about it can only be checked here: that it is served at all (a 404 makes
+     * `register("/sw.js")` reject and push silently never works), that it is served from the ROOT so its
+     * scope covers `/` (a worker under `/lib/` could never control the app), and that it revalidates (a
+     * cached worker keeps an old push handler alive for up to 24h after a deploy).
+     */
+    @Test
+    fun daemonServesTheServiceWorkerAtTheRootScope() = withServer { ctx ->
+        val resp = ctx.get("/sw.js")
+        assertEquals(HttpStatusCode.OK, resp.status, "GET /sw.js is served from the root scope")
+        assertContentTypeContains(resp, "javascript")
+        assertEquals(
+            "no-cache",
+            resp.headers[HttpHeaders.CacheControl],
+            "the worker script revalidates so a deploy is not pinned behind a cached push handler",
+        )
+
+        val body = resp.bodyAsText()
+        for (handler in listOf("push", "notificationclick", "fetch")) {
+            assertTrue(
+                body.contains("addEventListener(\"$handler\""),
+                "the worker handles the '$handler' event",
+            )
+        }
+        // Payload-less push: the worker is told only THAT something happened and asks the daemon what.
+        assertTrue(body.contains("\"/sessions\""), "the worker learns which sessions are waiting from /sessions")
+        assertTrue(body.contains("credentials: \"include\""), "that fetch carries the session cookie")
+        assertTrue(
+            body.contains("needsAttention") && body.contains("archived"),
+            "it filters on the same needsAttention && !archived rule the daemon's tracker uses",
+        )
+        // userVisibleOnly: true — a push that ends without a banner is a broken promise to the browser,
+        // so the "we could not ask" path must still show something rather than stay silent.
+        assertTrue(body.contains("showNotification"), "every push ends in a shown notification")
+        assertTrue(body.contains("renotify: false"), "repeat pushes for one session replace quietly")
+        assertTrue(
+            body.contains("/?session=") && body.contains("openWindow"),
+            "a tapped notification opens the app deep-linked at that session",
+        )
+        // Registered as a CLASSIC worker (the broader path on Safari), so it must not import anything —
+        // a bare specifier would throw on the very first line and take the whole push path with it.
+        assertTrue(
+            body.lineSequence().none { it.trimStart().startsWith("import ") },
+            "the worker is a classic script and imports nothing",
+        )
+    }
+
+    /**
+     * The browser half of the subscription handshake: `lib/push.js` must talk to the exact routes
+     * `PushRoutes.kt` mounts. Asserted against the Kotlin constants, so renaming a route on the server and
+     * forgetting the page fails here instead of in a browser nobody is watching.
+     */
+    @Test
+    fun theWebUiWiresTheBrowserPushSubscriptionFlow() = withServer { ctx ->
+        val push = ctx.get("/lib/push.js")
+        assertEquals(HttpStatusCode.OK, push.status, "GET /lib/push.js is served")
+        assertContentTypeContains(push, "javascript")
+        val body = push.bodyAsText()
+        for (route in listOf(PUSH_VAPID_KEY_PATH, PUSH_SUBSCRIBE_PATH, PUSH_UNSUBSCRIBE_PATH)) {
+            assertTrue(body.contains("\"$route\""), "the page calls the daemon's $route route")
+        }
+        assertTrue(body.contains("\"/sw.js\""), "it registers the root-scope worker")
+        assertTrue(
+            body.contains("userVisibleOnly: true"),
+            "the subscription promises a visible notification for every push (iOS requires it)",
+        )
+        assertTrue(body.contains("applicationServerKey"), "the VAPID key is passed as applicationServerKey")
+
+        // The toggle that drives it is the sidebar's, and the two notification paths must not both fire.
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(sidebar.contains("id=\"notify-toggle\""), "the toggle lives in the sidebar")
+        assertTrue(sidebar.contains("../lib/push.js"), "the toggle drives the push subscription")
+        val notify = ctx.get("/lib/notify.js").bodyAsText()
+        assertTrue(
+            notify.contains("isPushActive"),
+            "the in-tab notification stands down while push is active — otherwise an open tab shows two",
+        )
+
+        // The deep link is the only thing app.js and the (import-less) worker share, so pin both ends.
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(app.contains("DEEP_LINK_PARAM = \"session\""), "app.js reads ?session= on load")
+        assertTrue(app.contains("select-session"), "app.js honours the worker's focus-and-switch message")
     }
 
     @Test

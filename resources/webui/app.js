@@ -39,6 +39,31 @@ import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./
 
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
 
+/**
+ * The query parameter a notification tap deep-links with (`/?session=<id>`) — the shape `sw.js` builds in
+ * `openWindow`. Keep the two in step; the service worker is a classic script and cannot import this.
+ */
+const DEEP_LINK_PARAM = "session";
+
+/** The session id this page was opened for, or null. */
+function deepLinkSessionId() {
+  try {
+    return new URLSearchParams(window.location.search).get(DEEP_LINK_PARAM);
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Drop `?session=` from the address bar once it has been honoured, so a reload does not re-select it. */
+function clearDeepLink() {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(DEEP_LINK_PARAM)) return;
+    url.searchParams.delete(DEEP_LINK_PARAM);
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  } catch (_) { /* no History API — the parameter just lingers, which is harmless */ }
+}
+
 /** The hint shown for a session that cannot be attached because it is not alive. */
 function deadHint(state) {
   return state === "resumable"
@@ -136,6 +161,9 @@ function App() {
   pendingRef.current = pendingAction;
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
+  // The session a notification tap asked for, honoured once the first /sessions load has landed (the id
+  // means nothing until the list exists). Read at mount so a later reload cannot resurrect it.
+  const deepLinkRef = useRef(deepLinkSessionId());
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
 
@@ -171,10 +199,18 @@ function App() {
       setActiveId((id) => (id && !ids.has(id) ? null : id));
       setAttachedId((id) => (id && !ids.has(id) ? null : id));
       pruneReadPosters(ids);
+      // A deep link from a notification tap: select it now that the list is here, once.
+      const wanted = deepLinkRef.current;
+      if (wanted) {
+        deepLinkRef.current = null;
+        clearDeepLink();
+        const target = list.find((s) => s.id === wanted);
+        if (target) showSession(target);
+      }
     } catch (e) {
       say("Could not load sessions: " + errorMessage(e), true);
     }
-  }, [say]);
+  }, [say, showSession]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
@@ -265,6 +301,20 @@ function App() {
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
+
+  // A notification tapped while this page was already open: the service worker focuses this window and
+  // posts the session id, because a bare focus would leave whatever session was on screen — which is the
+  // common case on a phone and would make the tap useless.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return undefined;
+    const onMessage = (event) => {
+      const msg = event.data;
+      if (!msg || msg.type !== "select-session" || !msg.sessionId) return;
+      selectSession(msg.sessionId);
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, [selectSession]);
 
   // --- actions ---------------------------------------------------------------------------------
 

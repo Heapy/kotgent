@@ -11,6 +11,11 @@ import { useCallback, useEffect, useState } from "preact/hooks";
 import { groupSessions } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
+import {
+  refreshActive as refreshPush,
+  subscribe as pushSubscribe,
+  unsubscribe as pushUnsubscribe,
+} from "../lib/push.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
 
 function SessionRow({ session, active, onSelect, onRestore }) {
@@ -113,11 +118,28 @@ export function Sidebar({
       return next;   // a new Set every time: Preact compares state by identity
     });
   }, []);
+  // A subscription can vanish without this page being told (the browser drops it, site data is cleared),
+  // and a stale "push is on" belief would silence the in-tab notifications too — so reconcile once on load.
+  useEffect(() => { refreshPush(); }, []);
   const toggleNotifications = async () => {
     const next = !notifyOn;
-    if (next) await ensurePermission(); // prompt once when turning on; notifyAttention guards on the result
+    // Flip the stored preference first: the toggle is the per-device in-tab setting and must land whatever
+    // the push handshake does. Push is the upgrade on top of it, not a precondition.
     setNotifyEnabled(next);
     setNotifyOn(next);
+    try {
+      if (next) {
+        // Everything below runs inside this click: iOS refuses the permission prompt outside a user
+        // gesture. subscribe() prompts first and returns false when this browser/daemon cannot do push at
+        // all — then we still prompt for the in-tab path, which notifyAttention guards on.
+        if (!(await pushSubscribe())) await ensurePermission();
+      } else {
+        await pushUnsubscribe();
+      }
+    } catch (e) {
+      // A failed subscribe is a downgrade, not an error the operator must act on: the tab keeps notifying.
+      console.warn("kotgent: push subscription failed", e);
+    }
   };
   // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
   // and every count — and only surfaced under an explicit "Show done" toggle.
