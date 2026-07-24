@@ -14,13 +14,13 @@ jobs:
   build-test:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tmux (real-PTY integration checks)
         run: brew install tmux
 
       - name: Cache the Kotlin toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.kotlin
