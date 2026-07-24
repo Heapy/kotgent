@@ -195,11 +195,12 @@ class KotgentServer(
         private const val BIND_TIMEOUT_MS: Long = 10_000
 
         /**
-         * Production wiring: terminal bridges attach the real `tmux -L <socket> attach` upstream with a
-         * real `capture-pane -e` seed ([terminalBridgeForSession]) over the given [ptyFactory] (default
-         * [realPtyFactory] — a real cinterop `Pty`). The web UI directory is resolved to an ABSOLUTE
-         * path ([resolveWebUiDir]) so an installed daemon (launchd sets no `WorkingDirectory`, so its
-         * cwd is `/`) still serves the SPA instead of 404ing on a cwd-relative default.
+         * Production wiring: terminal bridges attach the real
+         * `tmux -f /dev/null -u -L <socket> attach` upstream with a real `capture-pane -p -e` seed
+         * ([terminalBridgeForSession]) over the given [ptyFactory] (default [realPtyFactory] — a real
+         * cinterop `Pty`). The web UI directory is resolved to an ABSOLUTE path ([resolveWebUiDir]) so
+         * an installed daemon (launchd sets no `WorkingDirectory`, so its cwd is `/`) still serves the
+         * SPA instead of 404ing on a cwd-relative default.
          */
         fun production(
             sessionManager: SessionManager,

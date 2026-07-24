@@ -23,7 +23,7 @@ import kotlinx.coroutines.sync.withLock
  *    the handle;
  *  - [closeUpstream] — 1→0: [TerminalBridge] stops the reader and closes the upstream (ending this
  *    attach — the tmux session lives on);
- *  - [seedProvider] — per attach: the `capture-pane -e` snapshot handed to a newly-attached
+ *  - [seedProvider] — per attach: the `capture-pane -p -e` snapshot handed to a newly-attached
  *    subscriber *before* any live delta, so a late joiner sees the current screen then updates.
  *
  * ## `window-size latest` reflow caveat

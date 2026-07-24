@@ -174,10 +174,12 @@ re-converges the option *values* on the next `newSession`, but bindings/hooks/pl
 control plane, and `attachUpstreamCommand` (`src/pty/PtyHandle.kt`) for the attach upstream — and both
 prepend `TMUX_CONFIG_ISOLATION`. **Any new tmux argv site must go through `tmuxCommand()`**; a hand-rolled
 `listOf(tmux, "-L", socket, …)` silently re-opens the hole. Outside production two fixtures build their own:
-`ptycheck/src/Main.kt` hand-rolls `"${q(tmux)} -f /dev/null -L $socket"` as a shell string (it cannot use
-`ProcessRunner`), and `TmuxTest.rawTmux` builds a deliberately *un*-isolated argv — that one **is** the
-isolation probe. (Exempt, because they start no server and parse no config: `tmux -V`, `command -v tmux`,
-and `kill-server` teardowns.) On top of isolation kotgent forces six options (`TMUX_SERVER_OPTIONS`):
+`ptycheck/src/Main.kt` hand-rolls `"${q(tmux)} -f /dev/null -L $socket"` as a shell string through its
+local fixture helpers, and `TmuxTest.rawTmux` builds a deliberately *un*-isolated argv — that one **is**
+the isolation probe. (`ptycheck` depends on the root module, so its use of local helpers is not because
+`ProcessRunner` is unavailable.) Exempt, because they start no server and parse no config: `tmux -V`,
+`command -v tmux`, and `kill-server` teardowns. On top of isolation kotgent forces six options
+(`TMUX_SERVER_OPTIONS`):
 `destroy-unattached off`, `default-terminal tmux-256color`, `mouse on`, `status off`,
 `history-limit 10000`, `escape-time 10` (`-s`). Three of them already equal tmux 3.7b's built-in defaults
 — isolation is what fixes Detach; they are pins against a future upstream default change. `TmuxOption.scope` is documentation
@@ -212,7 +214,9 @@ pane into it, and while `pane_in_mode=1` every keystroke — `send-keys` and byt
 client's pty alike, including `SessionManager.interrupt`'s `0x03` — is routed to the copy-mode key table
 and dropped while tmux still exits 0, which would make the projection record an interrupt that never
 happened. That is why **`Tmux.sendKeys` chains `copy-mode -q` + the send + a `#{pane_in_mode}` read-back
-into ONE tmux invocation** and throws when the read-back says the keys were eaten: separate invocations
+into ONE tmux invocation** and accepts only an answered `0`: an answered `1` throws
+`TmuxCopyModeException`, while an empty or unparseable answer throws a plain `TmuxException`. Separate
+invocations
 leave a window a wheel event can land in, `copy-mode -q` (unlike `send-keys -X cancel`) is a silent no-op
 on a pane in no mode so it can be chained at all, and there is deliberately no retry — a duplicated `0x03`
 quits some agent TUIs. Do not weaken that chain while `mouse on` is set;

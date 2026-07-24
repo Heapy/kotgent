@@ -166,6 +166,26 @@
 > unanswered shapes against `tmux` stubs, the bridge's delivery Boolean, the empty body that must not
 > touch the shared pane, and 409-vs-400 on `interrupt`); the CLAUDE.md baseline is updated to match.
 
+> **Revision 7 — smells-review consistency and fail-closed proof** (`mouse on` and both accepted
+> residuals remain unchanged). All findings were confirmed:
+>
+> 1. `Tmux.sendKeys` now accepts only an answered `#{pane_in_mode}` of `0`. An answered `1` remains a
+>    `TmuxCopyModeException` (409 at the action route); an empty or unparseable exit-0 read-back is a
+>    plain `TmuxException`, so `SessionManager.interrupt` cannot persist `ready` without proof that its
+>    `0x03` landed. One non-skip stub test covers both unanswered shapes.
+> 2. The `ptycheck` isolation read-back now enters teardown immediately after fixture creation, and
+>    `TmuxTest.killServerAndWait` fails after its bounded poll with the last tmux result instead of
+>    silently starting a test on an unproven-clean socket.
+> 3. Documentation and tests now describe the implemented seams rather than source-code identity:
+>    the attach argv has `-f /dev/null -u -L`, snapshots use `capture-pane -p -e`,
+>    `TERMINAL_MOUSE_ENABLE` follows tmux's measured `1006h`/`1000h`/`1002h` order,
+>    `forcesMouseOn` gates only subscriber seeding, and `leaveCopyMode(false)` means “not provably
+>    clear.” The unfalsifiable constant-reuse test was folded into the existing exact-argv behavior
+>    test; `ptycheck` no longer claims the root module's public `ProcessRunner` is unavailable.
+> 4. The README now records the accepted last-resizing-viewer wheel limitation and the reconciled
+>    **465 run / 465 passed / 0 skipped** baseline. Test count stays 465: the redundant attach-argv
+>    test was consolidated while the unanswered-`sendKeys` regression gained its own test.
+
 ## Overview
 
 The daemon's tmux server (`-L kotgent`) **reads the user's `~/.tmux.conf`**. The `-L` socket label

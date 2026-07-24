@@ -49,17 +49,19 @@ class TmuxTest {
      * then starts a *new* server (where `-f /dev/null` is the only invocation that matters) must wait
      * for the old one to be gone, or it races into the still-live one.
      *
-     * Bounded at 40 × 50 ms and then gives up **silently**: the callers all follow it with an
-     * assertion that fails on its own if the old server really is still there, so an exception here
-     * would only replace a precise failure with a vague one.
+     * Bounded at 40 × 50 ms, then fails with the final probe result. Setup must not claim every test
+     * starts clean when the old server's exit was never observed.
      */
     private suspend fun killServerAndWait() {
         killServer()
+        var last: ProcessResult? = null
         repeat(40) {
             val r = ProcessRunner.run(tmuxCommand(tmux.tmuxPath, tmux.socket, listOf("has-session", "-t", "kt-none")))
+            last = r
             if ("no server running" in r.stderr) return
             delay(50)
         }
+        error("tmux server '${tmux.socket}' did not exit after 40 probes; last result: $last")
     }
 
     /**
@@ -234,11 +236,11 @@ class TmuxTest {
     }
 
     /**
-     * The fourth answer, and the one that used to be wrong: a call that **failed** is not evidence the
-     * pane is clear. `leaveCopyMode` returned `true` on ANY non-zero exit, so a wrong `tmuxPath`, a
-     * permission error, a half-dead server or an unparseable `display-message` all read as "provably
-     * clear" — and `POST /sessions/{id}/input` then answered `200 ok` for bytes tmux discarded. Only a
-     * SOFT absence (the `isAbsence()` set every other method here normalizes) may read as `true`.
+     * A call that **failed** is not evidence the pane is clear. `leaveCopyMode` once returned `true`
+     * on ANY non-zero exit, so a wrong `tmuxPath`, a permission error, a half-dead server or an
+     * unparseable `display-message` all read as "provably clear" — and
+     * `POST /sessions/{id}/input` then answered `200 ok` for bytes tmux discarded. Only a SOFT
+     * absence (the `isAbsence()` set every other method here normalizes) may read as `true`.
      *
      * Runs against `tmux` stand-ins rather than a real server, so it needs no tmux and no skip-guard:
      * each stub reproduces one exit-status/stdout shape the real binary can produce.
@@ -277,6 +279,50 @@ class TmuxTest {
                 Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-clear", "echo 0\nexit 0\n"))
                     .leaveCopyMode("lcm-clear"),
                 "an ANSWERED 0 is the one positive case",
+            )
+        } finally {
+            removeTempDir(dir)
+        }
+    }
+
+    /**
+     * `sendKeys` must accept only an answered `0`: empty or noisy exit-0 stdout is not proof the send
+     * landed. Otherwise `SessionManager.interrupt` would persist `ready` without knowing its `0x03`
+     * reached the process. Both unanswered shapes are plain [TmuxException] failures; only an answered
+     * `1` proves the pane remains in a mode and warrants [TmuxCopyModeException].
+     *
+     * Runs against `tmux` stand-ins, so it needs no real server and no skip-guard.
+     */
+    @Test
+    fun sendKeysRefusesWhenTheDeliveryReadBackIsUnanswered() {
+        val dir = makeTempDir()
+        try {
+            val emptySend = assertFailsWith<TmuxException> {
+                Tmux(socket = tmux.socket, tmuxPath = writeStubTmux(dir, "tmux-send-mute", "exit 0\n"))
+                    .sendKeys("send-mute", byteArrayOf(0x03))
+            }
+            assertFalse(
+                emptySend is TmuxCopyModeException,
+                "an empty read-back is unanswered, not proof that the pane remains in copy-mode",
+            )
+            assertTrue(
+                "could not verify delivery" in emptySend.message.orEmpty(),
+                "the empty read-back failure must explain that delivery was unverified: ${emptySend.message}",
+            )
+
+            val noisySend = assertFailsWith<TmuxException> {
+                Tmux(
+                    socket = tmux.socket,
+                    tmuxPath = writeStubTmux(dir, "tmux-send-noise", "echo not-a-mode\nexit 0\n"),
+                ).sendKeys("send-noise", byteArrayOf(0x03))
+            }
+            assertFalse(
+                noisySend is TmuxCopyModeException,
+                "an unparseable read-back is unanswered, not proof that the pane remains in copy-mode",
+            )
+            assertTrue(
+                "could not verify delivery" in noisySend.message.orEmpty(),
+                "the noisy read-back failure must explain that delivery was unverified: ${noisySend.message}",
             )
         } finally {
             removeTempDir(dir)

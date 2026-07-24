@@ -121,8 +121,8 @@ fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, 
 }
 
 /**
- * The mouse-reporting DECSET a per-subscriber seed carries: normal + button tracking, then the SGR
- * encoding — byte-for-byte the set a `tmux attach` client emits for `mouse on` (measured, tmux 3.7b).
+ * The mouse-reporting DECSET a per-subscriber seed carries: SGR encoding, then normal + button
+ * tracking — byte-for-byte the set a `tmux attach` client emits for `mouse on` (measured, tmux 3.7b).
  *
  * ## Why the seed has to carry it at all
  * A subscriber joining an **existing** bridge is seeded from `capture-pane -p -e`, and that output
@@ -142,7 +142,7 @@ fun terminalAttachEnv(lang: String?, home: String?, path: String?): Map<String, 
  * drags but not free motion until the next full repaint. The wheel, which is what the option is for,
  * works either way. Undoing all of it on exit is `TERMINAL_MODE_RESET`'s job.
  */
-const val TERMINAL_MOUSE_ENABLE: String = "\u001b[?1000h\u001b[?1002h\u001b[?1006h"
+const val TERMINAL_MOUSE_ENABLE: String = "\u001b[?1006h\u001b[?1000h\u001b[?1002h"
 
 /**
  * Compose one subscriber's terminal seed: the `capture-pane -p -e` snapshot [capturedPane], preceded

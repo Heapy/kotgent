@@ -230,9 +230,9 @@ class SessionManager(
 
     /**
      * Leave copy-mode on [sessionId]'s pane so **programmatic** input is not eaten by the copy-mode key
-     * table; `false` means the pane is still in a mode and the caller must not claim delivery. Exposed
-     * for the `POST /sessions/{id}/input` seam, which writes into the shared upstream pty and would
-     * otherwise answer `ok` for bytes tmux discarded.
+     * table; `false` means the pane is not provably clear and the caller must not claim delivery.
+     * Exposed for the `POST /sessions/{id}/input` seam, which writes into the shared upstream pty and
+     * would otherwise answer `ok` for bytes tmux discarded.
      *
      * Deliberately **outside** the per-session control lock: it touches only tmux's pane mode, never
      * the projection or the store, and taking the lock would make a keystroke queue behind a

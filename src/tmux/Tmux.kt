@@ -225,8 +225,8 @@ class Tmux(
      * copy-mode (or any other mode), `false` = it is delivering keys to its process, `null` = the
      * question was not answered (no server, unknown pane, unparseable output).
      *
-     * `null` is deliberately distinct from `false`: it means "nothing left to prove", so callers treat
-     * it as a graceful no-op rather than as evidence either way.
+     * `null` is deliberately distinct from `false`: it is not evidence either way. Callers may treat a
+     * separately classified soft absence as moot, but an otherwise unanswered verification fails closed.
      */
     private fun paneModeFrom(r: ProcessResult): Boolean? =
         when (r.stdout.trim().lineSequence().lastOrNull()?.trim()) {
@@ -299,10 +299,11 @@ class Tmux(
      *  2. `send-keys -H …` — the real send;
      *  3. `display-message -p '#{pane_in_mode}'` — the proof, read with nothing able to intervene.
      *
-     * A trailing `1` means the keys went to the copy-mode key table, and this **fails loudly** with a
-     * [TmuxCopyModeException] — its own subtype, because that condition is transient and retryable and
-     * the transport answers it with a `409` + hint rather than a `400` — instead of letting the caller
-     * reduce to `ready`. Any OTHER non-zero exit stays a plain [TmuxException]. There is no retry:
+     * Only an answered trailing `0` proves delivery. A trailing `1` means the keys went to the copy-mode
+     * key table, and this **fails loudly** with a [TmuxCopyModeException] — its own subtype, because that
+     * condition is transient and retryable and the transport answers it with a `409` + hint rather than
+     * a `400` — instead of letting the caller reduce to `ready`. An empty or unparseable read-back and
+     * any OTHER non-zero exit stay plain [TmuxException] failures. There is no retry:
      * a duplicated `0x03` is not harmless (a second Ctrl-C quits some agent TUIs outright), and with
      * the chain atomic a retry would only be papering over a tmux that no longer behaves as measured.
      * This is what makes `mouse on` safe; do not weaken it while that option is set.
@@ -315,15 +316,22 @@ class Tmux(
             listOf(";", "display-message", "-p", "-t", target, PANE_IN_MODE)
         val r = tmux(*argv.toTypedArray())
         if (r.isAbsence()) return // no server / unknown session: graceful, as everywhere else here
+        val paneMode = paneModeFrom(r)
         // Checked BEFORE the exit status: a swallowed send can also fail the invocation for an unrelated
         // reason (a copy-mode binding reporting "no current client"), and copy-mode is the real diagnosis.
-        if (paneModeFrom(r) == true) {
+        if (paneMode == true) {
             throw TmuxCopyModeException(
                 "tmux send-keys for '$id' was not delivered: $target is in copy-mode, so the keys went " +
                     "to the copy-mode key table instead of the process",
             )
         }
         if (!r.isSuccess) throw TmuxException("tmux send-keys for '$id' failed: ${r.stderr.trim()}")
+        if (paneMode == null) {
+            throw TmuxException(
+                "tmux send-keys for '$id' could not verify delivery: expected a $PANE_IN_MODE read-back " +
+                    "of 0 or 1, got <${r.stdout.trim()}>",
+            )
+        }
     }
 
     private fun fields(vararg specs: String): String = specs.joinToString(FS)

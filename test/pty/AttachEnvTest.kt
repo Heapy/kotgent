@@ -1,7 +1,6 @@
 package io.kotgent.pty
 
 import io.kotgent.sys.DEFAULT_UTF8_LOCALE
-import io.kotgent.tmux.TMUX_CONFIG_ISOLATION
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -73,15 +72,21 @@ class AttachEnvTest {
     }
 
     @Test
-    fun theAttachCommandForcesUtf8Output() {
+    fun theAttachCommandCarriesIsolationAndForcesUtf8Output() {
         val argv = attachUpstreamCommand("/opt/homebrew/bin/tmux", "kotgent", "kt-abc123")
         assertEquals(
             listOf("/opt/homebrew/bin/tmux", "-f", "/dev/null", "-u", "-L", "kotgent", "attach", "-t", "kt-abc123"),
             argv,
             "the upstream is `tmux -f /dev/null -u -L <socket> attach -t <session>`",
         )
-        // -u must precede the subcommand: it is a tmux global flag, not an `attach` flag.
-        assertTrue(argv.indexOf("-u") < argv.indexOf("attach"), "-u is a global flag, before the subcommand")
+        // Both -f (with its value) and -u must precede the subcommand: they are tmux global flags,
+        // not `attach` flags.
+        val attach = argv.indexOf("attach")
+        val f = argv.indexOf("-f")
+        assertTrue(f >= 0, "the attach upstream passes -f")
+        assertEquals("/dev/null", argv[f + 1], "-f is immediately followed by its value")
+        assertTrue(f + 1 < attach, "-f /dev/null is global, before the subcommand")
+        assertTrue(argv.indexOf("-u") < attach, "-u is a global flag, before the subcommand")
     }
 
     /**
@@ -98,9 +103,9 @@ class AttachEnvTest {
     fun theSeedArmsMouseReportingWheneverTmuxForcesMouseOn() {
         val esc = "\u001b"
         assertEquals(
-            "$esc[?1000h$esc[?1002h$esc[?1006h",
+            "$esc[?1006h$esc[?1000h$esc[?1002h",
             TERMINAL_MOUSE_ENABLE,
-            "normal + button tracking then the SGR encoding — the set a tmux attach client emits for `mouse on`",
+            "SGR encoding, then normal + button tracking — the order tmux emits for `mouse on`",
         )
         assertEquals(
             (TERMINAL_MOUSE_ENABLE + "pane text").encodeToByteArray().toList(),
@@ -120,24 +125,5 @@ class AttachEnvTest {
         // reads an empty seed as "nothing to send". Prefixing a mode change would break that contract.
         assertTrue(terminalSeed("", mouseForced = true).isEmpty(), "an empty capture yields an empty seed")
         assertTrue(terminalSeed("", mouseForced = false).isEmpty())
-    }
-
-    @Test
-    fun theAttachCommandIsolatesTheUserConfig() {
-        val argv = attachUpstreamCommand("/opt/homebrew/bin/tmux", "kotgent", "kt-abc123")
-
-        // The upstream must not re-spell the isolation flags — it reuses the one shared definition.
-        assertEquals(
-            TMUX_CONFIG_ISOLATION,
-            argv.subList(1, 1 + TMUX_CONFIG_ISOLATION.size),
-            "the attach argv carries TMUX_CONFIG_ISOLATION verbatim, right after the tmux path",
-        )
-
-        // Same bug class as the -u ordering assertion: -f AND its value are global, so both must
-        // land before the subcommand or tmux reads them as arguments of `attach`.
-        val f = argv.indexOf("-f")
-        assertTrue(f >= 0, "the attach upstream passes -f")
-        assertEquals("/dev/null", argv[f + 1], "-f is immediately followed by its value")
-        assertTrue(f + 1 < argv.indexOf("attach"), "-f /dev/null is global, before the subcommand")
     }
 }

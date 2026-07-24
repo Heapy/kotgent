@@ -156,11 +156,13 @@ val TMUX_SERVER_OPTIONS: List<TmuxOption> = listOf(
 
 /**
  * Whether [options] forces tmux's `mouse` option on — the single place that question is answered, so
- * the two obligations that ride on the option cannot drift from it.
+ * the joining-subscriber seed cannot drift from it.
  *
- * Read by the terminal fan-out ([io.kotgent.pty.terminalSeed]): with `mouse on` a subscriber joining
- * an existing bridge must be handed the mouse-enable DECSET itself, because its `capture-pane` seed
- * carries no private-mode sequences and the upstream's own enable was broadcast before it arrived.
+ * Read only to gate the terminal fan-out's seed ([io.kotgent.pty.terminalSeed]): with `mouse on` a
+ * subscriber joining an existing bridge must be handed the mouse-enable DECSET itself, because its
+ * `capture-pane` seed carries no private-mode sequences and the upstream's own enable was broadcast
+ * before it arrived. [Tmux.sendKeys] cancels and verifies copy-mode unconditionally; it does not read
+ * this predicate.
  */
 fun forcesMouseOn(options: List<TmuxOption>): Boolean =
     options.any { it.name == "mouse" && it.value == "on" }

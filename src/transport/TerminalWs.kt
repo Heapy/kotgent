@@ -57,7 +57,7 @@ class TerminalRegistry(
  *
  * On connect it [TerminalBridge.subscribe]s to the session's shared bridge (from [registry]); the first
  * subscriber lazily opens the upstream `tmux attach` via the injected `PtyFactory` and the new subscriber
- * is pre-seeded with a `capture-pane -e` snapshot before any live delta (Task 9 behaviour — this route
+ * is pre-seeded with a `capture-pane -p -e` snapshot before any live delta (Task 9 behaviour — this route
  * just wires the WS as the subscriber's sink). Then:
  *  - **server → client:** every byte off the subscriber's output channel is sent as a **binary** frame
  *    (seed first, then live deltas);

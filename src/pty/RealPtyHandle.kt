@@ -50,9 +50,9 @@ fun terminalAttachEnv(): Map<String, String> = terminalAttachEnv(
 
 /**
  * Build a lazy [TerminalBridge] for the logical session [id] over [tmux]: the upstream is
- * `tmux -u -L <socket> attach -t kt-<id>` and the per-subscriber seed is `capture-pane -e` on that
- * session, composed by the pure [terminalSeed]. This is the production wiring; unit tests construct
- * [TerminalBridge] directly with a fake factory and fake seed instead.
+ * `tmux -f /dev/null -u -L <socket> attach -t kt-<id>` and the per-subscriber seed is
+ * `capture-pane -p -e` on that session, composed by the pure [terminalSeed]. This is the production
+ * wiring; unit tests construct [TerminalBridge] directly with a fake factory and fake seed instead.
  *
  * The seed is not the raw capture: when [tmux] forces `mouse on` it is prefixed with
  * [TERMINAL_MOUSE_ENABLE], because `capture-pane` emits no private-mode sequences and the upstream's

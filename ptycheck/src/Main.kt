@@ -176,15 +176,15 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
     val created = sh("$target new-session -d -s $session -x 80 -y 24 /bin/cat")
     expect(created == 0) { "could not create the tmux fixture session (exit=$created)" }
 
-    // The assertion behind `-f /dev/null`: on an isolated server this reads tmux's own default. A
-    // developer whose ~/.tmux.conf sets `destroy-unattached on` fails HERE, naming the cause, rather
-    // than failing the "outlives the attach" check below with a message that blames the pty.
-    val destroyUnattached = capture("$target show-options -gv destroy-unattached")
-    expect(destroyUnattached == "off") {
-        "an isolated server must report destroy-unattached off, got <$destroyUnattached> — is -f /dev/null still there?"
-    }
-
     try {
+        // The assertion behind `-f /dev/null`: on an isolated server this reads tmux's own default. A
+        // developer whose ~/.tmux.conf sets `destroy-unattached on` fails HERE, naming the cause, rather
+        // than failing the "outlives the attach" check below with a message that blames the pty.
+        val destroyUnattached = capture("$target show-options -gv destroy-unattached")
+        expect(destroyUnattached == "off") {
+            "an isolated server must report destroy-unattached off, got <$destroyUnattached> — is -f /dev/null still there?"
+        }
+
         val pty = Pty.open(
             command = tmuxCommand(tmux, socket, listOf("attach", "-t", session)),
             // tmux needs a usable TERM and a PATH; Pty.open defaults to an EMPTY environment.
@@ -281,8 +281,9 @@ private fun terminalBridgeFansOutRealTmuxAttach() = check("TerminalBridge fans o
 
             val bridge = terminalBridgeForSession(tmux, id, readerScope, realPtyFactory)
 
-            // The first subscriber opens the real upstream `tmux -L kotgent-test attach -t kt-…`;
-            // the second joins that same upstream. Each gets a capture-pane seed first.
+            // The first subscriber opens the real upstream
+            // `tmux -f /dev/null -u -L kotgent-test attach -t kt-…`; the second joins that same
+            // upstream. Each gets a `capture-pane -p -e` seed first.
             val a = bridge.subscribe()
             val b = bridge.subscribe()
             withTimeout(5_000) { a.output.receive() }
@@ -366,10 +367,7 @@ private suspend fun receiveUntil(sub: Subscriber, needle: String, timeoutMs: Lon
 
 // --- tiny shell helpers -------------------------------------------------------------------------
 //
-// This module cannot use the root module's ProcessRunner (an app module is not a dependency of
-// another app module), and it only needs a fixture setup/teardown, so it talks to /bin/sh directly
-// through stock `platform.posix` popen/pclose — the same "fork+exec happens inside libc" argument
-// ProcessRunner makes.
+// These fixture-only helpers execute already-quoted setup/teardown snippets through `/bin/sh`.
 
 /** POSIX single-quote quoting: every byte inside becomes literal to the shell. */
 private fun q(s: String): String = "'" + s.replace("'", "'\\''") + "'"

@@ -16,10 +16,9 @@ import kotlin.test.assertTrue
  *    that, and it must ride on every argv kotgent builds.
  *  - **`mouse on` is deliberately present** (see [TMUX_SERVER_OPTIONS]'s KDoc): it is the one forced
  *    row that changes a real tmux default, and it is what makes the wheel reach a pane's history
- *    from the browser and from `kotgent attach`. Two things hang off it, both read through
- *    [forcesMouseOn] so neither can drift from the table: `Tmux.sendKeys`' atomic
- *    cancel→send→verify chain, and the mouse-enable a joining subscriber's seed carries
- *    ([io.kotgent.pty.terminalSeed]) because `capture-pane` emits no private-mode sequences.
+ *    from the browser and from `kotgent attach`. `Tmux.sendKeys`' atomic cancel→send→verify chain
+ *    applies unconditionally; [forcesMouseOn] gates only the mouse-enable a joining subscriber's seed
+ *    carries ([io.kotgent.pty.terminalSeed]) because `capture-pane` emits no private-mode sequences.
  *  - **`focus-events` is deliberately absent** (see [TMUX_SERVER_OPTIONS]'s KDoc): focus has no
  *    single answer under a one-upstream/N-subscriber fan-out. It doubles as the decoy of the
  *    integration isolation test, which only stays falsifiable while kotgent never forces it.
@@ -85,10 +84,9 @@ class TmuxOptionsTest {
     }
 
     /**
-     * The two obligations that ride on `mouse on` both read the option set through [forcesMouseOn],
-     * so neither can drift from the table: `Tmux.sendKeys`' verified copy-mode cancel, and the
-     * mouse-enable a joining subscriber's seed carries ([io.kotgent.pty.terminalSeed]) because
-     * `capture-pane` emits no private-mode sequences.
+     * The mouse-enable a joining subscriber's seed carries ([io.kotgent.pty.terminalSeed]) is gated
+     * through [forcesMouseOn], so it cannot drift from the option table. `Tmux.sendKeys`' verified
+     * copy-mode cancel is intentionally unconditional and does not read this predicate.
      */
     @Test
     fun forcesMouseOnReadsTheOptionTableRatherThanRestatingIt() {

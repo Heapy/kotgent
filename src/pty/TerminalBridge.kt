@@ -11,8 +11,8 @@ import kotlinx.coroutines.launch
  * ## Lazy lifecycle (the whole point)
  * The upstream is only alive while someone is watching:
  *  - the **first** [subscribe] opens the upstream [PtyHandle] for [upstreamCommand]
- *    (`tmux -L kotgent attach -t kt-<id>`) and starts a reader loop pumping its bytes into the
- *    [Broadcaster];
+ *    (`tmux -f /dev/null -u -L kotgent attach -t kt-<id>`) and starts a reader loop pumping its bytes
+ *    into the [Broadcaster];
  *  - the **last** subscriber leaving closes the upstream — ending only *this* attach client. The
  *    tmux session (and the agent running in it) keeps running independently, which is what gives
  *    Detach (closing the IDE drops the last WS subscriber; the session survives) and what removes
@@ -31,8 +31,9 @@ import kotlinx.coroutines.launch
  * keeps our custom cinterop out of it). Production wires [ptyFactory] to [realPtyFactory] and
  * [upstreamCommand] / [seedProvider] to a real [io.kotgent.tmux.Tmux] — see [terminalBridgeForSession].
  *
- * @param upstreamCommand argv for the upstream pty, e.g. `[tmux, -L, kotgent, attach, -t, kt-<id>]`.
- * @param seedProvider    the `capture-pane -e` snapshot handed to each new subscriber before live
+ * @param upstreamCommand argv for the upstream pty, e.g.
+ *                        `[tmux, -f, /dev/null, -u, -L, kotgent, attach, -t, kt-<id>]`.
+ * @param seedProvider    the `capture-pane -p -e` snapshot handed to each new subscriber before live
  *                        deltas. Invoked on [subscribe] under the broadcaster lock; keep it quick
  *                        (a real tmux `capture-pane` is a sub-millisecond subprocess call).
  * @param ptyFactory      how to open the upstream [PtyHandle] for [upstreamCommand].
