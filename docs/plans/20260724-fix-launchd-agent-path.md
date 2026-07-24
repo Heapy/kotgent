@@ -140,16 +140,16 @@ shell-env pain) for self-healing we don't need when fail-fast makes staleness ob
 - Modify: `src/launchd/Plist.kt`
 - Modify: `test/launchd/PlistTest.kt`
 
-- [ ] write test: `null` captured → returns `DAEMON_DEFAULT_PATH` exactly
-- [ ] write test: captured with only empty/blank segments → returns `DAEMON_DEFAULT_PATH`
-- [ ] write test: captured with new dirs (`/Users/x/.local/bin`, an nvm dir) → all present, captured
+- [x] write test: `null` captured → returns `DAEMON_DEFAULT_PATH` exactly
+- [x] write test: captured with only empty/blank segments → returns `DAEMON_DEFAULT_PATH`
+- [x] write test: captured with new dirs (`/Users/x/.local/bin`, an nvm dir) → all present, captured
       entries first, `DAEMON_DEFAULT_PATH` entries appended, order preserved
-- [ ] write test: dedup — a captured PATH that already contains the default entries yields no duplicates
-- [ ] write test: empty segments in captured (`a::b`, leading/trailing `:`) are dropped
-- [ ] implement `mergedDaemonPath(captured: String?): String` in `Plist.kt` (pure, no I/O)
-- [ ] fix the `DAEMON_DEFAULT_PATH` KDoc — it is now the **fallback minimum** of system bins, not "where
+- [x] write test: dedup — a captured PATH that already contains the default entries yields no duplicates
+- [x] write test: empty segments in captured (`a::b`, leading/trailing `:`) are dropped
+- [x] implement `mergedDaemonPath(captured: String?): String` in `Plist.kt` (pure, no I/O)
+- [x] fix the `DAEMON_DEFAULT_PATH` KDoc — it is now the **fallback minimum** of system bins, not "where
       tmux/claude live"
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 2
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 2
 
 ### Task 2: `LaunchdInstaller` snapshots PATH into the plist
 

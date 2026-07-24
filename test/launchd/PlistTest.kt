@@ -96,6 +96,53 @@ class PlistTest {
         assertTrue("/opt/a & b/kotgent" !in x, "the raw ampersand is not left unescaped")
     }
 
+    // --- mergedDaemonPath: snapshot the caller's PATH, keep the defaults as the fallback minimum ------
+
+    @Test
+    fun mergedDaemonPathNullCapturedReturnsTheDefaultExactly() {
+        assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath(null), "null captured → the default, verbatim")
+    }
+
+    @Test
+    fun mergedDaemonPathBlankOnlyCapturedReturnsTheDefault() {
+        // Nothing usable in the captured PATH → fall back to the default minimum, unchanged.
+        assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath(""), "empty string → default")
+        assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath(":::"), "only empty segments → default")
+        assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath("   "), "only a blank segment → default")
+    }
+
+    @Test
+    fun mergedDaemonPathPutsCapturedDirsFirstThenAppendsDefaults() {
+        val nvm = "/Users/x/.nvm/versions/node/v20.0.0/bin"
+        val merged = mergedDaemonPath("/Users/x/.local/bin:$nvm")
+        val entries = merged.split(':')
+        val defaults = DAEMON_DEFAULT_PATH.split(':')
+        // captured entries come first, in their captured order; every default is appended after them.
+        assertEquals(listOf("/Users/x/.local/bin", nvm) + defaults, entries, "captured first, defaults appended")
+        assertTrue("/Users/x/.local/bin" in entries && nvm in entries, "the new dirs are present")
+        for (dir in defaults) assertTrue(dir in entries, "default $dir retained")
+    }
+
+    @Test
+    fun mergedDaemonPathDedupsDefaultsAlreadyPresentInCaptured() {
+        // A captured PATH that already lists some defaults must not yield duplicates.
+        val merged = mergedDaemonPath("/opt/homebrew/bin:/Users/x/.local/bin:/usr/bin")
+        val entries = merged.split(':')
+        assertEquals(entries.distinct(), entries, "no duplicate PATH entries")
+        // first-seen wins position: the shared entries keep their captured slot.
+        assertEquals(listOf("/opt/homebrew/bin", "/Users/x/.local/bin", "/usr/bin"), entries.take(3))
+        for (dir in listOf("/bin", "/usr/sbin", "/sbin")) assertTrue(dir in entries, "$dir still retained")
+    }
+
+    @Test
+    fun mergedDaemonPathDropsEmptySegmentsInCaptured() {
+        // a::b and leading/trailing ':' → the empty segments are dropped.
+        val merged = mergedDaemonPath(":/Users/x/.local/bin::/some/dir:")
+        val entries = merged.split(':')
+        assertTrue("" !in entries, "no empty segment survives the merge")
+        assertEquals(listOf("/Users/x/.local/bin", "/some/dir"), entries.take(2), "captured dirs, empties dropped")
+    }
+
     // --- tiny XML field extractors (test-only, tolerant of the emitter's whitespace) ----------------
 
     private fun labelValue(x: String) = stringAfterKey(x, "Label")
