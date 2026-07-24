@@ -202,16 +202,18 @@ pin an old UI for a day).
 - Create: `src/push/SqlitePushStore.kt`
 - Create: `test/push/PushStoreTest.kt`
 
-- [ ] add `PushSubscriptions.sq`: table DDL plus `selectAll`, `upsert` (by `endpoint`), `deleteByEndpoint`
-- [ ] add `src/push/PushStore.kt` — `data class PushSubscription(endpoint, p256dh, auth, createdAt)` and
+- [x] add `PushSubscriptions.sq`: table DDL plus `selectAll`, `upsert` (by `endpoint`), `deleteByEndpoint`
+- [x] add `src/push/PushStore.kt` — `data class PushSubscription(endpoint, p256dh, auth, createdAt)` and
       `interface PushStore { suspend fun list(); suspend fun save(sub); suspend fun remove(endpoint) }`
-- [ ] add `SqlitePushStore(driver)` over the same `SqlDriver` the event store uses, with
+- [x] add `SqlitePushStore(driver)` over the same `SqlDriver` the event store uses, with
       `CREATE TABLE IF NOT EXISTS` in `init` for pre-existing databases; `EventStore` is untouched
-- [ ] write tests: save → list round-trip, re-saving the same endpoint updates instead of duplicating,
+- [x] write tests: save → list round-trip, re-saving the same endpoint updates instead of duplicating,
       remove is idempotent
-- [ ] write test: opening the store over a driver whose schema predates the table (create the DB from a
+- [x] write test: opening the store over a driver whose schema predates the table (create the DB from a
       schema without it, like `EventStoreTest` does for `archived`) still works
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 2
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 2
+      ➕ actual baseline on this branch is **438**, not the 428 the plan quotes; with the 4 new tests the
+      suite is **442 run / 442 passed / 0 skipped**
 
 ### Task 2: AttentionTracker (pure transition detection)
 
