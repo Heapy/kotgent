@@ -466,7 +466,6 @@ select:focus-visible {
 #terminal-host {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 6px 8px;
   overflow: hidden;
 }
 /* visualViewport sets this ceiling while the software keyboard is open. Keeping it as a max-height
@@ -475,7 +474,12 @@ select:focus-visible {
 #terminal-host.visual-viewport-sized {
   max-height: var(--terminal-visible-height);
 }
-#terminal-host .xterm { height: 100%; }
+/* FitAddon measures this element's parent, then subtracts padding from `.xterm` itself. Keep the visual
+   gutter here—not on #terminal-host—so the fitted grid never includes pixels hidden by the host. */
+#terminal-host .xterm {
+  height: 100%;
+  padding: 6px 8px;
+}
 /* Safari zooms the page when a focused input computes below 16px. xterm's real text size remains the
    preference above; this only prevents its off-screen input shim from changing visualViewport geometry. */
 #terminal-host .xterm-helper-textarea { font-size: 16px !important; }
@@ -912,7 +916,7 @@ dialog::backdrop {
     line-height: 1;
   }
 
-  #terminal-host { padding: 4px 6px; }
+  #terminal-host .xterm { padding: 4px 6px; }
   .key-bar { display: flex; }
 }
 
