@@ -488,6 +488,41 @@ export function HelpDialog({ onClose }) {
             </p>
           </section>
 
+          <section id="help-tmux" class="help-section">
+            <h3>tmux, scrolling, and copying</h3>
+            <p>
+              Kotgent uses tmux's default prefix: press <kbd>Ctrl</kbd>+<kbd>B</kbd>, release both,
+              then press the command key. Your <code>~/.tmux.conf</code> is not loaded on Kotgent's
+              dedicated tmux server, so custom prefixes and bindings do not apply here.
+            </p>
+            <dl class="help-list">
+              <dt><kbd>Ctrl</kbd>+<kbd>B</kbd>, then <kbd>[</kbd></dt>
+              <dd>
+                Enter tmux copy mode to browse the pane's 10,000-line history. Use the arrow,
+                <kbd>Page Up</kbd>, and <kbd>Page Down</kbd> keys; the mouse wheel enters and scrolls
+                this mode automatically.
+              </dd>
+              <dt><kbd>Esc</kbd> or <kbd>q</kbd></dt>
+              <dd>
+                Leave copy mode and return keyboard input to the agent. Scrolling all the way back to
+                the bottom also exits it.
+              </dd>
+              <dt><kbd>Option</kbd>-drag, then <kbd>Cmd</kbd>+<kbd>C</kbd></dt>
+              <dd>
+                Select terminal text and copy it to the browser clipboard on macOS. Hold Option while
+                dragging so xterm selects the text instead of sending the drag to tmux or the agent.
+              </dd>
+              <dt><kbd>Shift</kbd>-drag, then <kbd>Ctrl</kbd>+<kbd>C</kbd></dt>
+              <dd>The equivalent browser-copy gesture on other platforms.</dd>
+            </dl>
+            <p class="help-note">
+              Browser selection and tmux copy mode are separate: copying in the browser does not use
+              tmux's paste buffer. Copy mode belongs to the pane and is shared by every viewer, so if
+              typing appears to be ignored after someone scrolls, leave copy mode or return to the bottom.
+              Use Kotgent's Detach button instead of tmux's detach binding; it closes only this viewer.
+            </p>
+          </section>
+
           <section class="help-section">
             <h3>States</h3>
             <dl class="help-list">

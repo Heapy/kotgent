@@ -239,6 +239,13 @@ class WebUiServingTest {
         )
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(dialogs.contains("id=\"help-dialog\""), "the UI includes the help screen")
+        assertTrue(dialogs.contains("id=\"help-tmux\""), "help includes a tmux and copying section")
+        assertTrue(
+            dialogs.contains("<kbd>Ctrl</kbd>+<kbd>B</kbd>") &&
+                dialogs.contains("<kbd>Option</kbd>-drag") &&
+                dialogs.contains("<kbd>Cmd</kbd>+<kbd>C</kbd>"),
+            "help documents the tmux prefix and macOS browser-copy gesture",
+        )
         // The help text explains the controls and states it documents — a rename that leaves the help
         // stale should fail here rather than quietly ship a wrong explanation.
         for (control in listOf("New session", "Attach", "Interrupt", "Resume", "Detach", "Stop")) {
