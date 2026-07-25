@@ -173,6 +173,8 @@ export function Sidebar({
       })
       .catch((e) => console.warn(warning, e));
   }, []);
+  // Clicks, storage events, and mount reconciliation publish intent, then enter this one decision path.
+  // In particular, observing current state on mount must not mint newer intent than a click already did.
   repairPushRef.current = () => {
     const transition = pushTransitionIdRef.current;
     const desired = notifyEnabled();
@@ -233,34 +235,14 @@ export function Sidebar({
       };
       pushRepairGenerationRef.current = null;
       Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
-      queuePushTransition(
-        syncedTransition,
-        next,
-        (context) => {
-          const currentPermission = pushPermissionRef.current;
-          return next
-            ? (currentPermission.transition === syncedTransition && currentPermission.request
-                ? pushSubscribe(currentPermission.request, context)
-                : refreshPush(context))
-            : pushUnsubscribe(context);
-        },
-        "kotgent: cross-tab push reconciliation failed",
-      );
+      repairPushRef.current();
       return true;
     };
     window.addEventListener("storage", syncNotificationPreference);
     // Close the render→effect listener gap before the initial reconciliation: if storage changed there,
-    // the sync owns the transition; otherwise queue the ordinary mount refresh exactly once.
+    // the sync publishes that newer intent; otherwise reconcile without superseding an earlier click.
     if (!syncNotificationPreference()) {
-      const transition = ++pushTransitionIdRef.current;
-      const desired = notifyOnRef.current;
-      pushPermissionRef.current = { transition: transition, request: null };
-      queuePushTransition(
-        transition,
-        desired,
-        (context) => desired ? refreshPush(context) : pushUnsubscribe(context),
-        "kotgent: push subscription refresh failed",
-      );
+      repairPushRef.current();
     }
     return () => {
       window.removeEventListener("storage", syncNotificationPreference);
@@ -285,13 +267,7 @@ export function Sidebar({
     pushRepairGenerationRef.current = null;
     // A fetch can be cancelled; a PushManager mutation cannot, and will repair the newest generation later.
     Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
-    queuePushTransition(
-      transition,
-      next,
-      (context) => next ? pushSubscribe(permission, context) : pushUnsubscribe(context),
-      // A failed subscribe is a downgrade, not an error the operator must act on: the tab keeps notifying.
-      "kotgent: push subscription transition failed",
-    );
+    repairPushRef.current();
   };
   // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
   // and every count — and only surfaced under an explicit "Show done" toggle.

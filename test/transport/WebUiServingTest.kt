@@ -882,11 +882,13 @@ class WebUiServingTest {
             "const permission = next ? ensurePermission() : null",
         )
         val togglePreferenceAt = toggle.indexOf("syncWorkerPushPreference()")
-        val toggleQueueAt = toggle.indexOf("queuePushTransition(")
+        val toggleIntentAt = toggle.indexOf("pushPermissionRef.current =")
+        val toggleRepairAt = toggle.indexOf("repairPushRef.current()")
         assertTrue(
             togglePermissionAt >= 0 &&
-                togglePreferenceAt in (togglePermissionAt + 1) until toggleQueueAt,
-            "an enable click claims permission first, then synchronously posts current intent before queueing",
+                togglePreferenceAt in (togglePermissionAt + 1) until toggleIntentAt &&
+                toggleRepairAt > toggleIntentAt,
+            "an enable click claims permission first, then publishes its intent before requesting reconciliation",
         )
         val boundedTransition = sidebar.substringAfter(
             "function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onController) {",
@@ -914,9 +916,8 @@ class WebUiServingTest {
                 queue.contains("notifyEnabled() === desired") &&
                 queue.contains("boundedPushTransition(") &&
                 queue.contains("() => repairPushRef.current()") &&
-                toggle.contains("transition,\n      next,") &&
-                toggle.contains("pushSubscribe(permission, context)") &&
-                toggle.contains("pushUnsubscribe(context)") &&
+                toggle.contains("repairPushRef.current()") &&
+                !toggle.contains("queuePushTransition(") &&
                 toggle.contains(
                     "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
                 ) &&
@@ -924,9 +925,12 @@ class WebUiServingTest {
                 repair.contains("const repairGeneration = transition + \":\" + desired") &&
                 repair.contains("pushRepairGenerationRef.current === repairGeneration") &&
                 repair.contains("transition,\n      desired,") &&
+                repair.contains("const permission = pushPermissionRef.current") &&
+                repair.contains("permission.transition === transition && permission.request") &&
+                repair.contains("pushSubscribe(permission.request, context)") &&
                 repair.contains("refreshPush(context)") &&
                 repair.contains("pushUnsubscribe(context)"),
-            "local ordering and the origin-wide choice guard mutations while stale repairs reread current intent",
+            "one repair owner derives the subscription decision from current local and origin-wide intent",
         )
         val storageSync = sidebar.substringAfter(
             "const syncNotificationPreference = (event = null) => {",
@@ -935,23 +939,10 @@ class WebUiServingTest {
         val addStorageListenerAt = sidebar.indexOf(
             "window.addEventListener(\"storage\", syncNotificationPreference)",
         )
-        val closeListenerGapAt = sidebar.indexOf("if (!syncNotificationPreference())")
         val preservedPermissionAt = storageSync.indexOf(
             "request: next && !preferenceChanged ? permission.request : null",
         )
-        val readPreservedPermissionAt = storageSync.indexOf(
-            "const currentPermission = pushPermissionRef.current",
-        )
-        val matchPreservedPermissionAt = storageSync.indexOf(
-            "currentPermission.transition === syncedTransition && currentPermission.request",
-        )
-        val subscribeWithPreservedPermissionAt = storageSync.indexOf(
-            "pushSubscribe(currentPermission.request, context)",
-        )
-        val refreshAfterPermissionAt = storageSync.indexOf(
-            "refreshPush(context)",
-            startIndex = subscribeWithPreservedPermissionAt.coerceAtLeast(0),
-        )
+        val storageRepairAt = storageSync.indexOf("repairPushRef.current()")
         assertTrue(
             storageSync.contains("const next = notifyEnabled()") &&
                 storageSync.indexOf("syncWorkerPushPreference()") in
@@ -965,17 +956,24 @@ class WebUiServingTest {
                 storageSync.contains(
                     "Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort())",
                 ) &&
-                storageSync.contains("syncedTransition,\n        next,") &&
                 preservedPermissionAt >= 0 &&
-                readPreservedPermissionAt > preservedPermissionAt &&
-                matchPreservedPermissionAt > readPreservedPermissionAt &&
-                subscribeWithPreservedPermissionAt > matchPreservedPermissionAt &&
-                refreshAfterPermissionAt > subscribeWithPreservedPermissionAt &&
-                storageSync.contains("pushUnsubscribe(context)") &&
+                storageRepairAt > preservedPermissionAt &&
+                !storageSync.contains("queuePushTransition(") &&
                 addStorageListenerAt >= 0 &&
-                closeListenerGapAt > addStorageListenerAt &&
                 sidebar.contains("window.removeEventListener(\"storage\", syncNotificationPreference)"),
-            "cross-tab repair carries an in-flight permission gesture into the replacement generation",
+            "cross-tab changes publish intent while the repair owner preserves an in-flight permission gesture",
+        )
+        val mountReconciliation = sidebar.substringAfter(
+            "window.addEventListener(\"storage\", syncNotificationPreference);",
+        ).substringBefore("\n    return () => {")
+        val closeListenerGapAt = mountReconciliation.indexOf("if (!syncNotificationPreference())")
+        val mountRepairAt = mountReconciliation.indexOf("repairPushRef.current()")
+        assertTrue(
+            closeListenerGapAt >= 0 &&
+                mountRepairAt > closeListenerGapAt &&
+                !mountReconciliation.contains("++pushTransitionIdRef.current") &&
+                !mountReconciliation.contains("pushPermissionRef.current ="),
+            "mount reconciliation joins the current transition without advancing its generation or discarding its permission request",
         )
         val notify = ctx.get("/lib/notify.js").bodyAsText()
         assertTrue(
