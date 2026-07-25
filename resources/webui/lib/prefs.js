@@ -1,46 +1,78 @@
 /*
- * Preferences: base path, grouping level and terminal font size.
+ * Preferences have two scopes:
+ *   - base path + grouping level are daemon-wide and arrive from GET /preferences plus the global
+ *     /events WebSocket;
+ *   - terminal font size is screen/device-specific and remains in its own localStorage key.
  *
- * These are a per-browser VIEW setting, not daemon state — they change how this page draws the session
- * list and what it pre-fills, nothing about the sessions themselves. So they live in localStorage and
- * never round-trip to the server.
+ * The old combined key is deleted but deliberately never read: silently importing one browser's old
+ * grouping into daemon-wide state would surprise every other connected browser.
  */
 
 import { normalizePath } from "./paths.js";
 
-export const PREFS_KEY = "kotgent.prefs.v1";
+export const LEGACY_PREFS_KEY = "kotgent.prefs.v1";
+export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
 export const MAX_GROUPING_LEVEL = 4;
 export const TERMINAL_FONT_SIZES = [11, 13, 16];
-export const DEFAULT_PREFS = { basePath: "", groupingLevel: 1, terminalFontSize: 13 };
+export const DEFAULT_PREFS = {
+  basePath: "",
+  groupingLevel: 1,
+  revision: 0,
+  terminalFontSize: 13,
+};
 
-/** Coerce anything read back from localStorage into a valid prefs shape. */
+/** Coerce dialog drafts and the local terminal value into a safe combined UI shape. */
 export function sanitizePrefs(raw) {
   const level = Number.parseInt(raw && raw.groupingLevel, 10);
+  const revision = Number(raw && raw.revision);
   const fontSize = Number.parseInt(raw && raw.terminalFontSize, 10);
   return {
     basePath: normalizePath(raw && raw.basePath),
     groupingLevel: Number.isFinite(level)
       ? Math.min(MAX_GROUPING_LEVEL, Math.max(0, level))
       : DEFAULT_PREFS.groupingLevel,
+    revision: Number.isSafeInteger(revision) && revision >= 0
+      ? revision
+      : DEFAULT_PREFS.revision,
     terminalFontSize: TERMINAL_FONT_SIZES.includes(fontSize)
       ? fontSize
       : DEFAULT_PREFS.terminalFontSize,
   };
 }
 
-export function loadPrefs() {
-  try {
-    const raw = window.localStorage.getItem(PREFS_KEY);
-    return sanitizePrefs(raw ? JSON.parse(raw) : DEFAULT_PREFS);
-  } catch (_) {
-    return sanitizePrefs(DEFAULT_PREFS); // unreadable / disabled storage — fall back to the defaults
-  }
+/** Strictly validate a server HTTP/WS preference payload before it can mutate UI state. */
+export function sanitizeServerPreferences(raw) {
+  if (!raw || typeof raw.basePath !== "string") return null;
+  if (!Number.isInteger(raw.groupingLevel) ||
+      raw.groupingLevel < 0 ||
+      raw.groupingLevel > MAX_GROUPING_LEVEL) return null;
+  if (!Number.isSafeInteger(raw.revision) || raw.revision < 0) return null;
+  const basePath = normalizePath(raw.basePath);
+  if (basePath.length > 0 && basePath.charAt(0) !== "/") return null;
+  return {
+    basePath: basePath,
+    groupingLevel: raw.groupingLevel,
+    revision: raw.revision,
+  };
 }
 
-export function persistPrefs(next) {
+/** Initial UI value: discard the legacy combined object and load only the new device-local font size. */
+export function loadPrefs() {
+  let terminalFontSize = DEFAULT_PREFS.terminalFontSize;
   try {
-    window.localStorage.setItem(PREFS_KEY, JSON.stringify(next));
-  } catch (_) { /* private mode / quota — the prefs still apply to this page load */ }
+    window.localStorage.removeItem(LEGACY_PREFS_KEY);
+    terminalFontSize = window.localStorage.getItem(TERMINAL_FONT_SIZE_KEY);
+  } catch (_) {
+    // unreadable / disabled storage — fall back to the defaults
+  }
+  return sanitizePrefs({ terminalFontSize: terminalFontSize });
+}
+
+export function persistTerminalFontSize(value) {
+  const fontSize = sanitizePrefs({ terminalFontSize: value }).terminalFontSize;
+  try {
+    window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(fontSize));
+  } catch (_) { /* private mode / quota — the font size still applies to this page load */ }
 }
 
 /** Grouping is what the base path buys; without one the sidebar stays a single flat list. */

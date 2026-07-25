@@ -8,9 +8,8 @@
  * Flow:
  *   1. The browser already holds the `kotgent_session` cookie the login flow (`kotgent web`) set, so this
  *      page needs no token: every request carries the cookie ambiently (`credentials: "same-origin"`).
- *   2. GET /sessions -> the session list; the sidebar draws it flat, or grouped by working directory
- *      when a base path is configured in Preferences.
- *   3. Open the GET /events WebSocket -> each session_update patches one keyed row in place.
+ *   2. GET /sessions + GET /preferences -> daemon state and daemon-wide grouping preferences.
+ *   3. Open the GET /events WebSocket -> session_update and preferences_update frames patch live state.
  *   4. Selecting a live session attaches an xterm.js terminal on its binary terminal WebSocket.
  *   5. Lifecycle actions (interrupt / stop / resume) are REST calls; detaching closes only this
  *      browser's terminal client and leaves the agent running.
@@ -29,7 +28,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preac
 import { html } from "htm/preact";
 
 import { AUTH_PATH, apiRequest, errorMessage, isUnauthenticated, wsUrl } from "./lib/api.js";
-import { loadPrefs, persistPrefs } from "./lib/prefs.js";
+import {
+  loadPrefs,
+  persistTerminalFontSize,
+  sanitizeServerPreferences,
+} from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
 import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
 import { throttleLeading } from "./lib/throttle.js";
@@ -174,6 +177,14 @@ function App() {
   pendingRef.current = pendingAction;
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
+  // HTTP and WebSocket preference responses race independently. The persisted revision is their one
+  // ordering authority; refs advance synchronously so two deliveries in one browser turn cannot both win.
+  const preferencesRevisionRef = useRef(prefs.revision);
+  const serverPreferencesRef = useRef({
+    basePath: prefs.basePath,
+    groupingLevel: prefs.groupingLevel,
+    revision: prefs.revision,
+  });
   // The session a notification tap asked for, honoured once a /sessions load contains it (the id means
   // nothing until the list exists). Seeded from the URL at mount; a focused stale client can replace it
   // with the worker's message and trigger a refresh.
@@ -210,6 +221,16 @@ function App() {
   }, []);
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
+
+  /** Apply a validated daemon preference payload unless a newer committed revision already arrived. */
+  const applyServerPreferences = useCallback((raw) => {
+    const next = sanitizeServerPreferences(raw);
+    if (!next || next.revision < preferencesRevisionRef.current) return false;
+    preferencesRevisionRef.current = next.revision;
+    serverPreferencesRef.current = next;
+    setPrefs((current) => Object.assign({}, current, next));
+    return true;
+  }, []);
 
   const activeSession = sessions.find((s) => s.id === activeId) || null;
 
@@ -280,6 +301,16 @@ function App() {
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
+  // Preferences load independently from sessions. A concurrent save or WebSocket frame may overtake this
+  // GET; applyServerPreferences's revision guard prevents that older response from rolling the UI back.
+  useEffect(() => {
+    let stopped = false;
+    apiRequest("/preferences")
+      .then((value) => { if (!stopped) applyServerPreferences(value); })
+      .catch((e) => { if (!stopped) say("Could not load preferences: " + errorMessage(e), true); });
+    return () => { stopped = true; };
+  }, [applyServerPreferences, say]);
+
   // Version metadata is independent of the session list: if this best-effort request fails, the
   // working UI still loads normally and simply omits the footer label.
   useEffect(() => {
@@ -313,6 +344,10 @@ function App() {
       socket.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        if (msg && msg.type === "preferences_update") {
+          applyServerPreferences(msg);
+          return;
+        }
         if (!msg || msg.type !== "session_update") return;
         // A session we have never seen (started elsewhere) — pull the list to get its metadata.
         if (!sessionsRef.current.some((s) => s.id === msg.sessionId)) {
@@ -355,7 +390,7 @@ function App() {
         try { socket.close(); } catch (_) {}
       }
     };
-  }, [say]);
+  }, [applyServerPreferences, say]);
 
   // Coming back to the tab is the third trigger: while it was hidden the guard suppressed every POST, so
   // the badge kept counting — as it should — and now clears. Registered once; the handler reads refs.
@@ -562,14 +597,25 @@ function App() {
     if (document.visibilityState === "visible") scheduleReattach();
   }, [scheduleReattach]);
 
-  const savePreferences = useCallback((next) => {
-    setPrefs(next);
-    persistPrefs(next);
+  const savePreferences = useCallback(async (next) => {
+    const saved = await apiRequest("/preferences", {
+      method: "PUT",
+      body: JSON.stringify({
+        basePath: next.basePath,
+        groupingLevel: next.groupingLevel,
+      }),
+    });
+    // A preferences_update for this write (or a later write from another browser) may have arrived while
+    // PUT was in flight. Apply only if this response is not older; the per-device font is independent.
+    applyServerPreferences(saved);
+    persistTerminalFontSize(next.terminalFontSize);
+    setPrefs((current) => Object.assign({}, current, { terminalFontSize: next.terminalFontSize }));
     setDialog(null);
-    say(next.basePath.length > 0
-      ? "Grouping by " + next.basePath + " (level " + next.groupingLevel + ")."
+    const current = serverPreferencesRef.current;
+    say(current.basePath.length > 0
+      ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
       : "Grouping off — no base path set.");
-  }, [say]);
+  }, [applyServerPreferences, say]);
 
   /** An explicit directory (a group's "+") wins, then the selected session's, then the base path. */
   const openNewSession = useCallback((cwd) => {

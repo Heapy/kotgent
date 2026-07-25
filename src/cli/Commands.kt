@@ -414,6 +414,7 @@ object Commands {
                     KotgentServer.production(
                         manager,
                         store,
+                        store,
                         tokenHolder,
                         tmux,
                         currentVersion = currentUiVersion(),

@@ -23,7 +23,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -61,14 +63,19 @@ class SqliteEventStore private constructor(
     driver: SqlDriver,
     private val json: Json,
     private val now: () -> Long,
-) : EventStore {
+) : EventStore, PreferencesStore {
 
     private val db: KotgentDatabase = KotgentDatabase(driver)
     private val events get() = db.eventsQueries
     private val sessions get() = db.sessionsQueries
+    private val preferenceQueries get() = db.uiPreferencesQueries
 
     /** Serializes all writes (single writer) and guards the in-memory maps below. */
     private val mutex = Mutex()
+
+    /** Initialized from the seeded singleton row after the legacy-database DDL runs in [init]. */
+    private val _preferences: MutableStateFlow<UiPreferences>
+    override val preferences: StateFlow<UiPreferences> get() = _preferences
 
     /** Per-session cached projection (reducer read-model); reconstructed lazily by [replay]. */
     private val projections = HashMap<SessionId, Projection>()
@@ -135,6 +142,15 @@ class SqliteEventStore private constructor(
         if (!driver.hasColumn("sessions", "archived")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }
+
+        // A whole new table follows the same runtime-migration rule as push_subscriptions: SQLDelight's
+        // generated create() covers fresh databases, while this idempotent DDL covers databases created by
+        // an older binary (generated Schema.migrate() is intentionally empty in this project). Keep this
+        // string in exact step with UiPreferences.sq. Seeding is idempotent too and gives both fresh and
+        // legacy databases the same revision-0 default.
+        driver.execute(null, CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS, 0)
+        preferenceQueries.seedDefaults()
+        _preferences = MutableStateFlow(readPreferences())
     }
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
@@ -209,6 +225,15 @@ class SqliteEventStore private constructor(
     override suspend fun listSessions(): List<SessionMeta> = mutex.withLock {
         sessions.list().executeAsList().map { it.toMeta() }
     }
+
+    override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
+        mutex.withLock {
+            // Increment in SQLite rather than deriving from StateFlow, so the persisted row remains the
+            // revision authority across restarts. The singleton was seeded during init, so this always
+            // updates exactly one row.
+            preferenceQueries.save(basePath, groupingLevel.toLong())
+            readPreferences().also { _preferences.value = it }
+        }
 
     override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
         mutex.withLock {
@@ -396,6 +421,11 @@ class SqliteEventStore private constructor(
     private fun decodeTags(text: String): List<String> =
         json.decodeFromString(ListSerializer(String.serializer()), text)
 
+    private fun readPreferences(): UiPreferences =
+        preferenceQueries.selectCurrent { basePath, groupingLevel, revision ->
+            UiPreferences(basePath, groupingLevel.toInt(), revision)
+        }.executeAsOne()
+
     private fun Sessions.toMeta(): SessionMeta = SessionMeta(
         id = SessionId(id),
         name = name,
@@ -421,6 +451,14 @@ class SqliteEventStore private constructor(
     )
 
     companion object {
+        /** Mirror of the `UiPreferences.sq` DDL, for databases created before that table existed. */
+        const val CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS: String =
+            "CREATE TABLE IF NOT EXISTS ui_preferences (" +
+                "singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1), " +
+                "base_path TEXT NOT NULL, " +
+                "grouping_level INTEGER NOT NULL, " +
+                "revision INTEGER NOT NULL)"
+
         /** JSON used for the `payload` column: `type` discriminator matches [AgentEvent]'s @SerialName. */
         val DEFAULT_JSON: Json = Json {
             classDiscriminator = "type"

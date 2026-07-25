@@ -246,22 +246,30 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
   const [level, setLevel] = useState(String(prefs.groupingLevel));
   const [fontSize, setFontSize] = useState(String(prefs.terminalFontSize));
   const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
 
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault();
     const cleaned = normalizePath(basePath);
     if (cleaned.length > 0 && cleaned.charAt(0) !== "/") {
       setError("Base path must be absolute (start with /).");
       return;
     }
-    onSave(sanitizePrefs({
-      basePath: cleaned,
-      groupingLevel: level,
-      terminalFontSize: fontSize,
-    }));
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave(sanitizePrefs({
+        basePath: cleaned,
+        groupingLevel: level,
+        terminalFontSize: fontSize,
+      }));
+    } catch (e) {
+      setError("Could not save preferences: " + errorMessage(e));
+      setBusy(false);
+    }
   };
 
   const preview = groupingPreview(sanitizePrefs({
@@ -276,7 +284,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
         <div class="dialog-head">
           <div>
             <h2 id="prefs-title">Preferences</h2>
-            <p>Stored in this browser only.</p>
+            <p>Base path and grouping are shared by every browser connected to this daemon.</p>
           </div>
           <button id="prefs-close" class="icon-button" type="button"
                   aria-label="Close" onClick=${onClose}>×</button>
@@ -312,15 +320,19 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
               </option>
             `)}
           </select>
-          <small class="field-hint">Applied immediately to an attached terminal after you save.</small>
+          <small class="field-hint">
+            Stored only in this browser and applied immediately to an attached terminal after you save.
+          </small>
         </label>
 
         ${error && html`<p id="prefs-error" class="form-error" role="alert">${error}</p>`}
 
         <div class="dialog-actions">
           <button id="prefs-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>Cancel</button>
-          <button id="prefs-submit" class="button button-primary" type="submit">Save</button>
+                  disabled=${busy} onClick=${onClose}>Cancel</button>
+          <button id="prefs-submit" class="button button-primary" type="submit" disabled=${busy}>
+            ${busy ? "Saving…" : "Save"}
+          </button>
         </div>
       </form>
     <//>

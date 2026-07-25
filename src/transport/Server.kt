@@ -9,6 +9,7 @@ import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.store.EventStore
+import io.kotgent.store.PreferencesStore
 import io.kotgent.sys.markOpenFdsCloexec
 import io.kotgent.tmux.Tmux
 import io.ktor.http.ContentType
@@ -69,6 +70,8 @@ import platform.posix.access
  * @param tokens the live master token. A [TokenHolder] rather than a plain `() -> String` because the
  *   server does not only READ the secret any more: `POST /auth/rotate` re-mints it, and every gate below
  *   has to observe the new value on the very next request.
+ * @param preferencesStore daemon-wide UI preferences. Kept as a separate contract from [store] even
+ *   though production passes the same SQLite object for both.
  * @param terminalBridgeFactory builds the lazy [TerminalBridge] for a session id on a given scope; the
  *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
  *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
@@ -90,6 +93,7 @@ import platform.posix.access
 class KotgentServer(
     private val sessionManager: SessionManager,
     private val store: EventStore,
+    private val preferencesStore: PreferencesStore,
     private val tokens: TokenHolder,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
     private val directoryCompleter: DirectoryCompleter = posixDirectoryCompleter,
@@ -154,7 +158,8 @@ class KotgentServer(
                         authenticated(tokens::current, publicUrl) {
                             controlRoutes(sessionManager, store, inputSink, currentVersion, json)
                             directoryCompletionRoutes(directoryCompleter, json)
-                            eventsWs(store, json)
+                            preferencesRoutes(preferencesStore, json)
+                            eventsWs(store, preferencesStore, json)
                             terminalWs(registry, store, json)
                             // Web Push registration, only when the daemon actually has push wired (a store AND a key
                             // provider). Absent either, the routes simply do not exist — a 404 the page reads as "this
@@ -255,6 +260,7 @@ class KotgentServer(
         fun production(
             sessionManager: SessionManager,
             store: EventStore,
+            preferencesStore: PreferencesStore,
             tokens: TokenHolder,
             tmux: Tmux,
             currentVersion: String = currentUiVersion(),
@@ -268,6 +274,7 @@ class KotgentServer(
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             store = store,
+            preferencesStore = preferencesStore,
             tokens = tokens,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },
             currentVersion = currentVersion,

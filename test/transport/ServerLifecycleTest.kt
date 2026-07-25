@@ -111,6 +111,7 @@ class ServerLifecycleTest {
         fun server(port: Int): KotgentServer = KotgentServer(
             sessionManager = manager,
             store = store,
+            preferencesStore = store,
             tokens = TokenHolder("server-lifecycle-test-token"),
             terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in this test") },
             webUiDir = null,

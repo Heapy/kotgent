@@ -31,9 +31,11 @@ import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.store.EventStore
+import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
+import io.kotgent.store.UiPreferences
 import io.kotgent.tmux.Tmux
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -43,6 +45,7 @@ import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
@@ -65,7 +68,9 @@ import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.currentCoroutineContext
@@ -77,6 +82,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -864,7 +871,98 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
     }
 
-    // ---- 7. working-directory completion --------------------------------------------------------
+    // ---- 7. daemon-wide UI preferences -----------------------------------------------------------
+
+    @Test
+    fun preferencesGetDefaultsAndPutReturnsCanonicalPersistedValue() = withServer { ctx ->
+        assertEquals(
+            PreferencesDto(basePath = "", groupingLevel = 1, revision = 0),
+            ctx.getPreferences(),
+            "a fresh daemon exposes the seeded defaults",
+        )
+
+        val response = ctx.putPreferences(
+            """{"basePath":"  //Users///me/dev///  ","groupingLevel":4}""",
+        )
+        assertEquals(HttpStatusCode.OK, response.status)
+        val saved = TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), response.bodyAsText())
+        assertEquals(
+            PreferencesDto(basePath = "/Users/me/dev", groupingLevel = 4, revision = 1),
+            saved,
+            "PUT canonicalizes with the same rule as the browser and consumes one revision",
+        )
+        assertEquals(saved, ctx.getPreferences(), "GET reads back the persisted value")
+    }
+
+    @Test
+    fun invalidPreferenceBodiesPathsAndLevelsAre400WithoutMutation() = withServer { ctx ->
+        val before = ctx.getPreferences()
+        val invalidBodies = listOf(
+            "not-json",
+            "{}",
+            """{"basePath":"relative/path","groupingLevel":1}""",
+            """{"basePath":"/work","groupingLevel":-1}""",
+            """{"basePath":"/work","groupingLevel":5}""",
+            """{"basePath":"/work","groupingLevel":"2"}""",
+        )
+
+        for (body in invalidBodies) {
+            val response = ctx.putPreferences(body)
+            assertEquals(HttpStatusCode.BadRequest, response.status, "invalid body must be rejected: $body")
+            assertEquals(before, ctx.getPreferences(), "a rejected request cannot mutate or consume a revision")
+        }
+    }
+
+    @Test
+    fun preferencesAreReachableThroughThePublishedTunnel() =
+        withServer(publicUrl = publicUrl) { ctx ->
+            val response = ctx.client.put("http://127.0.0.1:${ctx.port}/preferences") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                header(HttpHeaders.Host, publicHost)
+                header(HttpHeaders.Origin, publicUrl)
+                setBody("""{"basePath":"/shared/work","groupingLevel":2}""")
+            }
+
+            assertEquals(HttpStatusCode.OK, response.status, "the published host reaches PUT /preferences")
+            assertEquals(
+                PreferencesDto("/shared/work", 2, 1),
+                TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), response.bodyAsText()),
+            )
+        }
+
+    @Test
+    fun globalEventsWsSendsTheCurrentPreferencesThenLiveSavesToAnotherClient() = withServer { ctx ->
+        // Persist before connecting to prove the first frame is a current snapshot, not a hard-coded default.
+        val firstSave = ctx.putPreferences("""{"basePath":"/before-connect","groupingLevel":1}""")
+        assertEquals(HttpStatusCode.OK, firstSave.status)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            assertEquals(
+                PreferencesUpdateDto(
+                    basePath = "/before-connect",
+                    groupingLevel = 1,
+                    revision = 1,
+                ),
+                receivePreferencesUpdate(),
+                "a global subscriber immediately receives the persisted snapshot",
+            )
+
+            // The HTTP writer and WS reader are distinct clients/channels. The committed revision is the
+            // ordering authority whichever response reaches a browser first.
+            val secondSave = ctx.putPreferences("""{"basePath":"/live","groupingLevel":3}""")
+            assertEquals(HttpStatusCode.OK, secondSave.status)
+            assertEquals(
+                PreferencesUpdateDto(basePath = "/live", groupingLevel = 3, revision = 2),
+                receivePreferencesUpdate(),
+                "an accepted save is delivered live to the already-connected client",
+            )
+        }
+    }
+
+    // ---- 8. working-directory completion --------------------------------------------------------
 
     @Test
     fun directoryCompletionReturnsServerPathsAndRejectsARelativeInputWithoutBasePath() {
@@ -952,6 +1050,19 @@ class TransportTest {
             return TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
         }
 
+        suspend fun getPreferences(): PreferencesDto {
+            val resp = client.get("http://127.0.0.1:$port/preferences") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            return TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), resp.bodyAsText())
+        }
+
+        suspend fun putPreferences(body: String) = client.put("http://127.0.0.1:$port/preferences") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody(body)
+        }
+
         /** An authenticated `POST` with no body — for the control ops (stop/resume/interrupt/…). */
         suspend fun post(path: String) = client.post("http://127.0.0.1:$port$path") {
             header(HttpHeaders.Authorization, "Bearer $token")
@@ -1005,6 +1116,7 @@ class TransportTest {
                         KotgentServer.production(
                             manager,
                             store,
+                            store,
                             TokenHolder(token),
                             Tmux(socket = "kotgent-production-factory-test", tmuxPath = "/usr/bin/false"),
                             ptyFactory = ptyFactory,
@@ -1018,10 +1130,11 @@ class TransportTest {
                 ).also { push = it.push }.server
             } else {
                 KotgentServer(
-                    manager,
-                    store,
-                    TokenHolder(token),
-                    bridgeFactory,
+                    sessionManager = manager,
+                    store = store,
+                    preferencesStore = store,
+                    tokens = TokenHolder(token),
+                    terminalBridgeFactory = bridgeFactory,
                     directoryCompleter = directoryCompleter,
                     webUiDir = null,
                     publicUrl = publicUrl,
@@ -1050,9 +1163,32 @@ class TransportTest {
     }
 
     private suspend fun DefaultClientWebSocketSession.receiveUpdate(): SessionUpdateDto {
+        return TRANSPORT_JSON.decodeFromString(
+            SessionUpdateDto.serializer(),
+            receiveTextPayload("session_update"),
+        )
+    }
+
+    private suspend fun DefaultClientWebSocketSession.receivePreferencesUpdate(): PreferencesUpdateDto {
+        return TRANSPORT_JSON.decodeFromString(
+            PreferencesUpdateDto.serializer(),
+            receiveTextPayload("preferences_update"),
+        )
+    }
+
+    /**
+     * The global socket carries multiple message kinds. Dispatch on the discriminator before decoding so
+     * a preferences snapshot cannot break an existing session-update waiter (and vice versa).
+     */
+    private suspend fun DefaultClientWebSocketSession.receiveTextPayload(type: String): String {
         while (true) {
             val frame = incoming.receive()
-            if (frame is Frame.Text) return TRANSPORT_JSON.decodeFromString(SessionUpdateDto.serializer(), frame.readText())
+            if (frame !is Frame.Text) continue
+            val text = frame.readText()
+            val actualType = runCatching {
+                TRANSPORT_JSON.parseToJsonElement(text).jsonObject["type"]?.jsonPrimitive?.content
+            }.getOrNull()
+            if (actualType == type) return text
         }
     }
 
@@ -1114,7 +1250,7 @@ class TransportTest {
      * signal. Guarded by one coroutine [Mutex]; every observable is a [Channel] / [SharedFlow], so it is
      * safe to touch from the CIO engine threads and the test thread at once.
      */
-    private class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore {
+    private class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, PreferencesStore {
         private val mutex = Mutex()
         private val metas = LinkedHashMap<SessionId, SessionMeta>()
         private val logs = HashMap<SessionId, MutableList<StoredEvent>>()
@@ -1126,6 +1262,8 @@ class TransportTest {
         override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
         private val reliableUpdates = MutableSharedFlow<SessionUpdate>()
         override val reliableSessionUpdates: SharedFlow<SessionUpdate> get() = reliableUpdates
+        private val preferenceState = MutableStateFlow(UiPreferences("", 1, 0))
+        override val preferences: StateFlow<UiPreferences> get() = preferenceState
 
         /**
          * The fake's [io.kotgent.store.SqliteEventStore] `emitFromRow`: rebuild the signal from the STORED
@@ -1193,6 +1331,13 @@ class TransportTest {
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }
 
         override suspend fun listSessions(): List<SessionMeta> = mutex.withLock { metas.values.toList() }
+
+        override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
+            mutex.withLock {
+                UiPreferences(basePath, groupingLevel, preferenceState.value.revision + 1).also {
+                    preferenceState.value = it
+                }
+            }
 
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = mutex.withLock {
             val log = logs.getOrPut(sessionId) { mutableListOf() }

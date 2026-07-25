@@ -71,6 +71,7 @@ class ShutdownSignalsTest {
             val server = KotgentServer(
                 sessionManager = manager,
                 store = store,
+                preferencesStore = store,
                 tokens = TokenHolder(token),
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in this test") },
                 webUiDir = null,

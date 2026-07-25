@@ -15,8 +15,10 @@ import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.store.EventStore
+import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
+import io.kotgent.store.UiPreferences
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
@@ -38,7 +40,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -269,6 +273,49 @@ class WebUiServingTest {
         assertTrue(dialogs.contains("id=\"prefs-dialog\""), "the UI includes the preferences screen")
         assertTrue(dialogs.contains("id=\"prefs-base-path\""), "preferences expose the base path")
         assertTrue(dialogs.contains("id=\"prefs-grouping-level\""), "preferences expose the grouping level")
+        assertTrue(
+            dialogs.contains("shared by every browser connected to this daemon"),
+            "the dialog explains the daemon-wide scope",
+        )
+        assertTrue(
+            dialogs.contains("const [busy, setBusy] = useState(false)") &&
+                dialogs.contains("await onSave(") &&
+                dialogs.contains("Could not save preferences: ") &&
+                dialogs.contains("""${'$'}{busy ? "Saving…" : "Save"}"""),
+            "the dialog shows asynchronous save progress and keeps failures visible",
+        )
+
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("""apiRequest("/preferences")""") &&
+                app.contains("""method: "PUT"""") &&
+                app.contains("basePath: next.basePath") &&
+                app.contains("groupingLevel: next.groupingLevel"),
+            "the page loads and saves grouping preferences through the daemon",
+        )
+        assertTrue(
+            app.contains("""msg.type === "preferences_update"""") &&
+                app.contains("applyServerPreferences(msg)"),
+            "the global events socket applies live preference updates",
+        )
+        assertTrue(
+            app.contains("next.revision < preferencesRevisionRef.current") &&
+                app.contains("preferencesRevisionRef.current = next.revision"),
+            "older HTTP/WebSocket deliveries cannot roll back a newer persisted revision",
+        )
+
+        val prefs = ctx.get("/lib/prefs.js").bodyAsText()
+        assertTrue(
+            prefs.contains("""LEGACY_PREFS_KEY = "kotgent.prefs.v1"""") &&
+                prefs.contains("localStorage.removeItem(LEGACY_PREFS_KEY)") &&
+                !prefs.contains("getItem(LEGACY_PREFS_KEY)"),
+            "the legacy combined key is deleted but never imported",
+        )
+        assertTrue(
+            prefs.contains("""COLLAPSED_GROUPS_KEY = "kotgent.collapsedGroups.v1"""") &&
+                ctx.get("/lib/notify.js").bodyAsText().contains("""const KEY = "kotgent.notifications.v1""""),
+            "collapsed groups and notification intent keep their existing device-local keys",
+        )
     }
 
     @Test
@@ -1213,6 +1260,49 @@ class WebUiServingTest {
     }
 
     /**
+     * FitAddon measures the terminal's parent box, then subtracts padding from the `.xterm` element
+     * itself. Padding the parent instead makes the proposed grid one row/column too large whenever the
+     * unaccounted pixels cross a cell boundary, leaving the final row clipped by `overflow: hidden`.
+     */
+    @Test
+    fun xtermFitSubtractsThePaddingThatFramesTerminalContent() = withServer { ctx ->
+        val css = ctx.get("/style.css").bodyAsText()
+        val addon = ctx.get("/vendor/addon-fit.js").bodyAsText()
+        val hostRule = assertNotNull(
+            Regex("""(?s)#terminal-host\s*\{([^}]*)}""").find(css)?.groupValues?.get(1),
+            "the terminal host rule exists",
+        )
+        val xtermRule = assertNotNull(
+            Regex("""(?s)#terminal-host \.xterm\s*\{([^}]*)}""").find(css)?.groupValues?.get(1),
+            "the xterm rule exists",
+        )
+
+        assertTrue(
+            addon.contains("""this._terminal.element.parentElement""") &&
+                addon.contains("""getPropertyValue("padding-top")"""),
+            "the vendored FitAddon measures the parent but subtracts padding from .xterm",
+        )
+        assertTrue(
+            !hostRule.contains("padding:"),
+            "the measured parent must not hide unaccounted terminal padding",
+        )
+        assertTrue(
+            xtermRule.contains("height: 100%") && xtermRule.contains("padding: 6px 8px"),
+            "desktop padding belongs to the element FitAddon subtracts from the available box",
+        )
+
+        val breakpoint = css.indexOf("@media (max-width: 720px)")
+        assertTrue(breakpoint > 0, "the mobile breakpoint exists")
+        val nextMedia = css.indexOf("@media ", breakpoint + 1).let { if (it < 0) css.length else it }
+        val mobileCss = css.substring(breakpoint, nextMedia)
+        assertTrue(
+            Regex("""(?s)#terminal-host \.xterm\s*\{[^}]*padding:\s*4px 6px""")
+                .containsMatchIn(mobileCss),
+            "mobile padding stays on .xterm too, so its smaller grid is fitted to visible pixels",
+        )
+    }
+
+    /**
      * The special-key bar is browser-only, so pin both its byte-exact terminal protocol and the edge
      * contracts around it: a closed socket drops input, stale teardown cannot clear a replacement sender,
      * non-printable/multi-character input cannot consume sticky Ctrl, and the toolbar never takes pointer
@@ -1543,6 +1633,7 @@ class WebUiServingTest {
             val server = KotgentServer(
                 sessionManager = manager,
                 store = store,
+                preferencesStore = store,
                 tokens = TokenHolder(token),
                 // Never invoked in a serving test (no terminal WS connects); throwing makes that explicit.
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the serving test") },
@@ -1589,8 +1680,14 @@ class WebUiServingTest {
      * and the one API call the shadowing test makes ([listSessions]) returns an empty list. Everything
      * else is unused, so it returns empties / throws.
      */
-    private class NoopEventStore : EventStore {
+    private class NoopEventStore : EventStore, PreferencesStore {
         override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow<SessionUpdate>()
+        private val preferenceState = MutableStateFlow(UiPreferences("", 1, 0))
+        override val preferences: StateFlow<UiPreferences> get() = preferenceState
+        override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
+            UiPreferences(basePath, groupingLevel, preferenceState.value.revision + 1).also {
+                preferenceState.value = it
+            }
         override suspend fun upsertSession(meta: SessionMeta) {}
         override suspend fun updateSessionState(
             sessionId: SessionId,

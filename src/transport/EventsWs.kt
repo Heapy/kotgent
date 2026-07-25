@@ -6,6 +6,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.unread
 import io.kotgent.store.EventStore
+import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
@@ -47,23 +48,44 @@ import kotlinx.serialization.json.Json
  * Mounted inside [authenticated]. The browser authenticates the handshake with its ambient session cookie
  * (no token in the URL); `kotgent attach` and other native clients send an `Authorization: Bearer` header.
  */
-fun Route.eventsWs(store: EventStore, json: Json = TRANSPORT_JSON) {
+fun Route.eventsWs(
+    store: EventStore,
+    preferencesStore: PreferencesStore,
+    json: Json = TRANSPORT_JSON,
+) {
     webSocket("/events") {
         val sessionParam = call.request.queryParameters["session"]
         if (sessionParam != null) {
             streamOneSession(store, json, sessionParam)
         } else {
-            streamGlobalUpdates(store, json)
+            streamGlobalUpdates(store, preferencesStore, json)
         }
     }
 }
 
 private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.streamGlobalUpdates(
     store: EventStore,
+    preferencesStore: PreferencesStore,
     json: Json,
 ) {
     val ws = this
     coroutineScope {
+        // Preferences share the global socket because they are daemon-wide, not session events. StateFlow
+        // delivers its current persisted value immediately to this new collector, then every accepted
+        // save. The per-session mode below remains the canonical event log only.
+        launch {
+            preferencesStore.preferences.collect { preferences ->
+                ws.send(
+                    Frame.Text(
+                        json.encodeToString(
+                            PreferencesUpdateDto.serializer(),
+                            preferences.toUpdateDto(),
+                        ),
+                    ),
+                )
+            }
+        }
+
         // Periodic full resync. `sessionUpdates` is a DROP_OLDEST buffer, so a consumer that falls far
         // behind could miss a session's LAST update and show a stale state until it reconnects. Re-sending
         // every session's current state on a slow tick makes any such drop self-heal (the newest state is
