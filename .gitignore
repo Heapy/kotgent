@@ -2,3 +2,4 @@
 build/
 *.klib
 .claude/worktrees/
+.idea
