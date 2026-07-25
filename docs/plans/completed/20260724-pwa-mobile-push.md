@@ -2,10 +2,11 @@
 
 ## Completed status
 
-Completed on 2026-07-24. Implementation Tasks 1–20 shipped; two post-completion adversarial review passes
-subsequently brought the latest verification to **613 run / 613 passed / 0 skipped** (plus the separately
-driven real-PTY checks). This plan now lives under `docs/plans/completed/`; the manual real-device checks
-below remain post-completion verification, not unfinished implementation tasks.
+Completed on 2026-07-24. Implementation Tasks 1–20 shipped; the post-completion adversarial reviews and
+the rebase onto v0.3.0 brought the latest verification to **674 native tests passed / 0 skipped**, plus
+3 JVM build-info tests and the 11 real-PTY checks driven by `PtyTest`. This plan now lives under
+`docs/plans/completed/`; the manual real-device checks below remain post-completion verification, not
+unfinished implementation tasks.
 
 ## Overview
 
