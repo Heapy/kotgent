@@ -15,8 +15,11 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
+import io.ktor.server.application.serverConfig
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.EngineConnectorBuilder
+import io.ktor.server.engine.applicationEnvironment
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
@@ -24,6 +27,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import io.ktor.util.logging.KtorSimpleLogger
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -114,45 +118,66 @@ class KotgentServer(
     private val engineExceptionHandler = CoroutineExceptionHandler { _, cause ->
         if (!startupInProgress) throw cause
     }
+    private val engineScope = CoroutineScope(engineExceptionHandler)
 
     private val server: EmbeddedServer<*, *> =
-        CoroutineScope(engineExceptionHandler).embeddedServer(CIO, port = port, host = host) {
-            // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
-            val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
-            // Programmatic input: cancel copy-mode first (a wheel scroll by ANY viewer parks the shared
-            // pane there, where tmux silently eats every keystroke), then write into the one upstream.
-            // BOTH halves answer: `&&` short-circuits, so a pane that would eat the bytes is never written
-            // to, and a write that found no upstream (the lazy bridge with zero subscribers — the more
-            // common drop of the two) is reported instead of being answered `ok`. The interactive terminal
-            // WS deliberately does neither — see `Tmux.leaveCopyMode`.
-            val inputSink: TerminalInputSink = { id, bytes ->
-                sessionManager.leaveCopyMode(id) && registry.getOrCreate(id.value).write(bytes)
-            }
-            install(WebSockets)
-            routing {
-                // Hook ingress, one route per provider: same token, their own header check (Task 12).
-                claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
-                codexHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
-                // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
-                authRoutes(tokens, tickets, publicUrl, json)
-                // Token-gated control plane.
-                authenticated(tokens::current, publicUrl) {
-                    controlRoutes(sessionManager, store, inputSink, currentVersion, json)
-                    directoryCompletionRoutes(directoryCompleter, json)
-                    eventsWs(store, json)
-                    terminalWs(registry, store, json)
-                    // Web Push registration, only when the daemon actually has push wired (a store AND a key
-                    // provider). Absent either, the routes simply do not exist — a 404 the page reads as "this
-                    // daemon cannot do push", rather than a half-mounted surface that accepts subscriptions
-                    // nothing will ever send to.
-                    val subscriptions = pushStore
-                    val key = vapidPublicKey
-                    if (subscriptions != null && key != null) pushRoutes(subscriptions, key, json)
+        embeddedServer(
+            factory = CIO,
+            rootConfig = serverConfig(
+                environment = applicationEnvironment {
+                    log = websocketDisconnectAwareLogger(KtorSimpleLogger(KTOR_APPLICATION_LOGGER_NAME))
+                },
+            ) {
+                // Preserve the startup exception handler used by the former CoroutineScope.embeddedServer
+                // convenience overload while supplying the application logger explicitly.
+                parentCoroutineContext = engineScope.coroutineContext
+                module {
+                    // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
+                    val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
+                    // Programmatic input: cancel copy-mode first (a wheel scroll by ANY viewer parks the shared
+                    // pane there, where tmux silently eats every keystroke), then write into the one upstream.
+                    // BOTH halves answer: `&&` short-circuits, so a pane that would eat the bytes is never written
+                    // to, and a write that found no upstream (the lazy bridge with zero subscribers — the more
+                    // common drop of the two) is reported instead of being answered `ok`. The interactive terminal
+                    // WS deliberately does neither — see `Tmux.leaveCopyMode`.
+                    val inputSink: TerminalInputSink = { id, bytes ->
+                        sessionManager.leaveCopyMode(id) && registry.getOrCreate(id.value).write(bytes)
+                    }
+                    install(WebSockets)
+                    routing {
+                        // Hook ingress, one route per provider: same token, their own header check (Task 12).
+                        claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                        codexHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                        // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
+                        authRoutes(tokens, tickets, publicUrl, json)
+                        // Token-gated control plane.
+                        authenticated(tokens::current, publicUrl) {
+                            controlRoutes(sessionManager, store, inputSink, currentVersion, json)
+                            directoryCompletionRoutes(directoryCompleter, json)
+                            eventsWs(store, json)
+                            terminalWs(registry, store, json)
+                            // Web Push registration, only when the daemon actually has push wired (a store AND a key
+                            // provider). Absent either, the routes simply do not exist — a 404 the page reads as "this
+                            // daemon cannot do push", rather than a half-mounted surface that accepts subscriptions
+                            // nothing will ever send to.
+                            val subscriptions = pushStore
+                            val key = vapidPublicKey
+                            if (subscriptions != null && key != null) pushRoutes(subscriptions, key, json)
+                        }
+                        // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
+                        staticWebUi(webUiDir)
+                    }
                 }
-                // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
-                staticWebUi(webUiDir)
-            }
-        }.also {
+            },
+            configure = {
+                connectors.add(
+                    EngineConnectorBuilder().apply {
+                        this.host = host
+                        this.port = port
+                    },
+                )
+            },
+        ).also {
             // CIO defaults this to false. After serving a browser/WebSocket client, stopping the daemon
             // can leave the old local endpoint in TCP teardown state on macOS; without SO_REUSEADDR an
             // immediate restart then fails with EADDRINUSE even though no process owns the listener.
@@ -212,6 +237,9 @@ class KotgentServer(
 
         /** How long [start] waits for the engine to resolve its connectors before giving up. */
         private const val BIND_TIMEOUT_MS: Long = 10_000
+
+        /** The name used by Ktor's former embedded-server convenience overload. */
+        private const val KTOR_APPLICATION_LOGGER_NAME: String = "io.ktor.server.Application"
 
         /**
          * Production wiring: terminal bridges attach the real
