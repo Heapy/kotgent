@@ -264,6 +264,41 @@ class WebUiServingTest {
     }
 
     @Test
+    fun webUiUsesOneClickAgentPickerWithoutADefaultSelection() = withServer { ctx ->
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(
+            dialogs.contains("const [agent, setAgent] = useState(\"\")"),
+            "the new-session dialog starts without a selected agent",
+        )
+
+        val pickerStart = dialogs.indexOf("<fieldset class=\"field agent-picker\">")
+        val pickerEnd = dialogs.indexOf("</fieldset>", pickerStart.coerceAtLeast(0))
+        assertTrue(pickerStart >= 0 && pickerEnd > pickerStart, "the agent picker is a bounded fieldset")
+        val picker = dialogs.substring(pickerStart, pickerEnd)
+
+        assertEquals(2, Regex("type=\"radio\"").findAll(picker).count(), "each agent is one radio choice")
+        assertTrue(!picker.contains("<select"), "choosing an agent does not require opening a select")
+        assertTrue(picker.contains("value=\"claude\""), "Claude is available")
+        assertTrue(picker.contains("value=\"codex\""), "Codex is available")
+        assertTrue(picker.contains("required"), "the form requires an explicit agent choice")
+        assertTrue(
+            dialogs.contains("disabled=\${busy || !agent}"),
+            "the start action stays disabled until an agent is selected",
+        )
+
+        val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(css.contains(".agent-options"), "the icon choices have a dedicated layout")
+        assertTrue(
+            css.contains(".agent-option input:checked + .agent-option-content"),
+            "the selected agent has a visible state",
+        )
+        assertTrue(
+            css.contains(".agent-option input:focus-visible + .agent-option-content"),
+            "keyboard focus remains visible on the custom radio choices",
+        )
+    }
+
+    @Test
     fun webUiExposesThePreferencesScreen() = withServer { ctx ->
         assertTrue(
             ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"prefs-button\""),

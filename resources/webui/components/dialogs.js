@@ -41,7 +41,7 @@ function Dialog({ id, labelledBy, onClose, children }) {
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
 export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
-  const [agent, setAgent] = useState("claude");
+  const [agent, setAgent] = useState("");
   const [cwd, setCwd] = useState(initialCwd || "");
   const [completionQuery, setCompletionQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -151,13 +151,37 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
                   aria-label="Close" onClick=${onClose}>×</button>
         </div>
 
-        <label class="field">
-          <span>Agent</span>
-          <select id="session-agent" value=${agent} onChange=${(e) => setAgent(e.target.value)}>
-            <option value="claude">Claude</option>
-            <option value="codex">Codex</option>
-          </select>
-        </label>
+        <fieldset class="field agent-picker">
+          <legend>Agent</legend>
+          <div class="agent-options">
+            <label class="agent-option">
+              <input id="session-agent-claude" type="radio" name="session-agent" value="claude"
+                     required checked=${agent === "claude"}
+                     onChange=${(e) => setAgent(e.target.value)} />
+              <span class="agent-option-content">
+                <span class="agent-icon agent-icon-claude" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4" />
+                  </svg>
+                </span>
+                <span class="agent-option-name">Claude</span>
+              </span>
+            </label>
+            <label class="agent-option">
+              <input id="session-agent-codex" type="radio" name="session-agent" value="codex"
+                     required checked=${agent === "codex"}
+                     onChange=${(e) => setAgent(e.target.value)} />
+              <span class="agent-option-content">
+                <span class="agent-icon agent-icon-codex" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="m6 7 5 5-5 5M13 17h5" />
+                  </svg>
+                </span>
+                <span class="agent-option-name">Codex</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
 
         <div class="field">
           <label for="session-cwd">Working directory</label>
@@ -205,7 +229,8 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
         <div class="dialog-actions">
           <button id="new-session-cancel" class="button button-quiet" type="button"
                   onClick=${onClose}>Cancel</button>
-          <button id="new-session-submit" class="button button-primary" type="submit" disabled=${busy}>
+          <button id="new-session-submit" class="button button-primary" type="submit"
+                  disabled=${busy || !agent}>
             ${busy ? "Starting…" : "Start session"}
           </button>
         </div>

@@ -604,6 +604,85 @@ dialog::backdrop {
   padding: 7px 10px;
   width: 100%;
 }
+.agent-picker {
+  border: 0;
+  min-width: 0;
+  padding: 0;
+}
+.agent-picker > legend {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  padding: 0;
+}
+.agent-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.agent-option {
+  cursor: pointer;
+  min-width: 0;
+  position: relative;
+}
+.agent-option input {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+.agent-option-content {
+  align-items: center;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  gap: 12px;
+  min-height: 68px;
+  padding: 10px 12px;
+  transition: background 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+.agent-option:hover .agent-option-content {
+  background: var(--row-hover);
+}
+.agent-option input:checked + .agent-option-content {
+  background: var(--row-active);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.agent-option input:focus-visible + .agent-option-content {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.agent-icon {
+  align-items: center;
+  border-radius: 10px;
+  display: inline-flex;
+  flex: 0 0 38px;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+.agent-icon svg {
+  fill: none;
+  height: 23px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+  width: 23px;
+}
+.agent-icon-claude {
+  background: #f8e2d8;
+  color: #b94f2d;
+}
+.agent-icon-codex {
+  background: #1f2937;
+  color: #ffffff;
+}
+.agent-option-name {
+  font-size: 13px;
+  font-weight: 600;
+}
 .path-autocomplete {
   position: relative;
 }
