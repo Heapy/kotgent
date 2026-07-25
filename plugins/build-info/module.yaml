@@ -1,3 +1,7 @@
 # Small JVM build-time plugin that turns version.txt + Git HEAD into generated Kotlin constants.
 # It has no runtime footprint in the native application.
 product: jvm/amper-plugin
+
+settings:
+  kotlin:
+    version: 2.4.10

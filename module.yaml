@@ -17,38 +17,40 @@ dependencies:
   # (KT-78062), so the real-PTY assertions run from the `ptycheck` app module's MAIN binary,
   # which PtyTest execs. See CLAUDE.md.
   - ./sysnative
-  - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0
+  - $libs.kotlinx.coroutines.core
   # Ktor CIO server + WebSockets — transport foundation (Task 3 spike, real Server in Task 14).
-  # Versions come from the BOM/catalog that `settings.ktor: enabled` provides (default 3.4.1).
-  - io.ktor:ktor-server-cio
-  - io.ktor:ktor-server-websockets
+  # Versions come from the project catalog so Dependabot can keep the whole Ktor family aligned.
+  - $libs.ktor.server.cio
+  - $libs.ktor.server.websockets
   # Ktor CIO client (+ client WebSockets) — the CLI's ApiClient (control REST) and AttachClient
   # (terminal WS raw passthrough) are MAIN code now (Task 15), so these moved out of
   # test-dependencies into the main dependencies (still visible to the test compilation).
-  - io.ktor:ktor-client-cio
-  - io.ktor:ktor-client-websockets
+  - $libs.ktor.client.cio
+  - $libs.ktor.client.websockets
   # Ktor Darwin (NSURLSession) client engine — the ONLY way the daemon can speak HTTPS. Ktor's CIO
   # client cannot do TLS on Kotlin/Native at all (`openTLSSession` for non-JVM is a hard
   # `error("TLS sessions are not supported on Native platform.")`), and every Web Push endpoint is
   # https, so the push sender runs on NSURLSession and inherits the system trust store. Third-party
   # klib with its own cinterop, so it links into the test binary fine (the Ktor/sqliter precedent).
-  - io.ktor:ktor-client-darwin
+  - $libs.ktor.client.darwin
   # SQLDelight runtime native SQLite driver (Task 4 storage spike). The toolchain resolves the
   # macosArm64 variant (native-driver-macosarm64.klib) via Gradle Module Metadata, exactly like
   # Ktor's native artifacts. It is a THIRD-PARTY klib (its own sqliter-driver cinterop to sqlite3),
   # so — unlike our own raw pty.def cinterop (KT-78062) — it links into the TEST binary fine
   # (proven by the Ktor precedent in Task 3). Version matches the compiler used by the codegen
   # plugin (2.3.2, built with Kotlin 2.3.10 — klib-compatible with our 2.4.10).
-  - app.cash.sqldelight:native-driver:2.3.2
+  - $libs.sqldelight.native.driver
 
 test-dependencies:
   # No-network verification of DarwinPushTransport's exact request method, headers, body, and status.
-  - io.ktor:ktor-client-mock
+  - $libs.ktor.client.mock
 
 settings:
   kotlin:
     version: 2.4.10
-    serialization: json
+    serialization:
+      format: json
+      version: 1.11.0
     # SQLDelight's native-driver depends on co.touchlab:sqliter-driver, whose cinterop calls
     # the system SQLite (sqlite3_* symbols). Sqliter's own `linkerOpts = -lsqlite3` is NOT
     # propagated to the final Kotlin/Native link by toolchain 0.11.x, so both the main and test
@@ -58,4 +60,3 @@ settings:
     freeCompilerArgs: [-linker-option, -lsqlite3]
   native:
     entryPoint: io.kotgent.main
-  ktor: enabled

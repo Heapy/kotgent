@@ -17,7 +17,7 @@ product:
 dependencies:
   # Pty.output is a Channel<ByteArray>, so coroutines types are part of this module's
   # public API -> exported so consumers see them without re-declaring the dependency.
-  - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0:
+  - $libs.kotlinx.coroutines.core:
       exported: true
 
 settings:
