@@ -1344,7 +1344,12 @@ dialog::backdrop {
     line-height: 1;
   }
 
-  #terminal-host .xterm { padding: 4px 6px; }
+  /* xterm's native touch path is disabled while tmux mouse reporting is active. The terminal's JS
+     bridge owns vertical swipes, so the browser must not turn them into page pan or pull-to-refresh. */
+  #terminal-host .xterm {
+    padding: 4px 6px;
+    touch-action: none;
+  }
   .key-bar {
     display: flex;
     padding-bottom: calc(5px + var(--active-safe-area-bottom));

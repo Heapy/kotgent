@@ -65,6 +65,126 @@ function ctrlBytesFor(data) {
   }
 }
 
+/**
+ * Bridge a one-finger phone swipe into xterm's ordinary wheel path.
+ *
+ * xterm 5.5 handles touch scrolling only while mouse tracking is OFF. Kotgent's tmux client deliberately
+ * keeps tracking on so a desktop wheel reaches tmux's pane history, which leaves touchmove as a no-op on
+ * phones. Synthetic wheel events reuse xterm's current mouse protocol and coordinate mapping instead of
+ * hard-coding SGR bytes here; tmux or a mouse-aware TUI therefore sees exactly the input a real wheel
+ * would have produced.
+ */
+function installTouchScroll(term) {
+  const element = term.element;
+  if (!element) return { shouldFocus: () => true, dispose: () => {} };
+
+  const startThreshold = 6;
+  const maxEventsPerMove = 12;
+  let gesture = null;
+  let suppressFocusUntil = 0;
+
+  const resetGesture = () => { gesture = null; };
+  const trackedTouch = (touches, identifier) => {
+    for (let i = 0; i < touches.length; i += 1) {
+      if (touches[i].identifier === identifier) return touches[i];
+    }
+    return null;
+  };
+
+  const onTouchStart = (event) => {
+    if (event.touches.length !== 1) {
+      resetGesture();
+      return;
+    }
+    const touch = event.touches[0];
+    gesture = {
+      identifier: touch.identifier,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      lastY: touch.clientY,
+      remainder: 0,
+      claimed: false,
+    };
+  };
+
+  const onTouchMove = (event) => {
+    if (!gesture) return;
+    // When tracking is off, xterm's own touch handler scrolls its local buffer. Taking the gesture here
+    // would double-scroll it and would turn an otherwise useful native path into synthetic key presses.
+    if (event.touches.length !== 1 || term.modes.mouseTrackingMode === "none") {
+      resetGesture();
+      return;
+    }
+
+    const touch = trackedTouch(event.touches, gesture.identifier);
+    if (!touch) {
+      resetGesture();
+      return;
+    }
+
+    const deltaY = gesture.lastY - touch.clientY;
+    gesture.lastY = touch.clientY;
+    gesture.remainder += deltaY;
+
+    if (!gesture.claimed) {
+      const totalX = touch.clientX - gesture.startX;
+      const totalY = gesture.startY - touch.clientY;
+      if (Math.abs(totalY) < startThreshold || Math.abs(totalY) <= Math.abs(totalX)) return;
+      gesture.claimed = true;
+    }
+
+    // Claim only a proven vertical swipe. A tap therefore still reaches the click-to-focus handler below,
+    // while Safari cannot turn the swipe into page navigation or pull-to-refresh.
+    if (event.cancelable) event.preventDefault();
+    suppressFocusUntil = Date.now() + 350;
+
+    const screen = element.querySelector(".xterm-screen") || element;
+    const bounds = screen.getBoundingClientRect();
+    const rowHeight = bounds.height / Math.max(term.rows, 1);
+    if (!Number.isFinite(rowHeight) || rowHeight <= 0) return;
+
+    const lines = Math.trunc(gesture.remainder / rowHeight);
+    if (lines === 0) return;
+    const direction = Math.sign(lines);
+    const eventCount = Math.min(Math.abs(lines), maxEventsPerMove);
+    gesture.remainder -= direction * eventCount * rowHeight;
+
+    // Keep the reported position inside the character grid even if the finger leaves it mid-swipe. tmux
+    // resolves every wheel report against a cell, and discards coordinates outside its current geometry.
+    const clientX = Math.max(bounds.left + 1, Math.min(touch.clientX, bounds.right - 1));
+    const clientY = Math.max(bounds.top + 1, Math.min(touch.clientY, bounds.bottom - 1));
+    for (let i = 0; i < eventCount; i += 1) {
+      const wheelEvent = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX,
+        clientY,
+        deltaY: direction,
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+        view: window,
+      });
+      element.dispatchEvent(wheelEvent);
+    }
+  };
+
+  element.addEventListener("touchstart", onTouchStart, { passive: true });
+  element.addEventListener("touchmove", onTouchMove, { passive: false });
+  element.addEventListener("touchend", resetGesture, { passive: true });
+  element.addEventListener("touchcancel", resetGesture, { passive: true });
+
+  return {
+    shouldFocus: () => Date.now() >= suppressFocusUntil,
+    dispose: () => {
+      element.removeEventListener("touchstart", onTouchStart);
+      element.removeEventListener("touchmove", onTouchMove);
+      element.removeEventListener("touchend", resetGesture);
+      element.removeEventListener("touchcancel", resetGesture);
+      resetGesture();
+    },
+  };
+}
+
 export function TerminalPane({
   session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen, sidebarCollapsed,
   onToggleDrawer, onToggleSidebar, onOpenPalette, onAttach, onInterrupt, onResume, onDetach, onStop,
@@ -233,7 +353,10 @@ export function TerminalPane({
     // gesture. In particular, never move this back to ws.onopen: asynchronous focus cannot summon the
     // keyboard and steals focus from whichever control the operator was using. A click is the browser's
     // completed-tap signal, so a swipe over the terminal does not open the keyboard on pointer-down.
-    const focusTerminal = () => term.focus();
+    const touchScroll = installTouchScroll(term);
+    const focusTerminal = () => {
+      if (touchScroll.shouldFocus()) term.focus();
+    };
     host.addEventListener("click", focusTerminal);
 
     const viewportChanged = () => {
@@ -256,6 +379,7 @@ export function TerminalPane({
       refit.cancel();
       observer.disconnect();
       host.removeEventListener("click", focusTerminal);
+      touchScroll.dispose();
       if (viewport) {
         viewport.removeEventListener("resize", viewportChanged);
         viewport.removeEventListener("scroll", viewportChanged);

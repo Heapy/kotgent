@@ -86,7 +86,7 @@ class WebUiServingTest {
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
         assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
         assertTrue(
-            body.contains("src=\"app.js?v=ios-viewport-safe-area-4\""),
+            body.contains("src=\"app.js?v=mobile-swipe-scroll-5\""),
             "index.html bootstraps the cache-revised app.js",
         )
         assertTrue(body.contains("vendor/xterm.js"), "index.html loads the vendored xterm.js")
@@ -1422,8 +1422,8 @@ class WebUiServingTest {
         )
         assertTrue(
             body.contains("name=\"color-scheme\" content=\"dark\"") &&
-                body.contains("style.css?v=ios-viewport-safe-area-4") &&
-                body.contains("app.js?v=ios-viewport-safe-area-4"),
+                body.contains("style.css?v=mobile-swipe-scroll-5") &&
+                body.contains("app.js?v=mobile-swipe-scroll-5"),
             "the installed iOS app declares dark system UI and fetches the revised viewport assets",
         )
     }
@@ -2254,6 +2254,63 @@ class WebUiServingTest {
             pane.contains("term.options.fontSize = terminalFontSize") &&
                 pane.contains("}, [terminalFontSize]);"),
             "changing the preference updates and re-fits the live xterm without reconnecting it",
+        )
+    }
+
+    /**
+     * xterm 5.5 deliberately skips its native touch handlers while mouse tracking is active. Kotgent
+     * keeps that mode active so wheel events reach tmux's pane history, therefore a phone swipe needs a
+     * small browser-side bridge into xterm's existing wheel pipeline. Pin that bridge, its gesture
+     * ownership rules, and its teardown here; real touch delivery remains a real-device check.
+     */
+    @Test
+    fun theWebUiBridgesPhoneSwipesIntoXtermWheelEvents() = withServer { ctx ->
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        val css = ctx.get("/style.css").bodyAsText()
+        val bridge = pane.substringAfter("function installTouchScroll(term) {")
+            .substringBefore("\n}\n\nexport function TerminalPane")
+
+        assertTrue(
+            bridge.contains("term.modes.mouseTrackingMode === \"none\""),
+            "the bridge yields to xterm's native touch scrolling when mouse tracking is inactive",
+        )
+        assertTrue(
+            bridge.contains("event.touches.length !== 1") &&
+                bridge.contains("Math.abs(totalY) <= Math.abs(totalX)"),
+            "only a single-finger, predominantly vertical gesture is claimed",
+        )
+        assertTrue(
+            bridge.contains("event.preventDefault()") &&
+                bridge.contains("new WheelEvent(\"wheel\"") &&
+                bridge.contains("deltaMode: WheelEvent.DOM_DELTA_LINE") &&
+                bridge.contains("element.dispatchEvent(wheelEvent)"),
+            "a claimed swipe becomes line-based wheel input handled by xterm's current mouse protocol",
+        )
+        assertTrue(
+            pane.contains("touchScroll.shouldFocus()") &&
+                pane.contains("touchScroll.dispose()"),
+            "a swipe cannot focus the software keyboard and the bridge is disposed with its terminal",
+        )
+        for (event in listOf("touchstart", "touchmove", "touchend", "touchcancel")) {
+            assertTrue(
+                bridge.contains("element.addEventListener(\"$event\"") &&
+                    bridge.contains("element.removeEventListener(\"$event\""),
+                "the $event listener has a matching teardown",
+            )
+        }
+        assertTrue(
+            bridge.contains("element.addEventListener(\"touchmove\", onTouchMove, { passive: false })"),
+            "touchmove is explicitly non-passive so a claimed swipe can suppress browser navigation",
+        )
+
+        val breakpoint = css.indexOf("@media (max-width: 720px)")
+        assertTrue(breakpoint > 0, "the mobile breakpoint exists")
+        val nextMedia = css.indexOf("@media ", breakpoint + 1).let { if (it < 0) css.length else it }
+        val mobileCss = css.substring(breakpoint, nextMedia)
+        assertTrue(
+            Regex("""(?s)#terminal-host \.xterm\s*\{[^}]*touch-action:\s*none""")
+                .containsMatchIn(mobileCss),
+            "the mobile terminal owns its touch gesture instead of panning or refreshing the page",
         )
     }
 
