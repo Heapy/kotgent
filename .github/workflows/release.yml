@@ -40,7 +40,10 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           stage="kotgent-${version}-macos-arm64"
           mkdir -p "$stage/resources"
-          cp build/tasks/_kotgent_linkMacosArm64Release/kotgent.kexe "$stage/kotgent"
+          # The link output's directory and filename follow the checkout name, so ask the build-info
+          # plugin instead of hard-coding them. It fails if the previous step produced no executable.
+          ./kotlin do releaseKexePath
+          cp "$(cat build/kexe-path)" "$stage/kotgent"
           chmod +x "$stage/kotgent"
           cp -R resources/webui "$stage/resources/webui"
           tar -czf "${stage}.tar.gz" "$stage"

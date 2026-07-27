@@ -113,10 +113,11 @@ To build from source instead, see [Build & test](#build--test).
 
 ```shell
 ./kotlin build      # compile the macosArm64 app (+ the sysnative cinterop, + SQLDelight codegen)
+./kotlin do kexePath # print the debug app's absolute .kexe path (releaseKexePath for the release one)
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **674 native tests passed / 0 skipped**, plus 3 JVM tests for the build-info
+The suite currently reports **688 native tests passed / 0 skipped**, plus 7 JVM tests for the build-info
 plugin and the 11 real-PTY checks `ptycheck` runs (see below).
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
@@ -124,7 +125,22 @@ binary, and `./kotlin test` on its own never links a main binary. If the binary 
 so rather than passing quietly. See [Status & limitations](#status--limitations) for why those checks
 live in a separate binary.
 
-The produced binary lands under `build/` (the `macos/app` output); `kotgent` below refers to that binary.
+The produced binary lands under `build/` (the `macos/app` output). Its directory and filename include
+the checkout/worktree name, so use `./kotlin do kexePath` after `build` instead of hard-coding either
+(`releaseKexePath` for a `-v release` build); `kotgent` below refers to that binary. The command reads
+what `build` left behind rather than triggering it — the toolchain has no way for a plugin task to
+depend on the native link — so run it after a successful `build`, or it fails saying so.
+
+It prints the path and also writes it to `build/kexe-path`, which is what a script should read: a task
+action's stdout reaches you through the build log, so it is prefixed, interleaved with the log's own
+lines, and silenced by `--log-level` before the surrounding noise is. The file follows `--build-dir`
+along with everything else, and a failed lookup deletes it rather than leaving a stale answer behind.
+
+```shell
+./kotlin build
+./kotlin do kexePath
+kexe=$(cat build/kexe-path)
+```
 
 ## The CLI
 

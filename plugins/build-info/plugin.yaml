@@ -5,8 +5,27 @@ tasks:
       # the whole project root would overlap taskOutputDir and snapshot every build artifact.
       versionFile: ${project.rootDir}/version.txt
       generatedSourceDir: ${taskOutputDir}
+  # Neither the build root nor a native linked executable is a plugin reference, so both are derived
+  # from the task's own output directory (`<build root>/tasks/<task>`). The parameter cannot be named
+  # `taskOutputDir`: a name matching its own reference is rejected as a reference loop.
+  printDebugKexePath:
+    action: !io.kotgent.buildinfo.printKexePath
+      outputDir: ${taskOutputDir}
+      moduleName: ${module.name}
+      buildType: Debug
+  printReleaseKexePath:
+    action: !io.kotgent.buildinfo.printKexePath
+      outputDir: ${taskOutputDir}
+      moduleName: ${module.name}
+      buildType: Release
 
 generated:
   sources:
     - language: kotlin
       directory: ${tasks.generate.action.generatedSourceDir}
+
+commands:
+  - name: kexePath
+    performedBy: printDebugKexePath
+  - name: releaseKexePath
+    performedBy: printReleaseKexePath

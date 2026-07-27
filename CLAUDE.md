@@ -11,6 +11,7 @@ plugins.
 
 ```shell
 ./kotlin build      # compile        (run this BEFORE `test` — PtyTest execs the ptycheck binary)
+./kotlin do kexePath # print the root app's built debug .kexe path (also written to build/kexe-path)
 ./kotlin test       # run tests
 ./kotlin run -m kotgent   # run the binary  (⚠️ avoid in automation — this starts things; see below)
 ```
@@ -57,7 +58,8 @@ Five modules (see `project.yaml`):
   release workflow sets `KOTGENT_RELEASE_BUILD=true`, so its packaged/Homebrew binary displays `VERSION`
   alone and keeps the CLI's `kotgent VERSION` contract. Its action deliberately disables execution
   avoidance: in a linked worktree, `.git` is a stable indirection file while the changing branch ref lives
-  in the common Git directory outside the worktree.
+  in the common Git directory outside the worktree. It also exposes the `kexePath` / `releaseKexePath`
+  custom commands (see the invariant below).
 
 ## Core patterns & invariants
 
@@ -550,13 +552,33 @@ These are real and cost time to rediscover. Respect them.
 - **`kotlin.system.getTimeMillis()` is ERROR-level deprecated** on Kotlin 2.4.10 (a hard compile error).
   Use `kotlin.time.Clock` (e.g. `Clock.System.now().toEpochMilliseconds()`), and prefer injecting a
   `now: () -> Long` so tests stay deterministic.
+- **A plugin task cannot see a native link, and its stdout is not a channel.** The `kexePath` /
+  `releaseKexePath` commands live inside three measured limits of the 0.11.1 plugin API, and each one
+  shapes the code. (1) **No reference names a native executable or the build root.** `ProjectDataForPlugin`
+  exposes `rootDir` and nothing else; `module.jar`/`classes` are `CompilationArtifact.Kind` = `Jar|Classes`
+  only, and `module.runtimeClasspath` on a `macos/app` module aborts the CLI with
+  `IllegalStateException: Dependencies for JVM are not calculated`. So both paths are derived from
+  `${taskOutputDir}` — the link task's directory is its sibling under `tasks/`, the build root is that
+  directory's parent. That is what makes `--build-dir` work; the original `${project.rootDir}/build`
+  silently reported an artifact the run never produced. The parameter must **not** be called
+  `taskOutputDir` (a name matching its own reference is rejected as a reference loop) and must carry
+  `@Input(inferTaskDependency = false)`, or every toolchain invocation warns that a build-directory input
+  is "not produced by any other task". (2) **There is no task-dependency syntax, and `@Input` does not
+  infer one from a built-in task** — verified: adding the annotation left `show tasks` at
+  `printKexePath@build-info -> build-info:runtimeClasspathJvm`. The commands therefore *report* the last
+  build; they cannot trigger or order after one, and the docs must not claim otherwise. (3) **An action's
+  `println` and `System.err` both go through the build log** (a raw `FileDescriptor` write is the only way
+  around it), so the log is for humans and the machine-readable answer is the `build/kexe-path` record —
+  deleted before the lookup so a failed run leaves no stale answer for a script that skipped the exit
+  code. `UserReadableError` is CLI-internal, so a failure is rendered `ERROR: <class>: <message>`;
+  `MissingExecutableException` suppresses its stack trace to keep the actionable sentence readable.
 - Native links print harmless `'+zcm' is not a recognized feature` lines that the log formatter labels
   ERROR. They do not affect the build (`Build successful`); ignore them.
 
 ## Testing & running
 
 - Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **688 native tests passed /
-  0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
+  0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
   `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
