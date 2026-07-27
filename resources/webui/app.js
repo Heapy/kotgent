@@ -204,8 +204,9 @@ function App() {
   // guards a queued callback; once it fires, this prevents an older same-id request from mutating a newer
   // foreground attempt.
   const reattachRequestRef = useRef(null);
-  // A foreground transition grants one attempt. It remains available when the zero-delay timer wins the
-  // race against the socket's close callback, then is consumed as soon as a real candidate is evaluated.
+  // A fresh attachment, foreground transition, or recovered events socket grants one attempt. It remains
+  // available when the zero-delay timer wins the race against the terminal's close callback, then is
+  // consumed as soon as a real candidate is evaluated.
   const reattachAvailableRef = useRef(false);
 
   const cancelReattach = useCallback(() => {
@@ -218,6 +219,65 @@ function App() {
       clearTimeout(reattachTimerRef.current);
       reattachTimerRef.current = null;
     }
+  }, []);
+
+  const scheduleReattach = useCallback(() => {
+    if (document.visibilityState !== "visible" ||
+        !reattachAvailableRef.current ||
+        reattachTimerRef.current !== null) return;
+    reattachTimerRef.current = setTimeout(async () => {
+      reattachTimerRef.current = null;
+      const id = reattachIdRef.current;
+      // If a grant won the race with the queued WebSocket close, preserve it. onTerminalClosed will
+      // fill the candidate and schedule this same check again.
+      if (!id || document.visibilityState !== "visible") return;
+      reattachAvailableRef.current = false;
+
+      // The events socket can be suspended or reconnecting along with the terminal, so the cached row is
+      // not a liveness check. Ask the daemon for this session, then re-check every local intent after await.
+      const controller = new AbortController();
+      const previousRequest = reattachRequestRef.current;
+      reattachRequestRef.current = controller;
+      if (previousRequest) previousRequest.abort();
+      const livenessTimeout = setTimeout(
+        () => controller.abort(),
+        REATTACH_LIVENESS_TIMEOUT_MS,
+      );
+      try {
+        const s = await apiRequest(
+          "/sessions/" + encodeURIComponent(id),
+          { signal: controller.signal },
+        );
+        if (reattachRequestRef.current !== controller) return;
+        if (reattachIdRef.current !== id) return;
+        if (document.visibilityState !== "visible") return;
+        if (activeRef.current !== id) {
+          reattachIdRef.current = null;
+          return;
+        }
+        if (pendingRef.current) {
+          reattachIdRef.current = null;
+          return;
+        }
+        if (!s || !isAliveState(s.state)) {
+          reattachIdRef.current = null;
+          setHint(deadHint(s && s.state));
+          return;
+        }
+
+        reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
+        setAttachedId(id);
+        setHint(null);
+      } catch (_) {
+        if (reattachRequestRef.current !== controller) return;
+        // Keep the candidate: if this was a daemon restart, the events socket's successful reconnect
+        // grants a fresh attempt immediately. Explicit selection/detach still clears it via cancelReattach.
+        if (activeRef.current === id) setHint(detachedHint(null));
+      } finally {
+        clearTimeout(livenessTimeout);
+        if (reattachRequestRef.current === controller) reattachRequestRef.current = null;
+      }
+    }, 0);
   }, []);
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
@@ -243,6 +303,7 @@ function App() {
     // notification deep link), which is why it lives here and not in the click handler.
     setDrawerOpen(false);
     if (isAliveState(session.state)) {
+      reattachAvailableRef.current = true;
       setAttachedId(session.id);
       setHint(null);
     } else {
@@ -332,6 +393,7 @@ function App() {
     let socket = null;
     let timer = null;
     let stopped = false;
+    let opened = false;
 
     const connect = () => {
       if (stopped) return;
@@ -341,6 +403,15 @@ function App() {
         say("events WS error: " + e, true);
         return;
       }
+      socket.onopen = () => {
+        if (opened) {
+          // This socket is the daemon-availability signal. A terminal retry that raced the restart may
+          // have failed (or still be waiting on the old daemon); grant a fresh, owned liveness check now.
+          reattachAvailableRef.current = true;
+          scheduleReattach();
+        }
+        opened = true;
+      };
       socket.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (_) { return; }
@@ -390,7 +461,7 @@ function App() {
         try { socket.close(); } catch (_) {}
       }
     };
-  }, [applyServerPreferences, say]);
+  }, [applyServerPreferences, say, scheduleReattach]);
 
   // Coming back to the tab is the third trigger: while it was hidden the guard suppressed every POST, so
   // the badge kept counting — as it should — and now clears. Registered once; the handler reads refs.
@@ -429,70 +500,9 @@ function App() {
     return () => navigator.serviceWorker.removeEventListener("message", onMessage);
   }, [selectSession]);
 
-  const scheduleReattach = useCallback(() => {
-    if (document.visibilityState !== "visible" ||
-        !reattachAvailableRef.current ||
-        reattachTimerRef.current !== null) return;
-    reattachTimerRef.current = setTimeout(async () => {
-      reattachTimerRef.current = null;
-      const id = reattachIdRef.current;
-      // If visibility won the race with the queued WebSocket close, leave this foreground's one attempt
-      // available. onTerminalClosed will fill the candidate and schedule this same check again.
-      if (!id || document.visibilityState !== "visible") return;
-      reattachAvailableRef.current = false;
-
-      // The events socket can be suspended along with the terminal, so the cached row is not a liveness
-      // check. Ask the daemon for this session, then re-check every local intent after that await.
-      const controller = new AbortController();
-      const previousRequest = reattachRequestRef.current;
-      reattachRequestRef.current = controller;
-      if (previousRequest) previousRequest.abort();
-      const livenessTimeout = setTimeout(
-        () => controller.abort(),
-        REATTACH_LIVENESS_TIMEOUT_MS,
-      );
-      try {
-        const s = await apiRequest(
-          "/sessions/" + encodeURIComponent(id),
-          { signal: controller.signal },
-        );
-        if (reattachRequestRef.current !== controller) return;
-        if (reattachIdRef.current !== id) return;
-        if (document.visibilityState !== "visible") return;
-        if (activeRef.current !== id) {
-          reattachIdRef.current = null;
-          return;
-        }
-        if (pendingRef.current) {
-          reattachIdRef.current = null;
-          return;
-        }
-        if (!s || !isAliveState(s.state)) {
-          reattachIdRef.current = null;
-          setHint(deadHint(s && s.state));
-          return;
-        }
-
-        reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
-        setAttachedId(id);
-        setHint(null);
-      } catch (_) {
-        if (reattachRequestRef.current !== controller) return;
-        reattachIdRef.current = null;
-        // Failure means liveness is unknown; do not repeat the stale cached claim that the agent keeps
-        // running. The next events resync will supply a specific state if the daemon is reachable again.
-        if (activeRef.current === id) setHint(detachedHint(null));
-      } finally {
-        clearTimeout(livenessTimeout);
-        if (reattachRequestRef.current === controller) reattachRequestRef.current = null;
-      }
-    }, 0);
-  }, []);
-
-  // Mobile browsers commonly discard a terminal WebSocket while the page is suspended. The events
-  // socket heals itself, but the terminal is intentionally one-shot, so a return to the foreground gets
-  // exactly one reattach attempt. Schedule even when the close callback has not landed yet: browsers may
-  // deliver visibilitychange just before the queued WebSocket close event, and the timer catches that
+  // Mobile browsers commonly discard a terminal WebSocket while the page is suspended. A return to the
+  // foreground grants exactly one attempt; daemon recovery grants through the events socket above. Schedule
+  // even when the close callback has not landed yet: the zero-delay timer preserves the grant across that
   // ordering while also forcing Preact to render the detached state first.
   useEffect(() => {
     const reconnectWhenVisible = () => {
@@ -561,6 +571,7 @@ function App() {
           ? "Marked done. Find it under “Show done”."
           : "Session stopped. Resume it to continue.");
       } else if (action === "resume") {
+        reattachAvailableRef.current = true;
         setAttachedId(s.id);
         setHint(null);
       }
@@ -575,6 +586,7 @@ function App() {
   const attach = useCallback(() => {
     if (!activeRef.current) return;
     cancelReattach();
+    reattachAvailableRef.current = true;
     setAttachedId(activeRef.current);
     setHint(null);
   }, [cancelReattach]);

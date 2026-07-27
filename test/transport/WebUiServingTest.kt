@@ -1424,13 +1424,13 @@ class WebUiServingTest {
     }
 
     /**
-     * A suspended mobile page can lose only its terminal WebSocket while the events stream later heals
-     * itself. There is no browser runner in this native suite, so pin the complete source-side lifecycle:
-     * the exact closed attachment is remembered, foregrounding schedules one render-separated attempt,
-     * and the attempt rechecks selection/liveness before it can open a replacement.
+     * A suspended mobile page or a daemon restart can drop the terminal WebSocket. There is no browser
+     * runner in this native suite, so pin the complete source-side lifecycle: the exact closed attachment
+     * is remembered, fresh/foreground attachments get one bounded attempt, a failed liveness read retains
+     * its candidate, and the self-healing events socket grants another attempt when the daemon is back.
      */
     @Test
-    fun theWebUiReattachesAClosedAliveTerminalAfterBackgrounding() = withServer { ctx ->
+    fun theWebUiReattachesAClosedAliveTerminalAfterBackgroundingOrDaemonRestart() = withServer { ctx ->
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         val app = ctx.get("/app.js").bodyAsText()
 
@@ -1458,7 +1458,7 @@ class WebUiServingTest {
         val attachAt = schedule.indexOf("setAttachedId(id)")
         assertTrue(
             freshSessionAt >= 0 && attachAt > freshSessionAt,
-            "a foreground retry asks the daemon for current liveness before restoring the attachment",
+            "a retry asks the daemon for current liveness before restoring the attachment",
         )
         assertTrue(
             app.contains("const REATTACH_LIVENESS_TIMEOUT_MS = 10_000") &&
@@ -1508,11 +1508,10 @@ class WebUiServingTest {
         val failedRefresh = schedule.substringAfter("} catch (_) {")
             .substringBefore("\n      } finally {")
         assertTrue(
-            failedRefresh.indexOf("reattachRequestRef.current !== controller") in
-                0 until failedRefresh.indexOf("reattachIdRef.current = null") &&
-                failedRefresh.indexOf("reattachIdRef.current = null") in
-                0 until failedRefresh.indexOf("setHint(detachedHint(null))"),
-            "only the owning failed refresh consumes the retry, without claiming stale liveness",
+            failedRefresh.contains("reattachRequestRef.current !== controller") &&
+                !failedRefresh.contains("reattachIdRef.current = null") &&
+                failedRefresh.contains("setHint(detachedHint(null))"),
+            "an owning failed refresh keeps its candidate for daemon recovery without claiming stale liveness",
         )
         assertTrue(
             schedule.indexOf("reattachIdRef.current = null") in 0 until attachAt,
@@ -1531,6 +1530,45 @@ class WebUiServingTest {
                 visible.contains("scheduleReattach()"),
             "hiding aborts stale async work but retains its candidate; foregrounding grants a fresh attempt",
         )
+
+        val events = app.substringAfter("// Live updates. The daemon re-sends a full snapshot on connect")
+            .substringBefore("// Coming back to the tab is the third trigger")
+        val recoveredAt = events.indexOf("if (opened)")
+        val recoveryGrantAt = events.indexOf("reattachAvailableRef.current = true")
+        val recoveryScheduleAt = events.indexOf("scheduleReattach()")
+        val openedAt = events.indexOf("opened = true")
+        assertTrue(
+            events.contains("let opened = false") &&
+                events.contains("socket.onopen = () => {") &&
+                recoveredAt >= 0 &&
+                recoveryGrantAt > recoveredAt &&
+                recoveryScheduleAt > recoveryGrantAt &&
+                openedAt > recoveryScheduleAt,
+            "only a recovered events socket grants and schedules another terminal attempt",
+        )
+        assertTrue(
+            app.indexOf("const scheduleReattach = useCallback(() => {") <
+                app.indexOf("// Live updates. The daemon re-sends a full snapshot on connect"),
+            "the recovery callback is defined before the events effect consumes it",
+        )
+
+        val showSession = app.substringAfter("const showSession = useCallback((session) => {")
+            .substringBefore("\n  }, [cancelReattach]);")
+        val attach = app.substringAfter("const attach = useCallback(() => {")
+            .substringBefore("\n  }, [cancelReattach]);")
+        val resume = app.substringAfter("} else if (action === \"resume\") {")
+            .substringBefore("\n      }")
+        for ((source, name) in listOf(
+            showSession to "selecting/starting a live session",
+            attach to "explicitly attaching",
+            resume to "resuming a session",
+        )) {
+            assertTrue(
+                source.indexOf("reattachAvailableRef.current = true") in
+                    0 until source.indexOf("setAttachedId("),
+                "$name grants one retry before opening its terminal",
+            )
+        }
 
         val cancel = app.substringAfter("const cancelReattach = useCallback(() => {")
             .substringBefore("\n  }, []);")

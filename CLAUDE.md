@@ -555,7 +555,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **674 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **688 native tests passed /
   0 skipped**, plus the build-info plugin's 3 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
