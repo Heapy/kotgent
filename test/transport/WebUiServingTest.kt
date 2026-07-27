@@ -1546,9 +1546,10 @@ class WebUiServingTest {
                 openedAt > recoveryScheduleAt,
             "only a recovered events socket grants and schedules another terminal attempt",
         )
+        val scheduleAt = app.indexOf("const scheduleReattach = useCallback(() => {")
+        val eventsAt = app.indexOf("// Live updates. The daemon re-sends a full snapshot on connect")
         assertTrue(
-            app.indexOf("const scheduleReattach = useCallback(() => {") <
-                app.indexOf("// Live updates. The daemon re-sends a full snapshot on connect"),
+            scheduleAt >= 0 && eventsAt > scheduleAt,
             "the recovery callback is defined before the events effect consumes it",
         )
 
@@ -1563,12 +1564,22 @@ class WebUiServingTest {
             attach to "explicitly attaching",
             resume to "resuming a session",
         )) {
+            val grantAt = source.indexOf("reattachAvailableRef.current = true")
             assertTrue(
-                source.indexOf("reattachAvailableRef.current = true") in
-                    0 until source.indexOf("setAttachedId("),
+                grantAt >= 0 && source.indexOf("setAttachedId(") > grantAt,
                 "$name grants one retry before opening its terminal",
             )
+            // -1 where the site never cancels at all, which cannot revoke the grant either.
+            assertTrue(
+                source.indexOf("cancelReattach()") < grantAt,
+                "$name grants AFTER its own cancel, which would otherwise revoke the grant it just made",
+            )
         }
+        assertTrue(
+            showSession.indexOf("if (isAliveState(session.state)) {") in
+                0 until showSession.indexOf("reattachAvailableRef.current = true"),
+            "selecting a session that is not alive arms no retry at all",
+        )
 
         val cancel = app.substringAfter("const cancelReattach = useCallback(() => {")
             .substringBefore("\n  }, []);")
