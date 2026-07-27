@@ -399,6 +399,10 @@ function App() {
   // Live updates. The daemon re-sends a full snapshot on connect, so a reconnect resyncs cleanly.
   const loadRef = useRef(loadSessions);
   loadRef.current = loadSessions;
+  // Same indirection, and load-bearing for a second reason: `opened` lives in the effect, so rebuilding
+  // this socket would reset it and the next open would no longer read as a recovery.
+  const scheduleReattachRef = useRef(scheduleReattach);
+  scheduleReattachRef.current = scheduleReattach;
   useEffect(() => {
     let socket = null;
     let timer = null;
@@ -418,7 +422,7 @@ function App() {
           // This socket is the daemon-availability signal. A terminal retry that raced the restart may
           // have failed (or still be waiting on the old daemon); grant a fresh, owned liveness check now.
           reattachAvailableRef.current = true;
-          scheduleReattach();
+          scheduleReattachRef.current();
         }
         opened = true;
       };
@@ -471,7 +475,7 @@ function App() {
         try { socket.close(); } catch (_) {}
       }
     };
-  }, [applyServerPreferences, say, scheduleReattach]);
+  }, [applyServerPreferences, say]);
 
   // Coming back to the tab is the third trigger: while it was hidden the guard suppressed every POST, so
   // the badge kept counting — as it should — and now clears. Registered once; the handler reads refs.

@@ -1559,7 +1559,7 @@ class WebUiServingTest {
             .substringBefore("// Coming back to the tab is the third trigger")
         val recoveredAt = events.indexOf("if (opened)")
         val recoveryGrantAt = events.indexOf("reattachAvailableRef.current = true")
-        val recoveryScheduleAt = events.indexOf("scheduleReattach()")
+        val recoveryScheduleAt = events.indexOf("scheduleReattachRef.current()")
         val openedAt = events.indexOf("opened = true")
         assertTrue(
             events.contains("let opened = false") &&
@@ -1575,6 +1575,14 @@ class WebUiServingTest {
         assertTrue(
             scheduleAt >= 0 && eventsAt > scheduleAt,
             "the recovery callback is defined before the events effect consumes it",
+        )
+        assertTrue(
+            app.contains("const scheduleReattachRef = useRef(scheduleReattach)") &&
+                app.contains("scheduleReattachRef.current = scheduleReattach") &&
+                events.contains("scheduleReattachRef.current()") &&
+                !app.contains("}, [applyServerPreferences, say, scheduleReattach]);"),
+            "the events effect reaches the recovery callback through a ref, like the loadRef beside it: a " +
+                "dependency would rebuild the daemon socket and reset `opened`, disabling recovery silently",
         )
 
         val showSession = app.substringAfter("const showSession = useCallback((session) => {")
