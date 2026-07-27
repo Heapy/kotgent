@@ -1516,13 +1516,26 @@ class WebUiServingTest {
                 "without discarding the candidate and a later grant retries once the action settled",
         )
 
-        val failedRefresh = schedule.substringAfter("} catch (_) {")
+        val failedRefresh = schedule.substringAfter("} catch (err) {")
             .substringBefore("\n      } finally {")
         assertTrue(
             failedRefresh.contains("reattachRequestRef.current !== controller") &&
-                !failedRefresh.contains("reattachIdRef.current = null") &&
                 failedRefresh.contains("setHint(detachedHint(null))"),
-            "an owning failed refresh keeps its candidate for daemon recovery without claiming stale liveness",
+            "only the owning failed refresh reports the detachment, without claiming stale liveness",
+        )
+        assertTrue(
+            failedRefresh.contains("if (isDefiniteAnswer(err)) reattachIdRef.current = null"),
+            "a 4xx is the daemon's own answer about this session, so it discards the candidate instead of " +
+                "re-asking on every later grant; every other failure keeps it for daemon recovery",
+        )
+        val api = ctx.get("/lib/api.js").bodyAsText()
+        assertTrue(
+            api.contains("export function isDefiniteAnswer(error)") &&
+                api.contains("error.status >= 400 && error.status < 500") &&
+                api.contains("expired.status = resp.status") &&
+                api.contains("failed.status = resp.status"),
+            "apiRequest carries the HTTP status, so a caller can tell a definitive refusal from a daemon " +
+                "it simply could not reach",
         )
         assertTrue(
             schedule.indexOf("reattachIdRef.current = null") in 0 until attachAt,

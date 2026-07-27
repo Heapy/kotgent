@@ -20,6 +20,16 @@ export function isUnauthenticated(error) {
   return !!(error && error.unauthenticated);
 }
 
+/**
+ * True when the daemon answered THIS request and the answer will not change on a retry: the session is
+ * gone, or this client may no longer read it. Nothing else qualifies: an offline or aborted request
+ * carries no status at all, and a `5xx` from a tunnel in front of a restarting daemon is precisely the
+ * case worth retrying. So a caller that retries on recovery retries only what recovery can actually fix.
+ */
+export function isDefiniteAnswer(error) {
+  return !!error && error.status >= 400 && error.status < 500;
+}
+
 /** Build a same-origin WebSocket URL for [path]. The session cookie authenticates the handshake. */
 export function wsUrl(path, base) {
   const loc = base || window.location;
@@ -50,9 +60,14 @@ export async function apiRequest(path, options) {
     // the flag lets a caller (app.js, on its first load) navigate there instead of only reporting it.
     const expired = new Error("Signed out — open " + AUTH_PATH + " and enter a sign-in code.");
     expired.unauthenticated = true;
+    expired.status = resp.status;
     throw expired;
   }
-  if (!resp.ok) throw new Error(text || ("HTTP " + resp.status));
+  if (!resp.ok) {
+    const failed = new Error(text || ("HTTP " + resp.status));
+    failed.status = resp.status;
+    throw failed;
+  }
   if (!text) return null;
   try { return JSON.parse(text); } catch (_) { return text; }
 }

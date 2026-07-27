@@ -27,7 +27,14 @@ import { render } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { html } from "htm/preact";
 
-import { AUTH_PATH, apiRequest, errorMessage, isUnauthenticated, wsUrl } from "./lib/api.js";
+import {
+  AUTH_PATH,
+  apiRequest,
+  errorMessage,
+  isDefiniteAnswer,
+  isUnauthenticated,
+  wsUrl,
+} from "./lib/api.js";
 import {
   loadPrefs,
   persistTerminalFontSize,
@@ -268,10 +275,13 @@ function App() {
         reattachIdRef.current = null;       // consume before rendering: a failed replacement is a new close
         setAttachedId(id);
         setHint(null);
-      } catch (_) {
+      } catch (err) {
         if (reattachRequestRef.current !== controller) return;
-        // Keep the candidate: if this was a daemon restart, the events socket's successful reconnect
-        // grants a fresh attempt immediately. Explicit selection/detach still clears it via cancelReattach.
+        // A 4xx answered this session specifically — it is gone, or this client is signed out — and every
+        // later grant would re-ask the same doomed question, so that candidate dies here. Any other
+        // failure only means the daemon was unreachable: keep it, because the events socket's successful
+        // reconnect grants a fresh attempt at once. Explicit selection/detach clears it via cancelReattach.
+        if (isDefiniteAnswer(err)) reattachIdRef.current = null;
         if (activeRef.current === id) setHint(detachedHint(null));
       } finally {
         clearTimeout(livenessTimeout);
