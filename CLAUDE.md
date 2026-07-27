@@ -384,10 +384,24 @@ cache rule together.
 visible keyboard-constrained size. A terminal tap focuses xterm's helper textarea synchronously from that
 gesture, and the textarea stays at `16px` to prevent Safari auto-zoom from corrupting viewport geometry.
 The phone key bar sends binary terminal bytes and preserves xterm focus (special keys never become resize
-text frames). Finally, a terminal socket lost while hidden gets at most one foreground reattach attempt,
-and that attempt must fetch fresh daemon liveness under a deadline, then re-check the active id,
-visibility, request ownership, and pending control action before opening. Hiding or explicit intent aborts
-the owned liveness request so an older same-id completion cannot consume a newer foreground attempt.
+text frames). Finally, a terminal socket lost to suspension **or to a daemon restart** is reattached from
+one remembered candidate, and every rule around it governs *what may spend that candidate*. Four sites
+grant an attempt: a fresh attachment (selecting a live session, an explicit attach, a resume), a foreground
+transition, and the events socket's **re**-open — the only signal the daemon came back. A grant must be
+written after that site's `cancelReattach()` and inside its alive branch, or it is revoked the instant it
+is made. The attempt fetches fresh daemon liveness under a deadline, then re-checks the active id,
+visibility, request ownership and pending control action before opening. What it does on the way *out* is
+the load-bearing half: **explicit intent and a definitive answer destroy the candidate; transient
+conditions keep it.** A different active session, a `cancelReattach()`, and a `4xx` — the daemon
+answering about *this* session, gone or unreadable by this client — are final, and re-asking them on
+every later grant would loop forever. An in-flight control action and an unreachable daemon are not
+final: they keep the candidate for the next grant, which is what makes a restart recover on the
+reconnect instead of waiting out a visibility change or the 10 s deadline. `isDefiniteAnswer`
+(`lib/api.js`, over a `status` the `apiRequest` error now carries) is the one place that distinction
+is written. Hiding or explicit intent aborts the owned liveness request so an older same-id completion
+cannot consume a newer attempt, and the events effect reaches the reattach callback through a **ref**,
+never a dependency: rebuilding that socket resets its effect-scoped `opened` latch, after which no open
+ever reads as a recovery again.
 
 **VAPID uses `/usr/bin/openssl`, but openssl never owns the private-key file.** `VapidKey` generates the
 P-256 PEM and `OpensslVapidSigner` signs ES256 through the existing CLOEXEC-safe `ProcessRunner`; the
