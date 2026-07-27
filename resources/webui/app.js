@@ -255,10 +255,10 @@ function App() {
           reattachIdRef.current = null;
           return;
         }
-        if (pendingRef.current) {
-          reattachIdRef.current = null;
-          return;
-        }
+        // A control action owns the attachment decision until it settles, and it is as transient as an
+        // unreachable daemon — so keep the candidate. Its own outcome then decides: resume reattaches
+        // explicitly, while stop/archive leave a session the next grant reads as dead.
+        if (pendingRef.current) return;
         if (!s || !isAliveState(s.state)) {
           reattachIdRef.current = null;
           setHint(deadHint(s && s.state));

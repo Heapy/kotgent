@@ -1505,6 +1505,17 @@ class WebUiServingTest {
                 .containsMatchIn(schedule),
             "a fresh daemon response that says the session died is explained and never reattached",
         )
+        val activeBranch = schedule.substringAfter("if (activeRef.current !== id) {").substringBefore("}")
+        assertTrue(
+            activeBranch.contains("reattachIdRef.current = null"),
+            "a different active session is explicit intent, which discards the candidate",
+        )
+        assertTrue(
+            schedule.contains("if (pendingRef.current) return;"),
+            "a control action in flight is as transient as an unreachable daemon, so its branch returns " +
+                "without discarding the candidate and a later grant retries once the action settled",
+        )
+
         val failedRefresh = schedule.substringAfter("} catch (_) {")
             .substringBefore("\n      } finally {")
         assertTrue(
