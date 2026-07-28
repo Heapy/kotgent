@@ -271,13 +271,17 @@ class WebUiServingTest {
             "the new-session dialog starts without a selected agent",
         )
 
-        val picker = agentPickerOf(dialogs)
+        val choices = agentChoicesOf(dialogs)
+        assertEquals(4, Regex("value: \"").findAll(choices).count(), "the picker offers four agents")
+        assertTrue(choices.contains("value: \"claude\", name: \"Claude\", available: true"), "Claude starts")
+        assertTrue(choices.contains("value: \"codex\", name: \"Codex\", available: true"), "Codex starts")
 
-        assertEquals(2, Regex("type=\"radio\"").findAll(picker).count(), "each agent is one radio choice")
-        assertEquals(
-            2,
-            Regex("name=\"session-agent\"").findAll(picker).count(),
-            "both choices share one radio group name, or they stop being mutually exclusive",
+        val picker = agentPickerOf(dialogs)
+        assertTrue(picker.contains("AGENT_CHOICES.map("), "every card comes from that one table")
+        assertTrue(picker.contains("type=\"radio\""), "an agent is one radio choice, not a menu entry")
+        assertTrue(
+            picker.contains("name=\"session-agent\""),
+            "the choices share one radio group name, or they stop being mutually exclusive",
         )
         // The old control is gone from the WHOLE module, not merely from the fieldset that replaced it —
         // a leftover `<select id="session-agent">` elsewhere would satisfy a picker-scoped assertion.
@@ -285,8 +289,6 @@ class WebUiServingTest {
             !dialogs.contains("id=\"session-agent\""),
             "choosing an agent does not require opening a select",
         )
-        assertTrue(picker.contains("value=\"claude\""), "Claude is available")
-        assertTrue(picker.contains("value=\"codex\""), "Codex is available")
 
         val css = ctx.get("/style.css").bodyAsText()
         assertTrue(css.contains(".agent-options"), "the icon choices have a dedicated layout")
@@ -324,17 +326,44 @@ class WebUiServingTest {
             "the radios stay focusable — removing them from the box tree removes them from the keyboard",
         )
 
-        // Every other colour in the picker comes from a themed variable; these two literals do not, so
-        // each owes a dark counterpart the way the status badges above do.
-        assertEquals(
-            2,
-            Regex("\\.agent-icon-claude").findAll(css).count(),
-            "the Claude chip is declared once per colour scheme",
+        // Every other colour in the picker comes from a themed variable; the chips are literals, so each
+        // owes a dark counterpart the way the status badges above do.
+        for (agent in listOf("claude", "codex", "junie", "cursor")) {
+            assertEquals(
+                2,
+                Regex("\\.agent-icon-$agent").findAll(css).count(),
+                "the $agent chip is declared once per colour scheme",
+            )
+        }
+    }
+
+    @Test
+    fun plannedAgentsAreShownWithoutBecomingChoosable() = withServer { ctx ->
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+
+        val choices = agentChoicesOf(dialogs)
+        assertTrue(choices.contains("value: \"junie\", name: \"Junie\", available: false"), "Junie is planned")
+        assertTrue(choices.contains("value: \"cursor\", name: \"Cursor\", available: false"), "Cursor is planned")
+
+        // `disabled` is what keeps a planned card out of the tab order and the arrow-key group; without
+        // it the card would take a selection the daemon's agentFactoryOf then rejects with a 400.
+        val picker = agentPickerOf(dialogs)
+        assertTrue(picker.contains("disabled=\${!choice.available}"), "a planned agent cannot be selected")
+        assertTrue(
+            picker.contains("aria-required=\${choice.available ? \"true\" : null}"),
+            "only a choice that can be made is announced as required",
         )
-        assertEquals(
-            2,
-            Regex("\\.agent-icon-codex").findAll(css).count(),
-            "the Codex chip is declared once per colour scheme",
+        assertTrue(picker.contains("<small>Soon</small>"), "a planned agent says so on its card")
+
+        val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(
+            css.contains(".agent-option-unavailable .agent-option-content"),
+            "a planned card reads as unavailable",
+        )
+        // The shared `.agent-option:hover` rule would otherwise keep offering a card the input refuses.
+        assertTrue(
+            css.contains(".agent-option-unavailable:hover .agent-option-content"),
+            "a planned card does not answer the pointer either",
         )
     }
 
@@ -343,8 +372,18 @@ class WebUiServingTest {
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         val picker = agentPickerOf(dialogs)
 
-        // Focus lands on the choice that has no default, not on the prefilled path field below it.
-        assertTrue(picker.contains("ref=\${agentRef}"), "the picker owns the ref the dialog focuses")
+        // Focus lands on the choice that has no default, not on the prefilled path field below it — and
+        // on a card that can actually take it, since a planned agent's radio is disabled.
+        assertTrue(
+            dialogs.contains(
+                "const FIRST_AVAILABLE_AGENT = AGENT_CHOICES.find((choice) => choice.available).value;",
+            ),
+            "the focus target is the first agent that can be started, not simply the first card",
+        )
+        assertTrue(
+            picker.contains("ref=\${choice.value === FIRST_AVAILABLE_AGENT ? agentRef : null}"),
+            "the picker owns the ref the dialog focuses",
+        )
         assertTrue(
             dialogs.contains("const target = agent ? cwdRef.current : agentRef.current;"),
             "an unanswered agent choice takes the initial focus",
@@ -362,11 +401,7 @@ class WebUiServingTest {
             Regex("(?<![-\\w])required").findAll(picker).count(),
             "no native constraint validation competes with the dialog's own report",
         )
-        assertEquals(
-            2,
-            Regex("aria-required=\"true\"").findAll(picker).count(),
-            "the choice is still announced as required",
-        )
+        assertTrue(picker.contains("aria-required="), "the choice is still announced as required")
 
         // Submitting without a choice reports it and hands focus back, rather than doing nothing.
         assertTrue(dialogs.contains("if (!agent) {"), "submit refuses a missing agent explicitly")
@@ -1893,6 +1928,14 @@ class WebUiServingTest {
         val end = css.indexOf("}", start.coerceAtLeast(0))
         assertTrue(start >= 0 && end > start, "the stylesheet declares `$selector`")
         return css.substring(start, end)
+    }
+
+    /** The `AGENT_CHOICES` table the picker renders from, so a choice check cannot read the markup. */
+    private fun agentChoicesOf(dialogs: String): String {
+        val start = dialogs.indexOf("const AGENT_CHOICES = [")
+        val end = dialogs.indexOf("\n];", start.coerceAtLeast(0))
+        assertTrue(start >= 0 && end > start, "the new-session dialog declares its agents in one table")
+        return dialogs.substring(start, end)
     }
 
     /** The new-session dialog's agent `<fieldset>`, so a picker assertion cannot read the rest of the form. */

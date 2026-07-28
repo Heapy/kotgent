@@ -667,6 +667,18 @@ dialog::backdrop {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* A planned agent: its radio is `disabled`, so the card must not answer to the pointer either — the
+   hover highlight from the rule above outranks nothing on its own and would keep offering a choice the
+   input refuses. */
+.agent-option-unavailable {
+  cursor: default;
+}
+.agent-option-unavailable .agent-option-content {
+  opacity: 0.55;
+}
+.agent-option-unavailable:hover .agent-option-content {
+  background: var(--input-bg);
+}
 .agent-icon {
   align-items: center;
   border-radius: 10px;
@@ -685,7 +697,7 @@ dialog::backdrop {
   stroke-width: 2.2;
   width: 23px;
 }
-/* The two brand chips are the only literal colours in the picker, so they need the same light/dark pair
+/* The brand chips are the only literal colours in the picker, so each needs the same light/dark pair
    the badges above carry. `#1f2937` in particular sat within ~1.2:1 of the selected card's dark
    `--row-active`, leaving the chip's shape invisible behind its glyph. */
 .agent-icon-claude {
@@ -696,6 +708,14 @@ dialog::backdrop {
   background: #1f2937;
   color: #ffffff;
 }
+.agent-icon-junie {
+  background: #ede4fb;
+  color: #6b3fc0;
+}
+.agent-icon-cursor {
+  background: #e3e8ef;
+  color: #3f5570;
+}
 @media (prefers-color-scheme: dark) {
   .agent-icon-claude {
     background: #4a2a1c;
@@ -705,10 +725,23 @@ dialog::backdrop {
     background: #e6e8eb;
     color: #14171c;
   }
+  .agent-icon-junie {
+    background: #33245a;
+    color: #cfb8ff;
+  }
+  .agent-icon-cursor {
+    background: #2b3a4d;
+    color: #b9cde5;
+  }
 }
+/* A column so a planned agent's `Soon` sits under its name: a card is only ~160px wide on a phone, and
+   the two side by side would not fit next to the 38px chip. `.field small` above styles the note. */
 .agent-option-name {
+  display: flex;
+  flex-direction: column;
   font-size: 13px;
   font-weight: 600;
+  min-width: 0;
 }
 .path-autocomplete {
   position: relative;
