@@ -1,15 +1,11 @@
 version: 2
+# `gradle/libs.versions.toml` is deliberately NOT watched here. The Kotlin Toolchain reads that standard
+# version catalog, but Dependabot's gradle ecosystem cannot: its file fetcher's `required_files_in?` gate
+# demands a `build.gradle` / `build.gradle.kts` before it reads anything, and this project has none by
+# design. Every scheduled run aborted with `dependency_file_not_found` and produced no update, so the
+# entry was removed rather than left failing. Bump the catalog by hand, or evaluate Renovate, whose gradle
+# manager matches `gradle/*.toml` on its own pattern with no build-file prerequisite.
 updates:
-  # Kotlin Toolchain consumes this standard Gradle version catalog even though
-  # the project itself does not use Gradle.
-  - package-ecosystem: "gradle"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      all:
-        patterns:
-          - "*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
