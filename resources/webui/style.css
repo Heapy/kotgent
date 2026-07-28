@@ -604,8 +604,11 @@ dialog::backdrop {
   padding: 7px 10px;
   width: 100%;
 }
+/* `margin-inline` is the UA's own 2px on every fieldset. Left in place it insets the whole picker
+   relative to the full-width fields under it, so the cards no longer line up with the path input. */
 .agent-picker {
   border: 0;
+  margin-inline: 0;
   min-width: 0;
   padding: 0;
 }
@@ -625,10 +628,21 @@ dialog::backdrop {
   min-width: 0;
   position: relative;
 }
+/* `.field input` above also reaches these radios, which sit behind their cards: without the resets the
+   hidden control keeps a full-width, 38px, bordered box and — being positioned — paints over the card
+   it is supposed to be under. Only `opacity` hides that today. The box is zeroed rather than removed:
+   `display: none` or `visibility: hidden` would take the radio out of the tab order and kill both the
+   arrow-key group and the `:focus-visible` outline below. */
 .agent-option input {
+  background: none;
+  border: 0;
+  height: 0;
+  min-height: 0;
   opacity: 0;
+  padding: 0;
   pointer-events: none;
   position: absolute;
+  width: 0;
 }
 .agent-option-content {
   align-items: center;
@@ -671,6 +685,9 @@ dialog::backdrop {
   stroke-width: 2.2;
   width: 23px;
 }
+/* The two brand chips are the only literal colours in the picker, so they need the same light/dark pair
+   the badges above carry. `#1f2937` in particular sat within ~1.2:1 of the selected card's dark
+   `--row-active`, leaving the chip's shape invisible behind its glyph. */
 .agent-icon-claude {
   background: #f8e2d8;
   color: #b94f2d;
@@ -678,6 +695,16 @@ dialog::backdrop {
 .agent-icon-codex {
   background: #1f2937;
   color: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  .agent-icon-claude {
+    background: #4a2a1c;
+    color: #f6bda6;
+  }
+  .agent-icon-codex {
+    background: #e6e8eb;
+    color: #14171c;
+  }
 }
 .agent-option-name {
   font-size: 13px;

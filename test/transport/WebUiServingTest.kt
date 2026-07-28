@@ -301,6 +301,44 @@ class WebUiServingTest {
     }
 
     @Test
+    fun theAgentRadiosAreHiddenWithoutLeavingTheKeyboardOrTheDarkTheme() = withServer { ctx ->
+        val css = ctx.get("/style.css").bodyAsText()
+
+        // A fieldset carries a UA `margin-inline`, which would inset the picker relative to the
+        // full-width fields under it.
+        assertTrue(
+            cssRuleOf(css, ".agent-picker").contains("margin-inline: 0"),
+            "the picker lines up with the rest of the form",
+        )
+
+        // `.field input` reaches these radios too, and only `opacity` keeps that inherited box from
+        // painting over the card. Hiding them by removal instead would take them out of the tab order
+        // and silently kill the arrow-key group and the focus outline the test above pins.
+        val hidden = cssRuleOf(css, ".agent-option input")
+        assertTrue(hidden.contains("  width: 0;"), "the hidden radio drops the inherited full width")
+        assertTrue(hidden.contains("  height: 0;"), "the hidden radio drops the inherited height")
+        assertTrue(hidden.contains("  min-height: 0;"), "the hidden radio drops the inherited min-height")
+        assertTrue(hidden.contains("  border: 0;"), "the hidden radio drops the inherited border")
+        assertTrue(
+            !hidden.contains("display: none") && !hidden.contains("visibility: hidden"),
+            "the radios stay focusable — removing them from the box tree removes them from the keyboard",
+        )
+
+        // Every other colour in the picker comes from a themed variable; these two literals do not, so
+        // each owes a dark counterpart the way the status badges above do.
+        assertEquals(
+            2,
+            Regex("\\.agent-icon-claude").findAll(css).count(),
+            "the Claude chip is declared once per colour scheme",
+        )
+        assertEquals(
+            2,
+            Regex("\\.agent-icon-codex").findAll(css).count(),
+            "the Codex chip is declared once per colour scheme",
+        )
+    }
+
+    @Test
     fun webUiReportsAMissingAgentInsteadOfSilentlyRefusingToStart() = withServer { ctx ->
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         val picker = agentPickerOf(dialogs)
@@ -1847,6 +1885,14 @@ class WebUiServingTest {
         fun beInt(at: Int): Int = (0 until 4).fold(0) { acc, i -> (acc shl 8) or (bytes[at + i].toInt() and 0xFF) }
         assertEquals(size, beInt(16), "$what pixel width")
         assertEquals(size, beInt(20), "$what pixel height")
+    }
+
+    /** One top-level `selector { … }` rule body, so a declaration check cannot read a neighbouring rule. */
+    private fun cssRuleOf(css: String, selector: String): String {
+        val start = css.indexOf("\n$selector {")
+        val end = css.indexOf("}", start.coerceAtLeast(0))
+        assertTrue(start >= 0 && end > start, "the stylesheet declares `$selector`")
+        return css.substring(start, end)
     }
 
     /** The new-session dialog's agent `<fieldset>`, so a picker assertion cannot read the rest of the form. */
