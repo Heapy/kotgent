@@ -222,8 +222,11 @@ WebSocket), and renders a session's terminal with `xterm.js` over the terminal W
 keyboard input, resize). Its installable PWA layout adds a mobile sidebar drawer, safe-area handling,
 terminal sizing from `visualViewport`, and a phone-only row for Esc, Tab, Shift-Tab, arrows, Ctrl, and
 Ctrl-C. Terminal taps focus the software keyboard without Safari zooming the helper textarea, and a
-terminal socket lost while the app is backgrounded gets one bounded, daemon-liveness-checked reattach
-attempt on return.
+terminal socket lost — to the app being backgrounded, or to the daemon restarting under it — is reattached
+without a reload: on returning to the app, and on the events socket reconnecting, which is the only signal
+that a restarted daemon is back. Each attempt checks daemon liveness under a deadline first; a daemon that
+is merely unreachable leaves the attempt available for the next one, while a daemon that answers that this
+session is gone ends it rather than retrying forever.
 
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
 embedded short Git hash (for example `0.5.0+81c37fe`), while published Homebrew builds show the release
