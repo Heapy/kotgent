@@ -198,7 +198,7 @@ class WebUiServingTest {
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
-            "/lib/throttle.js", "/lib/notify.js", "/lib/push.js",
+            "/lib/throttle.js", "/lib/notify.js", "/lib/push.js", "/lib/agents.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js",
         )) {
@@ -271,13 +271,27 @@ class WebUiServingTest {
             "the new-session dialog starts without a selected agent",
         )
 
-        val choices = agentChoicesOf(dialogs)
+        val choices = ctx.get("/lib/agents.js").bodyAsText()
         assertEquals(4, Regex("value: \"").findAll(choices).count(), "the picker offers four agents")
         assertTrue(choices.contains("value: \"claude\", name: \"Claude\", available: true"), "Claude starts")
         assertTrue(choices.contains("value: \"codex\", name: \"Codex\", available: true"), "Codex starts")
 
+        // Each mark is the vendor's own path on its own viewBox, not a glyph redrawn to fit a shared box.
+        assertEquals(4, Regex("viewBox: \"").findAll(choices).count(), "every agent brings its own viewBox")
+        val marks = Regex("icon: \"([^\"]+)\"").findAll(choices).map { it.groupValues[1] }.toList()
+        assertEquals(4, marks.size, "every agent brings a path")
+        assertTrue(
+            marks.all { it.length > 100 },
+            "the shortest mark is ${marks.minOf { it.length }} chars — a real logo, not a hand-drawn glyph",
+        )
+
         val picker = agentPickerOf(dialogs)
+        assertTrue(
+            dialogs.contains("import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from \"../lib/agents.js\";"),
+            "the dialog renders from that table rather than carrying its own copy",
+        )
         assertTrue(picker.contains("AGENT_CHOICES.map("), "every card comes from that one table")
+        assertTrue(picker.contains("viewBox=\${choice.viewBox}"), "each card draws on its mark's own box")
         assertTrue(picker.contains("type=\"radio\""), "an agent is one radio choice, not a menu entry")
         assertTrue(
             picker.contains("name=\"session-agent\""),
@@ -326,6 +340,12 @@ class WebUiServingTest {
             "the radios stay focusable — removing them from the box tree removes them from the keyboard",
         )
 
+        // The marks are the vendors' filled paths, so the chip paints them with `fill`. A stroke setup
+        // left over from the hand-drawn glyphs would outline every filled shape instead.
+        val mark = cssRuleOf(css, ".agent-icon svg")
+        assertTrue(mark.contains("fill: currentColor"), "a brand mark is filled, and takes the chip's colour")
+        assertTrue(!mark.contains("stroke-width"), "nothing strokes a filled path")
+
         // Every other colour in the picker comes from a themed variable; the chips are literals, so each
         // owes a dark counterpart the way the status badges above do.
         for (agent in listOf("claude", "codex", "junie", "cursor")) {
@@ -341,7 +361,7 @@ class WebUiServingTest {
     fun plannedAgentsAreShownWithoutBecomingChoosable() = withServer { ctx ->
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
 
-        val choices = agentChoicesOf(dialogs)
+        val choices = ctx.get("/lib/agents.js").bodyAsText()
         assertTrue(choices.contains("value: \"junie\", name: \"Junie\", available: false"), "Junie is planned")
         assertTrue(choices.contains("value: \"cursor\", name: \"Cursor\", available: false"), "Cursor is planned")
 
@@ -375,8 +395,8 @@ class WebUiServingTest {
         // Focus lands on the choice that has no default, not on the prefilled path field below it — and
         // on a card that can actually take it, since a planned agent's radio is disabled.
         assertTrue(
-            dialogs.contains(
-                "const FIRST_AVAILABLE_AGENT = AGENT_CHOICES.find((choice) => choice.available).value;",
+            ctx.get("/lib/agents.js").bodyAsText().contains(
+                "export const FIRST_AVAILABLE_AGENT = AGENT_CHOICES.find((choice) => choice.available).value;",
             ),
             "the focus target is the first agent that can be started, not simply the first card",
         )
@@ -1928,14 +1948,6 @@ class WebUiServingTest {
         val end = css.indexOf("}", start.coerceAtLeast(0))
         assertTrue(start >= 0 && end > start, "the stylesheet declares `$selector`")
         return css.substring(start, end)
-    }
-
-    /** The `AGENT_CHOICES` table the picker renders from, so a choice check cannot read the markup. */
-    private fun agentChoicesOf(dialogs: String): String {
-        val start = dialogs.indexOf("const AGENT_CHOICES = [")
-        val end = dialogs.indexOf("\n];", start.coerceAtLeast(0))
-        assertTrue(start >= 0 && end > start, "the new-session dialog declares its agents in one table")
-        return dialogs.substring(start, end)
     }
 
     /** The new-session dialog's agent `<fieldset>`, so a picker assertion cannot read the rest of the form. */

@@ -12,6 +12,7 @@
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { groupFor, joinPath, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
 import { apiRequest, errorMessage } from "../lib/api.js";
@@ -39,35 +40,6 @@ function Dialog({ id, labelledBy, onClose, children }) {
 // --- New session -----------------------------------------------------------------------------------
 
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
-
-/*
- * The picker's choices, in display order. `available: false` renders an announced but unselectable card:
- * the kind is shown as planned, and its radio is `disabled`, so it leaves the tab order and the arrow-key
- * group entirely. That flag has to agree with the daemon's `agentFactoryOf`, which is the real gate — it
- * rejects an unknown kind with a 400 before any tmux side effect, so a card enabled here ahead of its
- * adapter would only produce a failed start. `icon` is a stroked path in a 24×24 box, not a brand mark.
- */
-const AGENT_CHOICES = [
-  {
-    value: "claude", name: "Claude", available: true,
-    icon: "M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4",
-  },
-  {
-    value: "codex", name: "Codex", available: true,
-    icon: "m6 7 5 5-5 5M13 17h5",
-  },
-  {
-    value: "junie", name: "Junie", available: false,
-    icon: "M9 4h6M13 4v9a4 4 0 0 1-8 0",
-  },
-  {
-    value: "cursor", name: "Cursor", available: false,
-    icon: "M5 3V17l4-3.5 3 6.5 2.6-1.1-2.9-6.4h4.5Z",
-  },
-];
-
-/** The card that takes the dialog's initial focus while no agent is chosen. */
-const FIRST_AVAILABLE_AGENT = AGENT_CHOICES.find((choice) => choice.available).value;
 
 export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
   const [agent, setAgent] = useState("");
@@ -215,7 +187,7 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
                        checked=${agent === choice.value} onChange=${chooseAgent} />
                 <span class="agent-option-content">
                   <span class=${"agent-icon agent-icon-" + choice.value} aria-hidden="true">
-                    <svg viewBox="0 0 24 24" focusable="false"><path d=${choice.icon} /></svg>
+                    <svg viewBox=${choice.viewBox} focusable="false"><path d=${choice.icon} /></svg>
                   </span>
                   <span class="agent-option-name">
                     ${choice.name}${!choice.available && html`<small>Soon</small>`}

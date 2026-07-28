@@ -688,29 +688,30 @@ dialog::backdrop {
   justify-content: center;
   width: 38px;
 }
+/* The marks are the vendors' own filled paths (see `lib/agents.js`), so they take `fill`, not a stroke,
+   and they read heavier than an outline at the same size — hence 20px inside the 38px chip. */
 .agent-icon svg {
-  fill: none;
-  height: 23px;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2.2;
-  width: 23px;
+  fill: currentColor;
+  height: 20px;
+  stroke: none;
+  width: 20px;
 }
 /* The brand chips are the only literal colours in the picker, so each needs the same light/dark pair
-   the badges above carry. `#1f2937` in particular sat within ~1.2:1 of the selected card's dark
-   `--row-active`, leaving the chip's shape invisible behind its glyph. */
+   the badges above carry: a chip tinted once would either glare or, like the earlier `#1f2937`, sit
+   within ~1.2:1 of the selected card's dark `--row-active` and lose its shape behind its own glyph.
+   The hues follow each vendor's own asset — OpenAI's `#0080f7` is the disc `lib/agents.js` drops,
+   Junie's `#48e054` is the fill on the JetBrains logo — and each pair clears 3:1 against its card. */
 .agent-icon-claude {
   background: #f8e2d8;
   color: #b94f2d;
 }
 .agent-icon-codex {
-  background: #1f2937;
-  color: #ffffff;
+  background: #e2f0ff;
+  color: #0080f7;
 }
 .agent-icon-junie {
-  background: #ede4fb;
-  color: #6b3fc0;
+  background: #e3f8e6;
+  color: #1d8a2c;
 }
 .agent-icon-cursor {
   background: #e3e8ef;
@@ -722,12 +723,12 @@ dialog::backdrop {
     color: #f6bda6;
   }
   .agent-icon-codex {
-    background: #e6e8eb;
-    color: #14171c;
+    background: #0d2c4a;
+    color: #5cb4ff;
   }
   .agent-icon-junie {
-    background: #33245a;
-    color: #cfb8ff;
+    background: #16351c;
+    color: #48e054;
   }
   .agent-icon-cursor {
     background: #2b3a4d;
