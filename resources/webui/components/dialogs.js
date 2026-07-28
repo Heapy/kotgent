@@ -52,8 +52,15 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const cwdRef = useRef(null);
+  const agentRef = useRef(null);
 
-  useEffect(() => { if (cwdRef.current) cwdRef.current.focus(); }, []);
+  // There is deliberately no default agent, so the picker — not the prefilled path — is the first
+  // answer this dialog needs, and it is where the initial focus belongs. Seeding `agent` from a
+  // preference later would hand the landing spot back to the path field on its own.
+  useEffect(() => {
+    const target = agent ? cwdRef.current : agentRef.current;
+    if (target) target.focus();
+  }, []);
 
   useEffect(() => {
     if (completionQuery === null) return undefined;
@@ -122,8 +129,22 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
     }
   };
 
+  const chooseAgent = (event) => {
+    setAgent(event.target.value);
+    setError(null);
+  };
+
   const submit = async (event) => {
     event.preventDefault();
+    if (!agent) {
+      // The one requirement the browser cannot report here. A `disabled` submit would swallow both the
+      // click and Enter with no feedback at all, and native `required` would anchor its bubble on a
+      // radio that is `opacity: 0` — so the missing choice is reported through the dialog's own
+      // `role="alert"` line, and focus goes back to the picker.
+      setError("Pick an agent to start a session.");
+      if (agentRef.current) agentRef.current.focus();
+      return;
+    }
     const tagList = tags
       .split(",")
       .map((tag) => tag.trim())
@@ -151,13 +172,14 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
                   aria-label="Close" onClick=${onClose}>×</button>
         </div>
 
-        <fieldset class="field agent-picker">
+        <fieldset class="field agent-picker"
+                  aria-describedby=${agent ? null : "new-session-agent-hint"}>
           <legend>Agent</legend>
           <div class="agent-options">
             <label class="agent-option">
               <input id="session-agent-claude" type="radio" name="session-agent" value="claude"
-                     required checked=${agent === "claude"}
-                     onChange=${(e) => setAgent(e.target.value)} />
+                     aria-required="true" ref=${agentRef} checked=${agent === "claude"}
+                     onChange=${chooseAgent} />
               <span class="agent-option-content">
                 <span class="agent-icon agent-icon-claude" aria-hidden="true">
                   <svg viewBox="0 0 24 24" focusable="false">
@@ -169,8 +191,8 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
             </label>
             <label class="agent-option">
               <input id="session-agent-codex" type="radio" name="session-agent" value="codex"
-                     required checked=${agent === "codex"}
-                     onChange=${(e) => setAgent(e.target.value)} />
+                     aria-required="true" checked=${agent === "codex"}
+                     onChange=${chooseAgent} />
               <span class="agent-option-content">
                 <span class="agent-icon agent-icon-codex" aria-hidden="true">
                   <svg viewBox="0 0 24 24" focusable="false">
@@ -181,6 +203,9 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
               </span>
             </label>
           </div>
+          ${!agent && html`
+            <p id="new-session-agent-hint" class="field-hint">Pick one to start a session.</p>
+          `}
         </fieldset>
 
         <div class="field">
@@ -229,8 +254,7 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
         <div class="dialog-actions">
           <button id="new-session-cancel" class="button button-quiet" type="button"
                   onClick=${onClose}>Cancel</button>
-          <button id="new-session-submit" class="button button-primary" type="submit"
-                  disabled=${busy || !agent}>
+          <button id="new-session-submit" class="button button-primary" type="submit" disabled=${busy}>
             ${busy ? "Starting…" : "Start session"}
           </button>
         </div>

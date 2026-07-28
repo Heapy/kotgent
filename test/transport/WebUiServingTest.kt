@@ -271,20 +271,22 @@ class WebUiServingTest {
             "the new-session dialog starts without a selected agent",
         )
 
-        val pickerStart = dialogs.indexOf("<fieldset class=\"field agent-picker\">")
-        val pickerEnd = dialogs.indexOf("</fieldset>", pickerStart.coerceAtLeast(0))
-        assertTrue(pickerStart >= 0 && pickerEnd > pickerStart, "the agent picker is a bounded fieldset")
-        val picker = dialogs.substring(pickerStart, pickerEnd)
+        val picker = agentPickerOf(dialogs)
 
         assertEquals(2, Regex("type=\"radio\"").findAll(picker).count(), "each agent is one radio choice")
-        assertTrue(!picker.contains("<select"), "choosing an agent does not require opening a select")
+        assertEquals(
+            2,
+            Regex("name=\"session-agent\"").findAll(picker).count(),
+            "both choices share one radio group name, or they stop being mutually exclusive",
+        )
+        // The old control is gone from the WHOLE module, not merely from the fieldset that replaced it —
+        // a leftover `<select id="session-agent">` elsewhere would satisfy a picker-scoped assertion.
+        assertTrue(
+            !dialogs.contains("id=\"session-agent\""),
+            "choosing an agent does not require opening a select",
+        )
         assertTrue(picker.contains("value=\"claude\""), "Claude is available")
         assertTrue(picker.contains("value=\"codex\""), "Codex is available")
-        assertTrue(picker.contains("required"), "the form requires an explicit agent choice")
-        assertTrue(
-            dialogs.contains("disabled=\${busy || !agent}"),
-            "the start action stays disabled until an agent is selected",
-        )
 
         val css = ctx.get("/style.css").bodyAsText()
         assertTrue(css.contains(".agent-options"), "the icon choices have a dedicated layout")
@@ -295,6 +297,62 @@ class WebUiServingTest {
         assertTrue(
             css.contains(".agent-option input:focus-visible + .agent-option-content"),
             "keyboard focus remains visible on the custom radio choices",
+        )
+    }
+
+    @Test
+    fun webUiReportsAMissingAgentInsteadOfSilentlyRefusingToStart() = withServer { ctx ->
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        val picker = agentPickerOf(dialogs)
+
+        // Focus lands on the choice that has no default, not on the prefilled path field below it.
+        assertTrue(picker.contains("ref=\${agentRef}"), "the picker owns the ref the dialog focuses")
+        assertTrue(
+            dialogs.contains("const target = agent ? cwdRef.current : agentRef.current;"),
+            "an unanswered agent choice takes the initial focus",
+        )
+
+        // One mechanism owns the requirement. A disabled submit swallows Enter with no feedback, and a
+        // native `required` would anchor its bubble on a radio the stylesheet renders at `opacity: 0`.
+        assertTrue(
+            dialogs.contains("disabled=\${busy}>"),
+            "the start action is gated on the request in flight, not on the agent choice",
+        )
+        assertTrue(!dialogs.contains("busy || !agent"), "the start action is not silently disabled")
+        assertEquals(
+            0,
+            Regex("(?<![-\\w])required").findAll(picker).count(),
+            "no native constraint validation competes with the dialog's own report",
+        )
+        assertEquals(
+            2,
+            Regex("aria-required=\"true\"").findAll(picker).count(),
+            "the choice is still announced as required",
+        )
+
+        // Submitting without a choice reports it and hands focus back, rather than doing nothing.
+        assertTrue(dialogs.contains("if (!agent) {"), "submit refuses a missing agent explicitly")
+        assertTrue(
+            dialogs.contains("setError(\"Pick an agent to start a session.\");"),
+            "the refusal carries a reason",
+        )
+        assertTrue(
+            dialogs.contains("if (agentRef.current) agentRef.current.focus();"),
+            "the refusal returns focus to the unanswered choice",
+        )
+        assertTrue(
+            dialogs.contains("id=\"new-session-error\" class=\"form-error\" role=\"alert\""),
+            "the reason is announced, not merely drawn",
+        )
+
+        // The same reason is visible at the point of choice while it is still unanswered.
+        assertTrue(
+            picker.contains("aria-describedby=\${agent ? null : \"new-session-agent-hint\"}"),
+            "the group is described by its hint only while no agent is selected",
+        )
+        assertTrue(
+            picker.contains("<p id=\"new-session-agent-hint\" class=\"field-hint\">"),
+            "the hint is rendered inside the group it describes",
         )
     }
 
@@ -1789,6 +1847,14 @@ class WebUiServingTest {
         fun beInt(at: Int): Int = (0 until 4).fold(0) { acc, i -> (acc shl 8) or (bytes[at + i].toInt() and 0xFF) }
         assertEquals(size, beInt(16), "$what pixel width")
         assertEquals(size, beInt(20), "$what pixel height")
+    }
+
+    /** The new-session dialog's agent `<fieldset>`, so a picker assertion cannot read the rest of the form. */
+    private fun agentPickerOf(dialogs: String): String {
+        val start = dialogs.indexOf("<fieldset class=\"field agent-picker\"")
+        val end = dialogs.indexOf("</fieldset>", start.coerceAtLeast(0))
+        assertTrue(start >= 0 && end > start, "the agent picker is a bounded fieldset")
+        return dialogs.substring(start, end)
     }
 
     /**
