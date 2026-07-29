@@ -74,6 +74,7 @@ fun rolloutFileSessionId(fileName: String): ProviderSessionId? {
 
 /**
  * Read the `cwd` out of a rollout's first (`session_meta`) line, or `null` if absent. Pure and host-free.
+ * Also the per-line field scan behind [claudeTranscriptCwd] — the `"cwd":"…"` shape is the same there.
  *
  * Deliberately a scan for the `"cwd":"…"` field rather than a JSON parse: the caller only reads the
  * HEAD of the file (a `session_meta` line embeds the full base instructions and can be tens of KB), so
@@ -112,6 +113,49 @@ fun rolloutCwd(head: String): String? {
         i++
     }
     return null // the closing quote never arrived (truncated head)
+}
+
+/**
+ * Entry names in [path] excluding `.`/`..`; empty if it cannot be opened.
+ *
+ * Extracted from [CodexRolloutScan] as a shared POSIX helper for the vendor-store scans (Codex rollout
+ * walking, the Claude `projects` scan in [claudeSessionLocator]) — public rather than `internal`
+ * because toolchain 0.11 gives tests no friend-module visibility.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun listDir(path: String): List<String> {
+    val dir = opendir(path) ?: return emptyList()
+    try {
+        val names = ArrayList<String>()
+        while (true) {
+            val entry = readdir(dir) ?: break
+            val name = entry.pointed.d_name.toKString()
+            if (name != "." && name != "..") names.add(name)
+        }
+        return names
+    } finally {
+        closedir(dir)
+    }
+}
+
+/**
+ * The first [bytes] of [path] as text, or `null` if it cannot be read. Shared with [listDir]'s callers
+ * (see its note on extraction and visibility); what it returns is usually a TRUNCATED head, which is why
+ * the pure parsers ([rolloutCwd], [claudeTranscriptCwd]) tolerate cut-off lines.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun readHead(path: String, bytes: Int = CodexRolloutScan.HEAD_BYTES): String? {
+    val fp = fopen(path, "rb") ?: return null
+    try {
+        fseek(fp, 0, SEEK_SET)
+        val buffer = ByteArray(bytes)
+        val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), bytes.convert(), fp) }
+        val n = read.toInt()
+        if (n <= 0) return null
+        return buffer.decodeToString(0, n)
+    } finally {
+        fclose(fp)
+    }
 }
 
 /** `$CODEX_HOME`, else `~/.codex` (falls back to a cwd-relative `.codex` if `$HOME` is unset). */
@@ -180,6 +224,20 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
             }
     }
 
+    /**
+     * The recorded `cwd` of the live rollout for [providerSessionId], or `null` when none exists — the
+     * Codex half of import discovery ([codexSessionLocator]). The rollout is matched by id in the file
+     * NAME (like [hasRollout]), then its `cwd` is read out of the first (`session_meta`) line exactly as
+     * [discoverSessionId] does. Only `sessions/` is walked, so an ARCHIVED rollout deliberately does not
+     * answer: archiving puts a session out of `codex resume`'s reach, and an import discovered from it
+     * would offer a revival that fails.
+     */
+    fun cwdOf(providerSessionId: ProviderSessionId): String? =
+        rolloutFiles().firstNotNullOfOrNull { file ->
+            if (rolloutFileSessionId(file.name) != providerSessionId) return@firstNotNullOfOrNull null
+            readHead(file.path)?.let(::rolloutCwd)
+        }
+
     /** One rollout file found on disk: its base [name], full [path], and mtime in epoch millis. */
     private data class RolloutFile(val name: String, val path: String, val mtimeMillis: Long)
 
@@ -207,42 +265,11 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
         return out
     }
 
-    /** Entry names in [path] excluding `.`/`..`; empty if it cannot be opened. */
-    private fun listDir(path: String): List<String> {
-        val dir = opendir(path) ?: return emptyList()
-        try {
-            val names = ArrayList<String>()
-            while (true) {
-                val entry = readdir(dir) ?: break
-                val name = entry.pointed.d_name.toKString()
-                if (name != "." && name != "..") names.add(name)
-            }
-            return names
-        } finally {
-            closedir(dir)
-        }
-    }
-
     /** Modification time of [path] in epoch millis, or `null` if it cannot be stat'ed. */
     private fun mtimeMillis(path: String): Long? = memScoped {
         val st = alloc<stat>()
         if (stat(path, st.ptr) != 0) return@memScoped null
         st.st_mtimespec.tv_sec * 1000L + st.st_mtimespec.tv_nsec / 1_000_000L
-    }
-
-    /** The first [bytes] of [path] as text (default [HEAD_BYTES]), or `null` if it cannot be read. */
-    private fun readHead(path: String, bytes: Int = HEAD_BYTES): String? {
-        val fp = fopen(path, "rb") ?: return null
-        try {
-            fseek(fp, 0, SEEK_SET)
-            val buffer = ByteArray(bytes)
-            val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), bytes.convert(), fp) }
-            val n = read.toInt()
-            if (n <= 0) return null
-            return buffer.decodeToString(0, n)
-        } finally {
-            fclose(fp)
-        }
     }
 
     companion object {

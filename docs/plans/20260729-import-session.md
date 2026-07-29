@@ -197,18 +197,18 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 - Create: `test/daemon/VendorSessionLocatorTest.kt`
 - Modify: `test/daemon/CodexRolloutScanTest.kt`
 
-- [ ] TDD: тесты `claudeTranscriptCwd` — строка с `"cwd"`, `cwd` не в первой строке, отсутствие поля,
+- [x] TDD: тесты `claudeTranscriptCwd` — строка с `"cwd"`, `cwd` не в первой строке, отсутствие поля,
       мусорные/пустые строки, пустой файл
-- [ ] TDD: тесты claude-скана на временном каталоге — `<id>.jsonl` найден в одном из `projects/*/`,
+- [x] TDD: тесты claude-скана на временном каталоге — `<id>.jsonl` найден в одном из `projects/*/`,
       id отсутствует, каталог `projects` отсутствует
-- [ ] TDD: тесты `CodexRolloutScan.cwdOf` — существующий rollout возвращает cwd из `session_meta`,
+- [x] TDD: тесты `CodexRolloutScan.cwdOf` — существующий rollout возвращает cwd из `session_meta`,
       неизвестный id → null, архивный rollout не считается
-- [ ] реализовать `claudeTranscriptCwd` (чистая функция) + скан (`opendir` по `projects/` +
+- [x] реализовать `claudeTranscriptCwd` (чистая функция) + скан (`opendir` по `projects/` +
       `access()` на `<dir>/<id>.jsonl`, без листинга транскриптов) по инжектируемому `claudeDir`
-- [ ] извлечь POSIX-хелперы `listDir`/`readHead` из `CodexRolloutScan` (public) и реализовать
+- [x] извлечь POSIX-хелперы `listDir`/`readHead` из `CodexRolloutScan` (public) и реализовать
       `cwdOf`, переиспользуя first-line парсинг `discoverSessionId`
-- [ ] `VendorSessionLocator` (fun interface) + продакшен-фабрика с диспатчем по agent kind
-- [ ] `./kotlin build && ./kotlin test` — зелёные
+- [x] `VendorSessionLocator` (fun interface) + продакшен-фабрика с диспатчем по agent kind
+- [x] `./kotlin build && ./kotlin test` — зелёные (706 passed / 0 skipped)
 
 ### Task 2: SessionManager.importSession + продакшен-wiring
 

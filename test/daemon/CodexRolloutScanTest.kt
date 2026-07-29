@@ -214,6 +214,40 @@ class CodexRolloutScanTest {
         assertNull(CodexRolloutScan("/nonexistent/kotgent-test-codex").discoverSessionId("/work", 0))
     }
 
+    // --- cwdOf: the recorded cwd of a live rollout (import discovery) ---
+
+    @Test
+    fun cwdOfReadsTheRecordedCwdOutOfTheSessionMeta() {
+        val codexDir = makeCodexDir()
+        val id = uuid('a')
+        placeRollout(codexDir, "2026", "07", "23", id, cwd = "/work/mine")
+        placeRollout(codexDir, "2026", "07", "23", uuid('b'), cwd = "/work/other")
+
+        assertEquals("/work/mine", CodexRolloutScan(codexDir).cwdOf(id))
+        // The production VendorSessionLocator is the same lookup behind the uniform (agent, id) shape.
+        assertEquals("/work/mine", codexSessionLocator(codexDir).cwdOf("codex", id))
+    }
+
+    @Test
+    fun cwdOfAnUnknownIdIsNull() {
+        val codexDir = makeCodexDir()
+        placeRollout(codexDir, "2026", "07", "23", uuid('c'), cwd = "/work/mine")
+
+        assertNull(CodexRolloutScan(codexDir).cwdOf(uuid('d')))
+        assertNull(CodexRolloutScan("/nonexistent/kotgent-test-codex").cwdOf(uuid('d')), "absent home -> null")
+    }
+
+    @Test
+    fun cwdOfIgnoresArchivedRollouts() {
+        // Archiving puts a session out of `codex resume`'s reach, so an import discovered from an
+        // archived rollout would offer a revival that fails — it must not answer.
+        val codexDir = makeCodexDir()
+        val id = uuid('e')
+        placeArchivedRollout(codexDir, id, cwd = "/work/archived")
+
+        assertNull(CodexRolloutScan(codexDir).cwdOf(id))
+    }
+
     // --- model discovery ---
 
     @Test
@@ -274,6 +308,22 @@ class CodexRolloutScanTest {
         writeFile(
             file,
             """{"timestamp":"$year-$month-${day}T10:00:00.000Z","type":"session_meta","payload":""" +
+                """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
+        )
+        files += file
+    }
+
+    /**
+     * Lay a rollout in the FLAT `archived_sessions/` directory — where `codex archive` moves a session,
+     * out of `codex resume`'s (and therefore the scan's) reach. Same file naming as a live rollout.
+     */
+    private fun placeArchivedRollout(codexDir: String, id: ProviderSessionId, cwd: String) {
+        val archived = "$codexDir/archived_sessions"
+        mkdir(archived, mode0700.convert()).also { if (!dirs.contains(archived)) dirs += archived }
+        val file = "$archived/rollout-2026-07-23T10-00-00-${id.value}.jsonl"
+        writeFile(
+            file,
+            """{"timestamp":"2026-07-23T10:00:00.000Z","type":"session_meta","payload":""" +
                 """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
         )
         files += file
