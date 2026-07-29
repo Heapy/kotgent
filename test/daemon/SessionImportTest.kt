@@ -338,6 +338,65 @@ class SessionImportTest {
     }
 
     @Test
+    fun aRelativeCwdIsRejectedAtTheDaemon() = runBlocking {
+        withTimeout(20_000) {
+            // The CLI resolves relative paths client-side, but the Web UI / any API client can send one
+            // raw. The daemon lives under launchd with cwd `/`, so access(F_OK) on "tmp" would answer
+            // for "/tmp" — and for codex the probe ignores cwd entirely, so the raw relative string
+            // would be stored and later mis-resolved by resume's `tmux new-session -c`.
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            var probeAsked = false
+            val mgr = manager(store, probe = VendorStoreProbe { _, _, _ -> probeAsked = true; true })
+
+            val ex = assertFailsWith<ImportCwdException> {
+                mgr.importSession("codex", providerId, cwd = "tmp")
+            }
+
+            assertTrue(ex.message!!.contains("absolute"), "the error demands an absolute path: ${ex.message}")
+            assertFalse(probeAsked, "a relative cwd fails before the transcript probe")
+            assertTrue(store.listSessions().isEmpty(), "no row was created")
+        }
+    }
+
+    @Test
+    fun aCwdThatIsAPlainFileIsRejected() = runBlocking {
+        withTimeout(20_000) {
+            // access(F_OK) alone accepted a file; tmux `new-session -c` would only trip over it at
+            // resume time, long after the row was stored.
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val mgr = manager(store)
+
+            val ex = assertFailsWith<ImportCwdException> {
+                mgr.importSession("claude", providerId, cwd = "/etc/hosts") // exists, but is a file
+            }
+
+            assertTrue(ex.message!!.contains("not a directory"), "the error names the shape: ${ex.message}")
+            assertTrue(store.listSessions().isEmpty(), "no row was created")
+        }
+    }
+
+    @Test
+    fun anUppercaseIdVariantIsNormalizedAndConflictsWithItsLowercaseTwin() = runBlocking {
+        withTimeout(20_000) {
+            // macOS's default FS is case-insensitive, so an uppercase re-casing of the same UUID finds
+            // the same on-disk transcript — it must land as ONE session (stored lowercase, matching
+            // what hooks later report), never as two rows for one conversation.
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val mgr = manager(store)
+            val upper = ProviderSessionId(providerId.value.uppercase())
+
+            val meta = mgr.importSession("claude", upper, cwd = "/tmp")
+            assertEquals(providerId, meta.providerSessionId, "the stored id is normalized to lowercase")
+
+            val dup = assertFailsWith<DuplicateImportException> {
+                mgr.importSession("claude", providerId, cwd = "/tmp")
+            }
+            assertEquals(SessionId("imp00001"), dup.existingId, "the lowercase twin is the same session")
+            assertEquals(1, store.listSessions().size, "one conversation, one row")
+        }
+    }
+
+    @Test
     fun aDiscoveredCwdThatFailsTheProbeFailsLoudlyNotSilently() = runBlocking {
         withTimeout(20_000) {
             // The claude mismatch shape: discovery found the transcript and read its recorded cwd, but
@@ -358,6 +417,37 @@ class SessionImportTest {
             assertEquals("/tmp", ex.cwd, "the error names the cwd discovery settled on")
             assertTrue(ex.message!!.contains("--cwd"), "…with the --cwd workaround: ${ex.message}")
             assertTrue(store.listSessions().isEmpty(), "no row was created")
+        }
+    }
+
+    // ---- the accepted bind residual (see importSession's KDoc), pinned ----
+
+    @Test
+    fun aBindFailureAfterTheRowCommitLeavesAFunctionalResumableRow() = runBlocking {
+        withTimeout(20_000) {
+            // idCapture.bind fails AFTER upsertSession committed. The exception surfaces (the route
+            // would answer 500, and the client's retry then gets the duplicate conflict), but the row
+            // survives carrying the provider id — resume() reads the row, so the session stays
+            // functional; only the event log misses its SessionBound (the recorded replay divergence).
+            val real = SqliteEventStore.inMemory(now = { 42L })
+            val failing = object : EventStore by real {
+                override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
+                    throw IllegalStateException("simulated bind-append failure")
+            }
+            val mgr = manager(failing)
+
+            assertFailsWith<IllegalStateException> { mgr.importSession("claude", providerId, cwd = "/tmp") }
+
+            val row = real.getSession(SessionId("imp00001"))!!
+            assertEquals(SessionState.resumable, row.state, "the committed row survives the bind failure")
+            assertEquals(providerId, row.providerSessionId, "…carrying the provider id resume() needs")
+            assertTrue(
+                real.read(SessionId("imp00001"), Seq(0)).isEmpty(),
+                "the log has no SessionBound — the KDoc's accepted replay divergence",
+            )
+            // A retry of the same import sees the surviving row: the duplicate conflict, not a twin.
+            assertFailsWith<DuplicateImportException> { mgr.importSession("claude", providerId, cwd = "/tmp") }
+            assertEquals(1, real.listSessions().size, "still exactly one row")
         }
     }
 

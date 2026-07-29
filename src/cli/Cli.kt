@@ -112,7 +112,7 @@ val USAGE: String = """
                  [--cwd D] [--name N] [--tag T] [--no-start]
       list | ls                      list sessions
       stop <id>                      stop a session
-      resume <id>                    resume a stopped/crashed session
+      resume <id>                    resume a stopped/crashed/resumable session
       interrupt <id>                 send Ctrl-C to un-stick a session
       attach <id>                    attach a raw terminal to a session
       web [--print]                  open the Web UI in a browser (or print the login URL)
@@ -212,9 +212,15 @@ private fun parseStart(rest: List<String>): CliCommand {
 }
 
 /**
- * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]`. `--cwd` REQUIRES its
- * value: silently treating a forgotten one as "discover the cwd" would contradict the operator's
- * explicit intent to override discovery (the flag exists exactly for the cases discovery gets wrong).
+ * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]`. Stricter than
+ * [parseStart] on purpose, because every silently-tolerated slip changes what gets imported:
+ *  - every value flag REQUIRES a real (non-`--`) value. A forgotten `--cwd` value read as "discover"
+ *    would contradict the operator's explicit override intent, and a swallowed flag is worse —
+ *    `--name --no-start` would name the session "--no-start" AND auto-resume it against the
+ *    operator's stated intent;
+ *  - a third positional is rejected. `start <agent> [cwd]` trains `import claude <id> ~/proj`, and
+ *    silently dropping the path would fall back to discovery — potentially registering a different
+ *    cwd than the one the operator typed.
  */
 private fun parseImport(rest: List<String>): CliCommand {
     val positionals = mutableListOf<String>()
@@ -222,16 +228,23 @@ private fun parseImport(rest: List<String>): CliCommand {
     var cwd: String? = null
     var name: String? = null
     var noStart = false
+    // The flag's value at [i + 1], or null when it is missing or is itself a `--` flag (see the KDoc).
+    fun flagValue(i: Int): String? = rest.getOrNull(i + 1)?.takeUnless { it.startsWith("--") }
     var i = 0
     while (i < rest.size) {
         when (val a = rest[i]) {
             "--cwd" -> {
-                cwd = rest.getOrNull(i + 1)
-                    ?: return CliCommand.Invalid("import: --cwd requires a directory")
+                cwd = flagValue(i) ?: return CliCommand.Invalid("import: --cwd requires a directory")
                 i += 2
             }
-            "--name" -> { name = rest.getOrNull(i + 1); i += 2 }
-            "--tag" -> { rest.getOrNull(i + 1)?.let { tags.add(it) }; i += 2 }
+            "--name" -> {
+                name = flagValue(i) ?: return CliCommand.Invalid("import: --name requires a value")
+                i += 2
+            }
+            "--tag" -> {
+                tags.add(flagValue(i) ?: return CliCommand.Invalid("import: --tag requires a value"))
+                i += 2
+            }
             "--no-start" -> { noStart = true; i += 1 }
             else -> {
                 if (a.startsWith("--")) return CliCommand.Invalid("import: unknown flag '$a'")
@@ -247,6 +260,11 @@ private fun parseImport(rest: List<String>): CliCommand {
     if (id.isNullOrBlank()) {
         return CliCommand.Invalid("import requires a provider session id: kotgent import <agent> <session-id>")
     }
+    if (positionals.size > 2) {
+        return CliCommand.Invalid(
+            "import: unexpected argument '${positionals[2]}' — the project directory is not positional here, use --cwd <dir>",
+        )
+    }
     return CliCommand.Import(agent, id, cwd, name, tags, noStart)
 }
 
@@ -260,9 +278,7 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Invalid -> { eprintln(command.message); eprintln(""); eprintln(USAGE); 2 }
     is CliCommand.Daemon -> Commands.daemon(command.port)
     is CliCommand.Start -> runStart(command)
-    is CliCommand.Import -> runImportResolving(command, currentWorkingDir()) { cwd ->
-        Commands.importSession(command.agent, command.providerSessionId, cwd, command.name, command.tags, command.noStart)
-    }
+    is CliCommand.Import -> runImport(command)
     is CliCommand.ListSessions -> Commands.list()
     is CliCommand.Stop -> Commands.stop(command.id)
     is CliCommand.Resume -> Commands.resume(command.id)
@@ -288,6 +304,12 @@ private fun runStart(command: CliCommand.Start): Int = try {
     eprintln(e.message ?: "cannot resolve the working directory")
     2
 }
+
+/** `import` — the [runCli] dispatch wrapper (the [runStart] shape): [runImportResolving] over the real cwd + command. */
+private fun runImport(command: CliCommand.Import): Int =
+    runImportResolving(command, currentWorkingDir()) { cwd ->
+        Commands.importSession(command.agent, command.providerSessionId, cwd, command.name, command.tags, command.noStart)
+    }
 
 /**
  * `import` — resolve the optional `--cwd` exactly the way [runStart] resolves its cwd (a relative path is

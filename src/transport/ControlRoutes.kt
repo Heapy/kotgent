@@ -165,22 +165,26 @@ fun Route.controlRoutes(
         }
         // The four import failures are deliberately standalone, hierarchy-free exceptions (see their
         // declarations in SessionManager.kt), so each catch is independent and their order carries no
-        // meaning — no parent catch can swallow a sibling.
+        // meaning — no parent catch can swallow a sibling. Their bodies differ only in status, hence
+        // the one shared answer helper.
+        suspend fun importFailure(e: RuntimeException, status: HttpStatusCode) =
+            call.respondText("cannot import session: ${e.message}", status = status)
         val meta = try {
             sessionManager.importSession(req.agent, importProviderId, req.cwd, req.name, req.tags)
         } catch (e: UnknownAgentKindException) {
-            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            importFailure(e, HttpStatusCode.BadRequest)
             return@post
         } catch (e: ImportCwdException) {
-            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            importFailure(e, HttpStatusCode.BadRequest)
             return@post
         } catch (e: TranscriptNotFoundException) {
-            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            importFailure(e, HttpStatusCode.BadRequest)
             return@post
         } catch (e: DuplicateImportException) {
-            // The message names the existing kotgent session id and, when it is archived, points at
-            // Restore — everything the CLI and the Web UI surface for a duplicate.
-            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.Conflict)
+            // 409: the message names the existing kotgent session id — the `kotgent session '<id>'`
+            // phrase the CLI's runImportCommand parses back out (see DUPLICATE_IMPORT_ID_IN_BODY in
+            // Commands.kt) — and, when it is archived, points at Restore.
+            importFailure(e, HttpStatusCode.Conflict)
             return@post
         }
         call.respondText(

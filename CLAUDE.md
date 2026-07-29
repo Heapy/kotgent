@@ -82,11 +82,15 @@ this split: put pure logic in `core/`, and keep I/O at the boundary.
 - Reducer invariant: `pendingApprovals > 0 ⟺ state == needs_approval`. There is no "permission answered"
   hook from Claude, so **entering `running` (a `ToolCall` / `TurnStarted`) resets `pendingApprovals = 0`** —
   that is how an approval clears. `needs_answer` and `resumable` are **not** produced by the reducer;
-  `needs_answer` is forward-modeled and `resumable` is a reconciler classification.
+  `needs_answer` is forward-modeled and `resumable` is a reconciler classification (and the state an
+  import registers directly — see "Import is registration, not launch").
 
 **Two providers, one shape.** `claude` and `codex` are both launched as a **TUI inside `tmux`** and both
 report through **hooks → a local HTTP ingress → the normalizer**. Adding a provider means an adapter
-(launch spec + hook config + normalizer), an ingress route, a `VendorStoreProbe`, and an entry in
+(launch spec + hook config + normalizer), an ingress route, a `VendorStoreProbe` (registered in
+`productionVendorStoreProbe`, `src/daemon/Reconciler.kt` — no longer inlined in `Commands`), a
+`VendorSessionLocator` (registered in `productionSessionLocator`, `src/daemon/VendorSessionLocator.kt` —
+without it import discovery silently answers null for the new kind, forcing `--cwd`), and an entry in
 `agentFactoryOf` — nothing in `core/`, the store, or the fan-out changes. What differs between the two:
 
 - **Hook delivery.** Claude takes a settings FILE (`claude --settings <path>`). Codex has no such flag, so
@@ -120,7 +124,16 @@ naming `--cwd` as the workaround. The agent *binary* is deliberately not checked
 session still live in another terminal is undetectable (resume runs a second CLI copy of the same
 conversation — operator's responsibility), and an imported session's `cliVersion`/`cliPath` stay null
 forever (filling them would mean running the binary at import, contradicting the rule above); `model`
-appears after the first resume (claude via hooks, codex via `resume()`'s model capture).
+appears after the first resume (claude via hooks, codex via `resume()`'s model capture, which reads the
+id-keyed rollout — never the cwd+mtime heuristic — once the provider id is known). The four import
+failures are deliberately **standalone, hierarchy-free** exceptions (`UnknownAgentKindException`,
+`ImportCwdException`, `TranscriptNotFoundException` → 400; `DuplicateImportException` → 409) so the
+route's catches are order-free — the flat counterpart of the load-bearing `TmuxCopyModeException`
+subtype pattern above. One cross-file contract rides the 409: its body's `kotgent session '<id>'`
+phrase is parsed back out by the CLI (`runImportCommand` via `DUPLICATE_IMPORT_ID_IN_BODY` in
+`src/cli/Commands.kt`), pinned on the server side by TransportTest and on the CLI side by CliTest
+stubs built from the real exception message — reword `DuplicateImportException` and a test fails
+instead of the `kotgent resume <id>` hint silently degrading.
 
 **Single-upstream `tmux`-client fan-out.** The daemon holds **exactly one** upstream `tmux attach` client
 per session and fans its output out to all subscribers (IDE, browser). `TerminalBridge` is **lazy**: the
@@ -608,7 +621,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **739 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **751 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

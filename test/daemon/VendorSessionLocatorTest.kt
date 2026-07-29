@@ -6,6 +6,8 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.S_IRUSR
 import platform.posix.S_IWUSR
 import platform.posix.S_IXUSR
@@ -91,60 +93,101 @@ class VendorSessionLocatorTest {
     }
 
     @Test
-    fun aCwdPastTheLineScanWindowIsNotFound() {
-        // The scan is bounded to the head lines: a cwd that first appears past the window is not found
-        // (a transcript whose first records carry no cwd is not one Claude wrote for a project dir).
-        val filler = (1..CLAUDE_CWD_SCAN_LINES).joinToString("\n") { """{"type":"summary","n":$it}""" }
-        val head = filler + "\n" + """{"cwd":"/work/late"}"""
-        assertNull(claudeTranscriptCwd(head))
+    fun aCwdOnALateLineWithinTheByteWindowIsFound() {
+        // The ONLY bound is the caller's byte window: a transcript whose head is dominated by
+        // chained-session summary records still yields its cwd, however many lines precede it. (A
+        // line-count cap used to sit on top of the byte cap and was removed — it added nothing but
+        // this exact failure mode.)
+        val filler = (1..200).joinToString("\n") { """{"type":"summary","n":$it}""" }
+        assertEquals("/work/late", claudeTranscriptCwd(filler + "\n" + """{"cwd":"/work/late"}"""))
     }
 
     // ---- the scan: projects/*/ is probed for <id>.jsonl, then the head is read ----
 
     @Test
-    fun theTranscriptIsFoundInOneOfTheProjectDirs() {
-        val claudeDir = makeClaudeDir()
-        val id = uuid('a')
-        // Several project dirs; only one holds <id>.jsonl. Its RECORDED cwd is the answer — not a
-        // re-decoding of the directory name (encodeClaudeProjectDir is irreversible).
-        placeTranscript(claudeDir, project = "-work-other", id = uuid('b'), recordedCwd = "/work/other")
-        placeTranscript(claudeDir, project = "-work-mine", id = id, recordedCwd = "/work/mine")
+    fun theTranscriptIsFoundInOneOfTheProjectDirs() = runBlocking {
+        withTimeout(20_000) {
+            val claudeDir = makeClaudeDir()
+            val id = uuid('a')
+            // Several project dirs; only one holds <id>.jsonl. Its RECORDED cwd is the answer — not a
+            // re-decoding of the directory name (encodeClaudeProjectDir is irreversible).
+            placeTranscript(claudeDir, project = "-work-other", id = uuid('b'), recordedCwd = "/work/other")
+            placeTranscript(claudeDir, project = "-work-mine", id = id, recordedCwd = "/work/mine")
 
-        assertEquals("/work/mine", claudeSessionLocator(claudeDir).cwdOf("claude", id))
+            assertEquals("/work/mine", claudeSessionLocator(claudeDir).cwdOf("claude", id))
+        }
     }
 
     @Test
-    fun anUnknownIdYieldsNull() {
-        val claudeDir = makeClaudeDir()
-        placeTranscript(claudeDir, project = "-work-mine", id = uuid('c'), recordedCwd = "/work/mine")
+    fun anUnknownIdYieldsNull() = runBlocking {
+        withTimeout(20_000) {
+            val claudeDir = makeClaudeDir()
+            placeTranscript(claudeDir, project = "-work-mine", id = uuid('c'), recordedCwd = "/work/mine")
 
-        assertNull(claudeSessionLocator(claudeDir).cwdOf("claude", uuid('d')))
+            assertNull(claudeSessionLocator(claudeDir).cwdOf("claude", uuid('d')))
+        }
     }
 
     @Test
-    fun aMissingProjectsDirYieldsNull() {
-        val claudeDir = makeClaudeDir() // exists, but has no projects/ at all
-        assertNull(claudeSessionLocator(claudeDir).cwdOf("claude", uuid('e')))
-        assertNull(
-            claudeSessionLocator("/nonexistent/kotgent-test-claude-home").cwdOf("claude", uuid('e')),
-            "an absent home degrades to null, never an exception",
-        )
+    fun aMissingProjectsDirYieldsNull() = runBlocking {
+        withTimeout(20_000) {
+            val claudeDir = makeClaudeDir() // exists, but has no projects/ at all
+            assertNull(claudeSessionLocator(claudeDir).cwdOf("claude", uuid('e')))
+            assertNull(
+                claudeSessionLocator("/nonexistent/kotgent-test-claude-home").cwdOf("claude", uuid('e')),
+                "an absent home degrades to null, never an exception",
+            )
+        }
+    }
+
+    @Test
+    fun theScanReadsTheFullByteWindowNotTheDefaultHead() = runBlocking {
+        withTimeout(20_000) {
+            // Pins the readHead(transcript, CLAUDE_CWD_SCAN_BYTES) call at the READER level: ~40 KB of
+            // summary records precede the cwd line — far past the codex scan's 8 KB window, well inside
+            // the 64 KB one. A regression to the smaller window would answer null here.
+            val claudeDir = makeClaudeDir()
+            val id = uuid('a')
+            val pad = "x".repeat(180)
+            val filler = (1..200).joinToString("\n") { """{"type":"summary","pad":"$pad","n":$it}""" }
+            placeTranscriptRaw(claudeDir, "-work-big", id, filler + "\n" + """{"cwd":"/work/big"}""" + "\n")
+
+            assertEquals("/work/big", claudeSessionLocator(claudeDir).cwdOf("claude", id))
+        }
+    }
+
+    @Test
+    fun aCwdPastTheByteWindowIsNotFound() = runBlocking {
+        withTimeout(20_000) {
+            // The byte window IS the bound: a cwd whose first appearance lies past CLAUDE_CWD_SCAN_BYTES
+            // is not found (the reader truncates there, and the truncated tail parses to nothing).
+            val claudeDir = makeClaudeDir()
+            val id = uuid('b')
+            val pad = "x".repeat(180)
+            val lines = (CLAUDE_CWD_SCAN_BYTES / 190) + 40 // comfortably past the 64 KB window
+            val filler = (1..lines).joinToString("\n") { """{"type":"summary","pad":"$pad","n":$it}""" }
+            placeTranscriptRaw(claudeDir, "-work-huge", id, filler + "\n" + """{"cwd":"/work/beyond"}""" + "\n")
+
+            assertNull(claudeSessionLocator(claudeDir).cwdOf("claude", id))
+        }
     }
 
     // ---- dispatch: one locator per agent kind, unknown kinds answer null ----
 
     @Test
-    fun dispatchSelectsTheLocatorForTheAgentKind() {
-        val id = uuid('f')
-        val locator = byAgentVendorSessionLocator(
-            mapOf(
-                "claude" to VendorSessionLocator { _, _ -> "/from/claude" },
-                "codex" to VendorSessionLocator { _, _ -> "/from/codex" },
-            ),
-        )
-        assertEquals("/from/claude", locator.cwdOf("claude", id))
-        assertEquals("/from/codex", locator.cwdOf("codex", id))
-        assertNull(locator.cwdOf("unknown-kind", id), "an unregistered kind answers null, not a crash")
+    fun dispatchSelectsTheLocatorForTheAgentKind() = runBlocking {
+        withTimeout(20_000) {
+            val id = uuid('f')
+            val locator = byAgentVendorSessionLocator(
+                mapOf(
+                    "claude" to VendorSessionLocator { _, _ -> "/from/claude" },
+                    "codex" to VendorSessionLocator { _, _ -> "/from/codex" },
+                ),
+            )
+            assertEquals("/from/claude", locator.cwdOf("claude", id))
+            assertEquals("/from/codex", locator.cwdOf("codex", id))
+            assertNull(locator.cwdOf("unknown-kind", id), "an unregistered kind answers null, not a crash")
+        }
     }
 
     // --- harness (throwaway $TMPDIR fake home; NEVER the real ~/.claude) ------------------------------
@@ -176,6 +219,17 @@ class VendorSessionLocatorTest {
             """{"type":"summary","summary":"a chat","leafUuid":"${id.value}"}""" + "\n" +
                 """{"parentUuid":null,"isSidechain":false,"cwd":"$recordedCwd","sessionId":"${id.value}","type":"user"}""" + "\n",
         )
+        files += path
+    }
+
+    /** Like [placeTranscript], but with caller-provided [content] (the byte-window boundary tests). */
+    private fun placeTranscriptRaw(claudeDir: String, project: String, id: ProviderSessionId, content: String) {
+        val projects = "$claudeDir/projects"
+        mkdir(projects, mode0700.convert()).also { if (!dirs.contains(projects)) dirs += projects }
+        val projectDir = "$projects/$project"
+        mkdir(projectDir, mode0700.convert()).also { if (!dirs.contains(projectDir)) dirs += projectDir }
+        val path = "$projectDir/${id.value}.jsonl"
+        writeFile(path, content)
         files += path
     }
 

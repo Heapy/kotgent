@@ -217,15 +217,17 @@ class CodexRolloutScanTest {
     // --- cwdOf: the recorded cwd of a live rollout (import discovery) ---
 
     @Test
-    fun cwdOfReadsTheRecordedCwdOutOfTheSessionMeta() {
-        val codexDir = makeCodexDir()
-        val id = uuid('a')
-        placeRollout(codexDir, "2026", "07", "23", id, cwd = "/work/mine")
-        placeRollout(codexDir, "2026", "07", "23", uuid('b'), cwd = "/work/other")
+    fun cwdOfReadsTheRecordedCwdOutOfTheSessionMeta() = runBlocking {
+        withTimeout(20_000) {
+            val codexDir = makeCodexDir()
+            val id = uuid('a')
+            placeRollout(codexDir, "2026", "07", "23", id, cwd = "/work/mine")
+            placeRollout(codexDir, "2026", "07", "23", uuid('b'), cwd = "/work/other")
 
-        assertEquals("/work/mine", CodexRolloutScan(codexDir).cwdOf(id))
-        // The production VendorSessionLocator is the same lookup behind the uniform (agent, id) shape.
-        assertEquals("/work/mine", codexSessionLocator(codexDir).cwdOf("codex", id))
+            assertEquals("/work/mine", CodexRolloutScan(codexDir).cwdOf(id))
+            // The production VendorSessionLocator is the same lookup behind the uniform (agent, id) shape.
+            assertEquals("/work/mine", codexSessionLocator(codexDir).cwdOf("codex", id))
+        }
     }
 
     @Test
@@ -269,6 +271,23 @@ class CodexRolloutScanTest {
         // A plain session_meta-only rollout (no turn_context, no model) — best-effort miss.
         placeRollout(codexDir, "2026", "07", "23", uuid('e'), cwd = "/work/nomodel")
         assertNull(CodexRolloutScan(codexDir).discoverModel("/work/nomodel", notBeforeMillis = 0))
+    }
+
+    @Test
+    fun modelOfReadsTheIdKeyedRolloutIgnoringNeighboursInTheSameCwd() {
+        // The resume-path capture: the provider id is known, so the model comes from THAT session's
+        // rollout (matched by id in the file name) — a newer neighbour session in the same cwd, which
+        // discoverModel's cwd+mtime heuristic could prefer, must never answer for it.
+        val codexDir = makeCodexDir()
+        val mine = uuid('a')
+        val neighbour = uuid('b')
+        placeRolloutWithModel(codexDir, "2026", "07", "23", mine, cwd = "/work/shared", model = "gpt-5.5")
+        placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+
+        val scan = CodexRolloutScan(codexDir)
+        assertEquals("gpt-5.5", scan.modelOf(mine), "the id-keyed rollout answers, not the newest for the cwd")
+        assertEquals("gpt-6", scan.modelOf(neighbour))
+        assertNull(scan.modelOf(uuid('c')), "an unknown id is null")
     }
 
     // --- harness (throwaway $TMPDIR fake ~/.codex; NEVER the real one) --------------------------------

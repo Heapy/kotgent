@@ -3,6 +3,7 @@ package io.kotgent.transport
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.cli.DUPLICATE_IMPORT_ID_IN_BODY
 import io.kotgent.cli.DaemonPush
 import io.kotgent.cli.startDaemonServer
 import io.kotgent.cli.withStartupCompensation
@@ -34,6 +35,7 @@ import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
+import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
@@ -938,6 +940,10 @@ class TransportTest {
         val noCwdBody = noCwd.bodyAsText()
         assertTrue("no on-disk record" in noCwdBody, "the body names the discovery miss: $noCwdBody")
         assertTrue("--cwd" in noCwdBody, "…and the workaround: $noCwdBody")
+        assertTrue(
+            "archived" in noCwdBody,
+            "…and the archived-codex cause — the one --cwd can never fix: $noCwdBody",
+        )
 
         val gone = "/nonexistent/kotgent-import-route-test"
         val deleted = ctx.postBody(
@@ -974,6 +980,15 @@ class TransportTest {
         assertEquals(HttpStatusCode.Conflict, dup.status, "a second import of the same provider id is a 409")
         val dupBody = dup.bodyAsText()
         assertTrue(dto.id in dupBody, "the 409 names the existing kotgent session: $dupBody")
+        // The server half of the DUPLICATE_IMPORT_ID_IN_BODY contract: the live body must carry the
+        // id in the EXACT phrase the CLI's runImportCommand parses back out — asserted with the very
+        // regex the CLI uses, so a reworded DuplicateImportException fails here instead of silently
+        // degrading the `kotgent resume <id>` hint to a placeholder.
+        assertEquals(
+            dto.id,
+            DUPLICATE_IMPORT_ID_IN_BODY.find(dupBody)?.groupValues?.get(1),
+            "the 409 body matches the phrase contract the CLI parses: $dupBody",
+        )
         assertTrue("archived" !in dupBody, "a live duplicate carries no archived marker: $dupBody")
 
         // An archived duplicate must say so — the right move there is Restore, not a second import.
@@ -1034,6 +1049,46 @@ class TransportTest {
         }
         assertEquals(HttpStatusCode.Created, resp.status, "the published host reaches /sessions/import: ${resp.bodyAsText()}")
     }
+
+    // ---- 6c. the harness fake honors the real store's contract (anti-drift) ---------------------
+
+    @Test
+    fun fakeEventStoreMirrorsTheRealStoresCacheStateAuthority() = runBlocking {
+        withTimeout(15_000) {
+            // FakeEventStore.append is hand-mirrored from SqliteEventStore and has already drifted
+            // once (it resurrected an imported `resumable` row to `running` on the SessionBound
+            // append until the import 201 test exposed it). Run the same scenario over BOTH stores
+            // and require identical answers, so the next divergence fails here first — a targeted
+            // contract test for the drift-prone cache-state authority, not a second EventStoreTest.
+            suspend fun cacheAuthorityAnswers(store: EventStore): List<Any?> {
+                val dead = SessionId("contrct1")
+                store.upsertSession(contractMeta(dead, SessionState.resumable))
+                store.append(dead, AgentEvent.SessionBound(providerId), EventSource.system)
+                val afterDeadAppend = store.getSession(dead)!!
+
+                val alive = SessionId("contrct2")
+                store.upsertSession(contractMeta(alive, SessionState.running))
+                store.append(alive, AgentEvent.TurnStarted, EventSource.hook)
+                store.append(alive, AgentEvent.TurnCompleted, EventSource.hook)
+                val afterAliveAppends = store.getSession(alive)!!
+
+                return listOf(
+                    afterDeadAppend.state, afterDeadAppend.providerSessionId, afterDeadAppend.lastSeq,
+                    afterAliveAppends.state, afterAliveAppends.lastSeq,
+                )
+            }
+            assertEquals(
+                cacheAuthorityAnswers(SqliteEventStore.inMemory(now = { 1L })),
+                cacheAuthorityAnswers(FakeEventStore(now = { 1L })),
+                "the harness fake must answer append/upsert exactly like SqliteEventStore",
+            )
+        }
+    }
+
+    private fun contractMeta(id: SessionId, state: SessionState) = SessionMeta(
+        id = id, name = id.value, agent = "claude", cwd = "/w",
+        tmuxSession = "kt-${id.value}", state = state, createdAt = 1L, updatedAt = 1L,
+    )
 
     // ---- 7. daemon-wide UI preferences -----------------------------------------------------------
 

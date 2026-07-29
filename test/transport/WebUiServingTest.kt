@@ -470,6 +470,13 @@ class WebUiServingTest {
             dialogs.contains("required=\${mode === \"start\"}"),
             "the working directory is optional when importing",
         )
+        // …and a prefilled start-mode cwd (a group's "+") must not ride into import mode, where any
+        // non-empty cwd is sent as an explicit override of discovery (the codex probe ignores cwd, so
+        // the wrong directory would be stored for good).
+        assertTrue(
+            dialogs.contains("""setCwd(next === "import" ? "" : (initialCwd || ""))"""),
+            "switching modes resets the cwd to the mode's own default",
+        )
         assertTrue(
             dialogs.contains("id=\"session-register-only\""),
             "importing can skip the automatic resume (the --no-start analogue)",

@@ -1,9 +1,6 @@
 package io.kotgent.daemon
 
 import io.kotgent.core.ProviderSessionId
-import kotlinx.cinterop.ExperimentalForeignApi
-import platform.posix.F_OK
-import platform.posix.access
 
 /*
  * Locating the project directory (`cwd`) a provider session was launched in, by provider session id —
@@ -30,10 +27,12 @@ import platform.posix.access
  * Finds the `cwd` a provider session was launched in, or `null` when the provider's on-disk store has
  * no live record for [providerSessionId]. Injected into the import path so it stays host-free and
  * unit-testable with a fake; the real per-provider lookups are [claudeSessionLocator] and
- * [codexSessionLocator], dispatched by [byAgentVendorSessionLocator].
+ * [codexSessionLocator], dispatched by [byAgentVendorSessionLocator]. `suspend` to match its twin
+ * [SessionManager] seam [VendorStoreProbe.hasTranscript] — both are blocking filesystem scans behind
+ * required constructor seams, and a test fake must be able to park inside either.
  */
 fun interface VendorSessionLocator {
-    fun cwdOf(agent: String, providerSessionId: ProviderSessionId): String?
+    suspend fun cwdOf(agent: String, providerSessionId: ProviderSessionId): String?
 }
 
 /**
@@ -61,42 +60,38 @@ fun productionSessionLocator(
 )
 
 /**
- * How many head lines of a Claude transcript [claudeTranscriptCwd] scans for the recorded `"cwd"`.
- * A transcript's opening records are summaries (no cwd) followed by message records that each carry
- * one; a transcript whose first ~25 records carry none is not one Claude wrote for a project dir.
- */
-const val CLAUDE_CWD_SCAN_LINES: Int = 25
-
-/**
  * How much of a Claude transcript [claudeSessionLocator] reads before scanning ([claudeTranscriptCwd]).
  * `cwd` sits near the START of each message record, so the window only needs to span the small summary
  * records plus the head of the first message — 64 KB is generous headroom while keeping the read O(1).
+ * This byte window is the ONLY bound on the scan: a second line-count cap used to sit on top of it and
+ * added nothing but a failure mode (a cwd first appearing past the line cap but inside the byte window
+ * was rejected), so it was removed.
  */
 const val CLAUDE_CWD_SCAN_BYTES: Int = 64 * 1024
 
 /**
- * The recorded `cwd` in a Claude transcript head: the first `"cwd":"…"` field within the first
- * [CLAUDE_CWD_SCAN_LINES] lines, or `null`. Pure and host-free. Garbage / empty / truncated lines are
- * skipped, not fatal (the caller hands over a bounded head whose last line may be cut off — the
- * per-line field scan is [rolloutCwd], which already refuses a value missing its closing quote).
+ * The recorded `cwd` in a Claude transcript head: the first `"cwd":"…"` field in the (byte-bounded)
+ * [head], or `null`. Pure and host-free. Garbage / empty / truncated lines are skipped, not fatal
+ * (the caller hands over a bounded head whose last line may be cut off — the per-line field scan is
+ * [rolloutCwd], which already refuses a value missing its closing quote). The caller's byte window
+ * ([CLAUDE_CWD_SCAN_BYTES]) is the only bound — see its KDoc.
  */
 fun claudeTranscriptCwd(head: String): String? =
-    head.lineSequence().take(CLAUDE_CWD_SCAN_LINES).firstNotNullOfOrNull(::rolloutCwd)
+    head.lineSequence().firstNotNullOfOrNull(::rolloutCwd)
 
 /**
  * The production [VendorSessionLocator] for Claude (see the file header): one `opendir` over
- * `<claudeDir>/projects/`, an O(1) `access(F_OK)` on `<dir>/<id>.jsonl` in each project subdirectory
- * (the id is a validated UUID, so the joined path is safe), then [claudeTranscriptCwd] over the found
- * transcript's head. First match wins; a missing/unreadable home degrades to `null`.
+ * `<claudeDir>/projects/`, then [readHead] on `<dir>/<id>.jsonl` in each project subdirectory (the id
+ * is a validated UUID, so the joined path is safe; `readHead` answers `null` for a missing file, so no
+ * separate existence pre-check is needed), then [claudeTranscriptCwd] over the found transcript's
+ * head. First match wins; a missing/unreadable home degrades to `null`.
  */
-@OptIn(ExperimentalForeignApi::class)
 fun claudeSessionLocator(claudeDir: String = defaultClaudeDir()): VendorSessionLocator =
     VendorSessionLocator { _, providerSessionId ->
         val projects = "${claudeDir.trimEnd('/')}/projects"
         listDir(projects).firstNotNullOfOrNull { project ->
-            val transcript = "$projects/$project/${providerSessionId.value}.jsonl"
-            if (access(transcript, F_OK) != 0) null
-            else readHead(transcript, CLAUDE_CWD_SCAN_BYTES)?.let(::claudeTranscriptCwd)
+            readHead("$projects/$project/${providerSessionId.value}.jsonl", CLAUDE_CWD_SCAN_BYTES)
+                ?.let(::claudeTranscriptCwd)
         }
     }
 

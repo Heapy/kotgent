@@ -15,12 +15,18 @@ import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxControl
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import platform.posix.F_OK
+import platform.posix.S_IFDIR
+import platform.posix.S_IFMT
 import platform.posix.access
+import platform.posix.stat
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -207,6 +213,18 @@ class DuplicateImportException(val existingId: SessionId, val archived: Boolean)
 /** Whether [path] exists on the host filesystem (`access(F_OK)`) — the import cwd existence gate. */
 @OptIn(ExperimentalForeignApi::class)
 private fun pathExists(path: String): Boolean = access(path, F_OK) == 0
+
+/**
+ * Whether an existing [path] is a DIRECTORY (`stat` + `S_IFDIR`) — the second half of the import cwd
+ * gate. `access(F_OK)` alone accepted a plain file, which `tmux new-session -c` would only trip over
+ * at resume time, long after the row was stored.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun isDirectory(path: String): Boolean = memScoped {
+    val st = alloc<stat>()
+    if (stat(path, st.ptr) != 0) return@memScoped false
+    (st.st_mode.toInt() and S_IFMT) == S_IFDIR
+}
 
 /**
  * One cleanup step of a compensation that itself failed (e.g. the `kill-session` that should have
@@ -614,10 +632,15 @@ class SessionManager(
      *  1. [agentKind] must be in [supportedAgentKinds] → [UnknownAgentKindException] (no adapter is
      *     ever built, so the binary is never touched);
      *  2. no existing kotgent session — archived included — may already hold [providerId] →
-     *     [DuplicateImportException] with the existing session's id;
+     *     [DuplicateImportException] with the existing session's id; [providerId] is first normalized
+     *     to lowercase (see the body) so a re-cased id cannot dodge the check;
      *  3. the cwd: an explicit [cwd] wins; otherwise [sessionLocator] discovers it from the
      *     provider's on-disk store; neither → [ImportCwdException];
-     *  4. the cwd must exist on disk → [ImportCwdException] (the project directory was deleted);
+     *  4. the cwd must be an ABSOLUTE path to an existing DIRECTORY → [ImportCwdException]. The CLI
+     *     resolves relative paths client-side, but the Web UI / any API client can send one raw, and
+     *     the daemon lives under launchd with cwd `/` — a relative path stored here would later be
+     *     mis-resolved by `resume`'s `tmux new-session -c` (the codex probe ignores cwd, so nothing
+     *     downstream would catch it);
      *  5. [vendorProbe] must see the transcript for exactly `(agentKind, cwd, providerId)` — the SAME
      *     triple stored in the row and re-probed by the [Reconciler] on every daemon start, so a
      *     discovered cwd that does not re-encode to the transcript (e.g. `/tmp` vs `/private/tmp`)
@@ -629,6 +652,12 @@ class SessionManager(
      * Accepted residual: if [ProviderIdCapture.bind] fails AFTER `upsertSession` committed, the row
      * carries [providerId] without a `SessionBound` in the log. [resume] reads the row, so the session
      * stays functional; the replay divergence is limited to this imported session's provider id.
+     *
+     * A second accepted residual: a kotgent-launched session whose own id capture is still pending
+     * (`provider_session_id` null — codex before the `SessionStart` hook or the rollout scan lands) is
+     * invisible to the duplicate gate, so importing that same conversation's id inside that window
+     * creates a second row; once the original's background bind lands, two rows share one provider id.
+     * There is nothing to match against until the id is known, so this cannot be closed here.
      */
     suspend fun importSession(
         agentKind: String,
@@ -640,19 +669,34 @@ class SessionManager(
         if (agentKind !in supportedAgentKinds) {
             throw UnknownAgentKindException(agentKind, supportedAgentKinds)
         }
-        val duplicate = store.listSessions().firstOrNull { it.providerSessionId == providerId }
+        // Providers mint and report lowercase UUIDs, but ProviderSessionId accepts uppercase hex and
+        // macOS's default filesystem is case-insensitive: an uppercase variant would still find the
+        // on-disk transcript, yet never string-match the lowercase id hooks later report — and would
+        // slip past the duplicate gate as a "different" id. Normalized once, at the import boundary.
+        val id = ProviderSessionId(providerId.value.lowercase())
+        val duplicate = store.listSessions().firstOrNull { it.providerSessionId == id }
         if (duplicate != null) throw DuplicateImportException(duplicate.id, duplicate.archived)
         val resolvedCwd = cwd
-            ?: sessionLocator.cwdOf(agentKind, providerId)
+            ?: sessionLocator.cwdOf(agentKind, id)
             ?: throw ImportCwdException(
-                "no on-disk record found for $agentKind session '${providerId.value}' — " +
-                    "pass the project directory explicitly with --cwd",
+                "no on-disk record with a readable cwd found for $agentKind session '${id.value}' — " +
+                    "pass the project directory explicitly with --cwd; note an archived codex " +
+                    "session is out of `codex resume`'s reach and cannot be imported at all",
             )
+        if (!resolvedCwd.startsWith("/")) {
+            throw ImportCwdException(
+                "project directory must be an absolute path: '$resolvedCwd' (the daemon runs with " +
+                    "cwd '/', so a relative path would later resolve against the wrong directory)",
+            )
+        }
         if (!pathExists(resolvedCwd)) {
             throw ImportCwdException("project directory does not exist: $resolvedCwd")
         }
-        if (!vendorProbe.hasTranscript(agentKind, resolvedCwd, providerId)) {
-            throw TranscriptNotFoundException(agentKind, providerId, resolvedCwd)
+        if (!isDirectory(resolvedCwd)) {
+            throw ImportCwdException("project directory is not a directory: $resolvedCwd")
+        }
+        if (!vendorProbe.hasTranscript(agentKind, resolvedCwd, id)) {
+            throw TranscriptNotFoundException(agentKind, id, resolvedCwd)
         }
 
         val sessionId = freshSessionId()
@@ -663,7 +707,7 @@ class SessionManager(
             name = name ?: tmuxSession,
             tags = tags,
             agent = agentKind,
-            providerSessionId = providerId,
+            providerSessionId = id,
             // cliVersion/cliPath/model stay null: filling them would mean running the binary at import
             // time, which contradicts the no-binary-check rule above. `model` arrives after the first
             // resume (claude via hooks, codex via the resume model capture).
@@ -678,7 +722,7 @@ class SessionManager(
         store.upsertSession(meta)
         // The append never resurrects a dead cache state (see SqliteEventStore.append), so the row
         // stays `resumable` through the bind. A bind failure here is the accepted residual (see KDoc).
-        idCapture.bind(sessionId, providerId)
+        idCapture.bind(sessionId, id)
         store.getSession(sessionId) ?: meta
     }
 

@@ -37,6 +37,11 @@ import kotlin.test.assertTrue
  * throwaway vendor homes. This is the guard against "the tests ran fakes while production shipped a
  * stub" (the Task-15 `{ false }` probe bug recorded in the ClaudeVendorStoreProbe.kt header).
  *
+ * Reach, recorded honestly: the guard covers the FACTORY FUNCTIONS only. The `Commands.daemon`
+ * call-site that passes them into the production [SessionManager] is outside automation (the daemon
+ * cannot be started in tests — repo rule), so a stub swapped in at that line would not fail here;
+ * it would only be caught by the manual verification checklist.
+ *
  * NEVER touches the real `~/.claude` / `~/.codex`: every tree is a `$TMPDIR` throwaway laid out
  * exactly like the vendors' (torn down in [cleanUp]).
  */
@@ -119,13 +124,24 @@ class ImportWiringTest {
             val probe = productionVendorStoreProbe(claudeDir = "$base/.claude", codexDir = codexDir)
             val locator = productionSessionLocator(claudeDir = "$base/.claude", codexDir = codexDir)
             val store = SqliteEventStore.inMemory(now = { 42L })
-            val mgr = manager(store, FakeTmux(), probe, locator)
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, probe, locator)
 
             val meta = mgr.importSession(CODEX_AGENT_KIND, id) // NO explicit cwd — discovery answers
 
             assertEquals(projectCwd, meta.cwd, "the real rollout scan read the session_meta cwd")
             assertEquals(SessionState.resumable, meta.state)
             assertEquals(id, meta.providerSessionId)
+
+            // The "survives daemon restart" guarantee, end-to-end for codex too: the SAME probe a
+            // restart re-asks keeps the imported session resumable (the codex probe ignores cwd, but
+            // that must be proven by the real component, not assumed).
+            Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            assertEquals(
+                SessionState.resumable,
+                store.getSession(SessionId("wire0001"))!!.state,
+                "reconcile over the real probe keeps the imported codex session resumable",
+            )
         }
     }
 
@@ -173,7 +189,11 @@ class ImportWiringTest {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store, FakeTmux(), probe, locator)
 
-            assertFailsWith<ImportCwdException> { mgr.importSession(CODEX_AGENT_KIND, id) }
+            val ex = assertFailsWith<ImportCwdException> { mgr.importSession(CODEX_AGENT_KIND, id) }
+            assertTrue(
+                ex.message!!.contains("archived"),
+                "the natural no---cwd path names the archived-codex cause: ${ex.message}",
+            )
             assertTrue(store.listSessions().isEmpty(), "no row was created")
         }
     }
@@ -216,9 +236,11 @@ class ImportWiringTest {
         writeFile("$day/rollout-2026-07-29T10-00-00-${id.value}.jsonl", sessionMetaLine(id, recordedCwd))
     }
 
+    // Same payload shape as CodexRolloutScanTest's fixtures (the id key is not read — it comes from
+    // the file name — but the two harnesses must model the one real record identically).
     private fun sessionMetaLine(id: ProviderSessionId, cwd: String): String =
         """{"timestamp":"2026-07-29T10:00:00.000Z","type":"session_meta",""" +
-            """"payload":{"id":"${id.value}","timestamp":"2026-07-29T10:00:00.000Z","cwd":"$cwd"}}""" + "\n"
+            """"payload":{"session_id":"${id.value}","timestamp":"2026-07-29T10:00:00.000Z","cwd":"$cwd"}}""" + "\n"
 
     private fun writeFile(path: String, text: String) {
         val bytes = text.encodeToByteArray()

@@ -3,23 +3,11 @@ package io.kotgent.daemon
 import io.kotgent.adapter.extractModel
 import io.kotgent.core.ProviderSessionId
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
-import kotlinx.cinterop.usePinned
-import platform.posix.SEEK_SET
-import platform.posix.closedir
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fread
-import platform.posix.fseek
 import platform.posix.getenv
-import platform.posix.opendir
-import platform.posix.readdir
 import platform.posix.stat
 
 /*
@@ -115,49 +103,6 @@ fun rolloutCwd(head: String): String? {
     return null // the closing quote never arrived (truncated head)
 }
 
-/**
- * Entry names in [path] excluding `.`/`..`; empty if it cannot be opened.
- *
- * Extracted from [CodexRolloutScan] as a shared POSIX helper for the vendor-store scans (Codex rollout
- * walking, the Claude `projects` scan in [claudeSessionLocator]) — public rather than `internal`
- * because toolchain 0.11 gives tests no friend-module visibility.
- */
-@OptIn(ExperimentalForeignApi::class)
-fun listDir(path: String): List<String> {
-    val dir = opendir(path) ?: return emptyList()
-    try {
-        val names = ArrayList<String>()
-        while (true) {
-            val entry = readdir(dir) ?: break
-            val name = entry.pointed.d_name.toKString()
-            if (name != "." && name != "..") names.add(name)
-        }
-        return names
-    } finally {
-        closedir(dir)
-    }
-}
-
-/**
- * The first [bytes] of [path] as text, or `null` if it cannot be read. Shared with [listDir]'s callers
- * (see its note on extraction and visibility); what it returns is usually a TRUNCATED head, which is why
- * the pure parsers ([rolloutCwd], [claudeTranscriptCwd]) tolerate cut-off lines.
- */
-@OptIn(ExperimentalForeignApi::class)
-fun readHead(path: String, bytes: Int = CodexRolloutScan.HEAD_BYTES): String? {
-    val fp = fopen(path, "rb") ?: return null
-    try {
-        fseek(fp, 0, SEEK_SET)
-        val buffer = ByteArray(bytes)
-        val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), bytes.convert(), fp) }
-        val n = read.toInt()
-        if (n <= 0) return null
-        return buffer.decodeToString(0, n)
-    } finally {
-        fclose(fp)
-    }
-}
-
 /** `$CODEX_HOME`, else `~/.codex` (falls back to a cwd-relative `.codex` if `$HOME` is unset). */
 @OptIn(ExperimentalForeignApi::class)
 fun defaultCodexDir(): String {
@@ -201,7 +146,7 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
             .sortedByDescending { it.mtimeMillis }
             .firstNotNullOfOrNull { file ->
                 val id = rolloutFileSessionId(file.name) ?: return@firstNotNullOfOrNull null
-                val head = readHead(file.path) ?: return@firstNotNullOfOrNull null
+                val head = readHead(file.path, HEAD_BYTES) ?: return@firstNotNullOfOrNull null
                 if (rolloutCwd(head) == cwd) id else null
             }
     }
@@ -233,9 +178,27 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
      * would offer a revival that fails.
      */
     fun cwdOf(providerSessionId: ProviderSessionId): String? =
+        rolloutHeadOf(providerSessionId, HEAD_BYTES)?.let(::rolloutCwd)
+
+    /**
+     * The recorded model of the live rollout for [providerSessionId], or `null`. Precise where
+     * [discoverModel]'s cwd+mtime heuristic is not: the rollout is matched by id in the file NAME
+     * (like [cwdOf]), so a busier neighbour session in the same cwd can never answer for this one.
+     * Used on the resume path, where the provider id is always known ([SessionManager.resume]
+     * requires it) — a FRESH codex launch has no captured id yet and stays on [discoverModel].
+     */
+    fun modelOf(providerSessionId: ProviderSessionId): String? =
+        rolloutHeadOf(providerSessionId, MODEL_SCAN_BYTES)?.let(::extractModel)
+
+    /**
+     * The first [bytes] of the live rollout named by [providerSessionId] — the ONE id-keyed lookup
+     * behind [cwdOf] and [modelOf], which differ only in window size and extractor. Matched by id in
+     * the file NAME (like [hasRollout]); `null` when no live rollout exists or it cannot be read.
+     */
+    private fun rolloutHeadOf(providerSessionId: ProviderSessionId, bytes: Int): String? =
         rolloutFiles().firstNotNullOfOrNull { file ->
             if (rolloutFileSessionId(file.name) != providerSessionId) return@firstNotNullOfOrNull null
-            readHead(file.path)?.let(::rolloutCwd)
+            readHead(file.path, bytes)
         }
 
     /** One rollout file found on disk: its base [name], full [path], and mtime in epoch millis. */

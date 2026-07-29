@@ -412,7 +412,14 @@ object Commands {
                 if (meta.agent == CODEX_AGENT_KIND) {
                     bgScope.launch {
                         repeat(MODEL_CAPTURE_ATTEMPTS) {
-                            val model = rolloutScan.discoverModel(meta.cwd, meta.createdAt)
+                            // With a KNOWN provider id (the resume path — resume() requires it) the
+                            // model is read out of THAT session's id-keyed rollout. The cwd+mtime
+                            // heuristic is only for a fresh launch, whose codex id is not captured
+                            // yet; there createdAt ≈ now, so the window is tight. On resume the same
+                            // heuristic would span every rollout since the ORIGINAL launch and could
+                            // stamp a busier neighbour session's model over this one's.
+                            val model = meta.providerSessionId?.let(rolloutScan::modelOf)
+                                ?: rolloutScan.discoverModel(meta.cwd, meta.createdAt)
                             if (model != null) {
                                 store.setModel(meta.id, model, daemonEpochMillis())
                                 return@launch
@@ -709,6 +716,16 @@ suspend fun runWebCommand(
 }
 
 /**
+ * The phrase in the import route's 409 body that carries the existing kotgent session id
+ * (`DuplicateImportException`'s message behind the route's "cannot import session: " prefix).
+ * [runImportCommand] parses the id back out of the text with this exact regex, so the cross-layer
+ * contract is pinned on BOTH sides: TransportTest asserts the live 409 body matches this same regex,
+ * and CliTest builds its stub bodies from the real exception message. Reword the exception and one of
+ * them fails — never a silent degradation of the `kotgent resume <id>` hint to a placeholder.
+ */
+val DUPLICATE_IMPORT_ID_IN_BODY: Regex = Regex("kotgent session '([^']+)'")
+
+/**
  * Execute the `import` handler through explicit seams (the [runWebCommand] pattern) so every branch is
  * testable without a daemon. Success registers the session and — unless [noStart] — immediately resumes
  * it via the ordinary resume endpoint, so a failed launch leaves the row honestly `resumable`; under
@@ -734,7 +751,8 @@ suspend fun runImportCommand(
         if (e.status == 409) {
             // The duplicate body is our own route's text (DuplicateImportException.message behind the
             // "cannot import session: " prefix), so the existing id is extractable for a concrete hint.
-            val existing = Regex("kotgent session '([^']+)'").find(e.body)?.groupValues?.get(1)
+            // The phrase is a pinned contract — see DUPLICATE_IMPORT_ID_IN_BODY.
+            val existing = DUPLICATE_IMPORT_ID_IN_BODY.find(e.body)?.groupValues?.get(1)
             stderr(
                 if ("archived" in e.body) {
                     "hint: that session is archived — Restore it in the Web UI instead of importing again"

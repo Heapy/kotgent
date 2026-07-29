@@ -150,6 +150,15 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onImport, onCl
   const switchMode = (next) => {
     setMode(next);
     setError(null);
+    // Each mode re-enters with its own cwd default. A prefilled start-mode cwd (a group's "+") must
+    // not ride into import mode: import sends any non-empty cwd as an explicit override of the
+    // daemon's transcript discovery, and the codex probe ignores cwd entirely — the group's
+    // directory, not the rollout's recorded one, would be stored as the session's project dir for
+    // good. A cwd meant to override discovery is typed in import mode itself.
+    setCwd(next === "import" ? "" : (initialCwd || ""));
+    setCompletionQuery(null);
+    setSuggestions([]);
+    setActiveSuggestion(-1);
   };
 
   const submit = async (event) => {
@@ -612,7 +621,7 @@ kotgent import <agent> <id>   register a session started outside kotgent, then r
 kotgent attach <id>           attach a raw terminal
 kotgent interrupt <id>        send Ctrl-C
 kotgent stop <id>             stop a session
-kotgent resume <id>           resume a stopped/crashed session
+kotgent resume <id>           resume a stopped/crashed/resumable session
 kotgent daemon [--port N]     run the control plane`;
 
 const STATES = [

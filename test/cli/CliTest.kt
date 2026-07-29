@@ -1,5 +1,7 @@
 package io.kotgent.cli
 
+import io.kotgent.core.SessionId
+import io.kotgent.daemon.DuplicateImportException
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
@@ -34,6 +36,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -110,6 +113,39 @@ class CliTest {
         assertTrue(parseArgs(listOf("import", "claude")) is CliCommand.Invalid, "import needs the provider session id")
         assertTrue(parseArgs(listOf("import", "claude", PROVIDER_ID, "--bogus")) is CliCommand.Invalid, "unknown flag")
         assertTrue(parseArgs(listOf("import", "claude", PROVIDER_ID, "--cwd")) is CliCommand.Invalid, "--cwd needs a directory")
+    }
+
+    @Test
+    fun importRejectsASurplusPositionalInsteadOfSilentlyDiscardingIt() {
+        // `start <agent> [cwd]` trains `import claude <id> ~/proj`; silently dropping the path would
+        // fall back to discovery and could register a DIFFERENT cwd than the one the operator typed.
+        val result = parseArgs(listOf("import", "claude", PROVIDER_ID, "/tmp/project"))
+        val invalid = assertIs<CliCommand.Invalid>(result, "a third positional is a usage error, not a discard")
+        assertTrue(invalid.message.contains("--cwd"), "the error points at the flag form: ${invalid.message}")
+    }
+
+    @Test
+    fun importValueFlagsRequireARealValueAndNeverSwallowAFlag() {
+        // `--name --no-start` used to name the session "--no-start" AND silently drop the --no-start
+        // semantics — the session was auto-resumed against the operator's stated intent. A missing or
+        // `--`-prefixed value is a usage error for every import value flag (stricter than parseStart
+        // on purpose: only import has a behavior-changing boolean flag that could be swallowed).
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--name", "--no-start")) is CliCommand.Invalid,
+            "--name must not swallow --no-start",
+        )
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--name")) is CliCommand.Invalid,
+            "--name needs a value",
+        )
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--tag", "--no-start")) is CliCommand.Invalid,
+            "--tag must not swallow --no-start",
+        )
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--tag")) is CliCommand.Invalid,
+            "--tag needs a value",
+        )
     }
 
     @Test
@@ -474,10 +510,15 @@ class CliTest {
         val stderr = mutableListOf<String>()
         val exit = runImportCommand(
             noStart = false,
+            // The stub body is BUILT from the real exception the route flattens (behind its
+            // "cannot import session: " prefix), so a reworded DuplicateImportException fails this
+            // test instead of silently degrading the hint — the CLI half of the
+            // DUPLICATE_IMPORT_ID_IN_BODY contract (TransportTest pins the server half).
             importSession = {
                 throw ApiException(
                     409,
-                    "cannot import session: provider session already imported as kotgent session 'abc12345'",
+                    "cannot import session: " +
+                        DuplicateImportException(SessionId("abc12345"), archived = false).message,
                 )
             },
             resume = { error("must not resume on a conflict") },
@@ -494,11 +535,12 @@ class CliTest {
         val stderr = mutableListOf<String>()
         val exit = runImportCommand(
             noStart = false,
+            // Built from the real exception — see importCommandPrintsTheExistingIdAndAResumeHintOnConflict.
             importSession = {
                 throw ApiException(
                     409,
-                    "cannot import session: provider session already imported as kotgent session " +
-                        "'abc12345' (archived — Restore it instead of importing again)",
+                    "cannot import session: " +
+                        DuplicateImportException(SessionId("abc12345"), archived = true).message,
                 )
             },
             resume = { error("must not resume on a conflict") },
@@ -509,6 +551,52 @@ class CliTest {
         assertTrue(stderr.any { "abc12345" in it }, "the existing session id is printed: $stderr")
         assertTrue(stderr.last().contains("Restore"), "the hint points at Restore: $stderr")
         assertFalse(stderr.any { "kotgent resume" in it }, "an archived duplicate must not be pointed at a bare resume")
+    }
+
+    @Test
+    fun importCommandLetsAFailedFollowUpResumePropagateAfterReportingTheImport() = runBlocking {
+        // The single most likely real-world failure: the import registered fine, but the daemon's
+        // resume fails (e.g. the agent binary does not resolve on launchd's PATH). The registration
+        // must already be reported — the operator has to know the row exists — and the ApiException
+        // must propagate untouched to Commands' generic withApi handler, whose rendering carries the
+        // daemon's `kotgent install` hint.
+        val stdout = mutableListOf<String>()
+        val ex = assertFailsWith<ApiException> {
+            runImportCommand(
+                noStart = false,
+                importSession = { sampleDto("imp00001", "resumable", needsAttention = false) },
+                resume = {
+                    throw ApiException(
+                        400,
+                        "cannot resume session: agent binary 'claude' not found on the daemon's PATH — run `kotgent install`",
+                    )
+                },
+                stdout = stdout::add,
+                stderr = { error("the resume failure must propagate, not be swallowed here: $it") },
+            )
+        }
+        assertTrue(ex.body.contains("kotgent install"), "the daemon's hint rides the propagated exception")
+        assertTrue(
+            stdout.any { "imported imp00001" in it },
+            "the successful registration was reported before the resume failed: $stdout",
+        )
+    }
+
+    @Test
+    fun importCommandReportsAResumeThatReturnedNoState() = runBlocking {
+        val stdout = mutableListOf<String>()
+        val exit = runImportCommand(
+            noStart = false,
+            importSession = { sampleDto("imp00001", "resumable", needsAttention = false) },
+            resume = { null },
+            stdout = stdout::add,
+            stderr = { error("no stderr expected: $it") },
+        )
+        assertEquals(0, exit)
+        assertTrue(
+            stdout.last().contains("resumed imp00001"),
+            "a resume with no returned state still reports the id: $stdout",
+        )
     }
 
     @Test
