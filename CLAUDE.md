@@ -114,18 +114,29 @@ without it import discovery silently answers null for the new kind, forcing `--c
 management with **zero tmux side-effects**: it writes a full `resumable` row (provider id set,
 `paneId = null`) and appends `SessionBound` via `ProviderIdCapture.bind`; the actual launch is the
 existing `resume()` path (`claude --resume` / `codex resume`), so there is no second launch codepath and
-a failed start leaves the row honestly `resumable`. Validation happens with the same `(agent, cwd, id)`
-triple the `Reconciler` re-probes on every daemon start (`VendorStoreProbe`, plus `VendorSessionLocator`
-discovering the `cwd` from the provider's own records when none is given) — an import that succeeds
-therefore stays `resumable` across restarts instead of silently degrading to `crashed`; a discovered
-`cwd` that fails the probe (e.g. claude's `/tmp` vs `/private/tmp` re-encoding) fails the import loudly,
-naming `--cwd` as the workaround. The agent *binary* is deliberately not checked at import time —
+a failed start leaves the row honestly `resumable`. The cwd (explicit or discovered) is **canonicalized
+through the filesystem** first (`realpath(3)` — `canonicalPath` in `SessionManager.kt`): providers record
+their process `getcwd` — the symlink-free spelling — so `/repo/./`, an uncollapsed `--cwd ../proj` and a
+symlinked prefix (`/tmp` for `/private/tmp`) must all converge on the ONE string that keys the claude
+transcript probe and lands in the row, or a valid import is falsely rejected (claude) / a noncanonical
+cwd is persisted (codex). The daemon owns this because only the filesystem can answer it — the CLI's
+`resolveCwdAgainst` deliberately collapses only `.`/duplicate/trailing slashes and passes `..` through
+UNRESOLVED (a lexical `..` collapse crosses symlinks wrongly: `/tmp/../Users` really names
+`/private/Users`; `start` likewise leaves `..` for tmux's `new-session -c` to resolve in the kernel).
+Validation happens with the same `(agent, canonical cwd, id)` triple the `Reconciler` re-probes on every
+daemon start (`VendorStoreProbe`, plus `VendorSessionLocator` discovering the `cwd` from the provider's
+own records when none is given) — an import that succeeds therefore stays `resumable` across restarts
+instead of silently degrading to `crashed`; a cwd that fails the probe even after canonicalization (a
+genuinely different directory) fails the import loudly, naming `--cwd` as the workaround. The agent *binary* is deliberately not checked at import time —
 `resume()` already fails fast with the `kotgent install` hint. Known limitations, recorded not fixed: a
 session still live in another terminal is undetectable (resume runs a second CLI copy of the same
 conversation — operator's responsibility), and an imported session's `cliVersion`/`cliPath` stay null
 forever (filling them would mean running the binary at import, contradicting the rule above); `model`
 appears after the first resume (claude via hooks, codex via `resume()`'s model capture, which reads the
-id-keyed rollout — never the cwd+mtime heuristic — once the provider id is known). The four import
+id-keyed rollout — never the cwd+mtime heuristic — once the provider id is known; the poll re-reads the
+row's id on EVERY attempt — `captureCodexModelOnce` in `CodexRolloutScan.kt` — so a fresh launch whose
+background id capture lands mid-poll switches to the id-keyed lookup instead of letting the heuristic
+persist a later same-cwd neighbour rollout's model). The four import
 failures are deliberately **standalone, hierarchy-free** exceptions (`UnknownAgentKindException`,
 `ImportCwdException`, `TranscriptNotFoundException` → 400; `DuplicateImportException` → 409) so the
 route's catches are order-free — the flat counterpart of the load-bearing `TmuxCopyModeException`
@@ -170,9 +181,13 @@ so `kotgent install` captures the caller's login `getenv("PATH")` and merges it 
 first) into the plist's `EnvironmentVariables.PATH`. Agents inherit that PATH — that is how a launchd-run
 daemon finds `claude`/`codex` (and, for codex's `env node` shebang, `node`) outside the system bins;
 re-run `kotgent install` from a full shell whenever the PATH goes stale. (Forcing PATH per-pane via tmux
-`new-session -e PATH=…` was tried and does **not** work on macOS: tmux spawns the pane as a login shell, so
-`/etc/zprofile`'s `path_helper -s` rebuilds PATH from `/etc/paths*` and discards the injected value — the
-pane's PATH comes from the server's env plus the user's shell rc files, not from `-e`.) An agent binary that
+`new-session -e PATH=…` was tried and does **not** work: tmux **special-cases `PATH`** — the pane always
+inherits the **tmux server's** own PATH and the `-e PATH=` is dropped, while sibling `-e` vars such as
+`KOTGENT_SESSION_ID` *do* land. This is **not** a login-shell/`path_helper` effect: verified on a
+direct-argv pane where no shell runs at all — `/etc/zprofile` never fires, yet `-e PATH=` is still
+discarded while a sibling `-e FOO=` survives. This is upstream-documented behaviour — PATH is inherited
+from the first-created session, i.e. the server's env (tmux/tmux#476). The server's PATH is the daemon's
+PATH — under launchd, the plist snapshot above — which is why the snapshot, not `-e`, is the fix.) An agent binary that
 does **not** resolve on the daemon's PATH **fails fast**: the factory's `create()` throws
 `AgentBinaryNotFoundException` before any tmux side-effect (no phantom `running` row), which `ControlRoutes`
 maps to a **400 carrying a `kotgent install` hint** — not a silent attach `1006`.
