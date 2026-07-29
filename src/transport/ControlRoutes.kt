@@ -1,13 +1,18 @@
 package io.kotgent.transport
 
+import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.unread
 import io.kotgent.daemon.AgentBinaryNotFoundException
+import io.kotgent.daemon.DuplicateImportException
+import io.kotgent.daemon.ImportCwdException
 import io.kotgent.daemon.NoSuchSessionException
 import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.TranscriptNotFoundException
+import io.kotgent.daemon.UnknownAgentKindException
 import io.kotgent.daemon.UnsupportedAgentException
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxCopyModeException
@@ -71,6 +76,11 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
  *  - `GET  /sessions`                       — list all sessions (from the store cache).
  *  - `GET  /sessions/{id}`                  — one session, or `404`.
  *  - `POST /sessions`                       — start a new session (`{agent, cwd, name?, tags?}`) → `201`.
+ *  - `POST /sessions/import`                — register a provider session started OUTSIDE kotgent
+ *    (`{agent, providerSessionId, cwd?, name?, tags?}`) as a `resumable` row → `201`; `400` for an unknown
+ *    kind / malformed id / cwd failures / a transcript the probe cannot see (distinguishable messages —
+ *    by the route convention `404` means "no such session `{id}`", and import addresses no resource);
+ *    `409` for a provider id an existing session already holds (the body names it, plus an archived note).
  *  - `POST /sessions/{id}/{stop|resume|interrupt|detach|done|undone}` — a lifecycle control op
  *    (`done` = kill + archive off the sidebar; `undone` = un-archive).
  *  - `POST /sessions/{id}/input`            — write raw terminal input (`TerminalInput` only in the slice).
@@ -127,6 +137,50 @@ fun Route.controlRoutes(
         } catch (e: TmuxException) {
             // e.g. a non-existent cwd → tmux new-session fails: a bad request, not a server error.
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        call.respondText(
+            json.encodeToString(SessionDto.serializer(), meta.toDto()),
+            ContentType.Application.Json,
+            HttpStatusCode.Created,
+        )
+    }
+
+    // Literal `import` outranks `{id}` in the sibling routes, so this can never shadow a session path.
+    post("/sessions/import") {
+        val req = try {
+            json.decodeFromString(ImportSessionRequest.serializer(), call.receiveText())
+        } catch (_: SerializationException) {
+            call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        // The DTO carries the id as a String (see ImportSessionRequest); constructing the value class
+        // HERE keeps a malformed UUID a clean 400 instead of the serializer's IllegalArgumentException
+        // sailing past the SerializationException catch above into a 500.
+        val importProviderId = try {
+            ProviderSessionId(req.providerSessionId)
+        } catch (e: IllegalArgumentException) {
+            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        // The four import failures are deliberately standalone, hierarchy-free exceptions (see their
+        // declarations in SessionManager.kt), so each catch is independent and their order carries no
+        // meaning — no parent catch can swallow a sibling.
+        val meta = try {
+            sessionManager.importSession(req.agent, importProviderId, req.cwd, req.name, req.tags)
+        } catch (e: UnknownAgentKindException) {
+            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (e: ImportCwdException) {
+            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (e: TranscriptNotFoundException) {
+            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.BadRequest)
+            return@post
+        } catch (e: DuplicateImportException) {
+            // The message names the existing kotgent session id and, when it is archived, points at
+            // Restore — everything the CLI and the Web UI surface for a duplicate.
+            call.respondText("cannot import session: ${e.message}", status = HttpStatusCode.Conflict)
             return@post
         }
         call.respondText(
@@ -292,6 +346,24 @@ data class VersionDto(val version: String)
 data class StartSessionRequest(
     val agent: String,
     val cwd: String,
+    val name: String? = null,
+    val tags: List<String> = emptyList(),
+)
+
+/**
+ * Request body for `POST /sessions/import`. [providerSessionId] is a plain `String` (like every
+ * [StartSessionRequest] field) on purpose: [ProviderSessionId]'s value-class serializer calls the
+ * primary constructor, whose `require` throws [IllegalArgumentException] — NOT `SerializationException`
+ * — so decoding it directly would sail past the route's decode catch and surface a malformed UUID as a
+ * 500. The handler constructs the value class itself and maps the failure to a 400. `cwd` is optional:
+ * when absent, the daemon's [io.kotgent.daemon.VendorSessionLocator] discovers it from the provider's
+ * on-disk store.
+ */
+@Serializable
+data class ImportSessionRequest(
+    val agent: String,
+    val providerSessionId: String,
+    val cwd: String? = null,
     val name: String? = null,
     val tags: List<String> = emptyList(),
 )

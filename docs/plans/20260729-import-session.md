@@ -251,12 +251,12 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 - Modify: `src/transport/ControlRoutes.kt` (+ DTO там, где живут остальные; id — `String`)
 - Modify: `test/transport/TransportTest.kt` (харнес получает новые фейки probe/locator)
 
-- [ ] TDD: 201 + SessionDto; 400 — неизвестный agent, кривой id (`IllegalArgumentException` из
+- [x] TDD: 201 + SessionDto; 400 — неизвестный agent, кривой id (`IllegalArgumentException` из
       конструктора `ProviderSessionId` в handler'е, не 500 из сериализатора), cwd-ошибки,
       транскрипт не найден — различимые сообщения; 409 — existingId в теле + archived-пометка
-- [ ] TDD: авторизация — Origin обязателен на POST, роут доступен не только с loopback
-- [ ] реализовать роут + маппинг четырёх исключений на коды
-- [ ] `./kotlin build && ./kotlin test` — зелёные
+- [x] TDD: авторизация — Origin обязателен на POST, роут доступен не только с loopback
+- [x] реализовать роут + маппинг четырёх исключений на коды
+- [x] `./kotlin build && ./kotlin test` — зелёные (727 passed / 0 skipped)
 
 ### Task 4: ApiClient + CLI `kotgent import`
 

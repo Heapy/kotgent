@@ -873,6 +873,168 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
     }
 
+    // ---- 6b. POST /sessions/import — registering an outside session as resumable ----------------
+
+    @Test
+    fun importRegistersAResumableSessionWithNoLaunchAndReturns201() = withServer(
+        probe = VendorStoreProbe { _, _, _ -> true },
+    ) { ctx ->
+        val resp = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp","name":"imported","tags":["t1"]}""",
+        )
+        assertEquals(HttpStatusCode.Created, resp.status, "a successful import answers 201: ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("resumable", dto.state, "an import lands resumable — nothing was launched")
+        assertEquals(providerId.value, dto.providerSessionId, "the row carries the imported provider id")
+        assertEquals("claude", dto.agent)
+        assertEquals("/tmp", dto.cwd)
+        assertEquals("imported", dto.name)
+        assertEquals(listOf("t1"), dto.tags)
+        assertNull(dto.paneId, "no pane — import launches nothing")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and no tmux session was created")
+
+        assertTrue(ctx.getSessions().any { it.id == dto.id }, "the imported session appears in GET /sessions")
+        val bound = ctx.store.read(SessionId(dto.id), Seq(0))
+        assertEquals(
+            listOf<AgentEvent>(AgentEvent.SessionBound(providerId)),
+            bound.map { it.event },
+            "the import appended exactly the SessionBound (replay stays consistent with the row)",
+        )
+    }
+
+    @Test
+    fun importFailuresAreDistinguishable400sNotServerErrors() = withServer { ctx ->
+        // The withServer defaults ARE this test's fixture: the probe misses every transcript and the
+        // locator discovers no cwd, so each ladder step below fails at its own gate.
+
+        val unparseable = ctx.postBody("/sessions/import", "not-json-at-all")
+        assertEquals(HttpStatusCode.BadRequest, unparseable.status, "an undecodable body is a 400")
+
+        val unknown = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"aider","providerSessionId":"${providerId.value}","cwd":"/tmp"}""",
+        )
+        assertEquals(HttpStatusCode.BadRequest, unknown.status, "an unknown agent kind is a client error")
+        val unknownBody = unknown.bodyAsText()
+        assertTrue("unknown agent kind" in unknownBody, "the body names the failure: $unknownBody")
+        assertTrue("claude" in unknownBody && "codex" in unknownBody, "…and the supported kinds: $unknownBody")
+
+        // A malformed provider id must be the handler's OWN clean 400: the DTO carries the id as a
+        // String precisely because ProviderSessionId's value-class serializer would throw
+        // IllegalArgumentException PAST the route's SerializationException catch — a 500.
+        val malformed = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"not-a-uuid","cwd":"/tmp"}""",
+        )
+        assertEquals(HttpStatusCode.BadRequest, malformed.status, "a malformed provider id is a 400, not a 500")
+        assertTrue("UUID" in malformed.bodyAsText(), "the body says what a valid id looks like: ${malformed.bodyAsText()}")
+
+        val noCwd = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"${providerId.value}"}""",
+        )
+        assertEquals(HttpStatusCode.BadRequest, noCwd.status, "discovery finding no cwd is a 400")
+        val noCwdBody = noCwd.bodyAsText()
+        assertTrue("no on-disk record" in noCwdBody, "the body names the discovery miss: $noCwdBody")
+        assertTrue("--cwd" in noCwdBody, "…and the workaround: $noCwdBody")
+
+        val gone = "/nonexistent/kotgent-import-route-test"
+        val deleted = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"$gone"}""",
+        )
+        assertEquals(HttpStatusCode.BadRequest, deleted.status, "a deleted project directory is a 400")
+        val deletedBody = deleted.bodyAsText()
+        assertTrue("does not exist" in deletedBody && gone in deletedBody, "the body names the missing dir: $deletedBody")
+
+        val noTranscript = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp"}""",
+        )
+        assertEquals(HttpStatusCode.BadRequest, noTranscript.status, "a transcript the probe cannot see is a 400")
+        val noTranscriptBody = noTranscript.bodyAsText()
+        assertTrue("no live claude transcript" in noTranscriptBody, "the body names the probe miss: $noTranscriptBody")
+        assertTrue("--cwd" in noTranscriptBody, "…the workaround: $noTranscriptBody")
+        assertTrue("archived" in noTranscriptBody, "…and archived codex sessions as a cause: $noTranscriptBody")
+
+        assertTrue(ctx.getSessions().isEmpty(), "no failed import left a row behind")
+    }
+
+    @Test
+    fun importOfADuplicateProviderIdIs409NamingTheExistingSessionAndItsArchivedState() = withServer(
+        probe = VendorStoreProbe { _, _, _ -> true },
+    ) { ctx ->
+        val body = """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp"}"""
+        val first = ctx.postBody("/sessions/import", body)
+        assertEquals(HttpStatusCode.Created, first.status)
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), first.bodyAsText())
+
+        val dup = ctx.postBody("/sessions/import", body)
+        assertEquals(HttpStatusCode.Conflict, dup.status, "a second import of the same provider id is a 409")
+        val dupBody = dup.bodyAsText()
+        assertTrue(dto.id in dupBody, "the 409 names the existing kotgent session: $dupBody")
+        assertTrue("archived" !in dupBody, "a live duplicate carries no archived marker: $dupBody")
+
+        // An archived duplicate must say so — the right move there is Restore, not a second import.
+        ctx.store.setArchived(SessionId(dto.id), true, 2L)
+        val dupArchived = ctx.postBody("/sessions/import", body)
+        assertEquals(HttpStatusCode.Conflict, dupArchived.status)
+        val archivedBody = dupArchived.bodyAsText()
+        assertTrue(dto.id in archivedBody, "the archived 409 still names the existing session: $archivedBody")
+        assertTrue(
+            "archived" in archivedBody && "Restore" in archivedBody,
+            "…and flags it archived with the Restore hint: $archivedBody",
+        )
+        assertEquals(1, ctx.getSessions().size, "still exactly one row for the provider id")
+    }
+
+    @Test
+    fun importAuthenticatedByCookieRequiresAnOriginOnThePost() = withServer(
+        probe = VendorStoreProbe { _, _, _ -> true },
+    ) { ctx ->
+        val cookie = issueSessionCookie(token, issuedAt = 1_700_000_000_000)
+        val body = """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp"}"""
+
+        val noOrigin = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/import") {
+            header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
+            setBody(body)
+        }
+        assertEquals(
+            HttpStatusCode.Forbidden,
+            noOrigin.status,
+            "a cookie-authenticated POST without an Origin is refused — the ambient-credential rule",
+        )
+        assertTrue(ctx.getSessions().isEmpty(), "and the refused import registered nothing")
+
+        val withOrigin = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/import") {
+            header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
+            header(HttpHeaders.Origin, "http://127.0.0.1")
+            setBody(body)
+        }
+        assertEquals(
+            HttpStatusCode.Created,
+            withOrigin.status,
+            "the same POST with a loopback Origin is served: ${withOrigin.bodyAsText()}",
+        )
+    }
+
+    @Test
+    fun importIsReachableThroughTheTunnelNotJustFromLoopback() = withServer(
+        publicUrl = publicUrl,
+        probe = VendorStoreProbe { _, _, _ -> true },
+    ) { ctx ->
+        // The phone case: /sessions/import is mounted inside `authenticated`, NOT `loopbackOnly` —
+        // exactly like /sessions/{id}/resume, whose flow it feeds.
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/import") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            header(HttpHeaders.Host, publicHost)
+            header(HttpHeaders.Origin, publicUrl)
+            setBody("""{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp"}""")
+        }
+        assertEquals(HttpStatusCode.Created, resp.status, "the published host reaches /sessions/import: ${resp.bodyAsText()}")
+    }
+
     // ---- 7. daemon-wide UI preferences -----------------------------------------------------------
 
     @Test
@@ -1089,6 +1251,12 @@ class TransportTest {
         // default) is the loopback-only daemon every other test drives.
         publicUrl: String? = null,
         directoryCompleter: DirectoryCompleter = DirectoryCompleter { _, _ -> emptyList() },
+        // The import seams (probe/locator), overridable so /sessions/import tests can make the vendor
+        // store answer. The defaults mirror "nothing on disk": every transcript probe misses and
+        // discovery finds no cwd — which is also what keeps every non-import test honest, since a
+        // default that answered `true` could hide a route that forgot to consult the probe at all.
+        probe: VendorStoreProbe = VendorStoreProbe { _, _, _ -> false },
+        locator: VendorSessionLocator = VendorSessionLocator { _, _ -> null },
         productionFactory: Boolean = false,
         pushAssembler: (suspend (EventStore, CoroutineScope) -> DaemonPush?)? = null,
         block: suspend (Ctx) -> Unit,
@@ -1102,8 +1270,8 @@ class TransportTest {
                 tmux, store, registry,
                 factory,
                 ProviderIdCapture(store, idScope),
-                VendorStoreProbe { _, _, _ -> false },
-                VendorSessionLocator { _, _ -> null },
+                probe,
+                locator,
                 setOf("claude", "codex"),
                 now = { 1L },
             )
@@ -1353,8 +1521,13 @@ class TransportTest {
             val stored = StoredEvent(sessionId, next.lastSeq, ts, source, event)
             log.add(stored)
             metas[sessionId]?.let { m ->
+                // Mirrors the real store's cache-state authority (SqliteEventStore.append): a DEAD cached
+                // state is never resurrected by an append — an import's late `SessionBound` must leave the
+                // row `resumable` — while an alive one applies the event over the cached (control-aware)
+                // state. last_seq and the provider id still come from the pure event-log projection.
+                val cacheState = if (m.state.isDead) m.state else reduce(prior.copy(state = m.state), event).state
                 metas[sessionId] = m.copy(
-                    state = next.state,
+                    state = cacheState,
                     stateSource = source,
                     lastSeq = next.lastSeq,
                     providerSessionId = next.providerSessionId ?: m.providerSessionId,
@@ -1362,13 +1535,14 @@ class TransportTest {
                 )
             }
             // Hand-built rather than [emitFromMeta], for the same two reasons the real store's `append` is
-            // exempt: the signal carries the freshly reduced state/lastSeq, and it must still go out when no
-            // meta row exists (the event was stored regardless). read_cursor and archived are untouched by an
-            // append but still ride it — an event on a done session must not un-hide its row.
+            // exempt: the signal carries the freshly reduced lastSeq (and the control-authoritative cache
+            // state), and it must still go out when no meta row exists (the event was stored regardless).
+            // read_cursor and archived are untouched by an append but still ride it — an event on a done
+            // session must not un-hide its row.
             val cached = metas[sessionId]
             emitUpdate(
                 SessionUpdate(
-                    sessionId, next.state, next.lastSeq,
+                    sessionId, cached?.state ?: next.state, next.lastSeq,
                     unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), cached?.archived ?: false,
                 ),
             )
