@@ -117,7 +117,7 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **688 native tests passed / 0 skipped**, plus 7 JVM tests for the build-info
+The suite currently reports **739 native tests passed / 0 skipped**, plus 7 JVM tests for the build-info
 plugin and the 11 real-PTY checks `ptycheck` runs (see below).
 
 Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
@@ -151,6 +151,8 @@ kotgent <command> [args]
   install | uninstall           (un)install the launchd LaunchAgent (io.kotgent.daemon)
   start <agent> [cwd]           start a session (agent: 'claude' | 'codex'; cwd defaults to the current dir)
              [--name N] [--tag T]
+  import <agent> <session-id>   register a session started outside kotgent, then resume it
+             [--cwd D] [--name N] [--tag T] [--no-start]
   list | ls                     list sessions and their states
   stop <id>                     stop a session
   resume <id>                   resume a stopped/crashed/resumable session
@@ -174,6 +176,23 @@ kotgent <command> [args]
   whenever either goes stale. An agent that can't be resolved on the daemon's `PATH` fails fast with a
   clear error pointing at `kotgent install`, not a silent attach failure.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the agent in it, and records the session.
+- **`import`** brings a conversation you started *outside* kotgent — `claude` or `codex` run in a plain
+  terminal — under kotgent, with its history intact. The import itself only registers the session (no
+  `tmux` side effects): kotgent verifies the provider's own on-disk record and writes a `resumable` entry,
+  then immediately resumes it (`claude --resume <id>` / `codex resume <id>`); `--no-start` skips that and
+  leaves it registered for later. The project directory is discovered from the provider's record; pass
+  `--cwd` if that discovery fails or picks the wrong directory. Finding the session id:
+  - **claude** — shown in the `claude --resume` session picker; it is also the transcript's file name,
+    `~/.claude/projects/<encoded-project-dir>/<session-id>.jsonl`.
+  - **codex** — shown in the `codex resume` session picker; it is also the trailing UUID of the rollout
+    file name, `~/.codex/sessions/<date>/rollout-<timestamp>-<session-id>.jsonl`. An *archived* codex
+    session cannot be imported — archiving puts it out of `codex resume`'s reach.
+
+  Importing an id kotgent already tracks fails with the existing session's id and the right next move
+  (`kotgent resume <id>`, or Restore in the Web UI if that session is archived). The Web UI's new-session
+  dialog has a matching **Import** mode, including the register-only checkbox. One caveat: kotgent cannot
+  detect that the conversation is still *live* in the original terminal — resuming it there and under
+  kotgent at once runs two CLI copies of the same conversation.
 - **`attach`** is **not** a direct `tmux attach`. It is a raw-terminal passthrough over the daemon's
   terminal WebSocket (tty put in raw mode via `termios`, stdin → WS, WS → stdout, `SIGWINCH` → resize,
   terminal restored on exit). Detaching an attach only drops a client; the agent stays alive.
@@ -409,6 +428,9 @@ is and isn't here:
   visual-viewport terminal sizing, software-keyboard focus handling, special-key toolbar, foreground
   terminal reattachment, and notification deep links are all shipped. The service worker is network-only:
   there is deliberately no offline shell when the local daemon cannot serve useful state.
+- **Import of externally started sessions.** `kotgent import` (and the Web UI's Import mode) registers a
+  conversation begun in a plain terminal and continues it under kotgent — fan-out, push, and mobile access
+  included, with the provider's own on-disk record as the history (see [The CLI](#the-cli)).
 
 **Backlog (not built yet):**
 
@@ -422,7 +444,7 @@ is and isn't here:
   approvals, and whether/how a session id can be preallocated or must be scanned after the fact.
 - Structured mobile actions such as native approve/deny buttons outside the agent's terminal. Approvals
   remain interactive TUI operations today.
-- A **diff viewer**, external-session import, and snapshots.
+- A **diff viewer** and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
 - A browser e2e harness (Playwright).

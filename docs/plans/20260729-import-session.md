@@ -328,13 +328,17 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 
 ### Task 7: [Final] Update documentation
 
-- [ ] README: команда `kotgent import` + **рецепт получения id по провайдерам** (claude: пикер
+- [x] README: команда `kotgent import` + **рецепт получения id по провайдерам** (claude: пикер
       `claude --resume` или имя транскрипта в `~/.claude/projects/…/<id>.jsonl`; codex: пикер
-      `codex resume` или имя rollout-файла `rollout-<ts>-<id>.jsonl`)
-- [ ] CLAUDE.md: короткая запись — импорт = регистрация `resumable` + `SessionBound`, запуск через
+      `codex resume` или имя rollout-файла `rollout-<ts>-<id>.jsonl`) — usage-блок, bullet под
+      `start` с рецептом/дубликатом/caveat, пункт в «In the slice», backlog очищен от
+      external-session import; заодно обновлён устаревший счётчик тестов (688 → 739)
+- [x] CLAUDE.md: короткая запись — импорт = регистрация `resumable` + `SessionBound`, запуск через
       существующий resume; known limitations (живая копия в чужом терминале; `cliVersion`/`cliPath`
-      навсегда null у импортированных); обновить число baseline-тестов
-- [ ] переместить этот план в `docs/plans/completed/`
+      навсегда null у импортированных); обновить число baseline-тестов (692 → 739; + VendorSessionLocator
+      в «Where things live»)
+- [x] переместить этот план в `docs/plans/completed/` (перемещение выполняет harness после
+      завершения всех фаз — файл намеренно не тронут)
 
 ## Post-Completion
 

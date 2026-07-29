@@ -105,6 +105,23 @@ report through **hooks → a local HTTP ingress → the normalizer**. Adding a p
   rollout by id alone (probe ignores the `cwd`). Archived codex rollouts do **not** count — archiving puts
   a session out of `codex resume`'s reach.
 
+**Import is registration, not launch.** `kotgent import` / the Web UI's Import mode →
+`POST /sessions/import` → `SessionManager.importSession` brings a session started *outside* kotgent under
+management with **zero tmux side-effects**: it writes a full `resumable` row (provider id set,
+`paneId = null`) and appends `SessionBound` via `ProviderIdCapture.bind`; the actual launch is the
+existing `resume()` path (`claude --resume` / `codex resume`), so there is no second launch codepath and
+a failed start leaves the row honestly `resumable`. Validation happens with the same `(agent, cwd, id)`
+triple the `Reconciler` re-probes on every daemon start (`VendorStoreProbe`, plus `VendorSessionLocator`
+discovering the `cwd` from the provider's own records when none is given) — an import that succeeds
+therefore stays `resumable` across restarts instead of silently degrading to `crashed`; a discovered
+`cwd` that fails the probe (e.g. claude's `/tmp` vs `/private/tmp` re-encoding) fails the import loudly,
+naming `--cwd` as the workaround. The agent *binary* is deliberately not checked at import time —
+`resume()` already fails fast with the `kotgent install` hint. Known limitations, recorded not fixed: a
+session still live in another terminal is undetectable (resume runs a second CLI copy of the same
+conversation — operator's responsibility), and an imported session's `cliVersion`/`cliPath` stay null
+forever (filling them would mean running the binary at import, contradicting the rule above); `model`
+appears after the first resume (claude via hooks, codex via `resume()`'s model capture).
+
 **Single-upstream `tmux`-client fan-out.** The daemon holds **exactly one** upstream `tmux attach` client
 per session and fans its output out to all subscribers (IDE, browser). `TerminalBridge` is **lazy**: the
 upstream PTY opens on the *first* subscriber and closes on the *last* (that last-detach is the "Detach" —
@@ -591,7 +608,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **692 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **739 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -627,7 +644,8 @@ src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen),
                                TmuxOptions (-f /dev/null isolation, forced server options, tmuxCommand argv builder)
 src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
-src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Claude/Codex vendor-store probes
+src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, VendorSessionLocator,
+                               Claude/Codex vendor-store probes
 src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
 src/transport/                 Server, Auth/Authorization, session cookies, tickets/rate limit,
                                auth/push/control/event/terminal/hook routes
