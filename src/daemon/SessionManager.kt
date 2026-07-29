@@ -346,6 +346,20 @@ class SessionManager(
      */
     private val importMutex = Mutex()
 
+    /** Guards [reservedIds] — every draw/release of an in-flight session id goes through it. */
+    private val idAllocationGuard = Mutex()
+
+    /**
+     * Session ids DRAWN by [freshSessionId] but not yet durable in the store. [start] and
+     * [importSession] both allocate before their `upsertSession`, under DIFFERENT locks (the
+     * per-session control lock vs [importMutex]), so the store check alone leaves a window in which
+     * both draw the same 32-bit id — and the later upsert would silently overwrite the earlier row and
+     * splice two agents into one event log / tmux name. Reserving the id for the allocation-to-upsert
+     * region closes that window; [releaseSessionId] drops the reservation when the region ends (on
+     * success the stored row takes over as the authority, on failure the id is genuinely free again).
+     */
+    private val reservedIds = HashSet<SessionId>()
+
     /** Guards [controlLocks] itself (the per-session lock table), never a control op. */
     private val controlLocksGuard = Mutex()
 
@@ -382,7 +396,24 @@ class SessionManager(
         name: String? = null,
         tags: List<String> = emptyList(),
     ): SessionMeta {
+        // Reserved until the finally below: the row is not in the store before the upsert inside the
+        // control lock, and only the reservation keeps a concurrent start/import from drawing the same id.
         val sessionId = freshSessionId()
+        try {
+            return startReserved(sessionId, agentKind, cwd, name, tags)
+        } finally {
+            releaseSessionId(sessionId)
+        }
+    }
+
+    /** The body of [start], running with [sessionId] already reserved (see [freshSessionId]). */
+    private suspend fun startReserved(
+        sessionId: SessionId,
+        agentKind: String,
+        cwd: String,
+        name: String?,
+        tags: List<String>,
+    ): SessionMeta {
         val shortId = sessionId.value
         val tmuxSession = tmux.sessionName(shortId)
         // create() rejects an unsupported or unresolvable agent kind (UnsupportedAgentException /
@@ -489,19 +520,37 @@ class SessionManager(
     }
 
     /**
-     * A [SessionId] not already used by any stored session or event log. [randomShortId] is only 32
-     * bits, so a collision with a dead HISTORICAL session's `kt-<id>` (whose `sessions` row and event
-     * log survive) is improbable but not impossible — and a collision would overwrite that row and
-     * splice this new agent into its existing log. So we reject any candidate the store already knows
-     * and regenerate, bounded. The id stays 8 hex chars for a stable, copy-pasteable CLI handle; the
-     * store check — not the id width — is what makes reuse impossible.
+     * A [SessionId] not already used by any stored session or event log, RESERVED for the caller until
+     * its [releaseSessionId]. [randomShortId] is only 32 bits, so a collision with a dead HISTORICAL
+     * session's `kt-<id>` (whose `sessions` row and event log survive) is improbable but not impossible
+     * — and a collision would overwrite that row and splice this new agent into its existing log. So we
+     * reject any candidate the store already knows and regenerate, bounded. The id stays 8 hex chars
+     * for a stable, copy-pasteable CLI handle; the store check — not the id width — is what makes reuse
+     * of a stored id impossible, and the [reservedIds] check is what makes a CONCURRENT allocation safe
+     * (see its KDoc: the store cannot answer for an id whose upsert has not happened yet, and the two
+     * allocation sites hold different locks). Every caller owes a `try`/`finally` [releaseSessionId].
      */
-    private suspend fun freshSessionId(): SessionId {
+    private suspend fun freshSessionId(): SessionId = idAllocationGuard.withLock {
         repeat(MAX_ID_ATTEMPTS) {
             val candidate = newSessionId()
-            if (store.getSession(candidate) == null && store.read(candidate, Seq(0)).isEmpty()) return candidate
+            if (candidate !in reservedIds &&
+                store.getSession(candidate) == null &&
+                store.read(candidate, Seq(0)).isEmpty()
+            ) {
+                reservedIds.add(candidate)
+                return@withLock candidate
+            }
         }
         error("could not allocate a unique session id after $MAX_ID_ATTEMPTS attempts")
+    }
+
+    /**
+     * Drop [freshSessionId]'s reservation of [sessionId] (see [reservedIds]). Runs under
+     * [NonCancellable]: a launch cancelled mid-flight must still release, or the id — and one
+     * [MAX_ID_ATTEMPTS] slot of every future allocation — leaks until the daemon restarts.
+     */
+    private suspend fun releaseSessionId(sessionId: SessionId): Unit = withContext(NonCancellable) {
+        idAllocationGuard.withLock { reservedIds.remove(sessionId) }
     }
 
     /** Stop [sessionId] according to [mode] (defaults to a full [StopMode.Kill]). */
@@ -699,31 +748,38 @@ class SessionManager(
             throw TranscriptNotFoundException(agentKind, id, resolvedCwd)
         }
 
+        // Reserved until the finally below: [importMutex] serializes imports against each other, but a
+        // concurrent [start] holds a different lock — only the reservation keeps both from drawing the
+        // same id before either upsert lands (see [reservedIds]).
         val sessionId = freshSessionId()
-        val tmuxSession = tmux.sessionName(sessionId.value) // pure formatter — no tmux side effect
-        val ts = now()
-        val meta = SessionMeta(
-            id = sessionId,
-            name = name ?: tmuxSession,
-            tags = tags,
-            agent = agentKind,
-            providerSessionId = id,
-            // cliVersion/cliPath/model stay null: filling them would mean running the binary at import
-            // time, which contradicts the no-binary-check rule above. `model` arrives after the first
-            // resume (claude via hooks, codex via the resume model capture).
-            cwd = resolvedCwd,
-            tmuxSession = tmuxSession,
-            paneId = null,
-            state = SessionState.resumable,
-            stateSource = EventSource.system,
-            createdAt = ts,
-            updatedAt = ts,
-        )
-        store.upsertSession(meta)
-        // The append never resurrects a dead cache state (see SqliteEventStore.append), so the row
-        // stays `resumable` through the bind. A bind failure here is the accepted residual (see KDoc).
-        idCapture.bind(sessionId, id)
-        store.getSession(sessionId) ?: meta
+        try {
+            val tmuxSession = tmux.sessionName(sessionId.value) // pure formatter — no tmux side effect
+            val ts = now()
+            val meta = SessionMeta(
+                id = sessionId,
+                name = name ?: tmuxSession,
+                tags = tags,
+                agent = agentKind,
+                providerSessionId = id,
+                // cliVersion/cliPath/model stay null: filling them would mean running the binary at import
+                // time, which contradicts the no-binary-check rule above. `model` arrives after the first
+                // resume (claude via hooks, codex via the resume model capture).
+                cwd = resolvedCwd,
+                tmuxSession = tmuxSession,
+                paneId = null,
+                state = SessionState.resumable,
+                stateSource = EventSource.system,
+                createdAt = ts,
+                updatedAt = ts,
+            )
+            store.upsertSession(meta)
+            // The append never resurrects a dead cache state (see SqliteEventStore.append), so the row
+            // stays `resumable` through the bind. A bind failure here is the accepted residual (see KDoc).
+            idCapture.bind(sessionId, id)
+            store.getSession(sessionId) ?: meta
+        } finally {
+            releaseSessionId(sessionId)
+        }
     }
 
     /**

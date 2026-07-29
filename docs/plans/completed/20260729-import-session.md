@@ -124,6 +124,12 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 
 ## Technical Details
 
+> **Примечание (ревью, 2026-07-29):** раздел зафиксирован как одобренный дизайн на момент
+> планирования; ревью-фазы уточнили три детали, источник истины — код (`src/daemon/VendorSessionLocator.kt`):
+> `cwdOf` стал `suspend` (зеркалит twin-seam `VendorStoreProbe.hasTranscript`), `access()`-пречек
+> удалён (`readHead` сам отвечает `null` на отсутствующий файл), а скан claude-транскрипта ограничен
+> только байтовым окном `CLAUDE_CWD_SCAN_BYTES` (64 KB), без лимита «~25 строк».
+
 - **Новый seam** `fun interface VendorSessionLocator { fun cwdOf(agent: String, id: ProviderSessionId): String? }`
   (`src/daemon/`), продакшен-фабрика диспатчит по agent kind (как `byAgentVendorStoreProbe`):
   - claude: по инжектируемому `claudeDir` — один `opendir` по `projects/`, затем `access()` на

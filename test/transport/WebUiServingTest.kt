@@ -109,7 +109,7 @@ class WebUiServingTest {
         assertTrue(body.contains("pruneReadPosters"), "…and drops the throttle of a session that vanished")
         assertTrue(body.contains("apiRequest(\"/version\")"), "app.js fetches the daemon version")
         assertTrue(body.contains("currentVersion=\${currentVersion}"), "app.js passes the version to the sidebar")
-        val loadStart = body.indexOf("const loadSessions = useCallback(async () => {")
+        val loadStart = body.indexOf("const loadSessions = useCallback(async ({ quiet = false } = {}) => {")
         val loadEnd = body.indexOf("\n  }, [cancelReattach", startIndex = loadStart.coerceAtLeast(0))
         assertTrue(loadStart >= 0 && loadEnd > loadStart, "the session loader is present and bounded")
         val loadSessions = body.substring(loadStart, loadEnd)
@@ -490,6 +490,39 @@ class WebUiServingTest {
             "a successful import continues through the ordinary resume endpoint",
         )
         assertTrue(app.contains("if (registerOnly) {"), "register-only stops before the resume")
+        // The import→resume flow occupies the same one-action-at-a-time slot as the control verbs, so a
+        // Done/Stop cannot slip between the registration and the delayed follow-up resume (which would
+        // then restart the session the operator had just stopped or archived).
+        assertTrue(
+            app.contains("setPendingAction(\"import\")"),
+            "the import flow participates in the pending-action guard",
+        )
+        // A completion only closes the dialog it was submitted from: the dialog's Cancel/×/Esc stay live
+        // while the request is in flight, so a dismissed import must not close a dialog opened since.
+        assertTrue(
+            app.contains("closeDialogFrom(submittedDialog)"),
+            "the import completion closes only its own dialog",
+        )
+        // The HTTP DTOs are never hand-merged into the session list: rows carry no total-ordering key
+        // (control-state, archive and read changes advance no seq), so a DTO snapshot cannot be ordered
+        // against the /events stream client-side. Each step instead AWAITS a fresh quiet refetch — the
+        // one routine install path, self-versioned so it also supersedes any stale list fetch still in
+        // flight (e.g. the /events unknown-id reload of the pre-bind upsert), with `quiet` keeping the
+        // replacement's routine "N session(s)." off the flow's own status line (the actionable
+        // resume-failure hint must survive it).
+        assertTrue(
+            app.contains("const listed = await loadSessions({ quiet: true })") &&
+                app.contains("(listed && listed.find((s) => s.id === created.id)) || created"),
+            "the import awaits a fresh snapshot instead of hand-merging the 201 DTO into the list",
+        )
+        // The terminal-attach decision reads the newest snapshot, not the resume response: the resumed
+        // agent's first events — or its immediate exit — may have landed while the response was in
+        // flight, and a terminal must not be attached to an already-dead session on stale state.
+        assertTrue(
+            app.contains("const resumed = await loadSessions({ quiet: true })") &&
+                app.contains("(resumed && resumed.find((s) => s.id === created.id)) || registered"),
+            "the post-resume selection comes from a fresh snapshot, with the known row as fallback only",
+        )
     }
 
     @Test

@@ -149,6 +149,31 @@ class CliTest {
     }
 
     @Test
+    fun importRejectsAnEmptyFlagValueInsteadOfResolvingItToTheCliCwd() {
+        // `--cwd "$UNSET_VAR"` expands to an EMPTY string, which resolveCwdAgainst would silently turn
+        // into the CLI's own cwd — sent as an EXPLICIT override of the daemon's transcript discovery.
+        // The codex probe ignores cwd, so the session would be registered (and resumed) under the wrong
+        // project with nothing downstream to catch it. Blank values are usage errors for every import
+        // value flag.
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--cwd", "")) is CliCommand.Invalid,
+            "an empty --cwd must not silently become the CLI's cwd",
+        )
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--cwd", "  ")) is CliCommand.Invalid,
+            "a whitespace-only --cwd is no more a directory than an empty one",
+        )
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--name", "")) is CliCommand.Invalid,
+            "an empty --name is a usage error, not a session named ''",
+        )
+        assertTrue(
+            parseArgs(listOf("import", "codex", PROVIDER_ID, "--tag", "")) is CliCommand.Invalid,
+            "an empty --tag is a usage error, not an empty tag",
+        )
+    }
+
+    @Test
     fun importResolvesAnExplicitCwdLikeStartButAnAbsentOneStaysAbsent() {
         // `--cwd` goes through the same resolution rule as `runStart` (relative → anchored at the CLI's
         // own cwd; absolute → untouched). The ONE deliberate difference: an absent `--cwd` stays null —
@@ -198,14 +223,32 @@ class CliTest {
         assertEquals("/", resolveCwdAgainst("/", "./"), "root base, './' — the regression: this returned \"\"")
         assertEquals("/sub", resolveCwdAgainst("/", "sub"), "root base, a relative child — exactly one slash")
         assertEquals("/sub", resolveCwdAgainst("/", "./sub"), "root base, './sub'")
-        assertEquals("/..", resolveCwdAgainst("/", ".."), "root base, '..' stays absolute (tmux canonicalizes)")
-        assertEquals("/..", resolveCwdAgainst("/", "./.."), "root base, './..'")
-        assertEquals("/a/..", resolveCwdAgainst("/", "a/.."), "root base, an embedded '..' stays absolute")
-        // Every result is absolute, whatever the relative part.
+        assertEquals("/", resolveCwdAgainst("/", ".."), "root base, '..' clamps at root, like the kernel")
+        assertEquals("/", resolveCwdAgainst("/", "./.."), "root base, './..'")
+        assertEquals("/", resolveCwdAgainst("/", "a/.."), "root base, an embedded '..' collapses")
+        // Every result is absolute, whatever the relative part ('..' may legitimately escape the base).
         for (rel in listOf(null, "", ".", "./", "././", "..", "./..", "sub", "./sub", "a/b/..")) {
             assertTrue(resolveCwdAgainst("/", rel).startsWith("/"), "resolveCwdAgainst(\"/\", $rel) must be absolute")
-            assertTrue(resolveCwdAgainst("/base", rel).startsWith("/base"), "resolveCwdAgainst(\"/base\", $rel) stays under the base")
+            assertTrue(resolveCwdAgainst("/base", rel).startsWith("/"), "resolveCwdAgainst(\"/base\", $rel) must be absolute")
         }
+    }
+
+    @Test
+    fun resolveCwdAgainstNormalizesDotAndDotDotSegments() {
+        // `import` probes the provider's on-disk store with this exact string BEFORE any tmux session
+        // exists to canonicalize it: Claude encodes the project cwd into a transcript directory name, so
+        // an unnormalized `/a/proj/../proj` would miss transcripts the canonical `/a/proj` names and
+        // reject a valid import. Lexical only — symlinks are deliberately not resolved.
+        val base = "/Users/me/project"
+        assertEquals("/Users/me", resolveCwdAgainst(base, ".."), "'..' names the parent of the CLI cwd")
+        assertEquals("/Users/me/other", resolveCwdAgainst(base, "../other"), "a sibling directory resolves canonically")
+        assertEquals(base, resolveCwdAgainst(base, "sub/.."), "an embedded '..' collapses back to the base")
+        assertEquals("$base/a/c", resolveCwdAgainst(base, "a/./b/../c"), "mixed '.' and '..' segments collapse")
+        assertEquals("/", resolveCwdAgainst(base, "../../.."), "enough '..' reaches root")
+        assertEquals("/", resolveCwdAgainst(base, "../../../.."), "'..' above root clamps at root")
+        assertEquals("/abs/b", resolveCwdAgainst(base, "/abs/a/../b"), "an absolute cwd is normalized too")
+        assertEquals("/abs/x", resolveCwdAgainst(base, "/abs/x/"), "a trailing slash is dropped")
+        assertEquals("/abs/x", resolveCwdAgainst(base, "/abs//x"), "a doubled slash is collapsed")
     }
 
     @Test

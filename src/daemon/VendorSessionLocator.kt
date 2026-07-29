@@ -11,9 +11,10 @@ import io.kotgent.core.ProviderSessionId
  * Providers disagree on where the answer lives:
  *  - **Claude** namespaces transcripts per project dir (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`),
  *    but [encodeClaudeProjectDir] is irreversible — so the cwd is found by scanning the `projects`
- *    subdirectories for `<id>.jsonl` (one `opendir` + an `access()` per subdirectory, never a listing
- *    of all transcripts) and reading the recorded `"cwd"` field out of the transcript's head
- *    ([claudeTranscriptCwd]).
+ *    subdirectories for `<id>.jsonl` (one `opendir` + a byte-bounded [readHead] per subdirectory,
+ *    never a listing of all transcripts; `readHead` answers `null` for a missing transcript, so there
+ *    is no separate existence pre-check) and reading the recorded `"cwd"` field out of the
+ *    transcript's head ([claudeTranscriptCwd]).
  *  - **Codex** names a rollout by id alone and records `cwd` in its first (`session_meta`) line —
  *    [CodexRolloutScan.cwdOf]. Archived rollouts do not answer (out of `codex resume`'s reach).
  *

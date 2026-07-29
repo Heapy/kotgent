@@ -412,14 +412,12 @@ object Commands {
                 if (meta.agent == CODEX_AGENT_KIND) {
                     bgScope.launch {
                         repeat(MODEL_CAPTURE_ATTEMPTS) {
-                            // With a KNOWN provider id (the resume path — resume() requires it) the
-                            // model is read out of THAT session's id-keyed rollout. The cwd+mtime
-                            // heuristic is only for a fresh launch, whose codex id is not captured
-                            // yet; there createdAt ≈ now, so the window is tight. On resume the same
-                            // heuristic would span every rollout since the ORIGINAL launch and could
-                            // stamp a busier neighbour session's model over this one's.
-                            val model = meta.providerSessionId?.let(rolloutScan::modelOf)
-                                ?: rolloutScan.discoverModel(meta.cwd, meta.createdAt)
+                            // One lookup per attempt: id-keyed when the provider id is known (the
+                            // resume path), the cwd+mtime heuristic only for an id-less fresh launch —
+                            // and deliberately never the heuristic as a FALLBACK for a temporary
+                            // id-keyed miss, which would persist a neighbour rollout's model (see
+                            // CodexRolloutScan.modelForCapture).
+                            val model = rolloutScan.modelForCapture(meta.providerSessionId, meta.cwd, meta.createdAt)
                             if (model != null) {
                                 store.setModel(meta.id, model, daemonEpochMillis())
                                 return@launch

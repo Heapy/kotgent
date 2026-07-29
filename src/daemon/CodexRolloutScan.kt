@@ -191,6 +191,21 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
         rolloutHeadOf(providerSessionId, MODEL_SCAN_BYTES)?.let(::extractModel)
 
     /**
+     * The one model-capture lookup rule (the daemon's `captureModelInBackground` wiring): with a KNOWN
+     * [providerSessionId] (the resume path — [SessionManager.resume] requires one) the answer comes
+     * ONLY from that session's id-keyed rollout ([modelOf]). A temporary miss there — `turn_context`
+     * is not written until the session takes its first turn — must stay `null` so the caller's retry
+     * loop polls again; it must NEVER fall back to [discoverModel], because on resume [notBeforeMillis]
+     * is the ORIGINAL launch time, so the cwd+mtime heuristic would span every rollout written since
+     * and could stamp a busier neighbour session's model over this one's. Only an id-less FRESH launch
+     * (codex before its id capture lands) uses the heuristic, where the window is tight
+     * (`createdAt` ≈ now).
+     */
+    fun modelForCapture(providerSessionId: ProviderSessionId?, cwd: String, notBeforeMillis: Long): String? =
+        if (providerSessionId != null) modelOf(providerSessionId)
+        else discoverModel(cwd, notBeforeMillis)
+
+    /**
      * The first [bytes] of the live rollout named by [providerSessionId] — the ONE id-keyed lookup
      * behind [cwdOf] and [modelOf], which differ only in window size and extractor. Matched by id in
      * the file NAME (like [hasRollout]); `null` when no live rollout exists or it cannot be read.

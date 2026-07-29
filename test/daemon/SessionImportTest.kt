@@ -243,6 +243,66 @@ class SessionImportTest {
         }
     }
 
+    @Test
+    fun aConcurrentImportCannotTakeTheIdAStartHasDrawnButNotYetUpserted() = runBlocking {
+        withTimeout(20_000) {
+            val real = SqliteEventStore.inMemory(now = { 42L })
+            // Park the START's upsert: its session id is allocated but not yet visible to the store —
+            // exactly the check-to-upsert window in which only the id reservation can protect it. The
+            // import's own (later) upsert must pass through unparked.
+            val startUpsertReached = CompletableDeferred<Unit>()
+            val releaseStartUpsert = CompletableDeferred<Unit>()
+            var parkedOnce = false
+            val store = object : EventStore by real {
+                override suspend fun upsertSession(meta: SessionMeta) {
+                    if (!parkedOnce) {
+                        parkedOnce = true
+                        startUpsertReached.complete(Unit)
+                        releaseStartUpsert.await()
+                    }
+                    real.upsertSession(meta)
+                }
+            }
+            // The generator INSISTS on the colliding id: the import draws "dup00001" too, and only the
+            // reservation — not the store, which does not know the id while the upsert is parked — can
+            // make it re-draw.
+            val ids = ArrayDeque(listOf("dup00001", "dup00001", "dup00002"))
+            val startProvider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            // Preallocated id so start() binds inline (no background capture job to wait out).
+            val startFactory = AgentFactory { _, cwd ->
+                object : AgentAdapter {
+                    override val events: Flow<AgentEvent> = emptyFlow()
+                    override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
+                        LaunchSpec(listOf("cat"), emptyMap(), cwd, startProvider)
+                }
+            }
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, factory = startFactory, newSessionId = { SessionId(ids.removeFirst()) })
+
+            val start = async { mgr.start("claude", "/tmp") }
+            startUpsertReached.await() // start holds "dup00001" — drawn and reserved, NOT stored yet
+
+            val imported = mgr.importSession("codex", providerId, cwd = "/tmp")
+            assertEquals(
+                SessionId("dup00002"),
+                imported.id,
+                "the import re-drew instead of stealing the id the start had already allocated",
+            )
+
+            releaseStartUpsert.complete(Unit)
+            assertEquals(SessionId("dup00001"), start.await().id)
+
+            // Two sessions, two untangled rows — the import overwrote neither the row nor the log.
+            val startRow = real.getSession(SessionId("dup00001"))!!
+            assertEquals(SessionState.running, startRow.state)
+            assertEquals(startProvider, startRow.providerSessionId)
+            val importRow = real.getSession(SessionId("dup00002"))!!
+            assertEquals(SessionState.resumable, importRow.state)
+            assertEquals(providerId, importRow.providerSessionId)
+            assertTrue(ids.isEmpty(), "the colliding candidate was drawn and rejected, then re-drawn")
+        }
+    }
+
     // ---- the failure ladder: kind, cwd discovery, cwd existence, probe ----
 
     @Test

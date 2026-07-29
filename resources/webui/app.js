@@ -182,6 +182,11 @@ function App() {
   activeRef.current = activeId;
   const pendingRef = useRef(pendingAction);
   pendingRef.current = pendingAction;
+  // Which dialog object a submission came from: a completion may only close ITS OWN dialog (see
+  // closeDialogFrom) — a bare setDialog(null) from a dismissed request would close whatever dialog
+  // the operator opened since and discard its draft.
+  const dialogRef = useRef(dialog);
+  dialogRef.current = dialog;
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
   // HTTP and WebSocket preference responses race independently. The persisted revision is their one
@@ -302,6 +307,13 @@ function App() {
     return true;
   }, []);
 
+  // Close the dialog a submission came from — and ONLY that one. The dialog's Cancel/×/Esc stay live
+  // while a request is in flight, so the operator may have dismissed it and opened ANOTHER dialog;
+  // a completion of the old request must not close the new dialog and discard its draft.
+  const closeDialogFrom = useCallback((submitted) => {
+    setDialog((current) => (current === submitted ? null : current));
+  }, []);
+
   const activeSession = sessions.find((s) => s.id === activeId) || null;
 
   /** Select [session]: attach its terminal when it is alive, explain why not when it is not. */
@@ -329,15 +341,28 @@ function App() {
     if (session) showSession(session);
   }, [showSession]);
 
-  const loadSessions = useCallback(async () => {
+  // Every call supersedes any /sessions fetch still in flight (the version bump below runs before the
+  // first await), so callers that just wrote fresher row state themselves refetch through here instead
+  // of merely invalidating — a bare invalidation could discard the ONLY pending source of the full list
+  // (the initial load, the /events unknown-id reload) and leave the sidebar incomplete until the 15 s
+  // resync. [quiet] keeps the replacement's routine "N session(s)." announcement from overwriting the
+  // calling flow's own status line (e.g. the actionable resume-failure hint); errors are never silenced.
+  // Resolves to the fetched list — even when a newer call took over the install, because the snapshot is
+  // still a post-response answer for the caller that awaited it — or to undefined when the fetch failed.
+  const loadSessions = useCallback(async ({ quiet = false } = {}) => {
     const version = ++sessionsLoadVersionRef.current;
     const isFirstLoad = firstLoadRef.current;
     try {
       const list = await apiRequest("/sessions");
-      if (version !== sessionsLoadVersionRef.current) return;
+      if (version !== sessionsLoadVersionRef.current) return list;
       firstLoadRef.current = false;
+      // Installed wholesale, deliberately NOT merged per-row against /events frames that arrived during
+      // the flight: rows carry no total-ordering key (control-state, archive and read changes advance no
+      // seq), so any client-side merge rule inverts as easily as a replace. Known residual: a frame that
+      // lands between the daemon taking this snapshot and the response landing here is transiently
+      // overwritten, until the next frame or the 15 s resync heals it — the flow's designed self-healing.
       setSessions(list);
-      say(list.length + " session(s).");
+      if (!quiet) say(list.length + " session(s).");
       // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
       // nor keep a mark-read throttle (and its timer) alive for the rest of the page's life.
       const ids = new Set(list.map((s) => s.id));
@@ -355,6 +380,7 @@ function App() {
           showSession(target);
         }
       }
+      return list;
     } catch (e) {
       if (version !== sessionsLoadVersionRef.current) return;
       // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
@@ -545,15 +571,16 @@ function App() {
   // --- actions ---------------------------------------------------------------------------------
 
   const startSession = useCallback(async (body) => {
+    const submittedDialog = dialogRef.current;
     const created = await apiRequest("/sessions", {
       method: "POST",
       body: JSON.stringify(body),
     });
     setSessions((prev) => prev.concat([created]));
-    setDialog(null);
+    closeDialogFrom(submittedDialog);
     say("Started " + displayName(created) + ".");
     showSession(created);   // from `created` directly: the ref has not caught up with setSessions yet
-  }, [say, showSession]);
+  }, [closeDialogFrom, say, showSession]);
 
   /**
    * Import a conversation started outside kotgent (`POST /sessions/import`), then — unless the dialog's
@@ -562,39 +589,69 @@ function App() {
    * text in the form's own error line. A failed FOLLOW-UP resume is different: the registration itself
    * succeeded, so the dialog is already closed and the session is shown honestly resumable with the
    * resume error in the status line — retrying the import would only 409.
+   *
+   * The HTTP DTOs (the 201, the resume response) are never merged into the list by hand: rows carry no
+   * total-ordering key (control-state changes advance no seq), so a DTO snapshot cannot be ordered
+   * against the /events stream — see loadSessions. Each step instead AWAITS a fresh quiet refetch,
+   * which installs the list through the one routine path (superseding any stale fetch still in flight)
+   * and returns the newest snapshot to select from, so the terminal-attach decision (showSession) reads
+   * the freshest known state, never a response that spent its flight time being overtaken by events.
+   *
+   * The whole flow occupies the one-action-at-a-time slot (`pendingAction`), like controlSession's
+   * verbs: without it a Done/Stop on the just-imported row could run between registration and the
+   * follow-up resume — and the delayed resume would then restart the session the operator had just
+   * stopped or archived.
    */
   const importSession = useCallback(async (body, registerOnly) => {
-    const created = await apiRequest("/sessions/import", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    // The import's SessionBound append can already have pushed this row here through /events (an unknown
-    // id triggers a full list reload), so merge instead of blindly concatenating — two rows for one id
-    // would break the keyed sidebar.
-    setSessions((prev) => (prev.some((s) => s.id === created.id)
-      ? prev.map((s) => (s.id === created.id ? created : s))
-      : prev.concat([created])));
-    setDialog(null);
-    if (registerOnly) {
-      say("Imported " + displayName(created) + " — registered only.");
-      showSession(created);   // resumable → the dead hint explains the next step
-      return;
+    if (pendingRef.current) {
+      // Refused, not queued: the rejection surfaces in the dialog's own error line.
+      throw new Error("Another action is still in progress — try again in a moment.");
     }
+    const submittedDialog = dialogRef.current;
+    setPendingAction("import");
     try {
-      const resumed = await apiRequest(
-        "/sessions/" + encodeURIComponent(created.id) + "/resume",
-        { method: "POST" },
-      );
-      const row = resumed && resumed.id ? resumed : created;
-      setSessions((prev) => prev.map((s) => (s.id === row.id ? row : s)));
-      say("Imported and resumed " + displayName(row) + ".");
-      showSession(row);       // alive now → attaches the terminal
-    } catch (e) {
-      // The daemon's message (e.g. the `kotgent install` hint for a missing binary) says what to fix.
-      showSession(created);
-      say("Imported, but resume failed: " + errorMessage(e), true);
+      const created = await apiRequest("/sessions/import", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      // This refetch started after the import committed, so its snapshot lists the new row at least as
+      // fresh as the 201 DTO (including the SessionBound append the response reflects — an /events push
+      // of the earlier pre-bind upsert may have installed an OLDER row), and being self-versioned it
+      // also supersedes any stale list fetch still in flight (e.g. the /events unknown-id reload). The
+      // DTO remains only the fallback for a failed or overtaken fetch.
+      const listed = await loadSessions({ quiet: true });
+      const registered = (listed && listed.find((s) => s.id === created.id)) || created;
+      closeDialogFrom(submittedDialog);
+      if (registerOnly) {
+        say("Imported " + displayName(registered) + " — registered only.");
+        showSession(registered);   // resumable → the dead hint explains the next step
+        return;
+      }
+      try {
+        await apiRequest(
+          "/sessions/" + encodeURIComponent(created.id) + "/resume",
+          { method: "POST" },
+        );
+        // Select from a fresh post-resume snapshot, never from the resume DTO: the resumed agent's
+        // first events — or its immediate exit — may have landed through /events while the response
+        // was in flight, and attaching a terminal to an already-dead session must not happen on state
+        // known to be stale.
+        const resumed = await loadSessions({ quiet: true });
+        const row = (resumed && resumed.find((s) => s.id === created.id)) || registered;
+        say("Imported and resumed " + displayName(row) + ".");
+        showSession(row);       // alive in the snapshot → attaches the terminal
+      } catch (e) {
+        // The daemon's message (e.g. the `kotgent install` hint for a missing binary) says what to fix;
+        // `quiet` keeps the refetch's routine "N session(s)." announcement off that status line, and
+        // the fresh snapshot decides what the row looks like now (still resumable, normally).
+        const after = await loadSessions({ quiet: true });
+        showSession((after && after.find((s) => s.id === created.id)) || registered);
+        say("Imported, but resume failed: " + errorMessage(e), true);
+      }
+    } finally {
+      setPendingAction(null);
     }
-  }, [say, showSession]);
+  }, [closeDialogFrom, loadSessions, say, showSession]);
 
   const controlSession = useCallback(async (action, id) => {
     // Acts on an explicit session [id] when given (e.g. Restore from a sidebar row), else the active one.
@@ -665,6 +722,7 @@ function App() {
   }, [scheduleReattach]);
 
   const savePreferences = useCallback(async (next) => {
+    const submittedDialog = dialogRef.current;
     const saved = await apiRequest("/preferences", {
       method: "PUT",
       body: JSON.stringify({
@@ -677,12 +735,12 @@ function App() {
     applyServerPreferences(saved);
     persistTerminalFontSize(next.terminalFontSize);
     setPrefs((current) => Object.assign({}, current, { terminalFontSize: next.terminalFontSize }));
-    setDialog(null);
+    closeDialogFrom(submittedDialog);
     const current = serverPreferencesRef.current;
     say(current.basePath.length > 0
       ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
       : "Grouping off — no base path set.");
-  }, [applyServerPreferences, say]);
+  }, [applyServerPreferences, closeDialogFrom, say]);
 
   /** An explicit directory (a group's "+") wins, then the selected session's, then the base path. */
   const openNewSession = useCallback((cwd) => {

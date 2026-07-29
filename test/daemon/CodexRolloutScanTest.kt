@@ -290,6 +290,30 @@ class CodexRolloutScanTest {
         assertNull(scan.modelOf(uuid('c')), "an unknown id is null")
     }
 
+    @Test
+    fun modelForCaptureNeverFallsBackToTheHeuristicWhenTheProviderIdIsKnown() {
+        // The resume-path hazard: this session's rollout has no turn_context YET (codex writes the model
+        // only once the resumed session takes a turn), while a busier neighbour in the same cwd already
+        // has one. Falling back to the cwd+mtime heuristic would persist the NEIGHBOUR's model; the
+        // id-keyed lookup must answer null so the capture loop retries against the right rollout.
+        val codexDir = makeCodexDir()
+        val mine = uuid('a')
+        val neighbour = uuid('b')
+        placeRollout(codexDir, "2026", "07", "23", mine, cwd = "/work/shared")
+        placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+
+        val scan = CodexRolloutScan(codexDir)
+        assertNull(
+            scan.modelForCapture(mine, "/work/shared", notBeforeMillis = 0),
+            "a temporary id-keyed miss stays null — it must not adopt the neighbour's model",
+        )
+        assertEquals(
+            "gpt-6",
+            scan.modelForCapture(null, "/work/shared", notBeforeMillis = 0),
+            "an id-less fresh launch still discovers through the cwd+mtime heuristic",
+        )
+    }
+
     // --- harness (throwaway $TMPDIR fake ~/.codex; NEVER the real one) --------------------------------
 
     private val mode0700: Int get() = S_IRUSR or S_IWUSR or S_IXUSR

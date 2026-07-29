@@ -214,10 +214,13 @@ private fun parseStart(rest: List<String>): CliCommand {
 /**
  * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]`. Stricter than
  * [parseStart] on purpose, because every silently-tolerated slip changes what gets imported:
- *  - every value flag REQUIRES a real (non-`--`) value. A forgotten `--cwd` value read as "discover"
- *    would contradict the operator's explicit override intent, and a swallowed flag is worse —
+ *  - every value flag REQUIRES a real (non-blank, non-`--`) value. A forgotten `--cwd` value read as
+ *    "discover" would contradict the operator's explicit override intent; a swallowed flag is worse —
  *    `--name --no-start` would name the session "--no-start" AND auto-resume it against the
- *    operator's stated intent;
+ *    operator's stated intent; and an EMPTY value (`--cwd "$UNSET_VAR"` with the variable unset)
+ *    would silently resolve to the CLI's own cwd and be sent as an explicit override of discovery —
+ *    with the codex probe ignoring cwd, the session would be registered (and resumed) under the
+ *    wrong project;
  *  - a third positional is rejected. `start <agent> [cwd]` trains `import claude <id> ~/proj`, and
  *    silently dropping the path would fall back to discovery — potentially registering a different
  *    cwd than the one the operator typed.
@@ -228,8 +231,8 @@ private fun parseImport(rest: List<String>): CliCommand {
     var cwd: String? = null
     var name: String? = null
     var noStart = false
-    // The flag's value at [i + 1], or null when it is missing or is itself a `--` flag (see the KDoc).
-    fun flagValue(i: Int): String? = rest.getOrNull(i + 1)?.takeUnless { it.startsWith("--") }
+    // The flag's value at [i + 1], or null when it is missing, blank, or itself a `--` flag (see the KDoc).
+    fun flagValue(i: Int): String? = rest.getOrNull(i + 1)?.takeUnless { it.isBlank() || it.startsWith("--") }
     var i = 0
     while (i < rest.size) {
         when (val a = rest[i]) {
@@ -344,39 +347,54 @@ fun eprintln(line: String) {
 class UnresolvableCwdException(message: String) : IllegalStateException(message)
 
 /**
- * Resolve a possibly-relative [cwd] against [base] (the CLI's own working directory) to an ABSOLUTE
- * path. The daemon runs under launchd with cwd `/`, so a relative `cwd` sent verbatim (e.g.
- * `kotgent start claude .` or `… start claude sub/dir`) would be resolved by the daemon against `/` —
- * the wrong directory. The CLI resolves it here, against its own cwd, before sending. Pure (no IO), so
- * it is unit-tested directly; an already-absolute cwd and the omitted (`null`) case pass through as the
- * base. tmux `new-session -c` canonicalizes any remaining `..` segments at launch.
+ * Resolve a possibly-relative [cwd] against [base] (the CLI's own working directory) to an ABSOLUTE,
+ * lexically NORMALIZED path. The daemon runs under launchd with cwd `/`, so a relative `cwd` sent
+ * verbatim (e.g. `kotgent start claude .` or `… start claude sub/dir`) would be resolved by the daemon
+ * against `/` — the wrong directory. The CLI resolves it here, against its own cwd, before sending.
+ * Pure (no IO), so it is unit-tested directly.
+ *
+ * `.` and `..` segments (and duplicate/trailing slashes) are collapsed HERE, not left for tmux to
+ * canonicalize at launch: `import` probes the provider's on-disk store with this exact string BEFORE any
+ * tmux session exists — Claude encodes the project cwd into a transcript directory name — so an
+ * unnormalized `--cwd ../proj` (stored as `/a/proj/../proj`) would miss transcripts the canonical
+ * `/a/proj` names, rejecting a perfectly valid import. See [normalizeAbsolutePath].
  *
  * The result is ABSOLUTE in every branch, or it throws:
- * - an absolute [cwd] passes straight through and never consults [base];
+ * - an absolute [cwd] passes through (normalized) and never consults [base];
  * - otherwise [base] must itself be absolute — a relative one (`"sub"`), the `"."` [currentWorkingDir]
  *   falls back to when `getcwd` fails, or an empty string raise [UnresolvableCwdException]. Joining them
  *   would produce `"./sub"` / `"sub"` (still relative, the exact bug this function exists to prevent), and
  *   reading `""` as root would launch the agent in `/` — both silently wrong, so neither is guessed at.
- *
- * Root is the edge case that must not collapse: `"/"` trims to the EMPTY string, and `"./"` strips to an
- * empty relative part, so a naive join yields `""` — not a path at all. Both are normalized back to `/`.
  */
 fun resolveCwdAgainst(base: String, cwd: String?): String {
     // An absolute target needs no base at all — resolve it even if the CLI cannot name its own cwd.
-    if (cwd != null && cwd.startsWith("/")) return cwd
+    if (cwd != null && cwd.startsWith("/")) return normalizeAbsolutePath(cwd)
     if (!base.startsWith("/")) {
         throw UnresolvableCwdException(
             "cannot resolve a relative directory: the current working directory is not absolute " +
-                "('$base') — pass an absolute path to `kotgent start`",
+                "('$base') — pass an absolute path instead",
         )
     }
-    val b = base.trimEnd('/').ifEmpty { "/" } // "/" stays root, never ""
-    if (cwd.isNullOrEmpty()) return b
-    // Strip leading "./" segments; "." / "./" / "././" all name the base directory itself.
-    var rel: String = cwd
-    while (rel.startsWith("./")) rel = rel.substring(2)
-    if (rel.isEmpty() || rel == ".") return b
-    return if (b == "/") "/$rel" else "$b/$rel"
+    return normalizeAbsolutePath(if (cwd.isNullOrEmpty()) base else "$base/$cwd")
+}
+
+/**
+ * Collapse `.`/`..` segments, duplicate slashes and any trailing slash in an ABSOLUTE [path]; `..` above
+ * root clamps at root (`/.. → /`, like the kernel), so the result is always absolute — which is also what
+ * keeps the degenerate joins (`"//sub"`, `"/base/./"`) from ever emitting `""` or a doubled slash.
+ * Lexical on purpose — no filesystem access, no symlink resolution: the goal is the canonical STRING the
+ * daemon's vendor-store probe compares against, not a realpath.
+ */
+private fun normalizeAbsolutePath(path: String): String {
+    val segments = ArrayDeque<String>()
+    for (segment in path.split('/')) {
+        when (segment) {
+            "", "." -> {}
+            ".." -> segments.removeLastOrNull()
+            else -> segments.addLast(segment)
+        }
+    }
+    return "/" + segments.joinToString("/")
 }
 
 /**
