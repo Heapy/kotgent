@@ -3,6 +3,7 @@ package io.kotgent.cli
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.ImportSessionRequest
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
@@ -32,6 +33,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -83,6 +85,54 @@ class CliTest {
     @Test
     fun startWithoutAnAgentIsInvalid() {
         assertTrue(parseArgs(listOf("start")) is CliCommand.Invalid)
+    }
+
+    @Test
+    fun parsesImportWithAgentIdAndFlags() {
+        assertEquals(
+            CliCommand.Import("claude", PROVIDER_ID, cwd = null, name = null, tags = emptyList(), noStart = false),
+            parseArgs(listOf("import", "claude", PROVIDER_ID)),
+        )
+        assertEquals(
+            CliCommand.Import("codex", PROVIDER_ID, "/tmp/p", "my-name", listOf("a", "b"), noStart = true),
+            parseArgs(
+                listOf(
+                    "import", "codex", PROVIDER_ID,
+                    "--cwd", "/tmp/p", "--name", "my-name", "--tag", "a", "--tag", "b", "--no-start",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun importMissingArgumentsOrUnknownFlagsAreInvalid() {
+        assertTrue(parseArgs(listOf("import")) is CliCommand.Invalid, "import needs an agent")
+        assertTrue(parseArgs(listOf("import", "claude")) is CliCommand.Invalid, "import needs the provider session id")
+        assertTrue(parseArgs(listOf("import", "claude", PROVIDER_ID, "--bogus")) is CliCommand.Invalid, "unknown flag")
+        assertTrue(parseArgs(listOf("import", "claude", PROVIDER_ID, "--cwd")) is CliCommand.Invalid, "--cwd needs a directory")
+    }
+
+    @Test
+    fun importResolvesAnExplicitCwdLikeStartButAnAbsentOneStaysAbsent() {
+        // `--cwd` goes through the same resolution rule as `runStart` (relative → anchored at the CLI's
+        // own cwd; absolute → untouched). The ONE deliberate difference: an absent `--cwd` stays null —
+        // the daemon then discovers the project directory from the provider's on-disk store, and
+        // defaulting it to the CLI's cwd would silently defeat that discovery.
+        val seen = mutableListOf<String?>()
+        assertEquals(0, runImportResolving(importCommand(cwd = null), "/base") { seen += it; 0 })
+        assertEquals(0, runImportResolving(importCommand(cwd = "sub"), "/base") { seen += it; 0 })
+        assertEquals(0, runImportResolving(importCommand(cwd = "/abs"), ".") { seen += it; 0 })
+        assertEquals(listOf(null, "/base/sub", "/abs"), seen)
+    }
+
+    @Test
+    fun importWithAnUnresolvableCwdExitsTwoWithoutRunningTheCommand() {
+        // Same contract as runStart: a relative --cwd with no absolute base must fail LOUDLY (exit 2)
+        // instead of sending the daemon (cwd `/` under launchd) a relative path it would mis-resolve.
+        var ran = false
+        val exit = runImportResolving(importCommand(cwd = "sub"), base = ".") { ran = true; 0 }
+        assertEquals(2, exit, "UnresolvableCwdException → usage exit code 2, like runStart")
+        assertFalse(ran, "the command must not run when the cwd cannot be resolved")
     }
 
     @Test
@@ -213,6 +263,29 @@ class CliTest {
         val decoded = TRANSPORT_JSON.decodeFromString(StartSessionRequest.serializer(), req.body)
         assertEquals("claude", decoded.agent, "agent is posted")
         assertEquals("/tmp/project", decoded.cwd, "cwd is posted")
+    }
+
+    @Test
+    fun importSessionPostsTheImportBodyAndSurfacesTheCreatedSession() = withStub { stub, api ->
+        val created = api.importSession("codex", PROVIDER_ID, cwd = "/tmp/p")
+        assertEquals("newsess1", created.id, "the registered session's id is surfaced")
+
+        val req = stub.requests.receive()
+        assertEquals("POST", req.method)
+        assertEquals("/sessions/import", req.path)
+        assertEquals("Bearer secret", req.auth, "import is Bearer-authenticated like every control call")
+        val decoded = TRANSPORT_JSON.decodeFromString(ImportSessionRequest.serializer(), req.body)
+        assertEquals("codex", decoded.agent, "agent is posted")
+        assertEquals(PROVIDER_ID, decoded.providerSessionId, "the provider session id is posted as a String")
+        assertEquals("/tmp/p", decoded.cwd, "an explicit cwd rides along")
+    }
+
+    @Test
+    fun importSessionOmittedCwdStaysAbsentForDaemonDiscovery() = withStub { stub, api ->
+        api.importSession("claude", PROVIDER_ID)
+        val req = stub.requests.receive()
+        val decoded = TRANSPORT_JSON.decodeFromString(ImportSessionRequest.serializer(), req.body)
+        assertNull(decoded.cwd, "no cwd in the body → the daemon's VendorSessionLocator discovers it")
     }
 
     @Test
@@ -362,6 +435,100 @@ class CliTest {
         assertTrue(stderr.single().contains("open exited 7"))
     }
 
+    // ---- 3b. the import command (pure seams, no daemon) -----------------------------------------
+
+    @Test
+    fun importCommandRegistersThenResumesByDefault() = runBlocking {
+        val stdout = mutableListOf<String>()
+        val resumedIds = mutableListOf<String>()
+        val exit = runImportCommand(
+            noStart = false,
+            importSession = { sampleDto("imp00001", "resumable", needsAttention = false) },
+            resume = { id -> resumedIds += id; sampleDto(id, "running", needsAttention = false) },
+            stdout = stdout::add,
+            stderr = { error("no stderr expected: $it") },
+        )
+        assertEquals(0, exit)
+        assertTrue(stdout.first().contains("imported imp00001"), "the created session id is printed: $stdout")
+        assertEquals(listOf("imp00001"), resumedIds, "the freshly imported session is resumed by default")
+        assertTrue(stdout.any { "running" in it }, "the post-resume state is reported: $stdout")
+    }
+
+    @Test
+    fun importCommandNoStartOnlyRegisters() = runBlocking {
+        val stdout = mutableListOf<String>()
+        val exit = runImportCommand(
+            noStart = true,
+            importSession = { sampleDto("imp00001", "resumable", needsAttention = false) },
+            resume = { error("resume must not be called under --no-start") },
+            stdout = stdout::add,
+            stderr = { error("no stderr expected: $it") },
+        )
+        assertEquals(0, exit)
+        assertTrue(stdout.first().contains("imp00001"), "the registered session id is printed: $stdout")
+        assertTrue(stdout.any { "kotgent resume imp00001" in it }, "how to start it later is printed: $stdout")
+    }
+
+    @Test
+    fun importCommandPrintsTheExistingIdAndAResumeHintOnConflict() = runBlocking {
+        val stderr = mutableListOf<String>()
+        val exit = runImportCommand(
+            noStart = false,
+            importSession = {
+                throw ApiException(
+                    409,
+                    "cannot import session: provider session already imported as kotgent session 'abc12345'",
+                )
+            },
+            resume = { error("must not resume on a conflict") },
+            stdout = { error("no stdout expected: $it") },
+            stderr = stderr::add,
+        )
+        assertEquals(1, exit)
+        assertTrue(stderr.any { "abc12345" in it }, "the existing session id is printed: $stderr")
+        assertTrue(stderr.any { "kotgent resume abc12345" in it }, "the hint names the exact resume command: $stderr")
+    }
+
+    @Test
+    fun importCommandPointsAnArchivedDuplicateAtRestore() = runBlocking {
+        val stderr = mutableListOf<String>()
+        val exit = runImportCommand(
+            noStart = false,
+            importSession = {
+                throw ApiException(
+                    409,
+                    "cannot import session: provider session already imported as kotgent session " +
+                        "'abc12345' (archived — Restore it instead of importing again)",
+                )
+            },
+            resume = { error("must not resume on a conflict") },
+            stdout = { error("no stdout expected: $it") },
+            stderr = stderr::add,
+        )
+        assertEquals(1, exit)
+        assertTrue(stderr.any { "abc12345" in it }, "the existing session id is printed: $stderr")
+        assertTrue(stderr.last().contains("Restore"), "the hint points at Restore: $stderr")
+        assertFalse(stderr.any { "kotgent resume" in it }, "an archived duplicate must not be pointed at a bare resume")
+    }
+
+    @Test
+    fun importCommandPrintsTheServerMessageOnBadRequest() = runBlocking {
+        val stderr = mutableListOf<String>()
+        var resumeCalled = false
+        val exit = runImportCommand(
+            noStart = false,
+            importSession = {
+                throw ApiException(400, "cannot import session: unknown agent kind 'gemini' (supported: claude, codex)")
+            },
+            resume = { resumeCalled = true; null },
+            stdout = { error("no stdout expected: $it") },
+            stderr = stderr::add,
+        )
+        assertEquals(1, exit)
+        assertTrue(stderr.single().contains("unknown agent kind 'gemini'"), "the server's message is surfaced: $stderr")
+        assertFalse(resumeCalled, "a failed import must not resume anything")
+    }
+
     // ---- 4. AttachClient smoke (no real tty, no socket) -----------------------------------------
 
     @Test
@@ -492,6 +659,15 @@ class CliTest {
                         HttpStatusCode.Created,
                     )
                 }
+                post("/sessions/import") {
+                    val body = call.receiveText()
+                    record("POST", body)
+                    call.respondText(
+                        TRANSPORT_JSON.encodeToString(SessionDto.serializer(), cannedStart),
+                        ContentType.Application.Json,
+                        HttpStatusCode.Created,
+                    )
+                }
                 post("/sessions/{id}/{action}") {
                     val body = call.receiveText()
                     record("POST", body)
@@ -556,6 +732,10 @@ class CliTest {
         updatedAt = 1,
     )
 
+    /** An [CliCommand.Import] with only the cwd varying — the resolution rule is what the tests probe. */
+    private fun importCommand(cwd: String?) =
+        CliCommand.Import("claude", PROVIDER_ID, cwd, name = null, tags = emptyList(), noStart = false)
+
     private fun webTicket() = TicketResponse(
         ticket = "A1B2C3D4",
         localUrl = "http://127.0.0.1:27508/auth#ticket=A1B2C3D4",
@@ -569,5 +749,10 @@ class CliTest {
         override fun enterRaw() { events.add("enter") }
         override fun restore() { events.add("restore") }
         override fun windowSize(): WinSize = size
+    }
+
+    private companion object {
+        /** A well-formed provider session id for the import tests (parsing never validates it). */
+        const val PROVIDER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     }
 }

@@ -2,6 +2,7 @@ package io.kotgent.cli
 
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.ImportSessionRequest
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
@@ -70,6 +71,33 @@ class ApiClient(
     ): SessionDto {
         val body = json.encodeToString(StartSessionRequest.serializer(), StartSessionRequest(agent, cwd, name, tags))
         val resp = client.post("$baseUrl/sessions") {
+            bearer()
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        ensureSuccess(resp)
+        return json.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+    }
+
+    /**
+     * `POST /sessions/import` — register a provider session started OUTSIDE kotgent as a `resumable`
+     * row (no launch, no tmux side effect); returns the created session. A null [cwd] lets the daemon
+     * discover the project directory from the provider's on-disk store. Import failures surface as
+     * [ApiException]: 409 = the provider id is already held by an existing kotgent session (the body
+     * names it), 400 = unknown agent / malformed id / cwd or transcript problems.
+     */
+    suspend fun importSession(
+        agent: String,
+        providerSessionId: String,
+        cwd: String? = null,
+        name: String? = null,
+        tags: List<String> = emptyList(),
+    ): SessionDto {
+        val body = json.encodeToString(
+            ImportSessionRequest.serializer(),
+            ImportSessionRequest(agent, providerSessionId, cwd, name, tags),
+        )
+        val resp = client.post("$baseUrl/sessions/import") {
             bearer()
             contentType(ContentType.Application.Json)
             setBody(body)

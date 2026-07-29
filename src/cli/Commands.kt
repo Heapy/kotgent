@@ -89,6 +89,28 @@ object Commands {
         0
     }
 
+    /**
+     * `import <agent> <session-id>` — register a session started outside kotgent
+     * (`POST /sessions/import`), then, unless [noStart], immediately resume it. Output, hints and the
+     * exit contract live in [runImportCommand]; this wires it to the real [ApiClient].
+     */
+    fun importSession(
+        agent: String,
+        providerSessionId: String,
+        cwd: String?,
+        name: String?,
+        tags: List<String>,
+        noStart: Boolean,
+    ): Int = withApi { api ->
+        runImportCommand(
+            noStart = noStart,
+            importSession = { api.importSession(agent, providerSessionId, cwd, name, tags) },
+            resume = api::resume,
+            stdout = ::println,
+            stderr = ::eprintln,
+        )
+    }
+
     fun stop(id: String): Int = withApi { api -> report("stopped", id, api.stop(id)) }
     fun resume(id: String): Int = withApi { api -> report("resumed", id, api.resume(id)) }
     fun interrupt(id: String): Int = withApi { api -> report("interrupted", id, api.interrupt(id)) }
@@ -683,6 +705,53 @@ suspend fun runWebCommand(
         stdout(formUrl)
     }
     stdout(renderSignInCode(ticket))
+    return 0
+}
+
+/**
+ * Execute the `import` handler through explicit seams (the [runWebCommand] pattern) so every branch is
+ * testable without a daemon. Success registers the session and — unless [noStart] — immediately resumes
+ * it via the ordinary resume endpoint, so a failed launch leaves the row honestly `resumable`; under
+ * [noStart] the follow-up command is printed instead. The two import-specific HTTP answers are handled
+ * here: a **409** duplicate prints the server's message (it names the existing kotgent session id) plus
+ * the concrete next move — `kotgent resume <id>`, or Restore when the duplicate is archived — and a
+ * **400** surfaces the server's message verbatim (unknown agent, malformed id, cwd/transcript problems
+ * are already distinguishable there). A failure of the follow-up resume propagates to [Commands]'
+ * generic `withApi` handler: the import itself succeeded, and the daemon's message (e.g. the
+ * `kotgent install` hint for a missing binary) already says what to fix.
+ */
+suspend fun runImportCommand(
+    noStart: Boolean,
+    importSession: suspend () -> SessionDto,
+    resume: suspend (String) -> SessionDto?,
+    stdout: (String) -> Unit,
+    stderr: (String) -> Unit,
+): Int {
+    val s = try {
+        importSession()
+    } catch (e: ApiException) {
+        stderr(e.body.trim().ifEmpty { e.message ?: "import failed" })
+        if (e.status == 409) {
+            // The duplicate body is our own route's text (DuplicateImportException.message behind the
+            // "cannot import session: " prefix), so the existing id is extractable for a concrete hint.
+            val existing = Regex("kotgent session '([^']+)'").find(e.body)?.groupValues?.get(1)
+            stderr(
+                if ("archived" in e.body) {
+                    "hint: that session is archived — Restore it in the Web UI instead of importing again"
+                } else {
+                    "hint: continue the existing session with `kotgent resume ${existing ?: "<id>"}`"
+                },
+            )
+        }
+        return 1
+    }
+    stdout("imported ${s.id}  (${s.agent})  ${s.state}  cwd=${s.cwd}")
+    if (noStart) {
+        stdout("registered only — start it later with `kotgent resume ${s.id}`")
+        return 0
+    }
+    val resumed = resume(s.id)
+    stdout(if (resumed != null) "resumed ${resumed.id} → ${resumed.state}" else "resumed ${s.id}")
     return 0
 }
 

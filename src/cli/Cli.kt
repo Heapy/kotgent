@@ -46,6 +46,21 @@ sealed interface CliCommand {
     /** `start <agent> [cwd] [--name N] [--tag T]...` — start a session ([cwd] null = current dir). */
     data class Start(val agent: String, val cwd: String?, val name: String?, val tags: List<String>) : CliCommand
 
+    /**
+     * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]` — register a provider
+     * session started OUTSIDE kotgent as a `resumable` row, then (unless [noStart]) resume it. Unlike
+     * [Start], a null [cwd] does NOT mean the current dir: it stays absent so the daemon discovers the
+     * project directory from the provider's on-disk store (see [runImportResolving]).
+     */
+    data class Import(
+        val agent: String,
+        val providerSessionId: String,
+        val cwd: String?,
+        val name: String?,
+        val tags: List<String>,
+        val noStart: Boolean,
+    ) : CliCommand
+
     /** `list` / `ls` — list sessions. */
     data object ListSessions : CliCommand
 
@@ -93,6 +108,8 @@ val USAGE: String = """
       daemon [--port N]              run the control-plane server (default port $DEFAULT_PORT)
       start <agent> [cwd]            start a session (agent: 'claude' | 'codex'; cwd defaults to .)
                  [--name N] [--tag T]
+      import <agent> <session-id>    register a session started outside kotgent, then resume it
+                 [--cwd D] [--name N] [--tag T] [--no-start]
       list | ls                      list sessions
       stop <id>                      stop a session
       resume <id>                    resume a stopped/crashed session
@@ -116,6 +133,7 @@ fun parseArgs(args: List<String>): CliCommand {
         "--help", "-h", "help" -> CliCommand.Help
         "daemon" -> CliCommand.Daemon(parsePortFlag(rest) ?: DEFAULT_PORT)
         "start" -> parseStart(rest)
+        "import" -> parseImport(rest)
         "list", "ls" -> CliCommand.ListSessions
         "stop" -> requireId("stop", rest) { CliCommand.Stop(it) }
         "resume" -> requireId("resume", rest) { CliCommand.Resume(it) }
@@ -194,6 +212,45 @@ private fun parseStart(rest: List<String>): CliCommand {
 }
 
 /**
+ * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]`. `--cwd` REQUIRES its
+ * value: silently treating a forgotten one as "discover the cwd" would contradict the operator's
+ * explicit intent to override discovery (the flag exists exactly for the cases discovery gets wrong).
+ */
+private fun parseImport(rest: List<String>): CliCommand {
+    val positionals = mutableListOf<String>()
+    val tags = mutableListOf<String>()
+    var cwd: String? = null
+    var name: String? = null
+    var noStart = false
+    var i = 0
+    while (i < rest.size) {
+        when (val a = rest[i]) {
+            "--cwd" -> {
+                cwd = rest.getOrNull(i + 1)
+                    ?: return CliCommand.Invalid("import: --cwd requires a directory")
+                i += 2
+            }
+            "--name" -> { name = rest.getOrNull(i + 1); i += 2 }
+            "--tag" -> { rest.getOrNull(i + 1)?.let { tags.add(it) }; i += 2 }
+            "--no-start" -> { noStart = true; i += 1 }
+            else -> {
+                if (a.startsWith("--")) return CliCommand.Invalid("import: unknown flag '$a'")
+                positionals.add(a); i += 1
+            }
+        }
+    }
+    val agent = positionals.getOrNull(0)
+    if (agent.isNullOrBlank()) {
+        return CliCommand.Invalid("import requires an agent: kotgent import <agent> <session-id>")
+    }
+    val id = positionals.getOrNull(1)
+    if (id.isNullOrBlank()) {
+        return CliCommand.Invalid("import requires a provider session id: kotgent import <agent> <session-id>")
+    }
+    return CliCommand.Import(agent, id, cwd, name, tags, noStart)
+}
+
+/**
  * Parse [args] and run the resulting command, returning the process exit code. This is the one place
  * that performs I/O (network calls, the daemon, the interactive attach); [parseArgs] stays pure.
  */
@@ -203,6 +260,9 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Invalid -> { eprintln(command.message); eprintln(""); eprintln(USAGE); 2 }
     is CliCommand.Daemon -> Commands.daemon(command.port)
     is CliCommand.Start -> runStart(command)
+    is CliCommand.Import -> runImportResolving(command, currentWorkingDir()) { cwd ->
+        Commands.importSession(command.agent, command.providerSessionId, cwd, command.name, command.tags, command.noStart)
+    }
     is CliCommand.ListSessions -> Commands.list()
     is CliCommand.Stop -> Commands.stop(command.id)
     is CliCommand.Resume -> Commands.resume(command.id)
@@ -224,6 +284,22 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
  */
 private fun runStart(command: CliCommand.Start): Int = try {
     Commands.start(command.agent, resolveCwdAgainst(currentWorkingDir(), command.cwd), command.name, command.tags)
+} catch (e: UnresolvableCwdException) {
+    eprintln(e.message ?: "cannot resolve the working directory")
+    2
+}
+
+/**
+ * `import` — resolve the optional `--cwd` exactly the way [runStart] resolves its cwd (a relative path is
+ * anchored at [base], the CLI's own working directory; an unresolvable one prints the error and exits 2 —
+ * the daemon lives under launchd with cwd `/`, so a relative path must never reach it), with ONE
+ * deliberate difference: an ABSENT `--cwd` stays absent, because the daemon then discovers the project
+ * directory from the provider's on-disk store — defaulting it to the CLI's cwd would silently defeat
+ * discovery. [importCommand] receives the resolved (or absent) cwd; it is a seam so this rule is
+ * unit-testable without a daemon (see `CliTest`).
+ */
+fun runImportResolving(command: CliCommand.Import, base: String, importCommand: (resolvedCwd: String?) -> Int): Int = try {
+    importCommand(command.cwd?.let { resolveCwdAgainst(base, it) })
 } catch (e: UnresolvableCwdException) {
     eprintln(e.message ?: "cannot resolve the working directory")
     2

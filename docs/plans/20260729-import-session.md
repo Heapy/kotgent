@@ -266,14 +266,14 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 - Modify: `src/cli/Commands.kt`
 - Modify: `test/cli/CliTest.kt` (+ тесты Commands там, где живут существующие)
 
-- [ ] TDD: parseArgs — `import <agent> <session-id>`, флаги `--cwd/--name/--tag/--no-start`,
+- [x] TDD: parseArgs — `import <agent> <session-id>`, флаги `--cwd/--name/--tag/--no-start`,
       ошибки на недостающие аргументы
-- [ ] TDD: `--cwd` резолвится через `resolveCwdAgainst(currentWorkingDir(), …)` как в `runStart`;
+- [x] TDD: `--cwd` резолвится через `resolveCwdAgainst(currentWorkingDir(), …)` как в `runStart`;
       нерезолвимый путь → `UnresolvableCwdException` → exit 2
-- [ ] TDD: Commands.import — успех печатает id и (по умолчанию) резюмит; `--no-start` только
+- [x] TDD: Commands.import — успех печатает id и (по умолчанию) резюмит; `--no-start` только
       регистрирует; 409 печатает existingId и подсказку; 400 печатает сообщение сервера
-- [ ] реализовать метод ApiClient (стандартный HttpTimeout) + команду + `USAGE` в `Cli.kt`
-- [ ] `./kotlin build && ./kotlin test` — зелёные
+- [x] реализовать метод ApiClient (стандартный HttpTimeout) + команду + `USAGE` в `Cli.kt`
+- [x] `./kotlin build && ./kotlin test` — зелёные (738 passed / 0 skipped)
 
 ### Task 5: Web UI — режим Import в пикере новой сессии
 
