@@ -555,6 +555,47 @@ function App() {
     showSession(created);   // from `created` directly: the ref has not caught up with setSessions yet
   }, [say, showSession]);
 
+  /**
+   * Import a conversation started outside kotgent (`POST /sessions/import`), then — unless the dialog's
+   * "register only" was ticked — resume it through the ordinary resume endpoint, exactly like the CLI's
+   * `kotgent import`. An import failure (400/409) propagates to the dialog, which shows the daemon's
+   * text in the form's own error line. A failed FOLLOW-UP resume is different: the registration itself
+   * succeeded, so the dialog is already closed and the session is shown honestly resumable with the
+   * resume error in the status line — retrying the import would only 409.
+   */
+  const importSession = useCallback(async (body, registerOnly) => {
+    const created = await apiRequest("/sessions/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    // The import's SessionBound append can already have pushed this row here through /events (an unknown
+    // id triggers a full list reload), so merge instead of blindly concatenating — two rows for one id
+    // would break the keyed sidebar.
+    setSessions((prev) => (prev.some((s) => s.id === created.id)
+      ? prev.map((s) => (s.id === created.id ? created : s))
+      : prev.concat([created])));
+    setDialog(null);
+    if (registerOnly) {
+      say("Imported " + displayName(created) + " — registered only.");
+      showSession(created);   // resumable → the dead hint explains the next step
+      return;
+    }
+    try {
+      const resumed = await apiRequest(
+        "/sessions/" + encodeURIComponent(created.id) + "/resume",
+        { method: "POST" },
+      );
+      const row = resumed && resumed.id ? resumed : created;
+      setSessions((prev) => prev.map((s) => (s.id === row.id ? row : s)));
+      say("Imported and resumed " + displayName(row) + ".");
+      showSession(row);       // alive now → attaches the terminal
+    } catch (e) {
+      // The daemon's message (e.g. the `kotgent install` hint for a missing binary) says what to fix.
+      showSession(created);
+      say("Imported, but resume failed: " + errorMessage(e), true);
+    }
+  }, [say, showSession]);
+
   const controlSession = useCallback(async (action, id) => {
     // Acts on an explicit session [id] when given (e.g. Restore from a sidebar row), else the active one.
     const s = sessionsRef.current.find((x) => x.id === (id || activeRef.current));
@@ -704,7 +745,7 @@ function App() {
     />
     ${dialog && dialog.kind === "new" && html`
       <${NewSessionDialog} initialCwd=${dialog.cwd} basePath=${prefs.basePath}
-                           onStart=${startSession} onClose=${closeDialog} />`}
+                           onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "prefs" && html`
       <${PreferencesDialog} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}

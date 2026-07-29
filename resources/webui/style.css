@@ -604,6 +604,55 @@ dialog::backdrop {
   padding: 7px 10px;
   width: 100%;
 }
+/* The New session dialog's two modes (start new / import existing): a segmented pair of toggle
+   buttons whose state rides `aria-pressed`, styled to match the selected agent card. */
+.dialog-mode {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 16px;
+  padding: 4px;
+}
+.dialog-mode button {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  min-height: 30px;
+  padding: 5px 10px;
+}
+.dialog-mode button:hover { color: var(--text); }
+.dialog-mode button[aria-pressed="true"] {
+  background: var(--row-active);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text);
+}
+.dialog-mode button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* A checkbox row in a dialog form. `.field input` above sizes text inputs full-width at 38px, which
+   would blow a checkbox up with it — hence the more specific reset; the span reset relies on source
+   order against `.field > span`. */
+.checkbox-field {
+  align-items: flex-start;
+  display: flex;
+  gap: 9px;
+}
+.checkbox-field input[type="checkbox"] {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  min-height: 0;
+  width: auto;
+}
+.checkbox-field > span { margin-bottom: 0; }
 /* `margin-inline` is the UA's own 2px on every fieldset. Left in place it insets the whole picker
    relative to the full-width fields under it, so the cards no longer line up with the path input. */
 .agent-picker {

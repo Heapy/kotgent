@@ -41,7 +41,16 @@ function Dialog({ id, labelledBy, onClose, children }) {
 
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
-export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
+/**
+ * One form, two modes. "Start new" launches an agent (`onStart`); "Import existing" registers a
+ * conversation started OUTSIDE kotgent by its provider session id (`onImport(body, registerOnly)` →
+ * `POST /sessions/import`). Import needs no working directory — the daemon discovers it from the
+ * provider's own transcript — so the cwd field is `required` only in start mode. Import errors
+ * (400/409) are shown verbatim in the form's error line: the daemon's text already names the fix
+ * (a duplicate names the existing kotgent session, a claude cwd mismatch names the workaround).
+ */
+export function NewSessionDialog({ initialCwd, basePath, onStart, onImport, onClose }) {
+  const [mode, setMode] = useState("start");
   const [agent, setAgent] = useState("");
   const [cwd, setCwd] = useState(initialCwd || "");
   const [completionQuery, setCompletionQuery] = useState(null);
@@ -50,10 +59,13 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
   const [cwdFocused, setCwdFocused] = useState(false);
   const [name, setName] = useState("");
   const [tags, setTags] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [registerOnly, setRegisterOnly] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const cwdRef = useRef(null);
   const agentRef = useRef(null);
+  const sessionIdRef = useRef(null);
 
   // There is deliberately no default agent, so the picker — not the prefilled path — is the first
   // answer this dialog needs, and it is where the initial focus belongs. Seeding `agent` from a
@@ -135,6 +147,11 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
     setError(null);
   };
 
+  const switchMode = (next) => {
+    setMode(next);
+    setError(null);
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     if (!agent) {
@@ -142,8 +159,16 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
       // click and Enter with no feedback at all, and native `required` would anchor its bubble on a
       // radio that is `opacity: 0` — so the missing choice is reported through the dialog's own
       // `role="alert"` line, and focus goes back to the picker.
-      setError("Pick an agent to start a session.");
+      setError(mode === "import"
+        ? "Pick the agent that owns the session you are importing."
+        : "Pick an agent to start a session.");
       if (agentRef.current) agentRef.current.focus();
+      return;
+    }
+    if (mode === "import" && !sessionId.trim()) {
+      // Native `required` catches an empty field but not a whitespace-only one.
+      setError("Enter the provider session id to import.");
+      if (sessionIdRef.current) sessionIdRef.current.focus();
       return;
     }
     const tagList = tags
@@ -154,9 +179,21 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
     setBusy(true);
     setError(null);
     try {
-      await onStart({ agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList });
+      if (mode === "import") {
+        await onImport({
+          agent: agent,
+          providerSessionId: sessionId.trim(),
+          cwd: cwd.trim() || null,
+          name: name.trim() || null,
+          tags: tagList,
+        }, registerOnly);
+      } else {
+        await onStart({ agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList });
+      }
     } catch (e) {
-      setError("Could not start session: " + errorMessage(e));
+      // The import route's own 400/409 text is already user-facing ("cannot import session: …" plus
+      // the fix), so it is shown verbatim; the start path keeps its established prefix.
+      setError(mode === "import" ? errorMessage(e) : "Could not start session: " + errorMessage(e));
       setBusy(false);
     }
   };
@@ -167,10 +204,21 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
         <div class="dialog-head">
           <div>
             <h2 id="new-session-title">New session</h2>
-            <p>Start a coding agent in a tmux-backed workspace.</p>
+            <p>${mode === "import"
+              ? "Register a conversation started outside kotgent and continue it here."
+              : "Start a coding agent in a tmux-backed workspace."}</p>
           </div>
           <button id="new-session-close" class="icon-button" type="button"
                   aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+
+        <div class="dialog-mode" role="group" aria-label="New session mode">
+          <button id="new-session-mode-start" type="button" disabled=${busy}
+                  aria-pressed=${mode === "start" ? "true" : "false"}
+                  onClick=${() => switchMode("start")}>Start new</button>
+          <button id="new-session-mode-import" type="button" disabled=${busy}
+                  aria-pressed=${mode === "import" ? "true" : "false"}
+                  onClick=${() => switchMode("import")}>Import existing</button>
         </div>
 
         <fieldset class="field agent-picker"
@@ -197,21 +245,41 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
             `)}
           </div>
           ${!agent && html`
-            <p id="new-session-agent-hint" class="field-hint">Pick one to start a session.</p>
+            <p id="new-session-agent-hint" class="field-hint">
+              ${mode === "import" ? "Pick the agent that owns the session." : "Pick one to start a session."}
+            </p>
           `}
         </fieldset>
 
+        ${mode === "import" && html`
+          <label class="field">
+            <span>Provider session id</span>
+            <input id="session-provider-id" type="text" required spellcheck="false" autocomplete="off"
+                   placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" ref=${sessionIdRef}
+                   value=${sessionId} onInput=${(e) => setSessionId(e.target.value)} />
+            <small class="field-hint">
+              claude: the ${"<id>"}.jsonl transcript name under ~/.claude/projects — codex: the id in
+              the ${"rollout-<ts>-<id>"}.jsonl file name.
+            </small>
+          </label>
+        `}
+
         <div class="field">
-          <label for="session-cwd">Working directory</label>
+          <label for="session-cwd">
+            Working directory${mode === "import" ? html` <small>optional</small>` : ""}
+          </label>
           <div class="path-autocomplete">
-            <input id="session-cwd" type="text" required spellcheck="false" autocomplete="off"
+            <input id="session-cwd" type="text" required=${mode === "start"} spellcheck="false"
+                   autocomplete="off"
                    role="combobox" aria-autocomplete="list"
                    aria-expanded=${cwdFocused && suggestions.length > 0 ? "true" : "false"}
                    aria-controls="session-cwd-options"
                    aria-activedescendant=${activeSuggestion >= 0
                      ? "session-cwd-option-" + activeSuggestion
                      : null}
-                   placeholder="/path/to/project" ref=${cwdRef}
+                   placeholder=${mode === "import"
+                     ? "found from the transcript when omitted"
+                     : "/path/to/project"} ref=${cwdRef}
                    value=${cwd} onInput=${cwdInput} onKeyDown=${cwdKeyDown}
                    onFocus=${() => setCwdFocused(true)} onBlur=${() => setCwdFocused(false)} />
             ${cwdFocused && suggestions.length > 0 && html`
@@ -242,13 +310,29 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onClose }) {
                  value=${tags} onInput=${(e) => setTags(e.target.value)} />
         </label>
 
+        ${mode === "import" && html`
+          <label class="field checkbox-field">
+            <input id="session-register-only" type="checkbox" checked=${registerOnly}
+                   onChange=${(e) => setRegisterOnly(e.target.checked)} />
+            <span>
+              Register only
+              <small class="field-hint">
+                Skip the automatic resume and leave the session resumable — e.g. while the conversation
+                is still open in the terminal it was started in.
+              </small>
+            </span>
+          </label>
+        `}
+
         ${error && html`<p id="new-session-error" class="form-error" role="alert">${error}</p>`}
 
         <div class="dialog-actions">
           <button id="new-session-cancel" class="button button-quiet" type="button"
                   onClick=${onClose}>Cancel</button>
           <button id="new-session-submit" class="button button-primary" type="submit" disabled=${busy}>
-            ${busy ? "Starting…" : "Start session"}
+            ${mode === "import"
+              ? (busy ? "Importing…" : "Import session")
+              : (busy ? "Starting…" : "Start session")}
           </button>
         </div>
       </form>
@@ -524,6 +608,7 @@ function phoneSetup(onClose) {
 
 const CLI_HELP = `kotgent list                  list sessions
 kotgent start <agent> [cwd]   start a session (claude | codex)
+kotgent import <agent> <id>   register a session started outside kotgent, then resume it
 kotgent attach <id>           attach a raw terminal
 kotgent interrupt <id>        send Ctrl-C
 kotgent stop <id>             stop a session
@@ -548,6 +633,10 @@ const CONTROLS = [
   ["New session",
     "Starts an agent in the directory you give it. With a base path set in Preferences, each group's " +
     "+ starts one in that group's directory instead."],
+  ["Import",
+    "The New session dialog's second mode: registers a conversation started outside kotgent by its " +
+    "provider session id. Registration alone touches nothing — the session arrives resumable — and " +
+    "unless you tick “register only”, it is resumed for you right away."],
   ["Attach",
     "Connects this browser to the session's terminal. It starts nothing — it only opens a view on an " +
     "agent that is already running."],

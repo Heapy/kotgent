@@ -279,18 +279,23 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 
 **Files:**
 - Modify: `resources/webui/components/dialogs.js` (диалог + `CLI_HELP`/Controls — новая команда)
-- Modify: `resources/webui/lib/api.js`
-- Modify: `resources/webui/app.js` (склейка import → resume → выбор сессии, если нужна)
+- Modify: `resources/webui/app.js` (склейка import → resume → выбор сессии)
+- Modify: `resources/webui/style.css` (сегмент-переключатель режима + checkbox-строка; `.field input`
+  иначе раздувает чекбокс) — по факту вместо `lib/api.js`, которому правки не понадобились
+- Modify: `test/transport/WebUiServingTest.kt` (обновлён закреплённый текст + новый import-контракт)
 
-- [ ] режим «Import» в диалоге: выбор агента (существующие метки из `lib/agents.js`), поле
+- [x] режим «Import» в диалоге: выбор агента (существующие метки из `lib/agents.js`), поле
       session id, опциональный cwd, чекбокс «только зарегистрировать»
-- [ ] сабмит: `POST /sessions/import` → (если не «только зарегистрировать») `POST /sessions/{id}/resume`
+- [x] сабмит: `POST /sessions/import` → (если не «только зарегистрировать») `POST /sessions/{id}/resume`
       → выбор сессии и открытие терминала; ошибки 400/409 текстом из ответа в обычном месте
       ошибок формы
-- [ ] обновить `CLI_HELP` в `dialogs.js` — команда `kotgent import`
-- [ ] `node --check` на каждый изменённый модуль
-- [ ] если появился новый JS-файл — регистрация в `test/transport/WebUiServingTest.kt`
-- [ ] `./kotlin build && ./kotlin test` — зелёные (serving-контракты)
+- [x] обновить `CLI_HELP` в `dialogs.js` — команда `kotgent import` (+ пункт Import в Controls)
+- [x] `node --check` на каждый изменённый модуль (dialogs.js, app.js; api.js не потребовал правок —
+      `apiRequest` уже универсален)
+- [x] если появился новый JS-файл — регистрация в `test/transport/WebUiServingTest.kt` (нового файла
+      нет; вместо этого обновлён закреплённый текст ошибки выбора агента и добавлен
+      serving-контракт `webUiOffersImportingASessionStartedOutsideKotgent`)
+- [x] `./kotlin build && ./kotlin test` — зелёные (739 passed / 0 skipped)
 
 ### Task 6: Verify acceptance criteria
 

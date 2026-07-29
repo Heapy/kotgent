@@ -428,8 +428,9 @@ class WebUiServingTest {
         // Submitting without a choice reports it and hands focus back, rather than doing nothing.
         assertTrue(dialogs.contains("if (!agent) {"), "submit refuses a missing agent explicitly")
         assertTrue(
-            dialogs.contains("setError(\"Pick an agent to start a session.\");"),
-            "the refusal carries a reason",
+            dialogs.contains("\"Pick an agent to start a session.\"") &&
+                dialogs.contains("\"Pick the agent that owns the session you are importing.\""),
+            "the refusal carries a reason in both dialog modes",
         )
         assertTrue(
             dialogs.contains("if (agentRef.current) agentRef.current.focus();"),
@@ -449,6 +450,39 @@ class WebUiServingTest {
             picker.contains("<p id=\"new-session-agent-hint\" class=\"field-hint\">"),
             "the hint is rendered inside the group it describes",
         )
+    }
+
+    @Test
+    fun webUiOffersImportingASessionStartedOutsideKotgent() = withServer { ctx ->
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        // The New session dialog's second mode registers a conversation started outside kotgent.
+        assertTrue(dialogs.contains("id=\"new-session-mode-import\""), "the dialog has an Import mode")
+        assertTrue(
+            dialogs.contains("id=\"session-provider-id\""),
+            "import mode asks for the provider session id",
+        )
+        assertTrue(
+            dialogs.contains("providerSessionId: sessionId.trim(),"),
+            "the id travels under the import route's field name",
+        )
+        // The daemon discovers the cwd from the provider's transcript, so only start mode requires one.
+        assertTrue(
+            dialogs.contains("required=\${mode === \"start\"}"),
+            "the working directory is optional when importing",
+        )
+        assertTrue(
+            dialogs.contains("id=\"session-register-only\""),
+            "importing can skip the automatic resume (the --no-start analogue)",
+        )
+        assertTrue(dialogs.contains("kotgent import <agent> <id>"), "the CLI help names the import command")
+
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(app.contains("apiRequest(\"/sessions/import\""), "the import posts to POST /sessions/import")
+        assertTrue(
+            app.contains("\"/sessions/\" + encodeURIComponent(created.id) + \"/resume\""),
+            "a successful import continues through the ordinary resume endpoint",
+        )
+        assertTrue(app.contains("if (registerOnly) {"), "register-only stops before the resume")
     }
 
     @Test
