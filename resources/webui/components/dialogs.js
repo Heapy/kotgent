@@ -201,7 +201,10 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onImport, onCl
       }
     } catch (e) {
       // The import route's own 400/409 text is already user-facing ("cannot import session: …" plus
-      // the fix), so it is shown verbatim; the start path keeps its established prefix.
+      // the fix), so it is shown verbatim; the start path keeps its established prefix. Reached only
+      // while THIS form is still the mounted one: app.js rethrows a completion's failure into the
+      // form only when the submitted dialog is still current, and routes it to the status line
+      // otherwise — a setError after unmount would be a silent no-op and the error would vanish.
       setError(mode === "import" ? errorMessage(e) : "Could not start session: " + errorMessage(e));
       setBusy(false);
     }

@@ -146,13 +146,16 @@ class ImportWiringTest {
     }
 
     @Test
-    fun aRecordedCwdThatReEncodesElsewhereFailsTheImportLoudly() = runBlocking {
+    fun aSymlinkedRecordedCwdIsCanonicalizedIntoTheTranscriptKeyAndTheImportSucceeds() = runBlocking {
         withTimeout(20_000) {
-            // The real-world /tmp-vs-/private/tmp shape: Claude wrote the transcript under the project
-            // dir encoded from /private/tmp, but RECORDED cwd "/tmp" inside it. The real locator finds
-            // the file and answers "/tmp"; the real probe re-encodes "/tmp" to a DIFFERENT project dir
-            // where no transcript exists. Import must fail loudly with the --cwd hint — the same probe
-            // would flunk it on every daemon start, silently degrading resumable → crashed.
+            // The real-world /tmp-vs-/private/tmp shape, driven through the REAL /tmp symlink: Claude
+            // wrote the transcript under the project dir encoded from /private/tmp (its process getcwd —
+            // the realpath form), while the recorded/typed spelling says "/tmp". The daemon canonicalizes
+            // with realpath(3) BEFORE probing, so both spellings converge on the transcript's key and the
+            // import lands with the canonical cwd in the row — with the canonicalization deleted, the
+            // probe re-encodes "/tmp" to a project dir with no transcript and this import fails loudly.
+            // (A cwd that still misses AFTER canonicalization keeps that loud TranscriptNotFoundException
+            // — SessionImportTest pins the ladder.)
             val base = makeBase()
             val claudeDir = makeDir("$base/.claude")
             val id = uuid('c')
@@ -162,11 +165,13 @@ class ImportWiringTest {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store, FakeTmux(), probe, locator)
 
-            val ex = assertFailsWith<TranscriptNotFoundException> { mgr.importSession(CLAUDE_AGENT_KIND, id) }
+            val meta = mgr.importSession(CLAUDE_AGENT_KIND, id) // discovery answers "/tmp"
 
-            assertEquals("/tmp", ex.cwd, "the error names the cwd discovery settled on")
-            assertTrue(ex.message!!.contains("--cwd"), "…with the --cwd workaround: ${ex.message}")
-            assertTrue(store.listSessions().isEmpty(), "no row was created")
+            assertEquals("/private/tmp", meta.cwd, "the row stores the canonical spelling, not the symlinked one")
+            assertEquals(SessionState.resumable, meta.state)
+            // The Reconciler's restart re-probe asks the same canonical triple, so the row survives it.
+            Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            assertEquals(SessionState.resumable, store.getSession(SessionId("wire0001"))!!.state)
         }
     }
 
@@ -204,7 +209,12 @@ class ImportWiringTest {
 
     private fun makeBase(): String {
         val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
-        return makeDir("$tmp/kotgent-import-wiring-${getpid()}-${counter++}")
+        val made = makeDir("$tmp/kotgent-import-wiring-${getpid()}-${counter++}")
+        // The fixtures must be laid out from the CANONICAL spelling ($TMPDIR sits behind the
+        // /var → /private/var symlink): real providers record their process getcwd — the realpath form —
+        // and importSession canonicalizes the same way before probing, so a fixture built from the
+        // symlinked spelling would place transcripts under a key production never asks.
+        return canonicalPath(made) ?: made
     }
 
     private fun makeDir(path: String): String {

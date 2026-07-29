@@ -4,6 +4,7 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.claude.ClaudeHookNormalizer
 import io.kotgent.adapter.codex.CodexHookConfig
 import io.kotgent.adapter.codex.CodexHookNormalizer
+import io.kotgent.cli.eprintln
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -14,7 +15,9 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -101,6 +104,13 @@ fun Route.codexHookRoutes(
     json: Json = HOOK_JSON,
     /** See [claudeHookRoutes]. */
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
+    /**
+     * Fired when a hook-delivered `SessionBound` DISPLACED a different, already-persisted provider id —
+     * see the parameter on [hookRoutes]. Surfaced here and not on [claudeHookRoutes] because only Codex
+     * has a fallback id source that can be wrong (the cwd+mtime rollout scan can provisionally bind a
+     * same-cwd NEIGHBOUR's id); Claude preallocates, so its hook id can never displace a different one.
+     */
+    onProviderIdRebound: suspend (SessionId) -> Unit = {},
 ) = hookRoutes(
     path = CodexHookConfig.INGRESS_PATH,
     tokenHeader = CodexHookConfig.HOOK_TOKEN_HEADER,
@@ -112,6 +122,7 @@ fun Route.codexHookRoutes(
     store = store,
     json = json,
     paneLookupGraceMillis = paneLookupGraceMillis,
+    onProviderIdRebound = onProviderIdRebound,
 )
 
 /**
@@ -142,6 +153,23 @@ private fun Route.hookRoutes(
      * leaves it a no-op. It must never fail the hook.
      */
     onHookPayload: suspend (SessionId, JsonElement) -> Unit = { _, _ -> },
+    /**
+     * Fired AFTER a hook `SessionBound` was appended, iff it DISPLACED a different, already-persisted
+     * provider id (a FIRST bind — null → id — does not fire it). The hook is authoritative for the
+     * session it fires in, and the reducer records its id unconditionally ("the hook wins over the
+     * scan") — but anything captured under the displaced id (the model) is suspect from that moment,
+     * so the daemon wires this to `SessionManager.onProviderIdRebound`, which clears the model and
+     * re-runs the id-keyed capture. The prior id is read from the session ROW — the same authority the
+     * model capture keys off — immediately before the append. Once a displacement is detected, the
+     * append and this callback run as ONE non-cancellable unit, and a callback failure is logged
+     * without failing the hook: after the append commits the new id, a same-id retry of the hook reads
+     * no displacement, so a correction lost to a dropped connection (handler cancellation) or a thrown
+     * callback would never fire again. Accepted residual: the pre-append read and the append are two
+     * adjacent single-writer store calls, so a scan bind PLUS a completed model capture squeezing
+     * between them would evade detection — vanishingly unlikely against the capture poll's
+     * seconds-scale cadence. Default no-op.
+     */
+    onProviderIdRebound: suspend (SessionId) -> Unit = {},
 ) = loopbackOnly {
     post(path) {
         // 1. Authenticate the shared hook token before anything else (constant-time — see Auth).
@@ -197,7 +225,30 @@ private fun Route.hookRoutes(
 
         val normalized = normalize(event, payload, paneId)
         if (normalized != null) {
-            store.append(sessionId, normalized, EventSource.hook)
+            // Snapshot the ROW's provider id before a SessionBound append so a genuine displacement
+            // (hook id != a previously scan-bound id) can trigger the model correction below.
+            val priorProviderId =
+                if (normalized is AgentEvent.SessionBound) store.getSession(sessionId)?.providerSessionId
+                else null
+            val displacing = normalized is AgentEvent.SessionBound &&
+                priorProviderId != null &&
+                priorProviderId != normalized.providerSessionId
+            if (displacing) {
+                // The append and the rebind correction run as ONE non-cancellable unit: this handler
+                // dies with its connection (a hook curl can drop mid-request), and once the append has
+                // committed the new id a SAME-id retry of the hook reads no displacement — so a
+                // correction lost between the two would leave the suspect model permanently. The
+                // callback is two cheap store calls plus a background-job kick; its failure is logged
+                // and never fails the hook, for the same never-refires reason.
+                withContext(NonCancellable) {
+                    store.append(sessionId, normalized, EventSource.hook)
+                    runCatching { onProviderIdRebound(sessionId) }.onFailure { failure ->
+                        eprintln("provider-id rebind correction failed for '${sessionId.value}': $failure")
+                    }
+                }
+            } else {
+                store.append(sessionId, normalized, EventSource.hook)
+            }
             call.respondText("ok", status = HttpStatusCode.OK)
         } else {
             // A wired-but-unmapped hook (or a SessionStart with no usable id): accepted, nothing stored.

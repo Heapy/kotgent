@@ -202,11 +202,27 @@ class SqliteEventStore private constructor(
         emitFromRow(sessionId)
     }
 
-    override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long): Unit = mutex.withLock {
+    override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long): Unit = mutex.withLock {
         sessions.setModel(model, updatedAt, sessionId.value)
         // The model itself rides the periodic /events resync (SessionMeta.toUpdateDto); this signal just
         // keeps state/unread fresh (it carries archived, not model).
         emitFromRow(sessionId)
+    }
+
+    override suspend fun setModelForProvider(
+        sessionId: SessionId,
+        providerSessionId: ProviderSessionId,
+        model: String,
+        updatedAt: Long,
+    ): Boolean = mutex.withLock {
+        // The WHERE carries the provider-id check, so check-and-write is one atomic statement; the
+        // read-back below only decides the return value / whether to emit, and cannot go stale because
+        // every writer holds this same mutex.
+        sessions.setModelForProvider(model, updatedAt, sessionId.value, providerSessionId.value)
+        val applied = sessions.get(sessionId.value).executeAsOneOrNull()
+            ?.provider_session_id == providerSessionId.value
+        if (applied) emitFromRow(sessionId)
+        applied
     }
 
     override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {

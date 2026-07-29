@@ -19,7 +19,7 @@ import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
-import io.kotgent.daemon.daemonEpochMillis
+import io.kotgent.daemon.captureCodexModelOnce
 import io.kotgent.daemon.productionSessionLocator
 import io.kotgent.daemon.productionVendorStoreProbe
 import io.kotgent.daemon.requireAbsoluteBinary
@@ -406,22 +406,22 @@ object Commands {
                 if (meta.agent == CODEX_AGENT_KIND) rolloutScan.discoverSessionId(meta.cwd, meta.createdAt) else null
             },
             // Codex records its model in the rollout's turn_context — written only once the session takes
-            // its first turn — so poll a few times after launch and persist the first hit. Claude captures
-            // its model via the hook path instead, so this is scoped to codex.
+            // its first turn — so poll a few times after launch and persist the first ID-KEYED hit.
+            // Claude captures its model via the hook path instead, so this is scoped to codex.
             captureModelInBackground = { meta ->
                 if (meta.agent == CODEX_AGENT_KIND) {
                     bgScope.launch {
                         repeat(MODEL_CAPTURE_ATTEMPTS) {
-                            // One lookup per attempt: id-keyed when the provider id is known (the
-                            // resume path), the cwd+mtime heuristic only for an id-less fresh launch —
-                            // and deliberately never the heuristic as a FALLBACK for a temporary
-                            // id-keyed miss, which would persist a neighbour rollout's model (see
-                            // CodexRolloutScan.modelForCapture).
-                            val model = rolloutScan.modelForCapture(meta.providerSessionId, meta.cwd, meta.createdAt)
-                            if (model != null) {
-                                store.setModel(meta.id, model, daemonEpochMillis())
-                                return@launch
-                            }
+                            // One ID-KEYED lookup per attempt, with the provider id re-read from the
+                            // ROW each time (captureCodexModelOnce): a fresh launch's background id
+                            // capture can land mid-poll, and only from that moment can any attempt
+                            // answer. While the id is unknown nothing is persisted at all — there is
+                            // deliberately no cwd+mtime heuristic (see captureCodexModelOnce's KDoc:
+                            // a FIRST SessionStart bind — null → id — can land even after the poll
+                            // ends and triggers no model correction, so an id-less guess could stick
+                            // forever). A bind that DISPLACES a scan-bound id is different: the hook
+                            // ingress' rebind seam clears the model and re-runs this very lambda.
+                            if (captureCodexModelOnce(store, rolloutScan, meta)) return@launch
                             delay(MODEL_CAPTURE_INTERVAL_MILLIS)
                         }
                     }

@@ -30,6 +30,8 @@ import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -462,6 +464,45 @@ class EventStoreTest {
             // SQLITE_ERROR stack trace on every daemon start.
             val reopened = SqliteEventStore.using(driver, now = { 3L })
             assertTrue(reopened.getSession(sid)!!.archived, "a second open over the migrated DB still reads")
+        }
+    }
+
+    // ---- model (the conditional capture write) ----
+
+    @Test
+    fun setModelForProviderWritesOnlyWhileTheRowStillHoldsThatId() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("model01")
+            val scanned = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            val hook = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+
+            // No row yet — nothing to write, and the caller is told so.
+            assertFalse(store.setModelForProvider(sid, scanned, "gpt-6", 2L), "no row: nothing written")
+
+            // A never-bound row (provider id NULL) can never satisfy the condition.
+            store.upsertSession(meta(sid))
+            assertFalse(store.setModelForProvider(sid, scanned, "gpt-6", 2L), "a NULL provider id never matches")
+            assertNull(store.getSession(sid)!!.model)
+
+            // While the row holds the id the lookup was keyed by, the write applies.
+            store.append(sid, AgentEvent.SessionBound(scanned), EventSource.system)
+            assertTrue(store.setModelForProvider(sid, scanned, "gpt-6", 3L), "the held id matches: written")
+            assertEquals("gpt-6", store.getSession(sid)!!.model)
+
+            // The mislabeling race: a hook rebind displaces the id and clears the model. A capture that
+            // still holds the DISPLACED id must write ZERO rows — never race past that clear.
+            store.append(sid, AgentEvent.SessionBound(hook), EventSource.hook)
+            store.setModel(sid, null, 4L)
+            assertFalse(
+                store.setModelForProvider(sid, scanned, "gpt-6", 5L),
+                "a write conditioned on the displaced id is refused",
+            )
+            assertNull(store.getSession(sid)!!.model, "the rebind's clear survives the raced capture")
+
+            // Keyed by the now-authoritative id, the re-run capture writes normally.
+            assertTrue(store.setModelForProvider(sid, hook, "gpt-5.5", 6L))
+            assertEquals("gpt-5.5", store.getSession(sid)!!.model)
         }
     }
 

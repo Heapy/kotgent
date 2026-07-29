@@ -18,10 +18,11 @@ import io.kotgent.core.ProviderSessionId
  *  - **Codex** names a rollout by id alone and records `cwd` in its first (`session_meta`) line —
  *    [CodexRolloutScan.cwdOf]. Archived rollouts do not answer (out of `codex resume`'s reach).
  *
- * A located cwd is a CANDIDATE, not a verdict: import re-probes `(agent, cwd, id)` with the same
- * [VendorStoreProbe] the Reconciler will use, so a recorded cwd that re-encodes into a different
- * project dir (e.g. `/tmp` vs `/private/tmp`) fails the import loudly instead of silently degrading
- * `resumable → crashed` on the next daemon restart.
+ * A located cwd is a CANDIDATE, not a verdict: import canonicalizes it ([canonicalPath] — a spelling
+ * divergence like `/tmp` vs `/private/tmp` is healed there) and then re-probes `(agent, cwd, id)` with
+ * the same [VendorStoreProbe] the Reconciler will use, so a recorded cwd that STILL re-encodes into a
+ * different project dir (a genuinely different directory) fails the import loudly instead of silently
+ * degrading `resumable → crashed` on the next daemon restart.
  */
 
 /**

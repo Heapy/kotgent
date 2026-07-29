@@ -291,6 +291,39 @@ class SessionManagerTest {
         }
     }
 
+    @Test
+    fun aProviderIdRebindClearsTheSuspectModelAndRetriggersTheCapture() = runBlocking {
+        withTimeout(20_000) {
+            // The rebind scenario: the fallback rollout scan bound a same-cwd NEIGHBOUR's id, the model
+            // capture persisted that neighbour's model under it (and stopped polling), then the hook's
+            // authoritative SessionBound displaced the id. The ingress calls onProviderIdRebound, which
+            // must (1) clear the now-suspect model and (2) re-run the capture with the row meta, whose
+            // per-attempt row re-read keys every lookup off the NEW id.
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val captured = CompletableDeferred<SessionMeta>()
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
+                captureModelInBackground = { m -> captured.complete(m) },
+                now = { 9L },
+            )
+            val hookId = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            store.upsertSession(
+                meta("rbnd01", SessionState.running, providerId = hookId)
+                    .copy(agent = "codex", model = "gpt-6"), // the neighbour's model, id already displaced
+            )
+
+            mgr.onProviderIdRebound(SessionId("rbnd01"))
+
+            assertNull(store.getSession(SessionId("rbnd01"))!!.model, "the displaced id's model is cleared")
+            val m = captured.await()
+            assertEquals(SessionId("rbnd01"), m.id, "the capture was re-triggered for the session")
+            assertEquals(hookId, m.providerSessionId, "…with the row meta carrying the hook's own id")
+        }
+    }
+
     // ---- provider-id capture: preallocated -> SessionBound in the log immediately ----
 
     @Test

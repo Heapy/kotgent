@@ -223,9 +223,9 @@ class CliTest {
         assertEquals("/", resolveCwdAgainst("/", "./"), "root base, './' — the regression: this returned \"\"")
         assertEquals("/sub", resolveCwdAgainst("/", "sub"), "root base, a relative child — exactly one slash")
         assertEquals("/sub", resolveCwdAgainst("/", "./sub"), "root base, './sub'")
-        assertEquals("/", resolveCwdAgainst("/", ".."), "root base, '..' clamps at root, like the kernel")
-        assertEquals("/", resolveCwdAgainst("/", "./.."), "root base, './..'")
-        assertEquals("/", resolveCwdAgainst("/", "a/.."), "root base, an embedded '..' collapses")
+        assertEquals("/..", resolveCwdAgainst("/", ".."), "root base, '..' rides through for the kernel to clamp")
+        assertEquals("/..", resolveCwdAgainst("/", "./.."), "root base, './..' — the '.' collapses, the '..' stays")
+        assertEquals("/a/..", resolveCwdAgainst("/", "a/.."), "root base, an embedded '..' is preserved")
         // Every result is absolute, whatever the relative part ('..' may legitimately escape the base).
         for (rel in listOf(null, "", ".", "./", "././", "..", "./..", "sub", "./sub", "a/b/..")) {
             assertTrue(resolveCwdAgainst("/", rel).startsWith("/"), "resolveCwdAgainst(\"/\", $rel) must be absolute")
@@ -234,21 +234,27 @@ class CliTest {
     }
 
     @Test
-    fun resolveCwdAgainstNormalizesDotAndDotDotSegments() {
-        // `import` probes the provider's on-disk store with this exact string BEFORE any tmux session
-        // exists to canonicalize it: Claude encodes the project cwd into a transcript directory name, so
-        // an unnormalized `/a/proj/../proj` would miss transcripts the canonical `/a/proj` names and
-        // reject a valid import. Lexical only — symlinks are deliberately not resolved.
+    fun resolveCwdAgainstCollapsesDotSegmentsButLeavesDotDotForTheFilesystem() {
+        // `.`/duplicate/trailing slashes are pure SPELLING — collapsing them can never change which
+        // directory is named. `..` is not: it crosses a directory boundary, and a lexical collapse
+        // resolves it against the path's spelling while the kernel resolves it against the real
+        // (symlink-traversed) tree — on macOS lexical `/tmp/../Users` says `/Users`, but /tmp is a
+        // symlink into /private, so the filesystem's answer is `/private/Users`. So `..` passes through
+        // untouched: `start` hands it to tmux (`new-session -c` resolves it in the kernel), and
+        // `import`'s daemon canonicalizes with realpath(3) before probing/storing (SessionImportTest).
         val base = "/Users/me/project"
-        assertEquals("/Users/me", resolveCwdAgainst(base, ".."), "'..' names the parent of the CLI cwd")
-        assertEquals("/Users/me/other", resolveCwdAgainst(base, "../other"), "a sibling directory resolves canonically")
-        assertEquals(base, resolveCwdAgainst(base, "sub/.."), "an embedded '..' collapses back to the base")
-        assertEquals("$base/a/c", resolveCwdAgainst(base, "a/./b/../c"), "mixed '.' and '..' segments collapse")
-        assertEquals("/", resolveCwdAgainst(base, "../../.."), "enough '..' reaches root")
-        assertEquals("/", resolveCwdAgainst(base, "../../../.."), "'..' above root clamps at root")
-        assertEquals("/abs/b", resolveCwdAgainst(base, "/abs/a/../b"), "an absolute cwd is normalized too")
+        assertEquals("$base/a/b", resolveCwdAgainst(base, "a/./b"), "'.' segments collapse")
         assertEquals("/abs/x", resolveCwdAgainst(base, "/abs/x/"), "a trailing slash is dropped")
         assertEquals("/abs/x", resolveCwdAgainst(base, "/abs//x"), "a doubled slash is collapsed")
+        assertEquals("$base/..", resolveCwdAgainst(base, ".."), "'..' is preserved, not collapsed")
+        assertEquals("$base/../other", resolveCwdAgainst(base, "../other"), "'..' rides through to the filesystem")
+        assertEquals("$base/sub/..", resolveCwdAgainst(base, "sub/.."), "an embedded '..' is preserved too")
+        assertEquals(
+            "/tmp/../Users",
+            resolveCwdAgainst(base, "/tmp/../Users"),
+            "the symlink-hazard pin: lexically this is /Users, but the real path is /private/Users — " +
+                "only code with the filesystem in hand may decide",
+        )
     }
 
     @Test

@@ -98,6 +98,18 @@ class WebUiServingTest {
         assertTrue(body.contains("from \"preact\""), "the entry module imports the vendored Preact")
         assertTrue(body.contains("from \"htm/preact\""), "the entry module imports htm's Preact binding")
         assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
+        // The model merge: only the snapshot/resync form (msg.snapshot) carries the model and is taken
+        // VERBATIM — null included, so a model the provider-id rebind correction cleared clears in an
+        // already-connected UI too. The old null-guarded patch (`msg.model != null`) kept a wrong model
+        // on screen until a full reload.
+        assertTrue(
+            body.contains("msg.snapshot ? { model: msg.model } : {}"),
+            "the session_update merge takes the snapshot form's model verbatim, null included",
+        )
+        assertTrue(
+            !body.contains("msg.model != null"),
+            "no null-guard may filter the authoritative snapshot model (a cleared model must clear)",
+        )
         assertTrue(body.contains("startSession"), "app.js can create sessions")
         assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
         // The unread-badge wiring. There is no JS harness, so these greps are what stops the whole feature
@@ -141,6 +153,16 @@ class WebUiServingTest {
                     """window\.location\.replace\(AUTH_PATH\);\s*return;""",
             ).containsMatchIn(loadSessions),
             "only the first unauthenticated /sessions load redirects an unsigned installed PWA to /auth",
+        )
+        // A superseded call must not resolve to its own LOSING snapshot: it awaits the newest attempt
+        // (promise identity elects the winner — rows carry no protocol ordering key to compare instead),
+        // so a caller acting on the answer — showSession's terminal-attach decision — never reads alive
+        // state the winner already replaced with dead/archived.
+        assertTrue(
+            body.contains("const sessionsLoadLatestRef = useRef(null)") &&
+                loadSessions.contains("sessionsLoadLatestRef.current = attempt") &&
+                loadSessions.contains("while (winner !== sessionsLoadLatestRef.current)"),
+            "a superseded /sessions call resolves to the elected winner's snapshot, not its own",
         )
         assertContentTypeContains(resp, "javascript")
     }
@@ -503,6 +525,18 @@ class WebUiServingTest {
             app.contains("closeDialogFrom(submittedDialog)"),
             "the import completion closes only its own dialog",
         )
+        // …and a late import/start FAILURE must not vanish into an unmounted form: the dialog's
+        // Cancel/×/Esc stay live while the request is in flight, and a setError on the dismissed
+        // instance is a silent no-op. The completion rethrows into the form's error line only while
+        // the submitted dialog is still the mounted one, and routes the failure to the status line
+        // otherwise — savePreferences' rule, applied to both new-session flows (import keeps the
+        // daemon's verbatim text; start keeps its established prefix).
+        assertTrue(
+            app.contains("if (dialogRef.current === submittedDialog) throw e;") &&
+                app.contains("say(errorMessage(e), true);") &&
+                app.contains("say(\"Could not start session: \" + errorMessage(e), true);"),
+            "a failure landing after the dialog was dismissed reaches the status line, not a dead form",
+        )
         // The HTTP DTOs are never hand-merged into the session list: rows carry no total-ordering key
         // (control-state, archive and read changes advance no seq), so a DTO snapshot cannot be ordered
         // against the /events stream client-side. Each step instead AWAITS a fresh quiet refetch — the
@@ -515,13 +549,56 @@ class WebUiServingTest {
                 app.contains("(listed && listed.find((s) => s.id === created.id)) || created"),
             "the import awaits a fresh snapshot instead of hand-merging the 201 DTO into the list",
         )
-        // The terminal-attach decision reads the newest snapshot, not the resume response: the resumed
-        // agent's first events — or its immediate exit — may have landed while the response was in
-        // flight, and a terminal must not be attached to an already-dead session on stale state.
+        // A failed post-import refetch must not leave the imported row INVISIBLE until the next resync
+        // (the 201 committed; nothing else lists it): the row is ensured present exactly once — a
+        // guarded concat, never a replacement, since the id did not exist before the import — and the
+        // success line never overwrites the refetch's own error report.
         assertTrue(
-            app.contains("const resumed = await loadSessions({ quiet: true })") &&
-                app.contains("(resumed && resumed.find((s) => s.id === created.id)) || registered"),
-            "the post-resume selection comes from a fresh snapshot, with the known row as fallback only",
+            app.contains("prev.some((s) => s.id === created.id) ? prev : prev.concat([registered])"),
+            "the imported row is made visible even when the refetch failed",
+        )
+        assertTrue(
+            app.contains("if (listed) say(\"Imported \"") &&
+                app.contains("if (resumed) say(\"Imported and resumed \""),
+            "a failed refetch's error report survives instead of being masked by a success line",
+        )
+        // The terminal-attach decision reads the newest snapshot first; when that refetch fails, the
+        // RESUME DTO — post-resume state, alive — is the fallback, never the pre-resume `registered`
+        // row, which would report success while silently dropping the terminal attach.
+        assertTrue(
+            app.contains("const resumedDto = await apiRequest(") &&
+                app.contains("const resumed = await loadSessions({ quiet: true })") &&
+                app.contains("|| (resumedDto && resumedDto.id ? resumedDto : registered)"),
+            "the post-resume selection prefers the fresh snapshot, then the resume DTO — never the pre-resume row",
+        )
+        // Every showSession in the flow runs after an await, and in that window the operator can select
+        // another session (a sidebar click, a push-notification tap). The flow only auto-selects the
+        // imported session while the selection GENERATION is unchanged since submit; the status line
+        // still reports the outcome either way. The guard counts selection EVENTS, not the selected id:
+        // id equality has an ABA hole (A→B→A, or re-selecting the already-active session, compares
+        // equal), so every showSession bumps the generation and the flows compare against a
+        // submit-time capture of it.
+        assertTrue(
+            app.contains("selectionGenRef.current += 1") &&
+                app.contains("const selectionAtSubmit = selectionGenRef.current") &&
+                app.contains("const selectionUnmoved = () => selectionGenRef.current === selectionAtSubmit"),
+            "the selection generation captured at submit time is the steering guard's reference point",
+        )
+        assertTrue(
+            app.contains("if (selectionUnmoved()) showSession(registered);") &&
+                app.contains("if (selectionUnmoved()) showSession(row);") &&
+                app.contains(
+                    "if (selectionUnmoved()) showSession((after && after.find((s) => s.id === created.id)) || registered);",
+                ),
+            "all three import-flow selections (register-only, resumed, resume-failed) honour a moved selection",
+        )
+        assertTrue(
+            app.contains("if (selectionGenRef.current === selectionAtSubmit) showSession(created);"),
+            "startSession honours the same rule — a selection moved during the POST is not yanked back",
+        )
+        assertTrue(
+            !app.contains("activeRef.current === selectionAtSubmit"),
+            "no flow guards on id equality — the ABA hole the generation exists to close",
         )
     }
 
@@ -564,6 +641,40 @@ class WebUiServingTest {
             app.contains("next.revision < preferencesRevisionRef.current") &&
                 app.contains("preferencesRevisionRef.current = next.revision"),
             "older HTTP/WebSocket deliveries cannot roll back a newer persisted revision",
+        )
+        // The dialog seeds its draft from `prefs` once, at mount. A dialog REOPENED while a save's PUT
+        // was still in flight therefore holds a pre-save draft — and closeDialogFrom rightly preserves
+        // it. Keying the dialog on the committed revision remounts it when any commit lands (this
+        // browser's or another's), re-seeding the draft; without the key, saving the stale draft would
+        // roll the committed write back under a fresh revision, past the revision guard above.
+        assertTrue(
+            app.contains("""<${'$'}{PreferencesDialog} key=${'$'}{prefs.revision}"""),
+            "a landed preferences commit re-seeds any open preferences dialog's draft",
+        )
+        // The key alone is not a SAVE guard: before the first revision arrives, a reopened dialog (or
+        // one remounted busy=false by an early preferences_update echo) could land an overlapping PUT
+        // from its stale draft, committing pre-save values under a FRESH revision. savePreferences
+        // therefore refuses a second PUT while one is in flight — the rejection surfaces in the
+        // dialog's own error line — and always releases the guard, success or failure.
+        assertTrue(
+            app.contains("const prefsSaveInFlightRef = useRef(false)") &&
+                app.contains("if (prefsSaveInFlightRef.current) {") &&
+                app.contains("prefsSaveInFlightRef.current = true") &&
+                app.contains("prefsSaveInFlightRef.current = false"),
+            "overlapping preference saves are refused while one PUT is still in flight",
+        )
+        // A remount keeps the dialog OBJECT identical, so the dialog identity alone cannot protect the
+        // remounted form: savePreferences captures the mounted form's revision at submit, and a
+        // completion only closes (or throws into) the form it came from — a remounted form keeps its
+        // fresher draft open with the outcome routed to the status line.
+        assertTrue(
+            app.contains("const revisionAtSubmit = prefsRef.current.revision") &&
+                app.contains("if (sameForm) closeDialogFrom(submittedDialog)") &&
+                app.contains(
+                    "if (dialogRef.current === submittedDialog && " +
+                        "prefsRef.current.revision === revisionAtSubmit) throw e",
+                ),
+            "a preferences save completion never closes a remounted form or throws into an unmounted one",
         )
 
         val prefs = ctx.get("/lib/prefs.js").bodyAsText()
@@ -2059,7 +2170,13 @@ class WebUiServingTest {
             updatedAt: Long,
         ) {}
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
-        override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long) {}
+        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) {}
+        override suspend fun setModelForProvider(
+            sessionId: SessionId,
+            providerSessionId: io.kotgent.core.ProviderSessionId,
+            model: String,
+            updatedAt: Long,
+        ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun listSessions(): List<SessionMeta> = emptyList()

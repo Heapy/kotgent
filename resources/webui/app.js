@@ -180,6 +180,12 @@ function App() {
   sessionsRef.current = sessions;
   const activeRef = useRef(activeId);
   activeRef.current = activeId;
+  // Monotonic selection generation, bumped by every showSession call (a sidebar click, a notification
+  // deep link, a flow's own auto-select). Flows that steer the selection after an await capture it at
+  // submit and only auto-select while it is unchanged. Comparing session IDs instead has an ABA hole:
+  // A→B→A, or re-selecting the already-active session during the await, compares equal and would let
+  // the completion yank the operator's newer (re-)selection away.
+  const selectionGenRef = useRef(0);
   const pendingRef = useRef(pendingAction);
   pendingRef.current = pendingAction;
   // Which dialog object a submission came from: a completion may only close ITS OWN dialog (see
@@ -207,6 +213,9 @@ function App() {
   // Only the newest list response may mutate state. A notification can request a refresh while the initial
   // load is still in flight, and letting that older response land last would erase the notification target.
   const sessionsLoadVersionRef = useRef(0);
+  // The newest in-flight /sessions attempt, published synchronously at call time: a superseded call
+  // awaits THIS instead of resolving to its own losing snapshot (see loadSessions).
+  const sessionsLoadLatestRef = useRef(null);
   // An unexpected terminal close leaves one reattach candidate. The timer is a deliberate render
   // boundary: setting attachedId null and straight back to the same id in one turn can be batched into no
   // change, so TerminalPane's keyed effect would never build a replacement socket.
@@ -318,6 +327,7 @@ function App() {
 
   /** Select [session]: attach its terminal when it is alive, explain why not when it is not. */
   const showSession = useCallback((session) => {
+    selectionGenRef.current += 1; // every selection, user- or flow-driven, invalidates older submits
     cancelReattach();
     setActiveId(session.id);
     // Picking a session is the drawer's whole purpose, so it closes itself — on a phone the terminal is
@@ -347,53 +357,72 @@ function App() {
   // (the initial load, the /events unknown-id reload) and leave the sidebar incomplete until the 15 s
   // resync. [quiet] keeps the replacement's routine "N session(s)." announcement from overwriting the
   // calling flow's own status line (e.g. the actionable resume-failure hint); errors are never silenced.
-  // Resolves to the fetched list — even when a newer call took over the install, because the snapshot is
-  // still a post-response answer for the caller that awaited it — or to undefined when the fetch failed.
+  // Resolves to the snapshot the ELECTED winner installed (undefined when that fetch failed): a
+  // superseded call AWAITS the newest attempt instead of resolving to its own losing response — promise
+  // identity elects the winner, no protocol ordering key needed — because a caller acting on the answer
+  // (showSession's terminal-attach decision) must never read alive state whose replacement, already
+  // installed by the winner, says dead/archived. (A bare external version bump — the notification tap —
+  // starts no replacement attempt; the newest attempt's own response is then still the freshest held.)
   const loadSessions = useCallback(async ({ quiet = false } = {}) => {
     const version = ++sessionsLoadVersionRef.current;
     const isFirstLoad = firstLoadRef.current;
-    try {
-      const list = await apiRequest("/sessions");
-      if (version !== sessionsLoadVersionRef.current) return list;
-      firstLoadRef.current = false;
-      // Installed wholesale, deliberately NOT merged per-row against /events frames that arrived during
-      // the flight: rows carry no total-ordering key (control-state, archive and read changes advance no
-      // seq), so any client-side merge rule inverts as easily as a replace. Known residual: a frame that
-      // lands between the daemon taking this snapshot and the response landing here is transiently
-      // overwritten, until the next frame or the 15 s resync heals it — the flow's designed self-healing.
-      setSessions(list);
-      if (!quiet) say(list.length + " session(s).");
-      // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
-      // nor keep a mark-read throttle (and its timer) alive for the rest of the page's life.
-      const ids = new Set(list.map((s) => s.id));
-      setActiveId((id) => (id && !ids.has(id) ? null : id));
-      setAttachedId((id) => (id && !ids.has(id) ? null : id));
-      pruneReadPosters(ids);
-      if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
-      // A deep link from a notification tap: select it now that the list is here, once.
-      const wanted = deepLinkRef.current;
-      if (wanted) {
-        const target = list.find((s) => s.id === wanted);
-        if (target) {
-          deepLinkRef.current = null;
-          clearDeepLink();
-          showSession(target);
+    const attempt = (async () => {
+      try {
+        const list = await apiRequest("/sessions");
+        if (version !== sessionsLoadVersionRef.current) return list;
+        firstLoadRef.current = false;
+        // Installed wholesale, deliberately NOT merged per-row against /events frames that arrived during
+        // the flight: rows carry no total-ordering key (control-state, archive and read changes advance no
+        // seq), so any client-side merge rule inverts as easily as a replace. Known residual: a frame that
+        // lands between the daemon taking this snapshot and the response landing here is transiently
+        // overwritten, until the next frame or the 15 s resync heals it — the flow's designed self-healing.
+        setSessions(list);
+        if (!quiet) say(list.length + " session(s).");
+        // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
+        // nor keep a mark-read throttle (and its timer) alive for the rest of the page's life.
+        const ids = new Set(list.map((s) => s.id));
+        setActiveId((id) => (id && !ids.has(id) ? null : id));
+        setAttachedId((id) => (id && !ids.has(id) ? null : id));
+        pruneReadPosters(ids);
+        if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
+        // A deep link from a notification tap: select it now that the list is here, once.
+        const wanted = deepLinkRef.current;
+        if (wanted) {
+          const target = list.find((s) => s.id === wanted);
+          if (target) {
+            deepLinkRef.current = null;
+            clearDeepLink();
+            showSession(target);
+          }
         }
+        return list;
+      } catch (e) {
+        if (version !== sessionsLoadVersionRef.current) return;
+        // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
+        // its very first request is a 401 and there is no link to hand it. Send it to the sign-in page, where
+        // the code form is the only way in. `replace` so the back button does not bounce straight back into
+        // this dead page. Only the initial load phase routes: a 401 after one successful list (a rotated token)
+        // leaves a live page with an attached terminal on screen instead of throwing that terminal away.
+        if (isFirstLoad && isUnauthenticated(e)) {
+          window.location.replace(AUTH_PATH);
+          return;
+        }
+        say("Could not load sessions: " + errorMessage(e), true);
       }
-      return list;
-    } catch (e) {
-      if (version !== sessionsLoadVersionRef.current) return;
-      // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
-      // its very first request is a 401 and there is no link to hand it. Send it to the sign-in page, where
-      // the code form is the only way in. `replace` so the back button does not bounce straight back into
-      // this dead page. Only the initial load phase routes: a 401 after one successful list (a rotated token)
-      // leaves a live page with an attached terminal on screen instead of throwing that terminal away.
-      if (isFirstLoad && isUnauthenticated(e)) {
-        window.location.replace(AUTH_PATH);
-        return;
-      }
-      say("Could not load sessions: " + errorMessage(e), true);
+    })();
+    // Published before anyone's await resumes (this whole tail is synchronous), so a superseded call
+    // always sees the attempt that superseded it.
+    sessionsLoadLatestRef.current = attempt;
+    let winner = attempt;
+    let result = await winner;
+    while (winner !== sessionsLoadLatestRef.current) {
+      // Superseded: the elected winner's installed snapshot is the authoritative answer. Loop, because
+      // an even newer call may take over while this one is being awaited; the chain always ends at the
+      // newest attempt, whose own resolution breaks it.
+      winner = sessionsLoadLatestRef.current;
+      result = await winner;
     }
+    return result;
   }, [cancelReattach, say, showSession]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
@@ -479,7 +508,9 @@ function App() {
               lastSeq: msg.lastSeq,
               unread: msg.unread,
               archived: msg.archived,
-            }, msg.model != null ? { model: msg.model } : {}) // only the resync carries model; never blank it
+            }, msg.snapshot ? { model: msg.model } : {}) // the snapshot/resync form is authoritative for
+          // model and is taken VERBATIM — null included, so a cleared suspect model (provider-id rebind)
+          // clears here too; the live signal never tracks it, so its null must not blank anything.
           : s)));
         // Both a live update and the 15 s resync land here, which makes this the mark-read heartbeat: a
         // POST that was lost heals on the next frame. Judged on the frame's own numbers — `sessionsRef`
@@ -572,35 +603,65 @@ function App() {
 
   const startSession = useCallback(async (body) => {
     const submittedDialog = dialogRef.current;
-    const created = await apiRequest("/sessions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    // Same steering rule as importSession's: auto-select the new session only while the selection
+    // GENERATION is unchanged since submit — a sidebar click or a notification tap during the POST
+    // (even one landing back on the very session that was active at submit) must not be yanked away
+    // to the freshly started session.
+    const selectionAtSubmit = selectionGenRef.current;
+    let created;
+    try {
+      created = await apiRequest("/sessions", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      // The submitting form owns the error only while it is still the mounted one (savePreferences'
+      // rule): the dialog's Cancel/×/Esc stay live during the POST, and a setError on an unmounted
+      // form is a silent no-op — so a late failure is routed to the status line instead of vanishing.
+      if (dialogRef.current === submittedDialog) throw e;
+      say("Could not start session: " + errorMessage(e), true);
+      return;
+    }
     setSessions((prev) => prev.concat([created]));
     closeDialogFrom(submittedDialog);
     say("Started " + displayName(created) + ".");
-    showSession(created);   // from `created` directly: the ref has not caught up with setSessions yet
+    // From `created` directly: the ref has not caught up with setSessions yet.
+    if (selectionGenRef.current === selectionAtSubmit) showSession(created);
   }, [closeDialogFrom, say, showSession]);
 
   /**
    * Import a conversation started outside kotgent (`POST /sessions/import`), then — unless the dialog's
    * "register only" was ticked — resume it through the ordinary resume endpoint, exactly like the CLI's
    * `kotgent import`. An import failure (400/409) propagates to the dialog, which shows the daemon's
-   * text in the form's own error line. A failed FOLLOW-UP resume is different: the registration itself
-   * succeeded, so the dialog is already closed and the session is shown honestly resumable with the
-   * resume error in the status line — retrying the import would only 409.
+   * text in the form's own error line — but only while that exact form is still MOUNTED
+   * (savePreferences' rule): the dialog's Cancel/×/Esc stay live during the request, and a setError on
+   * an unmounted (or replaced) instance is a silent no-op, so a failure landing after a dismissal is
+   * routed to the status line instead of vanishing. A failed FOLLOW-UP resume is different: the
+   * registration itself succeeded, so the dialog is already closed and the session is shown honestly
+   * resumable with the resume error in the status line — retrying the import would only 409.
    *
-   * The HTTP DTOs (the 201, the resume response) are never merged into the list by hand: rows carry no
+   * The HTTP DTOs (the 201, the resume response) are never MERGED into the list by hand: rows carry no
    * total-ordering key (control-state changes advance no seq), so a DTO snapshot cannot be ordered
    * against the /events stream — see loadSessions. Each step instead AWAITS a fresh quiet refetch,
    * which installs the list through the one routine path (superseding any stale fetch still in flight)
-   * and returns the newest snapshot to select from, so the terminal-attach decision (showSession) reads
-   * the freshest known state, never a response that spent its flight time being overtaken by events.
+   * and resolves to the elected winner's snapshot to select from, so the terminal-attach decision
+   * (showSession) reads the freshest known state. The DTOs remain FALLBACKS for a failed refetch only:
+   * the 201 row is present-once concatenated so the imported session is never invisible (its id did not
+   * exist before, so nothing fresher can be replaced), and the resume DTO — post-resume, alive — feeds
+   * showSession so a reported success still attaches the terminal.
    *
    * The whole flow occupies the one-action-at-a-time slot (`pendingAction`), like controlSession's
    * verbs: without it a Done/Stop on the just-imported row could run between registration and the
    * follow-up resume — and the delayed resume would then restart the session the operator had just
    * stopped or archived.
+   *
+   * The flow STEERS the selection (showSession) only while the selection GENERATION is unchanged since
+   * submit: every showSession below runs after an await, and in that window a sidebar click or a push
+   * notification tap can select another session — auto-selecting the imported one would yank the
+   * operator back and discard that newer choice. The guard counts selection EVENTS
+   * (selectionGenRef), not the selected id: id equality has an ABA hole where A→B→A, or re-selecting
+   * the already-active session, reads as "unmoved" and is stolen anyway. The say() lines are not
+   * guarded: the status line reports the outcome without moving anyone.
    */
   const importSession = useCallback(async (body, registerOnly) => {
     if (pendingRef.current) {
@@ -608,12 +669,24 @@ function App() {
       throw new Error("Another action is still in progress — try again in a moment.");
     }
     const submittedDialog = dialogRef.current;
+    const selectionAtSubmit = selectionGenRef.current;
+    const selectionUnmoved = () => selectionGenRef.current === selectionAtSubmit;
     setPendingAction("import");
     try {
-      const created = await apiRequest("/sessions/import", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      let created;
+      try {
+        created = await apiRequest("/sessions/import", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        // Rethrown into the form's error line only while the submitted dialog is still the mounted
+        // one; a late failure otherwise goes to the status line (verbatim — the daemon's import text
+        // is already user-facing), never into an unmounted form's silent setError.
+        if (dialogRef.current === submittedDialog) throw e;
+        say(errorMessage(e), true);
+        return;
+      }
       // This refetch started after the import committed, so its snapshot lists the new row at least as
       // fresh as the 201 DTO (including the SessionBound append the response reflects — an /events push
       // of the earlier pre-bind upsert may have installed an OLDER row), and being self-versioned it
@@ -621,31 +694,45 @@ function App() {
       // DTO remains only the fallback for a failed or overtaken fetch.
       const listed = await loadSessions({ quiet: true });
       const registered = (listed && listed.find((s) => s.id === created.id)) || created;
+      // A refetch that failed (or resolved uninstalled after a bare external version bump) must not
+      // leave the imported row INVISIBLE — the 201 committed, and nothing else lists it until the next
+      // resync. Present-once concat, never a replacement: the id did not exist before this import, so
+      // an already-listed row can only come from a post-commit source at least as fresh as ours.
+      setSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : prev.concat([registered])));
       closeDialogFrom(submittedDialog);
       if (registerOnly) {
-        say("Imported " + displayName(registered) + " — registered only.");
-        showSession(registered);   // resumable → the dead hint explains the next step
+        // Said only when the refetch answered: after a failed refetch the status line holds
+        // loadSessions' actionable error, and announcing success would overwrite it — the selected row
+        // below is feedback enough that the import itself landed.
+        if (listed) say("Imported " + displayName(registered) + " — registered only.");
+        if (selectionUnmoved()) showSession(registered);   // resumable → the dead hint explains the next step
         return;
       }
       try {
-        await apiRequest(
+        const resumedDto = await apiRequest(
           "/sessions/" + encodeURIComponent(created.id) + "/resume",
           { method: "POST" },
         );
-        // Select from a fresh post-resume snapshot, never from the resume DTO: the resumed agent's
-        // first events — or its immediate exit — may have landed through /events while the response
-        // was in flight, and attaching a terminal to an already-dead session must not happen on state
-        // known to be stale.
+        // Select from a fresh post-resume snapshot first: the resumed agent's first events — or its
+        // immediate exit — may have landed through /events while the response was in flight, and
+        // attaching a terminal to an already-dead session must not happen on state known to be stale.
         const resumed = await loadSessions({ quiet: true });
-        const row = (resumed && resumed.find((s) => s.id === created.id)) || registered;
-        say("Imported and resumed " + displayName(row) + ".");
-        showSession(row);       // alive in the snapshot → attaches the terminal
+        // When that refetch fails, the RESUME DTO is the fallback — post-resume state, alive, so
+        // showSession still attaches the terminal; the pre-resume `registered` row would report
+        // success while silently dropping the attach. (The action route answers a plain "ok" with no
+        // DTO only when the row vanished mid-request — then the pre-resume row is all that is left.)
+        // The DTO is deliberately not merged into the list: no ordering key; /events and the resync
+        // heal the sidebar row.
+        const row = (resumed && resumed.find((s) => s.id === created.id))
+          || (resumedDto && resumedDto.id ? resumedDto : registered);
+        if (resumed) say("Imported and resumed " + displayName(row) + ".");
+        if (selectionUnmoved()) showSession(row); // alive in the snapshot (or the DTO) → attaches the terminal
       } catch (e) {
         // The daemon's message (e.g. the `kotgent install` hint for a missing binary) says what to fix;
         // `quiet` keeps the refetch's routine "N session(s)." announcement off that status line, and
         // the fresh snapshot decides what the row looks like now (still resumable, normally).
         const after = await loadSessions({ quiet: true });
-        showSession((after && after.find((s) => s.id === created.id)) || registered);
+        if (selectionUnmoved()) showSession((after && after.find((s) => s.id === created.id)) || registered);
         say("Imported, but resume failed: " + errorMessage(e), true);
       }
     } finally {
@@ -721,25 +808,58 @@ function App() {
     if (document.visibilityState === "visible") scheduleReattach();
   }, [scheduleReattach]);
 
+  // One preferences PUT at a time. The dialog's own `busy` flag cannot enforce this: ×/Esc stay live
+  // while a save is in flight, so the dialog can be closed and REOPENED — a fresh mount, busy=false,
+  // draft seeded from the still-uncommitted prefs — and an early preferences_update echo remounts even
+  // the OPEN dialog through its revision key, resetting busy mid-save. A second PUT from either stale
+  // draft would commit pre-save values under a FRESH revision — a rollback the revision guard cannot
+  // catch. Refused, not queued (importSession's precedent): the rejection lands in the dialog's error
+  // line, and once the first commit arrives the revision-key remount re-seeds any open draft anyway.
+  const prefsSaveInFlightRef = useRef(false);
+
   const savePreferences = useCallback(async (next) => {
+    if (prefsSaveInFlightRef.current) {
+      throw new Error("A preferences save is already in progress — try again in a moment.");
+    }
+    prefsSaveInFlightRef.current = true;
     const submittedDialog = dialogRef.current;
-    const saved = await apiRequest("/preferences", {
-      method: "PUT",
-      body: JSON.stringify({
-        basePath: next.basePath,
-        groupingLevel: next.groupingLevel,
-      }),
-    });
-    // A preferences_update for this write (or a later write from another browser) may have arrived while
-    // PUT was in flight. Apply only if this response is not older; the per-device font is independent.
-    applyServerPreferences(saved);
-    persistTerminalFontSize(next.terminalFontSize);
-    setPrefs((current) => Object.assign({}, current, { terminalFontSize: next.terminalFontSize }));
-    closeDialogFrom(submittedDialog);
-    const current = serverPreferencesRef.current;
-    say(current.basePath.length > 0
-      ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
-      : "Grouping off — no base path set.");
+    // Which FORM this save came from, not just which dialog: a commit landing mid-flight bumps
+    // prefs.revision and remounts PreferencesDialog under the SAME dialog object (see the render key),
+    // re-seeding a fresh draft the operator may already be editing — the dialog identity alone cannot
+    // tell the two forms apart. prefsRef tracks the last RENDERED prefs, so this matches the mounted
+    // form's key; preferencesRevisionRef advances ahead of render and would misread the user's own
+    // batched save as a remount.
+    const revisionAtSubmit = prefsRef.current.revision;
+    try {
+      const saved = await apiRequest("/preferences", {
+        method: "PUT",
+        body: JSON.stringify({
+          basePath: next.basePath,
+          groupingLevel: next.groupingLevel,
+        }),
+      });
+      const sameForm = prefsRef.current.revision === revisionAtSubmit;
+      // A preferences_update for this write (or a later write from another browser) may have arrived while
+      // PUT was in flight. Apply only if this response is not older; the per-device font is independent.
+      applyServerPreferences(saved);
+      persistTerminalFontSize(next.terminalFontSize);
+      setPrefs((current) => Object.assign({}, current, { terminalFontSize: next.terminalFontSize }));
+      // A remounted form holds a FRESHER draft than the one this save came from — leave it open and let
+      // the status line below carry the outcome; closing it would discard the operator's newer edits.
+      if (sameForm) closeDialogFrom(submittedDialog);
+      const current = serverPreferencesRef.current;
+      say(current.basePath.length > 0
+        ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
+        : "Grouping off — no base path set.");
+    } catch (e) {
+      // The submitting form owns the error only while it is still the mounted one. After a remount (or
+      // a close-and-reopen) that instance is unmounted and its setError is a silent no-op, so a late
+      // failure is routed to the status line instead of vanishing.
+      if (dialogRef.current === submittedDialog && prefsRef.current.revision === revisionAtSubmit) throw e;
+      say("Could not save preferences: " + errorMessage(e), true);
+    } finally {
+      prefsSaveInFlightRef.current = false;
+    }
   }, [applyServerPreferences, closeDialogFrom, say]);
 
   /** An explicit directory (a group's "+") wins, then the selected session's, then the base path. */
@@ -804,8 +924,21 @@ function App() {
     ${dialog && dialog.kind === "new" && html`
       <${NewSessionDialog} initialCwd=${dialog.cwd} basePath=${prefs.basePath}
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
+    ${/* Keyed on the committed server revision: the dialog seeds its draft from `prefs` once, at mount
+          (useState), so a dialog REOPENED while a save's PUT was still in flight holds a pre-save draft —
+          and closeDialogFrom rightly preserves it. When the commit lands (applyServerPreferences bumps
+          the revision), the key remounts the dialog and re-seeds the draft from the committed values;
+          without it, saving that stale draft would roll back the write under a fresh revision, which the
+          revision guard cannot catch. The key alone is NOT a save guard — before the revision arrives,
+          the reopened (or echo-remounted, busy reset) dialog could still land an overlapping stale PUT;
+          prefsSaveInFlightRef in savePreferences refuses that second PUT until the first settles. And
+          because a remount keeps the dialog OBJECT identical, savePreferences also captures the
+          revision at submit: a completion never closes a remounted form (its re-seeded draft is
+          fresher) and a late failure routes to the status line, not the unmounted instance's error
+          line. The user's own in-dialog save never remounts visibly: its applyServerPreferences and
+          closeDialogFrom land in one batched render with the dialog closed. */ ""}
     ${dialog && dialog.kind === "prefs" && html`
-      <${PreferencesDialog} prefs=${prefs} sessions=${sessions}
+      <${PreferencesDialog} key=${prefs.revision} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "help" && html`<${HelpDialog} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "phone" && html`<${PhoneDialog} onClose=${closeDialog} />`}

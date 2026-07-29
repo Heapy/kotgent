@@ -132,11 +132,29 @@ genuinely different directory) fails the import loudly, naming `--cwd` as the wo
 session still live in another terminal is undetectable (resume runs a second CLI copy of the same
 conversation — operator's responsibility), and an imported session's `cliVersion`/`cliPath` stay null
 forever (filling them would mean running the binary at import, contradicting the rule above); `model`
-appears after the first resume (claude via hooks, codex via `resume()`'s model capture, which reads the
-id-keyed rollout — never the cwd+mtime heuristic — once the provider id is known; the poll re-reads the
-row's id on EVERY attempt — `captureCodexModelOnce` in `CodexRolloutScan.kt` — so a fresh launch whose
-background id capture lands mid-poll switches to the id-keyed lookup instead of letting the heuristic
-persist a later same-cwd neighbour rollout's model). The four import
+appears after the first resume (claude via hooks, codex via `resume()`'s model capture, which reads ONLY
+the session's own id-keyed rollout — `captureCodexModelOnce` in `CodexRolloutScan.kt` re-reads the row's
+provider id on EVERY attempt, so a fresh launch whose background id capture lands mid-poll starts
+answering. While the id is unknown an attempt persists NOTHING, and there is deliberately NO cwd+mtime
+heuristic fallback any more: a codex `SessionStart` hook can bind the id at ANY later moment — even
+after the poll has exhausted its attempts — and a FIRST bind (null → id) triggers no model correction,
+so an id-less guess (possibly a busier same-cwd neighbour rollout's model), persisted at any point,
+could stick forever. Every guarded variant of the heuristic — provisional writes, final-attempt-only,
+pre-write re-reads — lost that same race and was removed. A session whose id never binds keeps an
+honest null model; it is already degraded, since resume itself requires the id. The row's id can
+itself be a wrong PROVISIONAL one — `discoverSessionId`'s cwd+mtime fallback can bind a same-cwd
+NEIGHBOUR's id, making the capture persist the neighbour's model and stop — and the hook's later
+authoritative `SessionBound` overwrites only the id (the reducer records it unconditionally: the hook
+wins over the scan). That displacement therefore carries a correction: the codex hook ingress reads
+the row's id just before a `SessionBound` append, and when the append DISPLACED a different persisted
+id it fires `SessionManager.onProviderIdRebound`, which clears the suspect model (`setModel(null)`)
+and re-runs the id-keyed capture under the now-authoritative id. Two guarantees keep that correction
+honest: the displacing append and the callback run as ONE non-cancellable unit in the ingress (a
+dropped hook connection or a thrown callback is logged, never lost — a same-id retry could not
+re-detect the displacement), and every id-keyed capture WRITE is atomically conditional on the row
+still holding the id the lookup was keyed by (`EventStore.setModelForProvider`, the check inside the
+SQL `WHERE`), so an in-flight capture that raced the rebind writes zero rows and keeps polling
+instead of restoring the neighbour's model past the clear). The four import
 failures are deliberately **standalone, hierarchy-free** exceptions (`UnknownAgentKindException`,
 `ImportCwdException`, `TranscriptNotFoundException` → 400; `DuplicateImportException` → 409) so the
 route's catches are order-free — the flat counterpart of the load-bearing `TmuxCopyModeException`
@@ -525,8 +543,11 @@ leaves `state`/`last_seq`/`provider_session_id` untouched. `model` is captured a
 the hook payload's `transcript_path` (a default-wired `ClaudeModelCapture` behind `hookRoutes`'
 `onHookPayload` seam, so no `Server.kt` change), Codex by polling the rollout's `turn_context` (a
 `SessionManager.captureModelInBackground` seam). A miss just leaves `model` null. Only `archived` rides
-`SessionUpdate` (live+resync must agree, or the row flickers); `model` rides only the resync DTO and app.js
-patches it null-guarded. `read_cursor` is the only **client-driven** one: `app.js` POSTs
+`SessionUpdate` (live+resync must agree, or the row flickers); `model` rides only the snapshot/resync form
+of the `/events` DTO, which marks itself (`snapshot: true`, the wire discriminator — `encodeDefaults` makes
+a live frame's untracked `model` serialize as the same `null`) and which app.js merges VERBATIM — null
+included, so a model the provider-id rebind correction cleared clears in a connected UI too. `read_cursor`
+is the only **client-driven** one: `app.js` POSTs
 `/sessions/{id}/read` for the session it displays, from three **imperative** triggers (selection, every
 `/events` frame for the active session — the 15 s resync doubles as the heartbeat that heals a lost POST —
 and `visibilitychange`), never a `useEffect` on `[id, lastSeq, unread]`, whose primitives are unchanged
@@ -636,7 +657,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **755 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **765 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

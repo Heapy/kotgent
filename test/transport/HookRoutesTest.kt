@@ -305,10 +305,16 @@ class HookRoutesTest {
     private fun withCodexIngress(
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
+        onProviderIdRebound: suspend (SessionId) -> Unit = {},
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
-            routing { codexHookRoutes({ token }, paneLookup, store, paneLookupGraceMillis = 0) }
+            routing {
+                codexHookRoutes(
+                    { token }, paneLookup, store, paneLookupGraceMillis = 0,
+                    onProviderIdRebound = onProviderIdRebound,
+                )
+            }
         }
         try {
             withTimeout(20_000) {
@@ -367,6 +373,87 @@ class HookRoutesTest {
             )
             assertEquals(HttpStatusCode.OK, response.status)
             assertEquals(AgentEvent.SessionBound(ProviderSessionId(id)), store.appended.receive().event)
+        }
+    }
+
+    // ---- the rebind seam: a hook SessionBound that displaces a scan-bound id ----
+
+    /** A codex session row as the rebind tests need it: bound (or not) to [providerId]. */
+    private fun boundMeta(providerId: ProviderSessionId?): SessionMeta = SessionMeta(
+        id = session, name = "kt-abc123", agent = "codex",
+        providerSessionId = providerId, cwd = "/work", tmuxSession = "kt-abc123", paneId = pane,
+        state = SessionState.running, stateSource = EventSource.system,
+        createdAt = 0L, updatedAt = 0L,
+    )
+
+    @Test
+    fun codexSessionStartThatDisplacesADifferentBoundIdFiresTheRebindSeam() {
+        // The fallback rollout scan (cwd+mtime) can provisionally bind a same-cwd NEIGHBOUR's id, and
+        // the id-keyed model capture then persists that neighbour's model and stops polling. The hook
+        // is authoritative and its SessionBound overwrites the id — but the model correction only
+        // happens if the ingress notices the displacement and fires this seam (the daemon wires it to
+        // SessionManager.onProviderIdRebound: clear the suspect model, re-run the id-keyed capture).
+        val store = RecordingEventStore()
+        store.sessionMeta = boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+        val rebounds = Channel<SessionId>(Channel.UNLIMITED)
+        withCodexIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
+            val response = client.postCodexHook(
+                port,
+                CodexHookConfig.SESSION_START,
+                body = """{"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","cwd":"/work"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                AgentEvent.SessionBound(ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")),
+                store.appended.receive().event,
+                "the hook id was appended regardless — the hook wins over the scan",
+            )
+            assertEquals(session, rebounds.receive(), "displacing a DIFFERENT bound id fired the seam")
+        }
+    }
+
+    @Test
+    fun aThrowingRebindCorrectionNeverFailsTheHook() {
+        // The correction runs after the SessionBound append committed the new id, so a SAME-id retry of
+        // the hook would read no displacement and could never re-fire the seam — the ingress must absorb
+        // (and log) a correction failure rather than fail the hook for a retry that cannot help.
+        val store = RecordingEventStore()
+        store.sessionMeta = boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+        withCodexIngress(
+            store,
+            onProviderIdRebound = { throw IllegalStateException("correction broke") },
+        ) { port, client ->
+            val response = client.postCodexHook(
+                port,
+                CodexHookConfig.SESSION_START,
+                body = """{"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","cwd":"/work"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status, "a failed correction is logged, never a failed hook")
+            assertEquals(
+                AgentEvent.SessionBound(ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")),
+                store.appended.receive().event,
+                "the displacing append itself still committed",
+            )
+        }
+    }
+
+    @Test
+    fun codexSessionStartFiresNoRebindOnAFirstBindOrARepeatOfTheSameId() {
+        val store = RecordingEventStore() // getSession answers null: no prior id on the row
+        val rebounds = Channel<SessionId>(Channel.UNLIMITED)
+        withCodexIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
+            val id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            // A FIRST bind (null -> id) displaces nothing: protecting this case is the job of the
+            // no-id-less-persist rule in captureCodexModelOnce, not of a correction.
+            client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
+            store.appended.receive()
+            assertTrue(rebounds.tryReceive().isFailure, "a first bind is not a displacement")
+
+            // Re-binding the SAME id (a duplicate/retried hook) displaces nothing either.
+            store.sessionMeta = boundMeta(ProviderSessionId(id))
+            client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
+            store.appended.receive()
+            assertTrue(rebounds.tryReceive().isFailure, "re-binding the same id displaces nothing")
         }
     }
 
@@ -433,9 +520,18 @@ class HookRoutesTest {
             updatedAt: Long,
         ) = Unit
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
-        override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long) = Unit
+        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = Unit
+        override suspend fun setModelForProvider(
+            sessionId: SessionId,
+            providerSessionId: ProviderSessionId,
+            model: String,
+            updatedAt: Long,
+        ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = Unit
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
+
+        /** What [getSession] answers — rebind tests seed it to simulate an already-bound session row. */
+        var sessionMeta: SessionMeta? = null
+        override suspend fun getSession(sessionId: SessionId): SessionMeta? = sessionMeta
         override suspend fun listSessions(): List<SessionMeta> = emptyList()
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
         override suspend fun projectionOf(sessionId: SessionId): Projection = Projection.EMPTY

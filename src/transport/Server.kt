@@ -150,8 +150,14 @@ class KotgentServer(
                     install(WebSockets)
                     routing {
                         // Hook ingress, one route per provider: same token, their own header check (Task 12).
+                        // Codex additionally wires the rebind seam: its fallback rollout scan can bind a
+                        // same-cwd neighbour's id, so a hook SessionBound that displaces it must clear the
+                        // (possibly neighbour-derived) model and re-run the id-keyed capture.
                         claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
-                        codexHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                        codexHookRoutes(
+                            tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
+                            onProviderIdRebound = sessionManager::onProviderIdRebound,
+                        )
                         // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
                         authRoutes(tokens, tickets, publicUrl, json)
                         // Token-gated control plane.

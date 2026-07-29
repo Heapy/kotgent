@@ -34,12 +34,17 @@ import kotlin.test.assertTrue
  * ImportWiringTest over throwaway vendor homes). Separate from [SessionManagerTest] on purpose —
  * that file already carries 30+ launch/control cases.
  *
- * `/tmp` serves as the "existing" project directory for the cwd existence gate (`access(F_OK)` runs
- * for real — stock `platform.posix` links into the test binary fine).
+ * `/tmp` serves as the "existing" project directory for the cwd gate (`realpath(3)` runs for real —
+ * stock `platform.posix` links into the test binary fine), so the STORED/PROBED spelling is its
+ * canonical form [canonicalTmp] (`/private/tmp` — /tmp is a symlink on macOS, and importSession
+ * canonicalizes through the filesystem before probing and storing).
  */
 class SessionImportTest {
 
     private val providerId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    /** What importSession turns an explicit `--cwd /tmp` into everywhere downstream of the gate. */
+    private val canonicalTmp = canonicalPath("/tmp")!!
 
     /**
      * An [AgentFactory] that FAILS the test if import ever touches it: import must never build an
@@ -103,7 +108,7 @@ class SessionImportTest {
             assertEquals("kt-imp00001", row.tmuxSession, "tmuxSession from the pure sessionName formatter")
             assertEquals("kt-imp00001", row.name, "name defaults to the tmux session name")
             assertEquals("claude", row.agent)
-            assertEquals("/tmp", row.cwd)
+            assertEquals(canonicalTmp, row.cwd, "the row stores the canonical (realpath) spelling")
             assertNull(row.cliVersion, "no binary was run, so no version")
             assertNull(row.cliPath, "no binary was run, so no path")
             assertNull(row.model, "model arrives only after the first resume")
@@ -123,7 +128,7 @@ class SessionImportTest {
             )
 
             // The probe was asked exactly the (agent, cwd, id) triple that went into the row.
-            assertEquals(listOf(Triple("claude", "/tmp", providerId)), probed)
+            assertEquals(listOf(Triple("claude", canonicalTmp, providerId)), probed)
 
             // ZERO tmux side effects — sessionName is a pure formatter, everything else untouched.
             assertTrue(tmux.newSessionCommands.isEmpty(), "import must not create a tmux session")
@@ -141,7 +146,7 @@ class SessionImportTest {
             // ONE probe answers BOTH the import and the reconcile, and only for the exact triple the
             // import stores — the discovery↔probe consistency guard: a mismatching cwd would flunk the
             // import instead of silently degrading resumable → crashed on the next daemon start.
-            val probe = VendorStoreProbe { a, c, id -> a == "claude" && c == "/tmp" && id == providerId }
+            val probe = VendorStoreProbe { a, c, id -> a == "claude" && c == canonicalTmp && id == providerId }
             val mgr = manager(store, tmux, probe = probe)
             mgr.importSession("claude", providerId, cwd = "/tmp")
 
@@ -337,7 +342,7 @@ class SessionImportTest {
             }
 
             assertEquals("codex", ex.agentKind)
-            assertEquals("/tmp", ex.cwd)
+            assertEquals(canonicalTmp, ex.cwd, "the error names the canonical cwd the probe was keyed on")
             assertTrue(ex.message!!.contains("--cwd"), "the error names the --cwd workaround: ${ex.message}")
             assertTrue(ex.message!!.contains("archived"), "…and archived codex sessions as a cause: ${ex.message}")
             assertTrue(store.listSessions().isEmpty(), "no row was created")
@@ -374,8 +379,29 @@ class SessionImportTest {
             val meta = mgr.importSession("claude", providerId, cwd = "/tmp")
 
             assertFalse(locatorAsked, "discovery is not consulted when the caller supplies a cwd")
-            assertEquals(listOf("/tmp"), probedCwds, "the probe sees the explicit cwd")
-            assertEquals("/tmp", meta.cwd, "the explicit cwd is what the row stores")
+            assertEquals(listOf(canonicalTmp), probedCwds, "the probe sees the explicit cwd, canonicalized")
+            assertEquals(canonicalTmp, meta.cwd, "the explicit cwd (canonical form) is what the row stores")
+        }
+    }
+
+    @Test
+    fun anExplicitCwdIsCanonicalizedThroughTheFilesystemBeforeTheProbeAndTheRow() = runBlocking {
+        withTimeout(20_000) {
+            // The daemon is the one place with the real filesystem in hand, so IT owns canonicalization:
+            // a `/repo/./`-style spelling (the Web UI / API can send one raw), a trailing slash, and a
+            // symlinked prefix (`/tmp` really is `/private/tmp` on macOS) must all converge on the ONE
+            // string Claude's transcript key encodes and the Reconciler later re-probes — a verbatim
+            // spelling would falsely reject a valid claude import and persist a noncanonical codex cwd.
+            // Deliberately NOT lexical: realpath crosses the symlink, a string cleanup cannot.
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val probedCwds = mutableListOf<String>()
+            val mgr = manager(store, probe = VendorStoreProbe { _, c, _ -> probedCwds += c; true })
+
+            val meta = mgr.importSession("claude", providerId, cwd = "/tmp/./")
+
+            assertEquals("/private/tmp", canonicalTmp, "/tmp is a symlink — realpath must cross it")
+            assertEquals(canonicalTmp, meta.cwd, "the row stores the canonical form of a messy spelling")
+            assertEquals(listOf(canonicalTmp), probedCwds, "the probe was keyed on the canonical form")
         }
     }
 
@@ -401,9 +427,10 @@ class SessionImportTest {
     fun aRelativeCwdIsRejectedAtTheDaemon() = runBlocking {
         withTimeout(20_000) {
             // The CLI resolves relative paths client-side, but the Web UI / any API client can send one
-            // raw. The daemon lives under launchd with cwd `/`, so access(F_OK) on "tmp" would answer
-            // for "/tmp" — and for codex the probe ignores cwd entirely, so the raw relative string
-            // would be stored and later mis-resolved by resume's `tmux new-session -c`.
+            // raw. The daemon lives under launchd with cwd `/`, so realpath(3) on "tmp" would resolve
+            // it against `/` — an answer the caller never meant — and for codex the probe ignores cwd
+            // entirely, so a quietly-resolved wrong path would be stored and later handed to resume's
+            // `tmux new-session -c`.
             val store = SqliteEventStore.inMemory(now = { 42L })
             var probeAsked = false
             val mgr = manager(store, probe = VendorStoreProbe { _, _, _ -> probeAsked = true; true })
@@ -421,8 +448,8 @@ class SessionImportTest {
     @Test
     fun aCwdThatIsAPlainFileIsRejected() = runBlocking {
         withTimeout(20_000) {
-            // access(F_OK) alone accepted a file; tmux `new-session -c` would only trip over it at
-            // resume time, long after the row was stored.
+            // Existence alone (realpath succeeding) accepts a file; tmux `new-session -c` would only
+            // trip over it at resume time, long after the row was stored.
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
 
@@ -459,10 +486,13 @@ class SessionImportTest {
     @Test
     fun aDiscoveredCwdThatFailsTheProbeFailsLoudlyNotSilently() = runBlocking {
         withTimeout(20_000) {
-            // The claude mismatch shape: discovery found the transcript and read its recorded cwd, but
-            // that cwd re-encodes into a different project dir (/tmp vs /private/tmp), so the probe —
-            // the same question the Reconciler will re-ask — cannot see it. This must be a loud error
-            // naming --cwd, never a session that silently degrades resumable → crashed after restart.
+            // The claude mismatch shape that SURVIVES canonicalization: discovery found the transcript
+            // and read its recorded cwd, but even the canonical form of that cwd re-encodes into a
+            // project dir the probe — the same question the Reconciler will re-ask — cannot see. This
+            // must be a loud error naming --cwd, never a session that silently degrades
+            // resumable → crashed after restart. (The /tmp-vs-/private/tmp shape specifically is now
+            // HEALED by realpath before the probe — ImportWiringTest pins that — so the loud path is
+            // for genuinely different directories.)
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(
                 store,
@@ -474,7 +504,7 @@ class SessionImportTest {
                 mgr.importSession("claude", providerId) // no explicit cwd — discovery answers
             }
 
-            assertEquals("/tmp", ex.cwd, "the error names the cwd discovery settled on")
+            assertEquals(canonicalTmp, ex.cwd, "the error names the canonical form of the discovered cwd")
             assertTrue(ex.message!!.contains("--cwd"), "…with the --cwd workaround: ${ex.message}")
             assertTrue(store.listSessions().isEmpty(), "no row was created")
         }
@@ -532,7 +562,7 @@ class SessionImportTest {
             val meta = captured.await()
             assertEquals(SessionId("imp00001"), meta.id, "resume wires model capture for the revived session")
             assertEquals("codex", meta.agent)
-            assertEquals("/tmp", meta.cwd, "…with the cwd the rollout scan needs")
+            assertEquals(canonicalTmp, meta.cwd, "…with the (canonical) cwd the rollout scan needs")
             assertEquals(1, tmux.newSessionCommands.size, "the resume actually launched")
         }
     }

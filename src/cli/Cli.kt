@@ -353,11 +353,13 @@ class UnresolvableCwdException(message: String) : IllegalStateException(message)
  * against `/` — the wrong directory. The CLI resolves it here, against its own cwd, before sending.
  * Pure (no IO), so it is unit-tested directly.
  *
- * `.` and `..` segments (and duplicate/trailing slashes) are collapsed HERE, not left for tmux to
- * canonicalize at launch: `import` probes the provider's on-disk store with this exact string BEFORE any
- * tmux session exists — Claude encodes the project cwd into a transcript directory name — so an
- * unnormalized `--cwd ../proj` (stored as `/a/proj/../proj`) would miss transcripts the canonical
- * `/a/proj` names, rejecting a perfectly valid import. See [normalizeAbsolutePath].
+ * `.` segments and duplicate/trailing slashes are collapsed HERE (pure spelling — the same directory
+ * either way); `..` segments deliberately pass through UNRESOLVED, because collapsing `..` lexically
+ * changes meaning across symlinks (macOS: `/tmp/../Users` is lexically `/Users`, but /tmp is a symlink
+ * into /private, so the filesystem's answer is `/private/Users`). Downstream owns them with the real
+ * tree in hand: `start` hands the path to `tmux new-session -c` (the kernel resolves it at launch), and
+ * `import` is canonicalized by the DAEMON with `realpath(3)` before the vendor-store probe runs (see
+ * SessionManager.importSession). See [normalizeAbsolutePath].
  *
  * The result is ABSOLUTE in every branch, or it throws:
  * - an absolute [cwd] passes through (normalized) and never consults [base];
@@ -379,23 +381,17 @@ fun resolveCwdAgainst(base: String, cwd: String?): String {
 }
 
 /**
- * Collapse `.`/`..` segments, duplicate slashes and any trailing slash in an ABSOLUTE [path]; `..` above
- * root clamps at root (`/.. → /`, like the kernel), so the result is always absolute — which is also what
- * keeps the degenerate joins (`"//sub"`, `"/base/./"`) from ever emitting `""` or a doubled slash.
- * Lexical on purpose — no filesystem access, no symlink resolution: the goal is the canonical STRING the
- * daemon's vendor-store probe compares against, not a realpath.
+ * Collapse `.` segments, duplicate slashes and any trailing slash in an ABSOLUTE [path] — spelling-only
+ * cleanup that can never change which directory is named (it is also what keeps the degenerate joins,
+ * `"//sub"` / `"/base/./"`, from ever emitting `""` or a doubled slash). `..` segments are deliberately
+ * KEPT, not collapsed: `..` crosses a directory boundary, and a lexical collapse resolves it against the
+ * path's SPELLING while the kernel resolves it against the real (symlink-traversed) tree — the two
+ * disagree whenever a prefix is a symlink (`/tmp/../Users` really names `/private/Users`). Only code
+ * with the filesystem in hand may resolve `..`: tmux at launch for `start`, the daemon's `realpath(3)`
+ * for `import`.
  */
-private fun normalizeAbsolutePath(path: String): String {
-    val segments = ArrayDeque<String>()
-    for (segment in path.split('/')) {
-        when (segment) {
-            "", "." -> {}
-            ".." -> segments.removeLastOrNull()
-            else -> segments.addLast(segment)
-        }
-    }
-    return "/" + segments.joinToString("/")
-}
+private fun normalizeAbsolutePath(path: String): String =
+    "/" + path.split('/').filter { it.isNotEmpty() && it != "." }.joinToString("/")
 
 /**
  * The process's current working directory (`start`'s default cwd): `getcwd`, else `$PWD`, else `"."`.

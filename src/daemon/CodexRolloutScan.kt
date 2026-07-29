@@ -2,6 +2,8 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.extractModel
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.SessionMeta
+import io.kotgent.store.EventStore
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -152,24 +154,6 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
     }
 
     /**
-     * The model of the newest rollout written for [cwd] at or after [notBeforeMillis], or `null`. Codex
-     * records the model in a `turn_context` record (a few lines in, PAST the multi-KB `session_meta` line),
-     * so this reads a larger [MODEL_SCAN_BYTES] head than [discoverSessionId] and pulls the first
-     * `"model":"…"` out of it with [extractModel] (which skips `session_meta`'s neighbouring
-     * `model_provider`). Best-effort — a rollout with no model line yields `null`.
-     */
-    fun discoverModel(cwd: String, notBeforeMillis: Long): String? {
-        val threshold = notBeforeMillis - MTIME_SLACK_MILLIS
-        return rolloutFiles()
-            .filter { it.mtimeMillis >= threshold }
-            .sortedByDescending { it.mtimeMillis }
-            .firstNotNullOfOrNull { file ->
-                val head = readHead(file.path, MODEL_SCAN_BYTES) ?: return@firstNotNullOfOrNull null
-                if (rolloutCwd(head) == cwd) extractModel(head) else null
-            }
-    }
-
-    /**
      * The recorded `cwd` of the live rollout for [providerSessionId], or `null` when none exists — the
      * Codex half of import discovery ([codexSessionLocator]). The rollout is matched by id in the file
      * NAME (like [hasRollout]), then its `cwd` is read out of the first (`session_meta`) line exactly as
@@ -181,29 +165,16 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
         rolloutHeadOf(providerSessionId, HEAD_BYTES)?.let(::rolloutCwd)
 
     /**
-     * The recorded model of the live rollout for [providerSessionId], or `null`. Precise where
-     * [discoverModel]'s cwd+mtime heuristic is not: the rollout is matched by id in the file NAME
-     * (like [cwdOf]), so a busier neighbour session in the same cwd can never answer for this one.
-     * Used on the resume path, where the provider id is always known ([SessionManager.resume]
-     * requires it) — a FRESH codex launch has no captured id yet and stays on [discoverModel].
+     * The recorded model of the live rollout for [providerSessionId], or `null` — the ONE model lookup.
+     * The rollout is matched by id in the file NAME (like [cwdOf]), so a busier neighbour session in
+     * the same cwd can never answer for this one. The model sits in a `turn_context` record a few
+     * lines PAST the multi-KB `session_meta` line, hence the [MODEL_SCAN_BYTES] window and
+     * [extractModel] (which skips `session_meta`'s neighbouring `model_provider`). A rollout with no
+     * `turn_context` yet — codex writes it only once the session takes its first turn — is an honest
+     * `null`, and [captureCodexModelOnce]'s retry loop polls again.
      */
     fun modelOf(providerSessionId: ProviderSessionId): String? =
         rolloutHeadOf(providerSessionId, MODEL_SCAN_BYTES)?.let(::extractModel)
-
-    /**
-     * The one model-capture lookup rule (the daemon's `captureModelInBackground` wiring): with a KNOWN
-     * [providerSessionId] (the resume path — [SessionManager.resume] requires one) the answer comes
-     * ONLY from that session's id-keyed rollout ([modelOf]). A temporary miss there — `turn_context`
-     * is not written until the session takes its first turn — must stay `null` so the caller's retry
-     * loop polls again; it must NEVER fall back to [discoverModel], because on resume [notBeforeMillis]
-     * is the ORIGINAL launch time, so the cwd+mtime heuristic would span every rollout written since
-     * and could stamp a busier neighbour session's model over this one's. Only an id-less FRESH launch
-     * (codex before its id capture lands) uses the heuristic, where the window is tight
-     * (`createdAt` ≈ now).
-     */
-    fun modelForCapture(providerSessionId: ProviderSessionId?, cwd: String, notBeforeMillis: Long): String? =
-        if (providerSessionId != null) modelOf(providerSessionId)
-        else discoverModel(cwd, notBeforeMillis)
 
     /**
      * The first [bytes] of the live rollout named by [providerSessionId] — the ONE id-keyed lookup
@@ -279,4 +250,55 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
 fun codexVendorStoreProbe(codexDir: String = defaultCodexDir()): VendorStoreProbe {
     val scan = CodexRolloutScan(codexDir)
     return VendorStoreProbe { _, _, providerSessionId -> scan.hasRollout(providerSessionId) }
+}
+
+/**
+ * One attempt of the background model-capture poll for a codex session: read this session's own
+ * ID-KEYED rollout ([CodexRolloutScan.modelOf]) and persist a hit. Returns `true` when a model was
+ * persisted — the answer that ends the caller's retry loop.
+ *
+ * The provider id is re-read from the ROW on every attempt, never taken from the launch-time [meta]
+ * snapshot: a FRESH codex launch has no id yet, and the background id capture can land mid-poll —
+ * only from that moment can any attempt answer. (On resume the id is already in [meta] and the row
+ * agrees; the fallback covers a row deleted mid-poll.)
+ *
+ * While the id is unknown, an attempt persists NOTHING — there is deliberately no cwd+mtime heuristic
+ * fallback (one existed, and every guarded variant of it lost the same race): a codex `SessionStart`
+ * hook can bind the id at ANY later moment, including after this poll has exhausted its attempts, and
+ * a FIRST bind (null → id) triggers no model correction — so an id-less guess (possibly a busier
+ * same-cwd NEIGHBOUR rollout's model), persisted at any point, could outlive every chance of being
+ * overwritten. For a fresh launch the id binds within seconds (hook or rollout discovery — the same
+ * rollout a heuristic would have read) and the id-keyed lookup stamps the model correctly; a session
+ * whose id NEVER binds is already degraded — resume itself requires the id — and its honest `null`
+ * model beats a neighbour's guess.
+ *
+ * The row's id itself can be a wrong PROVISIONAL one: [CodexRolloutScan.discoverSessionId]'s cwd+mtime
+ * match can bind a same-cwd neighbour's id, which makes this attempt persist the neighbour's model and
+ * stop the poll. That is corrected upstream, not here: a hook `SessionBound` that DISPLACES a different
+ * persisted id fires the ingress rebind seam, and `SessionManager.onProviderIdRebound` clears the
+ * suspect model and restarts this poll under the now-authoritative id.
+ *
+ * The write itself is CONDITIONAL on the row still holding the id this attempt's lookup was keyed by
+ * ([EventStore.setModelForProvider]): the id is read, the rollout tree is scanned (slow), and only then
+ * is the model persisted — a hook rebind (displace + clear) landing inside that window would otherwise
+ * be raced past by an unconditional write, permanently restoring the displaced id's (possibly the
+ * neighbour's) model. A raced attempt writes zero rows and answers `false`, so the poll simply retries
+ * keyed off the row's now-authoritative id.
+ *
+ * A top-level function (not inline in `Commands.daemon`'s wiring lambda) because the daemon cannot be
+ * started under automation — this IS the poll body the daemon schedules, testable over a throwaway
+ * codex home.
+ */
+suspend fun captureCodexModelOnce(
+    store: EventStore,
+    scan: CodexRolloutScan,
+    meta: SessionMeta,
+    now: () -> Long = ::daemonEpochMillis,
+): Boolean {
+    val providerId = store.getSession(meta.id)?.providerSessionId
+        ?: meta.providerSessionId
+        ?: return false // no id yet — persist nothing, keep polling (see the KDoc)
+    val model = scan.modelOf(providerId) ?: return false
+    // Atomically conditional on the id the lookup above was keyed by — see the KDoc's race paragraph.
+    return store.setModelForProvider(meta.id, providerId, model, now())
 }

@@ -102,11 +102,24 @@ UPDATE sessions
 SET read_cursor = MAX(read_cursor, MIN(?, last_seq))
 WHERE id = ?;
 
--- Set ONLY the discovered model (and updated_at). Best-effort, once per session; never touches state.
+-- Set ONLY the discovered model (and updated_at); never touches state. Best-effort and REPEATABLE, not
+-- once-per-session: the hook ingress' provider-id rebind correction clears it (NULL) and re-runs the
+-- capture, which writes again (see EventStore.setModel).
 setModel:
 UPDATE sessions
 SET model = ?, updated_at = ?
 WHERE id = ?;
+
+-- Set the model ONLY IF the row still holds the provider id the capture's lookup was keyed by. The check
+-- and the write are ONE statement, so under the store's single-writer lock a capture that read the row's
+-- id, scanned the rollout tree, and then raced a hook rebind (which displaced the id and cleared the
+-- model) writes ZERO rows instead of restoring the displaced id's — possibly a same-cwd neighbour's —
+-- model past the rebind's clear. A NULL provider_session_id never matches (SQL NULL comparison), which is
+-- right: an id-less row has nothing to condition on.
+setModelForProvider:
+UPDATE sessions
+SET model = ?, updated_at = ?
+WHERE id = ? AND provider_session_id = ?;
 
 get:
 SELECT *

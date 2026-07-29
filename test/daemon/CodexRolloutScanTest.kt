@@ -1,8 +1,15 @@
 package io.kotgent.daemon
 
+import io.kotgent.core.AgentEvent
+import io.kotgent.core.EventSource
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.SessionId
+import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.store.EventStore
+import io.kotgent.store.SqliteEventStore
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.toKString
@@ -250,34 +257,14 @@ class CodexRolloutScanTest {
         assertNull(CodexRolloutScan(codexDir).cwdOf(id))
     }
 
-    // --- model discovery ---
-
-    @Test
-    fun discoverModelReadsTheModelFromTurnContextPastTheHeadBoundary() {
-        val codexDir = makeCodexDir()
-        val id = uuid('d')
-        // The model sits in a turn_context record AFTER a >8 KB session_meta line — past discoverSessionId's
-        // 8 KB head, so this only works because discoverModel reads the larger MODEL_SCAN_BYTES window.
-        placeRolloutWithModel(codexDir, "2026", "07", "23", id, cwd = "/work/model", model = "gpt-5.5")
-
-        val scan = CodexRolloutScan(codexDir)
-        assertEquals("gpt-5.5", scan.discoverModel("/work/model", notBeforeMillis = 0))
-        assertNull(scan.discoverModel("/work/nowhere", notBeforeMillis = 0), "no matching cwd -> null")
-    }
-
-    @Test
-    fun discoverModelIsNullWhenTheRolloutHasNoModel() {
-        val codexDir = makeCodexDir()
-        // A plain session_meta-only rollout (no turn_context, no model) — best-effort miss.
-        placeRollout(codexDir, "2026", "07", "23", uuid('e'), cwd = "/work/nomodel")
-        assertNull(CodexRolloutScan(codexDir).discoverModel("/work/nomodel", notBeforeMillis = 0))
-    }
+    // --- model capture (id-keyed ONLY — no id-less result is ever written) ---
 
     @Test
     fun modelOfReadsTheIdKeyedRolloutIgnoringNeighboursInTheSameCwd() {
-        // The resume-path capture: the provider id is known, so the model comes from THAT session's
-        // rollout (matched by id in the file name) — a newer neighbour session in the same cwd, which
-        // discoverModel's cwd+mtime heuristic could prefer, must never answer for it.
+        // The one model lookup: the provider id keys the file NAME, so a newer neighbour session in
+        // the same cwd never answers for this one. The fixture's session_meta line is padded past the
+        // 8 KB HEAD_BYTES window, so this also pins that modelOf reads the larger MODEL_SCAN_BYTES
+        // head the turn_context record sits behind.
         val codexDir = makeCodexDir()
         val mine = uuid('a')
         val neighbour = uuid('b')
@@ -291,27 +278,242 @@ class CodexRolloutScanTest {
     }
 
     @Test
-    fun modelForCaptureNeverFallsBackToTheHeuristicWhenTheProviderIdIsKnown() {
-        // The resume-path hazard: this session's rollout has no turn_context YET (codex writes the model
-        // only once the resumed session takes a turn), while a busier neighbour in the same cwd already
-        // has one. Falling back to the cwd+mtime heuristic would persist the NEIGHBOUR's model; the
-        // id-keyed lookup must answer null so the capture loop retries against the right rollout.
+    fun modelOfIsNullWhenTheRolloutHasNoTurnContextYet() {
+        // Codex writes turn_context (and the model in it) only once the session takes its first turn.
+        // Until then the id-keyed lookup must answer an honest null so the capture loop retries — a
+        // busier same-cwd neighbour that already has a model must never answer for this session.
         val codexDir = makeCodexDir()
         val mine = uuid('a')
-        val neighbour = uuid('b')
         placeRollout(codexDir, "2026", "07", "23", mine, cwd = "/work/shared")
-        placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+        placeRolloutWithModel(codexDir, "2026", "07", "24", uuid('b'), cwd = "/work/shared", model = "gpt-6")
 
-        val scan = CodexRolloutScan(codexDir)
-        assertNull(
-            scan.modelForCapture(mine, "/work/shared", notBeforeMillis = 0),
-            "a temporary id-keyed miss stays null — it must not adopt the neighbour's model",
-        )
-        assertEquals(
-            "gpt-6",
-            scan.modelForCapture(null, "/work/shared", notBeforeMillis = 0),
-            "an id-less fresh launch still discovers through the cwd+mtime heuristic",
-        )
+        assertNull(CodexRolloutScan(codexDir).modelOf(mine))
+    }
+
+    @Test
+    fun captureCodexModelOnceReReadsTheProviderIdTheBackgroundBindLandedMidPoll() = runBlocking {
+        withTimeout(20_000) {
+            // The fresh-launch poll: the capture loop starts with a launch-time meta whose provider id
+            // is NULL (codex has no --session-id), and the background id capture lands mid-poll. Every
+            // attempt must re-read the ROW's current id — a loop pinned to the stale null could never
+            // capture a fresh launch's model at all.
+            val codexDir = makeCodexDir()
+            val mine = uuid('a')
+            val neighbour = uuid('b')
+            placeRolloutWithModel(codexDir, "2026", "07", "23", mine, cwd = "/work/shared", model = "gpt-5.5")
+            placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val launchMeta = SessionMeta(
+                id = SessionId("cap00001"),
+                name = "kt-cap00001", tags = emptyList(), agent = CODEX_AGENT_KIND,
+                providerSessionId = null, // what the loop closed over at launch time
+                cwd = "/work/shared", tmuxSession = "kt-cap00001", paneId = null,
+                state = SessionState.running, stateSource = EventSource.system,
+                createdAt = 0L, updatedAt = 0L,
+            )
+            // The bind has landed by the time this attempt runs: the ROW knows the id.
+            store.upsertSession(launchMeta.copy(providerSessionId = mine))
+
+            val persisted = captureCodexModelOnce(store, CodexRolloutScan(codexDir), launchMeta, now = { 43L })
+
+            assertTrue(persisted, "the id-keyed lookup answered")
+            assertEquals(
+                "gpt-5.5",
+                store.getSession(SessionId("cap00001"))!!.model,
+                "the row's CURRENT id keys the lookup — never the launch-time null",
+            )
+        }
+    }
+
+    @Test
+    fun captureCodexModelOncePersistsNothingWhileTheIdIsUnknown() = runBlocking {
+        withTimeout(20_000) {
+            // While the id is unknown an attempt persists NOTHING (no cwd+mtime heuristic exists any
+            // more): an id-less hit could only be a same-cwd guess, and a FIRST SessionStart bind
+            // (null -> id) landing at any later moment triggers no model correction — only a bind that
+            // DISPLACES a different persisted id fires the ingress rebind seam — so a guess once
+            // written could stick forever.
+            // And once the id IS bound, an id-keyed miss (this session's rollout has no turn_context
+            // yet) stays an honest null so the loop keeps polling.
+            val codexDir = makeCodexDir()
+            val mine = uuid('a')
+            val neighbour = uuid('b')
+            // This session's own rollout has no turn_context; the same-cwd neighbour has one.
+            placeRollout(codexDir, "2026", "07", "23", mine, cwd = "/work/shared")
+            placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val launchMeta = SessionMeta(
+                id = SessionId("cap00003"),
+                name = "kt-cap00003", tags = emptyList(), agent = CODEX_AGENT_KIND,
+                providerSessionId = null, // what the loop closed over at launch time
+                cwd = "/work/shared", tmuxSession = "kt-cap00003", paneId = null,
+                state = SessionState.running, stateSource = EventSource.system,
+                createdAt = 0L, updatedAt = 0L,
+            )
+            store.upsertSession(launchMeta)
+
+            val scan = CodexRolloutScan(codexDir)
+            assertFalse(captureCodexModelOnce(store, scan, launchMeta, now = { 43L }))
+            assertNull(
+                store.getSession(SessionId("cap00003"))!!.model,
+                "an id-less attempt persists nothing — any hit could be the neighbour's",
+            )
+
+            // The bind lands mid-poll. The next attempt runs id-keyed, misses (no turn_context yet),
+            // and the model honestly stays null — no fallback exists to guess from.
+            store.upsertSession(launchMeta.copy(providerSessionId = mine))
+            assertFalse(captureCodexModelOnce(store, scan, launchMeta, now = { 44L }))
+            assertNull(
+                store.getSession(SessionId("cap00003"))!!.model,
+                "a bound id makes the id-keyed lookup the only source; a miss stays null",
+            )
+        }
+    }
+
+    @Test
+    fun captureCodexModelOnceNeverPersistsAGuessEvenWhenTheIdNeverBinds() = runBlocking {
+        withTimeout(20_000) {
+            // The id never binds (hook lost, rollout discovery failed). Every attempt — including the
+            // poll's last — persists nothing: a delayed codex SessionStart can still bind the id AFTER
+            // the poll has exited, and a FIRST bind (null -> id) triggers no model correction (the
+            // ingress rebind seam fires only when a DIFFERENT persisted id is displaced), so any guess
+            // written here (the same-cwd neighbour's gpt-6) would stick forever. Such a session is
+            // already degraded — resume itself requires the id — and its honest null model beats a guess.
+            val codexDir = makeCodexDir()
+            placeRolloutWithModel(codexDir, "2026", "07", "24", uuid('b'), cwd = "/work/solo", model = "gpt-6")
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val launchMeta = SessionMeta(
+                id = SessionId("cap00004"),
+                name = "kt-cap00004", tags = emptyList(), agent = CODEX_AGENT_KIND,
+                providerSessionId = null,
+                cwd = "/work/solo", tmuxSession = "kt-cap00004", paneId = null,
+                state = SessionState.running, stateSource = EventSource.system,
+                createdAt = 0L, updatedAt = 0L,
+            )
+            store.upsertSession(launchMeta)
+
+            val scan = CodexRolloutScan(codexDir)
+            repeat(3) { attempt ->
+                assertFalse(captureCodexModelOnce(store, scan, launchMeta, now = { 43L + attempt }))
+            }
+            assertNull(
+                store.getSession(SessionId("cap00004"))!!.model,
+                "no attempt ever writes an id-less result — the model stays an honest null",
+            )
+        }
+    }
+
+    @Test
+    fun aHookRebindAfterAScanBoundNeighbourCorrectsThePersistedModel() = runBlocking {
+        withTimeout(20_000) {
+            // The full mislabeling chain, driven through the exact production seams (no daemon):
+            //   1. the cwd+mtime discovery fallback binds the same-cwd NEIGHBOUR's id (under mtime ties
+            //      discoverSessionId can pick either same-cwd rollout — that IS the hazard, so the
+            //      neighbour is bound deterministically through the same ProviderIdCapture.bind the
+            //      discovery path calls);
+            //   2. the id-keyed capture trusts the row's id, persists the NEIGHBOUR's model, and stops;
+            //   3. the authoritative hook SessionStart appends SessionBound with the true id — the
+            //      reducer overwrites the id ("the hook wins over the scan") but corrects no model;
+            //   4. the ingress' rebind seam (SessionManager.onProviderIdRebound) clears the suspect
+            //      model and re-runs the capture, which now keys off the true id.
+            val codexDir = makeCodexDir()
+            val mine = uuid('a')
+            val neighbour = uuid('b')
+            placeRolloutWithModel(codexDir, "2026", "07", "23", mine, cwd = "/work/shared", model = "gpt-5.5")
+            placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+            val scan = CodexRolloutScan(codexDir)
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val sid = SessionId("rbnd0001")
+            val launchMeta = SessionMeta(
+                id = sid, name = "kt-rbnd0001", agent = CODEX_AGENT_KIND,
+                providerSessionId = null, // fresh codex launch: no id yet
+                cwd = "/work/shared", tmuxSession = "kt-rbnd0001", paneId = null,
+                state = SessionState.running, stateSource = EventSource.system,
+                createdAt = 0L, updatedAt = 0L,
+            )
+            store.upsertSession(launchMeta)
+            val idCapture = ProviderIdCapture(store, this)
+            val recapture = CompletableDeferred<SessionMeta>()
+            val mgr = SessionManager(
+                FakeTmux(), store, PaneRegistry(),
+                AgentFactory { _, _ -> throw AssertionError("the chain never launches an adapter") },
+                idCapture,
+                VendorStoreProbe { _, _, _ -> false }, VendorSessionLocator { _, _ -> null },
+                setOf("claude", "codex"),
+                captureModelInBackground = { m -> recapture.complete(m) },
+                now = { 43L },
+            )
+
+            // 1 + 2: scan-bound neighbour id -> the capture persists the neighbour's model and stops.
+            assertTrue(idCapture.bind(sid, neighbour), "the discovery fallback's bind path")
+            assertTrue(captureCodexModelOnce(store, scan, launchMeta, now = { 43L }))
+            assertEquals("gpt-6", store.getSession(sid)!!.model, "the neighbour's model was persisted")
+
+            // 3: the hook displaces the id; the append alone corrects nothing.
+            store.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
+            assertEquals(mine, store.getSession(sid)!!.providerSessionId, "the hook wins over the scan")
+            assertEquals("gpt-6", store.getSession(sid)!!.model, "…but the suspect model survives the append")
+
+            // 4: the rebind seam clears it and the re-run capture stamps the TRUE session's model.
+            mgr.onProviderIdRebound(sid)
+            assertNull(store.getSession(sid)!!.model, "the suspect model is cleared before any recapture")
+            val again = recapture.await()
+            assertTrue(captureCodexModelOnce(store, scan, again, now = { 44L }), "the re-run answers id-keyed")
+            assertEquals("gpt-5.5", store.getSession(sid)!!.model, "the true model replaces the neighbour's")
+        }
+    }
+
+    @Test
+    fun captureCodexModelOnceCannotRacePastTheRebindClearWithTheDisplacedIdsModel() = runBlocking {
+        withTimeout(20_000) {
+            // The residual the rebind seam alone left open: an attempt that read the scan-bound
+            // NEIGHBOUR id, and then had the authoritative hook displace that id (and the seam clear
+            // the model) WHILE it was still scanning the rollout tree, used to write the neighbour's
+            // model unconditionally — racing past the clear and restoring the mislabel with its poll
+            // already stopped. The write is now atomically conditional on the row still holding the id
+            // the lookup was keyed by (EventStore.setModelForProvider), so the raced attempt writes
+            // zero rows and answers false — the poll retries keyed off the now-authoritative id.
+            val codexDir = makeCodexDir()
+            val mine = uuid('a')
+            val neighbour = uuid('b')
+            placeRollout(codexDir, "2026", "07", "23", mine, cwd = "/work/shared") // no turn_context yet
+            placeRolloutWithModel(codexDir, "2026", "07", "24", neighbour, cwd = "/work/shared", model = "gpt-6")
+            val real = SqliteEventStore.inMemory(now = { 42L })
+            val sid = SessionId("race0001")
+            val launchMeta = SessionMeta(
+                id = sid, name = "kt-race0001", agent = CODEX_AGENT_KIND,
+                providerSessionId = null, // fresh codex launch: no id yet
+                cwd = "/work/shared", tmuxSession = "kt-race0001", paneId = null,
+                state = SessionState.running, stateSource = EventSource.system,
+                createdAt = 0L, updatedAt = 0L,
+            )
+            real.upsertSession(launchMeta)
+            real.append(sid, AgentEvent.SessionBound(neighbour), EventSource.system) // the scan-bound id
+
+            // Interleave the displacement into the capture's read-scan-write window: the id the attempt
+            // read goes stale the moment it starts scanning.
+            val store = object : EventStore by real {
+                private var raced = false
+                override suspend fun getSession(sessionId: SessionId): SessionMeta? {
+                    val row = real.getSession(sessionId)
+                    if (!raced) {
+                        raced = true
+                        real.append(sid, AgentEvent.SessionBound(mine), EventSource.hook) // the hook displaces
+                        real.setModel(sid, null, 43L) // the rebind seam's clear
+                    }
+                    return row
+                }
+            }
+
+            assertFalse(
+                captureCodexModelOnce(store, CodexRolloutScan(codexDir), launchMeta, now = { 44L }),
+                "a capture holding the displaced id writes zero rows",
+            )
+            assertNull(
+                real.getSession(sid)!!.model,
+                "the neighbour's model cannot race past the rebind's clear",
+            )
+        }
     }
 
     // --- harness (throwaway $TMPDIR fake ~/.codex; NEVER the real one) --------------------------------
@@ -374,7 +576,7 @@ class CodexRolloutScanTest {
 
     /**
      * Like [placeRollout] but with a realistically LARGE `session_meta` line (padded past the 8 KB head)
-     * followed by a `turn_context` record carrying the [model] — the shape [CodexRolloutScan.discoverModel]
+     * followed by a `turn_context` record carrying the [model] — the shape [CodexRolloutScan.modelOf]
      * must read past to find. The session_meta carries `model_provider` but not `model`, guarding the
      * false-match.
      */

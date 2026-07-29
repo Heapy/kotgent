@@ -27,6 +27,7 @@ import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorSessionLocator
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
+import io.kotgent.daemon.canonicalPath
 import io.kotgent.push.PushStore
 import io.kotgent.push.PushSubscription
 import io.kotgent.push.PushNotifier
@@ -285,6 +286,30 @@ class TransportTest {
             SessionUpdate(SessionId("arc01"), SessionState.stopped, Seq(1), 0L, archived = true).toDto().archived,
             "the live SessionUpdateDto carries archived",
         )
+    }
+
+    @Test
+    fun onlyTheSnapshotUpdateDtoCarriesTheModelAndMarksItselfAsAuthoritative() {
+        // The wire cannot distinguish "model not tracked" from "model cleared" by the null alone
+        // (TRANSPORT_JSON encodes defaults), so the snapshot/resync form marks itself: the client takes
+        // its model VERBATIM — null included, which is how the provider-id rebind's clear reaches an
+        // already-connected UI — while the live signal's untracked null must never blank anything.
+        val meta = SessionMeta(
+            id = SessionId("mdl01"), name = "n", agent = "codex", cwd = "/w",
+            tmuxSession = "kt-mdl01", state = SessionState.running, createdAt = 1L, updatedAt = 1L,
+            model = "gpt-6",
+        )
+        val snapshot = meta.toUpdateDto()
+        assertTrue(snapshot.snapshot, "the snapshot/resync form marks itself")
+        assertEquals("gpt-6", snapshot.model)
+        assertNull(
+            meta.copy(model = null).toUpdateDto().model,
+            "a cleared model rides the resync as an authoritative null",
+        )
+
+        val live = SessionUpdate(SessionId("mdl01"), SessionState.running, Seq(1), 0L).toDto()
+        assertEquals(false, live.snapshot, "the live signal is not a snapshot")
+        assertNull(live.model, "the live signal does not track the model")
     }
 
     @Test
@@ -890,7 +915,7 @@ class TransportTest {
         assertEquals("resumable", dto.state, "an import lands resumable — nothing was launched")
         assertEquals(providerId.value, dto.providerSessionId, "the row carries the imported provider id")
         assertEquals("claude", dto.agent)
-        assertEquals("/tmp", dto.cwd)
+        assertEquals(canonicalPath("/tmp"), dto.cwd, "the row stores the canonical (realpath) cwd spelling")
         assertEquals("imported", dto.name)
         assertEquals(listOf("t1"), dto.tags)
         assertNull(dto.paneId, "no pane — import launches nothing")
@@ -1543,10 +1568,25 @@ class TransportTest {
             emitFromMeta(sessionId)
         }
 
-        override suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long): Unit = mutex.withLock {
+        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long): Unit = mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
             metas[sessionId] = m.copy(model = model, updatedAt = updatedAt)
             emitFromMeta(sessionId)
+        }
+
+        override suspend fun setModelForProvider(
+            sessionId: SessionId,
+            providerSessionId: ProviderSessionId,
+            model: String,
+            updatedAt: Long,
+        ): Boolean = mutex.withLock {
+            // Honors the contract: check-and-write atomically under the writer lock — a row whose
+            // provider id changed (a hook rebind) is left untouched and the caller told so.
+            val m = metas[sessionId] ?: return@withLock false
+            if (m.providerSessionId != providerSessionId) return@withLock false
+            metas[sessionId] = m.copy(model = model, updatedAt = updatedAt)
+            emitFromMeta(sessionId)
+            true
         }
 
         override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {

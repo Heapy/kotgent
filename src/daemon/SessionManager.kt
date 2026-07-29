@@ -22,10 +22,11 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import platform.posix.F_OK
+import kotlinx.cinterop.toKString
 import platform.posix.S_IFDIR
 import platform.posix.S_IFMT
-import platform.posix.access
+import platform.posix.free
+import platform.posix.realpath
 import platform.posix.stat
 import kotlin.random.Random
 import kotlin.time.Clock
@@ -194,8 +195,8 @@ class TranscriptNotFoundException(
     val cwd: String,
 ) : RuntimeException(
     "no live $agentKind transcript found for session '${providerSessionId.value}' under '$cwd' — " +
-        "if the session was launched in a different directory (or its recorded cwd re-encodes " +
-        "elsewhere, e.g. /tmp vs /private/tmp), pass the right one with --cwd; " +
+        "path spelling is already canonicalized (/tmp is probed as /private/tmp), so if the session " +
+        "was launched in a genuinely different directory, pass that one with --cwd; " +
         "an archived codex session is out of `codex resume`'s reach and cannot be imported",
 )
 
@@ -210,14 +211,31 @@ class DuplicateImportException(val existingId: SessionId, val archived: Boolean)
             if (archived) " (archived — Restore it instead of importing again)" else "",
     )
 
-/** Whether [path] exists on the host filesystem (`access(F_OK)`) — the import cwd existence gate. */
+/**
+ * The filesystem-canonical form of [path] (`realpath(3)`): symlinks resolved (macOS: `/tmp` →
+ * `/private/tmp`), `.`/`..` segments applied against the REAL directory tree — never lexically, which
+ * crosses symlinks wrongly — and duplicate/trailing slashes dropped. `null` when [path] does not
+ * resolve, which doubles as the import cwd existence gate. This is the ONE canonicalizer for the
+ * import cwd: providers record their process `getcwd` (exactly the realpath form) into their on-disk
+ * stores, so the probe key and the stored row must use this spelling or a valid import is falsely
+ * rejected (claude) / a noncanonical path is persisted (codex). Public because tests build their
+ * canonical expectations with it (toolchain 0.11: tests cannot see `internal`); stock `platform.posix`
+ * links into the test binary, so KT-78062 does not apply.
+ */
 @OptIn(ExperimentalForeignApi::class)
-private fun pathExists(path: String): Boolean = access(path, F_OK) == 0
+fun canonicalPath(path: String): String? {
+    val resolved = realpath(path, null) ?: return null
+    return try {
+        resolved.toKString()
+    } finally {
+        free(resolved)
+    }
+}
 
 /**
  * Whether an existing [path] is a DIRECTORY (`stat` + `S_IFDIR`) — the second half of the import cwd
- * gate. `access(F_OK)` alone accepted a plain file, which `tmux new-session -c` would only trip over
- * at resume time, long after the row was stored.
+ * gate. Existence alone ([canonicalPath] succeeding) accepts a plain file, which `tmux new-session -c`
+ * would only trip over at resume time, long after the row was stored.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun isDirectory(path: String): Boolean = memScoped {
@@ -313,10 +331,12 @@ class SessionManager(
      */
     private val discoverProviderId: suspend (SessionMeta) -> ProviderSessionId? = { null },
     /**
-     * Best-effort, fire-and-forget model capture for a freshly-started session (Codex reads it from the
-     * rollout after launch; Claude captures it via the hook path instead, so this is a no-op there). Called
-     * once from [start] with the stored meta; the daemon wires it to a background job that discovers and
-     * persists the model. Default no-op keeps it inert in tests that do not exercise it.
+     * Best-effort, fire-and-forget model capture (Codex reads it from the rollout after launch; Claude
+     * captures it via the hook path instead, so this is a no-op there). Called from [start] with the
+     * stored meta and from every successful [resume] with the revived meta — for an IMPORTED codex
+     * session, which never launched under kotgent, resume is the only place its model can ever be
+     * captured. The daemon wires it to a background job that discovers and persists the model. Default
+     * no-op keeps it inert in tests that do not exercise it.
      */
     private val captureModelInBackground: (SessionMeta) -> Unit = {},
     private val newSessionId: () -> SessionId = { SessionId(randomShortId()) },
@@ -326,6 +346,26 @@ class SessionManager(
 ) {
     /** Convenience view of [registry] as the `paneLookup` shape [io.kotgent.transport.claudeHookRoutes] takes. */
     val paneLookup: suspend (PaneId) -> SessionId? get() = registry::lookup
+
+    /**
+     * The hook ingress' provider-id REBIND correction ([io.kotgent.transport.codexHookRoutes]): called
+     * after a hook-delivered `SessionBound` displaced a DIFFERENT, already-persisted provider id. The
+     * displaced id came from the fallback rollout scan ([CodexRolloutScan.discoverSessionId]), whose
+     * cwd+mtime match can provisionally bind a same-cwd NEIGHBOUR's id — and the id-keyed model capture
+     * trusts the row's id, so a model persisted under the displaced id may be the neighbour's, with its
+     * capture poll already stopped. The captured model is therefore provably suspect: clear it, then
+     * re-run [captureModelInBackground], whose per-attempt row re-read ([captureCodexModelOnce]) keys
+     * every lookup off the id the hook just made authoritative. An IN-FLIGHT capture that already read
+     * the displaced id cannot undo this clear either: its write is atomically conditional on the row
+     * still holding that id ([io.kotgent.store.EventStore.setModelForProvider]), so it writes zero rows
+     * and keeps polling instead. The clear itself stays deliberately unconditional — null can only
+     * remove, and the worst raced case (wiping a just-landed correct model) self-heals on the re-run's
+     * immediate first attempt.
+     */
+    suspend fun onProviderIdRebound(sessionId: SessionId) {
+        store.setModel(sessionId, null, now())
+        store.getSession(sessionId)?.let(captureModelInBackground)
+    }
 
     /**
      * Leave copy-mode on [sessionId]'s pane so **programmatic** input is not eaten by the copy-mode key
@@ -685,16 +725,19 @@ class SessionManager(
      *     to lowercase (see the body) so a re-cased id cannot dodge the check;
      *  3. the cwd: an explicit [cwd] wins; otherwise [sessionLocator] discovers it from the
      *     provider's on-disk store; neither → [ImportCwdException];
-     *  4. the cwd must be an ABSOLUTE path to an existing DIRECTORY → [ImportCwdException]. The CLI
-     *     resolves relative paths client-side, but the Web UI / any API client can send one raw, and
-     *     the daemon lives under launchd with cwd `/` — a relative path stored here would later be
-     *     mis-resolved by `resume`'s `tmux new-session -c` (the codex probe ignores cwd, so nothing
-     *     downstream would catch it);
-     *  5. [vendorProbe] must see the transcript for exactly `(agentKind, cwd, providerId)` — the SAME
-     *     triple stored in the row and re-probed by the [Reconciler] on every daemon start, so a
-     *     discovered cwd that does not re-encode to the transcript (e.g. `/tmp` vs `/private/tmp`)
-     *     fails loudly here with a `--cwd` hint instead of silently degrading `resumable → crashed`
-     *     after the next restart → [TranscriptNotFoundException].
+     *  4. the cwd must be an ABSOLUTE path (the CLI resolves relative paths client-side, but the Web
+     *     UI / any API client can send one raw, and the daemon lives under launchd with cwd `/` — a
+     *     relative path stored here would later be mis-resolved by `resume`'s `tmux new-session -c`),
+     *     and is then CANONICALIZED through the filesystem ([canonicalPath], `realpath(3)`) into the
+     *     ONE spelling both the probe key and the row use: `/repo/./`, an uncollapsed `--cwd ../proj`
+     *     and a symlinked prefix (`/tmp` for `/private/tmp`) would each miss the Claude transcript key
+     *     — falsely rejecting a valid import — or persist a noncanonical codex cwd. A path that does
+     *     not resolve, or resolves to a non-directory → [ImportCwdException];
+     *  5. [vendorProbe] must see the transcript for exactly `(agentKind, canonical cwd, providerId)` —
+     *     the SAME triple stored in the row and re-probed by the [Reconciler] on every daemon start,
+     *     so a cwd that STILL does not re-encode to the transcript after canonicalization (a genuinely
+     *     different directory) fails loudly here with a `--cwd` hint instead of silently degrading
+     *     `resumable → crashed` after the next restart → [TranscriptNotFoundException].
      *
      * The whole method runs under the daemon-wide [importMutex] (see its KDoc).
      *
@@ -738,14 +781,16 @@ class SessionManager(
                     "cwd '/', so a relative path would later resolve against the wrong directory)",
             )
         }
-        if (!pathExists(resolvedCwd)) {
-            throw ImportCwdException("project directory does not exist: $resolvedCwd")
+        // Canonical through the FILESYSTEM, never lexically (KDoc gate 4): realpath resolves `.`/`..`
+        // and symlinks exactly the way the provider's own `getcwd` did when it recorded the transcript,
+        // and its failure doubles as the existence gate.
+        val canonicalCwd = canonicalPath(resolvedCwd)
+            ?: throw ImportCwdException("project directory does not exist: $resolvedCwd")
+        if (!isDirectory(canonicalCwd)) {
+            throw ImportCwdException("project directory is not a directory: $canonicalCwd")
         }
-        if (!isDirectory(resolvedCwd)) {
-            throw ImportCwdException("project directory is not a directory: $resolvedCwd")
-        }
-        if (!vendorProbe.hasTranscript(agentKind, resolvedCwd, id)) {
-            throw TranscriptNotFoundException(agentKind, id, resolvedCwd)
+        if (!vendorProbe.hasTranscript(agentKind, canonicalCwd, id)) {
+            throw TranscriptNotFoundException(agentKind, id, canonicalCwd)
         }
 
         // Reserved until the finally below: [importMutex] serializes imports against each other, but a
@@ -764,7 +809,7 @@ class SessionManager(
                 // cliVersion/cliPath/model stay null: filling them would mean running the binary at import
                 // time, which contradicts the no-binary-check rule above. `model` arrives after the first
                 // resume (claude via hooks, codex via the resume model capture).
-                cwd = resolvedCwd,
+                cwd = canonicalCwd,
                 tmuxSession = tmuxSession,
                 paneId = null,
                 state = SessionState.resumable,

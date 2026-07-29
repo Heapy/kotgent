@@ -4,6 +4,7 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
 import io.kotgent.core.Projection
+import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
@@ -118,11 +119,42 @@ interface EventStore {
 
     /**
      * Set the best-effort discovered `model` on an existing session row (and its `updated_at`), leaving
-     * `state` / `last_seq` / `provider_session_id` untouched. Called once per session by the model-capture
-     * seams (Claude transcript / Codex rollout). A no-op if the row does not exist. The model reaches
-     * clients via the periodic `/events` resync (which carries it), so this emits an ordinary signal.
+     * `state` / `last_seq` / `provider_session_id` untouched. Written by the model-capture seams (Claude
+     * transcript / Codex rollout) whenever a capture — or a RE-capture — lands, so it is repeatable, not
+     * once-per-session; a `null` [model] CLEARS the field — the hook ingress' provider-id rebind
+     * correction uses it, because a model captured under a provider id that a hook `SessionBound` later
+     * displaced may belong to a different session (the re-run capture then writes again). A no-op if the
+     * row does not exist. The model reaches clients via the `/events` snapshot/resync frames (which carry
+     * it verbatim), so this emits an ordinary signal.
+     *
+     * A capture whose lookup was keyed by a provider id must use [setModelForProvider] instead, so a
+     * rebind racing the capture cannot be overwritten; this unconditional form remains for the two
+     * callers with nothing to condition on — the rebind clear itself, and the Claude transcript capture
+     * (Claude preallocates its id, so no displacement exists there).
      */
-    suspend fun setModel(sessionId: SessionId, model: String, updatedAt: Long)
+    suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long)
+
+    /**
+     * Set the discovered `model` like [setModel], but ONLY IF the session row still holds
+     * [providerSessionId] — the id the caller's lookup was keyed by — as an ATOMIC check-and-write.
+     * Returns whether the row was written; `false` means no such row, or its provider id is no longer
+     * [providerSessionId] (never bound, cleared, or displaced by a hook rebind).
+     *
+     * This is what keeps an in-flight codex model capture from mislabeling a session: the capture reads
+     * the row's id, scans the rollout tree (slow), and only then writes — a hook `SessionBound` can
+     * displace the id (and the rebind correction clear the model) inside that window, and an
+     * unconditional write would race past the clear and restore the displaced id's (possibly a same-cwd
+     * neighbour's) model. Conditioned on the id, the raced write touches zero rows and the caller's
+     * `false` keeps its retry loop polling under the row's now-authoritative id. Implementations must
+     * make the check and the write atomic under the single-writer contract ([SqliteEventStore] carries
+     * the check in the statement's `WHERE`); emits a [sessionUpdates] signal only when the write applied.
+     */
+    suspend fun setModelForProvider(
+        sessionId: SessionId,
+        providerSessionId: ProviderSessionId,
+        model: String,
+        updatedAt: Long,
+    ): Boolean
 
     /**
      * Advance the session's read cursor to [seq] — the "I have seen through seq N" mark the Web UI

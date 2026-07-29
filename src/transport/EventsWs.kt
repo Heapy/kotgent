@@ -154,11 +154,20 @@ data class SessionUpdateDto(
     /** Whether the session is archived ("done"); the client hides/shows the row on this. */
     val archived: Boolean = false,
     /**
-     * The discovered model, or null. Carried on the SNAPSHOT/resync form ([SessionMeta.toUpdateDto]); the
-     * live signal ([SessionUpdate]) does not track it, so it is null there — the client only overwrites its
-     * model when this is non-null (see app.js), so a live update never blanks an already-shown model.
+     * The discovered model, or null. Only the snapshot/resync form ([SessionMeta.toUpdateDto], marked
+     * [snapshot]) is authoritative for it — there `null` genuinely means "no model", including a model
+     * the provider-id rebind correction just CLEARED, so the client takes it verbatim. The live signal
+     * ([SessionUpdate]) does not track the model at all; its `null` here means nothing, and the client
+     * must not blank an already-shown model on it. Both forms serialize `model` (TRANSPORT_JSON has
+     * `encodeDefaults = true`), which is why [snapshot] exists as the discriminator.
      */
     val model: String? = null,
+    /**
+     * `true` on the full-row snapshot/resync form ([SessionMeta.toUpdateDto] — the connect baseline and
+     * the 15 s resync), `false` on the live change signal ([SessionUpdate.toDto]). The client keys the
+     * [model] merge on this — see its KDoc.
+     */
+    val snapshot: Boolean = false,
 )
 
 fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
@@ -179,6 +188,7 @@ fun SessionMeta.toUpdateDto(): SessionUpdateDto = SessionUpdateDto(
     unread = unread(lastSeq.value, readCursor.value),
     archived = archived,
     model = model,
+    snapshot = true,
 )
 
 /** A single canonical event pushed on the per-session `/events?session=…` stream. */
