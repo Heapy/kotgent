@@ -299,17 +299,32 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] все требования Overview реализованы: CLI-импорт одной командой даёт живую сессию;
-      `--no-start`/чекбокс оставляют `resumable` без единого tmux-вызова; Web UI импортирует
-      и открывает терминал
-- [ ] краевые случаи: дубликат (в т.ч. конкурентный) → 409; архивный codex rollout → 400 с
-      подсказкой; кривой id → 400 (не 500); удалённый cwd → 400; claude cwd-mismatch → 400 с
-      подсказкой про `--cwd`; импорт при отсутствующем бинарнике проходит, `resume` падает с
-      подсказкой `kotgent install`
-- [ ] импортированная сессия переживает рестарт демона: `reconcile` держит `resumable`
-- [ ] `./kotlin build`, затем `./kotlin test` — полный прогон, 0 skipped, baseline вырос
-- [ ] `ptycheck` `EXPECTED_CHECKS` не менялся (новых real-PTY проверок нет)
-- [ ] `node --check` на всех изменённых JS-модулях
+- [x] все требования Overview реализованы: CLI-импорт одной командой даёт живую сессию
+      (`runImportCommand` регистрирует и резюмит; `importCommandRegistersThenResumesByDefault`);
+      `--no-start`/чекбокс оставляют `resumable` без единого tmux-вызова
+      (`importCommandNoStartOnlyRegisters`,
+      `importRegistersAFullResumableRowAndBindsTheProviderIdWithNoTmuxSideEffects`); Web UI импортирует
+      и открывает терминал (`dialogs.js` Import-режим + `app.js` import → resume → выбор;
+      `webUiOffersImportingASessionStartedOutsideKotgent`)
+- [x] краевые случаи: дубликат (в т.ч. конкурентный) → 409
+      (`aDuplicateProviderIdConflictsAndNamesTheExistingSessionIncludingArchived`,
+      `twoConcurrentImportsOfTheSameIdYieldExactlyOneRow`, TransportTest 6b); архивный codex rollout →
+      400 с подсказкой (`anArchivedCodexRolloutIsNotDiscoverable`); кривой id → 400 (не 500 — catch
+      `IllegalArgumentException` в handler'е); удалённый cwd → 400
+      (`aDeletedProjectDirectoryFailsBeforeTheProbe`); claude cwd-mismatch → 400 с подсказкой про
+      `--cwd` (`aRecordedCwdThatReEncodesElsewhereFailsTheImportLoudly`,
+      `aDiscoveredCwdThatFailsTheProbeFailsLoudlyNotSilently`); импорт при отсутствующем бинарнике
+      проходит (`importOfASupportedKindSucceedsEvenWhenTheAgentBinaryIsMissing`), `resume` падает с
+      подсказкой `kotgent install` (TransportTest, 400 + hint)
+- [x] импортированная сессия переживает рестарт демона: `reconcile` держит `resumable`
+      (`anImportedSessionStaysResumableThroughReconcile`; wiring-тест гоняет реальные locator+probe
+      через `Reconciler`)
+- [x] `./kotlin build`, затем `./kotlin test` — полный прогон: 739 passed / 0 failed / 0 skipped
+      (baseline вырос с 692)
+- [x] `ptycheck` `EXPECTED_CHECKS` не менялся (`test/pty/PtyTest.kt:73` = 11; `git diff` по
+      `ptycheck/` и `test/pty/` за все коммиты плана пуст)
+- [x] `node --check` на всех изменённых JS-модулях (`node` на машине отсутствует — эквивалентная
+      parse-only проверка `Bun.Transpiler.transformSync` для `dialogs.js`, `app.js`, `api.js`: все OK)
 
 ### Task 7: [Final] Update documentation
 
