@@ -3,6 +3,7 @@ package io.kotgent.cli
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import io.kotgent.currentUiVersion
+import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.claude.ClaudeAdapter
 import io.kotgent.adapter.claude.ClaudeCli
 import io.kotgent.adapter.claude.ClaudeHookConfig
@@ -18,11 +19,10 @@ import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
-import io.kotgent.daemon.requireAbsoluteBinary
-import io.kotgent.daemon.byAgentVendorStoreProbe
-import io.kotgent.daemon.claudeVendorStoreProbe
-import io.kotgent.daemon.codexVendorStoreProbe
 import io.kotgent.daemon.daemonEpochMillis
+import io.kotgent.daemon.productionSessionLocator
+import io.kotgent.daemon.productionVendorStoreProbe
+import io.kotgent.daemon.requireAbsoluteBinary
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.DAEMON_LABEL
@@ -335,8 +335,10 @@ object Commands {
         val codexPath: String? = codexCli.locate()
         // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
         // instead of silently building some other provider's adapter for it (which would launch the wrong
-        // agent while persisting the requested name).
-        val agentFactory = agentFactoryOf(
+        // agent while persisting the requested name). This ONE map is the single source of truth for
+        // "supported": the factory is built from it AND its keys become the SessionManager's
+        // supportedAgentKinds (the import gate), so the two can never disagree.
+        val agentBuilders: Map<String, (cwd: String) -> AgentAdapter> =
             mapOf(
                 CLAUDE_AGENT_KIND to { cwd: String ->
                     ClaudeAdapter(
@@ -359,8 +361,8 @@ object Commands {
                         cliPath = codexPath,
                     )
                 },
-            ),
-        )
+            )
+        val agentFactory = agentFactoryOf(agentBuilders)
         // Codex has no `--session-id`, so a fresh codex session's provider id is unknown at launch. The
         // rollout scan is the discovery path that does not depend on hook delivery: it finds the rollout
         // Codex wrote for this cwd after the launch began and reads the id out of its file name. Claude
@@ -372,6 +374,12 @@ object Commands {
             registry,
             agentFactory,
             idCapture,
+            // Import validates against the SAME probe instance the Reconciler below re-probes with, and
+            // discovers a cwd through the real production locators — see productionVendorStoreProbe /
+            // productionSessionLocator (both pinned by the import wiring test).
+            vendorProbe,
+            productionSessionLocator(),
+            agentBuilders.keys,
             discoverProviderId = { meta ->
                 if (meta.agent == CODEX_AGENT_KIND) rolloutScan.discoverSessionId(meta.cwd, meta.createdAt) else null
             },
@@ -563,18 +571,14 @@ object Commands {
     private const val SHUTDOWN_POLL_MILLIS: Long = 100
 
     /**
-     * The reconciler's vendor-store transcript probe (Task 18), dispatched per provider: for a dead
-     * session it asks whether the conversation still exists, so it classifies as `resumable` rather than
-     * a dead-end `crashed`. Claude stats `~/.claude/projects/<encoded-cwd>/<id>.jsonl`; Codex looks for
-     * `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`. Both root at the real user directories and are
-     * host-free by injection (see [claudeVendorStoreProbe] / [codexVendorStoreProbe]).
+     * The vendor-store transcript probe (Task 18), dispatched per provider: for a dead session it asks
+     * whether the conversation still exists, so it classifies as `resumable` rather than a dead-end
+     * `crashed`. Claude stats `~/.claude/projects/<encoded-cwd>/<id>.jsonl`; Codex looks for
+     * `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`. The ONE instance serves both the Reconciler
+     * and `SessionManager.importSession`, so an import is validated with the exact question every later
+     * reconcile re-asks (see [productionVendorStoreProbe]).
      */
-    private val vendorProbe: VendorStoreProbe = byAgentVendorStoreProbe(
-        mapOf(
-            CLAUDE_AGENT_KIND to claudeVendorStoreProbe(),
-            CODEX_AGENT_KIND to codexVendorStoreProbe(),
-        ),
-    )
+    private val vendorProbe: VendorStoreProbe = productionVendorStoreProbe()
 
     // --- helpers ---------------------------------------------------------------------------------
 

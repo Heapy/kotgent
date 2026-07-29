@@ -35,6 +35,24 @@ fun byAgentVendorStoreProbe(probes: Map<String, VendorStoreProbe>): VendorStoreP
         probes[agent]?.hasTranscript(agent, cwd, providerSessionId) ?: false
     }
 
+/**
+ * The PRODUCTION probe dispatch — one real per-provider probe per supported agent kind, rooted at the
+ * real vendor homes by default. The daemon bootstrap passes this ONE instance to both the [Reconciler]
+ * and [SessionManager.importSession], so an import is validated with exactly the `(agent, cwd, id)`
+ * question every later daemon start re-asks. The dirs are injectable so the import wiring test drives
+ * this same function over throwaway homes — the guard against "the tests ran real probes while
+ * production shipped a stub" (the Task-15 bug recorded in the ClaudeVendorStoreProbe.kt header).
+ */
+fun productionVendorStoreProbe(
+    claudeDir: String = defaultClaudeDir(),
+    codexDir: String = defaultCodexDir(),
+): VendorStoreProbe = byAgentVendorStoreProbe(
+    mapOf(
+        CLAUDE_AGENT_KIND to claudeVendorStoreProbe(claudeDir),
+        CODEX_AGENT_KIND to codexVendorStoreProbe(codexDir),
+    ),
+)
+
 /** One session's reconciliation outcome: how it was reclassified and whether its tmux pane is alive. */
 data class ReconciledSession(
     val sessionId: SessionId,

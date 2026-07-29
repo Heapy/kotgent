@@ -14,10 +14,13 @@ import io.kotgent.core.SessionState
 import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxControl
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import platform.posix.F_OK
+import platform.posix.access
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -148,6 +151,63 @@ class AgentBinaryNotFoundException(val agentKind: String) :
 fun requireAbsoluteBinary(agentKind: String, located: String?): String =
     located?.takeIf { it.startsWith("/") } ?: throw AgentBinaryNotFoundException(agentKind)
 
+/*
+ * The four import failures ([SessionManager.importSession]) are deliberately STANDALONE exceptions —
+ * direct [RuntimeException] subtypes, never subtypes of each other or of any existing kotgent
+ * exception ([UnsupportedAgentException], [io.kotgent.tmux.TmuxException], …). The exception hierarchy
+ * is load-bearing for transport mapping in this repo (see [io.kotgent.tmux.TmuxCopyModeException]):
+ * with no hierarchy among them, the import route can catch each one in any order and map it to its own
+ * status without an accidental parent catch swallowing a sibling.
+ */
+
+/**
+ * Thrown when [SessionManager.importSession] is asked for an agent kind the daemon does not support
+ * (not in `supportedAgentKinds`). Import validates against the set instead of calling
+ * [AgentFactory.create], which would drag the binary check into a side-effect-free registration.
+ */
+class UnknownAgentKindException(val agentKind: String, val supported: Set<String>) :
+    RuntimeException(
+        "unknown agent kind '$agentKind' (supported: ${supported.sorted().joinToString(", ")})",
+    )
+
+/**
+ * Thrown when [SessionManager.importSession] cannot settle a session's project directory: neither an
+ * explicit `--cwd` nor discovery yielded one, or the directory itself no longer exists on disk.
+ */
+class ImportCwdException(message: String) : RuntimeException(message)
+
+/**
+ * Thrown when the vendor-store probe does not see a transcript for the exact `(agent, cwd, id)` an
+ * import would store — the same triple the [Reconciler] re-probes on every daemon start, so failing
+ * HERE (with the `--cwd` workaround named) beats a session that silently degrades
+ * `resumable → crashed` after the next restart.
+ */
+class TranscriptNotFoundException(
+    val agentKind: String,
+    val providerSessionId: ProviderSessionId,
+    val cwd: String,
+) : RuntimeException(
+    "no live $agentKind transcript found for session '${providerSessionId.value}' under '$cwd' — " +
+        "if the session was launched in a different directory (or its recorded cwd re-encodes " +
+        "elsewhere, e.g. /tmp vs /private/tmp), pass the right one with --cwd; " +
+        "an archived codex session is out of `codex resume`'s reach and cannot be imported",
+)
+
+/**
+ * Thrown when the provider session id is already held by an existing kotgent session (archived rows
+ * included — an archived duplicate means the right move is Restore, not a second import). Carries
+ * [existingId] so the caller can point the operator at the session that already exists.
+ */
+class DuplicateImportException(val existingId: SessionId, val archived: Boolean) :
+    RuntimeException(
+        "provider session already imported as kotgent session '${existingId.value}'" +
+            if (archived) " (archived — Restore it instead of importing again)" else "",
+    )
+
+/** Whether [path] exists on the host filesystem (`access(F_OK)`) — the import cwd existence gate. */
+@OptIn(ExperimentalForeignApi::class)
+private fun pathExists(path: String): Boolean = access(path, F_OK) == 0
+
 /**
  * One cleanup step of a compensation that itself failed (e.g. the `kill-session` that should have
  * removed a just-launched agent, or the state write that should have erased a phantom row).
@@ -203,6 +263,27 @@ class SessionManager(
     private val agentFactory: AgentFactory,
     private val idCapture: ProviderIdCapture,
     /**
+     * The vendor-store transcript probe [importSession] validates against — the SAME dispatch the
+     * daemon hands its [Reconciler], so an import is checked with exactly the `(agent, cwd, id)`
+     * question every later daemon start will re-ask. Deliberately NO default value: every call-site
+     * must choose, because a default fake is how the production Reconciler once shipped a `{ false }`
+     * stub while the tests stayed green (see the ClaudeVendorStoreProbe.kt header).
+     */
+    private val vendorProbe: VendorStoreProbe,
+    /**
+     * Discovery of an imported session's cwd when the caller supplies none (see [importSession]).
+     * No default value — same reasoning as [vendorProbe].
+     */
+    private val sessionLocator: VendorSessionLocator,
+    /**
+     * The agent kinds this daemon can launch — the production wiring passes `builders.keys` of the
+     * SAME map [agentFactory] was built from, so there is exactly one source of truth for "supported".
+     * [importSession] gates on this set instead of calling [AgentFactory.create] (which would drag the
+     * binary fail-fast into a side-effect-free registration; [resume] owns that check).
+     * No default value — same reasoning as [vendorProbe].
+     */
+    private val supportedAgentKinds: Set<String>,
+    /**
      * Provider-specific discovery of a session's id for the FALLBACK capture path — consulted only when
      * the launch preallocated nothing AND no `SessionBound` has arrived from a hook yet.
      *
@@ -239,6 +320,13 @@ class SessionManager(
      * `start`/`resume` for no benefit.
      */
     fun leaveCopyMode(sessionId: SessionId): Boolean = tmux.leaveCopyMode(sessionId.value)
+
+    /**
+     * Serializes [importSession] end-to-end, daemon-wide. Imports are rare, so one global lock is
+     * simpler than a per-provider-id table — and it is what makes the duplicate check and the row
+     * write atomic: two concurrent imports of the same provider id cannot both pass the check.
+     */
+    private val importMutex = Mutex()
 
     /** Guards [controlLocks] itself (the per-session lock table), never a control op. */
     private val controlLocksGuard = Mutex()
@@ -487,12 +575,18 @@ class SessionManager(
             // advance last_seq / provider_session_id, which a full-row write would clobber.
             store.updateSessionState(sessionId, next.state, EventSource.user, paneId, ts)
             registry.register(paneId, sessionId)
-            return@withControlLock meta.copy(
+            val revived = meta.copy(
                 paneId = paneId,
                 state = next.state,
                 stateSource = EventSource.user,
                 updatedAt = ts,
             )
+            // Best-effort, fire-and-forget model capture on revival too (the same seam start() uses).
+            // An IMPORTED codex session has never launched under kotgent, so this is the only place its
+            // model can ever be captured — after the resumed agent starts writing its rollout again.
+            // A no-op for claude (its model arrives via the hook path).
+            captureModelInBackground(revived)
+            return@withControlLock revived
         } catch (e: Throwable) {
             // Compensate a failure at or after the fresh agent's launch (see start()): kill it, drop the
             // pane — and PUT THE ROW BACK to its pre-resume dead state. The write above may already have
@@ -506,6 +600,87 @@ class SessionManager(
     /** True if tmux currently reports a LIVE (non-dead) pane for [tmuxSession] (`kt-<id>`). */
     private fun isPaneAlive(tmuxSession: String): Boolean =
         tmux.listPanes().any { it.session == tmuxSession && !it.dead }
+
+    /**
+     * Import a provider session that was started OUTSIDE kotgent (a conversation begun in a plain
+     * terminal), registering it as a `resumable` row + a `SessionBound` in the event log so the
+     * existing [resume] can revive it with the provider's own resume launch. Registration ONLY —
+     * deliberately free of tmux side effects (no pane, no launch; [TmuxControl.sessionName] is a pure
+     * formatter) and of any binary check: [resume] owns the [AgentBinaryNotFoundException] fail-fast
+     * with its `kotgent install` hint, so importing a supported kind succeeds even while its binary
+     * does not resolve. Returns the stored [SessionMeta].
+     *
+     * Validation order (each failure a distinct, hierarchy-free exception — see their KDoc):
+     *  1. [agentKind] must be in [supportedAgentKinds] → [UnknownAgentKindException] (no adapter is
+     *     ever built, so the binary is never touched);
+     *  2. no existing kotgent session — archived included — may already hold [providerId] →
+     *     [DuplicateImportException] with the existing session's id;
+     *  3. the cwd: an explicit [cwd] wins; otherwise [sessionLocator] discovers it from the
+     *     provider's on-disk store; neither → [ImportCwdException];
+     *  4. the cwd must exist on disk → [ImportCwdException] (the project directory was deleted);
+     *  5. [vendorProbe] must see the transcript for exactly `(agentKind, cwd, providerId)` — the SAME
+     *     triple stored in the row and re-probed by the [Reconciler] on every daemon start, so a
+     *     discovered cwd that does not re-encode to the transcript (e.g. `/tmp` vs `/private/tmp`)
+     *     fails loudly here with a `--cwd` hint instead of silently degrading `resumable → crashed`
+     *     after the next restart → [TranscriptNotFoundException].
+     *
+     * The whole method runs under the daemon-wide [importMutex] (see its KDoc).
+     *
+     * Accepted residual: if [ProviderIdCapture.bind] fails AFTER `upsertSession` committed, the row
+     * carries [providerId] without a `SessionBound` in the log. [resume] reads the row, so the session
+     * stays functional; the replay divergence is limited to this imported session's provider id.
+     */
+    suspend fun importSession(
+        agentKind: String,
+        providerId: ProviderSessionId,
+        cwd: String? = null,
+        name: String? = null,
+        tags: List<String> = emptyList(),
+    ): SessionMeta = importMutex.withLock {
+        if (agentKind !in supportedAgentKinds) {
+            throw UnknownAgentKindException(agentKind, supportedAgentKinds)
+        }
+        val duplicate = store.listSessions().firstOrNull { it.providerSessionId == providerId }
+        if (duplicate != null) throw DuplicateImportException(duplicate.id, duplicate.archived)
+        val resolvedCwd = cwd
+            ?: sessionLocator.cwdOf(agentKind, providerId)
+            ?: throw ImportCwdException(
+                "no on-disk record found for $agentKind session '${providerId.value}' — " +
+                    "pass the project directory explicitly with --cwd",
+            )
+        if (!pathExists(resolvedCwd)) {
+            throw ImportCwdException("project directory does not exist: $resolvedCwd")
+        }
+        if (!vendorProbe.hasTranscript(agentKind, resolvedCwd, providerId)) {
+            throw TranscriptNotFoundException(agentKind, providerId, resolvedCwd)
+        }
+
+        val sessionId = freshSessionId()
+        val tmuxSession = tmux.sessionName(sessionId.value) // pure formatter — no tmux side effect
+        val ts = now()
+        val meta = SessionMeta(
+            id = sessionId,
+            name = name ?: tmuxSession,
+            tags = tags,
+            agent = agentKind,
+            providerSessionId = providerId,
+            // cliVersion/cliPath/model stay null: filling them would mean running the binary at import
+            // time, which contradicts the no-binary-check rule above. `model` arrives after the first
+            // resume (claude via hooks, codex via the resume model capture).
+            cwd = resolvedCwd,
+            tmuxSession = tmuxSession,
+            paneId = null,
+            state = SessionState.resumable,
+            stateSource = EventSource.system,
+            createdAt = ts,
+            updatedAt = ts,
+        )
+        store.upsertSession(meta)
+        // The append never resurrects a dead cache state (see SqliteEventStore.append), so the row
+        // stays `resumable` through the bind. A bind failure here is the accepted residual (see KDoc).
+        idCapture.bind(sessionId, providerId)
+        store.getSession(sessionId) ?: meta
+    }
 
     /**
      * Detach — a no-op at this layer. Detach is a transport concern (a terminal-WS subscriber left /

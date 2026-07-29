@@ -43,6 +43,13 @@ class SessionManagerTest {
 
     private val cat = listOf("cat") // a harmless, long-lived pane command
 
+    // The import seams are REQUIRED constructor parameters (no defaults — every call-site must
+    // choose). The tests here never import, so they pass inert stand-ins; the import behavior itself
+    // is covered by SessionImportTest / ImportWiringTest.
+    private val importProbe = VendorStoreProbe { _, _, _ -> false }
+    private val importLocator = VendorSessionLocator { _, _ -> null }
+    private val importKinds = setOf("claude", "codex")
+
     private fun meta(
         idV: String,
         state: SessionState,
@@ -229,6 +236,7 @@ class SessionManagerTest {
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null, cliVersion = "2.1.218", cliPath = "/usr/local/bin/claude"),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("sess09") },
                 now = { 1L },
             )
@@ -249,6 +257,7 @@ class SessionManagerTest {
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("sess10") },
                 now = { 1L },
             )
@@ -268,6 +277,7 @@ class SessionManagerTest {
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 captureModelInBackground = { meta -> captured.complete(meta) },
                 newSessionId = { SessionId("mdl01") },
                 now = { 1L },
@@ -294,6 +304,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("sess01") },
                 now = { 1L },
             )
@@ -328,6 +339,7 @@ class SessionManagerTest {
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1),
+                importProbe, importLocator, importKinds,
                 discoverProviderId = { meta -> discovered.also { seen += meta } },
                 newSessionId = { SessionId("cx0001") },
                 now = { 1L },
@@ -364,6 +376,7 @@ class SessionManagerTest {
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 20),
+                importProbe, importLocator, importKinds,
                 discoverProviderId = { fromDisk },
                 newSessionId = { SessionId("cx0002") },
                 now = { 1L },
@@ -424,6 +437,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 now = { 1L },
             )
             // A dead session whose provider id was never captured (id pending).
@@ -448,6 +462,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("done01") },
                 now = { 1L },
             )
@@ -473,6 +488,7 @@ class SessionManagerTest {
                 tmux, store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("done02") },
                 now = { 1L },
             )
@@ -498,6 +514,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("stop01") },
                 now = { 1L },
             )
@@ -525,6 +542,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("intr01") },
                 now = { 1L },
             )
@@ -555,6 +573,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { id },
                 now = { 1L },
             )
@@ -593,6 +612,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 now = { 7L },
             )
             store.upsertSession(meta("resu01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
@@ -620,6 +640,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("detc01") },
                 now = { 1L },
             )
@@ -649,6 +670,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("race01") },
                 now = { 1L },
             )
@@ -692,6 +714,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("fail01") },
                 now = { 1L },
             )
@@ -725,6 +748,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 now = { 9L },
             )
             store.upsertSession(meta("resf01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
@@ -756,6 +780,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("strt01") },
                 now = { 1L },
             )
@@ -796,6 +821,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("orph01") },
                 now = { 1L },
             )
@@ -825,6 +851,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 now = { 9L },
             )
             store.upsertSession(meta("rorp01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
@@ -858,6 +885,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("cncl01") },
                 now = { 1L },
             )
@@ -896,6 +924,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("supp01") },
                 now = { 1L },
             )
@@ -927,6 +956,7 @@ class SessionManagerTest {
                 tmux, store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("ordr01") },
                 now = { 1L },
             )
@@ -952,6 +982,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("kfai01") },
                 now = { 1L },
             )
@@ -987,6 +1018,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = provider),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId(ids.removeFirst()) },
                 now = { 1L },
             )
@@ -1020,6 +1052,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 tmux, store, PaneRegistry(), factory,
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("x0000001") }, now = { 1L },
             )
             assertFailsWith<UnsupportedAgentException> { mgr.start("aider", "/tmp") }
@@ -1051,6 +1084,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 tmux, store, PaneRegistry(), factory,
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("nf000001") }, now = { 1L },
             )
             assertFailsWith<AgentBinaryNotFoundException> { mgr.start("claude", "/tmp") }
@@ -1092,6 +1126,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 tmux, store, PaneRegistry(), factory,
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("na000001") }, now = { 1L },
             )
             assertFailsWith<AgentBinaryNotFoundException> { mgr.start("claude", "/tmp") }
@@ -1118,6 +1153,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 tmux, store, registry, factory,
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 now = { 1L },
             )
 
@@ -1143,6 +1179,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
                 now = { 1L },
             )
             // Cache still claims the session is alive (running), but tmux reports no live pane for it.
@@ -1174,6 +1211,7 @@ class SessionManagerTest {
                     realTmux, store, registry,
                     StubAgentFactory(cat, preallocated = provider),
                     ProviderIdCapture(store, this),
+                    importProbe, importLocator, importKinds,
                     newSessionId = { SessionId("itg01") },
                 )
 

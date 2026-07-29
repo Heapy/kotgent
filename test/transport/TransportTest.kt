@@ -23,6 +23,8 @@ import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.VendorSessionLocator
+import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.push.PushStore
 import io.kotgent.push.PushSubscription
@@ -1100,6 +1102,9 @@ class TransportTest {
                 tmux, store, registry,
                 factory,
                 ProviderIdCapture(store, idScope),
+                VendorStoreProbe { _, _, _ -> false },
+                VendorSessionLocator { _, _ -> null },
+                setOf("claude", "codex"),
                 now = { 1L },
             )
             val ptyFactory = WsFakePtyFactory()

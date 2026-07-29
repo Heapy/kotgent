@@ -217,30 +217,33 @@ Web UI (Import) ──────┘        agent ∈ supportedAgentKinds? → 
 - Modify: `src/cli/Commands.kt` (wiring: probe + locator + supportedAgentKinds в `SessionManager(...)`)
 - Create: `test/daemon/SessionImportTest.kt` (в `SessionManagerTest.kt` уже 33 теста — отдельный файл)
 
-- [ ] TDD: happy path — полная строка (`state = resumable`, `providerSessionId`, `paneId = null`,
+- [x] TDD: happy path — полная строка (`state = resumable`, `providerSessionId`, `paneId = null`,
       `tmuxSession = tmux.sessionName(shortId)`, `name ?: tmuxSession`, `cliVersion/cliPath/model = null`,
       `createdAt`/`updatedAt`), `SessionBound` в event log, state остаётся `resumable` после bind;
       **никаких tmux side-эффектов**: `FakeTmux` записывает вызовы — assert, что new-session/kill/send
       пусты (`sessionName` — чистый форматтер, разрешён)
-- [ ] TDD: импорт → `Reconciler.reconcile()` → state **остаётся** `resumable` (страж консистентности
+- [x] TDD: импорт → `Reconciler.reconcile()` → state **остаётся** `resumable` (страж консистентности
       `(agent, cwd, id)`: без него рассинхрон discovery↔probe молча деградирует в `crashed` после
       рестарта демона)
-- [ ] TDD: импорт поддержанного kind **проходит при отсутствующем бинарнике** (фиксирует решение
+- [x] TDD: импорт поддержанного kind **проходит при отсутствующем бинарнике** (фиксирует решение
       «бинарник не проверяем»; проверка остаётся в `resume()`)
-- [ ] TDD: дубликат providerSessionId (включая archived-сессию) → `DuplicateImportException` с
+- [x] TDD: дубликат providerSessionId (включая archived-сессию) → `DuplicateImportException` с
       existingId; два конкурентных импорта одного id → ровно одна строка (import-Mutex)
-- [ ] TDD: неизвестный kind; транскрипт не найден пробой (текст называет `--cwd` и архивные codex);
+- [x] TDD: неизвестный kind; транскрипт не найден пробой (текст называет `--cwd` и архивные codex);
       discovery не нашёл cwd; явный `cwd` побеждает discovery; cwd-каталог удалён → ошибка;
       claude-mismatch (discovery нашёл файл, но записанный `cwd` ре-энкодится в другой каталог) →
       ошибка, не тихий успех
-- [ ] TDD: `resume()` зовёт `captureModelInBackground` (model импортированной codex-сессии
+- [x] TDD: `resume()` зовёт `captureModelInBackground` (model импортированной codex-сессии
       появляется после resume)
-- [ ] реализовать `importSession` (порядок из Technical Details, import-Mutex, исключения без
+- [x] реализовать `importSession` (порядок из Technical Details, import-Mutex, исключения без
       иерархии, residual про сбой `bind` — в KDoc) + `resume()`-однострочник
-- [ ] wiring: новые параметры конструктора **без default**; `Commands.daemon` передаёт настоящие
-      `byAgentVendorStoreProbe(...)` + locator-фабрику + `builders.keys`; wiring-тест по образцу
-      `test/transport/AuthorizeWiringTest.kt`
-- [ ] `./kotlin build && ./kotlin test` — зелёные
+- [x] wiring: новые параметры конструктора **без default**; `Commands.daemon` передаёт настоящие
+      `byAgentVendorStoreProbe(...)` + locator-фабрику + `builders.keys` — через извлечённые
+      `productionVendorStoreProbe()` / `productionSessionLocator()` (инжектируемые dirs), которые
+      wiring-тест `test/daemon/ImportWiringTest.kt` (по образцу `AuthorizeWiringTest`) гоняет над
+      throwaway-домами: реальные locator+probe для claude и codex, claude cwd-mismatch, архивный
+      codex rollout
+- [x] `./kotlin build && ./kotlin test` — зелёные (722 passed / 0 skipped)
 
 ### Task 3: POST /sessions/import
 

@@ -14,6 +14,8 @@ import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.VendorSessionLocator
+import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
@@ -1895,6 +1897,9 @@ class WebUiServingTest {
                     }
                 },
                 ProviderIdCapture(store, idScope),
+                VendorStoreProbe { _, _, _ -> false },
+                VendorSessionLocator { _, _ -> null },
+                setOf("claude", "codex"),
                 now = { 1L },
             )
             val server = KotgentServer(

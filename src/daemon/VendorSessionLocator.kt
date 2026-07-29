@@ -46,6 +46,21 @@ fun byAgentVendorSessionLocator(locators: Map<String, VendorSessionLocator>): Ve
     }
 
 /**
+ * The PRODUCTION locator dispatch (mirrors [productionVendorStoreProbe]): the real per-provider cwd
+ * lookups the daemon wires into [SessionManager.importSession], with the vendor homes injectable so
+ * the import wiring test drives this same function over throwaway dirs.
+ */
+fun productionSessionLocator(
+    claudeDir: String = defaultClaudeDir(),
+    codexDir: String = defaultCodexDir(),
+): VendorSessionLocator = byAgentVendorSessionLocator(
+    mapOf(
+        CLAUDE_AGENT_KIND to claudeSessionLocator(claudeDir),
+        CODEX_AGENT_KIND to codexSessionLocator(codexDir),
+    ),
+)
+
+/**
  * How many head lines of a Claude transcript [claudeTranscriptCwd] scans for the recorded `"cwd"`.
  * A transcript's opening records are summaries (no cwd) followed by message records that each carry
  * one; a transcript whose first ~25 records carry none is not one Claude wrote for a project dir.
