@@ -358,18 +358,18 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Create: `resources/webui/components/CommandPalette.js`
 - Modify: `resources/webui/components/dialogs.js`
 
-- [ ] export the existing `Dialog` wrapper from `dialogs.js` (no behaviour change)
-- [ ] create `CommandPalette` with `id="command-palette"`: a query `<input>` with autofocus and a
+- [x] export the existing `Dialog` wrapper from `dialogs.js` (no behaviour change)
+- [x] create `CommandPalette` with `id="command-palette"`: a query `<input>` with autofocus and a
       `<ul role="listbox">` of `role="option"` rows wired with `aria-activedescendant`
-- [ ] render a row as title + subtitle + right-edge `hint`, a chord chip whose `title` spells the full
+- [x] render a row as title + subtitle + right-edge `hint`, a chord chip whose `title` spells the full
       accord, and a dimmed style for rows carrying `disabled`
-- [ ] implement arrow navigation with wrap-around that skips the disabled tail, `Enter` to run,
+- [x] implement arrow navigation with wrap-around that skips the disabled tail, `Enter` to run,
       `scrollIntoView({block:"nearest"})` on the active row, and an active-index reset on query change
-- [ ] close the palette BEFORE invoking `run()`
-- [ ] run `node --check` on both changed modules
-- [ ] add `WebUiServingTest` assertions: the module is registered, imports `lib/commands.js`, and ships
+- [x] close the palette BEFORE invoking `run()`
+- [x] run `node --check` on both changed modules
+- [x] add `WebUiServingTest` assertions: the module is registered, imports `lib/commands.js`, and ships
       the listbox roles
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 4
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 4
 
 ### Task 4: Add leader mode to the palette
 

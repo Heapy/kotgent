@@ -225,7 +225,7 @@ class WebUiServingTest {
             "/lib/throttle.js", "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/lib/clipboard.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
-            "/components/dialogs.js",
+            "/components/dialogs.js", "/components/CommandPalette.js",
         )) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
@@ -283,6 +283,38 @@ class WebUiServingTest {
             commands.contains("title: \"Resume this session\"") &&
                 commands.contains("title: \"Resume a conversation started outside kotgent…\""),
             "the current-session and outside-kotgent resume commands are disambiguated",
+        )
+    }
+
+    @Test
+    fun theCommandPaletteShipsAnAccessibleSearchListbox() = withServer { ctx ->
+        val palette = ctx.get("/components/CommandPalette.js").bodyAsText()
+        assertTrue(
+            palette.contains("import { filterCommands } from \"../lib/commands.js\""),
+            "the palette filters the one shared command registry",
+        )
+        assertTrue(
+            palette.contains("import { Dialog } from \"./dialogs.js\"") &&
+                ctx.get("/components/dialogs.js").bodyAsText().contains("export function Dialog"),
+            "the palette reuses the exported native dialog wrapper",
+        )
+        assertTrue(
+            palette.contains("role=\"combobox\"") &&
+                palette.contains("aria-activedescendant=\${activeOptionId}") &&
+                palette.contains("role=\"listbox\"") &&
+                palette.contains("role=\"option\""),
+            "combobox focus drives the listbox through aria-activedescendant",
+        )
+        assertTrue(
+            palette.contains("scrollIntoView({ block: \"nearest\" })") &&
+                palette.contains("if (!item.disabled) indexes.push(index)"),
+            "wrapped keyboard navigation scrolls and excludes the disabled tail",
+        )
+        val closeAt = palette.indexOf("if (dialog && dialog.open) dialog.close()")
+        val runAt = palette.indexOf("item.run()")
+        assertTrue(
+            closeAt >= 0 && runAt > closeAt,
+            "a command closes the native modal before its action can open another one",
         )
     }
 

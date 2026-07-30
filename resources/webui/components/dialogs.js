@@ -18,7 +18,7 @@ import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/p
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
 
-function Dialog({ id, labelledBy, onClose, children }) {
+export function Dialog({ id, labelledBy, onClose, children }) {
   const ref = useRef(null);
 
   useEffect(() => {
