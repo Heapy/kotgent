@@ -541,6 +541,54 @@ class WebUiServingTest {
     }
 
     @Test
+    fun sessionAndPaletteRowsSharePillInteractionStates() = withServer { ctx ->
+        val css = ctx.get("/style.css").bodyAsText()
+        val session = cssRuleOf(css, ".session-row")
+        assertTrue(
+            session.contains("margin:") &&
+                session.contains("border-radius:") &&
+                session.contains("var(--list-inset)"),
+            "session pills share one list inset without pinning its decorative measurements",
+        )
+        assertTrue(
+            cssRuleOf(css, ".session-row:hover").contains("background: var(--row-hover)"),
+            "hover keeps a neutral fill",
+        )
+        assertTrue(
+            cssRuleOf(css, ".session-row.active").contains("background: var(--pill-active)"),
+            "the active pill uses the shared low-alpha accent fill",
+        )
+        val focus = cssRuleOf(css, ".session-row:focus-visible")
+        assertTrue(
+            focus.contains("outline:") && focus.contains("var(--accent)"),
+            "keyboard focus remains visible around the clickable session pill",
+        )
+
+        val section = cssRuleOf(css, ".section-title")
+        assertTrue(
+            section.contains("text-transform: uppercase") &&
+                section.contains("color: var(--muted)") &&
+                section.contains("var(--list-inset)"),
+            "section labels stay muted and line up with the pills",
+        )
+        assertTrue(
+            cssRuleOf(css, ".group-head").contains("var(--list-inset)") &&
+                cssRuleOf(css, ".attn-dot").contains("margin-inline:") &&
+                cssRuleOf(css, ".unread-pill").contains("margin-inline:"),
+            "group and status affordances follow the same inset rhythm",
+        )
+
+        val paletteOption = cssRuleOf(css, ".command-palette-option")
+        assertTrue(
+            paletteOption.contains("border-radius:") &&
+                cssRuleOf(css, ".command-palette-option.active").contains("background: var(--pill-active)") &&
+                cssRuleOf(css, ".command-palette-leader-command:hover")
+                    .contains("background: var(--row-hover)"),
+            "search and leader rows reuse the session pill's active and hover language",
+        )
+    }
+
+    @Test
     fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         assertTrue(pane.contains("id=\"attach-button\""), "the UI includes attach")

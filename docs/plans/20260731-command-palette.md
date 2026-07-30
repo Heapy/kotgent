@@ -511,15 +511,15 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 **Files:**
 - Modify: `resources/webui/style.css`
 
-- [ ] inset and round session rows; fill the active row with the accent at low alpha and give hover a
+- [x] inset and round session rows; fill the active row with the accent at low alpha and give hover a
       neutral fill
-- [ ] restyle section headings as small uppercase muted labels and align the group head, unread pill and
+- [x] restyle section headings as small uppercase muted labels and align the group head, unread pill and
       attention dot to the new inset
-- [ ] restyle the palette rows to match so it reads as part of the same shell
-- [ ] confirm the focus ring stays visible on a pill (the session list is keyboard-navigable —
+- [x] restyle the palette rows to match so it reads as part of the same shell
+- [x] confirm the focus ring stays visible on a pill (the session list is keyboard-navigable —
       `Sidebar.js:59-64`)
-- [ ] assert the focus-visible rule survives the restyle (an invariant; do not pin radii or alphas)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 12
+- [x] assert the focus-visible rule survives the restyle (an invariant; do not pin radii or alphas)
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 12
 
 ### Task 12: Verify acceptance criteria
 

@@ -19,6 +19,9 @@
   --input-bg: #14171c;
   --shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
   --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  --list-inset: 6px;
+  --pill-active: color-mix(in srgb, var(--accent) 16%, transparent);
+  --pill-active-border: color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 * { box-sizing: border-box; }
@@ -198,11 +201,12 @@ select:focus-visible {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.1em;
   color: var(--muted);
-  margin: 14px 0 6px 0;
+  margin: 16px var(--list-inset) 7px;
 }
 .section-title.attn { color: var(--attn); }
 
@@ -251,7 +255,7 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 4px 2px 10px;
+  padding: 3px var(--list-inset);
 }
 /* The head doubles as the collapse toggle: a full-width button that still reads as a plain heading. */
 .group-toggle {
@@ -310,18 +314,20 @@ select:focus-visible {
 
 .group-sessions {
   border-left: 1px solid var(--border);
-  margin-left: 10px;
-  padding-left: 4px;
+  margin-left: var(--list-inset);
+  padding-left: 0;
 }
 
 .session-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 9px 10px;
+  border-radius: 12px;
   cursor: pointer;
   border: 1px solid transparent;
+  margin: 2px var(--list-inset);
+  transition: background 120ms ease-out, border-color 120ms ease-out;
 }
 .session-row:hover { background: var(--row-hover); }
 .session-row:focus-visible {
@@ -329,8 +335,8 @@ select:focus-visible {
   outline-offset: 1px;
 }
 .session-row.active {
-  background: var(--row-active);
-  border-color: var(--accent);
+  background: var(--pill-active);
+  border-color: var(--pill-active-border);
 }
 
 .session-main {
@@ -359,14 +365,16 @@ select:focus-visible {
   border-radius: 50%;
   background: var(--attn);
   box-shadow: 0 0 0 3px var(--attn-bg);
+  margin-inline: 2px;
 }
 
 .unread-pill {
   flex: 0 0 auto;
   font-size: 10px;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   border-radius: 9px;
+  margin-inline: 2px;
   padding: 0 6px;
   line-height: 16px;
 }
@@ -576,14 +584,21 @@ dialog::backdrop {
 }
 .command-palette-option {
   align-items: center;
+  border: 1px solid transparent;
+  border-radius: 12px;
   cursor: pointer;
   display: flex;
   gap: 12px;
   justify-content: space-between;
+  margin: 2px 0;
   min-height: 54px;
   padding: 8px 10px;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
 }
-.command-palette-option.active { background: var(--row-active); }
+.command-palette-option.active {
+  background: var(--pill-active);
+  border-color: var(--pill-active-border);
+}
 .command-palette-option.disabled {
   cursor: default;
   opacity: 0.5;
@@ -652,9 +667,9 @@ dialog::backdrop {
 }
 .command-palette-leader-command {
   align-items: center;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 9px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
   color: var(--text);
   cursor: pointer;
   display: flex;
