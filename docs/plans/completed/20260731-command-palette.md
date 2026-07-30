@@ -538,10 +538,10 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 
 ### Task 13: [Final] Update documentation
 
-- [ ] update `CLAUDE.md`: the palette is the home of rare actions, `lib/commands.js` is the single
+- [x] update `CLAUDE.md`: the palette is the home of rare actions, `lib/commands.js` is the single
       command registry (a second list must not appear), the one capture-phase listener and the `e.code`
       rule, and the dark-only theme decision
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Follow-up stages (scoped, not designed here)
 

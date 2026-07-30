@@ -477,6 +477,26 @@ are served with `Cache-Control: no-cache` ("revalidate", not "never store") so a
 cannot remain pinned after an upgrade. Keep the root scope, network-only fetch contract, and the targeted
 cache rule together.
 
+**The command palette is the home of rare Web UI actions.** `resources/webui/lib/commands.js` is the
+single command and mnemonic registry: search mode renders its filtered descriptors and leader mode renders
+the chord-bearing subset. Do not introduce a second list in `app.js` or a component. The sidebar brand row
+keeps only the daily notification toggle (plus the structural mobile drawer close); Preferences stays
+reachable from the base-path note, and an empty first run keeps its direct "Start a session" action.
+Reserved future chords remain visible but disabled in this one registry until their stages are designed.
+
+**Global Web UI shortcuts have one owner.** `app.js` installs exactly one capture-phase document
+`keydown` listener for the palette openers and desktop sidebar toggle; extend that listener rather than
+adding another global listener. Match physical keys with `event.code`, not layout-dependent `event.key`.
+Leader mnemonics likewise read bare `event.code` without modifier checks because the opener's modifier may
+be released before the second key arrives. The listener must continue to yield while another dialog owns
+the keyboard. `⌘1` is reliable in the installed PWA but reserved for tab switching in ordinary browser
+tabs, so `#sidebar-toggle` remains the guaranteed path.
+
+**The Web UI is dark-only.** `style.css` carries one unconditional dark palette with the Kotlin-purple
+accent; do not reintroduce `prefers-color-scheme` branches. The OLED-black phone variables belong inside
+the existing `@media (max-width: 720px)` block so the FitAddon test's mobile slice remains stable, and the
+translucent sidebar's composite blur stays desktop-only.
+
 **The mobile terminal lifecycle has four coupled invariants.** Initial xterm geometry is computed from
 `window.visualViewport` before fitting and opening the terminal WebSocket, so the upstream starts at the
 visible keyboard-constrained size. A terminal tap focuses xterm's helper textarea synchronously from that
@@ -692,7 +712,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **844 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **851 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
