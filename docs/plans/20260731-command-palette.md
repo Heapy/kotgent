@@ -377,17 +377,17 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Modify: `resources/webui/components/CommandPalette.js`
 - Modify: `resources/webui/style.css`
 
-- [ ] accept `mode` (`"search" | "leader"`) plus `onModeChange`; in leader mode replace the input with a
+- [x] accept `mode` (`"search" | "leader"`) plus `onModeChange`; in leader mode replace the input with a
       mnemonic grid built from the same descriptors (letter chip + title)
-- [ ] handle a bare `e.code` letter in leader mode (no modifier check) → run its command; ignore a
+- [x] handle a bare `e.code` letter in leader mode (no modifier check) → run its command; ignore a
       disabled letter and surface its reason in the palette footer; `preventDefault()` on `Space`
-- [ ] `Backspace` returns to search, `Esc` closes (native)
-- [ ] render the search row at the top of leader mode as a tappable control that switches to search and
+- [x] `Backspace` returns to search, `Esc` closes (native)
+- [x] render the search row at the top of leader mode as a tappable control that switches to search and
       focuses the input — the phone's path into search
-- [ ] style both modes: a grid of large touch targets in leader, a list in search
-- [ ] run `node --check resources/webui/components/CommandPalette.js`
-- [ ] add `WebUiServingTest` assertions for the mnemonic grid and the reserved-but-disabled letters
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 5
+- [x] style both modes: a grid of large touch targets in leader, a list in search
+- [x] run `node --check resources/webui/components/CommandPalette.js`
+- [x] add `WebUiServingTest` assertions for the mnemonic grid and the reserved-but-disabled letters
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 5
 
 ### Task 5: Wire the palette into app.js with the global key listener
 

@@ -316,6 +316,37 @@ class WebUiServingTest {
             closeAt >= 0 && runAt > closeAt,
             "a command closes the native modal before its action can open another one",
         )
+
+        assertTrue(
+            palette.contains("class=\"command-palette-leader-grid\"") &&
+                palette.contains("const leaderCommands = commands.filter((item) => item.chord)"),
+            "leader mode renders the mnemonic subset of the same descriptors",
+        )
+        assertTrue(
+            palette.contains("event.code === \"Key\" + command.chord.toUpperCase()") &&
+                !palette.contains("event.metaKey") &&
+                !palette.contains("event.ctrlKey"),
+            "leader letters use layout-independent bare codes after the opening modifier is released",
+        )
+        assertTrue(
+            palette.contains("event.code === \"Space\"") &&
+                palette.contains("event.code === \"Backspace\"") &&
+                palette.contains("onModeChange(\"search\")"),
+            "leader mode suppresses Space and returns to search on Backspace or the search row",
+        )
+        assertTrue(
+            palette.contains("setLeaderMessage(item.title + \": \" + item.disabled)") &&
+                palette.contains("role=\"status\" aria-live=\"polite\""),
+            "reserved disabled mnemonics stay visible and announce why they cannot run",
+        )
+        assertTrue(
+            palette.contains("if (mode === \"search\" && queryRef.current) queryRef.current.focus()"),
+            "tapping the leader's search row focuses the input once search mode renders",
+        )
+        assertTrue(
+            ctx.get("/style.css").bodyAsText().contains(".command-palette-leader-grid"),
+            "both palette modes ship with their layout styles",
+        )
     }
 
     @Test

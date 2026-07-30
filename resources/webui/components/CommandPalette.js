@@ -23,11 +23,14 @@ function availableIndexes(items) {
   return indexes;
 }
 
-export function CommandPalette({ commands, onClose }) {
+export function CommandPalette({ commands, mode = "search", onModeChange, onClose }) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [leaderMessage, setLeaderMessage] = useState("");
   const activeOptionRef = useRef(null);
+  const queryRef = useRef(null);
   const results = useMemo(() => filterCommands(commands, query), [commands, query]);
+  const leaderCommands = commands.filter((item) => item.chord);
   const enabled = availableIndexes(results);
   const activeOptionId = activeIndex >= 0 ? optionId(activeIndex) : null;
 
@@ -40,6 +43,11 @@ export function CommandPalette({ commands, onClose }) {
       activeOptionRef.current.scrollIntoView({ block: "nearest" });
     }
   }, [activeIndex]);
+
+  useEffect(() => {
+    setLeaderMessage("");
+    if (mode === "search" && queryRef.current) queryRef.current.focus();
+  }, [mode]);
 
   const closeThenRun = (item) => {
     if (!item || item.disabled) return;
@@ -73,58 +81,115 @@ export function CommandPalette({ commands, onClose }) {
     }
   };
 
+  const runLeaderCommand = (item) => {
+    if (item.disabled) {
+      setLeaderMessage(item.title + ": " + item.disabled);
+      return;
+    }
+    closeThenRun(item);
+  };
+
+  const leaderKeyDown = (event) => {
+    if (mode !== "leader") return;
+    if (event.code === "Space") {
+      event.preventDefault(); // never let Space activate the focused search-mode row
+      return;
+    }
+    if (event.code === "Backspace") {
+      event.preventDefault();
+      onModeChange("search");
+      return;
+    }
+    const item = leaderCommands.find(
+      (command) => event.code === "Key" + command.chord.toUpperCase(),
+    );
+    if (!item) return;
+    event.preventDefault();
+    runLeaderCommand(item);
+  };
+
   return html`
     <${Dialog} id="command-palette" labelledBy="command-palette-title" onClose=${onClose}>
-      <div class="command-palette-shell">
+      <div class=${"command-palette-shell " + mode} onKeyDown=${leaderKeyDown}>
         <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>
-        <input
-          id="command-palette-query"
-          class="command-palette-query"
-          type="search"
-          role="combobox"
-          placeholder="Search commands and sessions"
-          autoComplete="off"
-          autoFocus
-          aria-autocomplete="list"
-          aria-controls=${LISTBOX_ID}
-          aria-expanded="true"
-          aria-activedescendant=${activeOptionId}
-          value=${query}
-          onInput=${(event) => setQuery(event.target.value)}
-          onKeyDown=${keyDown}
-        />
-        <ul id=${LISTBOX_ID} class="command-palette-list" role="listbox">
-          ${results.map((item, index) => html`
-            <li
-              key=${item.id}
-              id=${optionId(index)}
-              class=${"command-palette-option" +
-                (index === activeIndex ? " active" : "") +
-                (item.disabled ? " disabled" : "")}
-              role="option"
-              aria-selected=${index === activeIndex ? "true" : "false"}
-              aria-disabled=${item.disabled ? "true" : null}
-              ref=${index === activeIndex ? activeOptionRef : null}
-              onMouseMove=${() => { if (!item.disabled) setActiveIndex(index); }}
-              onClick=${() => closeThenRun(item)}
+        ${mode === "leader"
+          ? html`
+            <button
+              id="command-palette-search-mode"
+              class="command-palette-search-mode"
+              type="button"
+              onClick=${() => onModeChange("search")}
             >
-              <span class="command-palette-copy">
-                <strong>${item.title}</strong>
-                ${item.subtitle && html`<small>${item.subtitle}</small>`}
-                ${item.disabled && html`
-                  <small class="command-palette-disabled-reason">${item.disabled}</small>`}
-              </span>
-              <span class="command-palette-hint">
-                ${item.chord
-                  ? html`<kbd class="command-palette-chord"
-                              title=${"Press Command-K, then " + item.chord.toUpperCase()}>
-                      ${item.chord}
-                    </kbd>`
-                  : item.hint}
-              </span>
-            </li>
-          `)}
-        </ul>
+              <span>Search commands and sessions</span>
+              <kbd>⌘K</kbd>
+            </button>
+            <div class="command-palette-leader-grid" role="group" aria-label="Command shortcuts">
+              ${leaderCommands.map((item) => html`
+                <button
+                  key=${item.id}
+                  class=${"command-palette-leader-command" + (item.disabled ? " disabled" : "")}
+                  type="button"
+                  aria-disabled=${item.disabled ? "true" : null}
+                  onClick=${() => runLeaderCommand(item)}
+                >
+                  <kbd class="command-palette-leader-key">${item.chord}</kbd>
+                  <span>${item.title}</span>
+                </button>
+              `)}
+            </div>
+            <p class="command-palette-footer" role="status" aria-live="polite">
+              ${leaderMessage || "Press a letter, Backspace to search, or Esc to close."}
+            </p>`
+          : html`
+            <input
+              id="command-palette-query"
+              class="command-palette-query"
+              type="search"
+              role="combobox"
+              placeholder="Search commands and sessions"
+              autoComplete="off"
+              autoFocus
+              ref=${queryRef}
+              aria-autocomplete="list"
+              aria-controls=${LISTBOX_ID}
+              aria-expanded="true"
+              aria-activedescendant=${activeOptionId}
+              value=${query}
+              onInput=${(event) => setQuery(event.target.value)}
+              onKeyDown=${keyDown}
+            />
+            <ul id=${LISTBOX_ID} class="command-palette-list" role="listbox">
+              ${results.map((item, index) => html`
+                <li
+                  key=${item.id}
+                  id=${optionId(index)}
+                  class=${"command-palette-option" +
+                    (index === activeIndex ? " active" : "") +
+                    (item.disabled ? " disabled" : "")}
+                  role="option"
+                  aria-selected=${index === activeIndex ? "true" : "false"}
+                  aria-disabled=${item.disabled ? "true" : null}
+                  ref=${index === activeIndex ? activeOptionRef : null}
+                  onMouseMove=${() => { if (!item.disabled) setActiveIndex(index); }}
+                  onClick=${() => closeThenRun(item)}
+                >
+                  <span class="command-palette-copy">
+                    <strong>${item.title}</strong>
+                    ${item.subtitle && html`<small>${item.subtitle}</small>`}
+                    ${item.disabled && html`
+                      <small class="command-palette-disabled-reason">${item.disabled}</small>`}
+                  </span>
+                  <span class="command-palette-hint">
+                    ${item.chord
+                      ? html`<kbd class="command-palette-chord"
+                                  title=${"Press Command-K, then " + item.chord.toUpperCase()}>
+                          ${item.chord}
+                        </kbd>`
+                      : item.hint}
+                  </span>
+                </li>
+              `)}
+            </ul>`}
       </div>
     <//>
   `;
