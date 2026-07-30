@@ -396,20 +396,20 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Modify: `resources/webui/components/Sidebar.js`
 - Modify: `resources/webui/components/dialogs.js`
 
-- [ ] lift `showDone` out of `Sidebar` into `app.js`, passing `showDone` and `onToggleShowDone` down
-- [ ] add palette state (`null | {mode}`) plus `openPalette(mode)` / `closePalette`
-- [ ] register ONE `document.addEventListener("keydown", handler, true)` in an effect: match
+- [x] lift `showDone` out of `Sidebar` into `app.js`, passing `showDone` and `onToggleShowDone` down
+- [x] add palette state (`null | {mode}`) plus `openPalette(mode)` / `closePalette`
+- [x] register ONE `document.addEventListener("keydown", handler, true)` in an effect: match
       `e.metaKey && e.code === "KeyK"` or `e.ctrlKey && e.shiftKey && e.code === "KeyK"`, then
       `preventDefault()` + `stopPropagation()`; closed → open in search, open → toggle mode; ignore the
       binding entirely while another dialog is open
-- [ ] build the command context from the existing handlers plus the extracted copy action, and pass
+- [x] build the command context from the existing handlers plus the extracted copy action, and pass
       `run` closures into `buildCommands`
-- [ ] add an `initialMode` prop to `NewSessionDialog` that seeds `cwd` **empty** when it is `"import"`,
+- [x] add an `initialMode` prop to `NewSessionDialog` that seeds `cwd` **empty** when it is `"import"`,
       and wire `r` to open it
-- [ ] run `node --check` on every changed module
-- [ ] add `WebUiServingTest` assertions: `app.js` registers a capture-phase listener, matches on
+- [x] run `node --check` on every changed module
+- [x] add `WebUiServingTest` assertions: `app.js` registers a capture-phase listener, matches on
       `e.code`, renders `CommandPalette`, and the dialog's import mode starts with an empty cwd
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 6
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 6
 
 ### Task 6: Clean up the visible chrome
 

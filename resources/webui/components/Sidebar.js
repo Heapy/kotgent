@@ -139,10 +139,10 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
 }
 
 export function Sidebar({
-  sessions, activeId, prefs, status, currentVersion, drawerOpen,
+  sessions, activeId, prefs, status, currentVersion, drawerOpen, showDone,
   onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore, onCloseDrawer,
+  onToggleShowDone,
 }) {
-  const [showDone, setShowDone] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
   const notifyOnRef = useRef(notifyOn);
@@ -403,7 +403,7 @@ export function Sidebar({
             class="show-done-toggle"
             type="button"
             aria-expanded=${showDone ? "true" : "false"}
-            onClick=${() => setShowDone((v) => !v)}
+            onClick=${onToggleShowDone}
           >${(showDone ? "▾ " : "▸ ") + "Show done (" + doneSessions.length + ")"}</button>
           ${showDone && html`
             <ul id="done-list" class="session-list done-list">

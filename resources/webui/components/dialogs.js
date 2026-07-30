@@ -49,10 +49,12 @@ const DIRECTORY_COMPLETION_DELAY_MS = 150;
  * (400/409) are shown verbatim in the form's error line: the daemon's text already names the fix
  * (a duplicate names the existing kotgent session, a claude cwd mismatch names the workaround).
  */
-export function NewSessionDialog({ initialCwd, basePath, onStart, onImport, onClose }) {
-  const [mode, setMode] = useState("start");
+export function NewSessionDialog({
+  initialCwd, initialMode = "start", basePath, onStart, onImport, onClose,
+}) {
+  const [mode, setMode] = useState(initialMode);
   const [agent, setAgent] = useState("");
-  const [cwd, setCwd] = useState(initialCwd || "");
+  const [cwd, setCwd] = useState(initialMode === "import" ? "" : (initialCwd || ""));
   const [completionQuery, setCompletionQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);

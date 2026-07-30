@@ -36,6 +36,7 @@ import {
   wsUrl,
 } from "./lib/api.js";
 import { writeClipboard } from "./lib/clipboard.js";
+import { buildCommands } from "./lib/commands.js";
 import {
   loadPrefs,
   persistTerminalFontSize,
@@ -50,6 +51,7 @@ import {
   tmuxAttachCommand,
 } from "./lib/sessions.js";
 import { throttleLeading } from "./lib/throttle.js";
+import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
 import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./components/dialogs.js";
@@ -173,7 +175,9 @@ function App() {
   const [attachedId, setAttachedId] = useState(null);   // the session whose terminal is open here
   const [pendingAction, setPendingAction] = useState(null);
   const [prefs, setPrefs] = useState(loadPrefs);
-  const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd} | {kind:'prefs'} | {kind:'help'} | {kind:'phone'}
+  const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd,initialMode} | {kind:'prefs'} | {kind:'help'} | {kind:'phone'}
+  const [palette, setPalette] = useState(null);         // null | {mode:'search'|'leader'}
+  const [showDone, setShowDone] = useState(false);
   const [status, setStatus] = useState({ text: "", error: false });
   const [hint, setHint] = useState(SELECT_HINT);
   // Narrow screens only: the sidebar is an overlay drawer there, so its open/closed state lives here —
@@ -181,6 +185,9 @@ function App() {
   // breakpoint the drawer classes mean nothing (the sidebar is a plain flex column) and this stays false,
   // because the toggle that flips it is display:none.
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const openPalette = useCallback((mode = "search") => setPalette({ mode: mode }), []);
+  const closePalette = useCallback(() => setPalette(null), []);
 
   // Latest values for handlers that must not be re-created on every update.
   const sessionsRef = useRef(sessions);
@@ -236,6 +243,25 @@ function App() {
   // available when the zero-delay timer wins the race against the terminal's close callback, then is
   // consumed as soon as a real candidate is evaluated.
   const reattachAvailableRef = useRef(false);
+
+  // Capture before xterm.js or a focused form field sees the opener. A native app dialog owns the
+  // keyboard while it is open; the palette itself is separate state so the same binding can toggle its
+  // two views. `code` keeps the shortcut tied to the physical K key across keyboard layouts.
+  useEffect(() => {
+    const handler = (event) => {
+      const opensPalette =
+        (event.metaKey && event.code === "KeyK") ||
+        (event.ctrlKey && event.shiftKey && event.code === "KeyK");
+      if (!opensPalette || dialogRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPalette((current) => current
+        ? { mode: current.mode === "search" ? "leader" : "search" }
+        : { mode: "search" });
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, []);
 
   const cancelReattach = useCallback(() => {
     reattachIdRef.current = null;
@@ -889,10 +915,15 @@ function App() {
   }, [applyServerPreferences, closeDialogFrom, say]);
 
   /** An explicit directory (a group's "+") wins, then the selected session's, then the base path. */
-  const openNewSession = useCallback((cwd) => {
+  const openNewSession = useCallback((cwd, initialMode = "start") => {
     const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
-    setDialog({ kind: "new", cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath });
+    setDialog({
+      kind: "new",
+      cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath,
+      initialMode: initialMode,
+    });
   }, []);
+  const openImportSession = useCallback(() => openNewSession(null, "import"), [openNewSession]);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
@@ -907,10 +938,43 @@ function App() {
   const stop = useCallback(() => controlSession("stop"), [controlSession]);
   const done = useCallback(() => controlSession("done"), [controlSession]);
   const restore = useCallback((id) => controlSession("undone", id), [controlSession]);
+  const toggleShowDone = useCallback(() => setShowDone((shown) => !shown), []);
+  const changePaletteMode = useCallback((mode) => {
+    setPalette((current) => current ? { mode: mode } : current);
+  }, []);
+
+  const commands = buildCommands({
+    sessions: sessions,
+    activeSession: activeSession,
+    attachedId: attachedId,
+    actions: {
+      selectSession: selectSession,
+      interrupt: interrupt,
+      resume: resume,
+      attach: attach,
+      detach: detach,
+      stop: stop,
+      done: done,
+      copyTmux: copyTmuxCommand,
+      newSession: () => openNewSession(null),
+      importSession: openImportSession,
+      toggleShowDone: toggleShowDone,
+      help: openHelp,
+      phone: openPhone,
+      preferences: openPrefs,
+    },
+  });
 
   // --- render ----------------------------------------------------------------------------------
 
   return html`
+    ${palette && html`
+      <${CommandPalette}
+        commands=${commands}
+        mode=${palette.mode}
+        onModeChange=${changePaletteMode}
+        onClose=${closePalette}
+      />`}
     ${/* The drawer's tap-outside dismissal — a real button so it is reachable by keyboard and by a screen
           reader too, and rendered only while the drawer is open so desktop never has it in the tree. */ ""}
     ${drawerOpen && html`
@@ -923,6 +987,7 @@ function App() {
       status=${status}
       currentVersion=${currentVersion}
       drawerOpen=${drawerOpen}
+      showDone=${showDone}
       onSelect=${selectSession}
       onNewSession=${openNewSession}
       onOpenPrefs=${openPrefs}
@@ -930,6 +995,7 @@ function App() {
       onOpenPhone=${openPhone}
       onRestore=${restore}
       onCloseDrawer=${closeDrawer}
+      onToggleShowDone=${toggleShowDone}
     />
     <${TerminalPane}
       session=${activeSession}
@@ -948,7 +1014,8 @@ function App() {
       onTerminalClosed=${onTerminalClosed}
     />
     ${dialog && dialog.kind === "new" && html`
-      <${NewSessionDialog} initialCwd=${dialog.cwd} basePath=${prefs.basePath}
+      <${NewSessionDialog} initialCwd=${dialog.cwd} initialMode=${dialog.initialMode}
+                           basePath=${prefs.basePath}
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
     ${/* Keyed on the committed server revision: the dialog seeds its draft from `prefs` once, at mount
           (useState), so a dialog REOPENED while a save's PUT was still in flight holds a pre-save draft —

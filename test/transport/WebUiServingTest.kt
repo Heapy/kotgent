@@ -350,6 +350,45 @@ class WebUiServingTest {
     }
 
     @Test
+    fun theAppOwnsThePaletteBindingAndCommandContext() = withServer { ctx ->
+        val app = ctx.get("/app.js").bodyAsText()
+        assertEquals(
+            1,
+            Regex("""document\.addEventListener\("keydown", handler, true\)""").findAll(app).count(),
+            "the app installs one capture-phase palette listener",
+        )
+        assertTrue(
+            app.contains("event.metaKey && event.code === \"KeyK\"") &&
+                app.contains("event.ctrlKey && event.shiftKey && event.code === \"KeyK\"") &&
+                app.contains("event.preventDefault()") &&
+                app.contains("event.stopPropagation()"),
+            "the opener matches the physical K key and consumes both supported bindings",
+        )
+        assertTrue(
+            app.contains("if (!opensPalette || dialogRef.current) return") &&
+                app.contains("current.mode === \"search\" ? \"leader\" : \"search\""),
+            "an app dialog owns its keyboard and a repeated opener toggles palette mode",
+        )
+        assertTrue(
+            app.contains("const commands = buildCommands({") &&
+                app.contains("copyTmux: copyTmuxCommand") &&
+                app.contains("importSession: openImportSession") &&
+                app.contains("<\${CommandPalette}") &&
+                app.contains("commands=\${commands}"),
+            "the rendered palette receives descriptors built from app-owned actions",
+        )
+
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(
+            app.contains("const [showDone, setShowDone] = useState(false)") &&
+                app.contains("showDone=\${showDone}") &&
+                app.contains("onToggleShowDone=\${toggleShowDone}") &&
+                !sidebar.contains("const [showDone, setShowDone]"),
+            "the app owns archived-session visibility so the palette and sidebar share one state",
+        )
+    }
+
+    @Test
     fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         assertTrue(pane.contains("id=\"attach-button\""), "the UI includes attach")
@@ -604,6 +643,7 @@ class WebUiServingTest {
     @Test
     fun webUiOffersImportingASessionStartedOutsideKotgent() = withServer { ctx ->
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        val app = ctx.get("/app.js").bodyAsText()
         // The New session dialog's second mode registers a conversation started outside kotgent.
         assertTrue(dialogs.contains("id=\"new-session-mode-import\""), "the dialog has an Import mode")
         assertTrue(
@@ -627,12 +667,23 @@ class WebUiServingTest {
             "switching modes resets the cwd to the mode's own default",
         )
         assertTrue(
+            dialogs.contains("const [mode, setMode] = useState(initialMode)") &&
+                dialogs.contains(
+                    """const [cwd, setCwd] = useState(initialMode === "import" ? "" : (initialCwd || ""))""",
+                ),
+            "opening directly in import mode cannot inherit a selected session or group cwd",
+        )
+        assertTrue(
+            app.contains("""openNewSession(null, "import")""") &&
+                app.contains("initialMode=\${dialog.initialMode}"),
+            "the resume mnemonic opens the existing dialog directly in import mode",
+        )
+        assertTrue(
             dialogs.contains("id=\"session-register-only\""),
             "importing can skip the automatic resume (the --no-start analogue)",
         )
         assertTrue(dialogs.contains("kotgent import <agent> <id>"), "the CLI help names the import command")
 
-        val app = ctx.get("/app.js").bodyAsText()
         assertTrue(app.contains("apiRequest(\"/sessions/import\""), "the import posts to POST /sessions/import")
         assertTrue(
             app.contains("\"/sessions/\" + encodeURIComponent(created.id) + \"/resume\""),
