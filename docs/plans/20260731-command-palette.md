@@ -101,6 +101,8 @@ the palette is Preact + htm like everything else, and the matcher is plain JS.
 - **regression baseline**: the last recorded green run was **844 native tests / 0 skipped** (plus the
   build-info plugin's 7 JVM tests and 11 `ptycheck` checks — see `docs/plans/20260730-junie-provider.md`).
   Record the actual number on the first green run of this work and compare at the end.
+- **implementation baseline (2026-07-31)**: **844 native tests / 0 skipped**, plus 7 build-info JVM
+  tests and all 11 `ptycheck` checks through `PtyTest`.
 - **automation limits** (from `CLAUDE.md`): never start the daemon, `./kotlin run`, a real
   `claude`/`codex`/`junie`, or `launchctl` while implementing.
 
@@ -317,21 +319,21 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 **Files:**
 - Create: `resources/webui/lib/commands.js`
 
-- [ ] create `buildCommands(ctx)` returning the descriptor array from Technical Details, with
+- [x] create `buildCommands(ctx)` returning the descriptor array from Technical Details, with
       `ctx = {sessions, activeSession, attachedId, actions}`; group `sessions`, then `session`, then
       `general`
-- [ ] compute `disabled` per command from the rules the terminal header uses today (`isAliveState`,
+- [x] compute `disabled` per command from the rules the terminal header uses today (`isAliveState`,
       `session.id === attachedId`, `session.tmuxSession` present), each with a short human reason
-- [ ] attach the chord letters from the mnemonic table, marking `t` and `b` disabled with an explicit
+- [x] attach the chord letters from the mnemonic table, marking `t` and `b` disabled with an explicit
       "not implemented yet" reason, and give the two resume-ish commands their disambiguating titles
-- [ ] implement `filterCommands(items, query)`: case-insensitive substring, word-start matches first,
+- [x] implement `filterCommands(items, query)`: case-insensitive substring, word-start matches first,
       available items first, disabled ones as a tail omitted entirely for an empty query
-- [ ] for an empty query, emit needs-attention sessions first and then the remainder **deduplicated**,
+- [x] for an empty query, emit needs-attention sessions first and then the remainder **deduplicated**,
       including archived sessions with `hint: "done"`
-- [ ] run `node --check resources/webui/lib/commands.js`
-- [ ] add `WebUiServingTest` assertions: the module is served and registered, exports both functions, and
+- [x] run `node --check resources/webui/lib/commands.js`
+- [x] add `WebUiServingTest` assertions: the module is served and registered, exports both functions, and
       its source carries the full chord table including the reserved-disabled letters
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 2
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 2
 
 ### Task 2: Extract the clipboard helper so the palette can copy the tmux command
 

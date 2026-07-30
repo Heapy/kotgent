@@ -222,7 +222,7 @@ class WebUiServingTest {
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
-            "/lib/throttle.js", "/lib/notify.js", "/lib/push.js", "/lib/agents.js",
+            "/lib/throttle.js", "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js",
         )) {
@@ -243,6 +243,45 @@ class WebUiServingTest {
         assertTrue(
             ctx.get("/lib/throttle.js").bodyAsText().contains("export function throttleLeading"),
             "the mark-read throttle is exported under the name app.js imports",
+        )
+    }
+
+    @Test
+    fun theCommandRegistryIsTheServedSourceOfSearchAndLeaderCommands() = withServer { ctx ->
+        val commands = ctx.get("/lib/commands.js").bodyAsText()
+        assertTrue(commands.contains("export function buildCommands"), "the command registry is exported")
+        assertTrue(commands.contains("export function filterCommands"), "the pure matcher is exported")
+
+        val chords = mapOf(
+            "session.interrupt" to "i",
+            "session.stop" to "s",
+            "session.done" to "d",
+            "session.copy-tmux" to "c",
+            "general.new" to "n",
+            "general.import" to "r",
+            "general.free-terminal" to "t",
+            "general.help" to "h",
+            "general.phone" to "m",
+            "general.notifications" to "b",
+            "general.preferences" to "p",
+        )
+        for ((id, chord) in chords) {
+            assertTrue(
+                Regex("""id: "$id", group: "\w+", chord: "$chord"""").containsMatchIn(commands),
+                "$id keeps the '$chord' leader mnemonic in the one registry",
+            )
+        }
+        for (id in listOf("general.free-terminal", "general.notifications")) {
+            val descriptor = commands.substringAfter("id: \"$id\"").substringBefore("\n    },")
+            assertTrue(
+                descriptor.contains("disabled: \"not implemented yet\""),
+                "$id is reserved but visibly unavailable until its designed stage",
+            )
+        }
+        assertTrue(
+            commands.contains("title: \"Resume this session\"") &&
+                commands.contains("title: \"Resume a conversation started outside kotgent…\""),
+            "the current-session and outside-kotgent resume commands are disambiguated",
         )
     }
 
