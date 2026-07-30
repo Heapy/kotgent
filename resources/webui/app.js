@@ -991,8 +991,6 @@ function App() {
       onSelect=${selectSession}
       onNewSession=${openNewSession}
       onOpenPrefs=${openPrefs}
-      onOpenHelp=${openHelp}
-      onOpenPhone=${openPhone}
       onRestore=${restore}
       onCloseDrawer=${closeDrawer}
       onToggleShowDone=${toggleShowDone}
@@ -1005,6 +1003,7 @@ function App() {
       hint=${hint}
       drawerOpen=${drawerOpen}
       onToggleDrawer=${toggleDrawer}
+      onOpenPalette=${openPalette}
       onAttach=${attach}
       onInterrupt=${interrupt}
       onResume=${resume}

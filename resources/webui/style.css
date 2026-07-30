@@ -246,6 +246,7 @@ select:focus-visible {
   line-height: 1.45;
   margin: 8px 10px;
 }
+.empty-sessions p { margin: 0 0 10px; }
 
 /* --- Directory groups (base path + grouping level) --- */
 .session-group { margin-bottom: 10px; }
@@ -458,9 +459,12 @@ select:focus-visible {
   white-space: nowrap;
 }
 .session-actions {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 6px;
+}
+.palette-button {
+  flex: 0 0 auto;
   margin-left: auto;
 }
 #terminal-host {
@@ -1209,7 +1213,7 @@ dialog::backdrop {
     min-height: 34px;
     width: 34px;
   }
-  /* The drawer is narrow and the brand row now carries one more button; let it wrap rather than squeeze. */
+  /* Keep the notification and drawer-close controls from squeezing the brand in the narrow drawer. */
   .brand-actions {
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -1228,7 +1232,10 @@ dialog::backdrop {
   #terminal-title { font-size: 12px; }
   /* The lifecycle controls collapse to an icon row: the label text is still the button's content (and its
      accessible name comes from aria-label either way), but it is drawn from `data-icon` instead. */
-  .session-actions { gap: 4px; }
+  .session-actions {
+    display: flex;
+    gap: 4px;
+  }
   .session-actions .button {
     font-size: 0;
     min-height: 34px;

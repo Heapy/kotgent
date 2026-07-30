@@ -67,7 +67,8 @@ function ctrlBytesFor(data) {
 
 export function TerminalPane({
   session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen,
-  onToggleDrawer, onAttach, onInterrupt, onResume, onDetach, onStop, onDone, onTerminalClosed,
+  onToggleDrawer, onOpenPalette, onAttach, onInterrupt, onResume, onDetach, onStop, onDone,
+  onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   const [copyResult, setCopyResult] = useState(null);
@@ -296,6 +297,10 @@ export function TerminalPane({
     ctrlActiveRef.current = false;
     setCtrlActive(false);
   };
+  const openPalette = () => {
+    const mode = window.matchMedia("(max-width: 720px)").matches ? "leader" : "search";
+    onOpenPalette(mode);
+  };
 
   return html`
     <main id="terminal-pane">
@@ -318,10 +323,18 @@ export function TerminalPane({
             ${badge ? badge.label : ""}
           </span>
         </div>
+        <button
+          id="palette-button"
+          class="icon-button icon-button-small palette-button"
+          type="button"
+          aria-label="Open command palette"
+          title="Commands"
+          onClick=${openPalette}
+        >⋯</button>
         ${/* Each control carries its label as text AND an icon in `data-icon`. Above the mobile
-              breakpoint the text is the button; below it, the text collapses and style.css draws
+              breakpoint the palette replaces this row; below it, the text collapses and style.css draws
               `data-icon` through ::before, so one row of markup serves both without a JS branch. The
-              aria-label keeps the accessible name identical to the desktop wording either way. */ ""}
+              aria-label keeps the accessible name identical to the wording either way. */ ""}
         ${session && html`
           <div id="session-actions" class="session-actions">
             ${alive && tmuxCommand && html`

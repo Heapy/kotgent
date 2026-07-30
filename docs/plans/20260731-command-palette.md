@@ -418,19 +418,21 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Modify: `resources/webui/components/TerminalPane.js`
 - Modify: `resources/webui/style.css`
 
-- [ ] remove `#new-session-button`, `#phone-button`, `#help-button` and `#prefs-button` from the sidebar
+- [x] remove `#new-session-button`, `#phone-button`, `#help-button` and `#prefs-button` from the sidebar
       header, keeping `#notify-toggle` and `#drawer-close`, and keep the `onOpenPrefs` / `onNewSession`
       props for `#base-path-note` and the per-group `+`
-- [ ] add a "Start a session" button to the `#empty-sessions` empty state so a first run is not left
+- [x] add a "Start a session" button to the `#empty-sessions` empty state so a first run is not left
       without a discoverable path
-- [ ] add `#palette-button` (`⋯`) to the terminal header **outside** the `${session && …}` guard,
+- [x] add `#palette-button` (`⋯`) to the terminal header **outside** the `${session && …}` guard,
       opening the palette in `search` on desktop and `leader` under the mobile breakpoint
-- [ ] hide the terminal header's action buttons above the mobile breakpoint via CSS only (they stay in
+- ➕ [x] wire the `openPalette` handler added in Task 5 through `app.js` to the terminal header button;
+      `app.js` is required for the button to work but was omitted from Task 6's file list
+- [x] hide the terminal header's action buttons above the mobile breakpoint via CSS only (they stay in
       the markup and stay available on phones); refresh the stale wrap comment at `style.css:1077-1079`
-- [ ] run `node --check` on both components
-- [ ] move the `prefs-button` / `help-button` / `phone-button` assertions from `Sidebar.js` onto the
+- [x] run `node --check` on both components
+- [x] move the `prefs-button` / `help-button` / `phone-button` assertions from `Sidebar.js` onto the
       palette registry, and assert the sidebar header now carries only the notification toggle
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 7
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 7
 
 ### Task 7: Persist the sidebar collapse preference
 

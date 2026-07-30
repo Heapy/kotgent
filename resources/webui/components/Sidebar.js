@@ -140,8 +140,7 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
 
 export function Sidebar({
   sessions, activeId, prefs, status, currentVersion, drawerOpen, showDone,
-  onSelect, onNewSession, onOpenPrefs, onOpenHelp, onOpenPhone, onRestore, onCloseDrawer,
-  onToggleShowDone,
+  onSelect, onNewSession, onOpenPrefs, onRestore, onCloseDrawer, onToggleShowDone,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
@@ -285,12 +284,6 @@ export function Sidebar({
           <h1>Kotgent</h1>
           <div class="brand-actions">
             <button
-              id="new-session-button"
-              class="button button-primary button-small"
-              type="button"
-              onClick=${() => onNewSession(null)}
-            >New session</button>
-            <button
               id="notify-toggle"
               class=${"icon-button icon-button-small notify-toggle" + (notifyOn ? " active" : "")}
               type="button"
@@ -300,30 +293,6 @@ export function Sidebar({
                 : "Notifications off — click to turn on for this device"}
               onClick=${toggleNotifications}
             >${notifyOn ? "🔔" : "🔕"}</button>
-            <button
-              id="phone-button"
-              class="icon-button icon-button-small"
-              type="button"
-              aria-label="Sign in from your phone"
-              title="Sign in from your phone"
-              onClick=${onOpenPhone}
-            >📱</button>
-            <button
-              id="help-button"
-              class="icon-button icon-button-small"
-              type="button"
-              aria-label="Help"
-              title="How kotgent works"
-              onClick=${onOpenHelp}
-            >?</button>
-            <button
-              id="prefs-button"
-              class="icon-button icon-button-small"
-              type="button"
-              aria-label="Preferences"
-              title="Preferences"
-              onClick=${onOpenPrefs}
-            >⚙</button>
             ${/* Shown only under the mobile media query: the drawer's scrim covers the hamburger that
                   opened it, so without this the only way back is a tap outside. */ ""}
             <button
@@ -390,9 +359,11 @@ export function Sidebar({
         </ul>
 
         ${visible.length === 0 && html`
-          <p id="empty-sessions" class="empty-sessions">
-            No sessions yet. Start one to attach it here.
-          </p>
+          <div id="empty-sessions" class="empty-sessions">
+            <p>No sessions yet. Start one to attach it here.</p>
+            <button id="empty-new-session-button" class="button button-primary" type="button"
+                    onClick=${() => onNewSession(null)}>Start a session</button>
+          </div>
         `}
       </section>
 

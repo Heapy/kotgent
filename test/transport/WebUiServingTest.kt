@@ -284,6 +284,17 @@ class WebUiServingTest {
                 commands.contains("title: \"Resume a conversation started outside kotgent…\""),
             "the current-session and outside-kotgent resume commands are disambiguated",
         )
+        for ((id, title) in mapOf(
+            "general.preferences" to "Preferences",
+            "general.help" to "Help",
+            "general.phone" to "Sign in from your phone",
+        )) {
+            val descriptor = commands.substringAfter("id: \"$id\"").substringBefore("\n    },")
+            assertTrue(
+                descriptor.contains("title: \"$title\"") && descriptor.contains("disabled: null"),
+                "$title remains available from the command registry after leaving the sidebar header",
+            )
+        }
     }
 
     @Test
@@ -389,6 +400,57 @@ class WebUiServingTest {
     }
 
     @Test
+    fun thePaletteReplacesRedundantDesktopChromeWithoutRemovingEntryPoints() = withServer { ctx ->
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        val brandActions = sidebar.substringAfter("<div class=\"brand-actions\">")
+            .substringBefore("\n          </div>")
+        assertEquals(
+            2,
+            Regex("<button").findAll(brandActions).count(),
+            "the sidebar brand row keeps only notifications and the mobile drawer close",
+        )
+        assertTrue(
+            brandActions.contains("id=\"notify-toggle\"") &&
+                brandActions.contains("id=\"drawer-close\"") &&
+                !sidebar.contains("id=\"new-session-button\"") &&
+                !sidebar.contains("id=\"phone-button\"") &&
+                !sidebar.contains("id=\"help-button\"") &&
+                !sidebar.contains("id=\"prefs-button\""),
+            "general actions no longer duplicate the command palette in the sidebar header",
+        )
+        assertTrue(
+            sidebar.contains("id=\"empty-new-session-button\"") &&
+                sidebar.contains(">Start a session</button>") &&
+                sidebar.contains("onClick=\${() => onNewSession(null)}"),
+            "an empty first run still exposes session creation without knowing the palette shortcut",
+        )
+
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        val paletteButtonAt = pane.indexOf("id=\"palette-button\"")
+        val sessionGuardAt = pane.indexOf("\${session && html`")
+        assertTrue(
+            paletteButtonAt >= 0 && paletteButtonAt < sessionGuardAt,
+            "the palette button renders even when there is no selected session",
+        )
+        assertTrue(
+            pane.contains("window.matchMedia(\"(max-width: 720px)\").matches ? \"leader\" : \"search\"") &&
+                pane.contains("onOpenPalette(mode)") &&
+                ctx.get("/app.js").bodyAsText().contains("onOpenPalette=\${openPalette}"),
+            "the header opens the compact leader on phones and search on wider screens",
+        )
+
+        val css = ctx.get("/style.css").bodyAsText()
+        val desktop = css.substringBefore("@media (max-width: 720px)")
+        val mobile = css.substringAfter("@media (max-width: 720px)")
+            .substringBefore("@media (prefers-reduced-motion: reduce)")
+        assertTrue(
+            desktop.contains(".session-actions {\n  display: none;") &&
+                mobile.contains(".session-actions {\n    display: flex;"),
+            "lifecycle buttons stay in markup but switch from palette-only desktop to direct mobile controls",
+        )
+    }
+
+    @Test
     fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         assertTrue(pane.contains("id=\"attach-button\""), "the UI includes attach")
@@ -396,7 +458,7 @@ class WebUiServingTest {
         assertTrue(pane.contains("id=\"resume-button\""), "the UI includes resume")
         assertTrue(pane.contains("id=\"detach-button\""), "the UI includes detach")
         assertTrue(pane.contains("id=\"stop-button\""), "the UI includes stop")
-        assertTrue(pane.contains("id=\"copy-tmux-button\""), "the desktop UI includes copy tmux")
+        assertTrue(pane.contains("id=\"copy-tmux-button\""), "the UI keeps the direct copy-tmux control")
         assertTrue(
             pane.contains("\${alive && tmuxCommand && html`"),
             "copy tmux is offered only while the tmux session is alive",
@@ -783,8 +845,8 @@ class WebUiServingTest {
     @Test
     fun webUiExposesThePreferencesScreen() = withServer { ctx ->
         assertTrue(
-            ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"prefs-button\""),
-            "the sidebar has the preferences (gear) entry point",
+            ctx.get("/lib/commands.js").bodyAsText().contains("id: \"general.preferences\""),
+            "the command palette has the preferences entry point",
         )
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(dialogs.contains("id=\"prefs-dialog\""), "the UI includes the preferences screen")
@@ -872,8 +934,8 @@ class WebUiServingTest {
     @Test
     fun webUiExposesTheHelpScreen() = withServer { ctx ->
         assertTrue(
-            ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"help-button\""),
-            "the sidebar has the help entry point",
+            ctx.get("/lib/commands.js").bodyAsText().contains("id: \"general.help\""),
+            "the command palette has the help entry point",
         )
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(dialogs.contains("id=\"help-dialog\""), "the UI includes the help screen")
@@ -898,8 +960,8 @@ class WebUiServingTest {
     @Test
     fun webUiExposesThePhoneAccessScreen() = withServer { ctx ->
         assertTrue(
-            ctx.get("/components/Sidebar.js").bodyAsText().contains("id=\"phone-button\""),
-            "the sidebar has the phone (QR) entry point next to help and preferences",
+            ctx.get("/lib/commands.js").bodyAsText().contains("id: \"general.phone\""),
+            "the command palette has the phone sign-in entry point",
         )
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(dialogs.contains("id=\"phone-dialog\""), "the UI includes the phone sign-in screen")
