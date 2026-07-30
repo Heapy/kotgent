@@ -1,43 +1,23 @@
-/* Kotgent Web UI — minimal styling (plan Task 18). Light/dark is a nice-to-have. */
+/* Kotgent Web UI — a single dark, mac-native shell. */
 
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --border: #dfe3e8;
-  --text: #1c2128;
-  --muted: #6a737d;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --attn: #d13438;
-  --attn-bg: #fdecea;
-  --danger: #b42318;
-  --danger-hover: #912018;
-  --row-hover: #eef2f7;
-  --row-active: #e2ebfb;
-  --term-bg: #1e1e1e;
-  --input-bg: #ffffff;
-  --shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14171c;
-    --panel: #1b1f27;
-    --border: #2a2f3a;
-    --text: #e6e9ef;
-    --muted: #8a93a2;
-    --accent: #4a86ff;
-    --accent-hover: #6a9bff;
-    --attn: #ff6b6b;
-    --attn-bg: #3a1f22;
-    --danger: #dc4c43;
-    --danger-hover: #ef6a61;
-    --row-hover: #232833;
-    --row-active: #2a3242;
-    --term-bg: #000000;
-    --input-bg: #14171c;
-    --shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
-  }
+  --bg: #14171c;
+  --panel: #1b1f27;
+  --border: #2a2f3a;
+  --text: #e6e9ef;
+  --muted: #8a93a2;
+  --accent: #8B62FF;
+  --accent-fill: #7A4FF5;
+  --accent-hover: #6E43DF;
+  --attn: #ff6b6b;
+  --attn-bg: #3a1f22;
+  --danger: #dc4c43;
+  --danger-hover: #ef6a61;
+  --row-hover: #232833;
+  --row-active: #2a3242;
+  --term-bg: #000000;
+  --input-bg: #14171c;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
 }
 
 * { box-sizing: border-box; }
@@ -154,8 +134,8 @@ select:focus-visible {
   padding: 0 9px;
 }
 .button-primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: #fff;
 }
 .button-primary:hover:not(:disabled) {
@@ -396,21 +376,12 @@ select:focus-visible {
   text-transform: lowercase;
   white-space: nowrap;
 }
-.badge-running   { background: #dbeafe; color: #1e40af; }
-.badge-ready     { background: #dcfce7; color: #166534; }
-.badge-attention { background: #fde3e3; color: #a4161a; }
-.badge-dead      { background: #e5e7eb; color: #4b5563; }
-.badge-crashed   { background: #fee2e2; color: #991b1b; }
-.badge-resumable { background: #fef3c7; color: #92400e; }
-
-@media (prefers-color-scheme: dark) {
-  .badge-running   { background: #1e3a8a; color: #bfd4ff; }
-  .badge-ready     { background: #14532d; color: #b7f7c9; }
-  .badge-attention { background: #5a1a1d; color: #ffc9c9; }
-  .badge-dead      { background: #2d333d; color: #aeb6c2; }
-  .badge-crashed   { background: #5a1a1a; color: #ffb3b3; }
-  .badge-resumable { background: #4a3610; color: #ffe0a3; }
-}
+.badge-running   { background: #1e3a8a; color: #bfd4ff; }
+.badge-ready     { background: #14532d; color: #b7f7c9; }
+.badge-attention { background: #5a1a1d; color: #ffc9c9; }
+.badge-dead      { background: #2d333d; color: #aeb6c2; }
+.badge-crashed   { background: #5a1a1a; color: #ffb3b3; }
+.badge-resumable { background: #4a3610; color: #ffe0a3; }
 
 #sidebar-footer {
   align-items: baseline;
@@ -544,8 +515,8 @@ select:focus-visible {
   min-width: 34px;
 }
 .key-bar-key[aria-pressed="true"] {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: #fff;
 }
 
@@ -894,44 +865,23 @@ dialog::backdrop {
   stroke: none;
   width: 20px;
 }
-/* The brand chips are the only literal colours in the picker, so each needs the same light/dark pair
-   the badges above carry: a chip tinted once would either glare or, like the earlier `#1f2937`, sit
-   within ~1.2:1 of the selected card's dark `--row-active` and lose its shape behind its own glyph.
-   The hues follow each vendor's own asset — OpenAI's `#0080f7` is the disc `lib/agents.js` drops,
-   Junie's `#48e054` is the fill on the JetBrains logo — and each pair clears 3:1 against its card. */
+/* The brand chips are the only literal colours in the picker. Their dark-shell tints keep the glyph
+   distinct from both the card and its selected `--row-active` state. */
 .agent-icon-claude {
-  background: #f8e2d8;
-  color: #b94f2d;
+  background: #4a2a1c;
+  color: #f6bda6;
 }
 .agent-icon-codex {
-  background: #e2f0ff;
-  color: #0080f7;
+  background: #0d2c4a;
+  color: #5cb4ff;
 }
 .agent-icon-junie {
-  background: #e3f8e6;
-  color: #1d8a2c;
+  background: #16351c;
+  color: #48e054;
 }
 .agent-icon-cursor {
-  background: #e3e8ef;
-  color: #3f5570;
-}
-@media (prefers-color-scheme: dark) {
-  .agent-icon-claude {
-    background: #4a2a1c;
-    color: #f6bda6;
-  }
-  .agent-icon-codex {
-    background: #0d2c4a;
-    color: #5cb4ff;
-  }
-  .agent-icon-junie {
-    background: #16351c;
-    color: #48e054;
-  }
-  .agent-icon-cursor {
-    background: #2b3a4d;
-    color: #b9cde5;
-  }
+  background: #2b3a4d;
+  color: #b9cde5;
 }
 /* A column so a planned agent's `Soon` sits under its name: a card is only ~160px wide on a phone, and
    the two side by side would not fit next to the 38px chip. `.field small` above styles the note. */
@@ -1171,6 +1121,12 @@ dialog::backdrop {
 }
 
 @media (max-width: 720px) {
+  :root {
+    --bg: #000;
+    --panel: #0d0f14;
+    --input-bg: #101218;
+  }
+
   #help-dialog { width: 100%; }
   .help-list {
     grid-template-columns: 1fr;

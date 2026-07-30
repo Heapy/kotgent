@@ -476,18 +476,18 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Modify: `resources/webui/index.html`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] fold **all three** `@media (prefers-color-scheme: dark)` blocks (`style.css:22`, `:396`, `:769`)
+- [x] fold **all three** `@media (prefers-color-scheme: dark)` blocks (`style.css:22`, `:396`, `:769`)
       into their base rules and delete the light values
-- [ ] rewrite `theAgentRadiosAreHiddenWithoutLeavingTheKeyboardOrTheDarkTheme`
+- [x] rewrite `theAgentRadiosAreHiddenWithoutLeavingTheKeyboardOrTheDarkTheme`
       (`WebUiServingTest.kt:375-381`) to expect one `.agent-icon-<agent>` declaration instead of two,
       keeping its intent ("every chip is declared, once, in the single theme")
-- [ ] set `--accent: #8B62FF` and give filled buttons a denser `#7A4FF5` background
-- [ ] add the phone override (`--bg: #000`, near-black panels) **inside the existing**
+- [x] set `--accent: #8B62FF` and give filled buttons a denser `#7A4FF5` background
+- [x] add the phone override (`--bg: #000`, near-black panels) **inside the existing**
       `@media (max-width: 720px)` block at `style.css:1018`, and update `theme-color` in `index.html`
-- [ ] grep to confirm no `prefers-color-scheme` rule survives
-- [ ] assert the invariant, not the palette: no `prefers-color-scheme` block remains, and the mobile
+- [x] grep to confirm no `prefers-color-scheme` rule survives
+- [x] assert the invariant, not the palette: no `prefers-color-scheme` block remains, and the mobile
       block still contains the `#terminal-host .xterm` padding rule the fit test slices for
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 10
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 10
 
 ### Task 10: Float the sidebar and terminal as two cards
 

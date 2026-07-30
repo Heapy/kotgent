@@ -641,13 +641,18 @@ class WebUiServingTest {
         assertTrue(mark.contains("fill: currentColor"), "a brand mark is filled, and takes the chip's colour")
         assertTrue(!mark.contains("stroke-width"), "nothing strokes a filled path")
 
+        assertTrue(
+            !css.contains("prefers-color-scheme"),
+            "the shell has one dark theme rather than a second conditional palette",
+        )
+
         // Every other colour in the picker comes from a themed variable; the chips are literals, so each
-        // owes a dark counterpart the way the status badges above do.
+        // must be declared exactly once in the single theme.
         for (agent in listOf("claude", "codex", "junie", "cursor")) {
             assertEquals(
-                2,
+                1,
                 Regex("\\.agent-icon-$agent").findAll(css).count(),
-                "the $agent chip is declared once per colour scheme",
+                "the $agent chip is declared once in the single theme",
             )
         }
     }
