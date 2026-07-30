@@ -949,13 +949,18 @@ class TransportTest {
 
         // A malformed provider id must be the handler's OWN clean 400: the DTO carries the id as a
         // String precisely because ProviderSessionId's value-class serializer would throw
-        // IllegalArgumentException PAST the route's SerializationException catch — a 500.
+        // IllegalArgumentException PAST the route's SerializationException catch — a 500. "Malformed"
+        // is a CHARSET question, not a UUID one: junie's ids are not UUIDs, so what must be refused
+        // here is an id kotgent could not put in a path/argv/URL unquoted.
         val malformed = ctx.postBody(
             "/sessions/import",
-            """{"agent":"claude","providerSessionId":"not-a-uuid","cwd":"/tmp"}""",
+            """{"agent":"claude","providerSessionId":"not a uuid","cwd":"/tmp"}""",
         )
         assertEquals(HttpStatusCode.BadRequest, malformed.status, "a malformed provider id is a 400, not a 500")
-        assertTrue("UUID" in malformed.bodyAsText(), "the body says what a valid id looks like: ${malformed.bodyAsText()}")
+        assertTrue(
+            "ProviderSessionId" in malformed.bodyAsText(),
+            "the body says what a valid id looks like: ${malformed.bodyAsText()}",
+        )
 
         val noCwd = ctx.postBody(
             "/sessions/import",

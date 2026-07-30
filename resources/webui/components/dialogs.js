@@ -271,7 +271,8 @@ export function NewSessionDialog({ initialCwd, basePath, onStart, onImport, onCl
                    value=${sessionId} onInput=${(e) => setSessionId(e.target.value)} />
             <small class="field-hint">
               claude: the ${"<id>"}.jsonl transcript name under ~/.claude/projects — codex: the id in
-              the ${"rollout-<ts>-<id>"}.jsonl file name.
+              the ${"rollout-<ts>-<id>"}.jsonl file name — junie: the directory name under
+              ~/.junie/sessions, e.g. ${"session-<date>-<time>-<suffix>"}.
             </small>
           </label>
         `}
@@ -619,7 +620,7 @@ function phoneSetup(onClose) {
 // --- Help ------------------------------------------------------------------------------------------
 
 const CLI_HELP = `kotgent list                  list sessions
-kotgent start <agent> [cwd]   start a session (claude | codex)
+kotgent start <agent> [cwd]   start a session (claude | codex | junie)
 kotgent import <agent> <id>   register a session started outside kotgent, then resume it
 kotgent attach <id>           attach a raw terminal
 kotgent interrupt <id>        send Ctrl-C

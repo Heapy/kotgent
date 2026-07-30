@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -93,8 +94,14 @@ class DomainTest {
     @Test
     fun decodingAMalformedProviderIdIsRejected() {
         assertFailsWith<IllegalArgumentException> {
-            json.decodeFromString<AgentEvent>("""{"type":"session_bound","providerSessionId":"not-a-uuid"}""")
+            json.decodeFromString<AgentEvent>("""{"type":"session_bound","providerSessionId":"has spaces"}""")
         }
+        // A non-UUID id is NOT malformed — junie's ids look like this, and the wire must carry them.
+        val junie = json.decodeFromString<AgentEvent>(
+            """{"type":"session_bound","providerSessionId":"session-260730-015553-1j1h"}""",
+        )
+        assertIs<AgentEvent.SessionBound>(junie)
+        assertEquals("session-260730-015553-1j1h", junie.providerSessionId.value)
     }
 
     // ---- value-class id invariants ----
@@ -116,13 +123,40 @@ class DomainTest {
     }
 
     @Test
-    fun providerSessionIdRequiresUuid() {
-        assertFailsWith<IllegalArgumentException> { ProviderSessionId("not-a-uuid") }
-        // wrong length in the final group
-        assertFailsWith<IllegalArgumentException> { ProviderSessionId("11111111-2222-3333-4444-55555555555") }
-        // non-hex character
-        assertFailsWith<IllegalArgumentException> { ProviderSessionId("g1111111-2222-3333-4444-555555555555") }
+    fun providerSessionIdAcceptsEveryProvidersIdShape() {
+        // claude/codex mint UUIDs; junie mints `session-<ts>-<suffix>`. Both must construct.
         assertEquals(uuid, ProviderSessionId(uuid).value)
+        assertEquals("session-260730-015553-1j1h", ProviderSessionId("session-260730-015553-1j1h").value)
+        assertEquals("a.b_c-1", ProviderSessionId("a.b_c-1").value)
+    }
+
+    @Test
+    fun providerSessionIdRejectsWhatIsUnsafeInAPathArgvOrUrl() {
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("   ") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("has spaces") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("slash/es") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("quote'y") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("pipe|d") }
+        // `..` is a path component that escapes its parent, and a leading `-` reads as a CLI flag.
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("..") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId(".hidden") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("--resume") }
+        assertFailsWith<IllegalArgumentException> { ProviderSessionId("x".repeat(ProviderSessionId.MAX_LENGTH + 1)) }
+        assertEquals("x".repeat(128), ProviderSessionId("x".repeat(ProviderSessionId.MAX_LENGTH)).value)
+    }
+
+    @Test
+    fun isCanonicalUuidIsTheBoundaryCheckForUuidProviders() {
+        assertTrue(isCanonicalUuid(uuid))
+        assertTrue(isCanonicalUuid(uuid.uppercase()), "hex case is insignificant in a UUID")
+        assertFalse(isCanonicalUuid("session-260730-015553-1j1h"))
+        assertFalse(isCanonicalUuid("not-a-uuid"))
+        // wrong length in the final group
+        assertFalse(isCanonicalUuid("11111111-2222-3333-4444-55555555555"))
+        // non-hex character
+        assertFalse(isCanonicalUuid("g1111111-2222-3333-4444-555555555555"))
+        assertFalse(isCanonicalUuid(""))
     }
 
     @Test

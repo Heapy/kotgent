@@ -3,6 +3,7 @@ package io.kotgent.adapter.claude
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.PaneId
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.isCanonicalUuid
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -76,7 +77,10 @@ object ClaudeHookNormalizer {
     private fun sessionBound(payload: JsonElement): AgentEvent? {
         val raw = payload.stringField(FIELD_SESSION_ID) ?: return null
         // Claude session ids are UUIDs; a malformed one can't address a resume, so ignore it rather
-        // than throwing on an untrusted callback body.
+        // than throwing on an untrusted callback body. The UUID check is EXPLICIT here because
+        // ProviderSessionId itself only enforces a path/argv-safe charset (it is the union of all
+        // providers, and Junie's ids are not UUIDs) — without it, arbitrary callback text would bind.
+        if (!isCanonicalUuid(raw)) return null
         return runCatching { ProviderSessionId(raw) }.getOrNull()?.let(AgentEvent::SessionBound)
     }
 

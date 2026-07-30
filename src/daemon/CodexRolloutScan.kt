@@ -3,6 +3,7 @@ package io.kotgent.daemon
 import io.kotgent.adapter.extractModel
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.isCanonicalUuid
 import io.kotgent.store.EventStore
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -50,7 +51,10 @@ private const val ROLLOUT_SUFFIX = ".jsonl"
  * [fileName] is not a rollout file or its id is not a UUID. Pure and host-free.
  *
  * The id is taken from the END of the stem rather than by splitting on `-`: the timestamp portion
- * contains dashes too, so only "the last 36 characters" is unambiguous.
+ * contains dashes too, so only "the last 36 characters" is unambiguous. UUID-ness is asserted
+ * EXPLICITLY ([isCanonicalUuid]): [ProviderSessionId] only enforces a path/argv-safe charset (it is the
+ * union of all providers, Junie's ids are not UUIDs), so without this check any 36-character tail —
+ * e.g. a differently-named vendor file — would be accepted as a codex id.
  */
 fun rolloutFileSessionId(fileName: String): ProviderSessionId? {
     if (!fileName.startsWith(ROLLOUT_PREFIX) || !fileName.endsWith(ROLLOUT_SUFFIX)) return null
@@ -59,6 +63,7 @@ fun rolloutFileSessionId(fileName: String): ProviderSessionId? {
     val candidate = stem.substring(stem.length - UUID_LENGTH)
     // The character before the id must be the separating '-', else this is some other naming scheme.
     if (stem[stem.length - UUID_LENGTH - 1] != '-') return null
+    if (!isCanonicalUuid(candidate)) return null
     return runCatching { ProviderSessionId(candidate) }.getOrNull()
 }
 
@@ -72,38 +77,7 @@ fun rolloutFileSessionId(fileName: String): ProviderSessionId? {
  * first ~200 bytes of the payload, well inside the head. JSON string escapes are unescaped, so a path
  * containing a quote or a backslash round-trips.
  */
-fun rolloutCwd(head: String): String? {
-    val marker = "\"cwd\":\""
-    val start = head.indexOf(marker)
-    if (start < 0) return null
-    val from = start + marker.length
-    val sb = StringBuilder()
-    var i = from
-    while (i < head.length) {
-        when (val c = head[i]) {
-            '"' -> return sb.toString()
-            '\\' -> {
-                if (i + 1 >= head.length) return null // truncated mid-escape: no usable value
-                when (val esc = head[i + 1]) {
-                    'n' -> sb.append('\n')
-                    'r' -> sb.append('\r')
-                    't' -> sb.append('\t')
-                    'u' -> {
-                        if (i + 5 >= head.length) return null
-                        val code = head.substring(i + 2, i + 6).toIntOrNull(16) ?: return null
-                        sb.append(code.toChar())
-                        i += 4
-                    }
-                    else -> sb.append(esc) // covers \" \\ \/ and anything else, literally
-                }
-                i++
-            }
-            else -> sb.append(c)
-        }
-        i++
-    }
-    return null // the closing quote never arrived (truncated head)
-}
+fun rolloutCwd(head: String): String? = jsonStringField(head, "cwd")
 
 /** `$CODEX_HOME`, else `~/.codex` (falls back to a cwd-relative `.codex` if `$HOME` is unset). */
 @OptIn(ExperimentalForeignApi::class)

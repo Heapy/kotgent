@@ -17,6 +17,9 @@ import io.kotgent.core.ProviderSessionId
  *    transcript's head ([claudeTranscriptCwd]).
  *  - **Codex** names a rollout by id alone and records `cwd` in its first (`session_meta`) line —
  *    [CodexRolloutScan.cwdOf]. Archived rollouts do not answer (out of `codex resume`'s reach).
+ *  - **Junie** names a session directory by id alone but records the project dir only in its session
+ *    INDEX — [JunieSessionScan.cwdOf]. A session that never ran a task has no index row, so it has no
+ *    discoverable cwd (and nothing worth resuming); the operator passes `--cwd`.
  *
  * A located cwd is a CANDIDATE, not a verdict: import canonicalizes it ([canonicalPath] — a spelling
  * divergence like `/tmp` vs `/private/tmp` is healed there) and then re-probes `(agent, cwd, id)` with
@@ -28,8 +31,9 @@ import io.kotgent.core.ProviderSessionId
 /**
  * Finds the `cwd` a provider session was launched in, or `null` when the provider's on-disk store has
  * no live record for [providerSessionId]. Injected into the import path so it stays host-free and
- * unit-testable with a fake; the real per-provider lookups are [claudeSessionLocator] and
- * [codexSessionLocator], dispatched by [byAgentVendorSessionLocator]. `suspend` to match its twin
+ * unit-testable with a fake; the real per-provider lookups are [claudeSessionLocator],
+ * [codexSessionLocator] and [junieSessionLocator], dispatched by [byAgentVendorSessionLocator].
+ * `suspend` to match its twin
  * [SessionManager] seam [VendorStoreProbe.hasTranscript] — both are blocking filesystem scans behind
  * required constructor seams, and a test fake must be able to park inside either.
  */
@@ -54,10 +58,12 @@ fun byAgentVendorSessionLocator(locators: Map<String, VendorSessionLocator>): Ve
 fun productionSessionLocator(
     claudeDir: String = defaultClaudeDir(),
     codexDir: String = defaultCodexDir(),
+    junieDir: String = defaultJunieDir(),
 ): VendorSessionLocator = byAgentVendorSessionLocator(
     mapOf(
         CLAUDE_AGENT_KIND to claudeSessionLocator(claudeDir),
         CODEX_AGENT_KIND to codexSessionLocator(codexDir),
+        JUNIE_AGENT_KIND to junieSessionLocator(junieDir),
     ),
 )
 

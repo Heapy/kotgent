@@ -16,9 +16,11 @@ import io.kotgent.tmux.TmuxPane
  *
  * All three keys are part of the question because providers disagree on what identifies a transcript:
  * Claude namespaces by project directory (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`, so it needs
- * [cwd]), Codex names its rollout by id alone (`~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`, so it
- * ignores [cwd]) — and [agent] is what selects between them. The real probes are
- * [claudeVendorStoreProbe] and [codexVendorStoreProbe], dispatched by [byAgentVendorStoreProbe].
+ * [cwd]), while Codex names its rollout by id alone
+ * (`~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`) and Junie its session directory by id alone
+ * (`~/.junie/sessions/<id>/`), so both ignore [cwd] — and [agent] is what selects between them. The real
+ * probes are [claudeVendorStoreProbe], [codexVendorStoreProbe] and [junieVendorStoreProbe], dispatched by
+ * [byAgentVendorStoreProbe].
  */
 fun interface VendorStoreProbe {
     suspend fun hasTranscript(agent: String, cwd: String, providerSessionId: ProviderSessionId): Boolean
@@ -46,10 +48,12 @@ fun byAgentVendorStoreProbe(probes: Map<String, VendorStoreProbe>): VendorStoreP
 fun productionVendorStoreProbe(
     claudeDir: String = defaultClaudeDir(),
     codexDir: String = defaultCodexDir(),
+    junieDir: String = defaultJunieDir(),
 ): VendorStoreProbe = byAgentVendorStoreProbe(
     mapOf(
         CLAUDE_AGENT_KIND to claudeVendorStoreProbe(claudeDir),
         CODEX_AGENT_KIND to codexVendorStoreProbe(codexDir),
+        JUNIE_AGENT_KIND to junieVendorStoreProbe(junieDir),
     ),
 )
 

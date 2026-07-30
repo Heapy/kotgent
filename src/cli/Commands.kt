@@ -10,9 +10,14 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.codex.CodexAdapter
 import io.kotgent.adapter.codex.CodexCli
 import io.kotgent.adapter.codex.CodexHookConfig
+import io.kotgent.adapter.junie.JunieAdapter
+import io.kotgent.adapter.junie.JunieCli
+import io.kotgent.adapter.junie.JunieHookConfig
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.CodexRolloutScan
+import io.kotgent.daemon.JUNIE_AGENT_KIND
+import io.kotgent.daemon.JunieSessionScan
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
@@ -20,6 +25,7 @@ import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.daemon.captureCodexModelOnce
+import io.kotgent.daemon.captureJunieModelOnce
 import io.kotgent.daemon.productionSessionLocator
 import io.kotgent.daemon.productionVendorStoreProbe
 import io.kotgent.daemon.requireAbsoluteBinary
@@ -308,6 +314,7 @@ object Commands {
         val tokenHolder = TokenHolder(readOrCreateToken()) { rotated ->
             writeClaudeHookSettings(port, rotated)
             writeCodexHookScript(port, rotated)
+            writeJunieHookConfig(port, rotated)
             writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
         }
         val token = tokenHolder.current()
@@ -336,6 +343,7 @@ object Commands {
         // (the source of truth), so the adapter does not need to re-surface events (Task 12 decision).
         val settingsPath = writeClaudeHookSettings(port, token)
         val codexHookScriptPath = writeCodexHookScript(port, token)
+        val junieHookConfigPath = writeJunieHookConfig(port, token)
         val claudeCli = ClaudeCli()
         // Detect the version ONCE (one binary call) and reuse it for both the `--session-id` gate and the
         // per-session `cliVersion` metadata surfaced in the UI.
@@ -343,6 +351,8 @@ object Commands {
         val sessionIdSupported = ClaudeCli.supportsSessionId(claudeVersion)
         val codexCli = CodexCli()
         val codexVersion = codexCli.detectVersion()
+        val junieCli = JunieCli()
+        val junieVersion = junieCli.detectVersion()
         // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
         // does not depend on the child shell's PATH under launchd's minimal env. `locate()` returns null
         // when the agent is NOT resolvable on the daemon's PATH; it can also return a NON-absolute path
@@ -355,6 +365,7 @@ object Commands {
         // shell PATH into the plist). The same located path is what we persist as `cliPath` metadata.
         val claudePath: String? = claudeCli.locate()
         val codexPath: String? = codexCli.locate()
+        val juniePath: String? = junieCli.locate()
         // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
         // instead of silently building some other provider's adapter for it (which would launch the wrong
         // agent while persisting the requested name). This ONE map is the single source of truth for
@@ -383,6 +394,16 @@ object Commands {
                         cliPath = codexPath,
                     )
                 },
+                JUNIE_AGENT_KIND to { cwd: String ->
+                    JunieAdapter(
+                        cwd = cwd,
+                        hookConfigPath = junieHookConfigPath,
+                        events = emptyFlow(),
+                        binaryName = requireAbsoluteBinary(JUNIE_AGENT_KIND, juniePath),
+                        cliVersion = junieVersion?.toString(),
+                        cliPath = juniePath,
+                    )
+                },
             )
         val agentFactory = agentFactoryOf(agentBuilders)
         // Codex has no `--session-id`, so a fresh codex session's provider id is unknown at launch. The
@@ -390,6 +411,11 @@ object Commands {
         // Codex wrote for this cwd after the launch began and reads the id out of its file name. Claude
         // preallocates and needs none of this, so the scan is scoped to codex sessions.
         val rolloutScan = CodexRolloutScan()
+        // Junie cannot preallocate an id either, and its documented SessionStart hook payload carries none,
+        // so the same shape applies: find the session junie created on disk for this launch. The scan walks
+        // session DIRECTORIES (they exist from the moment junie starts, unlike its index rows) — see
+        // JunieSessionScan's header.
+        val junieScan = JunieSessionScan()
         val manager = SessionManager(
             tmux,
             store,
@@ -403,11 +429,16 @@ object Commands {
             productionSessionLocator(),
             agentBuilders.keys,
             discoverProviderId = { meta ->
-                if (meta.agent == CODEX_AGENT_KIND) rolloutScan.discoverSessionId(meta.cwd, meta.createdAt) else null
+                when (meta.agent) {
+                    CODEX_AGENT_KIND -> rolloutScan.discoverSessionId(meta.cwd, meta.createdAt)
+                    JUNIE_AGENT_KIND -> junieScan.discoverSessionId(meta.cwd, meta.createdAt)
+                    else -> null // claude preallocates its id; nothing to discover
+                }
             },
-            // Codex records its model in the rollout's turn_context — written only once the session takes
-            // its first turn — so poll a few times after launch and persist the first ID-KEYED hit.
-            // Claude captures its model via the hook path instead, so this is scoped to codex.
+            // Codex records its model in the rollout's turn_context, and junie a `modelUsage` list in its
+            // own event stream — both written only once the session takes its first turn, so both poll a few
+            // times after launch and persist the first ID-KEYED hit. Claude captures its model via the hook
+            // path instead, so neither branch covers it.
             captureModelInBackground = { meta ->
                 if (meta.agent == CODEX_AGENT_KIND) {
                     bgScope.launch {
@@ -422,6 +453,17 @@ object Commands {
                             // forever). A bind that DISPLACES a scan-bound id is different: the hook
                             // ingress' rebind seam clears the model and re-runs this very lambda.
                             if (captureCodexModelOnce(store, rolloutScan, meta)) return@launch
+                            delay(MODEL_CAPTURE_INTERVAL_MILLIS)
+                        }
+                    }
+                }
+                if (meta.agent == JUNIE_AGENT_KIND) {
+                    // Same poll, same two guarantees (id re-read from the ROW per attempt, conditional
+                    // write) — but the frequency-based extractor, because junie's `modelUsage` list mixes
+                    // the primary model with helper models (see captureJunieModelOnce).
+                    bgScope.launch {
+                        repeat(MODEL_CAPTURE_ATTEMPTS) {
+                            if (captureJunieModelOnce(store, junieScan, meta)) return@launch
                             delay(MODEL_CAPTURE_INTERVAL_MILLIS)
                         }
                     }
@@ -601,7 +643,8 @@ object Commands {
      * The vendor-store transcript probe (Task 18), dispatched per provider: for a dead session it asks
      * whether the conversation still exists, so it classifies as `resumable` rather than a dead-end
      * `crashed`. Claude stats `~/.claude/projects/<encoded-cwd>/<id>.jsonl`; Codex looks for
-     * `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`. The ONE instance serves both the Reconciler
+     * `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`; Junie for
+     * `~/.junie/sessions/<id>/events.jsonl`. The ONE instance serves both the Reconciler
      * and `SessionManager.importSession`, so an import is validated with the exact question every later
      * reconcile re-asks (see [productionVendorStoreProbe]).
      */
@@ -652,6 +695,25 @@ object Commands {
         writePrivateFile(headerPath, CodexHookConfig.headerFileContent(token).encodeToByteArray())
         val path = "${kotgentHome()}/codex-hook.sh"
         writePrivateFile(path, CodexHookConfig.hookScript(port, headerPath).encodeToByteArray())
+        return path
+    }
+
+    /**
+     * Write the Junie hook config, its script and its header file, returning the CONFIG's path (what
+     * [JunieAdapter] passes as `junie --config-location <path>`).
+     *
+     * Three files, same secret discipline as the other two providers: the token lives only in the `0600`
+     * header file the script reads via `curl -H @<file>`, never in an argv. Junie's config layer is the
+     * only one scoped to a single launch, which is why the hooks ride in a file kotgent owns rather than in
+     * the user's `~/.junie/config.json` (see [JunieHookConfig]).
+     */
+    private fun writeJunieHookConfig(port: Int, token: String): String {
+        val headerPath = "${kotgentHome()}/junie-hook-header"
+        writePrivateFile(headerPath, JunieHookConfig.headerFileContent(token).encodeToByteArray())
+        val scriptPath = "${kotgentHome()}/junie-hook.sh"
+        writePrivateFile(scriptPath, JunieHookConfig.hookScript(port, headerPath).encodeToByteArray())
+        val path = "${kotgentHome()}/junie-hooks.json"
+        writePrivateFile(path, JunieHookConfig.configJson(scriptPath).encodeToByteArray())
         return path
     }
 }

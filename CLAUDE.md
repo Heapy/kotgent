@@ -84,36 +84,71 @@ this split: put pure logic in `core/`, and keep I/O at the boundary.
   that is how an approval clears. `needs_answer` and `resumable` are **not** produced by the reducer;
   `needs_answer` is forward-modeled and `resumable` is a reconciler classification (and the state an
   import registers directly — see "Import is registration, not launch").
+- **`ProviderSessionId` is a SAFE-CHARSET id, not a UUID.** Claude and Codex mint UUIDs but Junie does not
+  (`session-260730-015553-1j1h`), so the core invariant is what every provider's id must actually satisfy:
+  non-blank, ≤128 chars, `[A-Za-z0-9._-]`, first character alphanumeric (which keeps `..` — a path
+  component that escapes its parent — and `-…` — a value a CLI reads as a flag — out). Where UUID-ness is
+  load-bearing the BOUNDARY checks it explicitly with `isCanonicalUuid`: the Claude/Codex hook normalizers
+  (an untrusted callback body must not bind arbitrary text), `CodexRolloutScan.rolloutFileSessionId` (a
+  36-char tail is an id only if it is a UUID), and `SessionManager.importSession`'s lowercase
+  normalization, which applies **only** to a UUID-shaped id — lowercasing is UUID case-insensitivity, and
+  doing it blindly would corrupt an id whose case is significant. Keep new such checks at the boundary.
 
-**Two providers, one shape.** `claude` and `codex` are both launched as a **TUI inside `tmux`** and both
-report through **hooks → a local HTTP ingress → the normalizer**. Adding a provider means an adapter
+**Three providers, one shape.** `claude`, `codex` and `junie` are all launched as a **TUI inside `tmux`**
+and all report through **hooks → a local HTTP ingress → the normalizer**. Adding a provider means an adapter
 (launch spec + hook config + normalizer), an ingress route, a `VendorStoreProbe` (registered in
 `productionVendorStoreProbe`, `src/daemon/Reconciler.kt` — no longer inlined in `Commands`), a
 `VendorSessionLocator` (registered in `productionSessionLocator`, `src/daemon/VendorSessionLocator.kt` —
 without it import discovery silently answers null for the new kind, forcing `--cwd`), and an entry in
-`agentFactoryOf` — nothing in `core/`, the store, or the fan-out changes. What differs between the two:
+`agentFactoryOf` — nothing in `core/`, the store, or the fan-out changes. What differs between them:
 
 - **Hook delivery.** Claude takes a settings FILE (`claude --settings <path>`). Codex has no such flag, so
   hooks ride in the argv as `-c 'hooks={…}'` — verified to resolve as `source: sessionFlags`, i.e. scoped
   to that one launch. **Never** write kotgent's hooks into `$CODEX_HOME/hooks.json` or a `[hooks]` table in
   the user's `config.toml`: both resolve as `source: user` and would fire for every codex session the user
   runs. Codex also marks an unseen hook `untrusted`, hence the companion `-c bypass_hook_trust=true`.
+  Junie takes an extra config FILE (`junie --config-location <path>`), the one hook layer scoped to a
+  single launch — and the only one Junie honors even for an untrusted project. **Never** write into
+  `~/.junie/config.json` (the USER layer: it would fire for every junie session the user runs); a
+  project-level `.junie/config.json` is worse still, since Junie deliberately IGNORES `hooks` from it.
 - **Provider id.** Claude preallocates (`--session-id <uuid>`). Codex cannot, so the id is captured after
   the fact: the `SessionStart` hook if it fires, else `CodexRolloutScan` reading
   `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl` (id in the file NAME, `cwd` in the first line). The
-  hook wins over the scan — it is authoritative for *this* session, the scan infers from disk.
-- **Approvals.** Codex fires a real `PermissionRequest`, so `needs_approval` is precise there; Claude maps
-  any `Notification`. The *clearing* rule is the same for both (see the reducer invariant above) — kotgent
-  never answers an approval, the operator does, in the terminal.
+  hook wins over the scan — it is authoritative for *this* session, the scan infers from disk. Junie is the
+  codex shape with one measured twist: its `--session-id` only names an EXISTING session to resume, its
+  documented `SessionStart` payload carries no id, and its `sessions/index.jsonl` row appears only once the
+  session has run a TASK — so `JunieSessionScan.discoverSessionId` enumerates session DIRECTORIES (which
+  exist from the moment junie starts) thresholded on the directory's **birth** time, and uses the index
+  only to EXCLUDE a candidate whose recorded `projectDir` is a different one. An index-only discovery would
+  expire (`ProviderIdCapture` polls 20 × 250 ms) long before a human types their first prompt, leaving
+  every junie session unresumable; an mtime threshold would offer a long-running session started hours ago,
+  because it is still writing events. Junie ids are NOT UUIDs (`session-260730-015553-1j1h`).
+- **Approvals.** Codex and Junie both fire a real `PermissionRequest`, so `needs_approval` is precise
+  there; Claude maps any `Notification`. The *clearing* rule is the same for all three (see the reducer
+  invariant above) — kotgent never answers an approval, the operator does, in the terminal. Junie makes
+  that rule an EXIT-CODE contract: a `PermissionRequest` hook that exits `0` AUTO-APPROVES the action and
+  one that exits `2` auto-DENIES it, so kotgent's hook script POSTs and then **exits 1** — the documented
+  fall-through that keeps Junie's own dialog (cost: a small TUI warning per request). Never regress that
+  exit to 0 or 2. Junie also PARSES a hook's stdout as a decision object (invalid JSON becomes
+  `additionalContext` injected into the model's turn), so the script writes nothing to stdout at all; both
+  halves are pinned by RUNNING the generated script in `JunieHookConfigTest`.
 - **Resumability.** Claude namespaces transcripts per project dir (probe needs the `cwd`); Codex names a
-  rollout by id alone (probe ignores the `cwd`). Archived codex rollouts do **not** count — archiving puts
-  a session out of `codex resume`'s reach.
+  rollout by id alone and Junie a session directory by id alone (both probes ignore the `cwd`). Archived
+  codex rollouts do **not** count — archiving puts a session out of `codex resume`'s reach — and for junie
+  the DISK is the authority, not the index: Junie prunes old sessions' context, so a session whose
+  directory is gone classifies honestly as `crashed` even while its index row lingers.
+- **The model.** Claude reports it in the hook payload's transcript; Codex writes ONE `model` into the
+  rollout's `turn_context`, so `extractModel` takes the first match. Junie records a `modelUsage` list per
+  turn that mixes the primary model with helper models — and the FIRST model in the file is a helper — so
+  it needs `extractDominantModel` (most frequent, ties → first seen), measured on a real session at 40
+  occurrences for the primary against 6/1/1 for three helpers.
 
 **Import is registration, not launch.** `kotgent import` / the Web UI's Import mode →
 `POST /sessions/import` → `SessionManager.importSession` brings a session started *outside* kotgent under
 management with **zero tmux side-effects**: it writes a full `resumable` row (provider id set,
 `paneId = null`) and appends `SessionBound` via `ProviderIdCapture.bind`; the actual launch is the
-existing `resume()` path (`claude --resume` / `codex resume`), so there is no second launch codepath and
+existing `resume()` path (`claude --resume` / `codex resume` / `junie --resume --session-id`), so there is
+no second launch codepath and
 a failed start leaves the row honestly `resumable`. The cwd (explicit or discovered) is **canonicalized
 through the filesystem** first (`realpath(3)` — `canonicalPath` in `SessionManager.kt`): providers record
 their process `getcwd` — the symlink-free spelling — so `/repo/./`, an uncollapsed `--cwd ../proj` and a
@@ -657,7 +692,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **765 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **844 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -670,13 +705,13 @@ These are real and cost time to rediscover. Respect them.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
 - **In automation, do not run the daemon or anything that spawns a real agent.** Avoid `kotgent daemon`,
-  `./kotlin run -m kotgent`, a real `claude` / `codex`, and `launchctl` — they start long-lived /
+  `./kotlin run -m kotgent`, a real `claude` / `codex` / `junie`, and `launchctl` — they start long-lived /
   interactive processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck`
   binary directly is fine — it terminates, and only touches the throwaway `-L kotgent-test` socket.
 - Inspecting a provider's CLI is fine and often necessary (`codex --help`, `codex app-server
   generate-json-schema --out <dir>`, `hooks/list` over an `app-server --stdio` pipe) — those terminate and
   touch no model. Do NOT start a turn (`codex exec`, `turn/start`), and do not write into `~/.codex` or
-  `~/.claude`: a probe must be readable-only against the user's real home.
+  `~/.claude` / `~/.junie`: a probe must be readable-only against the user's real home.
 
 ## Where things live
 
@@ -692,9 +727,11 @@ src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn)
                                Signals (SIGINT/SIGTERM taken back from Ktor's shutdown hook)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen),
                                TmuxOptions (-f /dev/null isolation, forced server options, tmuxCommand argv builder)
-src/adapter/                   AgentAdapter, LaunchSpec; claude/ + codex/ (Cli, HookConfig, HookNormalizer, Adapter)
+src/adapter/                   AgentAdapter, LaunchSpec, ModelScan; claude/ + codex/ + junie/
+                               (Cli, HookConfig, HookNormalizer, Adapter)
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, VendorSessionLocator,
-                               Claude/Codex vendor-store probes
+                               VendorStoreFs (listDir/readHead/readTail/JSON field scans),
+                               Claude/Codex/Junie vendor-store probes + scans
 src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
 src/transport/                 Server, Auth/Authorization, session cookies, tickets/rate limit,
                                auth/push/control/event/terminal/hook routes

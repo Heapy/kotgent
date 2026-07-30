@@ -4,6 +4,8 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.claude.ClaudeHookNormalizer
 import io.kotgent.adapter.codex.CodexHookConfig
 import io.kotgent.adapter.codex.CodexHookNormalizer
+import io.kotgent.adapter.junie.JunieHookConfig
+import io.kotgent.adapter.junie.JunieHookNormalizer
 import io.kotgent.cli.eprintln
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
@@ -126,9 +128,46 @@ fun Route.codexHookRoutes(
 )
 
 /**
- * The provider-neutral hook ingress both [claudeHookRoutes] and [codexHookRoutes] are built from: the
- * authenticate → identify → resolve → normalize → append pipeline described in [claudeHookRoutes], with
- * the provider-specific pieces ([path], the header names, [normalize]) passed in.
+ * The Junie hook ingress: `POST /hooks/junie` ([JunieHookConfig.INGRESS_PATH]), the counterpart of
+ * [claudeHookRoutes] / [codexHookRoutes] for the hooks the generated `junie-hook.sh` posts. Same contract
+ * in every respect (auth → event name → pane → normalize → append); only the path and the normalizer differ.
+ *
+ * A SEPARATE path, for the same reason the codex one is: the three providers' hook vocabularies overlap
+ * without agreeing. `Stop` means "turn finished" to all three, but `StopFailure` and `PreToolUse` exist
+ * only in Junie, `PostToolUse` only in Claude/Codex, and routing by path keeps the mapping unambiguous.
+ */
+fun Route.junieHookRoutes(
+    token: () -> String,
+    paneLookup: suspend (PaneId) -> SessionId?,
+    store: EventStore,
+    json: Json = HOOK_JSON,
+    /** See [claudeHookRoutes]. */
+    paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
+    /**
+     * Fired when a hook-delivered `SessionBound` DISPLACED a different, already-persisted provider id —
+     * see the parameter on [hookRoutes]. Surfaced here for the same reason as on [codexHookRoutes]: Junie
+     * has no id to preallocate either, so its id normally comes from a filesystem scan that CAN bind a
+     * same-cwd neighbour's, and a later hook that carries the real id must be able to correct it.
+     */
+    onProviderIdRebound: suspend (SessionId) -> Unit = {},
+) = hookRoutes(
+    path = JunieHookConfig.INGRESS_PATH,
+    tokenHeader = JunieHookConfig.HOOK_TOKEN_HEADER,
+    paneHeader = JunieHookConfig.TMUX_PANE_HEADER,
+    eventHeader = JunieHookConfig.HOOK_EVENT_HEADER,
+    normalize = JunieHookNormalizer::normalize,
+    token = token,
+    paneLookup = paneLookup,
+    store = store,
+    json = json,
+    paneLookupGraceMillis = paneLookupGraceMillis,
+    onProviderIdRebound = onProviderIdRebound,
+)
+
+/**
+ * The provider-neutral hook ingress [claudeHookRoutes], [codexHookRoutes] and [junieHookRoutes] are built
+ * from: the authenticate → identify → resolve → normalize → append pipeline described in
+ * [claudeHookRoutes], with the provider-specific pieces ([path], the header names, [normalize]) passed in.
  *
  * The whole ingress sits inside [loopbackOnly]: a hook is a `curl` from a process on THIS machine, so a
  * request arriving under any other `Host` — i.e. through the cloudflared tunnel — is refused with `403`

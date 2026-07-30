@@ -299,6 +299,7 @@ class WebUiServingTest {
         assertEquals(4, Regex("value: \"").findAll(choices).count(), "the picker offers four agents")
         assertTrue(choices.contains("value: \"claude\", name: \"Claude\", available: true"), "Claude starts")
         assertTrue(choices.contains("value: \"codex\", name: \"Codex\", available: true"), "Codex starts")
+        assertTrue(choices.contains("value: \"junie\", name: \"Junie\", available: true"), "Junie starts")
 
         // Each mark is the vendor's own path on its own viewBox, not a glyph redrawn to fit a shared box.
         assertEquals(4, Regex("viewBox: \"").findAll(choices).count(), "every agent brings its own viewBox")
@@ -386,8 +387,13 @@ class WebUiServingTest {
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
 
         val choices = ctx.get("/lib/agents.js").bodyAsText()
-        assertTrue(choices.contains("value: \"junie\", name: \"Junie\", available: false"), "Junie is planned")
         assertTrue(choices.contains("value: \"cursor\", name: \"Cursor\", available: false"), "Cursor is planned")
+        assertEquals(
+            1,
+            // Anchored on a CARD so the header comment's own mention of the flag is not counted.
+            Regex("""name: "\w+", available: false""").findAll(choices).count(),
+            "cursor is the only planned card left — claude, codex and junie all have adapters",
+        )
 
         // `disabled` is what keeps a planned card out of the tab order and the arrow-key group; without
         // it the card would take a selection the daemon's agentFactoryOf then rejects with a 400.

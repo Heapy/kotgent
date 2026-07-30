@@ -2,6 +2,7 @@ package io.kotgent.transport
 
 import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.codex.CodexHookConfig
+import io.kotgent.adapter.junie.JunieHookConfig
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -38,10 +39,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Route tests for both hook ingresses ([claudeHookRoutes] / [codexHookRoutes]). Each stands up an
- * embedded Ktor CIO server with the route wired to a fake pane lookup + a recording in-memory
- * [EventStore], drives it with a Ktor CIO client, and asserts behaviour via the store and the HTTP
- * status. Everything is wrapped in a bounded [withTimeout] so a broken round-trip fails fast.
+ * Route tests for all three hook ingresses ([claudeHookRoutes] / [codexHookRoutes] /
+ * [junieHookRoutes]). Each stands up an embedded Ktor CIO server with the route wired to a fake pane
+ * lookup + a recording in-memory [EventStore], drives it with a Ktor CIO client, and asserts behaviour
+ * via the store and the HTTP status. Everything is wrapped in a bounded [withTimeout] so a broken
+ * round-trip fails fast.
  *
  * These are NOT @Ignore'd: Task 3 proved the Ktor CIO server + client run for real in the macosArm64
  * test binary, so the `401` / `404` / append paths are exercised end-to-end now, without waiting on the
@@ -378,9 +380,9 @@ class HookRoutesTest {
 
     // ---- the rebind seam: a hook SessionBound that displaces a scan-bound id ----
 
-    /** A codex session row as the rebind tests need it: bound (or not) to [providerId]. */
-    private fun boundMeta(providerId: ProviderSessionId?): SessionMeta = SessionMeta(
-        id = session, name = "kt-abc123", agent = "codex",
+    /** A session row as the rebind tests need it: bound (or not) to [providerId]. */
+    private fun boundMeta(providerId: ProviderSessionId?, agent: String = "codex"): SessionMeta = SessionMeta(
+        id = session, name = "kt-abc123", agent = agent,
         providerSessionId = providerId, cwd = "/work", tmuxSession = "kt-abc123", paneId = pane,
         state = SessionState.running, stateSource = EventSource.system,
         createdAt = 0L, updatedAt = 0L,
@@ -478,19 +480,232 @@ class HookRoutesTest {
 
     @Test
     fun eachIngressSpeaksOnlyItsOwnProvidersVocabulary() {
-        // The reason the two providers get separate PATHS rather than one route with a `?provider=`:
-        // `PermissionRequest` is Codex-only and `Notification` is Claude-only, and routing by path makes
-        // "which normalizer applies" unambiguous. Cross-posting is accepted but maps to nothing.
+        // The reason the three providers get separate PATHS rather than one route with a `?provider=`:
+        // `PermissionRequest` is not a Claude hook, `Notification` is Claude-only and `StopFailure` is
+        // Junie-only, and routing by path makes "which normalizer applies" unambiguous. Cross-posting is
+        // accepted but maps to nothing.
         val claudeStore = RecordingEventStore()
         withIngress(claudeStore) { port, client ->
             assertEquals(HttpStatusCode.OK, client.postHook(port, CodexHookConfig.PERMISSION_REQUEST).status)
             assertTrue(claudeStore.appended.tryReceive().isFailure, "a codex-only hook is inert on /hooks/claude")
+            assertEquals(HttpStatusCode.OK, client.postHook(port, JunieHookConfig.STOP_FAILURE).status)
+            assertTrue(claudeStore.appended.tryReceive().isFailure, "a junie-only hook is inert on /hooks/claude")
         }
 
         val codexStore = RecordingEventStore()
         withCodexIngress(codexStore) { port, client ->
             assertEquals(HttpStatusCode.OK, client.postCodexHook(port, ClaudeHookConfig.NOTIFICATION).status)
             assertTrue(codexStore.appended.tryReceive().isFailure, "a claude-only hook is inert on /hooks/codex")
+            assertEquals(HttpStatusCode.OK, client.postCodexHook(port, JunieHookConfig.STOP_FAILURE).status)
+            assertTrue(codexStore.appended.tryReceive().isFailure, "a junie-only hook is inert on /hooks/codex")
+        }
+
+        val junieStore = RecordingEventStore()
+        withJunieIngress(junieStore) { port, client ->
+            assertEquals(HttpStatusCode.OK, client.postJunieHook(port, ClaudeHookConfig.NOTIFICATION).status)
+            assertTrue(junieStore.appended.tryReceive().isFailure, "a claude-only hook is inert on /hooks/junie")
+            assertEquals(HttpStatusCode.OK, client.postJunieHook(port, CodexHookConfig.POST_TOOL_USE).status)
+            assertTrue(junieStore.appended.tryReceive().isFailure, "junie has no PostToolUse: inert")
+        }
+    }
+
+    // ---- the Junie ingress: same contract, its own path and vocabulary ----
+
+    /** Boots [junieHookRoutes] the same way [withIngress] boots the Claude one. */
+    private fun withJunieIngress(
+        store: EventStore,
+        paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
+        onProviderIdRebound: suspend (SessionId) -> Unit = {},
+        block: suspend (port: Int, client: HttpClient) -> Unit,
+    ) = runBlocking {
+        val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
+            routing {
+                junieHookRoutes(
+                    { token }, paneLookup, store, paneLookupGraceMillis = 0,
+                    onProviderIdRebound = onProviderIdRebound,
+                )
+            }
+        }
+        try {
+            withTimeout(20_000) {
+                server.start(wait = false)
+                val port = server.engine.resolvedConnectors().first().port
+                val client = HttpClient(CIO)
+                try {
+                    block(port, client)
+                } finally {
+                    client.close()
+                }
+            }
+        } finally {
+            server.stop(gracePeriodMillis = 100, timeoutMillis = 500)
+        }
+    }
+
+    private suspend fun HttpClient.postJunieHook(
+        port: Int,
+        event: String,
+        token: String? = this@HookRoutesTest.token,
+        pane: String? = this@HookRoutesTest.pane.value,
+        body: String = "{}",
+    ): HttpResponse = post("http://127.0.0.1:$port${JunieHookConfig.INGRESS_PATH}?event=$event") {
+        if (token != null) header(JunieHookConfig.HOOK_TOKEN_HEADER, token)
+        if (pane != null) header(JunieHookConfig.TMUX_PANE_HEADER, pane)
+        setBody(body)
+    }
+
+    @Test
+    fun juniePreToolUseAppendsAToolCallCarryingTheToolName() {
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.PRE_TOOL_USE,
+                body = """{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            val appended = store.appended.receive()
+            assertEquals(session, appended.sessionId, "the pane resolved to its session")
+            assertEquals(AgentEvent.ToolCall("Bash"), appended.event)
+            assertEquals(EventSource.hook, appended.source)
+        }
+    }
+
+    @Test
+    fun juniePermissionRequestAppendsAnApproval() {
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.PERMISSION_REQUEST,
+                body = """{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{}}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.ApprovalRequested("Bash"), store.appended.receive().event)
+        }
+    }
+
+    @Test
+    fun junieStopFailureCompletesTheTurnSoASessionCannotStickAtRunning() {
+        // A turn that dies in an LLM error leaves junie's TUI idle and fires StopFailure INSTEAD of Stop.
+        // Without this mapping nothing would ever move the session out of `running`.
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.STOP_FAILURE,
+                body = """{"hook_event_name":"StopFailure","error":"rate_limit","error_details":"429"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.TurnCompleted, store.appended.receive().event)
+        }
+    }
+
+    @Test
+    fun junieSessionEndExitsTheSession() {
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.SESSION_END,
+                body = """{"hook_event_name":"SessionEnd","reason":"prompt_input_exit"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.Exited(0), store.appended.receive().event)
+        }
+    }
+
+    @Test
+    fun junieSessionStartCarriesNoIdSoNothingIsBound() {
+        // Junie's documented SessionStart payload has only `hook_event_name` + `source`: the id comes from
+        // JunieSessionScan instead. The hook is still accepted (200 "ignored"), it just stores nothing.
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.SESSION_START,
+                body = """{"hook_event_name":"SessionStart","source":"startup"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(store.appended.tryReceive().isFailure, "no session_id -> nothing to bind")
+        }
+    }
+
+    @Test
+    fun junieSessionStartBindsANonUuidIdWhenOneIsPresent() {
+        // Future-proofing: if the payload ever carries junie's own id, the hook is authoritative for the
+        // session it fires in and must bind it — and junie's ids are NOT UUIDs.
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.SESSION_START,
+                body = """{"hook_event_name":"SessionStart","session_id":"session-260730-015553-1j1h"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                AgentEvent.SessionBound(ProviderSessionId("session-260730-015553-1j1h")),
+                store.appended.receive().event,
+            )
+        }
+    }
+
+    @Test
+    fun junieSessionStartThatDisplacesADifferentBoundIdFiresTheRebindSeam() {
+        // Junie cannot preallocate an id either, so JunieSessionScan can provisionally bind a same-cwd
+        // NEIGHBOUR's id and the model capture then persists that neighbour's model. A hook that carries
+        // the real id must therefore be able to trigger the same correction the codex ingress does.
+        val store = RecordingEventStore()
+        store.sessionMeta = boundMeta(ProviderSessionId("session-260730-010101-aaaa"), agent = "junie")
+        val rebounds = Channel<SessionId>(Channel.UNLIMITED)
+        withJunieIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.SESSION_START,
+                body = """{"session_id":"session-260730-015553-1j1h"}""",
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(
+                AgentEvent.SessionBound(ProviderSessionId("session-260730-015553-1j1h")),
+                store.appended.receive().event,
+                "the hook id was appended regardless — the hook wins over the scan",
+            )
+            assertEquals(session, rebounds.receive(), "displacing a DIFFERENT bound id fired the seam")
+        }
+    }
+
+    @Test
+    fun junieIngressRejectsAWrongTokenBeforeLookingAtAnythingElse() {
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(port, JunieHookConfig.STOP, token = "wrong")
+            assertEquals(HttpStatusCode.Unauthorized, response.status)
+            assertTrue(store.appended.tryReceive().isFailure, "an unauthenticated callback stores nothing")
+        }
+    }
+
+    @Test
+    fun junieIngress404sAnUnknownPane() {
+        val store = RecordingEventStore()
+        withJunieIngress(store, paneLookup = { null }) { port, client ->
+            assertEquals(HttpStatusCode.NotFound, client.postJunieHook(port, JunieHookConfig.STOP).status)
+            assertTrue(store.appended.tryReceive().isFailure)
+        }
+    }
+
+    @Test
+    fun theJunieIngressIsLocalOnlyToo() {
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val url = "http://127.0.0.1:$port${JunieHookConfig.INGRESS_PATH}?event=${JunieHookConfig.STOP}"
+            val response = client.post(url) {
+                header(JunieHookConfig.HOOK_TOKEN_HEADER, token)
+                header(JunieHookConfig.TMUX_PANE_HEADER, pane.value)
+                header(HttpHeaders.Host, "kotgent.example.com")
+                setBody("{}")
+            }
+            assertEquals(HttpStatusCode.Forbidden, response.status)
+            assertTrue(store.appended.tryReceive().isFailure, "a non-local hook must append nothing")
         }
     }
 

@@ -51,11 +51,11 @@ import platform.posix.access
  * [terminalBridgeFactory] backed by a fake `PtyFactory`. The production wiring is [production].
  *
  * ## Auth layering
- *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes]) are mounted at the root, restricted to
- *    a loopback `Host` ([loopbackOnly] — they are `curl`s from this machine, never tunnel traffic) and do
- *    their own header-token check (Task 12) against the **same** master token — the plan's "one token on
- *    all". They read it through [TokenHolder.current], never as a captured string, so `kotgent token
- *    rotate` reaches every gate at once.
+ *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes], [junieHookRoutes]) are mounted at the
+ *    root, restricted to a loopback `Host` ([loopbackOnly] — they are `curl`s from this machine, never
+ *    tunnel traffic) and do their own header-token check (Task 12) against the **same** master token — the
+ *    plan's "one token on all". They read it through [TokenHolder.current], never as a captured string, so
+ *    `kotgent token rotate` reaches every gate at once.
  *  - The **login routes** ([authRoutes]) carry their own layering: ticket issuance and token rotation are
  *    `Bearer` + loopback-only, the login page is open, and the exchange is gated by `Host`/`Origin` alone
  *    because the ticket it spends IS its credential.
@@ -150,11 +150,16 @@ class KotgentServer(
                     install(WebSockets)
                     routing {
                         // Hook ingress, one route per provider: same token, their own header check (Task 12).
-                        // Codex additionally wires the rebind seam: its fallback rollout scan can bind a
-                        // same-cwd neighbour's id, so a hook SessionBound that displaces it must clear the
-                        // (possibly neighbour-derived) model and re-run the id-keyed capture.
+                        // Codex and junie additionally wire the rebind seam: neither can preallocate an id,
+                        // so their fallback filesystem scan can bind a same-cwd neighbour's, and a hook
+                        // SessionBound that displaces it must clear the (possibly neighbour-derived) model
+                        // and re-run the id-keyed capture.
                         claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
                         codexHookRoutes(
+                            tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
+                            onProviderIdRebound = sessionManager::onProviderIdRebound,
+                        )
+                        junieHookRoutes(
                             tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )

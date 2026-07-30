@@ -5,7 +5,7 @@
 
 **kotgent** is a local-first, restart-safe control plane for coding-agent sessions.
 
-Agent processes (Claude and Codex today) run inside `tmux`, independent of any user interface. The IDE
+Agent processes (Claude, Codex and Junie today) run inside `tmux`, independent of any user interface. The IDE
 terminal, desktop Web UI, and installable mobile PWA are interchangeable clients over one daemon. On a
 phone, server-sent Web Push can wake the PWA's service worker when a session needs attention, even after
 the app is closed. `tmux` is the transport and the process-survival mechanism, **not** the source of
@@ -13,7 +13,7 @@ truth: state is derived by replaying an append-only event log, so it survives a 
 
 ```text
 IDE terminal ──────┐
-Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex
+Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex | junie
 Mobile PWA ────────┘          │        │
                               │        └──▶ browser push service ──▶ service worker
                               ├── SQLite (event log, session cache, push subscriptions)
@@ -26,7 +26,8 @@ immortal:
 - **Close the IDE / reload the browser** — the agent keeps running in `tmux` (a client detached, the
   process did not die).
 - **Reboot the machine** — the process is gone, but the conversation is preserved on disk by the provider
-  itself (Claude's per-project transcripts, Codex's rollout files) and is restored with `resume`.
+  itself (Claude's per-project transcripts, Codex's rollout files, Junie's session directories) and is
+  restored with `resume`.
 
 ## Contents
 
@@ -50,7 +51,7 @@ Install from the Homebrew tap (macOS on Apple Silicon; the formula pulls in `tmu
 brew install Heapy/tap/kotgent
 ```
 
-The formula installs kotgent itself, **not** the agents: `claude` and/or `codex` have to be on your
+The formula installs kotgent itself, **not** the agents: `claude`, `codex` and/or `junie` have to be on your
 `PATH` already (see [Requirements](#requirements)). Then run the rest **from a normal login shell** —
 `kotgent install` snapshots that shell's environment (`PATH`, so the daemon can find the agent binaries,
 and `LANG`, so the TUI renders as UTF-8) into the launchd plist, and launchd would otherwise start the
@@ -103,6 +104,12 @@ To build from source instead, see [Build & test](#build--test).
   per launch (`codex -c 'hooks={…}'`), so your `~/.codex` is never modified. Codex has no session-id
   preallocation, so the id is captured afterwards — from the `SessionStart` hook, or by reading the
   rollout file Codex writes under `~/.codex/sessions`. Developed against codex-cli 0.145.
+- **`junie`** — the Junie CLI, on your `PATH`, if you want junie sessions. kotgent installs its hooks per
+  launch (`junie --config-location <kotgent-owned file>`), so your `~/.junie/config.json` is never
+  modified. Junie has no session-id preallocation either, so the id is captured afterwards, by reading the
+  session directory Junie writes under `~/.junie/sessions`. Live state tracking needs Junie's **hooks**,
+  which are an EAP feature: on a stable build that ignores them the session still launches and attaches,
+  it just shows a coarser state. Developed against junie 26.8.3 (EAP).
 - **`/usr/bin/openssl` and NSURLSession (Web Push only).** kotgent lazily uses macOS's system
   `/usr/bin/openssl` to generate and sign its VAPID P-256 credential; outbound HTTPS delivery uses
   the Darwin HTTP client backed by NSURLSession and the system trust store. Both are macOS runtime
@@ -149,7 +156,7 @@ kotgent <command> [args]
 
   daemon [--port N]              run the control-plane server (default port 27508; the launchd entry point)
   install | uninstall           (un)install the launchd LaunchAgent (io.kotgent.daemon)
-  start <agent> [cwd]           start a session (agent: 'claude' | 'codex'; cwd defaults to the current dir)
+  start <agent> [cwd]           start a session (agent: 'claude' | 'codex' | 'junie'; cwd defaults to the current dir)
              [--name N] [--tag T]
   import <agent> <session-id>   register a session started outside kotgent, then resume it
              [--cwd D] [--name N] [--tag T] [--no-start]
@@ -172,14 +179,15 @@ kotgent <command> [args]
   (`RunAtLoad` + `KeepAlive`, so the daemon comes up on login and is restarted if it dies) and
   `launchctl bootstrap` / `bootout` it. `install` also **snapshots your shell's `PATH` and `LANG`** into
   the plist: launchd starts the daemon with a minimal env and *no* locale, so the snapshot is what lets the
-  daemon and the agents it spawns find `claude`/`codex` and render a UTF-8 TUI. Re-run it from a full shell
+  daemon and the agents it spawns find `claude`/`codex`/`junie` and render a UTF-8 TUI. Re-run it from a full shell
   whenever either goes stale. An agent that can't be resolved on the daemon's `PATH` fails fast with a
   clear error pointing at `kotgent install`, not a silent attach failure.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the agent in it, and records the session.
-- **`import`** brings a conversation you started *outside* kotgent — `claude` or `codex` run in a plain
-  terminal — under kotgent, with its history intact. The import itself only registers the session (no
+- **`import`** brings a conversation you started *outside* kotgent — `claude`, `codex` or `junie` run in a
+  plain terminal — under kotgent, with its history intact. The import itself only registers the session (no
   `tmux` side effects): kotgent verifies the provider's own on-disk record and writes a `resumable` entry,
-  then immediately resumes it (`claude --resume <id>` / `codex resume <id>`); `--no-start` skips that and
+  then immediately resumes it (`claude --resume <id>` / `codex resume <id>` /
+  `junie --resume --session-id <id>`); `--no-start` skips that and
   leaves it registered for later. The project directory is discovered from the provider's record; pass
   `--cwd` if that discovery fails or picks the wrong directory. Finding the session id:
   - **claude** — shown in the `claude --resume` session picker; it is also the transcript's file name,
@@ -187,6 +195,10 @@ kotgent <command> [args]
   - **codex** — shown in the `codex resume` session picker; it is also the trailing UUID of the rollout
     file name, `~/.codex/sessions/<date>/rollout-<timestamp>-<session-id>.jsonl`. An *archived* codex
     session cannot be imported — archiving puts it out of `codex resume`'s reach.
+  - **junie** — shown in `/history`; it is also the directory name under `~/.junie/sessions`, e.g.
+    `session-260730-015553-1j1h`. Junie keeps only its most recent sessions' context, so a session whose
+    directory it has pruned cannot be imported. A junie session in which you never submitted a prompt has
+    no recorded project directory, so pass `--cwd` (there is nothing to resume in it anyway).
 
   Importing an id kotgent already tracks fails with the existing session's id and the right next move
   (`kotgent resume <id>`, or Restore in the Web UI if that session is archived). The Web UI's new-session
@@ -386,7 +398,7 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `store/` | `EventStore` interface + SQLDelight-backed `SqliteEventStore` (single-writer, WAL, append+cache in one transaction). |
 | `pty/` | `TerminalBridge` + `Broadcaster` — the lazy single-upstream `tmux attach` fan-out. |
 | `tmux/` | Thin wrapper over `tmux -f /dev/null -L kotgent` via a `popen`-based `ProcessRunner`: one argv builder that isolates the server from `~/.tmux.conf`, plus the small option set kotgent forces in its place. |
-| `adapter/` | `AgentAdapter` contract + the Claude and Codex adapters (launch/resume spec, hook config, event normalization). |
+| `adapter/` | `AgentAdapter` contract + the Claude, Codex and Junie adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
 | `push/` | Attention-edge tracking, SQLite subscription store, VAPID key/JWT signing, Darwin/NSURLSession delivery, and notifier lifecycle. |
 | `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. |
@@ -410,9 +422,11 @@ is and isn't here:
 
 **In the slice (v1):**
 
-- **Two providers: Claude and Codex.** Both run as a TUI in `tmux` and report through hooks. Codex adds
-  a real `PermissionRequest` signal, so `needs_approval` is precise there rather than inferred from a
-  generic notification.
+- **Three providers: Claude, Codex and Junie.** All run as a TUI in `tmux` and report through hooks. Codex
+  and Junie both fire a real `PermissionRequest`, so `needs_approval` is precise there rather than inferred
+  from a generic notification — kotgent only observes it, the operator answers in the terminal. Junie's
+  hooks are an EAP feature: without them a junie session still launches and attaches, its state is simply
+  coarser.
 - **Two keys, browser-friendly auth.** The daemon still binds `127.0.0.1` only, but browsers authenticate
   with a stateless, no-secret-in-URL session cookie (`kotgent web` mints a one-time ticket), and a phone
   can sign in through a **cloudflared** tunnel + Cloudflare Access. The CLI and hooks keep using the master
@@ -437,7 +451,7 @@ is and isn't here:
 - The Codex **app-server** (JSON-RPC v2) as an alternative event source — structured items, two-way
   approvals, and no terminal. That is a different product surface (a chat UI, not a terminal fan-out),
   so it is deliberately separate from the adapter above.
-- **A third provider: `cursor-cli`** — another TUI-in-`tmux` adapter behind the same shape (launch spec +
+- **A fourth provider: `cursor-cli`** — another TUI-in-`tmux` adapter behind the same shape (launch spec +
   hook config + normalizer, an ingress route, a `VendorStoreProbe`, and an `agentFactoryOf` entry), with
   nothing in `core/`, the store, or the fan-out changing. Open questions to resolve first: whether it
   exposes per-launch hooks (like Codex's `-c 'hooks={…}'`) or forces a user-scoped config, how it reports

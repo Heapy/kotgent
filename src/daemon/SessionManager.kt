@@ -11,6 +11,7 @@ import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.core.isCanonicalUuid
 import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxControl
@@ -68,6 +69,9 @@ const val CLAUDE_AGENT_KIND: String = "claude"
 
 /** Agent kind for Codex (`start codex`). */
 const val CODEX_AGENT_KIND: String = "codex"
+
+/** Agent kind for Junie (`start junie`). */
+const val JUNIE_AGENT_KIND: String = "junie"
 
 /**
  * An [AgentFactory] over the agent kinds in [builders], rejecting every other kind with
@@ -761,11 +765,17 @@ class SessionManager(
         if (agentKind !in supportedAgentKinds) {
             throw UnknownAgentKindException(agentKind, supportedAgentKinds)
         }
-        // Providers mint and report lowercase UUIDs, but ProviderSessionId accepts uppercase hex and
-        // macOS's default filesystem is case-insensitive: an uppercase variant would still find the
-        // on-disk transcript, yet never string-match the lowercase id hooks later report — and would
-        // slip past the duplicate gate as a "different" id. Normalized once, at the import boundary.
-        val id = ProviderSessionId(providerId.value.lowercase())
+        // UUID providers (claude, codex) mint and report lowercase ids, but ProviderSessionId accepts
+        // uppercase hex and macOS's default filesystem is case-insensitive: an uppercase variant would
+        // still find the on-disk transcript, yet never string-match the lowercase id hooks later report —
+        // and would slip past the duplicate gate as a "different" id. Normalized once, at the import
+        // boundary — but ONLY for a UUID-shaped id: lowercasing is UUID case-insensitivity, and applying
+        // it blindly would corrupt a provider id whose case is significant (junie's ids are not UUIDs).
+        val id = if (isCanonicalUuid(providerId.value)) {
+            ProviderSessionId(providerId.value.lowercase())
+        } else {
+            providerId
+        }
         val duplicate = store.listSessions().firstOrNull { it.providerSessionId == id }
         if (duplicate != null) throw DuplicateImportException(duplicate.id, duplicate.archived)
         val resolvedCwd = cwd

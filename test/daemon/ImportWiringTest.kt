@@ -42,8 +42,9 @@ import kotlin.test.assertTrue
  * cannot be started in tests — repo rule), so a stub swapped in at that line would not fail here;
  * it would only be caught by the manual verification checklist.
  *
- * NEVER touches the real `~/.claude` / `~/.codex`: every tree is a `$TMPDIR` throwaway laid out
- * exactly like the vendors' (torn down in [cleanUp]).
+ * NEVER touches the real `~/.claude` / `~/.codex` / `~/.junie`: every tree is a `$TMPDIR` throwaway laid
+ * out exactly like the vendors' (torn down in [cleanUp]), and every vendor home is passed explicitly so
+ * no default can reach the operator's own.
  */
 @OptIn(ExperimentalForeignApi::class)
 class ImportWiringTest {
@@ -74,8 +75,8 @@ class ImportWiringTest {
         tmux, store, PaneRegistry(), untouchableFactory,
         ProviderIdCapture(store, this),
         probe, locator,
-        // The same two kinds the daemon's builders map registers (its keys are what production passes).
-        setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND),
+        // The same kinds the daemon's builders map registers (its keys are what production passes).
+        setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND),
         newSessionId = { SessionId("wire0001") },
         now = { 42L },
     )
@@ -90,8 +91,8 @@ class ImportWiringTest {
             // The transcript sits where Claude would put it for THIS cwd, recording the same cwd — so
             // the locator's discovery re-encodes back to the transcript and the probe agrees.
             placeClaudeTranscript(claudeDir, encodeClaudeProjectDir(projectCwd), id, recordedCwd = projectCwd)
-            val probe = productionVendorStoreProbe(claudeDir = claudeDir, codexDir = "$base/.codex")
-            val locator = productionSessionLocator(claudeDir = claudeDir, codexDir = "$base/.codex")
+            val probe = productionProbe(base, claudeDir = claudeDir)
+            val locator = productionLocator(base, claudeDir = claudeDir)
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             val mgr = manager(store, tmux, probe, locator)
@@ -121,8 +122,8 @@ class ImportWiringTest {
             val projectCwd = makeDir("$base/repo")
             val id = uuid('b')
             placeCodexRollout(codexDir, id, recordedCwd = projectCwd)
-            val probe = productionVendorStoreProbe(claudeDir = "$base/.claude", codexDir = codexDir)
-            val locator = productionSessionLocator(claudeDir = "$base/.claude", codexDir = codexDir)
+            val probe = productionProbe(base, codexDir = codexDir)
+            val locator = productionLocator(base, codexDir = codexDir)
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             val mgr = manager(store, tmux, probe, locator)
@@ -160,8 +161,8 @@ class ImportWiringTest {
             val claudeDir = makeDir("$base/.claude")
             val id = uuid('c')
             placeClaudeTranscript(claudeDir, encodeClaudeProjectDir("/private/tmp"), id, recordedCwd = "/tmp")
-            val probe = productionVendorStoreProbe(claudeDir = claudeDir, codexDir = "$base/.codex")
-            val locator = productionSessionLocator(claudeDir = claudeDir, codexDir = "$base/.codex")
+            val probe = productionProbe(base, claudeDir = claudeDir)
+            val locator = productionLocator(base, claudeDir = claudeDir)
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store, FakeTmux(), probe, locator)
 
@@ -189,8 +190,8 @@ class ImportWiringTest {
                 "$archived/rollout-2026-07-29T10-00-00-${id.value}.jsonl",
                 sessionMetaLine(id, cwd = "$base"),
             )
-            val probe = productionVendorStoreProbe(claudeDir = "$base/.claude", codexDir = codexDir)
-            val locator = productionSessionLocator(claudeDir = "$base/.claude", codexDir = codexDir)
+            val probe = productionProbe(base, codexDir = codexDir)
+            val locator = productionLocator(base, codexDir = codexDir)
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store, FakeTmux(), probe, locator)
 
@@ -203,7 +204,89 @@ class ImportWiringTest {
         }
     }
 
+    @Test
+    fun aJunieSessionIsDiscoveredFromItsIndexByTheRealScan() = runBlocking {
+        withTimeout(20_000) {
+            val base = makeBase()
+            val junieDir = makeDir("$base/.junie")
+            val projectCwd = makeDir("$base/proj")
+            val id = ProviderSessionId("session-260730-015553-1j1h")
+            placeJunieSession(junieDir, id, recordedCwd = projectCwd)
+            val probe = productionProbe(base, junieDir = junieDir)
+            val locator = productionLocator(base, junieDir = junieDir)
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val tmux = FakeTmux()
+            val mgr = manager(store, tmux, probe, locator)
+
+            val meta = mgr.importSession(JUNIE_AGENT_KIND, id) // NO explicit cwd — discovery answers
+
+            assertEquals(projectCwd, meta.cwd, "the real index scan read the recorded projectDir")
+            assertEquals(SessionState.resumable, meta.state)
+            assertEquals(id, meta.providerSessionId, "a junie id is NOT a UUID and must survive verbatim")
+            assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux side effects")
+
+            // The "survives daemon restart" guarantee for junie: the SAME probe a restart re-asks keeps
+            // the imported session resumable.
+            Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            assertEquals(
+                SessionState.resumable,
+                store.getSession(SessionId("wire0001"))!!.state,
+                "reconcile over the real probe keeps the imported junie session resumable",
+            )
+        }
+    }
+
+    @Test
+    fun aJunieSessionWhoseDirectoryWasPrunedIsNotDiscoverable() = runBlocking {
+        withTimeout(20_000) {
+            // Junie keeps the context of only its most recent sessions, so an index row can outlive the
+            // session directory it names. The DISK is the authority: a pruned session must not be
+            // importable, because `--resume` could not revive it.
+            val base = makeBase()
+            val junieDir = makeDir("$base/.junie")
+            val id = ProviderSessionId("session-260624-190541-1d97")
+            makeDir("$junieDir/sessions")
+            writeFile("$junieDir/sessions/index.jsonl", junieIndexLine(id, projectDir = base))
+            val probe = productionProbe(base, junieDir = junieDir)
+            val locator = productionLocator(base, junieDir = junieDir)
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val mgr = manager(store, FakeTmux(), probe, locator)
+
+            assertFailsWith<ImportCwdException> { mgr.importSession(JUNIE_AGENT_KIND, id) }
+            assertTrue(store.listSessions().isEmpty(), "no row was created")
+
+            // With an explicit --cwd the discovery is bypassed, but the PROBE still refuses: there is
+            // nothing on disk to resume.
+            val probed = assertFailsWith<TranscriptNotFoundException> {
+                mgr.importSession(JUNIE_AGENT_KIND, id, cwd = base)
+            }
+            assertTrue(
+                probed.message!!.contains(id.value),
+                "the refusal names the session it could not find: ${probed.message}",
+            )
+        }
+    }
+
     // --- harness (throwaway $TMPDIR vendor homes; NEVER the real ones) --------------------------------
+
+    /**
+     * The real probe dispatch with EVERY vendor home pointed at a throwaway under [base] — a default
+     * would reach the operator's own `~/.claude` / `~/.codex` / `~/.junie`.
+     */
+    private fun productionProbe(
+        base: String,
+        claudeDir: String = "$base/.claude",
+        codexDir: String = "$base/.codex",
+        junieDir: String = "$base/.junie",
+    ): VendorStoreProbe = productionVendorStoreProbe(claudeDir, codexDir, junieDir)
+
+    /** The real locator dispatch, same all-throwaway-homes discipline as [productionProbe]. */
+    private fun productionLocator(
+        base: String,
+        claudeDir: String = "$base/.claude",
+        codexDir: String = "$base/.codex",
+        junieDir: String = "$base/.junie",
+    ): VendorSessionLocator = productionSessionLocator(claudeDir, codexDir, junieDir)
 
     private val mode0700: Int get() = S_IRUSR or S_IWUSR or S_IXUSR
 
@@ -245,6 +328,22 @@ class ImportWiringTest {
         val day = makeDir("$codexDir/sessions/2026/07/29")
         writeFile("$day/rollout-2026-07-29T10-00-00-${id.value}.jsonl", sessionMetaLine(id, recordedCwd))
     }
+
+    /**
+     * Lay a junie session where junie would: the session directory holding its `events.jsonl` (which is
+     * what the probe reads) plus the `index.jsonl` row carrying its `projectDir` (what the locator reads).
+     */
+    private fun placeJunieSession(junieDir: String, id: ProviderSessionId, recordedCwd: String) {
+        val sessions = makeDir("$junieDir/sessions")
+        val session = makeDir("$sessions/${id.value}")
+        writeFile("$session/events.jsonl", """{"kind":"SessionA2uxEvent","timestampMs":1785000000000}""" + "\n")
+        writeFile("$sessions/index.jsonl", junieIndexLine(id, recordedCwd))
+    }
+
+    // The real index record shape (verified against junie 26.8.3's ~/.junie/sessions/index.jsonl).
+    private fun junieIndexLine(id: ProviderSessionId, projectDir: String): String =
+        """{"sessionId":"${id.value}","createdAt":1785000000000,"updatedAt":1785000009999,""" +
+            """"projectDir":"$projectDir","taskName":"Do the thing"}""" + "\n"
 
     // Same payload shape as CodexRolloutScanTest's fixtures (the id key is not read — it comes from
     // the file name — but the two harnesses must model the one real record identically).
