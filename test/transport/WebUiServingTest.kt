@@ -223,6 +223,7 @@ class WebUiServingTest {
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/throttle.js", "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
+            "/lib/clipboard.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js",
         )) {
@@ -306,6 +307,24 @@ class WebUiServingTest {
             ctx.get("/lib/sessions.js").bodyAsText()
                 .contains("\"tmux -u -L kotgent attach -t \" + tmuxSession"),
             "copy tmux uses kotgent's dedicated socket and UTF-8 attach command",
+        )
+        assertTrue(
+            pane.contains("import { writeClipboard } from \"../lib/clipboard.js\"") &&
+                !pane.contains("async function writeClipboard"),
+            "TerminalPane imports the shared clipboard helper instead of hiding a local copy",
+        )
+        val clipboard = ctx.get("/lib/clipboard.js").bodyAsText()
+        assertTrue(
+            clipboard.contains("export async function writeClipboard") &&
+                clipboard.contains("document.execCommand(\"copy\")"),
+            "the shared helper keeps the legacy clipboard fallback",
+        )
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("const copyTmuxCommand = useCallback(async () => {") &&
+                app.contains("say(\"Tmux command copied to clipboard.\")") &&
+                app.contains("say(\"Could not copy the tmux command.\", true)"),
+            "the app-owned copy action reports through the persistent sidebar status line",
         )
         assertTrue(
             ctx.get("/style.css").bodyAsText().contains(".copy-tmux-button { display: none; }"),

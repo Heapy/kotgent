@@ -35,13 +35,20 @@ import {
   isUnauthenticated,
   wsUrl,
 } from "./lib/api.js";
+import { writeClipboard } from "./lib/clipboard.js";
 import {
   loadPrefs,
   persistTerminalFontSize,
   sanitizeServerPreferences,
 } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
-import { capitalize, displayName, isAliveState, stateBadge } from "./lib/sessions.js";
+import {
+  capitalize,
+  displayName,
+  isAliveState,
+  stateBadge,
+  tmuxAttachCommand,
+} from "./lib/sessions.js";
 import { throttleLeading } from "./lib/throttle.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
@@ -796,6 +803,25 @@ function App() {
     setAttachedId(null);
     setHint(detachedHint(s));
   }, [cancelReattach]);
+
+  // Unlike TerminalPane's still-visible copy button, the palette owns no lasting aria-live region.
+  // Report its copy result through the sidebar status line after the palette has closed.
+  const copyTmuxCommand = useCallback(async () => {
+    const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+    const command = s && isAliveState(s.state) && s.tmuxSession
+      ? tmuxAttachCommand(s.tmuxSession)
+      : "";
+    if (!command) {
+      say("Could not copy tmux command: select a live session with a tmux name.", true);
+      return;
+    }
+    try {
+      await writeClipboard(command);
+      say("Tmux command copied to clipboard.");
+    } catch (_) {
+      say("Could not copy the tmux command.", true);
+    }
+  }, [say]);
 
   /** The daemon dropped our terminal socket — this is not our own teardown. */
   const onTerminalClosed = useCallback((id) => {

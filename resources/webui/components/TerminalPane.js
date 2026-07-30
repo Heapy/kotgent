@@ -11,6 +11,7 @@
 import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
+import { writeClipboard } from "../lib/clipboard.js";
 import { displayName, isAliveState, stateBadge, tmuxAttachCommand } from "../lib/sessions.js";
 import { KeyBar } from "./KeyBar.js";
 
@@ -27,31 +28,6 @@ function debounce(fn, ms) {
 function sendResize(ws, cols, rows) {
   if (ws.readyState === WebSocket.OPEN && cols > 0 && rows > 0) {
     ws.send(resizeFrame(cols, rows));
-  }
-}
-
-async function writeClipboard(text) {
-  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch (_) {
-      // A non-secure origin or browser permission can reject the modern API; the click still gives the
-      // legacy path the user gesture it needs.
-    }
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.readOnly = true;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  try {
-    textarea.select();
-    if (!document.execCommand("copy")) throw new Error("copy command was rejected");
-  } finally {
-    textarea.remove();
   }
 }
 

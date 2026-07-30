@@ -341,16 +341,16 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Create: `resources/webui/lib/clipboard.js`
 - Modify: `resources/webui/components/TerminalPane.js`
 
-- [ ] move `writeClipboard` (`TerminalPane.js:33`, including its `document.execCommand` fallback)
+- [x] move `writeClipboard` (`TerminalPane.js:33`, including its `document.execCommand` fallback)
       verbatim into `lib/clipboard.js` and export it
-- [ ] have `TerminalPane.js` import it; leave `copyResult`, the button label and the `aria-live` status
+- [x] have `TerminalPane.js` import it; leave `copyResult`, the button label and the `aria-live` status
       exactly as they are (the header button keeps its own feedback)
-- [ ] expose a copy action from `app.js`'s side that reports through the status line (`say`), since the
+- [x] expose a copy action from `app.js`'s side that reports through the status line (`say`), since the
       palette closes before running and has no `aria-live` region of its own
-- [ ] run `node --check` on both modules
-- [ ] register `lib/clipboard.js` in `daemonServesTheComponentAndLibModules` and assert `TerminalPane.js`
+- [x] run `node --check` on both modules
+- [x] register `lib/clipboard.js` in `daemonServesTheComponentAndLibModules` and assert `TerminalPane.js`
       imports it rather than defining the helper
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 3
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 3
 
 ### Task 3: Add the palette component in search mode
 
