@@ -929,6 +929,24 @@ class WebUiServingTest {
                 ctx.get("/lib/notify.js").bodyAsText().contains("""const KEY = "kotgent.notifications.v1""""),
             "collapsed groups and notification intent keep their existing device-local keys",
         )
+        assertTrue(
+            prefs.contains("""SIDEBAR_COLLAPSED_KEY = "kotgent.sidebarCollapsed.v1"""") &&
+                prefs.contains("export function loadSidebarCollapsed()") &&
+                prefs.contains("export function persistSidebarCollapsed(value)") &&
+                prefs.contains("getItem(SIDEBAR_COLLAPSED_KEY) === \"true\"") &&
+                prefs.contains(
+                    "setItem(SIDEBAR_COLLAPSED_KEY, value === true ? \"true\" : \"false\")",
+                ),
+            "sidebar collapse has strict boolean helpers under its own device-local key",
+        )
+        val serverSanitizer = prefs.substringAfter("export function sanitizeServerPreferences(raw) {")
+            .substringBefore("\n}\n\n/** Initial UI value")
+        assertTrue(
+            !serverSanitizer.contains("sidebarCollapsed") &&
+                !app.substringAfter("method: \"PUT\"").substringBefore("\n      });")
+                    .contains("sidebarCollapsed"),
+            "sidebar collapse never enters daemon-wide GET/PUT preference payloads",
+        )
     }
 
     @Test

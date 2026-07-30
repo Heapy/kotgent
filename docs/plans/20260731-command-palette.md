@@ -439,14 +439,14 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 **Files:**
 - Modify: `resources/webui/lib/prefs.js`
 
-- [ ] add `SIDEBAR_COLLAPSED_KEY` alongside the terminal-font-size and collapsed-groups keys, with
+- [x] add `SIDEBAR_COLLAPSED_KEY` alongside the terminal-font-size and collapsed-groups keys, with
       `loadSidebarCollapsed()` / `persistSidebarCollapsed(value)`
-- [ ] keep it strictly per-device — it must never travel through `GET/PUT /preferences`, so a collapsed
+- [x] keep it strictly per-device — it must never travel through `GET/PUT /preferences`, so a collapsed
       desktop sidebar cannot collapse the phone's drawer
-- [ ] tolerate absent or garbage storage values by falling back to "expanded"
-- [ ] run `node --check resources/webui/lib/prefs.js`
-- [ ] extend the `lib/prefs.js` assertions to pin the new key and both helpers
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 8
+- [x] tolerate absent or garbage storage values by falling back to "expanded"
+- [x] run `node --check resources/webui/lib/prefs.js`
+- [x] extend the `lib/prefs.js` assertions to pin the new key and both helpers
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 8
 
 ### Task 8: Collapse the sidebar with a desktop toggle and ⌘1
 

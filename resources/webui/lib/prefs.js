@@ -2,7 +2,8 @@
  * Preferences have two scopes:
  *   - base path + grouping level are daemon-wide and arrive from GET /preferences plus the global
  *     /events WebSocket;
- *   - terminal font size is screen/device-specific and remains in its own localStorage key.
+ *   - terminal font size and sidebar collapse are screen/device-specific and remain in their own
+ *     localStorage keys.
  *
  * The old combined key is deleted but deliberately never read: silently importing one browser's old
  * grouping into daemon-wide state would surprise every other connected browser.
@@ -12,6 +13,7 @@ import { normalizePath } from "./paths.js";
 
 export const LEGACY_PREFS_KEY = "kotgent.prefs.v1";
 export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
+export const SIDEBAR_COLLAPSED_KEY = "kotgent.sidebarCollapsed.v1";
 export const MAX_GROUPING_LEVEL = 4;
 export const TERMINAL_FONT_SIZES = [11, 13, 16];
 export const DEFAULT_PREFS = {
@@ -101,5 +103,20 @@ export function loadCollapsedGroups() {
 export function persistCollapsedGroups(paths) {
   try {
     window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Array.from(paths)));
+  } catch (_) { /* private mode / quota — the collapse still applies to this page load */ }
+}
+
+/** Device-local shell state: a collapsed desktop must never collapse another screen's phone drawer. */
+export function loadSidebarCollapsed() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch (_) {
+    return false; // absent, garbage, or unreadable storage always starts expanded
+  }
+}
+
+export function persistSidebarCollapsed(value) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value === true ? "true" : "false");
   } catch (_) { /* private mode / quota — the collapse still applies to this page load */ }
 }
