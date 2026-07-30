@@ -424,6 +424,11 @@ class WebUiServingTest {
                 sidebar.contains("onClick=\${() => onNewSession(null)}"),
             "an empty first run still exposes session creation without knowing the palette shortcut",
         )
+        assertTrue(
+            sidebar.contains("id=\"base-path-note\"") &&
+                sidebar.contains("onClick=\${onOpenPrefs}"),
+            "the grouping note remains a direct Preferences entry point",
+        )
 
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         val paletteButtonAt = pane.indexOf("id=\"palette-button\"")

@@ -103,6 +103,8 @@ the palette is Preact + htm like everything else, and the matcher is plain JS.
   Record the actual number on the first green run of this work and compare at the end.
 - **implementation baseline (2026-07-31)**: **844 native tests / 0 skipped**, plus 7 build-info JVM
   tests and all 11 `ptycheck` checks through `PtyTest`.
+- **acceptance result (2026-07-31)**: **851 native tests / 0 skipped**, seven above the implementation
+  baseline, plus 7 build-info JVM tests and all 11 `ptycheck` checks through `PtyTest`.
 - **automation limits** (from `CLAUDE.md`): never start the daemon, `./kotlin run`, a real
   `claude`/`codex`/`junie`, or `launchctl` while implementing.
 
@@ -523,14 +525,16 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] verify every command in the mnemonic table is reachable in both modes, and that `t` and `b` render
+- [x] verify every command in the mnemonic table is reachable in both modes, and that `t` and `b` render
       disabled with their reasons
-- [ ] verify the sidebar header carries only the notification toggle, that Preferences is still reachable
+- [x] verify the sidebar header carries only the notification toggle, that Preferences is still reachable
       from `#base-path-note`, and that a fresh empty state still offers "Start a session"
-- [ ] verify no assertion was deleted rather than moved or rewritten: `prefs-button`, `help-button`,
+- ➕ [x] pin the existing `#base-path-note` → `onOpenPrefs` entry point in `WebUiServingTest`; the
+      acceptance audit found it was present in source but covered only by inspection
+- [x] verify no assertion was deleted rather than moved or rewritten: `prefs-button`, `help-button`,
       `phone-button`, the agent-chip count and the FitAddon padding invariant are all still pinned
-- [ ] run the full suite: `./kotlin build && ./kotlin test`
-- [ ] confirm the native test count matches or exceeds the baseline recorded at the start, with 0 skips
+- [x] run the full suite: `./kotlin build && ./kotlin test`
+- [x] confirm the native test count matches or exceeds the baseline recorded at the start, with 0 skips
 
 ### Task 13: [Final] Update documentation
 
