@@ -376,7 +376,7 @@ class WebUiServingTest {
             "the opener matches the physical K key and consumes both supported bindings",
         )
         assertTrue(
-            app.contains("if (!opensPalette || dialogRef.current) return") &&
+            app.contains("if ((!opensPalette && !togglesSidebar) || dialogRef.current) return") &&
                 app.contains("current.mode === \"search\" ? \"leader\" : \"search\""),
             "an app dialog owns its keyboard and a repeated opener toggles palette mode",
         )
@@ -447,6 +447,54 @@ class WebUiServingTest {
             desktop.contains(".session-actions {\n  display: none;") &&
                 mobile.contains(".session-actions {\n    display: flex;"),
             "lifecycle buttons stay in markup but switch from palette-only desktop to direct mobile controls",
+        )
+    }
+
+    @Test
+    fun theDesktopSidebarCollapsesWithoutOverloadingTheMobileDrawer() = withServer { ctx ->
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed)") &&
+                app.contains("persistSidebarCollapsed(sidebarCollapsed)") &&
+                app.contains("event.metaKey && event.code === \"Digit1\"") &&
+                app.contains("installed PWA receives it"),
+            "app state persists the desktop collapse and records the browser-tab shortcut limitation",
+        )
+
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        assertTrue(
+            pane.contains("id=\"sidebar-toggle\"") &&
+                pane.contains("onClick=\${onToggleSidebar}") &&
+                pane.contains("id=\"drawer-toggle\"") &&
+                pane.contains("onClick=\${onToggleDrawer}"),
+            "desktop collapse and mobile drawer retain separate buttons and handlers",
+        )
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(
+            sidebar.contains("<aside id=\"sidebar\"") &&
+                sidebar.contains("collapsed ? \"collapsed\" : \"\"") &&
+                !app.contains("id=\"app\""),
+            "the collapsed class belongs to #sidebar, while #app remains the external render container",
+        )
+
+        val css = ctx.get("/style.css").bodyAsText()
+        val collapseRule = cssRuleOf(css, "#sidebar.collapsed")
+        for (declaration in listOf(
+            "width: 0",
+            "min-width: 0",
+            "padding: 0",
+            "border-right: 0",
+            "overflow: hidden",
+        )) {
+            assertTrue(collapseRule.contains(declaration), "sidebar collapse keeps `$declaration`")
+        }
+        val mobile = css.substringAfter("@media (max-width: 720px)")
+            .substringBefore("@media (prefers-reduced-motion: reduce)")
+        assertTrue(
+            mobile.contains("#sidebar-toggle { display: none; }") &&
+                mobile.contains("#sidebar,\n  #sidebar.collapsed {") &&
+                css.contains(".drawer-toggle,\n.drawer-close,\n.drawer-scrim { display: none; }"),
+            "the desktop collapse is neutralized for the drawer and leaves its shared visibility rule untouched",
         )
     }
 

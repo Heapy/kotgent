@@ -456,18 +456,18 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 - Modify: `resources/webui/components/Sidebar.js`
 - Modify: `resources/webui/style.css`
 
-- [ ] hold `sidebarCollapsed` in `app.js`, seeded from `loadSidebarCollapsed()` and persisted on change
-- [ ] add `#sidebar-toggle` to the terminal header (a separate button from `#drawer-toggle`, which stays
+- [x] hold `sidebarCollapsed` in `app.js`, seeded from `loadSidebarCollapsed()` and persisted on change
+- [x] add `#sidebar-toggle` to the terminal header (a separate button from `#drawer-toggle`, which stays
       exactly as it is) and render `collapsed` as a class on `#sidebar`, not on `#app`
-- [ ] add the collapse rule zeroing `width`, `min-width`, `padding` and `border-right` with
+- [x] add the collapse rule zeroing `width`, `min-width`, `padding` and `border-right` with
       `overflow: hidden`, plus a transition; hide `#sidebar-toggle` inside the 720px block without
       touching the shared `.drawer-toggle, .drawer-close, .drawer-scrim` rule
-- [ ] extend the existing capture listener with `e.metaKey && e.code === "Digit1"`, with a comment
+- [x] extend the existing capture listener with `e.metaKey && e.code === "Digit1"`, with a comment
       recording that a plain browser tab reserves `⌘1` and only the installed PWA gets it reliably
-- [ ] run `node --check` on every changed module
-- [ ] add assertions for `#sidebar-toggle`, the collapse rule's four zeroed properties, and the
+- [x] run `node --check` on every changed module
+- [x] add assertions for `#sidebar-toggle`, the collapse rule's four zeroed properties, and the
       untouched `onToggleDrawer` wiring (`WebUiServingTest.kt:1509`, `:1531` must still pass unchanged)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 9
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 9
 
 ### Task 9: Collapse the stylesheet to a single dark theme with the Kotlin accent
 

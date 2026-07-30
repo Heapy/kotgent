@@ -139,7 +139,7 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
 }
 
 export function Sidebar({
-  sessions, activeId, prefs, status, currentVersion, drawerOpen, showDone,
+  sessions, activeId, prefs, status, currentVersion, drawerOpen, collapsed, showDone,
   onSelect, onNewSession, onOpenPrefs, onRestore, onCloseDrawer, onToggleShowDone,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
@@ -278,7 +278,8 @@ export function Sidebar({
   // `open` only means anything under the mobile media query, where this aside is a fixed overlay drawer;
   // above the breakpoint it is the same flex column it has always been.
   return html`
-    <aside id="sidebar" class=${drawerOpen ? "open" : ""}>
+    <aside id="sidebar"
+           class=${[drawerOpen ? "open" : "", collapsed ? "collapsed" : ""].filter(Boolean).join(" ")}>
       <header id="sidebar-head">
         <div class="brand-row">
           <h1>Kotgent</h1>

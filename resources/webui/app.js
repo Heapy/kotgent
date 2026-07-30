@@ -39,6 +39,8 @@ import { writeClipboard } from "./lib/clipboard.js";
 import { buildCommands } from "./lib/commands.js";
 import {
   loadPrefs,
+  loadSidebarCollapsed,
+  persistSidebarCollapsed,
   persistTerminalFontSize,
   sanitizeServerPreferences,
 } from "./lib/prefs.js";
@@ -178,6 +180,7 @@ function App() {
   const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd,initialMode} | {kind:'prefs'} | {kind:'help'} | {kind:'phone'}
   const [palette, setPalette] = useState(null);         // null | {mode:'search'|'leader'}
   const [showDone, setShowDone] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
   const [status, setStatus] = useState({ text: "", error: false });
   const [hint, setHint] = useState(SELECT_HINT);
   // Narrow screens only: the sidebar is an overlay drawer there, so its open/closed state lives here —
@@ -188,6 +191,7 @@ function App() {
 
   const openPalette = useCallback((mode = "search") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
+  useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
 
   // Latest values for handlers that must not be re-created on every update.
   const sessionsRef = useRef(sessions);
@@ -252,9 +256,16 @@ function App() {
       const opensPalette =
         (event.metaKey && event.code === "KeyK") ||
         (event.ctrlKey && event.shiftKey && event.code === "KeyK");
-      if (!opensPalette || dialogRef.current) return;
+      // A normal browser tab reserves Command-1 for tab switching; the installed PWA receives it
+      // reliably. The visible desktop toggle remains the guaranteed path in either surface.
+      const togglesSidebar = event.metaKey && event.code === "Digit1";
+      if ((!opensPalette && !togglesSidebar) || dialogRef.current) return;
       event.preventDefault();
       event.stopPropagation();
+      if (togglesSidebar) {
+        setSidebarCollapsed((collapsed) => !collapsed);
+        return;
+      }
       setPalette((current) => current
         ? { mode: current.mode === "search" ? "leader" : "search" }
         : { mode: "search" });
@@ -927,6 +938,7 @@ function App() {
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
+  const toggleSidebar = useCallback(() => setSidebarCollapsed((collapsed) => !collapsed), []);
 
   const closeDialog = useCallback(() => setDialog(null), []);
   const openPrefs = useCallback(() => setDialog({ kind: "prefs" }), []);
@@ -987,6 +999,7 @@ function App() {
       status=${status}
       currentVersion=${currentVersion}
       drawerOpen=${drawerOpen}
+      collapsed=${sidebarCollapsed}
       showDone=${showDone}
       onSelect=${selectSession}
       onNewSession=${openNewSession}
@@ -1002,7 +1015,9 @@ function App() {
       pendingAction=${pendingAction}
       hint=${hint}
       drawerOpen=${drawerOpen}
+      sidebarCollapsed=${sidebarCollapsed}
       onToggleDrawer=${toggleDrawer}
+      onToggleSidebar=${toggleSidebar}
       onOpenPalette=${openPalette}
       onAttach=${attach}
       onInterrupt=${interrupt}

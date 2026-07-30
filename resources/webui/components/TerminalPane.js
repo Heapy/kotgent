@@ -66,9 +66,9 @@ function ctrlBytesFor(data) {
 }
 
 export function TerminalPane({
-  session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen,
-  onToggleDrawer, onOpenPalette, onAttach, onInterrupt, onResume, onDetach, onStop, onDone,
-  onTerminalClosed,
+  session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen, sidebarCollapsed,
+  onToggleDrawer, onToggleSidebar, onOpenPalette, onAttach, onInterrupt, onResume, onDetach, onStop,
+  onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   const [copyResult, setCopyResult] = useState(null);
@@ -317,6 +317,16 @@ export function TerminalPane({
           title="Sessions"
           onClick=${onToggleDrawer}
         >☰</button>
+        <button
+          id="sidebar-toggle"
+          class="icon-button icon-button-small sidebar-toggle"
+          type="button"
+          aria-label=${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded=${sidebarCollapsed ? "false" : "true"}
+          aria-controls="sidebar"
+          title=${sidebarCollapsed ? "Expand sidebar (⌘1)" : "Collapse sidebar (⌘1)"}
+          onClick=${onToggleSidebar}
+        >${sidebarCollapsed ? "›" : "‹"}</button>
         <div class="terminal-identity">
           <span id="terminal-title">${session ? displayName(session) : "No session selected"}</span>
           <span id="terminal-state" class=${badge ? "badge " + badge.cls : "badge"}>

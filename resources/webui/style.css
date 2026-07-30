@@ -97,6 +97,15 @@ html, body {
   flex-direction: column;
   overflow-y: auto;
   padding: 12px;
+  transition: width 180ms ease-out, min-width 180ms ease-out, padding 180ms ease-out,
+              border-right-width 180ms ease-out;
+}
+#sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border-right: 0;
+  overflow: hidden;
 }
 
 #sidebar-head { margin-bottom: 8px; }
@@ -1154,6 +1163,12 @@ dialog::backdrop {
 .drawer-toggle,
 .drawer-close,
 .drawer-scrim { display: none; }
+#sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
 
 @media (max-width: 720px) {
   #help-dialog { width: 100%; }
@@ -1166,7 +1181,8 @@ dialog::backdrop {
   /* The sidebar leaves the flex row and becomes an overlay drawer: the terminal gets the whole screen,
      which is the only way a phone-sized viewport has room for one. `fixed` positions it against the
      viewport, so it re-applies the safe-area insets #app carries for the in-flow layout. */
-  #sidebar {
+  #sidebar,
+  #sidebar.collapsed {
     position: fixed;
     z-index: 30;
     top: 0;
@@ -1176,6 +1192,7 @@ dialog::backdrop {
     max-width: none;
     min-width: 0;
     border-right: 1px solid var(--border);
+    overflow-y: auto;
     padding: calc(12px + env(safe-area-inset-top)) 12px
              calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
     /* Closed: off-screen AND out of the tab order — a translated-away drawer is still focusable, so a
@@ -1213,6 +1230,7 @@ dialog::backdrop {
     min-height: 34px;
     width: 34px;
   }
+  #sidebar-toggle { display: none; }
   /* Keep the notification and drawer-close controls from squeezing the brand in the narrow drawer. */
   .brand-actions {
     flex-wrap: wrap;
