@@ -499,6 +499,48 @@ class WebUiServingTest {
     }
 
     @Test
+    fun theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost() = withServer { ctx ->
+        val css = ctx.get("/style.css").bodyAsText()
+        val appRule = cssRuleOf(css, "#app")
+        assertTrue(
+            appRule.contains("background: var(--bg)") &&
+                appRule.contains("env(safe-area-inset-top)") &&
+                appRule.contains("env(safe-area-inset-left)"),
+            "the shell owns both its background and the safe-area padding around the cards",
+        )
+
+        val sidebarRule = cssRuleOf(css, "#sidebar")
+        val terminalRule = cssRuleOf(css, "#terminal-pane")
+        for ((name, rule) in listOf("sidebar" to sidebarRule, "terminal pane" to terminalRule)) {
+            assertTrue(rule.contains("margin:"), "the $name is inset with margin")
+            assertTrue(rule.contains("border-radius:"), "the $name clips as a card")
+            assertTrue(rule.contains("box-shadow:"), "the $name floats above the shell")
+        }
+        assertTrue(!sidebarRule.contains("border-right:"), "the sidebar card has no dividing rail")
+
+        val hostRule = cssRuleOf(css, "#terminal-host")
+        assertTrue(!hostRule.contains("padding:"), "card geometry never becomes unmeasured terminal padding")
+
+        val desktopAt = css.indexOf("@media (min-width: 721px)")
+        val mobileAt = css.indexOf("@media (max-width: 720px)")
+        assertTrue(desktopAt > 0 && mobileAt > desktopAt, "desktop card effects precede the mobile reset")
+        val desktop = css.substring(desktopAt, mobileAt)
+        val mobile = css.substring(mobileAt)
+            .substringBefore("@media (prefers-reduced-motion: reduce)")
+        assertTrue(
+            Regex("""(?s)#sidebar\s*\{[^}]*backdrop-filter:\s*blur\(20px\)""").containsMatchIn(desktop),
+            "only the desktop sidebar pays for its translucent blur",
+        )
+        assertTrue(!mobile.contains("backdrop-filter"), "the phone drawer never enables a composite blur")
+        assertTrue(
+            mobile.contains("#terminal-pane {\n    border-radius: 0;") &&
+                mobile.contains("box-shadow: none;") &&
+                mobile.contains("margin: 0;"),
+            "the terminal card returns to the safe-area-sized phone shell",
+        )
+    }
+
+    @Test
     fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         assertTrue(pane.contains("id=\"attach-button\""), "the UI includes attach")

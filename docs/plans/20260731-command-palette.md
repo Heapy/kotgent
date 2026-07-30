@@ -494,17 +494,17 @@ PWA (`display: standalone`). `#sidebar-toggle` is the guaranteed path; the short
 **Files:**
 - Modify: `resources/webui/style.css`
 
-- [ ] move the background onto `#app` and give the sidebar and terminal pane **margins** (never padding
+- [x] move the background onto `#app` and give the sidebar and terminal pane **margins** (never padding
       on `#terminal-host`), `border-radius` and a soft shadow; drop the sidebar's right border
-- [ ] make the sidebar translucent with `backdrop-filter: blur(20px)` scoped to the desktop breakpoint
+- [x] make the sidebar translucent with `backdrop-filter: blur(20px)` scoped to the desktop breakpoint
       only, so phones never pay the composite pass
-- [ ] verify the mobile drawer overlay and its scrim still line up with the new radii and insets, and
+- [x] verify the mobile drawer overlay and its scrim still line up with the new radii and insets, and
       that the stage-8 collapse rule still animates cleanly with the new margins
-- [ ] confirm `env(safe-area-inset-*)` padding still applies at the shell level — the new margins add to
+- [x] confirm `env(safe-area-inset-*)` padding still applies at the shell level — the new margins add to
       it rather than replacing it
-- [ ] assert `#terminal-host` still carries no `padding:` and that the blur sits inside the desktop
+- [x] assert `#terminal-host` still carries no `padding:` and that the blur sits inside the desktop
       media query
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 11
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 11
 
 ### Task 11: Turn session rows into pills
 

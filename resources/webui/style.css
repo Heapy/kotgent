@@ -18,6 +18,7 @@
   --term-bg: #000000;
   --input-bg: #14171c;
   --shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
 }
 
 * { box-sizing: border-box; }
@@ -42,7 +43,6 @@ html, body {
   margin: 0;
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background: var(--bg);
   color: var(--text);
   /* Pull-to-refresh would reload the page mid-session on a phone — losing the terminal attach for a
      gesture the operator meant as a scroll. Nothing here scrolls the document anyway. */
@@ -50,6 +50,7 @@ html, body {
 }
 
 #app {
+  background: var(--bg);
   display: flex;
   /* 100vh first as the fallback, then 100dvh: mobile browsers size vh against the LARGEST viewport (the
      one with the toolbars hidden), so a 100vh shell is taller than the screen and pushes the terminal
@@ -72,19 +73,23 @@ html, body {
   max-width: 40%;
   flex: 0 0 auto;
   background: var(--panel);
-  border-right: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
   display: flex;
   flex-direction: column;
+  margin: 12px 0 12px 12px;
   overflow-y: auto;
   padding: 12px;
   transition: width 180ms ease-out, min-width 180ms ease-out, padding 180ms ease-out,
-              border-right-width 180ms ease-out;
+              margin-left 180ms ease-out;
 }
 #sidebar.collapsed {
   width: 0;
   min-width: 0;
   padding: 0;
   border-right: 0;
+  box-shadow: none;
+  margin-left: 0;
   overflow: hidden;
 }
 
@@ -413,6 +418,10 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   background: var(--term-bg);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  margin: 12px;
+  overflow: hidden;
 }
 #terminal-head {
   display: flex;
@@ -1120,6 +1129,15 @@ dialog::backdrop {
   flex: 0 0 auto;
 }
 
+/* Keep the blur off phones: their terminal repaints continuously behind the drawer. */
+@media (min-width: 721px) {
+  #sidebar {
+    background: color-mix(in srgb, var(--panel) 84%, transparent);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+  }
+}
+
 @media (max-width: 720px) {
   :root {
     --bg: #000;
@@ -1139,6 +1157,9 @@ dialog::backdrop {
      viewport, so it re-applies the safe-area insets #app carries for the in-flow layout. */
   #sidebar,
   #sidebar.collapsed {
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
     position: fixed;
     z-index: 30;
     top: 0;
@@ -1187,6 +1208,11 @@ dialog::backdrop {
     width: 34px;
   }
   #sidebar-toggle { display: none; }
+  #terminal-pane {
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
+  }
   /* Keep the notification and drawer-close controls from squeezing the brand in the narrow drawer. */
   .brand-actions {
     flex-wrap: wrap;
