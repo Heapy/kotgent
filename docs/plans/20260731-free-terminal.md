@@ -393,25 +393,25 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `src/daemon/SessionManager.kt`
 - Modify: `test/daemon/SessionManagerTest.kt`
 
-- [ ] add `suspend fun onTmuxSessionClosed(sessionId: SessionId)`: under `withControlLock`, read the row
+- [x] add `suspend fun onTmuxSessionClosed(sessionId: SessionId)`: under `withControlLock`, read the row
       (return on unknown), recompute `paneAlive` via `isPaneAlive`, `stopIntent`, and `transcriptExists`
       via `vendorProbe` (only when the provider id is non-null), classify with the **existing pure**
       `Reconciler.classify`, and write via `persistDerivedState(..., EventSource.liveness)` only on change
-- [ ] unregister the pane from the registry when the session is not alive
-- [ ] KDoc why this lives here and not in `Reconciler`: it needs the per-session control lock, and the
+- [x] unregister the pane from the registry when the session is not alive
+- [x] KDoc why this lives here and not in `Reconciler`: it needs the per-session control lock, and the
       unsynchronised version can interleave with a completing `resume()` and write `resumable` over a
       live session, after which the next Resume collides on the tmux name and `compensateFailedLaunch`
       kills the live session (`SessionManager.kt:521-530`)
-- [ ] KDoc why the write is `persistDerivedState`, not `upsertSession` (`SessionManager.kt:896-904`)
-- [ ] write a test: a shell row whose pane is gone and whose cwd exists becomes `resumable`
-- [ ] write a test: the same row with a deleted cwd becomes `crashed`
-- [ ] write a test: a row already `stopped` stays `stopped` (idempotent under a repeated trigger)
-- [ ] write a test: a row whose pane is alive is left untouched
-- [ ] write a test proving the lock matters: a `resume()` and an `onTmuxSessionClosed` for the same id run
+- [x] KDoc why the write is `persistDerivedState`, not `upsertSession` (`SessionManager.kt:896-904`)
+- [x] write a test: a shell row whose pane is gone and whose cwd exists becomes `resumable`
+- [x] write a test: the same row with a deleted cwd becomes `crashed`
+- [x] write a test: a row already `stopped` stays `stopped` (idempotent under a repeated trigger)
+- [x] write a test: a row whose pane is alive is left untouched
+- [x] write a test proving the lock matters: a `resume()` and an `onTmuxSessionClosed` for the same id run
       concurrently and the row never ends up dead while a pane is live
-- [ ] write a test that the write does not regress `last_seq` / `provider_session_id`
-- [ ] write a test: an unknown id is a silent no-op
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 6
+- [x] write a test that the write does not regress `last_seq` / `provider_session_id`
+- [x] write a test: an unknown id is a silent no-op
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 6
 
 ### Task 6: Generate the tmux hook script and its header file
 

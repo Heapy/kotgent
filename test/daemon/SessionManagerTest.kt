@@ -19,7 +19,14 @@ import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.Tmux
 import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxException
+import io.kotgent.tmux.TmuxPane
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -27,9 +34,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
+import platform.posix.S_IRUSR
+import platform.posix.S_IWUSR
+import platform.posix.S_IXUSR
+import platform.posix.getenv
+import platform.posix.getpid
+import platform.posix.mkdir
+import platform.posix.rmdir
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -40,6 +55,7 @@ import kotlin.test.assertTrue
  * `claude`), then simulates a daemon restart with a fresh [Reconciler] over the same tmux + store.
  * Every body is bounded by [withTimeout] as an anti-hang tripwire.
  */
+@OptIn(ExperimentalForeignApi::class)
 class SessionManagerTest {
 
     private val cat = listOf("cat") // a harmless, long-lived pane command
@@ -69,6 +85,42 @@ class SessionManagerTest {
         createdAt = 1_000L,
         updatedAt = 1_000L,
     )
+
+    /** A real shell-wired manager for the close-callback tests below. */
+    private fun CoroutineScope.shellManager(
+        store: EventStore,
+        tmux: TmuxControl,
+        registry: PaneRegistry = PaneRegistry(),
+        vendorProbe: VendorStoreProbe = shellVendorStoreProbe(),
+        now: () -> Long = { 2_000L },
+    ): SessionManager {
+        val syntheticId = ProviderSessionId("12121212-1212-4212-8212-121212121212")
+        val builders = mapOf<String, (String) -> AgentAdapter>(
+            SHELL_AGENT_KIND to { cwd ->
+                ShellAdapter(cwd, "/bin/zsh", generateSessionId = { syntheticId })
+            },
+        )
+        return SessionManager(
+            tmux, store, registry, agentFactoryOf(builders),
+            ProviderIdCapture(store, this),
+            vendorProbe, importLocator, importableAgentKinds(builders.keys),
+            newSessionId = { SessionId("shell999") },
+            now = now,
+        )
+    }
+
+    /** Create a throwaway cwd which a test may then remove to model a deleted shell directory. */
+    private fun makeClosedSessionTestDirectory(): String {
+        val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
+        val path = "$tmp/kotgent-session-close-${getpid()}-${closedSessionDirectoryCounter++}"
+        check(mkdir(path, MODE_0700.convert()) == 0) { "cannot create $path" }
+        return path
+    }
+
+    private companion object {
+        const val MODE_0700: Int = S_IRUSR or S_IWUSR or S_IXUSR
+        var closedSessionDirectoryCounter: Int = 0
+    }
 
     /**
      * An [EventStore] decorator that PARKS the first `projectionOf` after [arm] — i.e. a control op is
@@ -101,6 +153,24 @@ class SessionManagerTest {
                 release.await()
             }
             return delegate.projectionOf(sessionId)
+        }
+    }
+
+    /** Parks a close callback after it observed a dead pane but before it classifies the row. */
+    private class GatedVendorProbe(
+        private val result: Boolean,
+    ) : VendorStoreProbe {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+
+        override suspend fun hasTranscript(
+            agent: String,
+            cwd: String,
+            providerSessionId: ProviderSessionId,
+        ): Boolean {
+            entered.complete(Unit)
+            release.await()
+            return result
         }
     }
 
@@ -302,6 +372,214 @@ class SessionManagerTest {
                 "a shell resume has exactly the New argv and embeds no provider id",
             )
             assertEquals(SessionState.ready, store.getSession(started.id)!!.state)
+        }
+    }
+
+    // ---- live tmux session-closed trigger: targeted, serialized reclassification ----
+
+    @Test
+    fun aClosedShellWhoseCwdStillExistsBecomesResumableAndLosesItsPaneRegistration() = runBlocking {
+        withTimeout(20_000) {
+            val cwd = makeClosedSessionTestDirectory()
+            try {
+                val id = SessionId("close01")
+                val pane = PaneId("%401")
+                val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")
+                val store = SqliteEventStore.inMemory(now = { 1L })
+                val registry = PaneRegistry()
+                val mgr = shellManager(store, FakeTmux(), registry)
+                store.upsertSession(
+                    meta(id.value, SessionState.running, provider, pane)
+                        .copy(agent = SHELL_AGENT_KIND, cwd = cwd),
+                )
+                registry.register(pane, id)
+
+                mgr.onTmuxSessionClosed(id)
+
+                val row = store.getSession(id)!!
+                assertEquals(SessionState.resumable, row.state)
+                assertEquals(EventSource.liveness, row.stateSource)
+                assertNull(registry.lookup(pane), "a gone pane is no longer routable to provider hooks")
+            } finally {
+                assertEquals(0, rmdir(cwd), "the close-callback test left its cwd behind")
+            }
+        }
+    }
+
+    @Test
+    fun aClosedShellWhoseCwdWasDeletedBecomesCrashed() = runBlocking {
+        withTimeout(20_000) {
+            val cwd = makeClosedSessionTestDirectory()
+            assertEquals(0, rmdir(cwd), "the test models a cwd deleted before the shell exits")
+            val id = SessionId("close02")
+            val pane = PaneId("%402")
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val mgr = shellManager(store, FakeTmux(), registry)
+            store.upsertSession(
+                meta(id.value, SessionState.running, provider, pane)
+                    .copy(agent = SHELL_AGENT_KIND, cwd = cwd),
+            )
+            registry.register(pane, id)
+
+            mgr.onTmuxSessionClosed(id)
+
+            val row = store.getSession(id)!!
+            assertEquals(SessionState.crashed, row.state)
+            assertEquals(EventSource.liveness, row.stateSource)
+            assertNull(registry.lookup(pane))
+        }
+    }
+
+    @Test
+    fun aRepeatedCloseTriggerLeavesAnAlreadyStoppedRowUntouched() = runBlocking {
+        withTimeout(20_000) {
+            val id = SessionId("close03")
+            val pane = PaneId("%403")
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val mgr = shellManager(store, FakeTmux(), registry, now = { error("no state write expected") })
+            val initial = meta(id.value, SessionState.stopped, provider, pane).copy(
+                agent = SHELL_AGENT_KIND,
+                stateSource = EventSource.user,
+            )
+            store.upsertSession(initial)
+            registry.register(pane, id)
+
+            mgr.onTmuxSessionClosed(id)
+            mgr.onTmuxSessionClosed(id)
+
+            assertEquals(initial, store.getSession(id), "duplicate tmux hooks do not rewrite an unchanged row")
+            assertNull(registry.lookup(pane), "unregister remains idempotent across duplicate hooks")
+        }
+    }
+
+    @Test
+    fun aDelayedCloseTriggerLeavesAStillAlivePaneAndRowUntouched() = runBlocking {
+        withTimeout(20_000) {
+            val id = SessionId("close04")
+            val pane = PaneId("%404")
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4")
+            val livePane = TmuxPane("kt-${id.value}", pane, 4242, false, 120, 40)
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val mgr = shellManager(
+                store,
+                FakeTmux(listOf(livePane)),
+                registry,
+                now = { error("no state write expected") },
+            )
+            val initial = meta(id.value, SessionState.needs_approval, provider, pane)
+                .copy(agent = SHELL_AGENT_KIND, stateSource = EventSource.hook)
+            store.upsertSession(initial)
+            registry.register(pane, id)
+
+            mgr.onTmuxSessionClosed(id)
+
+            assertEquals(initial, store.getSession(id), "tmux truth wins over a stale close notification")
+            assertEquals(id, registry.lookup(pane), "a pane that is still alive stays registered")
+        }
+    }
+
+    @Test
+    fun closeReclassificationCannotRaceAResumeIntoLeavingADeadRowOverALivePane() = runBlocking {
+        withTimeout(20_000) {
+            val id = SessionId("close05")
+            val oldPane = PaneId("%405")
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5")
+            val backing = SqliteEventStore.inMemory(now = { 1L })
+            val store = TracingStore(backing)
+            val registry = PaneRegistry()
+            val probe = GatedVendorProbe(result = true)
+            val tmux = FakeTmux()
+            val mgr = shellManager(store, tmux, registry, vendorProbe = probe)
+            store.upsertSession(
+                meta(id.value, SessionState.running, provider, oldPane)
+                    .copy(agent = SHELL_AGENT_KIND),
+            )
+            registry.register(oldPane, id)
+
+            // The callback has observed the old pane as gone and is parked in its vendor probe while
+            // holding the session control lock. A resume for the same id must not launch through it.
+            val closing = async(start = CoroutineStart.UNDISPATCHED) { mgr.onTmuxSessionClosed(id) }
+            probe.entered.await()
+            val resuming = async(start = CoroutineStart.UNDISPATCHED) { mgr.resume(id) }
+            repeat(10) { yield() }
+            assertTrue(
+                tmux.newSessionCommands.isEmpty(),
+                "resume waits for the close callback's complete read/probe/write critical section",
+            )
+
+            probe.release.complete(Unit)
+            closing.await()
+            val resumed = resuming.await()
+
+            assertEquals(
+                listOf(SessionState.resumable, SessionState.ready),
+                store.stateWrites,
+                "the close classification lands before resume, never after its live-state write",
+            )
+            assertEquals(SessionState.ready, backing.getSession(id)!!.state)
+            assertFalse(backing.getSession(id)!!.state.isDead, "the durable row is live when its pane is live")
+            assertTrue(tmux.listPanes().any { it.session == "kt-${id.value}" && !it.dead })
+            assertEquals(id, registry.lookup(resumed.paneId!!))
+        }
+    }
+
+    @Test
+    fun closeStateWritePreservesHooksThatAdvanceSeqAndReplaceTheProviderIdMidProbe() = runBlocking {
+        withTimeout(20_000) {
+            val id = SessionId("close06")
+            val pane = PaneId("%406")
+            val provisional = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6")
+            val authoritative = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb6")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val probe = GatedVendorProbe(result = true)
+            val mgr = shellManager(store, FakeTmux(), vendorProbe = probe)
+            store.upsertSession(
+                meta(id.value, SessionState.running, provisional, pane)
+                    .copy(agent = SHELL_AGENT_KIND),
+            )
+
+            // Park after the callback read the provisional id. Hooks remain independent of the control
+            // lock and may advance the append-only log while the vendor probe is in flight.
+            val closing = async(start = CoroutineStart.UNDISPATCHED) { mgr.onTmuxSessionClosed(id) }
+            probe.entered.await()
+            store.append(id, AgentEvent.SessionBound(authoritative), EventSource.hook)
+            store.append(id, AgentEvent.ToolCall("after-close-observation"), EventSource.hook)
+            probe.release.complete(Unit)
+            closing.await()
+
+            val row = store.getSession(id)!!
+            assertEquals(SessionState.resumable, row.state)
+            assertEquals(Seq(2), row.lastSeq, "the liveness write cannot regress concurrently appended events")
+            assertEquals(
+                authoritative,
+                row.providerSessionId,
+                "the liveness write cannot restore the stale provisional provider id",
+            )
+        }
+    }
+
+    @Test
+    fun aCloseTriggerForAnUnknownIdIsASilentNoOp() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val mgr = shellManager(
+                store,
+                FakeTmux(),
+                registry,
+                vendorProbe = VendorStoreProbe { _, _, _ -> error("an unknown id must not reach the probe") },
+                now = { error("an unknown id must not write") },
+            )
+
+            mgr.onTmuxSessionClosed(SessionId("not-ours"))
+
+            assertTrue(store.listSessions().isEmpty())
+            assertTrue(registry.snapshot().isEmpty())
         }
     }
 

@@ -273,8 +273,8 @@ class CompensationFailure(message: String, cause: Throwable) : IllegalStateExcep
  * derived state back), so concurrent ops on the SAME session must not interleave: an `interrupt` that read
  * a live row while a `stop` killed the pane would write `ready` over `stopped` and resurrect a session
  * that has no pane. [withControlLock] gives each session id its own [Mutex], held across the whole
- * read-modify-write of [interrupt] / [resume] / [terminate]. Different sessions still proceed in parallel
- * (the lock is per id, not global).
+ * read-modify-write of [interrupt] / [resume] / [terminate] / [onTmuxSessionClosed]. Different sessions
+ * still proceed in parallel (the lock is per id, not global).
  *
  * [start] takes the SAME lock. A freshly minted id is unreachable only until the row is published: from
  * `upsertSession` onwards the session is listable and a concurrent `stop` can target it, so an unlocked
@@ -700,6 +700,34 @@ class SessionManager(
         }
     }
 
+    /**
+     * Reclassify a session after tmux reports that one of its sessions closed. The hook is only a
+     * trigger: tmux and the vendor store are re-read here, so a delayed/duplicate callback cannot make
+     * the hook payload itself authoritative. An unknown id is intentionally a silent no-op because the
+     * socket-level hook is global and can observe tmux sessions kotgent does not own.
+     *
+     * This belongs in [SessionManager], not [Reconciler], because the complete read → liveness probes →
+     * derived-state write must hold the SAME per-session control lock as [resume]. Without that lock, a
+     * close callback can observe the old pane as dead, pause while `resume()` launches and persists a
+     * fresh live pane, then overwrite `ready` with `resumable`. The next resume collides with the live
+     * tmux session name, and launch compensation can then kill that live session.
+     *
+     * The write deliberately goes through [persistDerivedState], never a stale full-row
+     * [EventStore.upsertSession]: provider hooks can advance `last_seq` and bind/replace
+     * `provider_session_id`, and this liveness observation owns neither field.
+     */
+    suspend fun onTmuxSessionClosed(sessionId: SessionId): Unit = withControlLock(sessionId) {
+        val meta = store.getSession(sessionId) ?: return@withControlLock
+        val paneAlive = isPaneAlive(meta.tmuxSession)
+        val stopIntent = meta.state == SessionState.stopped
+        val transcriptExists =
+            meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.agent, meta.cwd, it) } ?: false
+        val newState = Reconciler.classify(paneAlive, meta.state, stopIntent, transcriptExists)
+
+        if (!paneAlive) meta.paneId?.let { registry.unregister(it) }
+        if (newState != meta.state) persistDerivedState(meta, newState, EventSource.liveness)
+    }
+
     /** True if tmux currently reports a LIVE (non-dead) pane for [tmuxSession] (`kt-<id>`). */
     private fun isPaneAlive(tmuxSession: String): Boolean =
         tmux.listPanes().any { it.session == tmuxSession && !it.dead }
@@ -900,10 +928,10 @@ class SessionManager(
 
     /**
      * Run [block] holding [sessionId]'s control lock, so a session's control ops (interrupt / stop /
-     * resume) are strictly serialized end-to-end — read of the cache row, tmux side effect, and the
-     * derived-state write all inside one critical section (see the class KDoc). Only the tiny lock-table
-     * lookup takes the shared [controlLocksGuard]; the op itself holds the per-session lock only, so
-     * different sessions never block each other.
+     * resume) and tmux-close reclassification are strictly serialized end-to-end — read of the cache
+     * row, tmux/vendor observation or side effect, and the derived-state write all inside one critical
+     * section (see the class KDoc). Only the tiny lock-table lookup takes the shared [controlLocksGuard];
+     * the op itself holds the per-session lock only, so different sessions never block each other.
      */
     private suspend fun <T> withControlLock(sessionId: SessionId, block: suspend () -> T): T {
         val lock = controlLocksGuard.withLock { controlLocks.getOrPut(sessionId) { Mutex() } }
