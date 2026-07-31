@@ -350,9 +350,16 @@ class WebUiServingTest {
                 palette.contains("role=\"status\" aria-live=\"polite\""),
             "reserved disabled mnemonics stay visible and announce why they cannot run",
         )
+        // Both modes must own the focus. `leaderKeyDown` is bound to the shell, so it only runs for a
+        // keystroke bubbling out of that subtree — and leader mode unmounts the search input, which
+        // parks the focus on the <dialog> ABOVE the shell. That dropped every mnemonic while the
+        // grid's own click handlers kept working, which is why it read as a chord bug rather than a
+        // focus one.
         assertTrue(
-            palette.contains("if (mode === \"search\" && queryRef.current) queryRef.current.focus()"),
-            "tapping the leader's search row focuses the input once search mode renders",
+            palette.contains("if (queryRef.current) queryRef.current.focus()") &&
+                palette.contains("shellRef.current.focus()") &&
+                palette.contains("ref=\${shellRef} tabIndex=\"-1\""),
+            "search focuses its input and leader focuses the shell that carries the mnemonic handler",
         )
         assertTrue(
             ctx.get("/style.css").bodyAsText().contains(".command-palette-leader-grid"),

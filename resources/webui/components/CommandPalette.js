@@ -29,6 +29,7 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
   const [leaderMessage, setLeaderMessage] = useState("");
   const activeOptionRef = useRef(null);
   const queryRef = useRef(null);
+  const shellRef = useRef(null);
   const results = useMemo(() => filterCommands(commands, query), [commands, query]);
   const leaderCommands = commands.filter((item) => item.chord);
   const enabled = availableIndexes(results);
@@ -44,9 +45,17 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
     }
   }, [activeIndex]);
 
+  // Both modes must own the focus, not only search. `leaderKeyDown` sits on the shell, so it only ever
+  // runs for a keystroke that BUBBLES out of that subtree — and leaving leader mode unfocused parks the
+  // focus on the <dialog> itself, which is the shell's parent. Every mnemonic was silently dropped that
+  // way; the grid's click handlers still worked, which is exactly what made it look like a chord bug.
   useEffect(() => {
     setLeaderMessage("");
-    if (mode === "search" && queryRef.current) queryRef.current.focus();
+    if (mode === "search") {
+      if (queryRef.current) queryRef.current.focus();
+    } else if (shellRef.current) {
+      shellRef.current.focus();
+    }
   }, [mode]);
 
   const closeThenRun = (item) => {
@@ -110,7 +119,10 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
 
   return html`
     <${Dialog} id="command-palette" labelledBy="command-palette-title" onClose=${onClose}>
-      <div class=${"command-palette-shell " + mode} onKeyDown=${leaderKeyDown}>
+      ${/* tabIndex -1: programmatically focusable so leader mode can hold the keyboard, but never a
+            tab stop of its own. */ ""}
+      <div class=${"command-palette-shell " + mode} ref=${shellRef} tabIndex="-1"
+           onKeyDown=${leaderKeyDown}>
         <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>
         ${mode === "leader"
           ? html`

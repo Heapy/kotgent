@@ -565,6 +565,11 @@ dialog::backdrop {
   min-height: 240px;
   padding: 12px;
 }
+/* Leader mode focuses this container so its key handler receives the mnemonics (the search input is
+   unmounted there). That focus is programmatic, never a tab stop, so it draws no ring of its own —
+   the grid's own buttons keep theirs. */
+.command-palette-shell:focus,
+.command-palette-shell:focus-visible { outline: none; }
 .command-palette-query {
   background: var(--input-bg);
   border: 1px solid var(--border);
