@@ -513,6 +513,11 @@ class WebUiServingTest {
     @Test
     fun theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost() = withServer { ctx ->
         val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(
+            cssRuleOf(css, ":root").contains("color-scheme: dark") &&
+                cssRuleOf(css, "html, body").contains("background-color: #000"),
+            "WebKit gets an explicit dark scheme and literal black canvas for the iPhone safe-area",
+        )
         val appRule = cssRuleOf(css, "#app")
         assertTrue(
             appRule.contains("background: var(--bg)") &&
@@ -1245,6 +1250,11 @@ class WebUiServingTest {
         assertTrue(
             body.contains("viewport-fit=cover"),
             "the viewport reaches under the notch — the safe-area padding depends on it",
+        )
+        assertTrue(
+            body.contains("name=\"color-scheme\" content=\"dark\"") &&
+                body.contains("style.css?v=ios-dark-1"),
+            "the installed iOS app declares dark system UI and fetches the revised stylesheet URL",
         )
     }
 

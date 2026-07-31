@@ -1,6 +1,7 @@
 /* Kotgent Web UI — a single dark, mac-native shell. */
 
 :root {
+  color-scheme: dark;
   --bg: #14171c;
   --panel: #1b1f27;
   --border: #2a2f3a;
@@ -46,6 +47,9 @@ html, body {
   margin: 0;
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Literal black is intentional. Safari 26 derives its surrounding system surface from the page canvas;
+     keeping this out of a custom property also avoids a failed colour inference falling back to white. */
+  background-color: #000;
   color: var(--text);
   /* Pull-to-refresh would reload the page mid-session on a phone — losing the terminal attach for a
      gesture the operator meant as a scroll. Nothing here scrolls the document anyway. */

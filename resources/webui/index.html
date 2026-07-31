@@ -19,11 +19,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Kotgent" />
+  <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#000000" />
 
   <!-- Vendored, offline: pinned @xterm/xterm@5.5.0 + @xterm/addon-fit@0.10.0, preact@10.29.7 + htm@3.1.1. -->
   <link rel="stylesheet" href="vendor/xterm.css" />
-  <link rel="stylesheet" href="style.css" />
+  <!-- Query revision forces an already-installed iOS PWA past Safari's persistent HTTP asset cache. -->
+  <link rel="stylesheet" href="style.css?v=ios-dark-1" />
 
   <!--
     No bundler: bare specifiers are resolved to the vendored ES modules by the browser itself. This map
