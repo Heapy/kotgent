@@ -324,20 +324,20 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `src/daemon/SessionManager.kt`
 - Create: `test/adapter/shell/ShellAdapterTest.kt`
 
-- [ ] add `const val SHELL_AGENT_KIND = "shell"` beside the three existing kind constants
-- [ ] create `ShellAdapter(cwd, shell, generateSessionId = { ProviderSessionId(newUuidV4()) })`
+- [x] add `const val SHELL_AGENT_KIND = "shell"` beside the three existing kind constants
+- [x] create `ShellAdapter(cwd, shell, generateSessionId = { ProviderSessionId(newUuidV4()) })`
       implementing `AgentAdapter`, with `events = emptyFlow()` and no `env`
-- [ ] implement `buildLaunchSpec`: `[shell, "-l"]` with `cliPath = shell`, `cliVersion = null`; mint
+- [x] implement `buildLaunchSpec`: `[shell, "-l"]` with `cliPath = shell`, `cliVersion = null`; mint
       `preallocatedSessionId` for `New` and leave it **null** for `Resume` (the documented contract at
       `LaunchSpec.kt:49-55`; `resume()` ignores it either way)
-- [ ] KDoc the two reasons the synthetic id exists (`ResumeBlockedException` at `SessionManager.kt:662`,
+- [x] KDoc the two reasons the synthetic id exists (`ResumeBlockedException` at `SessionManager.kt:662`,
       and the null-id probe skip at `Reconciler.kt:127`) and that it identifies nothing at any vendor
-- [ ] decide where `newUuidV4` lives: either import it from `adapter/claude/ClaudeAdapter.kt:106` with a
+- [x] decide where `newUuidV4` lives: either import it from `adapter/claude/ClaudeAdapter.kt:106` with a
       comment, or promote it to a neutral home — pick one and say why in the KDoc
-- [ ] write tests: `New` renders `[shell, "-l"]` with the injected id; `Resume(existingId)` renders the
+- [x] write tests: `New` renders `[shell, "-l"]` with the injected id; `Resume(existingId)` renders the
       same argv, carries a null `preallocatedSessionId` and does not embed the id anywhere; `events`
       completes empty
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 3
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 3
 
 ### Task 3: Add the shell vendor-store probe
 

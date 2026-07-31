@@ -73,6 +73,9 @@ const val CODEX_AGENT_KIND: String = "codex"
 /** Agent kind for Junie (`start junie`). */
 const val JUNIE_AGENT_KIND: String = "junie"
 
+/** Agent kind for a plain login shell (`start shell`). */
+const val SHELL_AGENT_KIND: String = "shell"
+
 /**
  * An [AgentFactory] over the agent kinds in [builders], rejecting every other kind with
  * [UnsupportedAgentException]. The gate matters: without it a factory silently ignores the requested
