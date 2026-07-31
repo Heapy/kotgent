@@ -1,4 +1,4 @@
-# CLAUDE.md — working in the kotgent repo
+# AGENTS.md — working in the kotgent repo
 
 Guidance for future work here. Read this before changing the build, adding native code, or touching the
 event model. It captures the conventions and the hard-won toolchain lessons so they don't get re-derived.
@@ -521,6 +521,16 @@ keeps only the daily notification toggle (plus the structural mobile drawer clos
 reachable from the base-path note, and an empty first run keeps its direct "Start a session" action.
 Reserved future chords remain visible but disabled in this one registry until their stages are designed.
 
+**Mobile file upload is a session-cwd write, never an arbitrary-path API.** The palette's `f` command opens
+the native multi-file picker and `POST`s one raw file at a time to `/sessions/{id}/files?name=…`; the browser
+shows the selected session's cwd but never submits a directory. The authenticated route re-reads that
+session row and supplies its stored cwd to `FileUploader`, while the filename gate accepts one leaf only
+(no `/`, dot entries, control/NUL characters, or overlong UTF-8 component). Production streams at most 100
+MiB under a ten-minute deadline into a `mkstemp` sibling (`0600`), `fsync`s and closes it, then publishes via
+`link(2)`: an existing file or symlink wins with `409`, never gets overwritten, and every failed, cancelled,
+oversized, or timed-out request unlinks its partial temp. Keep the UI's multi-file loop sequential and the
+daemon's limit per file; a partial batch must report each failed name without retrying successful files.
+
 **Global Web UI shortcuts have one owner.** `app.js` installs exactly one capture-phase document
 `keydown` listener for the palette openers and desktop sidebar toggle; extend that listener rather than
 adding another global listener. Match physical keys with `event.code`, not layout-dependent `event.key`.
@@ -702,15 +712,15 @@ These are real and cost time to rediscover. Respect them.
   duplicate entry in `test-dependencies` changes the selection. **Verified still broken on toolchain
   0.11.0, 0.11.1 and 0.12.0-dev**, and reproducible in a one-module toy project.
   **Two-part mitigation, and the pattern to follow:**
-  1. Keep raw cinterop behind a pure-Kotlin interface (`PtyHandle`, `LocalTty`, `TmuxControl`) with a
-     `Fake…` for tests, so the *logic* runs for real in the test binary, and wrap the actual cinterop in
-     a single thin class (`RealPtyHandle`, `NativeTty`).
-  2. For assertions that genuinely need the real cinterop, put them in the **`ptycheck` main binary**
-     (main binaries link it fine) and drive them from the suite — `PtyTest` execs it. That is how the
-     former 5 `@Ignore`d tests run today; **the suite has no skips left.**
-  **This does NOT affect** third-party klibs that carry cinterop (Ktor, `native-driver`/`sqliter`) or the
-  stock `platform.posix` bindings — those link into test binaries fine. Never reintroduce a `-library`
-  path hack to work around it, and never fake a skip into a pass.
+    1. Keep raw cinterop behind a pure-Kotlin interface (`PtyHandle`, `LocalTty`, `TmuxControl`) with a
+       `Fake…` for tests, so the *logic* runs for real in the test binary, and wrap the actual cinterop in
+       a single thin class (`RealPtyHandle`, `NativeTty`).
+    2. For assertions that genuinely need the real cinterop, put them in the **`ptycheck` main binary**
+       (main binaries link it fine) and drive them from the suite — `PtyTest` execs it. That is how the
+       former 5 `@Ignore`d tests run today; **the suite has no skips left.**
+       **This does NOT affect** third-party klibs that carry cinterop (Ktor, `native-driver`/`sqliter`) or the
+       stock `platform.posix` bindings — those link into test binaries fine. Never reintroduce a `-library`
+       path hack to work around it, and never fake a skip into a pass.
 - **`posix_spawn` is absent from `platform.posix`.** It lives in `<spawn.h>`, which is not in the
   `platform.posix` macOS header set (that's why `Pty` needs its own `pty.def`). So `ProcessRunner` (which
   must spawn from the *test* binary, and therefore cannot use custom cinterop) uses **`popen`/`pclose`** —
