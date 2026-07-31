@@ -557,18 +557,18 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 
 ### Task 12: [Final] Update documentation
 
-- [ ] add a `CLAUDE.md` section for the shell kind: why it is a fourth provider rather than a new
+- [x] add a `CLAUDE.md` section for the shell kind: why it is a fourth provider rather than a new
       dimension, why the provider id is synthetic and `New`-only, and the accepted limitations
-- [ ] add a `CLAUDE.md` note that the `session-closed` tmux hook is a trigger whose truth is re-derived by
+- [x] add a `CLAUDE.md` note that the `session-closed` tmux hook is a trigger whose truth is re-derived by
       `SessionManager.onTmuxSessionClosed` under the control lock, that its script must stay in the
       `new-session` invocation and in the rotation callback, that tmux exposes no exit status, and that
       the tmux server was measured to keep answering during a hook
-- [ ] update the "Where things live" map with `src/adapter/shell/`, `src/sys/LoginShell.kt`,
+- [x] update the "Where things live" map with `src/adapter/shell/`, `src/sys/LoginShell.kt`,
       `src/tmux/TmuxHookConfig.kt`, `src/daemon/ShellVendorStoreProbe.kt`
-- [ ] note in `docs/plans/completed/20260731-command-palette.md` (or in `CLAUDE.md`) that the palette's
+- [x] note in `docs/plans/completed/20260731-command-palette.md` (or in `CLAUDE.md`) that the palette's
       stage-4 `free-terminal` hand-off is now delivered
-- [ ] update the test baseline number in `CLAUDE.md`
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update the test baseline number in `CLAUDE.md`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

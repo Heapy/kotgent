@@ -143,6 +143,26 @@ without it import discovery silently answers null for the new kind, forcing `--c
   it needs `extractDominantModel` (most frequent, ties → first seen), measured on a real session at 40
   occurrences for the primary against 6/1/1 for three helpers.
 
+**Shell is a fourth agent kind, not a new session dimension.** `ShellAdapter` implements the same
+`AgentAdapter` seam and `"shell"` is registered beside the three provider builders. This deliberately
+reuses the one `SessionManager.start` / `resume` path and all generic tmux, terminal, control, archive and
+reconciliation machinery; do not add a shell column, a reducer branch or a second launch path. It runs
+`currentLoginShell()` with `-l`; `src/sys/LoginShell.kt` chooses the first absolute executable from
+`$SHELL`, the passwd entry and `/bin/zsh`, in that order. The Web command palette's stage-4 `⌘K t`
+handoff is delivered through the ordinary New-session dialog with Shell preselected, and Import mode
+omits it because there is no outside conversation to adopt.
+
+A new shell mints a synthetic UUID provider id and appends the ordinary `SessionBound`; a resume neither
+mints nor embeds another id and launches the same `[shell, "-l"]` argv. The id is mechanical, not a
+vendor identity: the generic resume gate and reconciler both require a non-null provider id, so minting it
+for `New` only keeps those paths provider-neutral. The quiet-state limitations are intentional. While its
+pane is alive, a new shell remains `running` and a resumed shell remains `ready`; its empty event flow can
+never enter `needs_approval` / `needs_answer`, so it never notifies. `SessionBound` is its only event (the
+unread count is one until first open), `model` stays null, and liveness is its only later state input. A
+close observed while the daemon is live uses the tmux hook below; a close while it is down is caught by
+startup reconciliation. tmux exposes no exit status, so an unrequested clean exit and a killed process
+are indistinguishable and both classify from pane liveness, stop intent and whether the cwd still exists.
+
 **Import is registration, not launch.** `kotgent import` / the Web UI's Import mode →
 `POST /sessions/import` → `SessionManager.importSession` brings a session started *outside* kotgent under
 management with **zero tmux side-effects**: it writes a full `resumable` row (provider id set,
@@ -370,6 +390,23 @@ one upstream client serves N subscribers, and kotgent has better signals (the la
 subscriber count, agent state over hooks); it doubles as the decoy in the isolation integration test
 *because* kotgent never sets it, and a unit test pins its absence so forcing it fails there first rather
 than quietly making the isolation test unfalsifiable.
+
+**The tmux `session-closed` hook is a trigger, not truth.** Its private script posts only the closed tmux
+session name. `SessionManager.onTmuxSessionClosed` then takes the same per-session control lock as
+`resume`, re-reads pane liveness and the provider/cwd probe, and delegates to `Reconciler.classify` before
+writing derived state. Never treat the payload as an exit event or move that read/write sequence outside
+the lock: a close notification can race a resume. tmux supplies no usable child exit status, so shell
+closures deliberately use the same liveness and resumability evidence as every other agent. Measured on
+tmux 3.7b, the server continues answering `list-panes` while its `run-shell` hook command is running, so
+the callback can safely re-derive that truth instead of trusting the notification.
+
+The global hook must stay in the **same chained invocation** as `new-session`, after the forced server
+options and before the session is created. A standalone `set-hook` cannot start a tmux server, and adding
+it after creation leaves a close-before-install race. `TmuxHookConfig` writes a token-bearing `0600`
+header separately from the non-secret executable script, then `Tmux.newSession` chains the generated
+command through `tmuxCommand()` like every production tmux argv. Both initial daemon setup and the token
+rotation callback must finish `writeTmuxHookScript(port, token)` before publishing the token used to
+authenticate requests; otherwise a newly rotated daemon and its installed callback disagree.
 
 **Session identity is `pane_id`, not inherited env.** The logical key is the `tmux` session name
 `kt-<shortid>`; the runtime correlation key is the pane id (`#{pane_id}`), recaptured from live panes on
@@ -712,7 +749,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **851 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **891 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -744,14 +781,16 @@ src/crypto/                    Sha256, Hmac, Hex, Base64Url — canonical pure-K
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
 src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule),
-                               Signals (SIGINT/SIGTERM taken back from Ktor's shutdown hook)
+                               LoginShell.kt (absolute executable login-shell resolution), Signals
+                               (SIGINT/SIGTERM taken back from Ktor's shutdown hook)
 src/tmux/                      Tmux, TmuxControl (iface), ProcessRunner (popen),
-                               TmuxOptions (-f /dev/null isolation, forced server options, tmuxCommand argv builder)
+                               TmuxOptions (-f /dev/null isolation, forced server options, tmuxCommand argv builder),
+                               TmuxHookConfig.kt (private session-closed callback artifacts)
 src/adapter/                   AgentAdapter, LaunchSpec, ModelScan; claude/ + codex/ + junie/
-                               (Cli, HookConfig, HookNormalizer, Adapter)
+                               (Cli, HookConfig, HookNormalizer, Adapter); shell/ShellAdapter.kt
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, VendorSessionLocator,
                                VendorStoreFs (listDir/readHead/readTail/JSON field scans),
-                               Claude/Codex/Junie vendor-store probes + scans
+                               Claude/Codex/Junie vendor-store probes + scans, ShellVendorStoreProbe.kt
 src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
 src/transport/                 Server, Auth/Authorization, session cookies, tickets/rate limit,
                                auth/push/control/event/terminal/hook routes
