@@ -106,7 +106,7 @@ val USAGE: String = """
 
     Commands:
       daemon [--port N]              run the control-plane server (default port $DEFAULT_PORT)
-      start <agent> [cwd]            start a session (agent: 'claude' | 'codex' | 'junie'; cwd defaults to .)
+      start <agent> [cwd]            start a session (agent: 'claude' | 'codex' | 'junie' | 'shell'; cwd defaults to .)
                  [--name N] [--tag T]
       import <agent> <session-id>    register a session started outside kotgent, then resume it
                  [--cwd D] [--name N] [--tag T] [--no-start]

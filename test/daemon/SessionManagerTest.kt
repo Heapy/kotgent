@@ -3,6 +3,7 @@ package io.kotgent.daemon
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
@@ -223,6 +224,84 @@ class SessionManagerTest {
                         emptyMap(), cwd, null, cliVersion = cliVersion, cliPath = cliPath,
                     )
             }
+        }
+    }
+
+    @Test
+    fun importableKindsSubtractShellAndLeaveEveryOtherKindUntouched() {
+        val launchable = setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND, SHELL_AGENT_KIND)
+        assertEquals(
+            setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND),
+            importableAgentKinds(launchable),
+        )
+        val alreadyImportable = setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND)
+        assertEquals(alreadyImportable, importableAgentKinds(alreadyImportable), "subtraction is idempotent")
+    }
+
+    @Test
+    fun startShellCreatesARunningBoundRowWithTheLoginShellArgv() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
+            val builders = mapOf<String, (String) -> AgentAdapter>(
+                SHELL_AGENT_KIND to { cwd ->
+                    ShellAdapter(cwd, "/bin/zsh", generateSessionId = { provider })
+                },
+            )
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), agentFactoryOf(builders),
+                ProviderIdCapture(store, this),
+                shellVendorStoreProbe(), importLocator, importableAgentKinds(builders.keys),
+                newSessionId = { SessionId("shell001") },
+                now = { 1L },
+            )
+
+            val started = mgr.start(SHELL_AGENT_KIND, "/tmp")
+
+            assertEquals(SessionState.running, started.state)
+            assertEquals(provider, started.providerSessionId)
+            assertEquals(SHELL_AGENT_KIND, started.agent)
+            assertEquals(listOf("shell001" to "'/bin/zsh' '-l'"), tmux.newSessionCommands)
+            assertEquals(provider, store.getSession(SessionId("shell001"))!!.providerSessionId)
+        }
+    }
+
+    @Test
+    fun aDeadShellResumesWithTheSameArgvIntoAFreshReadyPane() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
+            val builders = mapOf<String, (String) -> AgentAdapter>(
+                SHELL_AGENT_KIND to { cwd ->
+                    ShellAdapter(cwd, "/bin/zsh", generateSessionId = { provider })
+                },
+            )
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), agentFactoryOf(builders),
+                ProviderIdCapture(store, this),
+                shellVendorStoreProbe(), importLocator, importableAgentKinds(builders.keys),
+                newSessionId = { SessionId("shell002") },
+                now = { 2L },
+            )
+            val started = mgr.start(SHELL_AGENT_KIND, "/tmp")
+            val firstPane = started.paneId
+            assertTrue(tmux.killSession(started.id.value), "the first shell pane existed before simulated death")
+
+            val resumed = mgr.resume(started.id)
+
+            assertEquals(SessionState.ready, resumed.state)
+            assertTrue(resumed.paneId != firstPane, "resume creates a fresh pane")
+            assertEquals(
+                listOf(
+                    "shell002" to "'/bin/zsh' '-l'",
+                    "shell002" to "'/bin/zsh' '-l'",
+                ),
+                tmux.newSessionCommands,
+                "a shell resume has exactly the New argv and embeds no provider id",
+            )
+            assertEquals(SessionState.ready, store.getSession(started.id)!!.state)
         }
     }
 

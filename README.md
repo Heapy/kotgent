@@ -5,15 +5,15 @@
 
 **kotgent** is a local-first, restart-safe control plane for coding-agent sessions.
 
-Agent processes (Claude, Codex and Junie today) run inside `tmux`, independent of any user interface. The IDE
-terminal, desktop Web UI, and installable mobile PWA are interchangeable clients over one daemon. On a
+Agent processes (Claude, Codex, Junie and plain login shells today) run inside `tmux`, independent of any user
+interface. The IDE terminal, desktop Web UI, and installable mobile PWA are interchangeable clients over one daemon. On a
 phone, server-sent Web Push can wake the PWA's service worker when a session needs attention, even after
 the app is closed. `tmux` is the transport and the process-survival mechanism, **not** the source of
 truth: state is derived by replaying an append-only event log, so it survives a daemon restart.
 
 ```text
 IDE terminal ──────┐
-Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex | junie
+Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex | junie | shell
 Mobile PWA ────────┘          │        │
                               │        └──▶ browser push service ──▶ service worker
                               ├── SQLite (event log, session cache, push subscriptions)
@@ -51,8 +51,9 @@ Install from the Homebrew tap (macOS on Apple Silicon; the formula pulls in `tmu
 brew install Heapy/tap/kotgent
 ```
 
-The formula installs kotgent itself, **not** the agents: `claude`, `codex` and/or `junie` have to be on your
-`PATH` already (see [Requirements](#requirements)). Then run the rest **from a normal login shell** —
+The formula installs kotgent itself, **not** the agent CLIs: `claude`, `codex` and/or `junie` have to be on
+your `PATH` already (see [Requirements](#requirements)); the `shell` kind uses your existing login shell.
+Then run the rest **from a normal login shell** —
 `kotgent install` snapshots that shell's environment (`PATH`, so the daemon can find the agent binaries,
 and `LANG`, so the TUI renders as UTF-8) into the launchd plist, and launchd would otherwise start the
 daemon with a minimal env and no locale at all:
@@ -60,6 +61,7 @@ daemon with a minimal env and no locale at all:
 ```shell
 kotgent install            # install + boot the daemon as a launchd agent (RunAtLoad + KeepAlive)
 kotgent start claude       # launch a Claude session inside tmux, in the current directory
+kotgent start shell        # launch a plain login shell in the same managed terminal surface
 kotgent web                # open the sign-in form and print its one-time code
 ```
 
@@ -110,6 +112,8 @@ To build from source instead, see [Build & test](#build--test).
   session directory Junie writes under `~/.junie/sessions`. Live state tracking needs Junie's **hooks**,
   which are an EAP feature: on a stable build that ignores them the session still launches and attaches,
   it just shows a coarser state. Developed against junie 26.8.3 (EAP).
+- **`shell`** — your current login shell (`$SHELL`, then the passwd entry, with `/bin/zsh` as the safe
+  fallback). It launches with `-l`, needs no additional CLI, emits no provider hooks and has no import path.
 - **`/usr/bin/openssl` and NSURLSession (Web Push only).** kotgent lazily uses macOS's system
   `/usr/bin/openssl` to generate and sign its VAPID P-256 credential; outbound HTTPS delivery uses
   the Darwin HTTP client backed by NSURLSession and the system trust store. Both are macOS runtime
@@ -156,7 +160,7 @@ kotgent <command> [args]
 
   daemon [--port N]              run the control-plane server (default port 27508; the launchd entry point)
   install | uninstall           (un)install the launchd LaunchAgent (io.kotgent.daemon)
-  start <agent> [cwd]           start a session (agent: 'claude' | 'codex' | 'junie'; cwd defaults to the current dir)
+  start <agent> [cwd]           start a session (agent: 'claude' | 'codex' | 'junie' | 'shell'; cwd defaults to the current dir)
              [--name N] [--tag T]
   import <agent> <session-id>   register a session started outside kotgent, then resume it
              [--cwd D] [--name N] [--tag T] [--no-start]
@@ -182,14 +186,16 @@ kotgent <command> [args]
   daemon and the agents it spawns find `claude`/`codex`/`junie` and render a UTF-8 TUI. Re-run it from a full shell
   whenever either goes stale. An agent that can't be resolved on the daemon's `PATH` fails fast with a
   clear error pointing at `kotgent install`, not a silent attach failure.
-- **`start`** creates a `tmux` session `kt-<id>`, launches the agent in it, and records the session.
+- **`start`** creates a `tmux` session `kt-<id>`, launches the requested agent or login shell in it, and
+  records the session.
 - **`import`** brings a conversation you started *outside* kotgent — `claude`, `codex` or `junie` run in a
   plain terminal — under kotgent, with its history intact. The import itself only registers the session (no
   `tmux` side effects): kotgent verifies the provider's own on-disk record and writes a `resumable` entry,
   then immediately resumes it (`claude --resume <id>` / `codex resume <id>` /
   `junie --resume --session-id <id>`); `--no-start` skips that and
   leaves it registered for later. The project directory is discovered from the provider's record; pass
-  `--cwd` if that discovery fails or picks the wrong directory. Finding the session id:
+  `--cwd` if that discovery fails or picks the wrong directory. `shell` is deliberately not importable:
+  there is no outside provider session or transcript to adopt. Finding a provider session id:
   - **claude** — shown in the `claude --resume` session picker; it is also the transcript's file name,
     `~/.claude/projects/<encoded-project-dir>/<session-id>.jsonl`.
   - **codex** — shown in the `codex resume` session picker; it is also the trailing UUID of the rollout
@@ -422,8 +428,9 @@ is and isn't here:
 
 **In the slice (v1):**
 
-- **Three providers: Claude, Codex and Junie.** All run as a TUI in `tmux` and report through hooks. Codex
-  and Junie both fire a real `PermissionRequest`, so `needs_approval` is precise there rather than inferred
+- **Four launch kinds: Claude, Codex, Junie and Shell.** The three providers run as a TUI in `tmux` and
+  report through hooks; Shell runs the user's login shell through the same lifecycle and terminal fan-out.
+  Codex and Junie both fire a real `PermissionRequest`, so `needs_approval` is precise there rather than inferred
   from a generic notification — kotgent only observes it, the operator answers in the terminal. Junie's
   hooks are an EAP feature: without them a junie session still launches and attaches, its state is simply
   coarser.

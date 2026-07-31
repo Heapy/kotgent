@@ -3,6 +3,7 @@ package io.kotgent.daemon
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.ProviderSessionId
@@ -86,6 +87,38 @@ class SessionImportTest {
     )
 
     // ---- happy path: a full resumable row + SessionBound, with zero tmux side effects ----
+
+    @Test
+    fun shellCanStartButCannotBeImportedAgainstTheSameManager() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 42L })
+            val tmux = FakeTmux()
+            val shellId = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
+            val builders = mapOf<String, (String) -> AgentAdapter>(
+                SHELL_AGENT_KIND to { cwd ->
+                    ShellAdapter(cwd, "/bin/zsh", generateSessionId = { shellId })
+                },
+            )
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(), agentFactoryOf(builders),
+                ProviderIdCapture(store, this),
+                shellVendorStoreProbe(), VendorSessionLocator { _, _ -> null },
+                importableAgentKinds(builders.keys),
+                newSessionId = { SessionId("shellimp") },
+                now = { 42L },
+            )
+
+            val started = mgr.start(SHELL_AGENT_KIND, "/tmp")
+            val error = assertFailsWith<UnknownAgentKindException> {
+                mgr.importSession(SHELL_AGENT_KIND, providerId, cwd = "/tmp")
+            }
+
+            assertEquals(SessionState.running, started.state, "the launch factory still accepts shell")
+            assertEquals(SHELL_AGENT_KIND, error.agentKind)
+            assertEquals(emptySet(), error.supported)
+            assertEquals(1, tmux.newSessionCommands.size, "the rejected import has no additional tmux side effect")
+        }
+    }
 
     @Test
     fun importRegistersAFullResumableRowAndBindsTheProviderIdWithNoTmuxSideEffects() = runBlocking {

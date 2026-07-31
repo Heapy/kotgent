@@ -368,24 +368,24 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `test/daemon/SessionImportTest.kt`
 - Modify: `test/cli/CliTest.kt`
 
-- [ ] add the `SHELL_AGENT_KIND` entry to `agentBuilders`, building `ShellAdapter(cwd, currentLoginShell())`
+- [x] add the `SHELL_AGENT_KIND` entry to `agentBuilders`, building `ShellAdapter(cwd, currentLoginShell())`
       — no `locate()`/`requireAbsoluteBinary`, because Task 1's predicate already enforces the same
       fail-fast property; note that in the entry's comment
-- [ ] add pure `importableAgentKinds(kinds: Set<String>): Set<String> = kinds - SHELL_AGENT_KIND` and pass
+- [x] add pure `importableAgentKinds(kinds: Set<String>): Set<String> = kinds - SHELL_AGENT_KIND` and pass
       it as `SessionManager`'s `supportedAgentKinds`, with a comment stating that the factory still accepts
       every key and only the **import** gate subtracts the shell (there is no outside shell session to adopt)
-- [ ] update the usage line in `Cli.kt:109` and the five agent-kind enumerations in `README.md`
+- [x] update the usage line in `Cli.kt:109` and the five agent-kind enumerations in `README.md`
       (`:16`, `:54`, `:107`, `:159`, `:186`)
-- [ ] write a unit test for `importableAgentKinds` (subtracts shell, leaves the rest, idempotent on a set
+- [x] write a unit test for `importableAgentKinds` (subtracts shell, leaves the rest, idempotent on a set
       without it)
-- [ ] write a `SessionManagerTest` case: `start("shell", cwd)` creates a `running` row whose
+- [x] write a `SessionManagerTest` case: `start("shell", cwd)` creates a `running` row whose
       `providerSessionId` is set and whose tmux command is the shell argv
-- [ ] write a `SessionManagerTest` case covering design decision 2 end to end: start a shell → pane
+- [x] write a `SessionManagerTest` case covering design decision 2 end to end: start a shell → pane
       killed → `resume()` → same argv, a fresh pane, state `ready`
-- [ ] write a `SessionImportTest` case: `importSession("shell", …)` throws `UnknownAgentKindException`
+- [x] write a `SessionImportTest` case: `importSession("shell", …)` throws `UnknownAgentKindException`
       while `start("shell", …)` still succeeds against the same manager
-- [ ] update `CliTest` for the new usage text and add a `start shell` parse case
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 5
+- [x] update `CliTest` for the new usage text and add a `start shell` parse case
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 5
 
 ### Task 5: Reclassify a closed session under the control lock
 

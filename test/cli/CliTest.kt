@@ -5,6 +5,7 @@ import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.DuplicateImportException
 import io.kotgent.daemon.JUNIE_AGENT_KIND
+import io.kotgent.daemon.SHELL_AGENT_KIND
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
@@ -89,13 +90,14 @@ class CliTest {
         // The parser does not know the agent kinds — the daemon's builders map is the one gate — so every
         // supported kind parses the same way.
         assertEquals(CliCommand.Start("junie", null, null, emptyList()), parseArgs(listOf("start", "junie")))
+        assertEquals(CliCommand.Start("shell", null, null, emptyList()), parseArgs(listOf("start", "shell")))
     }
 
     @Test
     fun theUsageNamesEverySupportedAgentKind() {
         // The kinds are gated by the daemon's builders map, but this text is where an operator learns
         // they exist — a provider that ships without appearing here is invisible from the CLI.
-        for (agent in listOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND)) {
+        for (agent in listOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND, SHELL_AGENT_KIND)) {
             assertTrue("'$agent'" in USAGE, "the usage names the $agent agent: $USAGE")
         }
     }

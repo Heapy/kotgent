@@ -71,6 +71,13 @@ const val JUNIE_AGENT_KIND: String = "junie"
 const val SHELL_AGENT_KIND: String = "shell"
 
 /**
+ * The subset of launchable [kinds] that may be imported from an external provider store. A shell has
+ * no outside conversation or provider identity to adopt, so it remains launchable through
+ * [AgentFactory] while being deliberately absent from [SessionManager.importSession]'s gate.
+ */
+fun importableAgentKinds(kinds: Set<String>): Set<String> = kinds - SHELL_AGENT_KIND
+
+/**
  * An [AgentFactory] over the agent kinds in [builders], rejecting every other kind with
  * [UnsupportedAgentException]. The gate matters: without it a factory silently ignores the requested
  * kind and builds whatever adapter it was closed over, so `start <unknown>` would launch the wrong agent
@@ -301,10 +308,10 @@ class SessionManager(
      */
     private val sessionLocator: VendorSessionLocator,
     /**
-     * The agent kinds this daemon can launch — the production wiring passes `builders.keys` of the
-     * SAME map [agentFactory] was built from, so there is exactly one source of truth for "supported".
-     * [importSession] gates on this set instead of calling [AgentFactory.create] (which would drag the
-     * binary fail-fast into a side-effect-free registration; [resume] owns that check).
+     * The agent kinds this daemon may import — production derives it from the SAME builder keys used
+     * for [agentFactory], then removes kinds such as [SHELL_AGENT_KIND] that have no outside provider
+     * session to adopt. [importSession] gates on this set instead of calling [AgentFactory.create]
+     * (which would drag the binary fail-fast into a side-effect-free registration; [resume] owns that check).
      * No default value — same reasoning as [vendorProbe].
      */
     private val supportedAgentKinds: Set<String>,

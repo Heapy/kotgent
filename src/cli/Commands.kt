@@ -13,6 +13,7 @@ import io.kotgent.adapter.codex.CodexHookConfig
 import io.kotgent.adapter.junie.JunieAdapter
 import io.kotgent.adapter.junie.JunieCli
 import io.kotgent.adapter.junie.JunieHookConfig
+import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.CodexRolloutScan
@@ -21,11 +22,13 @@ import io.kotgent.daemon.JunieSessionScan
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
+import io.kotgent.daemon.SHELL_AGENT_KIND
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.daemon.captureCodexModelOnce
 import io.kotgent.daemon.captureJunieModelOnce
+import io.kotgent.daemon.importableAgentKinds
 import io.kotgent.daemon.productionSessionLocator
 import io.kotgent.daemon.productionVendorStoreProbe
 import io.kotgent.daemon.requireAbsoluteBinary
@@ -44,6 +47,7 @@ import io.kotgent.push.vapidSubject
 import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.sys.installShutdownSignals
+import io.kotgent.sys.currentLoginShell
 import io.kotgent.sys.pendingShutdownSignal
 import io.kotgent.sys.shutdownSignalName
 import io.kotgent.tmux.ProcessRunner
@@ -366,11 +370,11 @@ object Commands {
         val claudePath: String? = claudeCli.locate()
         val codexPath: String? = codexCli.locate()
         val juniePath: String? = junieCli.locate()
-        // Only the kinds registered here are accepted: an unknown kind is rejected with a clear error
+        // Only the kinds registered here are accepted for launch: an unknown kind is rejected with a clear error
         // instead of silently building some other provider's adapter for it (which would launch the wrong
-        // agent while persisting the requested name). This ONE map is the single source of truth for
-        // "supported": the factory is built from it AND its keys become the SessionManager's
-        // supportedAgentKinds (the import gate), so the two can never disagree.
+        // agent while persisting the requested name). This ONE map is the single source of truth for the
+        // factory; the import gate is derived from its keys below and subtracts only kinds with no outside
+        // session to adopt (the shell).
         val agentBuilders: Map<String, (cwd: String) -> AgentAdapter> =
             mapOf(
                 CLAUDE_AGENT_KIND to { cwd: String ->
@@ -404,6 +408,11 @@ object Commands {
                         cliPath = juniePath,
                     )
                 },
+                SHELL_AGENT_KIND to { cwd: String ->
+                    // currentLoginShell already requires an absolute executable candidate, so this has
+                    // the same fail-fast property as requireAbsoluteBinary without locating a vendor CLI.
+                    ShellAdapter(cwd = cwd, shell = currentLoginShell())
+                },
             )
         val agentFactory = agentFactoryOf(agentBuilders)
         // Codex has no `--session-id`, so a fresh codex session's provider id is unknown at launch. The
@@ -427,12 +436,14 @@ object Commands {
             // productionSessionLocator (both pinned by the import wiring test).
             vendorProbe,
             productionSessionLocator(),
-            agentBuilders.keys,
+            // The factory accepts every builder key, while import rejects shell: there is no external
+            // shell provider session or transcript for kotgent to adopt.
+            importableAgentKinds(agentBuilders.keys),
             discoverProviderId = { meta ->
                 when (meta.agent) {
                     CODEX_AGENT_KIND -> rolloutScan.discoverSessionId(meta.cwd, meta.createdAt)
                     JUNIE_AGENT_KIND -> junieScan.discoverSessionId(meta.cwd, meta.createdAt)
-                    else -> null // claude preallocates its id; nothing to discover
+                    else -> null // claude and shell preallocate ids; nothing to discover
                 }
             },
             // Codex records its model in the rollout's turn_context, and junie a `modelUsage` list in its
