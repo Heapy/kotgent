@@ -1,13 +1,12 @@
 modules:
-  - .
-  - ./sysnative
-  # Test fixture: a MAIN binary that runs the real-PTY checks a test binary cannot (KT-78062).
-  # Driven from the suite by `PtyTest`, which execs it. See ptycheck/module.yaml.
-  - ./ptycheck
   # Build-time VERSION/Git metadata generator for the native application.
   - ./plugins/build-info
   # The codegen plugin is also a normal (jvm/amper-plugin) module and must be listed here.
   - ./plugins/sqldelight-gen
+  # Test fixture: a MAIN binary that runs the real-PTY checks a test binary cannot (KT-78062).
+  # Driven from the suite by `PtyTest`, which execs it. See ptycheck/module.yaml.
+  - ./ptycheck
+  - ./sysnative
 
 plugins:
   - ./plugins/build-info
