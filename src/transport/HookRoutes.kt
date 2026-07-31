@@ -12,6 +12,7 @@ import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
 import io.kotgent.core.SessionId
 import io.kotgent.store.EventStore
+import io.kotgent.tmux.TmuxHookConfig
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
@@ -163,6 +164,44 @@ fun Route.junieHookRoutes(
     paneLookupGraceMillis = paneLookupGraceMillis,
     onProviderIdRebound = onProviderIdRebound,
 )
+
+/**
+ * The tmux `session-closed` ingress. This intentionally does **not** reuse [hookRoutes]: when tmux
+ * fires this hook the pane is already gone, there is no JSON payload to normalize, and no
+ * [AgentEvent] is produced. The closed tmux session name is the identity source instead.
+ *
+ * [onSessionClosed] is only a trigger. Production re-reads both tmux liveness and the provider store
+ * under the session's control lock, so a delayed, duplicate, or unknown close notification cannot
+ * make this header authoritative. Consequently all well-authenticated notifications are fire-and-
+ * forget: malformed/foreign names are ignored, and callback failures are logged but still answer 200.
+ */
+fun Route.tmuxHookRoutes(
+    token: () -> String,
+    onSessionClosed: suspend (SessionId) -> Unit,
+) = loopbackOnly {
+    post(TmuxHookConfig.INGRESS_PATH) {
+        val presented = call.request.headers[TmuxHookConfig.HOOK_TOKEN_HEADER]
+        if (presented == null || !constantTimeEquals(presented, token())) {
+            call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
+            return@post
+        }
+
+        val sessionId = call.request.headers[TmuxHookConfig.SESSION_HEADER]
+            ?.takeIf { it.startsWith(TMUX_SESSION_PREFIX) }
+            ?.removePrefix(TMUX_SESSION_PREFIX)
+            ?.let { raw -> runCatching { SessionId(raw) }.getOrNull() }
+
+        if (sessionId == null) {
+            call.respondText("ignored", status = HttpStatusCode.OK)
+            return@post
+        }
+
+        runCatching { onSessionClosed(sessionId) }.onFailure { failure ->
+            eprintln("tmux session-close handling failed for '${sessionId.value}': $failure")
+        }
+        call.respondText("ok", status = HttpStatusCode.OK)
+    }
+}
 
 /**
  * The provider-neutral hook ingress [claudeHookRoutes], [codexHookRoutes] and [junieHookRoutes] are built
@@ -329,3 +368,6 @@ private suspend fun resolvePane(
 }
 
 private val EMPTY_OBJECT: JsonObject = JsonObject(emptyMap())
+
+/** Prefix [Tmux.sessionName][io.kotgent.tmux.Tmux.sessionName] adds to every managed session. */
+private const val TMUX_SESSION_PREFIX: String = "kt-"

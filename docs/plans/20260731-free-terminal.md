@@ -470,20 +470,20 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `src/transport/Server.kt`
 - Modify: `test/transport/HookRoutesTest.kt`
 
-- [ ] add `Route.tmuxHookRoutes(token: () -> String, onSessionClosed: suspend (SessionId) -> Unit)` inside
+- [x] add `Route.tmuxHookRoutes(token: () -> String, onSessionClosed: suspend (SessionId) -> Unit)` inside
       `loopbackOnly`, validating `HOOK_TOKEN_HEADER` with the existing constant-time comparison
-- [ ] parse the session name from `SESSION_HEADER`, strip the `kt-` prefix to a `SessionId`, invoke the
+- [x] parse the session name from `SESSION_HEADER`, strip the `kt-` prefix to a `SessionId`, invoke the
       callback inside `runCatching { … }.onFailure { eprintln(…) }` (the precedent at `HookRoutes.kt:284`),
       and answer `200` for a missing header, a foreign name, a bare `kt-` and an unknown session
-- [ ] KDoc why this does not reuse the private `hookRoutes` helper (no pane, no payload, no `AgentEvent`),
+- [x] KDoc why this does not reuse the private `hookRoutes` helper (no pane, no payload, no `AgentEvent`),
       and that the callback is a **trigger** whose truth is re-derived under the control lock
-- [ ] add `onTmuxSessionClosed: suspend (SessionId) -> Unit = {}` to the `KotgentServer` constructor,
+- [x] add `onTmuxSessionClosed: suspend (SessionId) -> Unit = {}` to the `KotgentServer` constructor,
       **forward it through the `production` factory** (`Server.kt:271`, which is what `Commands.daemon`
       calls), and mount the route beside the three provider ingresses
-- [ ] write tests in `HookRoutesTest.kt`: wrong/absent token → `401`; non-loopback `Host` → `403` without
+- [x] write tests in `HookRoutesTest.kt`: wrong/absent token → `401`; non-loopback `Host` → `403` without
       reaching the token check; valid call → `200` and the callback receives the parsed id;
       unknown/malformed/bare-`kt-` name → `200` with no callback; a **throwing** callback still → `200`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 9
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 9
 
 ### Task 9: Wire the hook end to end in the daemon bootstrap
 

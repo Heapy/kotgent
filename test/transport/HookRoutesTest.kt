@@ -16,6 +16,7 @@ import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
+import io.kotgent.tmux.TmuxHookConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
@@ -39,11 +40,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Route tests for all three hook ingresses ([claudeHookRoutes] / [codexHookRoutes] /
- * [junieHookRoutes]). Each stands up an embedded Ktor CIO server with the route wired to a fake pane
- * lookup + a recording in-memory [EventStore], drives it with a Ktor CIO client, and asserts behaviour
- * via the store and the HTTP status. Everything is wrapped in a bounded [withTimeout] so a broken
- * round-trip fails fast.
+ * Route tests for all four hook ingresses ([claudeHookRoutes] / [codexHookRoutes] /
+ * [junieHookRoutes] / [tmuxHookRoutes]). Each stands up an embedded Ktor CIO server, drives it with a
+ * Ktor CIO client, and asserts behaviour via a recording seam and the HTTP status. Everything is
+ * wrapped in a bounded [withTimeout] so a broken round-trip fails fast.
  *
  * These are NOT @Ignore'd: Task 3 proved the Ktor CIO server + client run for real in the macosArm64
  * test binary, so the `401` / `404` / append paths are exercised end-to-end now, without waiting on the
@@ -109,6 +109,43 @@ class HookRoutesTest {
         if (token != null) header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
         if (pane != null) header(ClaudeHookConfig.TMUX_PANE_HEADER, pane)
         setBody(body)
+    }
+
+    /** Boots the pane-free tmux close ingress with a recording callback. */
+    private fun withTmuxIngress(
+        tokenProvider: () -> String = { token },
+        onSessionClosed: suspend (SessionId) -> Unit = {},
+        block: suspend (port: Int, client: HttpClient) -> Unit,
+    ) = runBlocking {
+        val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
+            routing { tmuxHookRoutes(tokenProvider, onSessionClosed) }
+        }
+        try {
+            withTimeout(20_000) {
+                server.start(wait = false)
+                val port = server.engine.resolvedConnectors().first().port
+                val client = HttpClient(CIO)
+                try {
+                    block(port, client)
+                } finally {
+                    client.close()
+                }
+            }
+        } finally {
+            server.stop(gracePeriodMillis = 100, timeoutMillis = 500)
+        }
+    }
+
+    private suspend fun HttpClient.postTmuxHook(
+        port: Int,
+        token: String? = this@HookRoutesTest.token,
+        sessionName: String? = "kt-abc123",
+        host: String? = null,
+    ): HttpResponse = post("http://127.0.0.1:$port${TmuxHookConfig.INGRESS_PATH}") {
+        if (token != null) header(TmuxHookConfig.HOOK_TOKEN_HEADER, token)
+        if (sessionName != null) header(TmuxHookConfig.SESSION_HEADER, sessionName)
+        if (host != null) header(HttpHeaders.Host, host)
+        setBody("")
     }
 
     // ---- happy path: a valid POST appends the normalized event ----
@@ -298,6 +335,75 @@ class HookRoutesTest {
             }
             assertEquals(HttpStatusCode.Forbidden, response.status)
             assertTrue(store.appended.tryReceive().isFailure)
+        }
+    }
+
+    // ---- tmux session-close ingress: authenticated trigger, no pane/payload/event ----
+
+    @Test
+    fun tmuxCloseIngressRejectsAWrongOrMissingToken() {
+        val closed = Channel<SessionId>(Channel.UNLIMITED)
+        withTmuxIngress(onSessionClosed = { closed.send(it) }) { port, client ->
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                client.postTmuxHook(port, token = "wrong-token").status,
+            )
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                client.postTmuxHook(port, token = null).status,
+            )
+            assertTrue(closed.tryReceive().isFailure, "unauthenticated close triggers invoke nothing")
+        }
+    }
+
+    @Test
+    fun tmuxCloseIngressRejectsAForeignHostBeforeReadingTheToken() {
+        withTmuxIngress(
+            tokenProvider = { error("the foreign-Host gate must run before token validation") },
+        ) { port, client ->
+            assertEquals(
+                HttpStatusCode.Forbidden,
+                client.postTmuxHook(
+                    port,
+                    token = "irrelevant",
+                    host = "kotgent.example.com",
+                ).status,
+            )
+        }
+    }
+
+    @Test
+    fun tmuxCloseIngressStripsTheManagedPrefixAndInvokesTheTrigger() {
+        val closed = Channel<SessionId>(Channel.UNLIMITED)
+        withTmuxIngress(onSessionClosed = { closed.send(it) }) { port, client ->
+            assertEquals(HttpStatusCode.OK, client.postTmuxHook(port, sessionName = "kt-1a2b3c4d").status)
+            assertEquals(SessionId("1a2b3c4d"), closed.receive())
+        }
+    }
+
+    @Test
+    fun tmuxCloseIngressIgnoresMissingForeignAndBlankSessionNames() {
+        val closed = Channel<SessionId>(Channel.UNLIMITED)
+        withTmuxIngress(onSessionClosed = { closed.send(it) }) { port, client ->
+            for (name in listOf<String?>(null, "other-session", "kt-", "kt-   ")) {
+                assertEquals(
+                    HttpStatusCode.OK,
+                    client.postTmuxHook(port, sessionName = name).status,
+                    "an unusable session header is a fire-and-forget no-op: <$name>",
+                )
+            }
+            assertTrue(closed.tryReceive().isFailure, "unusable names never reach the trigger")
+        }
+    }
+
+    @Test
+    fun tmuxCloseIngressStillAnswersOkWhenTheTriggerThrows() {
+        withTmuxIngress(onSessionClosed = { error("simulated liveness-probe failure") }) { port, client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.postTmuxHook(port, sessionName = "kt-not-ours").status,
+                "an unknown session or probe failure must not surface in tmux's terminal",
+            )
         }
     }
 

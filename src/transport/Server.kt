@@ -1,6 +1,7 @@
 package io.kotgent.transport
 
 import io.kotgent.currentUiVersion
+import io.kotgent.core.SessionId
 import io.kotgent.daemon.SessionManager
 import io.kotgent.exe.NativeExe
 import io.kotgent.push.PushStore
@@ -88,6 +89,8 @@ import platform.posix.access
  *   this and [pushStore] must be present for [pushRoutes] to be mounted at all — push is an optional
  *   capability (it needs `openssl` and a writable `~/.kotgent`), so a daemon without it, and every test
  *   harness that does not pass them, behaves exactly as before.
+ * @param onTmuxSessionClosed receives authenticated tmux close triggers. Production forwards this to
+ *   [SessionManager.onTmuxSessionClosed], which re-derives truth under the per-session control lock.
  * @param port `0` binds an ephemeral port (tests); [port] reports the resolved one.
  */
 class KotgentServer(
@@ -103,6 +106,7 @@ class KotgentServer(
     private val tickets: TicketStore = TicketStore(),
     private val pushStore: PushStore? = null,
     private val vapidPublicKey: (suspend () -> String)? = null,
+    private val onTmuxSessionClosed: suspend (SessionId) -> Unit = {},
     host: String = "127.0.0.1",
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
@@ -163,6 +167,7 @@ class KotgentServer(
                             tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )
+                        tmuxHookRoutes(tokens::current, onTmuxSessionClosed)
                         // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
                         authRoutes(tokens, tickets, publicUrl, json)
                         // Token-gated control plane.
@@ -280,6 +285,7 @@ class KotgentServer(
             publicUrl: String? = null,
             pushStore: PushStore? = null,
             vapidPublicKey: (suspend () -> String)? = null,
+            onTmuxSessionClosed: suspend (SessionId) -> Unit = {},
             host: String = "127.0.0.1",
             port: Int = 0,
         ): KotgentServer = KotgentServer(
@@ -293,6 +299,7 @@ class KotgentServer(
             publicUrl = publicUrl,
             pushStore = pushStore,
             vapidPublicKey = vapidPublicKey,
+            onTmuxSessionClosed = onTmuxSessionClosed,
             host = host,
             port = port,
         )
