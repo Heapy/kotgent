@@ -52,6 +52,7 @@ import io.kotgent.sys.pendingShutdownSignal
 import io.kotgent.sys.shutdownSignalName
 import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.Tmux
+import io.kotgent.tmux.TmuxHookConfig
 import io.kotgent.transport.KotgentServer
 import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.SessionDto
@@ -301,11 +302,11 @@ object Commands {
             eprintln("kotgent daemon: ${e.message}")
             return@runBlocking 1
         }
-        // The master token lives behind a holder, not in a captured `val`: every gate (both hook
+        // The master token lives behind a holder, not in a captured `val`: every gate (all hook
         // ingresses, the Bearer check) resolves it per request, so `kotgent token rotate` takes effect on
-        // the next request instead of the next restart. Rotation must also reach the two consumers that
-        // read the secret from DISK — the CLI (`~/.kotgent/token`) and the hooks (their 0600 header
-        // files) — hence the persist callback rewrites all three.
+        // the next request instead of the next restart. Rotation must also reach the two consumer groups
+        // that read the secret from DISK — the CLI (`~/.kotgent/token`) and every hook (its 0600 header
+        // file) — hence the persist callback rewrites every hook artifact before the token file.
         //
         // ORDER MATTERS: the hook-header files are written FIRST and `~/.kotgent/token` LAST. The token file
         // is both the CLI's view of the secret and the value `TokenHolder.rotate` publishes into memory only
@@ -319,6 +320,7 @@ object Commands {
             writeClaudeHookSettings(port, rotated)
             writeCodexHookScript(port, rotated)
             writeJunieHookConfig(port, rotated)
+            writeTmuxHookScript(port, rotated)
             writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
         }
         val token = tokenHolder.current()
@@ -335,7 +337,8 @@ object Commands {
             },
         )
         val store = SqliteEventStore.using(driver)
-        val tmux = Tmux(TMUX_SOCKET)
+        val tmuxHookScriptPath = writeTmuxHookScript(port, token)
+        val tmux = Tmux(TMUX_SOCKET, hookScriptPath = tmuxHookScriptPath)
         tmux.ensureServer()
 
         val registry = PaneRegistry()
@@ -509,6 +512,7 @@ object Commands {
                         publicUrl = config.publicUrl,
                         pushStore = push?.store,
                         vapidPublicKey = push?.publicKey,
+                        onTmuxSessionClosed = manager::onTmuxSessionClosed,
                         port = port,
                     )
                 },
@@ -725,6 +729,23 @@ object Commands {
         writePrivateFile(scriptPath, JunieHookConfig.hookScript(port, headerPath).encodeToByteArray())
         val path = "${kotgentHome()}/junie-hooks.json"
         writePrivateFile(path, JunieHookConfig.configJson(scriptPath).encodeToByteArray())
+        return path
+    }
+
+    /**
+     * Write tmux's private `session-closed` script and token header, returning the script path passed
+     * to [Tmux]. [home] is injectable so tests can prove the artifact wiring and permissions inside a
+     * throwaway directory; production defaults to kotgent's real private home.
+     *
+     * Both files are written atomically as `0600`. The token lives only in the header file, which the
+     * generated script reads through `curl -H @<file>`; `/bin/sh` is named by the tmux hook command, so
+     * the script intentionally needs no execute bit.
+     */
+    fun writeTmuxHookScript(port: Int, token: String, home: String = kotgentHome()): String {
+        val headerPath = "$home/tmux-hook-header"
+        writePrivateFile(headerPath, TmuxHookConfig.headerFileContent(token).encodeToByteArray())
+        val path = "$home/tmux-hook.sh"
+        writePrivateFile(path, TmuxHookConfig.hookScript(port, headerPath).encodeToByteArray())
         return path
     }
 }

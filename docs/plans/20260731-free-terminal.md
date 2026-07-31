@@ -491,21 +491,21 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `src/cli/Commands.kt`
 - Create: `test/daemon/TmuxHookWiringTest.kt`
 
-- [ ] add `writeTmuxHookScript(port, token, home = kotgentHome())` mirroring `writeCodexHookScript` but
+- [x] add `writeTmuxHookScript(port, token, home = kotgentHome())` mirroring `writeCodexHookScript` but
       with an **injectable home** and public visibility, so a test can drive it against a throwaway
       directory instead of the operator's real `~/.kotgent`; it writes a `0600` header file and a `0600`
       script and returns the script path
-- [ ] **add `writeTmuxHookScript(port, rotated)` to the token-rotation persist callback**
+- [x] **add `writeTmuxHookScript(port, rotated)` to the token-rotation persist callback**
       (`Commands.kt:314-319`), before `writePrivateFile(defaultTokenPath(), …)` per the documented
       ordering; without this, `kotgent token rotate` leaves the hook holding a stale token and death
       detection dies silently (the ingress is fire-and-forget by design, so nothing would surface)
-- [ ] construct `Tmux` with that `hookScriptPath`, and pass `sessionManager::onTmuxSessionClosed` into
+- [x] construct `Tmux` with that `hookScriptPath`, and pass `sessionManager::onTmuxSessionClosed` into
       `KotgentServer.production` as `onTmuxSessionClosed`
-- [ ] write a wiring test over the pure/injectable parts: the generated script targets the same port,
+- [x] write a wiring test over the pure/injectable parts: the generated script targets the same port,
       path and header name the ingress validates, and both files are `0600`; record honestly — as
       `ImportWiringTest.kt:40-44` does — which part of the `Commands.daemon` call site remains outside
       automation
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 10
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 10
 
 ### Task 10: Offer Shell in the Web UI and light up the reserved palette command
 
