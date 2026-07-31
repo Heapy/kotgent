@@ -346,16 +346,16 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `src/daemon/Reconciler.kt`
 - Create: `test/daemon/ShellVendorStoreProbeTest.kt`
 
-- [ ] add `shellVendorStoreProbe(): VendorStoreProbe` answering "does `cwd` exist and is it a directory",
+- [x] add `shellVendorStoreProbe(): VendorStoreProbe` answering "does `cwd` exist and is it a directory",
       reusing the existing `isDirectory` helper (`SessionManager.kt:244-249`) — promote it to a shared
       home rather than copying the `stat`/`S_IFDIR` logic a second time
-- [ ] KDoc that a shell's resumability is only "is there somewhere to come back to", and that the
+- [x] KDoc that a shell's resumability is only "is there somewhere to come back to", and that the
       provider id is deliberately ignored
-- [ ] register `SHELL_AGENT_KIND to shellVendorStoreProbe()` in `productionVendorStoreProbe`
-- [ ] write tests: existing directory → true; missing path → false; a regular file → false
-- [ ] write a test that `productionVendorStoreProbe` dispatches `shell` to it (a shell row with a live
+- [x] register `SHELL_AGENT_KIND to shellVendorStoreProbe()` in `productionVendorStoreProbe`
+- [x] write tests: existing directory → true; missing path → false; a regular file → false
+- [x] write a test that `productionVendorStoreProbe` dispatches `shell` to it (a shell row with a live
       cwd probes true even though no vendor directory exists)
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 4
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 4
 
 ### Task 4: Register the kind in the bootstrap and close the import gate
 

@@ -2,12 +2,17 @@ package io.kotgent.daemon
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import platform.posix.SEEK_END
 import platform.posix.SEEK_SET
+import platform.posix.S_IFDIR
+import platform.posix.S_IFMT
 import platform.posix.closedir
 import platform.posix.fclose
 import platform.posix.fopen
@@ -16,6 +21,7 @@ import platform.posix.fseek
 import platform.posix.ftell
 import platform.posix.opendir
 import platform.posix.readdir
+import platform.posix.stat
 
 /*
  * Thin POSIX filesystem helpers shared by the vendor-store scans — Codex's rollout walking
@@ -26,6 +32,18 @@ import platform.posix.readdir
  * the daemon. Public rather than `internal` because toolchain 0.11 gives tests no friend-module
  * visibility.
  */
+
+/**
+ * Whether [path] exists and is a directory (`stat` + `S_IFDIR`). Shared by the import cwd gate and
+ * the shell resumability probe: existence alone would accept a regular file that tmux cannot use as
+ * `new-session -c`.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun isDirectory(path: String): Boolean = memScoped {
+    val st = alloc<stat>()
+    if (stat(path, st.ptr) != 0) return@memScoped false
+    (st.st_mode.toInt() and S_IFMT) == S_IFDIR
+}
 
 /** Entry names in [path] excluding `.`/`..`; empty if it cannot be opened. */
 @OptIn(ExperimentalForeignApi::class)

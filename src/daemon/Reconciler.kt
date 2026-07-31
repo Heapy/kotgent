@@ -54,6 +54,7 @@ fun productionVendorStoreProbe(
         CLAUDE_AGENT_KIND to claudeVendorStoreProbe(claudeDir),
         CODEX_AGENT_KIND to codexVendorStoreProbe(codexDir),
         JUNIE_AGENT_KIND to junieVendorStoreProbe(junieDir),
+        SHELL_AGENT_KIND to shellVendorStoreProbe(),
     ),
 )
 

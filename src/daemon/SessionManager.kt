@@ -16,19 +16,13 @@ import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.tmux.TmuxControl
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.cinterop.toKString
-import platform.posix.S_IFDIR
-import platform.posix.S_IFMT
 import platform.posix.free
 import platform.posix.realpath
-import platform.posix.stat
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
@@ -237,18 +231,6 @@ fun canonicalPath(path: String): String? {
     } finally {
         free(resolved)
     }
-}
-
-/**
- * Whether an existing [path] is a DIRECTORY (`stat` + `S_IFDIR`) — the second half of the import cwd
- * gate. Existence alone ([canonicalPath] succeeding) accepts a plain file, which `tmux new-session -c`
- * would only trip over at resume time, long after the row was stored.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun isDirectory(path: String): Boolean = memScoped {
-    val st = alloc<stat>()
-    if (stat(path, st.ptr) != 0) return@memScoped false
-    (st.st_mode.toInt() and S_IFMT) == S_IFDIR
 }
 
 /**
