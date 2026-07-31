@@ -542,17 +542,17 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 
 ### Task 11: Verify acceptance criteria
 
-- [ ] verify every Overview requirement is implemented: `kotgent start shell [cwd]`, the Web UI card, the
+- [x] verify every Overview requirement is implemented: `kotgent start shell [cwd]`, the Web UI card, the
       `⌘K t` palette command, sidebar presence, attach/input, kill/Done/Restore, resume, survival across a
       daemon restart
-- [ ] verify the accepted limitations hold **as written** — in particular that a started shell reports
+- [x] verify the accepted limitations hold **as written** — in particular that a started shell reports
       `running` and a resumed one `ready`, and that neither reaches `NEEDS_ATTENTION`
-- [ ] verify no schema migration, no reducer change and no second launch codepath were introduced
+- [x] verify no schema migration, no reducer change and no second launch codepath were introduced
       (`git diff` over `sqldelight/`, `src/core/Reducer.kt`, `SessionManager.start`)
-- [ ] verify token rotation keeps death detection working (the rotation callback rewrites the tmux hook
+- [x] verify token rotation keeps death detection working (the rotation callback rewrites the tmux hook
       header) — at minimum by inspection of `Commands.kt:314-319`
-- [ ] run the full suite: `./kotlin build && ./kotlin test` — expect **≥851 native tests, 0 skipped**
-- [ ] confirm `git grep '/Users/' -- '*.yaml'` is still empty and that no new tmux argv bypasses
+- [x] run the full suite: `./kotlin build && ./kotlin test` — expect **≥851 native tests, 0 skipped**
+- [x] confirm `git grep '/Users/' -- '*.yaml'` is still empty and that no new tmux argv bypasses
       `tmuxCommand()`
 
 ### Task 12: [Final] Update documentation
