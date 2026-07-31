@@ -419,23 +419,23 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Create: `src/tmux/TmuxHookConfig.kt`
 - Create: `test/tmux/TmuxHookConfigTest.kt`
 
-- [ ] add `INGRESS_PATH`, `HOOK_TOKEN_HEADER`, `SESSION_HEADER`, `ingressUrl(port)`,
+- [x] add `INGRESS_PATH`, `HOOK_TOKEN_HEADER`, `SESSION_HEADER`, `ingressUrl(port)`,
       `headerFileContent(token)` mirroring `CodexHookConfig`
-- [ ] add `hookScript(port, headerFilePath)`: `#!/bin/sh` + `exec /usr/bin/curl -sS -o /dev/null -X POST`
+- [x] add `hookScript(port, headerFilePath)`: `#!/bin/sh` + `exec /usr/bin/curl -sS -o /dev/null -X POST`
       with `--connect-timeout 2 --max-time 5`, `-H @<headerFile>`, `-H "X-Kotgent-Tmux-Session: $1"` and
       an empty body
-- [ ] KDoc the timeout as mandatory (CLAUDE.md: never issue an untimed request at the daemon — an
+- [x] KDoc the timeout as mandatory (CLAUDE.md: never issue an untimed request at the daemon — an
       orphan-held socket accepts and stays silent) and the absolute `/usr/bin/curl` as the
       `/usr/bin/openssl` principle — **not** as a PATH difference, since tmux special-cases `PATH` and
       `run-shell` inherits the same server snapshot the provider scripts run under
-- [ ] add `hookCommand(scriptPath)` producing `run-shell "/bin/sh '<path>' '#{q:hook_session_name}'"`,
+- [x] add `hookCommand(scriptPath)` producing `run-shell "/bin/sh '<path>' '#{q:hook_session_name}'"`,
       POSIX-single-quoting the script path; KDoc that `#{q:…}` guards against a session name containing a
       quote, and that this exact form was verified against tmux 3.7b
-- [ ] write tests: the token never appears in the script, only the header file's path; the URL carries
+- [x] write tests: the token never appears in the script, only the header file's path; the URL carries
       the requested port; the timeout flags are present; a script path containing a quote is escaped
-- [ ] write a test that runs `/bin/sh -n` over the generated script (syntax check without executing it),
+- [x] write a test that runs `/bin/sh -n` over the generated script (syntax check without executing it),
       following `JunieHookConfigTest`'s "actually exercise the generated script" precedent
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 7
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 7
 
 ### Task 7: Install the hook in the same invocation as `new-session`
 
