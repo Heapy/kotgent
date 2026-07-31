@@ -517,28 +517,28 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `resources/webui/style.css`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] add `{ value: "shell", name: "Shell", available: true, importable: false, viewBox, icon }` to
+- [x] add `{ value: "shell", name: "Shell", available: true, importable: false, viewBox, icon }` to
       `AGENT_CHOICES`, and extend the file's header comment: this is the one card that is **not** a vendor
       mark, because a shell has no vendor
-- [ ] add a `.agent-icon-shell` rule to `style.css` beside the existing per-kind rules (`:903-918`)
-- [ ] filter the picker by mode in `dialogs.js:238-259` — it renders **one** `AGENT_CHOICES.map(...)` for
+- [x] add a `.agent-icon-shell` rule to `style.css` beside the existing per-kind rules (`:903-918`)
+- [x] filter the picker by mode in `dialogs.js:238-259` — it renders **one** `AGENT_CHOICES.map(...)` for
       both start and import today, so without a filter the Shell card appears in Import mode and produces
       the `400` the UI should have prevented
-- [ ] wire `general.free-terminal` in `commands.js:139-145` — it already exists as a reserved, disabled
+- [x] wire `general.free-terminal` in `commands.js:139-145` — it already exists as a reserved, disabled
       command with the `⌘K t` chord, designed as stage 4 of the palette plan — to a real action that
       opens the New session dialog with Shell preselected; drop its `disabled: "not implemented yet"`
-- [ ] update the CLI help text rendered in `dialogs.js` (`start <agent>` currently reads
+- [x] update the CLI help text rendered in `dialogs.js` (`start <agent>` currently reads
       `claude | codex | junie`) and the import hint that enumerates per-provider id shapes
-- [ ] run `node --check` on every changed module
-- [ ] update the four pinned assertions in `WebUiServingTest.kt` that this change necessarily breaks:
+- [x] run `node --check` on every changed module
+- [x] update the four pinned assertions in `WebUiServingTest.kt` that this change necessarily breaks:
       the reserved-chord check at `:337` narrows to `general.notifications` alone; the three
       `assertEquals(4, …)` counts at `:733`/`:739`/`:741` become five; the vendor-mark length assertion at
       `:743` applies to the vendor cards only, with a message saying the shell card is the deliberate
       exception — keep the invariant falsifiable for real logos rather than deleting it
-- [ ] add assertions: `agents.js` exposes the `shell` choice marked `importable: false`, `style.css`
+- [x] add assertions: `agents.js` exposes the `shell` choice marked `importable: false`, `style.css`
       declares `.agent-icon-shell` exactly once (matching the loop at `:815-821`), and the palette command
       is no longer disabled
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 11
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 11
 
 ### Task 11: Verify acceptance criteria
 

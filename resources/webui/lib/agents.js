@@ -7,8 +7,9 @@
  * 400 before any tmux side effect, so a card enabled here ahead of its adapter only produces a failed
  * start.
  *
- * Each `icon` is the vendor's own mark, taken verbatim as a single filled path on its native `viewBox`
- * so nothing is redrawn by hand — hence the per-row viewBox rather than one shared 24x24:
+ * Each vendor `icon` is its own mark, taken verbatim as a single filled path on its native `viewBox`
+ * so nothing is redrawn by hand — hence the per-row viewBox rather than one shared 24x24. Shell is the
+ * sole non-vendor choice and uses a generic terminal glyph:
  *   claude  simple-icons (CC0), icons/claude.svg
  *   codex   OpenAI, developers.openai.com/favicon.svg — the blossom path only; the favicon's blue disc
  *           is dropped so the glyph takes its chip's colour like the other three
@@ -30,6 +31,10 @@ export const AGENT_CHOICES = [
   {
     value: "junie", name: "Junie", available: true, viewBox: "0 0 48 48",
     icon: "M31.993 16.013H48v2.667C48 37.346 39.997 48 18.668 48H16V32h2.668c9.33 0 13.338-3.993 13.338-13.333V16zM16 16H0v16h16zM32 0H16v16h16z",
+  },
+  {
+    value: "shell", name: "Shell", available: true, importable: false, viewBox: "0 0 24 24",
+    icon: "M20 3H4C2.89 3 2 3.89 2 5v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.11-.9-2-2-2ZM7.41 14 6 12.59l2.09-2.09L6 8.41 7.41 7l3.5 3.5L7.41 14ZM18 17h-5v-2h5v2Z",
   },
   {
     value: "cursor", name: "Cursor", available: false, viewBox: "0 0 24 24",

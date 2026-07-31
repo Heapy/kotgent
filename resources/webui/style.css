@@ -912,6 +912,11 @@ dialog::backdrop {
   background: #16351c;
   color: #48e054;
 }
+/* A shell has no vendor colour, so its generic terminal glyph stays on the themed palette. */
+.agent-icon-shell {
+  background: var(--row-active);
+  color: var(--accent);
+}
 .agent-icon-cursor {
   background: #2b3a4d;
   color: #b9cde5;

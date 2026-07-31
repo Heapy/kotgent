@@ -50,10 +50,10 @@ const DIRECTORY_COMPLETION_DELAY_MS = 150;
  * (a duplicate names the existing kotgent session, a claude cwd mismatch names the workaround).
  */
 export function NewSessionDialog({
-  initialCwd, initialMode = "start", basePath, onStart, onImport, onClose,
+  initialCwd, initialMode = "start", initialAgent = "", basePath, onStart, onImport, onClose,
 }) {
   const [mode, setMode] = useState(initialMode);
-  const [agent, setAgent] = useState("");
+  const [agent, setAgent] = useState(initialAgent);
   const [cwd, setCwd] = useState(initialMode === "import" ? "" : (initialCwd || ""));
   const [completionQuery, setCompletionQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -69,9 +69,9 @@ export function NewSessionDialog({
   const agentRef = useRef(null);
   const sessionIdRef = useRef(null);
 
-  // There is deliberately no default agent, so the picker — not the prefilled path — is the first
-  // answer this dialog needs, and it is where the initial focus belongs. Seeding `agent` from a
-  // preference later would hand the landing spot back to the path field on its own.
+  // There is deliberately no general default agent, so the picker — not the prefilled path — is the
+  // first answer this dialog normally needs. The free-terminal command is the one explicit preselection;
+  // for it, the working directory is the first unanswered field and receives focus instead.
   useEffect(() => {
     const target = agent ? cwdRef.current : agentRef.current;
     if (target) target.focus();
@@ -152,6 +152,9 @@ export function NewSessionDialog({
   const switchMode = (next) => {
     setMode(next);
     setError(null);
+    if (next === "import" && AGENT_CHOICES.some(
+      (choice) => choice.value === agent && choice.importable === false,
+    )) setAgent("");
     // Each mode re-enters with its own cwd default. A prefilled start-mode cwd (a group's "+") must
     // not ride into import mode: import sends any non-empty cwd as an explicit override of the
     // daemon's transcript discovery, and the codex probe ignores cwd entirely — the group's
@@ -239,7 +242,9 @@ export function NewSessionDialog({
                   aria-describedby=${agent ? null : "new-session-agent-hint"}>
           <legend>Agent</legend>
           <div class="agent-options">
-            ${AGENT_CHOICES.map((choice) => html`
+            ${AGENT_CHOICES
+              .filter((choice) => mode !== "import" || choice.importable !== false)
+              .map((choice) => html`
               <label key=${choice.value}
                      class=${"agent-option" + (choice.available ? "" : " agent-option-unavailable")}>
                 <input id=${"session-agent-" + choice.value} type="radio" name="session-agent"
@@ -274,7 +279,8 @@ export function NewSessionDialog({
             <small class="field-hint">
               claude: the ${"<id>"}.jsonl transcript name under ~/.claude/projects — codex: the id in
               the ${"rollout-<ts>-<id>"}.jsonl file name — junie: the directory name under
-              ~/.junie/sessions, e.g. ${"session-<date>-<time>-<suffix>"}.
+              ~/.junie/sessions, e.g. ${"session-<date>-<time>-<suffix>"}. Shell sessions have no
+              provider id and cannot be imported.
             </small>
           </label>
         `}
@@ -622,7 +628,7 @@ function phoneSetup(onClose) {
 // --- Help ------------------------------------------------------------------------------------------
 
 const CLI_HELP = `kotgent list                  list sessions
-kotgent start <agent> [cwd]   start a session (claude | codex | junie)
+kotgent start <agent> [cwd]   start a session (claude | codex | junie | shell)
 kotgent import <agent> <id>   register a session started outside kotgent, then resume it
 kotgent attach <id>           attach a raw terminal
 kotgent interrupt <id>        send Ctrl-C

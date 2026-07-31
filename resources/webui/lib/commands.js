@@ -140,8 +140,8 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "New free terminal",
       subtitle: "opens a tmux shell without an agent",
       hint: "⌘K t",
-      disabled: "not implemented yet",
-      run: () => {},
+      disabled: null,
+      run: () => actions.freeTerminal(),
     },
     {
       id: "general.show-done", group: "general", chord: null,

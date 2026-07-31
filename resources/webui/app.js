@@ -926,15 +926,20 @@ function App() {
   }, [applyServerPreferences, closeDialogFrom, say]);
 
   /** An explicit directory (a group's "+") wins, then the selected session's, then the base path. */
-  const openNewSession = useCallback((cwd, initialMode = "start") => {
+  const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "") => {
     const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
     setDialog({
       kind: "new",
       cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath,
       initialMode: initialMode,
+      initialAgent: initialAgent,
     });
   }, []);
   const openImportSession = useCallback(() => openNewSession(null, "import"), [openNewSession]);
+  const openFreeTerminal = useCallback(
+    () => openNewSession(null, "start", "shell"),
+    [openNewSession],
+  );
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
@@ -970,6 +975,7 @@ function App() {
       copyTmux: copyTmuxCommand,
       newSession: () => openNewSession(null),
       importSession: openImportSession,
+      freeTerminal: openFreeTerminal,
       toggleShowDone: toggleShowDone,
       help: openHelp,
       phone: openPhone,
@@ -1029,6 +1035,7 @@ function App() {
     />
     ${dialog && dialog.kind === "new" && html`
       <${NewSessionDialog} initialCwd=${dialog.cwd} initialMode=${dialog.initialMode}
+                           initialAgent=${dialog.initialAgent}
                            basePath=${prefs.basePath}
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
     ${/* Keyed on the committed server revision: the dialog seeds its draft from `prefs` once, at mount

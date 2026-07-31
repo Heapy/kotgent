@@ -272,13 +272,26 @@ class WebUiServingTest {
                 "$id keeps the '$chord' leader mnemonic in the one registry",
             )
         }
-        for (id in listOf("general.free-terminal", "general.notifications")) {
+        for (id in listOf("general.notifications")) {
             val descriptor = commands.substringAfter("id: \"$id\"").substringBefore("\n    },")
             assertTrue(
                 descriptor.contains("disabled: \"not implemented yet\""),
                 "$id is reserved but visibly unavailable until its designed stage",
             )
         }
+        val freeTerminal = commands.substringAfter("id: \"general.free-terminal\"").substringBefore("\n    },")
+        assertTrue(
+            freeTerminal.contains("disabled: null") &&
+                freeTerminal.contains("run: () => actions.freeTerminal()"),
+            "the free-terminal command is enabled and delegates to the app-owned action",
+        )
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("() => openNewSession(null, \"start\", \"shell\")") &&
+                app.contains("freeTerminal: openFreeTerminal") &&
+                app.contains("initialAgent=\${dialog.initialAgent}"),
+            "the free-terminal action opens the ordinary New dialog with Shell preselected",
+        )
         assertTrue(
             commands.contains("title: \"Resume this session\"") &&
                 commands.contains("title: \"Resume a conversation started outside kotgent…\""),
@@ -668,31 +681,51 @@ class WebUiServingTest {
     fun webUiUsesOneClickAgentPickerWithoutADefaultSelection() = withServer { ctx ->
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
         assertTrue(
-            dialogs.contains("const [agent, setAgent] = useState(\"\")"),
-            "the new-session dialog starts without a selected agent",
+            dialogs.contains("initialAgent = \"\"") &&
+                dialogs.contains("const [agent, setAgent] = useState(initialAgent)"),
+            "the new-session dialog has no general default but accepts an explicit command preselection",
         )
 
         val choices = ctx.get("/lib/agents.js").bodyAsText()
-        assertEquals(4, Regex("value: \"").findAll(choices).count(), "the picker offers four agents")
+        assertEquals(5, Regex("value: \"").findAll(choices).count(), "the picker offers five agents")
         assertTrue(choices.contains("value: \"claude\", name: \"Claude\", available: true"), "Claude starts")
         assertTrue(choices.contains("value: \"codex\", name: \"Codex\", available: true"), "Codex starts")
         assertTrue(choices.contains("value: \"junie\", name: \"Junie\", available: true"), "Junie starts")
-
-        // Each mark is the vendor's own path on its own viewBox, not a glyph redrawn to fit a shared box.
-        assertEquals(4, Regex("viewBox: \"").findAll(choices).count(), "every agent brings its own viewBox")
-        val marks = Regex("icon: \"([^\"]+)\"").findAll(choices).map { it.groupValues[1] }.toList()
-        assertEquals(4, marks.size, "every agent brings a path")
         assertTrue(
-            marks.all { it.length > 100 },
-            "the shortest mark is ${marks.minOf { it.length }} chars — a real logo, not a hand-drawn glyph",
+            choices.contains(
+                "value: \"shell\", name: \"Shell\", available: true, importable: false",
+            ),
+            "Shell starts but is explicitly excluded from transcript import",
         )
+
+        // Vendor marks remain their real paths on their own viewBoxes. Shell deliberately has no vendor,
+        // so its fifth card carries a generic terminal glyph without weakening that logo invariant.
+        assertEquals(5, Regex("viewBox: \"").findAll(choices).count(), "every agent brings its own viewBox")
+        val marksByAgent = Regex("""value: "([^"]+)"[\s\S]*?icon: "([^"]+)"""")
+            .findAll(choices)
+            .associate { it.groupValues[1] to it.groupValues[2] }
+        assertEquals(5, marksByAgent.size, "every agent brings a path")
+        val vendorMarks = listOf("claude", "codex", "junie", "cursor").map(marksByAgent::getValue)
+        assertTrue(
+            vendorMarks.all { it.length > 100 },
+            "the shortest vendor mark is ${vendorMarks.minOf { it.length }} chars — Shell is the deliberate generic-glyph exception",
+        )
+        assertTrue(marksByAgent.getValue("shell").isNotBlank(), "the Shell card carries its terminal glyph")
 
         val picker = agentPickerOf(dialogs)
         assertTrue(
             dialogs.contains("import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from \"../lib/agents.js\";"),
             "the dialog renders from that table rather than carrying its own copy",
         )
-        assertTrue(picker.contains("AGENT_CHOICES.map("), "every card comes from that one table")
+        assertTrue(
+            picker.contains(".filter((choice) => mode !== \"import\" || choice.importable !== false)") &&
+                picker.contains(".map((choice) => html`"),
+            "the one table is filtered by mode before its cards render",
+        )
+        assertTrue(
+            dialogs.contains("choice.value === agent && choice.importable === false"),
+            "switching a preselected Shell dialog to Import clears the hidden invalid choice",
+        )
         assertTrue(picker.contains("viewBox=\${choice.viewBox}"), "each card draws on its mark's own box")
         assertTrue(picker.contains("type=\"radio\""), "an agent is one radio choice, not a menu entry")
         assertTrue(
@@ -762,6 +795,11 @@ class WebUiServingTest {
                 "the $agent chip is declared once in the single theme",
             )
         }
+        assertEquals(
+            1,
+            Regex("\\.agent-icon-shell").findAll(css).count(),
+            "the deliberate non-vendor Shell chip is declared once beside the vendor chips",
+        )
     }
 
     @Test
@@ -774,7 +812,7 @@ class WebUiServingTest {
             1,
             // Anchored on a CARD so the header comment's own mention of the flag is not counted.
             Regex("""name: "\w+", available: false""").findAll(choices).count(),
-            "cursor is the only planned card left — claude, codex and junie all have adapters",
+            "cursor is the only planned card left — claude, codex, junie and shell can all be started",
         )
 
         // `disabled` is what keeps a planned card out of the tab order and the arrow-key group; without
@@ -905,6 +943,15 @@ class WebUiServingTest {
             "importing can skip the automatic resume (the --no-start analogue)",
         )
         assertTrue(dialogs.contains("kotgent import <agent> <id>"), "the CLI help names the import command")
+        assertTrue(
+            dialogs.contains("start a session (claude | codex | junie | shell)"),
+            "the CLI help lists Shell among the startable kinds",
+        )
+        assertTrue(
+            dialogs.contains("Shell sessions have no") &&
+                dialogs.contains("provider id and cannot be imported."),
+            "the provider-id hint records why Shell is absent from Import mode",
+        )
 
         assertTrue(app.contains("apiRequest(\"/sessions/import\""), "the import posts to POST /sessions/import")
         assertTrue(
