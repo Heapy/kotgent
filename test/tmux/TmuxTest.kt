@@ -44,6 +44,11 @@ class TmuxTest {
         ProcessRunner.run(listOf(tmux.tmuxPath, "-L", tmux.socket, "kill-server"))
     }
 
+    /** Best-effort removal of the global hook before teardown kills any remaining sessions. */
+    private fun clearSessionClosedHook() {
+        ProcessRunner.run(tmuxCommand(tmux.tmuxPath, tmux.socket, listOf("set-hook", "-gu", "session-closed")))
+    }
+
     /**
      * `kill-server` returns as soon as the server acknowledges, not when it has exited. Anything that
      * then starts a *new* server (where `-f /dev/null` is the only invocation that matters) must wait
@@ -77,7 +82,10 @@ class TmuxTest {
 
     @AfterTest
     fun tearDown() {
-        if (tmuxAvailable()) killServer()
+        if (tmuxAvailable()) {
+            clearSessionClosedHook()
+            killServer()
+        }
     }
 
     /** Poll capture-pane until [needle] renders (tmux draws asynchronously), bounded. */
@@ -366,6 +374,50 @@ class TmuxTest {
         }
     }
 
+    /**
+     * The production hook is installed in the same chain that creates a session. This exercises the
+     * real tmux event, including its important server-death edge: closing the final session still
+     * runs `session-closed` before tmux exits, so the daemon receives both names.
+     */
+    @Test
+    fun sessionClosedHookReportsAnOrdinaryAndTheLastSession() = runBlocking {
+        if (!tmuxAvailable()) return@runBlocking skipped()
+        withTimeout(30_000) {
+            val dir = makeTempDir()
+            try {
+                val log = "$dir/closed-sessions"
+                val script = "$dir/session-closed.sh"
+                writeFile(script, "#!/bin/sh\nprintf '%s\\n' \"\$1\" >> ${shq(log)}\n")
+
+                val hooked = Tmux(
+                    socket = tmux.socket,
+                    tmuxPath = tmux.tmuxPath,
+                    hookScriptPath = script,
+                )
+                hooked.newSession(id = "hooka", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+                hooked.newSession(id = "hookb", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+
+                assertTrue(hooked.killSession("hooka"), "the first hooked session should close")
+                assertEquals(
+                    listOf("kt-hooka"),
+                    waitForHookLines(log, 1),
+                    "the hook reports an ordinary session close",
+                )
+
+                assertTrue(hooked.killSession("hookb"), "the final hooked session should close")
+                assertEquals(
+                    listOf("kt-hooka", "kt-hookb"),
+                    waitForHookLines(log, 2),
+                    "the last-session hook runs before the tmux server dies",
+                )
+            } finally {
+                clearSessionClosedHook()
+                killServer()
+                removeTempDir(dir)
+            }
+        }
+    }
+
     @Test
     fun killingANonexistentSessionIsGraceful() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
@@ -624,6 +676,22 @@ class TmuxTest {
 
     private fun paneFormat(target: String, format: String): String =
         rawOnTestSocket("display-message", "-p", "-t", target, format).stdout.trim()
+
+    /** Poll the hook's append-only log until [count] lines arrive, bounded by the caller's timeout. */
+    private suspend fun waitForHookLines(path: String, count: Int): List<String> {
+        var last = emptyList<String>()
+        repeat(40) {
+            val result = ProcessRunner.run(listOf("/bin/cat", path))
+            last = if (result.isSuccess) {
+                result.stdout.lineSequence().filter { it.isNotEmpty() }.toList()
+            } else {
+                emptyList()
+            }
+            if (last.size >= count) return last
+            delay(50)
+        }
+        return last
+    }
 
     // --- isolation-probe harness (throwaway $TMPDIR fake $HOME; NEVER the operator's real one) -------
 

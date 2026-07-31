@@ -131,6 +131,65 @@ class TmuxOptionsTest {
     }
 
     @Test
+    fun newSessionArgvWithoutAHookIsByteIdenticalToTheOriginalOptionAndLaunchChain() {
+        val options = listOf(TmuxOption("-g", "status", "off"))
+
+        assertEquals(
+            listOf(
+                "set-option", "-g", "status", "off", ";",
+                "new-session", "-d",
+                "-s", "kt-abc123",
+                "-c", "/work/a b",
+                "-x", "132",
+                "-y", "47",
+                "-e", "KOTGENT_SESSION_ID=abc123",
+                "-P", "-F", "#{pane_id}",
+                "exec agent --flag",
+            ),
+            newSessionArgv(
+                serverOptions = options,
+                hookScriptPath = null,
+                id = "abc123",
+                cwd = "/work/a b",
+                cmd = "exec agent --flag",
+                cols = 132,
+                rows = 47,
+            ),
+            "omitting the hook preserves every argument and its original order",
+        )
+    }
+
+    @Test
+    fun newSessionArgvInstallsTheCloseHookBeforeOptionsAndPaneCreation() {
+        val options = listOf(TmuxOption("-s", "escape-time", "10"))
+        val scriptPath = "/private/tmp/kotgent/tmux-hook.sh"
+        val argv = newSessionArgv(
+            serverOptions = options,
+            hookScriptPath = scriptPath,
+            id = "def456",
+            cwd = "/work/repo",
+            cmd = "cat",
+            cols = 80,
+            rows = 24,
+        )
+
+        assertEquals(
+            listOf(
+                "set-hook", "-g", "session-closed", TmuxHookConfig.hookCommand(scriptPath), ";",
+            ),
+            argv.take(5),
+            "the hook is the first command in the chain that can start a server",
+        )
+        assertEquals(
+            listOf("set-option", "-s", "escape-time", "10", ";"),
+            argv.drop(5).take(5),
+            "the forced option chain follows the hook",
+        )
+        assertTrue(argv.indexOf("set-hook") < argv.indexOf("set-option"))
+        assertTrue(argv.indexOf("set-option") < argv.indexOf("new-session"))
+    }
+
+    @Test
     fun tmuxCommandCarriesTheIsolationBeforeTheSocketAndTheSubcommand() {
         val argv = tmuxCommand("/opt/homebrew/bin/tmux", "kotgent", listOf("kill-session", "-t", "kt-abc123"))
         assertEquals(

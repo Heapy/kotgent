@@ -445,23 +445,23 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Modify: `test/tmux/TmuxOptionsTest.kt`
 - Modify: `test/tmux/TmuxTest.kt`
 
-- [ ] extract the argv `Tmux.newSession` builds inline (`Tmux.kt:159-175`) into a pure
+- [x] extract the argv `Tmux.newSession` builds inline (`Tmux.kt:159-175`) into a pure
       `newSessionArgv(serverOptions, hookScriptPath, id, cwd, cmd, cols, rows)` in `TmuxOptions.kt`,
       beside `tmuxOptionCommands` — it is currently untestable, which is why this extraction is part of
       the task rather than a nicety
-- [ ] add `hookScriptPath: String? = null` to the `Tmux` constructor, KDoc'd as a test seam like
+- [x] add `hookScriptPath: String? = null` to the `Tmux` constructor, KDoc'd as a test seam like
       `serverOptions` and deliberately absent from `TmuxControl`
-- [ ] when non-null, `newSessionArgv` prepends `set-hook -g session-closed <hookCommand> ;` ahead of the
+- [x] when non-null, `newSessionArgv` prepends `set-hook -g session-closed <hookCommand> ;` ahead of the
       forced-option chain; KDoc that a standalone `set-hook` cannot start a server, so it must ride here
-- [ ] write pure tests: the `set-hook` triple precedes the option chain and `new-session`; with
+- [x] write pure tests: the `set-hook` triple precedes the option chain and `new-session`; with
       `hookScriptPath = null` the argv is byte-identical to today's
-- [ ] write an integration test on `-L kotgent-test` (existing skip-guard + `kill-server` teardown): a
+- [x] write an integration test on `-L kotgent-test` (existing skip-guard + `kill-server` teardown): a
       `Tmux` configured with a script that appends its `$1` to a temp file, two sessions created, one
       killed → the file names that session; then close the **last** session and assert it is recorded too
       (the server-death race)
-- [ ] add `set-hook -gu session-closed` to that test's teardown so the shared `-L kotgent-test` socket is
+- [x] add `set-hook -gu session-closed` to that test's teardown so the shared `-L kotgent-test` socket is
       left clean for the other suites that use it
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 8
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 8
 
 ### Task 8: Add the `/hooks/tmux` ingress
 

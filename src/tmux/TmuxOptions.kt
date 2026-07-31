@@ -189,6 +189,39 @@ fun tmuxOptionCommands(options: List<TmuxOption>): List<String> =
     options.flatMap { listOf("set-option", it.scope, it.name, it.value, ";") }
 
 /**
+ * The complete chained argv [Tmux.newSession] sends after tmux's global flags.
+ *
+ * When [hookScriptPath] is present, the global `session-closed` hook is installed first, followed by
+ * [serverOptions], and only then by `new-session`. A standalone `set-hook` cannot start a tmux server
+ * (the same constraint as `set-option`), so the hook must ride in the invocation that creates the
+ * first session; re-installing it on later sessions is intentional and idempotent. Keeping this pure
+ * makes both that ordering and the byte-identical no-hook argv testable without spawning tmux.
+ */
+fun newSessionArgv(
+    serverOptions: List<TmuxOption>,
+    hookScriptPath: String?,
+    id: String,
+    cwd: String,
+    cmd: String,
+    cols: Int,
+    rows: Int,
+): List<String> {
+    val hook = hookScriptPath?.let {
+        listOf("set-hook", "-g", "session-closed", TmuxHookConfig.hookCommand(it), ";")
+    }.orEmpty()
+    return hook + tmuxOptionCommands(serverOptions) + listOf(
+        "new-session", "-d",
+        "-s", "kt-$id",
+        "-c", cwd,
+        "-x", cols.toString(),
+        "-y", rows.toString(),
+        "-e", "KOTGENT_SESSION_ID=$id",
+        "-P", "-F", "#{pane_id}",
+        cmd,
+    )
+}
+
+/**
  * argv for any kotgent tmux invocation: `tmuxPath` + [TMUX_CONFIG_ISOLATION] + `-L socket` + `args`.
  *
  * The single assembly point for control-plane calls, so isolation cannot be forgotten at a new call

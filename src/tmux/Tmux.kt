@@ -78,6 +78,12 @@ class Tmux(
      * choosing tmux options.
      */
     val serverOptions: List<TmuxOption> = TMUX_SERVER_OPTIONS,
+    /**
+     * Private script installed as the global `session-closed` hook by [newSession], or `null` to omit
+     * the hook. A constructor seam like [serverOptions] so pure/integration tests can drive a harmless
+     * script; deliberately absent from [TmuxControl] because daemon-facing callers never choose hooks.
+     */
+    val hookScriptPath: String? = null,
 ) : TmuxControl {
     /** The tmux session name for a logical [id]. */
     override fun sessionName(id: String): String = "kt-$id"
@@ -134,13 +140,13 @@ class Tmux(
      * return its pane id (`new-session -P -F '#{pane_id}'`). `KOTGENT_SESSION_ID=<id>` is set as
      * a **debug label only** via `-e` (env-poisoning is never trusted for identity).
      *
-     * ## Why [serverOptions] ride in this one invocation
-     * A standalone `set-option` does **not** start a server (measured: `error connecting to …`,
-     * exit 1, nothing applied), so the options cannot be applied before `new-session` in a call of
-     * their own — and `default-terminal` is read when the pane is CREATED, so applying them after
-     * `new-session` would already be too late for the agent running in that pane. Chaining is not an
-     * optimisation, it is the only ordering that works. Re-applying on every session is intended: it
-     * is idempotent, and a server that came up some other way converges to kotgent's options.
+     * ## Why [hookScriptPath] and [serverOptions] ride in this one invocation
+     * Standalone `set-hook` / `set-option` commands do **not** start a server (measured: `error
+     * connecting to …`, exit 1, nothing applied), so neither can be installed before `new-session` in
+     * a call of its own — and `default-terminal` is read when the pane is CREATED, so applying the
+     * options afterwards would already be too late. Chaining is not an optimisation, it is the only
+     * ordering that works. Re-applying the hook and options on every session is intended: both are
+     * idempotent, and a server that came up some other way converges to kotgent's configuration.
      *
      * ## Failure is loud, not degraded
      * Every command in a tmux chain must succeed or the whole invocation fails, so an option name a
@@ -157,16 +163,7 @@ class Tmux(
      * A rejected chain aborts *before* `new-session` runs, so a failure leaves nothing half-created.
      */
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
-        val argv = tmuxOptionCommands(serverOptions) + listOf(
-            "new-session", "-d",
-            "-s", sessionName(id),
-            "-c", cwd,
-            "-x", cols.toString(),
-            "-y", rows.toString(),
-            "-e", "KOTGENT_SESSION_ID=$id",
-            "-P", "-F", "#{pane_id}",
-            cmd,
-        )
+        val argv = newSessionArgv(serverOptions, hookScriptPath, id, cwd, cmd, cols, rows)
         val r = tmux(*argv.toTypedArray())
         if (!r.isSuccess) throw TmuxException("tmux new-session for '$id' failed: ${r.stderr.trim()}")
         val paneId = r.stdout.trim()
