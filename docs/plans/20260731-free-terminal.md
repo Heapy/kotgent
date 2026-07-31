@@ -305,17 +305,17 @@ rule has one testable home. `POST /sessions/import` then answers `400` for `shel
 - Create: `src/sys/LoginShell.kt`
 - Create: `test/sys/LoginShellTest.kt`
 
-- [ ] add pure `resolveLoginShell(shellEnv: String?, pwShell: String?, isExecutable: (String) -> Boolean): String`
+- [x] add pure `resolveLoginShell(shellEnv: String?, pwShell: String?, isExecutable: (String) -> Boolean): String`
       — first non-blank, **absolute**, **executable** candidate of `shellEnv`, `pwShell`, else `/bin/zsh`
-- [ ] KDoc why each condition exists: launchd supplies no `$SHELL`; a relative program would resolve
+- [x] KDoc why each condition exists: launchd supplies no `$SHELL`; a relative program would resolve
       against the session cwd (`new-session -c`); a stale `$SHELL` would otherwise produce the phantom
       `running` row that `AgentBinaryNotFoundException` exists to prevent
-- [ ] add thin `currentLoginShell(): String` reading `getenv("SHELL")` and `getpwuid(getuid())->pw_shell`
+- [x] add thin `currentLoginShell(): String` reading `getenv("SHELL")` and `getpwuid(getuid())->pw_shell`
       via stock `platform.posix`, passing `{ access(it, X_OK) == 0 }`
-- [ ] write table-driven tests: both present, only env, only passwd, neither, blank, relative path,
+- [x] write table-driven tests: both present, only env, only passwd, neither, blank, relative path,
       absolute-but-not-executable in either slot (falls through to the next candidate, then the default)
-- [ ] write a test that `currentLoginShell()` returns an absolute, executable path on this host
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 2
+- [x] write a test that `currentLoginShell()` returns an absolute, executable path on this host
+- [x] run `./kotlin build && ./kotlin test` — must pass before task 2
 
 ### Task 2: Add ShellAdapter and the `shell` agent kind
 
