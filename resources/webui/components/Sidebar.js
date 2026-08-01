@@ -1,6 +1,6 @@
 /*
- * The session list: needs-attention triage on top, then every session — flat, or grouped by working
- * directory once a base path is configured.
+ * The session list: needs-attention triage on top, then every session — flat, or arranged as a nested
+ * working-directory tree once a base path is configured.
  *
  * Rows are keyed by session id, so a live update from /events patches the existing row instead of
  * rebuilding the list. That is what keeps focus and scroll position while sessions change state.
@@ -97,10 +97,18 @@ function SessionRow({ session, active, onSelect, onRestore }) {
   `;
 }
 
-function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSession }) {
+function groupNeedsAttention(group) {
+  return group.sessions.some((s) => isNeedsAttention(s.state)) ||
+    group.children.some(groupNeedsAttention);
+}
+
+function SessionGroup({
+  group, activeId, collapsedGroups, onSelect, onToggle, onNewSession,
+}) {
   // The head is a toggle BUTTON with the group's "+" as its sibling, not a child — a button inside a
   // button is invalid, and the "+" must not double as an expand.
-  const hidingAttention = collapsed && group.sessions.some((s) => isNeedsAttention(s.state));
+  const collapsed = collapsedGroups.has(group.path);
+  const hidingAttention = collapsed && groupNeedsAttention(group);
 
   return html`
     <li class=${"session-group" + (collapsed ? " collapsed" : "")}>
@@ -113,8 +121,8 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
           onClick=${() => onToggle(group.path)}
         >
           <span class="group-chevron" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>
-          <span class="group-title">${group.label}</span>
-          <span class="group-count">${group.sessions.length}</span>
+          <span class="group-title" title=${group.path || group.label}>${group.label}</span>
+          <span class="group-count">${group.sessionCount}</span>
           ${hidingAttention &&
             html`<span class="attn-dot" title="A session in this group needs attention"></span>`}
         </button>
@@ -128,9 +136,20 @@ function SessionGroup({ group, activeId, collapsed, onSelect, onToggle, onNewSes
           >+</button>`}
       </div>
       ${!collapsed && html`
-        <ul class="session-list group-sessions">
+        <ul class="session-list group-contents">
           ${group.sessions.map((s) => html`
             <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
+          `)}
+          ${group.children.map((child) => html`
+            <${SessionGroup}
+              key=${child.path}
+              group=${child}
+              activeId=${activeId}
+              collapsedGroups=${collapsedGroups}
+              onSelect=${onSelect}
+              onToggle=${onToggle}
+              onNewSession=${onNewSession}
+            />
           `)}
         </ul>
       `}
@@ -334,8 +353,8 @@ export function Sidebar({
               id="base-path-note"
               class="base-note"
               type="button"
-              title=${"Grouping under " + prefs.basePath + " at level " + prefs.groupingLevel +
-                " — click to change"}
+              title=${"Directory tree under " + prefs.basePath + ", up to " + prefs.groupingLevel +
+                " level(s) deep — click to change"}
               onClick=${onOpenPrefs}
             >${prefs.basePath}</button>
           `}
@@ -348,7 +367,7 @@ export function Sidebar({
                   key=${g.path}
                   group=${g}
                   activeId=${activeId}
-                  collapsed=${collapsedGroups.has(g.path)}
+                  collapsedGroups=${collapsedGroups}
                   onSelect=${onSelect}
                   onToggle=${toggleGroup}
                   onNewSession=${onNewSession}

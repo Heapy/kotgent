@@ -53,17 +53,77 @@ export function groupFor(cwd, basePath, level) {
   };
 }
 
-/** Fold [list] into `[{path, label, inBase, sessions}]` — in-base groups first, each side path-sorted. */
+function newNode(path, label, inBase) {
+  return { path: path, label: label, inBase: inBase, sessions: [], children: new Map() };
+}
+
+function sortedNodes(nodes) {
+  return Array.from(nodes.values()).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Replace each node's private child Map with a sorted array and compute its aggregate session count. */
+function finishNode(node) {
+  const children = sortedNodes(node.children).map(finishNode);
+  return {
+    path: node.path,
+    label: node.label,
+    inBase: node.inBase,
+    sessions: node.sessions,
+    children: children,
+    sessionCount: node.sessions.length + children.reduce((total, child) => total + child.sessionCount, 0),
+  };
+}
+
+/**
+ * Fold [list] into a folder forest. In-base paths become one node per visible directory segment; a
+ * session is assigned directly to the deepest node selected by [level], while every parent carries the
+ * aggregate count for its whole subtree. Sessions at [basePath] use a separate base-labelled node.
+ * Outside paths stay standalone full-path groups after the in-base tree.
+ */
 export function groupSessions(list, basePath, level) {
-  const groups = new Map();
+  const base = normalizePath(basePath);
+  const depth = Math.max(0, Math.trunc(Number(level)) || 0);
+  const roots = new Map();
+  const outside = new Map();
+  let baseNode = null;
+
   for (const s of list) {
-    const g = groupFor(s.cwd, basePath, level);
-    const existing = groups.get(g.path);
-    if (existing) existing.sessions.push(s);
-    else groups.set(g.path, { path: g.path, label: g.label, inBase: g.inBase, sessions: [s] });
+    const path = normalizePath(s.cwd);
+    const segments = segmentsUnder(base, path);
+    if (segments === null) {
+      let node = outside.get(path);
+      if (!node) {
+        node = newNode(path, path || "(unknown)", false);
+        outside.set(path, node);
+      }
+      node.sessions.push(s);
+      continue;
+    }
+
+    const visible = segments.slice(0, depth);
+    if (visible.length === 0) {
+      if (!baseNode) baseNode = newNode(base, basename(base) || base, true);
+      baseNode.sessions.push(s);
+      continue;
+    }
+
+    let siblings = roots;
+    const pathSegments = [];
+    let node = null;
+    for (const segment of visible) {
+      pathSegments.push(segment);
+      const nodePath = joinPath(base, pathSegments);
+      node = siblings.get(nodePath);
+      if (!node) {
+        node = newNode(nodePath, segment, true);
+        siblings.set(nodePath, node);
+      }
+      siblings = node.children;
+    }
+    node.sessions.push(s);
   }
-  return Array.from(groups.values()).sort((a, b) => {
-    if (a.inBase !== b.inBase) return a.inBase ? -1 : 1;
-    return a.path.localeCompare(b.path);
-  });
+
+  const inBase = sortedNodes(roots).map(finishNode);
+  if (baseNode) inBase.unshift(finishNode(baseNode));
+  return inBase.concat(sortedNodes(outside).map(finishNode));
 }

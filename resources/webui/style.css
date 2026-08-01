@@ -264,16 +264,17 @@ select:focus-visible {
 }
 .empty-sessions p { margin: 0 0 10px; }
 
-/* --- Directory groups (base path + grouping level) --- */
-.session-group { margin-bottom: 10px; }
+/* --- Directory tree (base path + maximum visible depth) --- */
+.session-group { margin-bottom: 2px; }
 .session-group.collapsed { margin-bottom: 2px; }
 .session-group:last-child { margin-bottom: 0; }
 
 .group-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px var(--list-inset);
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px var(--list-inset);
 }
 /* The head doubles as the collapse toggle: a full-width button that still reads as a plain heading. */
 .group-toggle {
@@ -281,7 +282,7 @@ select:focus-visible {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 0;
   background: none;
   border: 0;
@@ -297,7 +298,7 @@ select:focus-visible {
 }
 .group-chevron {
   flex: 0 0 auto;
-  width: 9px;
+  width: 8px;
   font-size: 9px;
   line-height: 1;
   color: var(--muted);
@@ -323,17 +324,20 @@ select:focus-visible {
   opacity: 0;
   transition: opacity 120ms ease-in-out;
 }
-/* Keep the group's "+" out of the way until the group (or the button itself) is in play. */
-.session-group:hover .group-new,
-.session-group:focus-within .group-new { opacity: 1; }
+/* Keep each folder's "+" out of the way until that exact heading is in play. */
+.group-head:hover > .group-new,
+.group-head:focus-within > .group-new { opacity: 1; }
 @media (hover: none) {
   .group-new { opacity: 1; }
 }
 
-.group-sessions {
+.group-contents {
   border-left: 1px solid var(--border);
-  margin-left: var(--list-inset);
-  padding-left: 0;
+  margin-left: 10px;
+  padding-left: 3px;
+}
+.group-contents > .session-row {
+  margin-left: 0;
 }
 
 .session-row {

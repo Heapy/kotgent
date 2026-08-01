@@ -13,7 +13,7 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
-import { groupFor, joinPath, normalizePath, segmentsUnder } from "../lib/paths.js";
+import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
@@ -366,20 +366,28 @@ export function NewSessionDialog({
 /** Describe what the draft settings would do, using a real session cwd when one is available. */
 function groupingPreview(draft, sessions) {
   if (!draft.basePath) return "No base path — sessions are listed flat.";
+  const base = normalizePath(draft.basePath);
+  const baseLabel = basename(base) || base;
   const sample = sessions.find((s) => segmentsUnder(draft.basePath, s.cwd) !== null);
   if (!sample) {
     const placeholders = Array.from({ length: draft.groupingLevel }, (_, i) => "<dir" + (i + 1) + ">");
-    return "Groups at " + joinPath(draft.basePath, placeholders);
+    return placeholders.length > 0
+      ? "Tree below " + base + ": " + placeholders.join(" › ")
+      : base + " → " + baseLabel + " (one folder for all sessions below the base)";
   }
-  return normalizePath(sample.cwd) + " → " + groupFor(sample.cwd, draft.basePath, draft.groupingLevel).path;
+  const segments = segmentsUnder(base, sample.cwd);
+  const visible = segments.slice(0, draft.groupingLevel);
+  const branch = visible.length > 0 ? visible.join(" › ") : baseLabel;
+  const bucketed = segments.length > visible.length ? " (deeper folders stay here)" : "";
+  return normalizePath(sample.cwd) + " → " + branch + bucketed;
 }
 
 const LEVEL_LABELS = [
-  "0 — one group for everything",
-  "1 — one group per direct child",
-  "2 — two levels deep",
-  "3 — three levels deep",
-  "4 — four levels deep",
+  "0 — one base folder",
+  "1 — direct child folders",
+  "2 — up to two folder levels",
+  "3 — up to three folder levels",
+  "4 — up to four folder levels",
 ];
 
 const TERMINAL_FONT_LABELS = new Map([
@@ -431,7 +439,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
         <div class="dialog-head">
           <div>
             <h2 id="prefs-title">Preferences</h2>
-            <p>Base path and grouping are shared by every browser connected to this daemon.</p>
+            <p>Base path and tree depth are shared by every browser connected to this daemon.</p>
           </div>
           <button id="prefs-close" class="icon-button" type="button"
                   aria-label="Close" onClick=${onClose}>×</button>
@@ -442,13 +450,13 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
           <input id="prefs-base-path" type="text" spellcheck="false" placeholder="/Users/you/dev"
                  ref=${inputRef} value=${basePath} onInput=${(e) => setBasePath(e.target.value)} />
           <small class="field-hint">
-            Absolute path. Sessions below it are grouped by directory, and new sessions default to it.
-            Leave empty for one flat list.
+            Absolute path. Sessions below it form a folder tree, and new sessions default to it. Leave
+            empty for one flat list.
           </small>
         </label>
 
         <label class="field">
-          <span>Grouping level <small>directories below the base path</small></span>
+          <span>Tree depth <small>maximum visible folders below the base path</small></span>
           <select id="prefs-grouping-level" value=${level} onChange=${(e) => setLevel(e.target.value)}>
             ${LEVEL_LABELS.slice(0, MAX_GROUPING_LEVEL + 1).map((label, value) => html`
               <option key=${value} value=${String(value)}>${label}</option>

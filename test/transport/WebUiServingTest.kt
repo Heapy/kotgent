@@ -251,6 +251,67 @@ class WebUiServingTest {
     }
 
     @Test
+    fun webUiGroupsSessionsIntoARecursiveDirectoryTree() = withServer { ctx ->
+        val paths = ctx.get("/lib/paths.js").bodyAsText()
+        assertTrue(
+            paths.contains("const visible = segments.slice(0, depth)") &&
+                paths.contains("siblings = node.children") &&
+                paths.contains("const children = sortedNodes(node.children).map(finishNode)") &&
+                paths.contains(
+                    "sessionCount: node.sessions.length + children.reduce(" +
+                        "(total, child) => total + child.sessionCount, 0)",
+                ),
+            "the grouping helper builds sorted recursive nodes with aggregate subtree counts",
+        )
+        assertTrue(
+            paths.contains("inBase.unshift(finishNode(baseNode))") &&
+                paths.contains("return inBase.concat(sortedNodes(outside).map(finishNode))") &&
+                paths.contains("newNode(path, path || \"(unknown)\", false)"),
+            "base-direct sessions get a base node and standalone outside/unknown groups follow the tree",
+        )
+
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(
+            sidebar.contains("const collapsed = collapsedGroups.has(group.path)") &&
+                sidebar.contains("collapsedGroups=${'$'}{collapsedGroups}") &&
+                sidebar.contains("onClick=${'$'}{() => onToggle(group.path)}"),
+            "every recursive folder reads and toggles the existing full-path collapse state independently",
+        )
+        assertTrue(
+            sidebar.contains("group.children.some(groupNeedsAttention)") &&
+                sidebar.contains("<span class=\"group-count\">${'$'}{group.sessionCount}</span>"),
+            "folder headings aggregate descendant attention and session counts",
+        )
+        assertTrue(
+            sidebar.contains("onClick=${'$'}{() => onNewSession(group.path)}"),
+            "each folder's plus action passes that folder's exact full path",
+        )
+        val directSessionsAt = sidebar.indexOf("${'$'}{group.sessions.map((s) => html`")
+        val childFoldersAt = sidebar.indexOf("${'$'}{group.children.map((child) => html`")
+        assertTrue(
+            directSessionsAt >= 0 && childFoldersAt > directSessionsAt &&
+                sidebar.substring(childFoldersAt).contains("<${'$'}{SessionGroup}"),
+            "direct sessions render before recursively nested child folders",
+        )
+
+        val css = ctx.get("/style.css").bodyAsText()
+        val contentsRule = cssRuleOf(css, ".group-contents")
+        assertTrue(
+            contentsRule.contains("border-left:") && contentsRule.contains("margin-left:") &&
+                contentsRule.contains("padding-left:"),
+            "nested folder contents have compact indentation and a tree guide",
+        )
+
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(
+            dialogs.contains("<span>Tree depth <small>maximum visible folders below the base path</small></span>") &&
+                dialogs.contains("placeholders.join(\" › \")") &&
+                dialogs.contains("visible.join(\" › \")"),
+            "preferences describe and preview a nested tree depth instead of a combined flat heading",
+        )
+    }
+
+    @Test
     fun theCommandRegistryIsTheServedSourceOfSearchAndLeaderCommands() = withServer { ctx ->
         val commands = ctx.get("/lib/commands.js").bodyAsText()
         assertTrue(commands.contains("export function buildCommands"), "the command registry is exported")
