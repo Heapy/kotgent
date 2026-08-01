@@ -50,7 +50,13 @@ export function errorMessage(error) {
 export async function apiRequest(path, options) {
   const opts = Object.assign({ credentials: "same-origin" }, options || {});
   opts.headers = Object.assign({}, opts.headers || {});
-  if (opts.body) opts.headers["Content-Type"] = "application/json";
+  // JSON is the app's ordinary body shape, but a File/Blob upload must keep its browser-provided media
+  // type and Content-Length. Default only string bodies, and never overwrite an explicit caller header.
+  const hasContentType = Object.keys(opts.headers)
+    .some((name) => name.toLocaleLowerCase() === "content-type");
+  if (typeof opts.body === "string" && !hasContentType) {
+    opts.headers["Content-Type"] = "application/json";
+  }
 
   const resp = await fetch(path, opts);
   const text = await resp.text();

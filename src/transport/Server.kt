@@ -77,6 +77,8 @@ import platform.posix.access
  *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
  *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
  * @param directoryCompleter lists one directory level for the working-directory autocomplete.
+ * @param fileUploader streams a phone/browser upload into the selected session's stored cwd. Production
+ *   uses the atomic POSIX writer; transport tests inject a recorder and never touch the host filesystem.
  * @param currentVersion the running application's display version exposed by `GET /version`.
  * @param webUiDir directory served at `/` (the Task-17 SPA). `null` disables static serving (tests);
  *   the default serves whatever exists under `resources/webui` — nothing yet, i.e. `404`, until Task 17.
@@ -100,6 +102,7 @@ class KotgentServer(
     private val tokens: TokenHolder,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
     private val directoryCompleter: DirectoryCompleter = posixDirectoryCompleter,
+    private val fileUploader: FileUploader = posixFileUploader,
     private val currentVersion: String = currentUiVersion(),
     private val webUiDir: String? = DEFAULT_WEBUI_DIR,
     private val publicUrl: String? = null,
@@ -172,6 +175,7 @@ class KotgentServer(
                         authRoutes(tokens, tickets, publicUrl, json)
                         // Token-gated control plane.
                         authenticated(tokens::current, publicUrl) {
+                            fileUploadRoutes(store, fileUploader, json)
                             controlRoutes(sessionManager, store, inputSink, currentVersion, json)
                             directoryCompletionRoutes(directoryCompleter, json)
                             preferencesRoutes(preferencesStore, json)
@@ -281,6 +285,7 @@ class KotgentServer(
             tmux: Tmux,
             currentVersion: String = currentUiVersion(),
             ptyFactory: PtyFactory = realPtyFactory,
+            fileUploader: FileUploader = posixFileUploader,
             webUiDir: String? = DEFAULT_WEBUI_DIR,
             publicUrl: String? = null,
             pushStore: PushStore? = null,
@@ -294,6 +299,7 @@ class KotgentServer(
             preferencesStore = preferencesStore,
             tokens = tokens,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },
+            fileUploader = fileUploader,
             currentVersion = currentVersion,
             webUiDir = webUiDir?.let { resolveWebUiDir(it) },
             publicUrl = publicUrl,

@@ -723,6 +723,7 @@ dialog::backdrop {
   min-height: 16px;
 }
 #new-session-form,
+#upload-form,
 #prefs-form,
 #phone-form { padding: 20px; }
 .dialog-head {
@@ -990,6 +991,50 @@ dialog::backdrop {
   margin: 14px 0 0;
   padding: 9px 10px;
 }
+.upload-destination {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0 0 14px;
+}
+.upload-destination code {
+  background: var(--row-hover);
+  border-radius: 4px;
+  color: var(--text);
+  display: block;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  padding: 7px 8px;
+}
+.file-input::file-selector-button {
+  background: var(--row-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  margin-right: 9px;
+  padding: 5px 8px;
+}
+.upload-progress,
+.upload-result {
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 14px 0 0;
+  overflow-wrap: anywhere;
+  padding: 9px 10px;
+}
+.upload-progress {
+  background: var(--row-hover);
+  color: var(--muted);
+}
+.upload-result {
+  background: color-mix(in srgb, #22c55e 14%, transparent);
+  color: #b7f7c9;
+}
+.upload-error { white-space: pre-line; }
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

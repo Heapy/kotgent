@@ -361,6 +361,124 @@ export function NewSessionDialog({
   `;
 }
 
+// --- File upload -----------------------------------------------------------------------------------
+
+/**
+ * Pick one or more files from this browser/device and upload them directly into the selected session's
+ * working directory. The destination path is display-only: the request carries only the session id and a
+ * leaf filename, and the daemon resolves the row's current cwd itself.
+ */
+export function UploadFilesDialog({ session, onClose }) {
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const inputRef = useRef(null);
+  const requestRef = useRef(null);
+
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.focus();
+    return () => {
+      if (requestRef.current) requestRef.current.abort();
+    };
+  }, []);
+
+  const selectedFiles = (event) => {
+    setFiles(Array.from(event.currentTarget.files || []));
+    setProgress("");
+    setResult(null);
+    setError(null);
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (files.length === 0 || busy) return;
+
+    const controller = new AbortController();
+    requestRef.current = controller;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    let uploaded = 0;
+    const failures = [];
+    try {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        setProgress("Uploading " + (index + 1) + " of " + files.length + ": " + file.name);
+        try {
+          await apiRequest(
+            "/sessions/" + encodeURIComponent(session.id) + "/files?name=" +
+              encodeURIComponent(file.name),
+            { method: "POST", body: file, signal: controller.signal },
+          );
+          uploaded += 1;
+        } catch (e) {
+          if (controller.signal.aborted) return;
+          failures.push(file.name + ": " + errorMessage(e));
+        }
+      }
+
+      setProgress("");
+      setResult(
+        "Uploaded " + uploaded + " " + (uploaded === 1 ? "file" : "files") +
+          " to " + session.cwd + ".",
+      );
+      if (failures.length > 0) {
+        setError(failures.join("\n"));
+      }
+      // A second press with the same selection would hit conflicts for every successful file. Clear the
+      // native FileList and require an explicit new pick; the result above remains visible.
+      setFiles([]);
+      if (inputRef.current) inputRef.current.value = "";
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  };
+
+  return html`
+    <${Dialog} id="upload-dialog" labelledBy="upload-title" onClose=${onClose}>
+      <form id="upload-form" onSubmit=${submit}>
+        <div class="dialog-head">
+          <div>
+            <h2 id="upload-title">Upload files</h2>
+            <p>Send files from this device to the selected session.</p>
+          </div>
+          <button id="upload-close" class="icon-button" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+
+        <p class="upload-destination">
+          Current folder <code>${session.cwd}</code>
+        </p>
+
+        <label class="field">
+          <span>Files <small>up to 100 MiB each</small></span>
+          <input id="upload-files" class="file-input" type="file" multiple ref=${inputRef}
+                 disabled=${busy} onChange=${selectedFiles} />
+          <small class="field-hint">
+            Existing files are never replaced. Rename a file first if its name is already present.
+          </small>
+        </label>
+
+        ${progress && html`<p class="upload-progress" role="status">${progress}</p>`}
+        ${result && html`<p class="upload-result" role="status">${result}</p>`}
+        ${error && html`<p id="upload-error" class="form-error upload-error" role="alert">${error}</p>`}
+
+        <div class="dialog-actions">
+          <button id="upload-cancel" class="button button-quiet" type="button"
+                  onClick=${onClose}>${busy ? "Cancel upload" : "Close"}</button>
+          <button id="upload-submit" class="button button-primary" type="submit"
+                  disabled=${busy || files.length === 0}>
+            ${busy ? "Uploading…" : files.length > 1 ? "Upload " + files.length + " files" : "Upload file"}
+          </button>
+        </div>
+      </form>
+    <//>
+  `;
+}
+
 // --- Preferences -----------------------------------------------------------------------------------
 
 /** Describe what the draft settings would do, using a real session cwd when one is available. */

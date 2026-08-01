@@ -323,6 +323,7 @@ class WebUiServingTest {
             "session.stop" to "s",
             "session.done" to "d",
             "session.copy-tmux" to "c",
+            "session.upload-files" to "f",
             "general.new" to "n",
             "general.import" to "r",
             "general.free-terminal" to "t",
@@ -481,6 +482,59 @@ class WebUiServingTest {
                 app.contains("onToggleShowDone=\${toggleShowDone}") &&
                 !sidebar.contains("const [showDone, setShowDone]"),
             "the app owns archived-session visibility so the palette and sidebar share one state",
+        )
+    }
+
+    @Test
+    fun mobilePaletteUploadsPickedFilesToTheSelectedSessionsCurrentFolder() = withServer { ctx ->
+        val commands = ctx.get("/lib/commands.js").bodyAsText()
+        val uploadCommand = commands.substringAfter("id: \"session.upload-files\"")
+            .substringBefore("\n    },")
+        assertTrue(
+            uploadCommand.contains("title: \"Upload files to current folder…\"") &&
+                uploadCommand.contains("disabled: disabledWhenNoSession(activeSession)") &&
+                uploadCommand.contains("run: () => actions.uploadFiles()"),
+            "the one palette registry exposes upload only for a selected session",
+        )
+
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("setDialog({ kind: \"upload\", session: selected })") &&
+                app.contains("uploadFiles: openUpload") &&
+                app.contains("<\${UploadFilesDialog} session=\${dialog.session}"),
+            "the palette captures the selected session and opens the upload dialog",
+        )
+
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(
+            dialogs.contains("export function UploadFilesDialog") &&
+                dialogs.contains("type=\"file\" multiple") &&
+                dialogs.contains("Current folder <code>\${session.cwd}</code>"),
+            "the dialog uses the native multi-file picker and shows the destination cwd",
+        )
+        assertTrue(
+            dialogs.contains("/files?name=\" +") &&
+                dialogs.contains("encodeURIComponent(file.name)") &&
+                dialogs.contains("{ method: \"POST\", body: file, signal: controller.signal }") &&
+                dialogs.contains("requestRef.current.abort()"),
+            "each picked File is posted as raw bytes with an encoded leaf name and cancellable teardown",
+        )
+        assertTrue(
+            dialogs.contains("Existing files are never replaced") &&
+                dialogs.contains("failures.join(\"\\n\")"),
+            "the no-overwrite rule and per-file failures are visible on the phone",
+        )
+
+        val api = ctx.get("/lib/api.js").bodyAsText()
+        assertTrue(
+            api.contains("typeof opts.body === \"string\"") && api.contains("!hasContentType"),
+            "apiRequest defaults JSON only for string bodies, preserving File/Blob uploads",
+        )
+        val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(
+            css.contains("#upload-form") && css.contains(".upload-destination") &&
+                css.contains(".file-input::file-selector-button"),
+            "the upload dialog and native picker affordance are styled",
         )
     }
 

@@ -417,12 +417,14 @@ private suspend fun ApplicationCall.respondToUnconsumedExchangeAndClose(
  * response; a peer that never finishes the body retains a socket only for that bounded grace.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-private suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush() {
+internal suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush(
+    reason: String = "closing unconsumed /auth/exchange request body",
+) {
     val callJob = coroutineContext[Job] ?: return
     val requestHandlerJob = callJob.parent ?: return
     val connectionPipelineJob = requestHandlerJob.parent ?: return
     delay(AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS)
-    connectionPipelineJob.cancel(CancellationException("closing unconsumed /auth/exchange request body"))
+    connectionPipelineJob.cancel(CancellationException(reason))
 }
 
 /**

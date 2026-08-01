@@ -118,6 +118,16 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
           : (tmuxAvailable ? null : "the selected session has no tmux name")),
       run: () => actions.copyTmux(),
     },
+    {
+      id: "session.upload-files", group: "session", chord: "f",
+      title: "Upload files to current folder…",
+      subtitle: activeSession && activeSession.cwd
+        ? activeSession.cwd
+        : "sends files to the selected session's working directory",
+      hint: "⌘K f",
+      disabled: disabledWhenNoSession(activeSession),
+      run: () => actions.uploadFiles(),
+    },
 
     {
       id: "general.new", group: "general", chord: "n",

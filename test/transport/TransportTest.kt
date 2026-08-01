@@ -55,6 +55,8 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readAvailable
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readBytes
@@ -437,7 +439,67 @@ class TransportTest {
         }
     }
 
-    // ---- 3c. POST /sessions/{id}/read advances the unread cursor ----
+    // ---- 3c. POST /sessions/{id}/files uploads into that session's stored cwd -------------------
+
+    @Test
+    fun postFilesUsesTheSessionsStoredCwdAndStreamsTheBody() {
+        val uploader = RecordingFileUploader()
+        withServer(fileUploader = uploader) { ctx ->
+            val created = ctx.startSession(cwd = "/work/current-project")
+            val payload = "photo bytes from the phone".encodeToByteArray()
+
+            val response = ctx.upload(created.id, "whiteboard.jpg", payload)
+
+            assertEquals(HttpStatusCode.Created, response.status)
+            assertEquals(
+                FileUploadResponse("whiteboard.jpg", payload.size.toLong(), "/work/current-project"),
+                TRANSPORT_JSON.decodeFromString(FileUploadResponse.serializer(), response.bodyAsText()),
+            )
+            val recorded = uploader.uploads.receive()
+            assertEquals("/work/current-project", recorded.directory)
+            assertEquals("whiteboard.jpg", recorded.fileName)
+            assertEquals(payload.size.toLong(), recorded.expectedBytes)
+            assertContentEquals(payload, recorded.body)
+        }
+    }
+
+    @Test
+    fun postFilesRejectsTraversalAndUnknownSessionsBeforeTouchingTheUploader() {
+        val uploader = RecordingFileUploader()
+        withServer(fileUploader = uploader) { ctx ->
+            val created = ctx.startSession()
+
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                ctx.upload(created.id, "..%2Fescape.txt", "nope".encodeToByteArray(), encodedName = true).status,
+            )
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                ctx.upload(created.id, "", "nope".encodeToByteArray()).status,
+            )
+            assertEquals(
+                HttpStatusCode.NotFound,
+                ctx.upload("no-such-session", "file.txt", "nope".encodeToByteArray()).status,
+            )
+            assertTrue(uploader.uploads.tryReceive().isFailure, "invalid targets never reach the filesystem edge")
+        }
+    }
+
+    @Test
+    fun postFilesReportsAnExistingDestinationAsAConflict() {
+        val uploader = RecordingFileUploader(FileUploadResult.AlreadyExists)
+        withServer(fileUploader = uploader) { ctx ->
+            val created = ctx.startSession(cwd = "/work/current-project")
+
+            val response = ctx.upload(created.id, "notes.txt", "new".encodeToByteArray())
+
+            assertEquals(HttpStatusCode.Conflict, response.status)
+            assertTrue(response.bodyAsText().contains("already exists"))
+            uploader.uploads.receive() // the body was consumed before the no-clobber publish answered
+        }
+    }
+
+    // ---- 3d. POST /sessions/{id}/read advances the unread cursor ----
 
     @Test
     fun postReadAdvancesTheCursorAndClearsUnread() = withServer { ctx ->
@@ -1322,6 +1384,19 @@ class TransportTest {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody(body)
         }
+
+        suspend fun upload(
+            id: String,
+            name: String,
+            body: ByteArray,
+            encodedName: Boolean = false,
+        ) = client.post(
+            "http://127.0.0.1:$port/sessions/$id/files?name=" +
+                if (encodedName) name else encodeQueryComponent(name),
+        ) {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            setBody(body)
+        }
     }
 
     private fun withServer(
@@ -1336,6 +1411,9 @@ class TransportTest {
         // default) is the loopback-only daemon every other test drives.
         publicUrl: String? = null,
         directoryCompleter: DirectoryCompleter = DirectoryCompleter { _, _ -> emptyList() },
+        fileUploader: FileUploader = FileUploader { directory, fileName, body, expectedBytes ->
+            saveUploadedFile(directory, fileName, body, expectedBytes)
+        },
         // The import seams (probe/locator), overridable so /sessions/import tests can make the vendor
         // store answer. The defaults mirror "nothing on disk": every transcript probe misses and
         // discovery finds no cwd — which is also what keeps every non-import test honest, since a
@@ -1378,6 +1456,7 @@ class TransportTest {
                             TokenHolder(token),
                             Tmux(socket = "kotgent-production-factory-test", tmuxPath = "/usr/bin/false"),
                             ptyFactory = ptyFactory,
+                            fileUploader = fileUploader,
                             webUiDir = null,
                             publicUrl = publicUrl,
                             pushStore = assembled?.store,
@@ -1394,6 +1473,7 @@ class TransportTest {
                     tokens = TokenHolder(token),
                     terminalBridgeFactory = bridgeFactory,
                     directoryCompleter = directoryCompleter,
+                    fileUploader = fileUploader,
                     webUiDir = null,
                     publicUrl = publicUrl,
                     port = 0,
@@ -1408,6 +1488,58 @@ class TransportTest {
                 idScope.cancel()
                 push?.close?.invoke()
             }
+        }
+    }
+
+    private data class RecordedUpload(
+        val directory: String,
+        val fileName: String,
+        val body: ByteArray,
+        val expectedBytes: Long?,
+    )
+
+    private class RecordingFileUploader(
+        private val result: FileUploadResult? = null,
+    ) : FileUploader {
+        val uploads = Channel<RecordedUpload>(capacity = Channel.UNLIMITED)
+
+        override suspend fun upload(
+            directory: String,
+            fileName: String,
+            body: ByteReadChannel,
+            expectedBytes: Long?,
+        ): FileUploadResult {
+            val chunks = ArrayList<ByteArray>()
+            var total = 0
+            val buffer = ByteArray(1_024)
+            while (true) {
+                val count = body.readAvailable(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                chunks += buffer.copyOf(count)
+                total += count
+            }
+            val received = ByteArray(total)
+            var offset = 0
+            for (chunk in chunks) {
+                chunk.copyInto(received, destinationOffset = offset)
+                offset += chunk.size
+            }
+            uploads.send(RecordedUpload(directory, fileName, received, expectedBytes))
+            return result ?: FileUploadResult.Stored(received.size.toLong())
+        }
+    }
+
+    private fun encodeQueryComponent(value: String): String = value.encodeToByteArray().joinToString("") { byte ->
+        val unsigned = byte.toInt() and 0xff
+        val char = unsigned.toChar()
+        if (
+            char in 'a'..'z' || char in 'A'..'Z' || char in '0'..'9' ||
+            char == '-' || char == '_' || char == '.' || char == '~'
+        ) {
+            char.toString()
+        } else {
+            "%" + unsigned.toString(16).uppercase().padStart(2, '0')
         }
     }
 

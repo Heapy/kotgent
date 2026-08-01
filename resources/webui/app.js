@@ -56,7 +56,13 @@ import { throttleLeading } from "./lib/throttle.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js?v=ios-viewport-safe-area-4";
-import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./components/dialogs.js";
+import {
+  HelpDialog,
+  NewSessionDialog,
+  PhoneDialog,
+  PreferencesDialog,
+  UploadFilesDialog,
+} from "./components/dialogs.js";
 
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
 const REATTACH_LIVENESS_TIMEOUT_MS = 10_000;
@@ -177,7 +183,7 @@ function App() {
   const [attachedId, setAttachedId] = useState(null);   // the session whose terminal is open here
   const [pendingAction, setPendingAction] = useState(null);
   const [prefs, setPrefs] = useState(loadPrefs);
-  const [dialog, setDialog] = useState(null);           // null | {kind:'new',cwd,initialMode} | {kind:'prefs'} | {kind:'help'} | {kind:'phone'}
+  const [dialog, setDialog] = useState(null);           // null | new | upload | prefs | help | phone
   const [palette, setPalette] = useState(null);         // null | {mode:'search'|'leader'}
   const [showDone, setShowDone] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
@@ -949,6 +955,10 @@ function App() {
   const openPrefs = useCallback(() => setDialog({ kind: "prefs" }), []);
   const openHelp = useCallback(() => setDialog({ kind: "help" }), []);
   const openPhone = useCallback(() => setDialog({ kind: "phone" }), []);
+  const openUpload = useCallback(() => {
+    const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
+    if (selected) setDialog({ kind: "upload", session: selected });
+  }, []);
 
   const interrupt = useCallback(() => controlSession("interrupt"), [controlSession]);
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
@@ -973,6 +983,7 @@ function App() {
       stop: stop,
       done: done,
       copyTmux: copyTmuxCommand,
+      uploadFiles: openUpload,
       newSession: () => openNewSession(null),
       importSession: openImportSession,
       freeTerminal: openFreeTerminal,
@@ -1038,6 +1049,8 @@ function App() {
                            initialAgent=${dialog.initialAgent}
                            basePath=${prefs.basePath}
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
+    ${dialog && dialog.kind === "upload" && html`
+      <${UploadFilesDialog} session=${dialog.session} onClose=${closeDialog} />`}
     ${/* Keyed on the committed server revision: the dialog seeds its draft from `prefs` once, at mount
           (useState), so a dialog REOPENED while a save's PUT was still in flight holds a pre-save draft —
           and closeDialogFrom rightly preserves it. When the commit lands (applyServerPreferences bumps
