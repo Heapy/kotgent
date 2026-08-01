@@ -85,7 +85,10 @@ class WebUiServingTest {
         val body = resp.bodyAsText()
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
         assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
-        assertTrue(body.contains("src=\"app.js\""), "index.html bootstraps app.js")
+        assertTrue(
+            body.contains("src=\"app.js?v=ios-viewport-safe-area-4\""),
+            "index.html bootstraps the cache-revised app.js",
+        )
         assertTrue(body.contains("vendor/xterm.js"), "index.html loads the vendored xterm.js")
         assertContentTypeContains(resp, "html")
     }
@@ -534,7 +537,10 @@ class WebUiServingTest {
         val appRule = cssRuleOf(css, "#app")
         assertTrue(
             appRule.contains("background: var(--bg)") &&
-                appRule.contains("env(safe-area-inset-top)") &&
+                appRule.contains("--device-safe-area-top: env(safe-area-inset-top") &&
+                appRule.contains("--device-safe-area-bottom: env(safe-area-inset-bottom") &&
+                appRule.contains("padding: var(--device-safe-area-top)") &&
+                appRule.contains("var(--active-safe-area-bottom)") &&
                 appRule.contains("env(safe-area-inset-left)"),
             "the shell owns both its background and the safe-area padding around the cards",
         )
@@ -1300,8 +1306,9 @@ class WebUiServingTest {
         )
         assertTrue(
             body.contains("name=\"color-scheme\" content=\"dark\"") &&
-                body.contains("style.css?v=ios-dark-1"),
-            "the installed iOS app declares dark system UI and fetches the revised stylesheet URL",
+                body.contains("style.css?v=ios-viewport-safe-area-4") &&
+                body.contains("app.js?v=ios-viewport-safe-area-4"),
+            "the installed iOS app declares dark system UI and fetches the revised viewport assets",
         )
     }
 
@@ -1952,6 +1959,12 @@ class WebUiServingTest {
     fun theWebUiShipsTheMobileDrawerAndViewportRules() = withServer { ctx ->
         val css = ctx.get("/style.css").bodyAsText()
         assertTrue(css.contains("100dvh"), "the app shell is sized against the DYNAMIC viewport height")
+        assertTrue(
+            Regex(
+                """(?s)#app\.installed-app\s*\{[^}]*height:\s*100vh""",
+            ).containsMatchIn(css),
+            "an installed PWA restores the physical viewport height WebKit subtracts the bottom inset from",
+        )
         assertTrue(css.contains("env(safe-area-inset-"), "the shell pads the notch / home-indicator insets")
         assertTrue(
             css.contains("overscroll-behavior: none"),
@@ -1992,6 +2005,15 @@ class WebUiServingTest {
         assertTrue(sidebar.contains("id=\"drawer-close\""), "the drawer can be dismissed from inside it")
 
         val app = ctx.get("/app.js").bodyAsText()
+        val installedClassAt = app.indexOf("appRoot.classList.toggle(\"installed-app\", installedApp)")
+        val renderAt = app.indexOf("render(html`<\${App} />`, appRoot)")
+        assertTrue(
+            app.contains("window.matchMedia(\"(display-mode: standalone)\").matches") &&
+                app.contains("window.matchMedia(\"(display-mode: fullscreen)\").matches") &&
+                app.contains("window.navigator.standalone === true") &&
+                installedClassAt >= 0 && renderAt > installedClassAt,
+            "the shell recognizes standard, WebKit-fullscreen, and iOS-vendor installed signals before rendering",
+        )
         assertTrue(app.contains("drawer-scrim"), "a tap outside the drawer closes it")
         assertTrue(
             app.contains("onToggleDrawer=\${toggleDrawer}"),
@@ -2053,6 +2075,23 @@ class WebUiServingTest {
             pane.contains("host.classList.add(\"visual-viewport-sized\")") &&
                 pane.contains("host.classList.remove(\"visual-viewport-sized\")"),
             "the visual-viewport host state is applied and removed with the terminal",
+        )
+        val viewportSizing = pane.substringAfter("const sizeForVisualViewport = () => {")
+            .substringBefore("\n    };")
+        val keyboardStateAt = viewportSizing.indexOf(
+            "app.classList.toggle(\"visual-viewport-shrunken\", viewportShrunken)",
+        )
+        val hiddenViewportReturnAt = viewportSizing.indexOf("if (!viewportShrunken) return")
+        val applyCapAt = viewportSizing.indexOf("host.classList.add(\"visual-viewport-sized\")")
+        assertTrue(
+            keyboardStateAt >= 0 &&
+                hiddenViewportReturnAt > keyboardStateAt &&
+                applyCapAt > hiddenViewportReturnAt,
+            "only a keyboard-shrunken visual viewport owns the terminal cap and shell inset state",
+        )
+        assertTrue(
+            pane.contains("app.classList.remove(\"visual-viewport-shrunken\")"),
+            "terminal teardown cannot leave a stale keyboard-safe-area state on the shell",
         )
         assertTrue(
             css.contains("#terminal-host.visual-viewport-sized") &&
@@ -2263,6 +2302,19 @@ class WebUiServingTest {
         assertTrue(
             Regex("""(?s)\.key-bar\s*\{[^}]*display:\s*flex""").containsMatchIn(mobileCss),
             "the toolbar is visible at the mobile breakpoint",
+        )
+        assertTrue(
+            Regex("""(?s)#app:has\(\.key-bar\)\s*\{[^}]*padding-bottom:\s*0""")
+                .containsMatchIn(mobileCss) &&
+                Regex(
+                    """(?s)\.key-bar\s*\{[^}]*padding-bottom:\s*calc\(5px \+ var\(--active-safe-area-bottom\)\)""",
+                ).containsMatchIn(mobileCss) &&
+                cssRuleOf(css, "#app").contains("var(--active-safe-area-bottom)") &&
+                Regex(
+                    """(?s)#app\.visual-viewport-shrunken\s*\{[^}]*--active-safe-area-bottom:\s*0px""",
+                ).containsMatchIn(css) &&
+                cssRuleOf(css, ".key-bar-key").contains("min-height: 48px"),
+            "the inset moves into an attached toolbar, stays on no-toolbar footers, and clears above the keyboard",
         )
     }
 

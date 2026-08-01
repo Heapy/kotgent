@@ -90,6 +90,8 @@ export function TerminalPane({
     if (!attachedId) return undefined;
     const host = hostRef.current;
     if (!host) return undefined;
+    const app = host.closest("#app");
+    if (!app) return undefined;
     ctrlActiveRef.current = false;
     setCtrlActive(false);
 
@@ -111,18 +113,33 @@ export function TerminalPane({
 
     // The layout viewport does not shrink reliably when a phone keyboard opens. Cap this flex item at
     // the visual viewport's bottom before the first fit so even the WebSocket URL carries the correct
-    // OPEN geometry when a session is switched while the keyboard is still visible.
+    // OPEN geometry when a session is switched while the keyboard is still visible. An installed iOS
+    // PWA also reports visualViewport.height short by its safe areas with NO keyboard; tolerate exactly
+    // that loss and leave the ordinary 100vh flex layout uncapped in the hidden-keyboard state.
     const viewport = window.visualViewport;
     const sizeForVisualViewport = () => {
       if (!viewport) return;
       if (!Number.isFinite(viewport.height) || !Number.isFinite(viewport.offsetTop) ||
           viewport.height <= 0) return;                  // Safari emits transient zeroes during rotation
 
+      const appBounds = app.getBoundingClientRect();
+      if (!Number.isFinite(appBounds.height) || appBounds.height <= 0) return;
+      const appStyle = getComputedStyle(app);
+      const safeAreaHeight =
+        (Number.parseFloat(appStyle.getPropertyValue("--device-safe-area-top")) || 0) +
+        (Number.parseFloat(appStyle.getPropertyValue("--device-safe-area-bottom")) || 0);
+      const viewportShrunken = viewport.height < appBounds.height - safeAreaHeight - 1;
+
       // Measure the ordinary flex height, not yesterday's keyboard-constrained one. Restoring the prior
       // cap on a bad measurement avoids collapsing the terminal during an in-progress viewport update.
       const previousHeight = host.style.getPropertyValue("--terminal-visible-height");
       host.classList.remove("visual-viewport-sized");
       host.style.removeProperty("--terminal-visible-height");
+      // CSS uses the same state to suppress WebKit's stale bottom inset above the open keyboard. Toggle
+      // before measuring the key bar so its now-smaller height is what the xterm ceiling reserves.
+      app.classList.toggle("visual-viewport-shrunken", viewportShrunken);
+      if (!viewportShrunken) return;
+
       const bounds = host.getBoundingClientRect();
       const visibleBottom = viewport.offsetTop + viewport.height;
       // The key bar follows the host in the pane's flex column. Its ordinary layout already reduces
@@ -245,6 +262,7 @@ export function TerminalPane({
       }
       host.classList.remove("visual-viewport-sized");
       host.style.removeProperty("--terminal-visible-height");
+      app.classList.remove("visual-viewport-shrunken");
       dataSubscription.dispose();
       resizeSubscription.dispose();
       ws.onopen = null;

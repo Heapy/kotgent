@@ -546,8 +546,14 @@ translucent sidebar's composite blur stays desktop-only.
 
 **The mobile terminal lifecycle has four coupled invariants.** Initial xterm geometry is computed from
 `window.visualViewport` before fitting and opening the terminal WebSocket, so the upstream starts at the
-visible keyboard-constrained size. A terminal tap focuses xterm's helper textarea synchronously from that
-gesture, and the textarea stays at `16px` to prevent Safari auto-zoom from corrupting viewport geometry.
+visible keyboard-constrained size. The installed shell is marked before first render from the standalone,
+fullscreen **or** iOS `navigator.standalone` signal: WebKit can report a standalone manifest as fullscreen,
+while its `dvh` and hidden-keyboard `visualViewport.height` omit the safe areas. The shell therefore uses
+physical `vh`, and a visual-viewport height loss no larger than the vertical safe areas leaves xterm's flex
+host uncapped; only a further keyboard shrink removes the stale bottom inset and applies the host ceiling.
+On a narrow screen the shell yields its bottom inset only while an attached key bar exists, so detached and
+stopped hints still clear the Home indicator. A terminal tap focuses xterm's helper textarea synchronously
+from that gesture, and the textarea stays at `16px` to prevent Safari auto-zoom from corrupting viewport geometry.
 The phone key bar sends binary terminal bytes and preserves xterm focus (special keys never become resize
 text frames). Finally, a terminal socket lost to suspension **or to a daemon restart** is reattached from
 one remembered candidate, and every rule around it governs *what may spend that candidate*. Four sites

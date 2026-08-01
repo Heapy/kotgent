@@ -55,7 +55,7 @@ import {
 import { throttleLeading } from "./lib/throttle.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
-import { TerminalPane } from "./components/TerminalPane.js";
+import { TerminalPane } from "./components/TerminalPane.js?v=ios-viewport-safe-area-4";
 import { HelpDialog, NewSessionDialog, PhoneDialog, PreferencesDialog } from "./components/dialogs.js";
 
 const SELECT_HINT = "Select a session on the left to attach its terminal.";
@@ -1059,4 +1059,13 @@ function App() {
   `;
 }
 
-render(html`<${App} />`, document.getElementById("app"));
+// WebKit reports a manifest `display: standalone` home-screen app as fullscreen on current iOS, while
+// older releases also expose only the vendor `navigator.standalone` signal. Resolve all three before the
+// first render so the installed shell uses the physical `vh` height without a one-frame safe-area gap.
+const appRoot = document.getElementById("app");
+const installedApp =
+  window.matchMedia("(display-mode: standalone)").matches ||
+  window.matchMedia("(display-mode: fullscreen)").matches ||
+  window.navigator.standalone === true;
+appRoot.classList.toggle("installed-app", installedApp);
+render(html`<${App} />`, appRoot);

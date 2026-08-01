@@ -25,7 +25,7 @@
   <!-- Vendored, offline: pinned @xterm/xterm@5.5.0 + @xterm/addon-fit@0.10.0, preact@10.29.7 + htm@3.1.1. -->
   <link rel="stylesheet" href="vendor/xterm.css" />
   <!-- Query revision forces an already-installed iOS PWA past Safari's persistent HTTP asset cache. -->
-  <link rel="stylesheet" href="style.css?v=ios-dark-1" />
+  <link rel="stylesheet" href="style.css?v=ios-viewport-safe-area-4" />
 
   <!--
     No bundler: bare specifiers are resolved to the vendored ES modules by the browser itself. This map
@@ -51,6 +51,6 @@
        deferred module below. -->
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=ios-viewport-safe-area-4"></script>
 </body>
 </html>

@@ -57,6 +57,9 @@ html, body {
 }
 
 #app {
+  --device-safe-area-top: env(safe-area-inset-top, 0px);
+  --device-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --active-safe-area-bottom: var(--device-safe-area-bottom);
   background: var(--bg);
   display: flex;
   /* 100vh first as the fallback, then 100dvh: mobile browsers size vh against the LARGEST viewport (the
@@ -69,9 +72,20 @@ html, body {
      notch and the home indicator; these insets pay it back. env() is 0 on everything else, which is why
      this sits outside the media query — a phone in landscape is wider than the breakpoint but still has
      a notch on one side. */
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  padding: var(--device-safe-area-top) env(safe-area-inset-right)
+           var(--active-safe-area-bottom) env(safe-area-inset-left);
 }
+
+/* WebKit bug 217754 leaves the Home-indicator inset set while the software keyboard already replaces that
+   unsafe edge. TerminalPane owns this state because visualViewport, unlike CSS env(), sees the keyboard. */
+#app.visual-viewport-shrunken {
+  --active-safe-area-bottom: 0px;
+}
+
+/* WebKit bugs 254868 and 264218: an installed PWA's `dvh` omits its safe areas, and current iOS reports a
+   manifest standalone app as fullscreen. app.js resolves both display-mode queries plus navigator's iOS
+   installed signal before rendering; `vh` is physical in that chrome-less context. */
+#app.installed-app { height: 100vh; }
 
 /* --- Sidebar --- */
 #sidebar {
@@ -513,7 +527,7 @@ select:focus-visible {
 .key-bar-key {
   flex: 1 1 28px;
   min-width: 24px;
-  min-height: 38px;
+  min-height: 48px;
   padding: 0 3px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1174,6 +1188,10 @@ dialog::backdrop {
     --input-bg: #101218;
   }
 
+  /* Let an ATTACHED bottom bar paint through the Home-indicator strip. Without that bar (initial,
+     detached, stopped or resumable), #app keeps its ordinary inset so the final hint stays safe. */
+  #app:has(.key-bar) { padding-bottom: 0; }
+
   #help-dialog { width: 100%; }
   .help-list {
     grid-template-columns: 1fr;
@@ -1278,7 +1296,10 @@ dialog::backdrop {
   }
 
   #terminal-host .xterm { padding: 4px 6px; }
-  .key-bar { display: flex; }
+  .key-bar {
+    display: flex;
+    padding-bottom: calc(5px + var(--active-safe-area-bottom));
+  }
 }
 
 /* A drawer that slides is decoration; an operator who asked for less motion still needs it to open. */
