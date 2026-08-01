@@ -258,6 +258,7 @@ class WebUiServingTest {
 
         val chords = mapOf(
             "session.interrupt" to "i",
+            "session.resume" to "u",
             "session.stop" to "s",
             "session.done" to "d",
             "session.copy-tmux" to "c",

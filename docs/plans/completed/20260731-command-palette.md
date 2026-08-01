@@ -199,6 +199,7 @@ another dialog is open** — stacking two `showModal()` dialogs is not a state t
 |-----|---------|--------------|
 | `n` | New session | always |
 | `i` | Interrupt current session | needs a live session |
+| `u` | Resume this session | needs a dead session |
 | `r` | Resume a conversation started outside kotgent… | always |
 | `t` | New free terminal | disabled until stage 4 — "not implemented yet" |
 | `s` | Stop current session… | needs a live session |
@@ -211,10 +212,9 @@ another dialog is open** — stacking two `showModal()` dialogs is not a state t
 
 `t` and `b` are reserved and rendered disabled from day one so muscle memory never has to be relearned.
 
-Two commands must not be confused, so their titles disambiguate explicitly: `r` opens the **import**
-mode of `NewSessionDialog` ("Resume a conversation started outside kotgent…"), while the session-level
-control from `controlSession("resume")` is titled "Resume this session" and carries **no** chord — it
-only applies to a dead session and is reachable by search.
+Two commands must not be confused, so their titles and mnemonics disambiguate explicitly: `r` opens the
+**import** mode of `NewSessionDialog` ("Resume a conversation started outside kotgent…"), while `u`
+resumes the selected dead session through `controlSession("resume")` ("Resume this session").
 
 Attach and Detach also carry no chord; they are search-only.
 

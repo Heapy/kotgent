@@ -65,10 +65,10 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       run: () => actions.interrupt(),
     },
     {
-      id: "session.resume", group: "session", chord: null,
+      id: "session.resume", group: "session", chord: "u",
       title: "Resume this session",
       subtitle: "restarts the selected conversation",
-      hint: null,
+      hint: "⌘K u",
       disabled: disabledWhenAlive(activeSession),
       run: () => actions.resume(),
     },
