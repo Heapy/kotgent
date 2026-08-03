@@ -581,7 +581,7 @@ cannot consume a newer attempt, and the events effect reaches the reattach callb
 never a dependency: rebuilding that socket resets its effect-scoped `opened` latch, after which no open
 ever reads as a recovery again.
 
-The fifth is the swipe-scroll bridge (`installTouchScroll`, `TerminalPane.js`), and it couples a browser
+The fifth is the swipe-scroll bridge (`installSwipeScroll`, `TerminalPane.js`), and it couples a browser
 gesture to tmux's forced `mouse on` and to one CSS rule — change any of the three and the other two must
 be re-measured. xterm 5.5 runs its own touch scrolling ONLY while mouse tracking is off, and kotgent keeps
 it on so a desktop wheel reaches pane history, so on a phone `touchmove` was a no-op: the seeded
@@ -589,9 +589,14 @@ it on so a desktop wheel reaches pane history, so on a phone `touchmove` was a n
 vertical swipe as line-based `WheelEvent`s on xterm's own element, so the reports go out under whatever
 mouse protocol is live rather than as hand-spelled SGR bytes, and it yields the gesture back when
 `mouseTrackingMode` is `"none"` so xterm's native path is not double-scrolled. Five rules are measured, not
-assumed. **`targetTouches`, never `touches`** — the latter counts contacts anywhere on screen, so a thumb
-resting on the sibling key bar (the ordinary one-handed grip) froze scrolling entirely until every finger
-lifted; reproduced on a real iPhone and fixed by the element-scoped list. **One report per ROW, and
+assumed. **POINTER events with `setPointerCapture`, never TouchEvents** — a touch gesture is delivered to
+the node it began on, and the rows under the finger are exactly what a scroll repaints, so a swipe over
+glyphs produced 1-2 reports for a whole gesture while the empty gutter beside the text stayed smooth
+(measured on a real iPhone; the earlier `targetTouches` fix, which cured a thumb resting on the key bar
+freezing the gesture, is subsumed — a captured pointer is identified by id, so other contacts are simply
+not it). Capturing retargets every later move to the terminal element, which is what makes the stream
+survive the repaint it causes. `pointerType !== "touch"` returns early: mouse and trackpad already have a
+real wheel. **One report per ROW, and
 deliberately NOT per five rows** — what a report is worth depends on who consumes it, and the browser
 cannot tell them apart, because tmux keeps mouse reporting enabled on the client either way while the PANE
 decides. A quiet pane enters copy-mode, where the binding is `send-keys -X -N 5 scroll-up` and a report

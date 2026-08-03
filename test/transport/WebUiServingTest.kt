@@ -2271,7 +2271,7 @@ class WebUiServingTest {
         // Slice on explicit indices rather than substringAfter/Before: those default to
         // `missingDelimiterValue = this`, so a renamed helper would silently widen `bridge` to the whole
         // file and let an assertion be satisfied by unrelated code elsewhere in the component.
-        val bridgeStart = pane.indexOf("function installTouchScroll(term) {")
+        val bridgeStart = pane.indexOf("function installSwipeScroll(term) {")
         assertTrue(bridgeStart >= 0, "the bridge helper exists under its documented name")
         val bridgeEnd = pane.indexOf("\n}\n\nexport function TerminalPane", bridgeStart)
         assertTrue(bridgeEnd > bridgeStart, "the bridge helper ends where the component begins")
@@ -2282,27 +2282,28 @@ class WebUiServingTest {
             bridge.contains("term.modes.mouseTrackingMode === \"none\""),
             "the bridge yields to xterm's native touch scrolling when mouse tracking is inactive",
         )
-        // `touches` counts contacts anywhere on the screen, so a thumb on the sibling key bar used to
-        // freeze scrolling until every finger lifted (reproduced on a real iPhone). The element-scoped
-        // list is the fix, and the plain form must not come back.
+        // Pointer capture, not TouchEvents: a touch gesture stays bound to the node it began on, and the
+        // rows under the finger are exactly what a scroll repaints. Measured on a real iPhone, a swipe
+        // over glyphs then produced 1-2 reports for a whole gesture while the empty gutter beside the
+        // text stayed smooth. Capturing retargets every later move to the terminal element.
         assertTrue(
-            bridge.contains("event.targetTouches.length !== 1") &&
-                bridge.contains("trackedTouch(event.targetTouches, gesture.identifier)") &&
+            bridge.contains("element.setPointerCapture(event.pointerId)") &&
+                bridge.contains("event.pointerType !== \"touch\"") &&
                 bridge.contains("Math.abs(totalY) <= Math.abs(totalX)"),
-            "only a single-finger, predominantly vertical gesture over the terminal itself is claimed",
+            "a finger's pointer is captured, and only a predominantly vertical gesture is claimed",
         )
         assertFalse(
-            bridge.contains("event.touches"),
-            "a second finger anywhere on the screen must not decide this element's gesture",
+            bridge.contains("addEventListener(\"touch"),
+            "the bridge does not listen for touch events, whose delivery a repaint can cut",
         )
         assertTrue(
             bridge.contains("element.dispatchEvent(new WheelEvent(\"wheel\"") &&
                 bridge.contains("deltaMode: WheelEvent.DOM_DELTA_LINE"),
             "a claimed swipe becomes line-based wheel input handled by xterm's current mouse protocol",
         )
-        // Ordering, not mere presence: cancelling an unqualified touchmove suppresses the compatibility
-        // mouse burst, and with it xterm's mousedown focus — i.e. hoisting this above the claim gate
-        // would make the software keyboard unreachable on a phone while every "contains" still passed.
+        // Ordering, not mere presence: cancelling an unqualified move suppresses the compatibility mouse
+        // burst, and with it xterm's mousedown focus — i.e. hoisting this above the claim gate would make
+        // the software keyboard unreachable on a phone while every "contains" still passed.
         val claimGateAt = bridge.indexOf("if (!gesture.claimed) {")
         val preventDefaultAt = bridge.indexOf("event.preventDefault()")
         assertTrue(
@@ -2319,14 +2320,14 @@ class WebUiServingTest {
             "travel is converted row-for-row and only what is emitted leaves the bank",
         )
         // The gesture banks; a frame loop emits. An agent pane repaints its whole alternate screen per
-        // report, so emitting a whole touchmove's worth at once arrives as a visible lurch — and a phone
+        // report, so emitting a whole move's worth at once arrives as a visible lurch — and a phone
         // gesture has no browser-synthesised momentum to carry it after the finger lifts.
-        val moveStart = bridge.indexOf("const onTouchMove = (event) => {")
-        val moveEnd = bridge.indexOf("const onTouchEnd = ")
-        assertTrue(moveStart in 0 until moveEnd, "the bridge has distinct move and end handlers")
+        val moveStart = bridge.indexOf("const onPointerMove = (event) => {")
+        val moveEnd = bridge.indexOf("const onPointerUp = ")
+        assertTrue(moveStart in 0 until moveEnd, "the bridge has distinct move and up handlers")
         assertFalse(
             bridge.substring(moveStart, moveEnd).contains("dispatchEvent"),
-            "a touchmove banks travel instead of emitting reports itself",
+            "a move banks travel instead of emitting reports itself",
         )
         assertTrue(
             bridge.contains("frameHandle = requestAnimationFrame(frame)") &&
@@ -2338,29 +2339,25 @@ class WebUiServingTest {
                 bridge.contains("coasting = true"),
             "a lifted finger keeps scrolling under a decaying velocity",
         )
-        // A new contact must stop a coasting scroll before anything else, or the throw fights the finger.
-        val touchStartAt = bridge.indexOf("const onTouchStart = (event) => {")
-        val stopInStart = bridge.indexOf("stopMotion();", touchStartAt)
-        val guardInStart = bridge.indexOf("event.targetTouches.length !== 1", touchStartAt)
+        // A new contact must stop a coasting scroll before it captures, or the throw fights the finger.
+        val downAt = bridge.indexOf("const onPointerDown = (event) => {")
+        val stopInDown = bridge.indexOf("stopMotion();", downAt)
+        val captureAt = bridge.indexOf("element.setPointerCapture(event.pointerId)", downAt)
         assertTrue(
-            touchStartAt >= 0 && stopInStart in (touchStartAt + 1) until guardInStart,
-            "a new touch cancels inertia immediately, before the gesture is even qualified",
+            downAt >= 0 && stopInDown in (downAt + 1) until captureAt,
+            "a new touch cancels inertia immediately, before the pointer is even captured",
         )
         assertTrue(
-            pane.contains("touchScroll.dispose()"),
+            pane.contains("swipeScroll.dispose()"),
             "the bridge is disposed with its terminal",
         )
-        for (event in listOf("touchstart", "touchmove", "touchend", "touchcancel")) {
+        for (event in listOf("pointerdown", "pointermove", "pointerup", "pointercancel")) {
             assertTrue(
                 bridge.contains("element.addEventListener(\"$event\"") &&
                     bridge.contains("element.removeEventListener(\"$event\""),
                 "the $event listener has a matching teardown",
             )
         }
-        assertTrue(
-            bridge.contains("element.addEventListener(\"touchmove\", onTouchMove, { passive: false })"),
-            "touchmove is explicitly non-passive so a claimed swipe can suppress browser navigation",
-        )
 
         // The reservation belongs to the bridge, which is installed unconditionally — under `pinch-zoom`
         // or `auto` a real iPhone stops scrolling the terminal entirely, which is what every viewport

@@ -68,20 +68,26 @@ function ctrlBytesFor(data) {
 /**
  * Bridge a one-finger phone swipe into xterm's ordinary wheel path.
  *
+ * The transport is POINTER events with `setPointerCapture`, not TouchEvents. A touch gesture is bound to
+ * the node it started on, and xterm repaints the rows under the finger as the terminal scrolls; measured
+ * on a real iPhone, a swipe over glyphs then delivered 1-2 reports for a whole gesture while the empty
+ * gutter beside the text — a node nothing repaints — stayed smooth. Capturing the pointer retargets every
+ * later move to the terminal element, so the stream survives the repaint it causes.
+ *
  * xterm 5.5 handles touch scrolling only while mouse tracking is OFF. Kotgent's tmux client deliberately
- * keeps tracking on so a desktop wheel reaches tmux's pane history, which leaves touchmove as a no-op on
- * phones. Synthetic wheel events reuse xterm's current mouse protocol and coordinate mapping instead of
+ * keeps tracking on so a desktop wheel reaches tmux's pane history, which leaves a bare finger drag a
+ * no-op on phones. Synthetic wheel events reuse xterm's current mouse protocol and coordinate mapping instead of
  * hard-coding SGR bytes here; tmux or a mouse-aware TUI therefore sees exactly the input a real wheel
  * would have produced.
  *
- * The gesture is SEPARATED from the emission. `touchmove` only banks travel and estimates a velocity; a
+ * The gesture is SEPARATED from the emission. A move only banks travel and estimates a velocity; a
  * `requestAnimationFrame` loop turns that bank into reports at a bounded, even rate and keeps running
  * after the finger lifts, with the velocity decaying. That shape is the point: an agent pane repaints its
- * whole alternate screen for every report it receives, so the old burst-per-touchmove arrived as visible
- * lurches, and a phone gesture — unlike a macOS trackpad, whose momentum the browser synthesises for
- * free — stopped dead the moment the finger left the glass.
+ * whole alternate screen for every report it receives, so emitting a whole move's worth at once arrived
+ * as visible lurches, and a phone gesture — unlike a macOS trackpad, whose momentum the browser
+ * synthesises for free — stopped dead the moment the finger left the glass.
  */
-function installTouchScroll(term) {
+function installSwipeScroll(term) {
   const element = term.element;
   if (!element) return { shouldFocus: () => true, dispose: () => {} };
 
@@ -119,13 +125,6 @@ function installTouchScroll(term) {
   let lastPoint = null;
   let frameHandle = 0;
   let lastFrameAt = 0;
-
-  const trackedTouch = (touches, identifier) => {
-    for (let i = 0; i < touches.length; i += 1) {
-      if (touches[i].identifier === identifier) return touches[i];
-    }
-    return null;
-  };
 
   const stopScheduler = () => {
     if (frameHandle) cancelAnimationFrame(frameHandle);
@@ -209,51 +208,43 @@ function installTouchScroll(term) {
     if (!frameHandle) frameHandle = requestAnimationFrame(frame);
   };
 
-  const onTouchStart = (event) => {
+  const onPointerDown = (event) => {
+    // Mouse and trackpad already have a real wheel; only a finger needs this bridge.
+    if (event.pointerType !== "touch") return;
     // Any new contact kills a coasting scroll — the same "catch the page" reflex native momentum has.
     stopMotion();
-    // `targetTouches`, never `touches`: the latter counts every contact with the screen, so a thumb
-    // resting on the sibling key bar refused the gesture and — with xterm's own touch path off and
-    // `touch-action: none` — froze scrolling until every finger lifted. Confirmed on a real iPhone.
-    if (event.targetTouches.length !== 1) {
-      gesture = null;
-      return;
-    }
-    const touch = event.targetTouches[0];
+    // Capture immediately. Without it the stream dies mid-swipe: measured on a real iPhone, a gesture
+    // over repainting rows delivered 1-2 reports where the captured pointer delivers dozens.
+    element.setPointerCapture(event.pointerId);
     lastMoveAt = performance.now();
-    lastPoint = { x: touch.clientX, y: touch.clientY };
+    lastPoint = { x: event.clientX, y: event.clientY };
     gesture = {
-      identifier: touch.identifier,
-      startX: touch.clientX,
-      startY: touch.clientY,
-      lastY: touch.clientY,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastY: event.clientY,
       claimed: false,
     };
   };
 
-  const onTouchMove = (event) => {
-    if (!gesture) return;
+  const onPointerMove = (event) => {
+    // A captured pointer is the only one that can reach here for this gesture, so the id check is the
+    // whole "is this our finger" test — a second finger elsewhere is simply not this pointer.
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
     // When tracking is off, xterm's own touch handler scrolls its local buffer. Taking the gesture here
     // would double-scroll it and would turn an otherwise useful native path into synthetic key presses.
-    if (event.targetTouches.length !== 1 || term.modes.mouseTrackingMode === "none") {
+    if (term.modes.mouseTrackingMode === "none") {
       gesture = null;
       stopMotion();
       return;
     }
 
-    const touch = trackedTouch(event.targetTouches, gesture.identifier);
-    if (!touch) {
-      gesture = null;
-      stopMotion();
-      return;
-    }
-
-    const deltaY = gesture.lastY - touch.clientY;
-    gesture.lastY = touch.clientY;
+    const deltaY = gesture.lastY - event.clientY;
+    gesture.lastY = event.clientY;
 
     if (!gesture.claimed) {
-      const totalX = touch.clientX - gesture.startX;
-      const totalY = gesture.startY - touch.clientY;
+      const totalX = event.clientX - gesture.startX;
+      const totalY = gesture.startY - event.clientY;
       if (Math.abs(totalY) < startThreshold || Math.abs(totalY) <= Math.abs(totalX)) return;
       gesture.claimed = true;
     }
@@ -264,9 +255,9 @@ function installTouchScroll(term) {
     suppressFocusUntil = Date.now() + 350;
 
     pendingPx += deltaY;
-    lastPoint = { x: touch.clientX, y: touch.clientY };
+    lastPoint = { x: event.clientX, y: event.clientY };
     // `performance.now()`, not `event.timeStamp`: the two are not guaranteed to share an origin, and a
-    // mismatched pair made every elapsed reading garbage — velocity stayed zero and nothing ever coasted.
+    // mismatched pair would make every elapsed reading garbage, leaving velocity at zero forever.
     const now = performance.now();
     const elapsed = now - lastMoveAt;
     lastMoveAt = now;
@@ -278,8 +269,9 @@ function installTouchScroll(term) {
     ensureScheduler();
   };
 
-  const onTouchEnd = () => {
-    const threw = gesture !== null && gesture.claimed;
+  const onPointerUp = (event) => {
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const threw = gesture.claimed;
     gesture = null;
     if (!threw) {
       stopMotion();
@@ -292,23 +284,24 @@ function installTouchScroll(term) {
     ensureScheduler();
   };
 
-  const onTouchCancel = () => {
+  const onPointerCancel = (event) => {
+    if (gesture && event.pointerId !== gesture.pointerId) return;
     gesture = null;
     stopMotion();
   };
 
-  element.addEventListener("touchstart", onTouchStart, { passive: true });
-  element.addEventListener("touchmove", onTouchMove, { passive: false });
-  element.addEventListener("touchend", onTouchEnd, { passive: true });
-  element.addEventListener("touchcancel", onTouchCancel, { passive: true });
+  element.addEventListener("pointerdown", onPointerDown);
+  element.addEventListener("pointermove", onPointerMove);
+  element.addEventListener("pointerup", onPointerUp);
+  element.addEventListener("pointercancel", onPointerCancel);
 
   return {
     shouldFocus: () => Date.now() >= suppressFocusUntil,
     dispose: () => {
-      element.removeEventListener("touchstart", onTouchStart);
-      element.removeEventListener("touchmove", onTouchMove);
-      element.removeEventListener("touchend", onTouchEnd);
-      element.removeEventListener("touchcancel", onTouchCancel);
+      element.removeEventListener("pointerdown", onPointerDown);
+      element.removeEventListener("pointermove", onPointerMove);
+      element.removeEventListener("pointerup", onPointerUp);
+      element.removeEventListener("pointercancel", onPointerCancel);
       gesture = null;
       stopMotion();
     },
@@ -489,9 +482,9 @@ export function TerminalPane({
     // xterm's own `mousedown` focus nor this click handler runs. `shouldFocus()` is therefore a second
     // line for a browser that still delivers a click, not the mechanism; do not "prove" the keyboard
     // rule by asserting this call exists.
-    const touchScroll = installTouchScroll(term);
+    const swipeScroll = installSwipeScroll(term);
     const focusTerminal = () => {
-      if (touchScroll.shouldFocus()) term.focus();
+      if (swipeScroll.shouldFocus()) term.focus();
     };
     host.addEventListener("click", focusTerminal);
 
@@ -515,7 +508,7 @@ export function TerminalPane({
       refit.cancel();
       observer.disconnect();
       host.removeEventListener("click", focusTerminal);
-      touchScroll.dispose();
+      swipeScroll.dispose();
       if (viewport) {
         viewport.removeEventListener("resize", viewportChanged);
         viewport.removeEventListener("scroll", viewportChanged);
