@@ -32,10 +32,13 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.set
 import kotlinx.cinterop.toKString
+import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,7 +57,14 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import platform.posix.F_OK
 import platform.posix.access
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fwrite
 import platform.posix.getcwd
+import platform.posix.mkdir
+import platform.posix.mkdtemp
+import platform.posix.rmdir
+import platform.posix.unlink
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -86,11 +96,12 @@ class WebUiServingTest {
         val body = resp.bodyAsText()
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
         assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
+        val rev = revisionOf(body)
         assertTrue(
-            body.contains("src=\"app.js?v=mobile-swipe-scroll-7\""),
-            "index.html bootstraps the cache-revised app.js",
+            body.contains("src=\"/_v/$rev/app.js\""),
+            "index.html bootstraps app.js through its content-revisioned URL",
         )
-        assertTrue(body.contains("vendor/xterm.js"), "index.html loads the vendored xterm.js")
+        assertTrue(body.contains("/_v/$rev/vendor/xterm.js"), "index.html loads the vendored xterm.js")
         assertContentTypeContains(resp, "html")
     }
 
@@ -193,17 +204,20 @@ class WebUiServingTest {
     fun theImportMapResolvesToVendoredModulesThatAreActuallyServed() = withServer { ctx ->
         val index = ctx.get("/").bodyAsText()
         assertTrue(index.contains("type=\"importmap\""), "index.html declares an import map")
+        // Unlike a relative import inside app.js, an import-map target resolves against the DOCUMENT, so
+        // it does not inherit app.js's revision prefix and has to carry one of its own.
+        val rev = revisionOf(index)
 
         val mapped = mapOf(
-            "preact" to "/vendor/preact.module.js",
-            "preact/hooks" to "/vendor/preact-hooks.module.js",
-            "htm" to "/vendor/htm.module.js",
-            "htm/preact" to "/vendor/htm-preact.module.js",
-            "qrcode" to "/vendor/qrcode.module.js",
+            "preact" to "/_v/$rev/vendor/preact.module.js",
+            "preact/hooks" to "/_v/$rev/vendor/preact-hooks.module.js",
+            "htm" to "/_v/$rev/vendor/htm.module.js",
+            "htm/preact" to "/_v/$rev/vendor/htm-preact.module.js",
+            "qrcode" to "/_v/$rev/vendor/qrcode.module.js",
         )
         for ((specifier, path) in mapped) {
             assertTrue(
-                index.contains("\"$specifier\"") && index.contains(path.removePrefix("/")),
+                index.contains("\"$specifier\": \"$path\""),
                 "the import map wires '$specifier' to $path",
             )
             val resp = ctx.get(path)
@@ -213,11 +227,11 @@ class WebUiServingTest {
         }
 
         // htm's Preact binding re-exports from both bare specifiers; the hooks build imports 'preact'.
-        val htmPreact = ctx.get("/vendor/htm-preact.module.js").bodyAsText()
+        val htmPreact = ctx.get("/_v/$rev/vendor/htm-preact.module.js").bodyAsText()
         assertTrue(htmPreact.contains("\"preact\""), "htm/preact imports the bare 'preact' specifier")
         assertTrue(htmPreact.contains("\"htm\""), "htm/preact imports the bare 'htm' specifier")
         assertTrue(
-            ctx.get("/vendor/preact-hooks.module.js").bodyAsText().contains("\"preact\""),
+            ctx.get("/_v/$rev/vendor/preact-hooks.module.js").bodyAsText().contains("\"preact\""),
             "the hooks build imports the bare 'preact' specifier",
         )
     }
@@ -1421,34 +1435,164 @@ class WebUiServingTest {
             body.contains("viewport-fit=cover"),
             "the viewport reaches under the notch — the safe-area padding depends on it",
         )
+        val rev = revisionOf(body)
         assertTrue(
             body.contains("name=\"color-scheme\" content=\"dark\"") &&
-                body.contains("style.css?v=mobile-swipe-scroll-7") &&
-                body.contains("app.js?v=mobile-swipe-scroll-7"),
-            "the installed iOS app declares dark system UI and fetches the revised viewport assets",
+                body.contains("href=\"/_v/$rev/style.css\"") &&
+                body.contains("src=\"/_v/$rev/app.js\""),
+            "the installed iOS app declares dark system UI and fetches content-revisioned assets",
+        )
+        // The manifest and the home-screen icon deliberately keep stable URLs: an installed PWA refers to
+        // them by a fixed address, so a revision in their path would be churn, not invalidation.
+        assertTrue(
+            body.contains("href=\"manifest.webmanifest\"") &&
+                body.contains("href=\"icons/apple-touch-icon.png\""),
+            "the install surface stays on stable URLs the installed app can keep referring to",
         )
     }
 
     /**
-     * `index.html` is the shell every other asset is fetched from and `/sw.js` will be the service worker
-     * (browsers cap a worker script at 24h of freshness), so both must revalidate. Everything else keeps
-     * the default so this stays a targeted rule, not a blanket "never cache anything".
+     * The one caching rule. An asset reached through a valid `/_v/<rev>/` prefix is content-addressed, so
+     * its bytes can never change under that URL and it is cached forever. Everything else revalidates:
+     * the shell (which carries the revision, so caching it would pin every asset URL with it), the worker
+     * (browsers cap a worker script at 24h of freshness), the manifest and icons — and any asset reached
+     * WITHOUT the prefix, e.g. from a stale bookmark. That last group used to be served with no caching
+     * header at all, i.e. under the browser's own heuristic freshness, which is precisely what the
+     * hand-bumped `?v=` token existed to escape.
      */
     @Test
-    fun theAppShellIsServedNoCacheAndTheRestIsNot() = withServer { ctx ->
-        for (path in listOf("/", "/index.html")) {
+    fun revisionedAssetsAreImmutableAndEverythingElseRevalidates() = withServer { ctx ->
+        val rev = revisionOf(ctx.get("/").bodyAsText())
+        for (path in listOf(
+            "/_v/$rev/app.js", "/_v/$rev/style.css",
+            "/_v/$rev/lib/api.js", "/_v/$rev/vendor/xterm.js",
+        )) {
+            assertEquals(
+                IMMUTABLE_CACHE_CONTROL,
+                ctx.get(path).headers[HttpHeaders.CacheControl],
+                "GET $path is content-addressed, so it never has to be fetched twice",
+            )
+        }
+        for (path in listOf(
+            "/", "/index.html", "/sw.js", "/manifest.webmanifest", "/icons/icon-192.png",
+            "/app.js", "/style.css",
+        )) {
             assertEquals(
                 "no-cache",
                 ctx.get(path).headers[HttpHeaders.CacheControl],
-                "GET $path revalidates so a deploy is never pinned behind a cached shell",
+                "GET $path revalidates so a deploy is never pinned behind a cached copy",
             )
         }
-        for (path in listOf("/app.js", "/style.css", "/manifest.webmanifest", "/icons/icon-192.png")) {
+        // Neither entry point may become immutable however it was addressed: the shell hands out every
+        // other asset URL, and the worker's root scope depends on its own path.
+        for (path in listOf("/_v/$rev/index.html", "/_v/$rev/sw.js")) {
             assertEquals(
-                null,
+                "no-cache",
                 ctx.get(path).headers[HttpHeaders.CacheControl],
-                "GET $path keeps the default caching — the no-cache rule is targeted",
+                "GET $path revalidates even through the revision prefix",
             )
+        }
+    }
+
+    /**
+     * The substitution itself, and the proof that the hand-maintained scheme is gone. A surviving `?v=`
+     * would mean someone re-introduced a token that has to be bumped by hand — and it would be bumped for
+     * three files out of thirty-four, which is what made the old scheme silently miss changes. A surviving
+     * `__REV__` would mean the daemon served a URL that never changes.
+     */
+    @Test
+    fun theServedShellCarriesARealRevisionAndNoHandBumpedToken() = withServer { ctx ->
+        val index = ctx.get("/").bodyAsText()
+        assertFalse(index.contains(WEBUI_REV_PLACEHOLDER), "the daemon substituted the revision placeholder")
+        assertFalse(index.contains("?v="), "no asset is fetched with a hand-bumped cache-busting query")
+        assertTrue(isRevToken(revisionOf(index)), "the substituted revision is a real content hash")
+
+        // The rest of the graph inherits the prefix from app.js's own URL, so no import may spell a
+        // version of its own — one that did would also be a second module instance of the same file.
+        assertFalse(ctx.get("/app.js").bodyAsText().contains("?v="), "app.js imports carry no query version")
+    }
+
+    /**
+     * The prefix is an address, not a filter: the same bytes sit behind it, and an unrecognised revision is
+     * still served. Refusing one would break the single real race — a shell fetched just before a daemon
+     * update asking for its assets just after it — for no gain, since a client can only hold an old
+     * revision's URL from an old shell, which it cannot have (the shell is `no-cache`).
+     */
+    @Test
+    fun theRevisionPrefixOnlyChangesTheAddress() = withServer { ctx ->
+        val rev = revisionOf(ctx.get("/").bodyAsText())
+        assertEquals(
+            ctx.get("/app.js").bodyAsText(),
+            ctx.get("/_v/$rev/app.js").bodyAsText(),
+            "the revisioned URL serves the very same module",
+        )
+        val stale = ctx.get("/_v/0123456789ab/app.js")
+        assertEquals(HttpStatusCode.OK, stale.status, "an older revision's URL still serves its asset")
+
+        // A revision this server never minted is the one dangerous case: `immutable` on a URL that cannot
+        // change — a failed substitution — would pin the file in every cache forever.
+        val bogus = ctx.get("/_v/${WEBUI_REV_PLACEHOLDER}/app.js")
+        assertEquals(HttpStatusCode.OK, bogus.status, "a malformed revision still serves the asset")
+        assertEquals(
+            "no-cache",
+            bogus.headers[HttpHeaders.CacheControl],
+            "a revision this server never minted must revalidate, not pin the asset forever",
+        )
+    }
+
+    /**
+     * The prefix is stripped BEFORE the traversal guard runs, so a `..` underneath it still reaches that
+     * guard instead of being hidden by the prefix. Asserted on the pure split rather than over HTTP,
+     * because a client normalises `..` out of a URL before it is ever sent.
+     */
+    @Test
+    fun strippingTheRevisionPrefixLeavesTraversalVisibleToTheGuard() {
+        val (rev, path) = stripRevPrefix("_v/0123456789ab/../../etc/passwd")
+        assertEquals("0123456789ab", rev, "the prefix is recognised")
+        assertTrue(path.contains(".."), "the traversal stays in the path the guard inspects")
+
+        assertEquals(null to "app.js", stripRevPrefix("app.js"), "an unprefixed path is untouched")
+        assertEquals(null to "_v/app.js", stripRevPrefix("_v/app.js"), "a prefix with no revision is untouched")
+        assertEquals(null to "_v/abc/", stripRevPrefix("_v/abc/"), "a prefix naming no file is untouched")
+        assertEquals("abc" to "lib/api.js", stripRevPrefix("_v/abc/lib/api.js"), "a nested path keeps its shape")
+
+        assertFalse(isRevToken("__REV__"), "the placeholder is not a revision")
+        assertFalse(isRevToken("0123456789AB"), "a revision is lowercase hex")
+        assertFalse(isRevToken("0123456789abc"), "a revision is exactly $WEBUI_REV_LENGTH characters")
+    }
+
+    /**
+     * The guarantee itself: a changed byte anywhere under the web UI directory changes the revision, and
+     * with it every asset URL the shell hands out — which is what replaces remembering to bump a token.
+     * Checked over a throwaway tree, since the served one cannot be mutated from a test.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    @Test
+    fun anyChangedByteChangesTheRevision() {
+        val dir = makeTempDir()
+        try {
+            writeFile("$dir/index.html", "<html>$WEBUI_REV_PLACEHOLDER</html>")
+            assertEquals(0, mkdir("$dir/lib", MODE_0700.convert()), "could not create the nested directory")
+            writeFile("$dir/lib/api.js", "export const a = 1;\n")
+
+            val before = webUiRevision(dir)
+            assertTrue(isRevToken(before), "a revision is a $WEBUI_REV_LENGTH-character lowercase hex token")
+            assertEquals(before, webUiRevision(dir), "an unchanged tree keeps its revision")
+
+            writeFile("$dir/lib/api.js", "export const a = 2;\n")
+            val afterEdit = webUiRevision(dir)
+            assertTrue(afterEdit != before, "editing a nested module changes the revision")
+
+            // The path is hashed alongside the content, so a rename counts even though no byte moved.
+            writeFile("$dir/lib/renamed.js", "export const a = 2;\n")
+            unlink("$dir/lib/api.js")
+            assertTrue(webUiRevision(dir) != afterEdit, "renaming a module changes the revision")
+        } finally {
+            unlink("$dir/index.html")
+            unlink("$dir/lib/api.js")
+            unlink("$dir/lib/renamed.js")
+            rmdir("$dir/lib")
+            rmdir(dir)
         }
     }
 
@@ -2872,6 +3016,41 @@ class WebUiServingTest {
     }
 
     /**
+     * The revision the served shell is carrying, read out of a `src="…"` attribute rather than the first
+     * `/_v/` in the file — the comment above those tags describes the shape too, and would be matched.
+     */
+    private fun revisionOf(index: String): String {
+        val marker = "src=\"/_v/"
+        val at = index.indexOf(marker)
+        assertTrue(at >= 0, "index.html fetches its assets through the revision prefix")
+        val rest = index.substring(at + marker.length)
+        val end = rest.indexOf('/')
+        assertTrue(end > 0, "the revision prefix names a path underneath it")
+        return rest.substring(0, end)
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun makeTempDir(): String = memScoped {
+        val template = "/tmp/kotgent-webui-rev-test-XXXXXX"
+        val encoded = template.encodeToByteArray()
+        val chars = allocArray<ByteVar>(encoded.size + 1)
+        encoded.forEachIndexed { index, byte -> chars[index] = byte }
+        chars[encoded.size] = 0
+        mkdtemp(chars)?.toKString() ?: error("could not create the revision test directory")
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun writeFile(path: String, text: String) {
+        val bytes = text.encodeToByteArray()
+        val fp = fopen(path, "wb") ?: error("cannot write $path")
+        try {
+            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+        } finally {
+            fclose(fp)
+        }
+    }
+
+    /**
      * Assert [bytes] really are a square PNG of [size] pixels, read out of the file's own IHDR rather than
      * trusted from the manifest or the filename. The icons are rendered by hand (`qlmanage` + `sips`) and
      * committed, so "the 192 slot holds a 512 render" is a mistake nothing else in the repo would catch.
@@ -2955,6 +3134,9 @@ private fun currentDir(): String = memScoped {
 
 @OptIn(ExperimentalForeignApi::class)
 private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
+
+/** `rwx------` for the throwaway directory the revision test builds its tree in. */
+private const val MODE_0700: Int = 0b111_000_000
 
 /**
  * Locate the `resources/webui` directory robustly: `./kotlin test` runs from the module root (so the

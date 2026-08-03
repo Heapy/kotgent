@@ -358,29 +358,35 @@ fun Route.staticWebUi(dir: String?) {
 }
 
 private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: String, rel: String) {
-    if (rel.contains("..") || rel.startsWith("/")) {
+    // Strip the revision BEFORE the traversal guard, so `_v/<rev>/../../etc/passwd` is still rejected.
+    val (rev, path) = stripRevPrefix(rel)
+    if (path.contains("..") || path.startsWith("/")) {
         call.respondText("bad path", status = HttpStatusCode.Forbidden)
         return
     }
-    val bytes = readFileBytesOrNull("$dir/$rel")
+    val bytes = readFileBytesOrNull("$dir/$path")
     if (bytes == null) {
         call.respondText("not found", status = HttpStatusCode.NotFound)
         return
     }
-    if (isRevalidateAlways(rel)) call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
-    call.respondBytes(bytes, contentTypeFor(rel))
+    // `index.html` is the only file carrying the placeholder, and the only one that has to: the revision
+    // it receives here is what gives every asset it references a content-addressed URL.
+    val body = if (path == "index.html") {
+        bytes.decodeToString().replace(WEBUI_REV_PLACEHOLDER, webUiRevision(dir)).encodeToByteArray()
+    } else {
+        bytes
+    }
+    // One rule: a valid revision in the path means the bytes can never change under this URL, so cache it
+    // forever; everything else revalidates. The `no-cache` half ("revalidate before use", NOT "do not
+    // store") also covers assets reached WITHOUT the prefix — a stale bookmark or an old shell — which
+    // used to be served with no caching header at all, i.e. under the browser's own heuristic freshness.
+    val immutable = rev != null && isRevToken(rev) && !neverImmutable(path)
+    call.response.headers.append(
+        HttpHeaders.CacheControl,
+        if (immutable) IMMUTABLE_CACHE_CONTROL else "no-cache",
+    )
+    call.respondBytes(body, contentTypeFor(path))
 }
-
-/**
- * The two files a stale cache would pin the whole app on, so both are served `Cache-Control: no-cache`
- * ("revalidate before use", NOT "do not store"): `index.html` is the shell every other asset is fetched
- * from, and `/sw.js` is the service worker — browsers cap a worker script's freshness at 24h, and a
- * cached one would keep serving an old push handler for a day after the daemon was updated.
- *
- * Matched on the whole request-relative path, not the extension: only the root-scope worker gets this,
- * and a `vendor/index.html` would not.
- */
-private fun isRevalidateAlways(rel: String): Boolean = rel == "index.html" || rel == "sw.js"
 
 private fun contentTypeFor(path: String): ContentType = when (path.substringAfterLast('.', "")) {
     "html" -> ContentType.Text.Html

@@ -521,6 +521,32 @@ are served with `Cache-Control: no-cache` ("revalidate", not "never store") so a
 cannot remain pinned after an upgrade. Keep the root scope, network-only fetch contract, and the targeted
 cache rule together.
 
+**Asset invalidation is a content revision in the PATH, and the prefix is what makes it free.**
+`WebUiAssets.kt`'s `webUiRevision` hashes the whole `resources/webui` tree — `sha256` per file, then
+`sha256` over the sorted `"<relpath> <hex>"` listing, first 12 hex characters — and `serveStaticFile`
+substitutes it for the `__REV__` placeholder in `index.html`. Hashing per file rather than over one
+concatenation bounds memory to a single file AND puts the path into the result, so a rename counts too;
+the sort makes the answer independent of `readdir` order. It is recomputed on **every** `index.html`
+request (~640 KB, 34 files) rather than memoized, so an edit made while the daemon runs is visible on the
+next reload with no cache to invalidate. **The prefix must stay a path segment, never a `?v=` query**: an
+ES module specifier resolves against the URL of the IMPORTING MODULE, so substituting `/_v/<rev>/` once in
+`index.html` reaches the entire import graph without touching a line of JavaScript — which is exactly what
+the old hand-bumped token could not do (it versioned 3 files out of 34, and a `lib/api.js` edit shipped
+under an unchanged URL). The one thing it does not reach is the `importmap`, whose targets resolve against
+the DOCUMENT and therefore spell the prefix out; `sw.js`, `manifest.webmanifest` and `icons/` deliberately
+stay on stable URLs, because the worker's root scope depends on its path and an installed PWA refers to
+the other two by a fixed address. One caching rule follows: a valid revision in the path means the bytes
+can never change under that URL → `max-age=31536000, immutable`; **everything else, prefixed or not, is
+`no-cache`** — which also closed the real hole, since unprefixed assets used to be served with no caching
+header at all, i.e. under the browser's own heuristic freshness. Two guards are load-bearing and must not
+be relaxed. `isRevToken` gates `immutable` on `[0-9a-f]{12}`: a failed substitution would otherwise serve
+`/_v/__REV__/app.js`, a URL that never changes, and pin that file in every cache forever — with the guard
+it degrades to revalidation. And `neverImmutable` keeps `index.html` and `sw.js` revalidating however they
+were addressed, because the shell is what hands out every other asset URL. An unrecognised revision is
+deliberately **served, not 404'd** — the prefix is only stripped, never verified — since a client can hold
+an old revision only from an old shell it cannot have, and refusing would break the one real race (a shell
+fetched just before a daemon update asking for its assets just after it).
+
 **The command palette is the home of rare Web UI actions.** `resources/webui/lib/commands.js` is the
 single command and mnemonic registry: search mode renders its filtered descriptors and leader mode renders
 the chord-bearing subset. Do not introduce a second list in `app.js` or a component. The sidebar brand row
@@ -818,7 +844,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **892 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **896 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -862,6 +888,7 @@ src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Ve
                                Claude/Codex/Junie vendor-store probes + scans, ShellVendorStoreProbe.kt
 src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
 src/transport/                 Server, Auth/Authorization, session cookies, tickets/rate limit,
+                               WebUiAssets (content revision + the one caching rule),
                                auth/push/control/event/terminal/hook routes
 src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands, Config (~/.kotgent/config.json)
 src/launchd/                   Plist, Install
