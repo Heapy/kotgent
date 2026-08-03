@@ -2296,9 +2296,8 @@ class WebUiServingTest {
             "a second finger anywhere on the screen must not decide this element's gesture",
         )
         assertTrue(
-            bridge.contains("new WheelEvent(\"wheel\"") &&
-                bridge.contains("deltaMode: WheelEvent.DOM_DELTA_LINE") &&
-                bridge.contains("element.dispatchEvent(wheelEvent)"),
+            bridge.contains("element.dispatchEvent(new WheelEvent(\"wheel\"") &&
+                bridge.contains("deltaMode: WheelEvent.DOM_DELTA_LINE"),
             "a claimed swipe becomes line-based wheel input handled by xterm's current mouse protocol",
         )
         // Ordering, not mere presence: cancelling an unqualified touchmove suppresses the compatibility
@@ -2311,14 +2310,41 @@ class WebUiServingTest {
             "the gesture is cancelled only after it qualifies as a swipe (claim at $claimGateAt, " +
                 "preventDefault at $preventDefaultAt)",
         )
-        // One report per row, and the whole travel debited: a banked overflow kept scrolling the old way
-        // after the finger reversed. The rate is deliberately NOT tmux's five-lines-per-report — an agent
-        // pane forwards the wheel to its full-screen TUI instead of entering copy-mode, and converting
-        // for copy-mode made that common case five times too slow.
+        // One report per row. The rate is deliberately NOT tmux's five-lines-per-report — an agent pane
+        // forwards the wheel to its full-screen TUI instead of entering copy-mode, and converting for
+        // copy-mode made that common case five times too slow.
         assertTrue(
-            bridge.contains("Math.trunc(gesture.remainder / rowHeight)") &&
-                bridge.contains("gesture.remainder -= reports * rowHeight"),
-            "travel is converted row-for-row and fully debited",
+            bridge.contains("Math.trunc(pendingPx / rowHeight)") &&
+                bridge.contains("pendingPx -= direction * count * rowHeight"),
+            "travel is converted row-for-row and only what is emitted leaves the bank",
+        )
+        // The gesture banks; a frame loop emits. An agent pane repaints its whole alternate screen per
+        // report, so emitting a whole touchmove's worth at once arrives as a visible lurch — and a phone
+        // gesture has no browser-synthesised momentum to carry it after the finger lifts.
+        val moveStart = bridge.indexOf("const onTouchMove = (event) => {")
+        val moveEnd = bridge.indexOf("const onTouchEnd = (event) => {")
+        assertTrue(moveStart in 0 until moveEnd, "the bridge has distinct move and end handlers")
+        assertFalse(
+            bridge.substring(moveStart, moveEnd).contains("dispatchEvent"),
+            "a touchmove banks travel instead of emitting reports itself",
+        )
+        assertTrue(
+            bridge.contains("frameHandle = requestAnimationFrame(frame)") &&
+                bridge.contains("cancelAnimationFrame(frameHandle)"),
+            "reports are paced by a frame loop that can be stopped",
+        )
+        assertTrue(
+            bridge.contains("velocity *= Math.pow(inertiaDecayPerMs, elapsed)") &&
+                bridge.contains("coasting = true"),
+            "a lifted finger keeps scrolling under a decaying velocity",
+        )
+        // A new contact must stop a coasting scroll before anything else, or the throw fights the finger.
+        val touchStartAt = bridge.indexOf("const onTouchStart = (event) => {")
+        val stopInStart = bridge.indexOf("stopMotion();", touchStartAt)
+        val guardInStart = bridge.indexOf("event.targetTouches.length !== 1", touchStartAt)
+        assertTrue(
+            touchStartAt >= 0 && stopInStart in (touchStartAt + 1) until guardInStart,
+            "a new touch cancels inertia immediately, before the gesture is even qualified",
         )
         assertTrue(
             pane.contains("touchScroll.dispose()"),

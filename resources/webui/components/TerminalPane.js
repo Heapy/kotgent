@@ -73,13 +73,31 @@ function ctrlBytesFor(data) {
  * phones. Synthetic wheel events reuse xterm's current mouse protocol and coordinate mapping instead of
  * hard-coding SGR bytes here; tmux or a mouse-aware TUI therefore sees exactly the input a real wheel
  * would have produced.
+ *
+ * The gesture is SEPARATED from the emission. `touchmove` only banks travel and estimates a velocity; a
+ * `requestAnimationFrame` loop turns that bank into reports at a bounded, even rate and keeps running
+ * after the finger lifts, with the velocity decaying. That shape is the point: an agent pane repaints its
+ * whole alternate screen for every report it receives, so the old burst-per-touchmove arrived as visible
+ * lurches, and a phone gesture — unlike a macOS trackpad, whose momentum the browser synthesises for
+ * free — stopped dead the moment the finger left the glass.
  */
 function installTouchScroll(term) {
   const element = term.element;
   if (!element) return { shouldFocus: () => true, dispose: () => {} };
 
   const startThreshold = 6;
-  const maxEventsPerMove = 12;
+  // The emission budget per frame. It must stay ABOVE what a finger actually delivers (~60px, i.e. about
+  // four rows, per frame on the measured device) or the picture falls behind the finger, which reads far
+  // worse than a burst. Everything above it stays banked rather than being dropped.
+  const maxReportsPerFrame = 6;
+  const velocityWeight = 0.6;
+  // Per-millisecond decay: ~0.92 across one 60Hz frame, ~0.22 over 300ms. A 3.6px/ms throw therefore
+  // coasts roughly 700px — about two screens — before it dies.
+  const inertiaDecayPerMs = 0.995;
+  const minInertiaVelocity = 0.03;
+  const maxInertiaMs = 1200;
+  // A finger that rested before lifting means "stop here", not "throw"; only a still-moving lift coasts.
+  const inertiaHandoffMs = 90;
   // One report per ROW, deliberately, even though tmux's own copy-mode binding is
   // `send-keys -X -N 5 scroll-up` and therefore moves five lines per report. What a report is worth
   // depends on who consumes it, and this side cannot tell them apart: tmux keeps mouse reporting enabled
@@ -92,7 +110,16 @@ function installTouchScroll(term) {
   let gesture = null;
   let suppressFocusUntil = 0;
 
-  const resetGesture = () => { gesture = null; };
+  // Scheduler state, deliberately outside `gesture`: it outlives the touch that produced it.
+  let pendingPx = 0;
+  let velocity = 0;
+  let lastMoveAt = 0;
+  let coasting = false;
+  let inertiaUntil = 0;
+  let lastPoint = null;
+  let frameHandle = 0;
+  let lastFrameAt = 0;
+
   const trackedTouch = (touches, identifier) => {
     for (let i = 0; i < touches.length; i += 1) {
       if (touches[i].identifier === identifier) return touches[i];
@@ -100,21 +127,106 @@ function installTouchScroll(term) {
     return null;
   };
 
+  const stopScheduler = () => {
+    if (frameHandle) cancelAnimationFrame(frameHandle);
+    frameHandle = 0;
+    lastFrameAt = 0;
+  };
+
+  /** Drop every trace of motion: the bank, the throw, and the loop burning frames for them. */
+  const stopMotion = () => {
+    pendingPx = 0;
+    velocity = 0;
+    coasting = false;
+    stopScheduler();
+  };
+
+  const dispatchReports = (count, direction, bounds) => {
+    // Keep the reported position inside the character grid: the finger may be long gone by the time
+    // inertia emits these, and a report has to name a cell tmux will accept.
+    const point = lastPoint || { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
+    const clientX = Math.max(bounds.left + 1, Math.min(point.x, bounds.right - 1));
+    const clientY = Math.max(bounds.top + 1, Math.min(point.y, bounds.bottom - 1));
+    for (let i = 0; i < count; i += 1) {
+      element.dispatchEvent(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX,
+        clientY,
+        deltaY: direction,
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+        view: window,
+      }));
+    }
+  };
+
+  const frame = (now) => {
+    frameHandle = 0;
+    // A backgrounded tab resumes with a huge gap; clamp it so inertia cannot teleport on return.
+    const elapsed = lastFrameAt ? Math.min(now - lastFrameAt, 64) : 16.7;
+    lastFrameAt = now;
+
+    // The mode can go away under a running throw (a pane leaving mouse reporting); stop rather than
+    // keep feeding events xterm would now interpret differently.
+    if (term.modes.mouseTrackingMode === "none") {
+      stopMotion();
+      return;
+    }
+
+    if (coasting) {
+      if (now >= inertiaUntil || Math.abs(velocity) < minInertiaVelocity) velocity = 0;
+      else {
+        pendingPx += velocity * elapsed;
+        velocity *= Math.pow(inertiaDecayPerMs, elapsed);
+      }
+    }
+
+    const screen = element.querySelector(".xterm-screen") || element;
+    const bounds = screen.getBoundingClientRect();
+    const rowHeight = bounds.height / Math.max(term.rows, 1);
+    if (!Number.isFinite(rowHeight) || rowHeight <= 0) {
+      stopMotion();
+      return;
+    }
+
+    const banked = Math.trunc(pendingPx / rowHeight);
+    if (banked !== 0) {
+      const direction = Math.sign(banked);
+      const count = Math.min(Math.abs(banked), maxReportsPerFrame);
+      // Only what is actually emitted leaves the bank; the rest rides the next frames, and a reversal
+      // simply subtracts from it instead of being paid off after the old direction.
+      pendingPx -= direction * count * rowHeight;
+      dispatchReports(count, direction, bounds);
+    }
+
+    const finished = !gesture && velocity === 0 && Math.abs(pendingPx) < rowHeight;
+    if (finished) stopMotion();
+    else frameHandle = requestAnimationFrame(frame);
+  };
+
+  const ensureScheduler = () => {
+    if (!frameHandle) frameHandle = requestAnimationFrame(frame);
+  };
+
   const onTouchStart = (event) => {
+    // Any new contact kills a coasting scroll — the same "catch the page" reflex native momentum has.
+    stopMotion();
     // `targetTouches`, never `touches`: the latter counts every contact with the screen, so a thumb
     // resting on the sibling key bar refused the gesture and — with xterm's own touch path off and
     // `touch-action: none` — froze scrolling until every finger lifted. Confirmed on a real iPhone.
     if (event.targetTouches.length !== 1) {
-      resetGesture();
+      gesture = null;
       return;
     }
     const touch = event.targetTouches[0];
+    lastMoveAt = event.timeStamp;
+    lastPoint = { x: touch.clientX, y: touch.clientY };
     gesture = {
       identifier: touch.identifier,
       startX: touch.clientX,
       startY: touch.clientY,
       lastY: touch.clientY,
-      remainder: 0,
       claimed: false,
     };
   };
@@ -124,19 +236,20 @@ function installTouchScroll(term) {
     // When tracking is off, xterm's own touch handler scrolls its local buffer. Taking the gesture here
     // would double-scroll it and would turn an otherwise useful native path into synthetic key presses.
     if (event.targetTouches.length !== 1 || term.modes.mouseTrackingMode === "none") {
-      resetGesture();
+      gesture = null;
+      stopMotion();
       return;
     }
 
     const touch = trackedTouch(event.targetTouches, gesture.identifier);
     if (!touch) {
-      resetGesture();
+      gesture = null;
+      stopMotion();
       return;
     }
 
     const deltaY = gesture.lastY - touch.clientY;
     gesture.lastY = touch.clientY;
-    gesture.remainder += deltaY;
 
     if (!gesture.claimed) {
       const totalX = touch.clientX - gesture.startX;
@@ -150,52 +263,51 @@ function installTouchScroll(term) {
     if (event.cancelable) event.preventDefault();
     suppressFocusUntil = Date.now() + 350;
 
-    const screen = element.querySelector(".xterm-screen") || element;
-    const bounds = screen.getBoundingClientRect();
-    const rowHeight = bounds.height / Math.max(term.rows, 1);
-    if (!Number.isFinite(rowHeight) || rowHeight <= 0) return;
-
-    const reports = Math.trunc(gesture.remainder / rowHeight);
-    if (reports === 0) return;
-    const direction = Math.sign(reports);
-    // Debit everything the finger travelled, including whatever the cap refuses to dispatch. Banking the
-    // overflow instead made a reversal pay off the old direction's backlog first, so the terminal kept
-    // scrolling the wrong way after the finger turned around. Only the sub-report fraction carries over.
-    gesture.remainder -= reports * rowHeight;
-    const eventCount = Math.min(Math.abs(reports), maxEventsPerMove);
-
-    // Keep the reported position inside the character grid even if the finger leaves it mid-swipe. tmux
-    // resolves every wheel report against a cell, and discards coordinates outside its current geometry.
-    const clientX = Math.max(bounds.left + 1, Math.min(touch.clientX, bounds.right - 1));
-    const clientY = Math.max(bounds.top + 1, Math.min(touch.clientY, bounds.bottom - 1));
-    for (let i = 0; i < eventCount; i += 1) {
-      const wheelEvent = new WheelEvent("wheel", {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        clientX,
-        clientY,
-        deltaY: direction,
-        deltaMode: WheelEvent.DOM_DELTA_LINE,
-        view: window,
-      });
-      element.dispatchEvent(wheelEvent);
+    pendingPx += deltaY;
+    lastPoint = { x: touch.clientX, y: touch.clientY };
+    const elapsed = event.timeStamp - lastMoveAt;
+    lastMoveAt = event.timeStamp;
+    // Smooth the estimate: iOS delivers moves unevenly, and one fat frame must not define the throw.
+    if (elapsed > 0) {
+      const sample = deltaY / elapsed;
+      velocity = velocity === 0 ? sample : velocity * (1 - velocityWeight) + sample * velocityWeight;
     }
+    ensureScheduler();
+  };
+
+  const onTouchEnd = (event) => {
+    const threw = gesture !== null && gesture.claimed;
+    gesture = null;
+    if (!threw) {
+      stopMotion();
+      return;
+    }
+    if (event.timeStamp - lastMoveAt > inertiaHandoffMs) velocity = 0;
+    coasting = true;
+    inertiaUntil = performance.now() + maxInertiaMs;
+    // Even without a throw the loop must run once more: the last fraction of travel is still banked.
+    ensureScheduler();
+  };
+
+  const onTouchCancel = () => {
+    gesture = null;
+    stopMotion();
   };
 
   element.addEventListener("touchstart", onTouchStart, { passive: true });
   element.addEventListener("touchmove", onTouchMove, { passive: false });
-  element.addEventListener("touchend", resetGesture, { passive: true });
-  element.addEventListener("touchcancel", resetGesture, { passive: true });
+  element.addEventListener("touchend", onTouchEnd, { passive: true });
+  element.addEventListener("touchcancel", onTouchCancel, { passive: true });
 
   return {
     shouldFocus: () => Date.now() >= suppressFocusUntil,
     dispose: () => {
       element.removeEventListener("touchstart", onTouchStart);
       element.removeEventListener("touchmove", onTouchMove);
-      element.removeEventListener("touchend", resetGesture);
-      element.removeEventListener("touchcancel", resetGesture);
-      resetGesture();
+      element.removeEventListener("touchend", onTouchEnd);
+      element.removeEventListener("touchcancel", onTouchCancel);
+      gesture = null;
+      stopMotion();
     },
   };
 }

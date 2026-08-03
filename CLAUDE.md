@@ -588,7 +588,7 @@ it on so a desktop wheel reaches pane history, so on a phone `touchmove` was a n
 `capture-pane` screen was all a mobile viewer could ever reach. The bridge replays a claimed one-finger
 vertical swipe as line-based `WheelEvent`s on xterm's own element, so the reports go out under whatever
 mouse protocol is live rather than as hand-spelled SGR bytes, and it yields the gesture back when
-`mouseTrackingMode` is `"none"` so xterm's native path is not double-scrolled. Four rules are measured, not
+`mouseTrackingMode` is `"none"` so xterm's native path is not double-scrolled. Five rules are measured, not
 assumed. **`targetTouches`, never `touches`** — the latter counts contacts anywhere on screen, so a thumb
 resting on the sibling key bar (the ordinary one-handed grip) froze scrolling entirely until every finger
 lifted; reproduced on a real iPhone and fixed by the element-scoped list. **One report per ROW, and
@@ -600,9 +600,19 @@ agent pane does not: every live claude pane reports `mouse_any_flag=1 alternate_
 the wheel with `send-keys -M` and the TUI scrolls its own way, typically one line per report. Converting
 at tmux's copy-mode rate was tried and reverted — it made the agent pane, i.e. the common case, scroll
 five times too slowly. Row-for-row is the honest default until the daemon tells the browser which kind of
-pane it is looking at. **The whole travel is debited** even when the per-move cap refuses to
-dispatch it, because a banked overflow made a reversal pay off the old direction first (arithmetically
-real; unreachable at the ~60px/frame iOS delivers, so this is a cheap guard, not an observed bug).
+pane it is looking at. **The gesture BANKS and a frame loop EMITS** — `touchmove` adds travel to
+`pendingPx` and updates a smoothed velocity, while a `requestAnimationFrame` loop converts the bank into
+reports at a bounded rate and keeps running after the finger lifts, decaying that velocity. Both halves
+answer a measured complaint about an agent pane, which repaints its whole alternate screen for every
+report it receives: emitting a whole touchmove's worth at once arrived as visible lurches, and a phone
+gesture stopped dead on `touchend` where a macOS trackpad gets momentum synthesised by the browser for
+free (the same claude session scrolls smoothly from a desktop wheel — that is what proves the TUI keeps
+up and the burst shape was the problem). The per-frame budget must stay ABOVE what a finger delivers
+(~60px, about four rows, per frame on the measured device) or the picture lags the finger, which reads
+worse than any burst; the overflow stays banked rather than dropped, so a reversal just subtracts from it.
+A new `touchstart` kills a coasting throw before it even qualifies the gesture, a lift that followed a
+pause does not coast at all, and the loop stops itself when the bank is spent — never leave it turning
+frames, and cancel it in `dispose` along with the listeners.
 **`touch-action: none` is unconditional**, living with the bridge rather than in the phone breakpoint:
 measured on a real iPhone, `pinch-zoom` and `auto` both let the browser claim the gesture and the terminal
 stops scrolling at ALL — which is exactly what landscape and iPad (wider than 720px) used to get while the
