@@ -3,3 +3,4 @@ build/
 *.klib
 .claude/worktrees/
 .idea
+.DS_Store
