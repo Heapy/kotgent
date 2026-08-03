@@ -2322,7 +2322,7 @@ class WebUiServingTest {
         // report, so emitting a whole touchmove's worth at once arrives as a visible lurch — and a phone
         // gesture has no browser-synthesised momentum to carry it after the finger lifts.
         val moveStart = bridge.indexOf("const onTouchMove = (event) => {")
-        val moveEnd = bridge.indexOf("const onTouchEnd = (event) => {")
+        val moveEnd = bridge.indexOf("const onTouchEnd = ")
         assertTrue(moveStart in 0 until moveEnd, "the bridge has distinct move and end handlers")
         assertFalse(
             bridge.substring(moveStart, moveEnd).contains("dispatchEvent"),

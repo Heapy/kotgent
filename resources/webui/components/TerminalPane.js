@@ -220,7 +220,7 @@ function installTouchScroll(term) {
       return;
     }
     const touch = event.targetTouches[0];
-    lastMoveAt = event.timeStamp;
+    lastMoveAt = performance.now();
     lastPoint = { x: touch.clientX, y: touch.clientY };
     gesture = {
       identifier: touch.identifier,
@@ -265,8 +265,11 @@ function installTouchScroll(term) {
 
     pendingPx += deltaY;
     lastPoint = { x: touch.clientX, y: touch.clientY };
-    const elapsed = event.timeStamp - lastMoveAt;
-    lastMoveAt = event.timeStamp;
+    // `performance.now()`, not `event.timeStamp`: the two are not guaranteed to share an origin, and a
+    // mismatched pair made every elapsed reading garbage — velocity stayed zero and nothing ever coasted.
+    const now = performance.now();
+    const elapsed = now - lastMoveAt;
+    lastMoveAt = now;
     // Smooth the estimate: iOS delivers moves unevenly, and one fat frame must not define the throw.
     if (elapsed > 0) {
       const sample = deltaY / elapsed;
@@ -275,14 +278,14 @@ function installTouchScroll(term) {
     ensureScheduler();
   };
 
-  const onTouchEnd = (event) => {
+  const onTouchEnd = () => {
     const threw = gesture !== null && gesture.claimed;
     gesture = null;
     if (!threw) {
       stopMotion();
       return;
     }
-    if (event.timeStamp - lastMoveAt > inertiaHandoffMs) velocity = 0;
+    if (performance.now() - lastMoveAt > inertiaHandoffMs) velocity = 0;
     coasting = true;
     inertiaUntil = performance.now() + maxInertiaMs;
     // Even without a throw the loop must run once more: the last fraction of travel is still banked.
