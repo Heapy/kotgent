@@ -380,6 +380,13 @@ loss on the primary input path; (2) tmux resolves a mouse event against the ONE 
 so under "last active" resize only the subscriber that resized last has a fully live wheel and a larger
 tab's is dead over the lower/right of its viewport. Both need per-subscriber state in `Broadcaster`
 (subscriber-agnostic about input today) — and (2) also a resize-policy rethink — so neither is a local fix.
+Residual (1) reaches the PHONE now that a swipe is bridged into a wheel (see the mobile invariants below):
+the most natural phone gesture puts the shared pane into copy-mode, after which the key bar's `^C` — like
+every other byte routed through the terminal WS, which deliberately does not cancel — is consumed by
+`send-keys -X cancel` instead of interrupting the agent, while the header's Interrupt button stays immune
+because `Tmux.sendKeys` chains `copy-mode -q`. Recovery is discoverable (tmux paints its `[n/m]` overlay
+per pane, the key bar's Esc cancels, and `copy-mode -e` auto-exits at the bottom), so this is degraded,
+not broken — but it is the same unfixed residual, now on the primary input path of the smaller device.
 Two smaller obligations ride along: `kotgent attach` writes `TERMINAL_MODE_RESET` in the same `finally` as
 `tty.restore()` — all three mouse trackers (`1003`/`1002`/`1000`) **before** the SGR encoding `1006`, or a
 surviving tracker degrades to the legacy X10 encoding, plus `2004`/`2031`/`1049`/`25` and application
@@ -544,7 +551,7 @@ accent; do not reintroduce `prefers-color-scheme` branches. The OLED-black phone
 the existing `@media (max-width: 720px)` block so the FitAddon test's mobile slice remains stable, and the
 translucent sidebar's composite blur stays desktop-only.
 
-**The mobile terminal lifecycle has four coupled invariants.** Initial xterm geometry is computed from
+**The mobile terminal lifecycle has five coupled invariants.** Initial xterm geometry is computed from
 `window.visualViewport` before fitting and opening the terminal WebSocket, so the upstream starts at the
 visible keyboard-constrained size. The installed shell is marked before first render from the standalone,
 fullscreen **or** iOS `navigator.standalone` signal: WebKit can report a standalone manifest as fullscreen,
@@ -573,6 +580,31 @@ is written. Hiding or explicit intent aborts the owned liveness request so an ol
 cannot consume a newer attempt, and the events effect reaches the reattach callback through a **ref**,
 never a dependency: rebuilding that socket resets its effect-scoped `opened` latch, after which no open
 ever reads as a recovery again.
+
+The fifth is the swipe-scroll bridge (`installTouchScroll`, `TerminalPane.js`), and it couples a browser
+gesture to tmux's forced `mouse on` and to one CSS rule — change any of the three and the other two must
+be re-measured. xterm 5.5 runs its own touch scrolling ONLY while mouse tracking is off, and kotgent keeps
+it on so a desktop wheel reaches pane history, so on a phone `touchmove` was a no-op: the seeded
+`capture-pane` screen was all a mobile viewer could ever reach. The bridge replays a claimed one-finger
+vertical swipe as line-based `WheelEvent`s on xterm's own element, so the reports go out under whatever
+mouse protocol is live rather than as hand-spelled SGR bytes, and it yields the gesture back when
+`mouseTrackingMode` is `"none"` so xterm's native path is not double-scrolled. Four rules are measured, not
+assumed. **`targetTouches`, never `touches`** — the latter counts contacts anywhere on screen, so a thumb
+resting on the sibling key bar (the ordinary one-handed grip) froze scrolling entirely until every finger
+lifted; reproduced on a real iPhone and fixed by the element-scoped list. **One report per FIVE rows** —
+tmux's copy-mode wheel binding is `send-keys -X -N 5 scroll-up`, so one-report-per-row measured 44 reports
+= 220 lines for a single full-height drag (about five screens); at the five-row rate the same drag moves
+the screen the finger travelled. **The whole travel is debited** even when the per-move cap refuses to
+dispatch it, because a banked overflow made a reversal pay off the old direction first (arithmetically
+real; unreachable at the ~60px/frame iOS delivers, so this is a cheap guard, not an observed bug).
+**`touch-action: none` is unconditional**, living with the bridge rather than in the phone breakpoint:
+measured on a real iPhone, `pinch-zoom` and `auto` both let the browser claim the gesture and the terminal
+stops scrolling at ALL — which is exactly what landscape and iPad (wider than 720px) used to get while the
+bridge was installed for them anyway. Losing pinch-zoom over the terminal is the accepted price;
+`overscroll-behavior: none` already covers pull-to-refresh. One thing the code does NOT do is what its
+shape suggests: a swipe does not summon the keyboard because `preventDefault()` on a claimed move
+suppresses the whole compatibility mouse burst (so xterm's own `mousedown` focus never runs) — the
+`shouldFocus()` gate is a second line, not the mechanism, and must not be used to "prove" the rule.
 
 **VAPID uses `/usr/bin/openssl`, but openssl never owns the private-key file.** `VapidKey` generates the
 P-256 PEM and `OpensslVapidSigner` signs ES256 through the existing CLOEXEC-safe `ProcessRunner`; the
@@ -765,7 +797,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **891 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **892 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

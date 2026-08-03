@@ -80,6 +80,11 @@ function installTouchScroll(term) {
 
   const startThreshold = 6;
   const maxEventsPerMove = 12;
+  // tmux's copy-mode wheel binding is `send-keys -X -N 5 scroll-up`, so ONE report moves five lines of
+  // history. Measuring a full-height drag on a real iPhone: 44 reports at one-per-row became 220 lines,
+  // about five screens for a single swipe; one report per five rows returned 40 lines, i.e. the screen
+  // the finger actually travelled.
+  const linesPerReport = 5;
   let gesture = null;
   let suppressFocusUntil = 0;
 
@@ -92,11 +97,14 @@ function installTouchScroll(term) {
   };
 
   const onTouchStart = (event) => {
-    if (event.touches.length !== 1) {
+    // `targetTouches`, never `touches`: the latter counts every contact with the screen, so a thumb
+    // resting on the sibling key bar refused the gesture and — with xterm's own touch path off and
+    // `touch-action: none` — froze scrolling until every finger lifted. Confirmed on a real iPhone.
+    if (event.targetTouches.length !== 1) {
       resetGesture();
       return;
     }
-    const touch = event.touches[0];
+    const touch = event.targetTouches[0];
     gesture = {
       identifier: touch.identifier,
       startX: touch.clientX,
@@ -111,12 +119,12 @@ function installTouchScroll(term) {
     if (!gesture) return;
     // When tracking is off, xterm's own touch handler scrolls its local buffer. Taking the gesture here
     // would double-scroll it and would turn an otherwise useful native path into synthetic key presses.
-    if (event.touches.length !== 1 || term.modes.mouseTrackingMode === "none") {
+    if (event.targetTouches.length !== 1 || term.modes.mouseTrackingMode === "none") {
       resetGesture();
       return;
     }
 
-    const touch = trackedTouch(event.touches, gesture.identifier);
+    const touch = trackedTouch(event.targetTouches, gesture.identifier);
     if (!touch) {
       resetGesture();
       return;
@@ -143,11 +151,15 @@ function installTouchScroll(term) {
     const rowHeight = bounds.height / Math.max(term.rows, 1);
     if (!Number.isFinite(rowHeight) || rowHeight <= 0) return;
 
-    const lines = Math.trunc(gesture.remainder / rowHeight);
-    if (lines === 0) return;
-    const direction = Math.sign(lines);
-    const eventCount = Math.min(Math.abs(lines), maxEventsPerMove);
-    gesture.remainder -= direction * eventCount * rowHeight;
+    const travelPerReport = rowHeight * linesPerReport;
+    const reports = Math.trunc(gesture.remainder / travelPerReport);
+    if (reports === 0) return;
+    const direction = Math.sign(reports);
+    // Debit everything the finger travelled, including whatever the cap refuses to dispatch. Banking the
+    // overflow instead made a reversal pay off the old direction's backlog first, so the terminal kept
+    // scrolling the wrong way after the finger turned around. Only the sub-report fraction carries over.
+    gesture.remainder -= reports * travelPerReport;
+    const eventCount = Math.min(Math.abs(reports), maxEventsPerMove);
 
     // Keep the reported position inside the character grid even if the finger leaves it mid-swipe. tmux
     // resolves every wheel report against a cell, and discards coordinates outside its current geometry.
@@ -353,6 +365,12 @@ export function TerminalPane({
     // gesture. In particular, never move this back to ws.onopen: asynchronous focus cannot summon the
     // keyboard and steals focus from whichever control the operator was using. A click is the browser's
     // completed-tap signal, so a swipe over the terminal does not open the keyboard on pointer-down.
+    //
+    // What actually keeps a swipe from summoning the keyboard is the bridge's `preventDefault()`, which
+    // suppresses the whole compatibility mouse burst — measured on a real iPhone: after a swipe neither
+    // xterm's own `mousedown` focus nor this click handler runs. `shouldFocus()` is therefore a second
+    // line for a browser that still delivers a click, not the mechanism; do not "prove" the keyboard
+    // rule by asserting this call exists.
     const touchScroll = installTouchScroll(term);
     const focusTerminal = () => {
       if (touchScroll.shouldFocus()) term.focus();

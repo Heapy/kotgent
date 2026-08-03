@@ -57,6 +57,7 @@ import platform.posix.access
 import platform.posix.getcwd
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -86,7 +87,7 @@ class WebUiServingTest {
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
         assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
         assertTrue(
-            body.contains("src=\"app.js?v=mobile-swipe-scroll-5\""),
+            body.contains("src=\"app.js?v=mobile-swipe-scroll-6\""),
             "index.html bootstraps the cache-revised app.js",
         )
         assertTrue(body.contains("vendor/xterm.js"), "index.html loads the vendored xterm.js")
@@ -1422,8 +1423,8 @@ class WebUiServingTest {
         )
         assertTrue(
             body.contains("name=\"color-scheme\" content=\"dark\"") &&
-                body.contains("style.css?v=mobile-swipe-scroll-5") &&
-                body.contains("app.js?v=mobile-swipe-scroll-5"),
+                body.contains("style.css?v=mobile-swipe-scroll-6") &&
+                body.contains("app.js?v=mobile-swipe-scroll-6"),
             "the installed iOS app declares dark system UI and fetches the revised viewport assets",
         )
     }
@@ -2267,29 +2268,61 @@ class WebUiServingTest {
     fun theWebUiBridgesPhoneSwipesIntoXtermWheelEvents() = withServer { ctx ->
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         val css = ctx.get("/style.css").bodyAsText()
-        val bridge = pane.substringAfter("function installTouchScroll(term) {")
-            .substringBefore("\n}\n\nexport function TerminalPane")
+        // Slice on explicit indices rather than substringAfter/Before: those default to
+        // `missingDelimiterValue = this`, so a renamed helper would silently widen `bridge` to the whole
+        // file and let an assertion be satisfied by unrelated code elsewhere in the component.
+        val bridgeStart = pane.indexOf("function installTouchScroll(term) {")
+        assertTrue(bridgeStart >= 0, "the bridge helper exists under its documented name")
+        val bridgeEnd = pane.indexOf("\n}\n\nexport function TerminalPane", bridgeStart)
+        assertTrue(bridgeEnd > bridgeStart, "the bridge helper ends where the component begins")
+        val bridge = pane.substring(bridgeStart, bridgeEnd)
+        assertTrue(bridge.length < pane.length, "the slice is a strict substring, not the whole file")
 
         assertTrue(
             bridge.contains("term.modes.mouseTrackingMode === \"none\""),
             "the bridge yields to xterm's native touch scrolling when mouse tracking is inactive",
         )
+        // `touches` counts contacts anywhere on the screen, so a thumb on the sibling key bar used to
+        // freeze scrolling until every finger lifted (reproduced on a real iPhone). The element-scoped
+        // list is the fix, and the plain form must not come back.
         assertTrue(
-            bridge.contains("event.touches.length !== 1") &&
+            bridge.contains("event.targetTouches.length !== 1") &&
+                bridge.contains("trackedTouch(event.targetTouches, gesture.identifier)") &&
                 bridge.contains("Math.abs(totalY) <= Math.abs(totalX)"),
-            "only a single-finger, predominantly vertical gesture is claimed",
+            "only a single-finger, predominantly vertical gesture over the terminal itself is claimed",
+        )
+        assertFalse(
+            bridge.contains("event.touches"),
+            "a second finger anywhere on the screen must not decide this element's gesture",
         )
         assertTrue(
-            bridge.contains("event.preventDefault()") &&
-                bridge.contains("new WheelEvent(\"wheel\"") &&
+            bridge.contains("new WheelEvent(\"wheel\"") &&
                 bridge.contains("deltaMode: WheelEvent.DOM_DELTA_LINE") &&
                 bridge.contains("element.dispatchEvent(wheelEvent)"),
             "a claimed swipe becomes line-based wheel input handled by xterm's current mouse protocol",
         )
+        // Ordering, not mere presence: cancelling an unqualified touchmove suppresses the compatibility
+        // mouse burst, and with it xterm's mousedown focus — i.e. hoisting this above the claim gate
+        // would make the software keyboard unreachable on a phone while every "contains" still passed.
+        val claimGateAt = bridge.indexOf("if (!gesture.claimed) {")
+        val preventDefaultAt = bridge.indexOf("event.preventDefault()")
         assertTrue(
-            pane.contains("touchScroll.shouldFocus()") &&
-                pane.contains("touchScroll.dispose()"),
-            "a swipe cannot focus the software keyboard and the bridge is disposed with its terminal",
+            claimGateAt >= 0 && preventDefaultAt > claimGateAt,
+            "the gesture is cancelled only after it qualifies as a swipe (claim at $claimGateAt, " +
+                "preventDefault at $preventDefaultAt)",
+        )
+        // tmux moves five lines per wheel report (`send-keys -X -N 5 scroll-up`), so one report per row
+        // scrolled a measured 220 lines for a single full-height drag. Debit the whole travel too: a
+        // banked overflow kept scrolling the old way after the finger reversed.
+        assertTrue(
+            bridge.contains("const linesPerReport = 5") &&
+                bridge.contains("rowHeight * linesPerReport") &&
+                bridge.contains("gesture.remainder -= reports * travelPerReport"),
+            "travel is converted at tmux's five-lines-per-report rate and fully debited",
+        )
+        assertTrue(
+            pane.contains("touchScroll.dispose()"),
+            "the bridge is disposed with its terminal",
         )
         for (event in listOf("touchstart", "touchmove", "touchend", "touchcancel")) {
             assertTrue(
@@ -2303,14 +2336,20 @@ class WebUiServingTest {
             "touchmove is explicitly non-passive so a claimed swipe can suppress browser navigation",
         )
 
+        // The reservation belongs to the bridge, which is installed unconditionally — under `pinch-zoom`
+        // or `auto` a real iPhone stops scrolling the terminal entirely, which is what every viewport
+        // wider than the phone breakpoint (landscape, iPad) used to get.
+        assertTrue(
+            Regex("""(?s)#terminal-host \.xterm\s*\{[^}]*height: 100%[^}]*touch-action:\s*none""")
+                .containsMatchIn(css),
+            "the unconditional terminal rule owns the touch gesture",
+        )
         val breakpoint = css.indexOf("@media (max-width: 720px)")
         assertTrue(breakpoint > 0, "the mobile breakpoint exists")
         val nextMedia = css.indexOf("@media ", breakpoint + 1).let { if (it < 0) css.length else it }
-        val mobileCss = css.substring(breakpoint, nextMedia)
-        assertTrue(
-            Regex("""(?s)#terminal-host \.xterm\s*\{[^}]*touch-action:\s*none""")
-                .containsMatchIn(mobileCss),
-            "the mobile terminal owns its touch gesture instead of panning or refreshing the page",
+        assertFalse(
+            css.substring(breakpoint, nextMedia).contains("touch-action"),
+            "the reservation is not scoped to the phone breakpoint, where the bridge is not",
         )
     }
 

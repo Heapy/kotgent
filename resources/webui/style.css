@@ -499,9 +499,16 @@ select:focus-visible {
 }
 /* FitAddon measures this element's parent, then subtracts padding from `.xterm` itself. Keep the visual
    gutter here—not on #terminal-host—so the fitted grid never includes pixels hidden by the host. */
+/* `touch-action: none` is what makes the swipe bridge possible at all, so it travels with the bridge —
+   which is installed unconditionally — rather than living inside the phone breakpoint. Measured on a real
+   iPhone: under `pinch-zoom` or `auto` the browser claims the gesture and the terminal stops scrolling
+   entirely, which is exactly what a landscape phone or an iPad (both wider than the 720px breakpoint)
+   used to get. Losing pinch-zoom over the terminal is the accepted price; `overscroll-behavior: none`
+   above already covers pull-to-refresh. */
 #terminal-host .xterm {
   height: 100%;
   padding: 6px 8px;
+  touch-action: none;
 }
 /* Safari zooms the page when a focused input computes below 16px. xterm's real text size remains the
    preference above; this only prevents its off-screen input shim from changing visualViewport geometry. */
@@ -1344,12 +1351,7 @@ dialog::backdrop {
     line-height: 1;
   }
 
-  /* xterm's native touch path is disabled while tmux mouse reporting is active. The terminal's JS
-     bridge owns vertical swipes, so the browser must not turn them into page pan or pull-to-refresh. */
-  #terminal-host .xterm {
-    padding: 4px 6px;
-    touch-action: none;
-  }
+  #terminal-host .xterm { padding: 4px 6px; }
   .key-bar {
     display: flex;
     padding-bottom: calc(5px + var(--active-safe-area-bottom));
