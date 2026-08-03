@@ -891,6 +891,66 @@ class SessionManagerTest {
         }
     }
 
+    @Test
+    fun resumingADoneSessionBringsItBackToTheSidebar() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
+                now = { 7L },
+            )
+            // Exactly what "Done" leaves behind: a dead, archived, still-resumable row.
+            store.upsertSession(
+                meta("done03", SessionState.stopped, providerId = provider, paneId = PaneId("%1"))
+                    .copy(archived = true),
+            )
+
+            val revived = mgr.resume(SessionId("done03"))
+
+            assertEquals(SessionState.ready, revived.state, "resume revives the archived session")
+            assertEquals(false, revived.archived, "the answered DTO reports it un-archived (clients merge it verbatim)")
+            assertEquals(
+                false, store.getSession(SessionId("done03"))!!.archived,
+                "a resumed session is not Done — its row is visible again, not a live agent nobody can see",
+            )
+        }
+    }
+
+    @Test
+    fun resumingAnArchivedSessionWhosePaneIsAliveStillUnarchivesIt() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux(
+                listOf(TmuxPane(session = "kt-done04", paneId = PaneId("%1"), pid = 4242, dead = false, width = 80, height = 24)),
+            )
+            val provider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
+                now = { 7L },
+            )
+            // The row an earlier lost Done → Resume left behind: alive again, but still hidden.
+            store.upsertSession(
+                meta("done04", SessionState.running, providerId = provider, paneId = PaneId("%1"))
+                    .copy(archived = true),
+            )
+
+            val updated = mgr.resume(SessionId("done04"))
+
+            assertTrue(tmux.newSessionCommands.isEmpty(), "a live pane keeps the launch a no-op")
+            assertEquals(false, updated.archived, "…but the un-archive still runs, so the row is recoverable")
+            assertEquals(false, store.getSession(SessionId("done04"))!!.archived)
+            assertEquals(SessionState.running, store.getSession(SessionId("done04"))!!.state, "and its state is untouched")
+        }
+    }
+
     // ---- control ops: stop / interrupt / resume / detach ----
 
     @Test

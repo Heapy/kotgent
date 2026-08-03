@@ -726,7 +726,17 @@ DDL in sync with the `.sq`.
 **Three orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
 `setArchived`), `model` (best-effort provider model; `setModel`) and `read_cursor` (the unread badge;
 `markRead`). None is a reducer/control-state concern, so each has its own targeted `EventStore` write that
-leaves `state`/`last_seq`/`provider_session_id` untouched. `model` is captured after launch — Claude from
+leaves `state`/`last_seq`/`provider_session_id` untouched. **Orthogonal does not mean untouched by
+`resume`**: because nothing in the launch path writes `archived`, a Done → Resume used to revive the agent
+under a row the sidebar still hid — a live pane whose state advanced invisibly, recoverable only by
+Restore, which is reachable but not what anyone looks for after resuming. So `SessionManager.resume` clears
+it (`clearDoneOnResume`), including on the already-alive launch no-op, which is what heals a row an earlier
+resume left hidden. Two details are load-bearing: the un-archive is written AFTER the state update so its
+`SessionUpdate` is the last one a client sees (fresh state and `archived=false` in one step, no flicker
+back under the state signal) and the returned meta carries `archived = false`, because an HTTP client
+merges that DTO into its list verbatim and a stale `true` would keep the revived row hidden until the next
+resync. A failed launch deliberately does NOT re-archive: compensation puts the dead state back, and the
+row must stay visible to carry that failure. `model` is captured after launch — Claude from
 the hook payload's `transcript_path` (a default-wired `ClaudeModelCapture` behind `hookRoutes`'
 `onHookPayload` seam, so no `Server.kt` change), Codex by polling the rollout's `turn_context` (a
 `SessionManager.captureModelInBackground` seam). A miss just leaves `model` null. Only `archived` rides

@@ -618,6 +618,22 @@ class SessionManager(
     }
 
     /**
+     * The [undone] half of a [resume]: a resumed session is by definition not "Done", so bring its row
+     * back to the sidebar. Runs INSIDE the caller's control lock (unlike [undone], which is its own
+     * operator op) and returns the meta the caller must answer with — an HTTP client merges that DTO
+     * into its list verbatim, so a stale `archived = true` there would keep the revived row hidden until
+     * the next resync even though the write landed.
+     *
+     * A no-op for the ordinary non-archived resume, so it costs one field read and no store write.
+     */
+    private suspend fun clearDoneOnResume(meta: SessionMeta): SessionMeta {
+        if (!meta.archived) return meta
+        val ts = now()
+        store.setArchived(meta.id, false, ts)
+        return meta.copy(archived = false, updatedAt = ts)
+    }
+
+    /**
      * Interrupt a stuck session: send Ctrl-C to un-stick a `running` that will not budge (Claude emits
      * no hook on Esc/Ctrl-C) AND apply [ControlSignal.Interrupt] to the projection (alive → `ready`,
      * approvals cleared). The projection is persisted only after [TmuxControl.sendKeys] returns with
@@ -642,15 +658,26 @@ class SessionManager(
     /**
      * Resume a dead session: build a resume launch spec (needs the captured provider id — resume is
      * blocked with [ResumeBlockedException] if it is still pending), start a fresh tmux session, and
-     * apply [ControlSignal.Resume] (dead → `ready`). A no-op on an already-alive session.
+     * apply [ControlSignal.Resume] (dead → `ready`). A no-op on an already-alive session — except for
+     * the `archived` clearance below, which a launch no-op still owes.
+     *
+     * A resume also un-archives a "Done" row ([clearDoneOnResume]). `archived` is orthogonal to control
+     * state, so nothing else in this path touches it, and a resumed row that stayed archived would be a
+     * live agent nobody can see: the sidebar hides it, its state advances invisibly, and only Restore
+     * would ever bring it back. A "Done" session is reachable for resume from the sidebar's own "Show
+     * done" section (select the row, then Resume) and from the CLI, so this is the ordinary path, not a
+     * corner case.
      */
     suspend fun resume(sessionId: SessionId): SessionMeta = withControlLock(sessionId) {
         val meta = store.getSession(sessionId) ?: throw NoSuchSessionException(sessionId)
         // The cache can say "alive" even though the pane died while the daemon was up: there is no live
         // exit hook, and liveness is only reconciled at startup. Confirm real tmux liveness before
         // treating resume as a no-op — otherwise a pane that dies mid-run could not be resumed until a
-        // daemon restart. A genuinely-live session is still a no-op.
-        if (meta.state.isAlive && isPaneAlive(meta.tmuxSession)) return@withControlLock meta
+        // daemon restart. A genuinely-live session is still a launch no-op, but an archived one is
+        // exactly the row a lost Done → Resume left behind, so the un-archive must still run.
+        if (meta.state.isAlive && isPaneAlive(meta.tmuxSession)) {
+            return@withControlLock clearDoneOnResume(meta)
+        }
         val providerId = meta.providerSessionId ?: throw ResumeBlockedException(sessionId)
 
         val adapter = agentFactory.create(meta.agent, meta.cwd)
@@ -677,11 +704,16 @@ class SessionManager(
             // upsert the whole (stale) row — the freshly-revived agent may already be appending hooks that
             // advance last_seq / provider_session_id, which a full-row write would clobber.
             store.updateSessionState(sessionId, next.state, EventSource.user, paneId, ts)
+            // After the state write, so the un-archive's own SessionUpdate is the LAST one a connected
+            // client sees for this resume: it carries both the fresh state and archived=false, and the
+            // row un-hides in one step instead of flickering back under the state signal.
+            if (meta.archived) store.setArchived(sessionId, false, ts)
             registry.register(paneId, sessionId)
             val revived = meta.copy(
                 paneId = paneId,
                 state = next.state,
                 stateSource = EventSource.user,
+                archived = false,
                 updatedAt = ts,
             )
             // Best-effort, fire-and-forget model capture on revival too (the same seam start() uses).
@@ -695,6 +727,8 @@ class SessionManager(
             // pane — and PUT THE ROW BACK to its pre-resume dead state. The write above may already have
             // committed `ready` + the fresh pane id, which would otherwise survive as a durable phantom
             // (an "alive" session whose pane we just killed) until the next daemon restart.
+            // `archived` is deliberately NOT restored: the state goes back to dead, and a row the
+            // operator just asked to resume must stay visible to carry that failure, not vanish again.
             compensateFailedLaunch(sessionId, sessionId.value, paneId, deadState, meta.paneId, e)
             throw e
         }
