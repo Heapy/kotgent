@@ -80,11 +80,15 @@ function installTouchScroll(term) {
 
   const startThreshold = 6;
   const maxEventsPerMove = 12;
-  // tmux's copy-mode wheel binding is `send-keys -X -N 5 scroll-up`, so ONE report moves five lines of
-  // history. Measuring a full-height drag on a real iPhone: 44 reports at one-per-row became 220 lines,
-  // about five screens for a single swipe; one report per five rows returned 40 lines, i.e. the screen
-  // the finger actually travelled.
-  const linesPerReport = 5;
+  // One report per ROW, deliberately, even though tmux's own copy-mode binding is
+  // `send-keys -X -N 5 scroll-up` and therefore moves five lines per report. What a report is worth
+  // depends on who consumes it, and this side cannot tell them apart: tmux keeps mouse reporting enabled
+  // on the client either way, while the pane decides. A quiet pane goes to copy-mode (five lines), but an
+  // agent pane runs a full-screen TUI — measured on live kotgent sessions, every claude pane reports
+  // `mouse_any_flag=1 alternate_on=1` — so tmux forwards the wheel with `send-keys -M` and the
+  // application scrolls its own way, typically one line. Converting at five made agent panes, the common
+  // case, scroll five times too slowly. Row-for-row is the honest default until the daemon tells the
+  // browser which pane it is looking at.
   let gesture = null;
   let suppressFocusUntil = 0;
 
@@ -151,14 +155,13 @@ function installTouchScroll(term) {
     const rowHeight = bounds.height / Math.max(term.rows, 1);
     if (!Number.isFinite(rowHeight) || rowHeight <= 0) return;
 
-    const travelPerReport = rowHeight * linesPerReport;
-    const reports = Math.trunc(gesture.remainder / travelPerReport);
+    const reports = Math.trunc(gesture.remainder / rowHeight);
     if (reports === 0) return;
     const direction = Math.sign(reports);
     // Debit everything the finger travelled, including whatever the cap refuses to dispatch. Banking the
     // overflow instead made a reversal pay off the old direction's backlog first, so the terminal kept
     // scrolling the wrong way after the finger turned around. Only the sub-report fraction carries over.
-    gesture.remainder -= reports * travelPerReport;
+    gesture.remainder -= reports * rowHeight;
     const eventCount = Math.min(Math.abs(reports), maxEventsPerMove);
 
     // Keep the reported position inside the character grid even if the finger leaves it mid-swipe. tmux

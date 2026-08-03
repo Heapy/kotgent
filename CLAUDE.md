@@ -591,10 +591,16 @@ mouse protocol is live rather than as hand-spelled SGR bytes, and it yields the 
 `mouseTrackingMode` is `"none"` so xterm's native path is not double-scrolled. Four rules are measured, not
 assumed. **`targetTouches`, never `touches`** — the latter counts contacts anywhere on screen, so a thumb
 resting on the sibling key bar (the ordinary one-handed grip) froze scrolling entirely until every finger
-lifted; reproduced on a real iPhone and fixed by the element-scoped list. **One report per FIVE rows** —
-tmux's copy-mode wheel binding is `send-keys -X -N 5 scroll-up`, so one-report-per-row measured 44 reports
-= 220 lines for a single full-height drag (about five screens); at the five-row rate the same drag moves
-the screen the finger travelled. **The whole travel is debited** even when the per-move cap refuses to
+lifted; reproduced on a real iPhone and fixed by the element-scoped list. **One report per ROW, and
+deliberately NOT per five rows** — what a report is worth depends on who consumes it, and the browser
+cannot tell them apart, because tmux keeps mouse reporting enabled on the client either way while the PANE
+decides. A quiet pane enters copy-mode, where the binding is `send-keys -X -N 5 scroll-up` and a report
+moves five lines (measured: 44 reports = 220 lines, about five screens, for one full-height drag). An
+agent pane does not: every live claude pane reports `mouse_any_flag=1 alternate_on=1`, so tmux forwards
+the wheel with `send-keys -M` and the TUI scrolls its own way, typically one line per report. Converting
+at tmux's copy-mode rate was tried and reverted — it made the agent pane, i.e. the common case, scroll
+five times too slowly. Row-for-row is the honest default until the daemon tells the browser which kind of
+pane it is looking at. **The whole travel is debited** even when the per-move cap refuses to
 dispatch it, because a banked overflow made a reversal pay off the old direction first (arithmetically
 real; unreachable at the ~60px/frame iOS delivers, so this is a cheap guard, not an observed bug).
 **`touch-action: none` is unconditional**, living with the bridge rather than in the phone breakpoint:

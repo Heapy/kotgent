@@ -55,7 +55,7 @@ import {
 import { throttleLeading } from "./lib/throttle.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
-import { TerminalPane } from "./components/TerminalPane.js?v=mobile-swipe-scroll-6";
+import { TerminalPane } from "./components/TerminalPane.js?v=mobile-swipe-scroll-7";
 import {
   HelpDialog,
   NewSessionDialog,

@@ -87,7 +87,7 @@ class WebUiServingTest {
         assertTrue(body.contains("kotgent-webui"), "index.html carries the known serving marker")
         assertTrue(body.contains("type=\"module\""), "index.html bootstraps the app as an ES module")
         assertTrue(
-            body.contains("src=\"app.js?v=mobile-swipe-scroll-6\""),
+            body.contains("src=\"app.js?v=mobile-swipe-scroll-7\""),
             "index.html bootstraps the cache-revised app.js",
         )
         assertTrue(body.contains("vendor/xterm.js"), "index.html loads the vendored xterm.js")
@@ -1423,8 +1423,8 @@ class WebUiServingTest {
         )
         assertTrue(
             body.contains("name=\"color-scheme\" content=\"dark\"") &&
-                body.contains("style.css?v=mobile-swipe-scroll-6") &&
-                body.contains("app.js?v=mobile-swipe-scroll-6"),
+                body.contains("style.css?v=mobile-swipe-scroll-7") &&
+                body.contains("app.js?v=mobile-swipe-scroll-7"),
             "the installed iOS app declares dark system UI and fetches the revised viewport assets",
         )
     }
@@ -2311,14 +2311,14 @@ class WebUiServingTest {
             "the gesture is cancelled only after it qualifies as a swipe (claim at $claimGateAt, " +
                 "preventDefault at $preventDefaultAt)",
         )
-        // tmux moves five lines per wheel report (`send-keys -X -N 5 scroll-up`), so one report per row
-        // scrolled a measured 220 lines for a single full-height drag. Debit the whole travel too: a
-        // banked overflow kept scrolling the old way after the finger reversed.
+        // One report per row, and the whole travel debited: a banked overflow kept scrolling the old way
+        // after the finger reversed. The rate is deliberately NOT tmux's five-lines-per-report — an agent
+        // pane forwards the wheel to its full-screen TUI instead of entering copy-mode, and converting
+        // for copy-mode made that common case five times too slow.
         assertTrue(
-            bridge.contains("const linesPerReport = 5") &&
-                bridge.contains("rowHeight * linesPerReport") &&
-                bridge.contains("gesture.remainder -= reports * travelPerReport"),
-            "travel is converted at tmux's five-lines-per-report rate and fully debited",
+            bridge.contains("Math.trunc(gesture.remainder / rowHeight)") &&
+                bridge.contains("gesture.remainder -= reports * rowHeight"),
+            "travel is converted row-for-row and fully debited",
         )
         assertTrue(
             pane.contains("touchScroll.dispose()"),
