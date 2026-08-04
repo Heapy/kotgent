@@ -137,8 +137,8 @@ interface EventStore {
      * once-per-session; a `null` [model] CLEARS the field — the hook ingress' provider-id rebind
      * correction uses it, because a model captured under a provider id that a hook `SessionBound` later
      * displaced may belong to a different session (the re-run capture then writes again). A no-op if the
-     * row does not exist. The model reaches clients via the `/events` snapshot/resync frames (which carry
-     * it verbatim), so this emits an ordinary signal.
+     * row does not exist. The emitted signal carries the committed row's model verbatim (`null` included),
+     * so the write — or the clear — reaches connected clients on this very emission.
      *
      * A capture whose lookup was keyed by a provider id must use [setModelForProvider] instead, so a
      * rebind racing the capture cannot be overwritten; this unconditional form remains for the two

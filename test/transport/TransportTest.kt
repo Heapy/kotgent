@@ -276,42 +276,56 @@ class TransportTest {
     }
 
     @Test
-    fun archivedIsCarriedOnBothTheDtoAndTheUpdateDto() {
+    fun archivedIsCarriedOnBothTheFullRowAndThePatch() {
         val meta = SessionMeta(
             id = SessionId("arc01"), name = "n", agent = "claude", cwd = "/w",
             tmuxSession = "kt-arc01", state = SessionState.stopped, createdAt = 1L, updatedAt = 1L,
             archived = true,
         )
         assertTrue(meta.toDto().archived, "SessionDto carries archived")
-        assertTrue(meta.toUpdateDto().archived, "the resync SessionUpdateDto carries archived")
         assertTrue(
             SessionUpdate(SessionId("arc01"), SessionState.stopped, Seq(1), 0L, archived = true).toDto().archived,
-            "the live SessionUpdateDto carries archived",
+            "the patch SessionUpdateDto carries archived",
         )
     }
 
     @Test
-    fun onlyTheSnapshotUpdateDtoCarriesTheModelAndMarksItselfAsAuthoritative() {
-        // The wire cannot distinguish "model not tracked" from "model cleared" by the null alone
-        // (TRANSPORT_JSON encodes defaults), so the snapshot/resync form marks itself: the client takes
-        // its model VERBATIM — null included, which is how the provider-id rebind's clear reaches an
-        // already-connected UI — while the live signal's untracked null must never blank anything.
-        val meta = SessionMeta(
-            id = SessionId("mdl01"), name = "n", agent = "codex", cwd = "/w",
-            tmuxSession = "kt-mdl01", state = SessionState.running, createdAt = 1L, updatedAt = 1L,
-            model = "gpt-6",
-        )
-        val snapshot = meta.toUpdateDto()
-        assertTrue(snapshot.snapshot, "the snapshot/resync form marks itself")
-        assertEquals("gpt-6", snapshot.model)
+    fun thePatchCarriesTheModelAndRevAndItsNullModelIsAuthoritative() {
+        // Every patch field is re-read from the committed row (SessionUpdate's contract), so the wire
+        // needs no snapshot/live discriminator any more: a patch's null model genuinely means "no model" —
+        // including one the provider-id rebind correction just CLEARED — and the client takes it verbatim.
+        val live = SessionUpdate(
+            SessionId("mdl01"), SessionState.running, Seq(1), 0L,
+            model = "gpt-6", rev = 7,
+        ).toDto()
+        assertEquals("gpt-6", live.model, "the patch carries the row's model")
+        assertEquals(7L, live.rev, "the patch carries the row's rev")
         assertNull(
-            meta.copy(model = null).toUpdateDto().model,
-            "a cleared model rides the resync as an authoritative null",
+            SessionUpdate(SessionId("mdl01"), SessionState.running, Seq(1), 0L, rev = 8).toDto().model,
+            "a cleared model rides the patch as an authoritative null",
         )
+    }
 
-        val live = SessionUpdate(SessionId("mdl01"), SessionState.running, Seq(1), 0L).toDto()
-        assertEquals(false, live.snapshot, "the live signal is not a snapshot")
-        assertNull(live.model, "the live signal does not track the model")
+    @Test
+    fun everyGlobalFrameKindCarriesTheTypeDiscriminator() {
+        // The client dispatches on `type`, and kotlinx emits it ONLY when encoding through the sealed
+        // base serializer — sendEventsFrame's invariant. A send site regressed to a concrete
+        // `X.serializer()` produces a type-less frame every client silently drops.
+        fun typeOf(frame: EventsFrame): String? {
+            val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frame)
+            return TRANSPORT_JSON.parseToJsonElement(encoded).jsonObject["type"]?.jsonPrimitive?.content
+        }
+        val meta = SessionMeta(
+            id = SessionId("fr01"), name = "n", agent = "claude", cwd = "/w",
+            tmuxSession = "kt-fr01", state = SessionState.running, createdAt = 1L, updatedAt = 1L,
+        )
+        assertEquals("sessions_snapshot", typeOf(SessionsSnapshotDto(listOf(meta.toDto()))))
+        assertEquals("session_row", typeOf(SessionRowDto(meta.toDto())))
+        assertEquals(
+            "session_update",
+            typeOf(SessionUpdate(SessionId("fr01"), SessionState.running, Seq(1), 0L).toDto()),
+        )
+        assertEquals("preferences_update", typeOf(UiPreferences("/p", 1, 1).toUpdateDto()))
     }
 
     @Test
@@ -360,8 +374,8 @@ class TransportTest {
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             // Draining the baseline snapshot proves we are subscribed — so the append below is not raced.
-            val snapshot = receiveUpdate()
-            assertEquals(created.id, snapshot.sessionId, "the snapshot covers the started session")
+            val snapshot = receiveSnapshot()
+            assertTrue(snapshot.sessions.any { it.id == created.id }, "the snapshot covers the started session")
 
             // A hook-style approval append flips the session to needs_approval; the WS must deliver it live.
             ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
@@ -369,6 +383,121 @@ class TransportTest {
             val update = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
             assertTrue(update.needsAttention, "needs_approval is a needs-attention state")
             assertTrue(update.lastSeq >= 1, "lastSeq advanced")
+        }
+    }
+
+    @Test
+    fun connectDeliversOneSnapshotOfFullRowsAndNothingBeforeIt() = withServer { ctx ->
+        val a = ctx.startSession(cwd = "/tmp/a")
+        val b = ctx.startSession(cwd = "/tmp/b")
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            // The FIRST session-kind frame must be the one snapshot — a per-session baseline would
+            // arrive as session_update/session_row frames and fail the type assertion here.
+            val (type, text) = receiveFirstSessionFrameJson()
+            assertEquals("sessions_snapshot", type, "the baseline is ONE snapshot frame")
+            val snapshot = TRANSPORT_JSON.decodeFromString(SessionsSnapshotDto.serializer(), text)
+            assertEquals(
+                setOf(a.id, b.id),
+                snapshot.sessions.map { it.id }.toSet(),
+                "the snapshot carries every session",
+            )
+            val row = snapshot.sessions.single { it.id == a.id }
+            assertEquals("/tmp/a", row.cwd, "snapshot rows are full SessionDto rows, not thin updates")
+            assertTrue(row.rev > 0, "a persisted row carries a positive rev")
+        }
+    }
+
+    @Test
+    fun aSessionStartedAfterConnectArrivesAsAFullRowAndThenPatches() = withServer { ctx ->
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            assertTrue(receiveSnapshot().sessions.isEmpty(), "the baseline is empty before any session")
+
+            val created = ctx.startSession(cwd = "/tmp/late")
+            val row = receiveRow()
+            assertEquals(created.id, row.session.id, "a session new to this socket arrives as a full row")
+            assertEquals("/tmp/late", row.session.cwd, "…carrying full metadata the client can render")
+
+            // Every later change for the now-carried session ships as a light patch with a newer rev.
+            ctx.store.append(SessionId(created.id), AgentEvent.ApprovalRequested("p1"), EventSource.hook)
+            val patch = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
+            assertTrue(patch.rev > row.session.rev, "the patch's rev is newer than the row it follows")
+        }
+    }
+
+    @Test
+    fun setModelReachesAConnectedClientImmediatelyIncludingItsClear() = withServer { ctx ->
+        val created = ctx.startSession()
+        val sid = SessionId(created.id)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            receiveSnapshot()
+
+            ctx.store.setModel(sid, "gpt-6", 2L)
+            val captured = awaitUpdate { it.sessionId == created.id && it.model == "gpt-6" }
+
+            // The rebind correction's clear must propagate too: a strictly newer patch with a null model.
+            ctx.store.setModel(sid, null, 3L)
+            val cleared = awaitUpdate { it.sessionId == created.id && it.rev > captured.rev }
+            assertNull(cleared.model, "the clear rides the patch as an authoritative null")
+        }
+    }
+
+    @Test
+    fun aRowlessUpdateIsNotForwardedAndTheRowStillArrivesWholeLater() = withServer { ctx ->
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            receiveSnapshot()
+
+            // An append can outrun the row's creation (the transport analog of the store's
+            // row-less-append exemption): nothing may reach the socket for it, and — critically — the id
+            // must NOT be marked as carried, or the row would later arrive as a patch the client ignores.
+            val sid = SessionId("ghost01")
+            ctx.store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            ctx.store.upsertSession(
+                SessionMeta(
+                    id = sid, name = "ghost", agent = "claude", cwd = "/tmp/ghost",
+                    tmuxSession = "kt-ghost01", state = SessionState.running, createdAt = 5L, updatedAt = 5L,
+                ),
+            )
+            val (type, text) = receiveFirstSessionFrameJson()
+            assertEquals(
+                "session_row", type,
+                "no frame for the row-less append, and the session still arrives WHOLE after its upsert",
+            )
+            val row = TRANSPORT_JSON.decodeFromString(SessionRowDto.serializer(), text)
+            assertEquals(sid.value, row.session.id)
+        }
+    }
+
+    @Test
+    fun aBurstConflatesPerSocketButTheFinalStateAlwaysArrives() = withServer { ctx ->
+        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val sid = SessionId(created.id)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            receiveSnapshot()
+
+            // Fire a burst without reading a single frame: the per-socket conflation may collapse the
+            // intermediate states, but the LAST one must always be delivered — that is the guarantee that
+            // replaced the 15 s resync.
+            repeat(40) { ctx.store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            val final = awaitUpdate { it.sessionId == created.id && it.lastSeq == 41L }
+            assertEquals("running", final.state, "the final conflated state matches the last append")
         }
     }
 
@@ -583,9 +712,9 @@ class TransportTest {
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             // Draining the baseline snapshot proves this "second client" is subscribed before the POST.
-            val snapshot = receiveUpdate()
-            assertEquals(created.id, snapshot.sessionId)
-            assertEquals(1L, snapshot.unread, "the second client starts out showing the badge")
+            val snapshot = receiveSnapshot()
+            val row = snapshot.sessions.single { it.id == created.id }
+            assertEquals(1L, row.unread, "the second client starts out showing the badge")
 
             ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
 
@@ -607,7 +736,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveUpdate() // the baseline snapshot
+            receiveSnapshot() // the baseline snapshot
             ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
 
             val update = awaitUpdate { it.sessionId == created.id && it.unread == 0L }
@@ -631,7 +760,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveUpdate() // the baseline snapshot
+            receiveSnapshot() // the baseline snapshot
 
             ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
             val appended = awaitUpdate { it.sessionId == created.id && it.lastSeq == 2L }
@@ -1559,6 +1688,36 @@ class TransportTest {
         )
     }
 
+    private suspend fun DefaultClientWebSocketSession.receiveSnapshot(): SessionsSnapshotDto {
+        return TRANSPORT_JSON.decodeFromString(
+            SessionsSnapshotDto.serializer(),
+            receiveTextPayload("sessions_snapshot"),
+        )
+    }
+
+    private suspend fun DefaultClientWebSocketSession.receiveRow(): SessionRowDto {
+        return TRANSPORT_JSON.decodeFromString(
+            SessionRowDto.serializer(),
+            receiveTextPayload("session_row"),
+        )
+    }
+
+    /**
+     * The first session-kind frame (anything but `preferences_update`), undecoded. For asserting WHICH
+     * frame kind the server chose — [receiveTextPayload] would silently skip a wrong kind and hang.
+     */
+    private suspend fun DefaultClientWebSocketSession.receiveFirstSessionFrameJson(): Pair<String, String> {
+        while (true) {
+            val frame = incoming.receive()
+            if (frame !is Frame.Text) continue
+            val text = frame.readText()
+            val type = runCatching {
+                TRANSPORT_JSON.parseToJsonElement(text).jsonObject["type"]?.jsonPrimitive?.content
+            }.getOrNull() ?: continue
+            if (type != "preferences_update") return type to text
+        }
+    }
+
     private suspend fun DefaultClientWebSocketSession.receivePreferencesUpdate(): PreferencesUpdateDto {
         return TRANSPORT_JSON.decodeFromString(
             PreferencesUpdateDto.serializer(),
@@ -1643,6 +1802,9 @@ class TransportTest {
     private class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, PreferencesStore {
         private val mutex = Mutex()
         private val metas = LinkedHashMap<SessionId, SessionMeta>()
+
+        /** Mirrors the real store's revision counter: every meta write stamps `++revCounter` (under [mutex]). */
+        private var revCounter = 0L
         private val logs = HashMap<SessionId, MutableList<StoredEvent>>()
         private val projections = HashMap<SessionId, Projection>()
         private val subs = HashMap<SessionId, MutableList<SendChannel<StoredEvent>>>()
@@ -1665,7 +1827,10 @@ class TransportTest {
         private suspend fun emitFromMeta(sessionId: SessionId) {
             val m = metas[sessionId] ?: return
             emitUpdate(
-                SessionUpdate(sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), m.archived),
+                SessionUpdate(
+                    sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), m.archived,
+                    model = m.model, rev = m.rev,
+                ),
             )
         }
 
@@ -1681,7 +1846,7 @@ class TransportTest {
             } else {
                 meta
             }
-            metas[meta.id] = merged
+            metas[meta.id] = merged.copy(rev = ++revCounter) // the store stamps rev, never the caller
             emitFromMeta(meta.id)
         }
 
@@ -1695,19 +1860,22 @@ class TransportTest {
             val m = metas[sessionId] ?: return@withLock
             // Honors the contract: update only state/state_source/pane_id/updated_at, NEVER last_seq or
             // provider_session_id (so a concurrent append is not clobbered).
-            metas[sessionId] = m.copy(state = state, stateSource = stateSource, paneId = paneId, updatedAt = updatedAt)
+            metas[sessionId] = m.copy(
+                state = state, stateSource = stateSource, paneId = paneId, updatedAt = updatedAt,
+                rev = ++revCounter,
+            )
             emitFromMeta(sessionId)
         }
 
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
-            metas[sessionId] = m.copy(archived = archived, updatedAt = updatedAt)
+            metas[sessionId] = m.copy(archived = archived, updatedAt = updatedAt, rev = ++revCounter)
             emitFromMeta(sessionId)
         }
 
         override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long): Unit = mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
-            metas[sessionId] = m.copy(model = model, updatedAt = updatedAt)
+            metas[sessionId] = m.copy(model = model, updatedAt = updatedAt, rev = ++revCounter)
             emitFromMeta(sessionId)
         }
 
@@ -1721,7 +1889,7 @@ class TransportTest {
             // provider id changed (a hook rebind) is left untouched and the caller told so.
             val m = metas[sessionId] ?: return@withLock false
             if (m.providerSessionId != providerSessionId) return@withLock false
-            metas[sessionId] = m.copy(model = model, updatedAt = updatedAt)
+            metas[sessionId] = m.copy(model = model, updatedAt = updatedAt, rev = ++revCounter)
             emitFromMeta(sessionId)
             true
         }
@@ -1729,7 +1897,10 @@ class TransportTest {
         override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
             // Mirrors the SQL: monotonic (max) and clamped to lastSeq (min); updated_at is NOT written.
-            metas[sessionId] = m.copy(readCursor = Seq(maxOf(m.readCursor.value, minOf(seq.value, m.lastSeq.value))))
+            metas[sessionId] = m.copy(
+                readCursor = Seq(maxOf(m.readCursor.value, minOf(seq.value, m.lastSeq.value))),
+                rev = ++revCounter,
+            )
             emitFromMeta(sessionId)
         }
 
@@ -1764,6 +1935,7 @@ class TransportTest {
                     lastSeq = next.lastSeq,
                     providerSessionId = next.providerSessionId ?: m.providerSessionId,
                     updatedAt = ts,
+                    rev = ++revCounter,
                 )
             }
             // Hand-built rather than [emitFromMeta], for the same two reasons the real store's `append` is
@@ -1776,6 +1948,7 @@ class TransportTest {
                 SessionUpdate(
                     sessionId, cached?.state ?: next.state, next.lastSeq,
                     unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), cached?.archived ?: false,
+                    model = cached?.model, rev = cached?.rev ?: 0,
                 ),
             )
             subs[sessionId]?.forEach { it.trySend(stored) }

@@ -3,23 +3,24 @@ package io.kotgent.transport
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
-import io.kotgent.core.SessionMeta
-import io.kotgent.core.unread
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
 import io.ktor.server.routing.Route
+import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.onSubscription
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -28,16 +29,25 @@ import kotlinx.serialization.json.Json
  * "needs attention" queue current without polling.
  *
  * ## Two modes on one endpoint
- *  - **Global (default).** With no `session` query param, it streams cross-session state-change
- *    notifications: first a **snapshot** of the current sessions (one [SessionUpdateDto] each), then a
- *    live stream of every subsequent [EventStore.sessionUpdates] change. This is the plan's "snapshot
- *    current sessions then stream changes" model. There is no meaningful global cursor (seq is
- *    per-session, Task 7), so this mode is intentionally cursor-less; the snapshot is the baseline.
+ *  - **Global (default).** With no `session` query param, it streams [EventsFrame]s: on connect ONE
+ *    [SessionsSnapshotDto] carrying every session as a full row, then per-session live traffic — a
+ *    session this socket has not carried yet arrives as a full-row [SessionRowDto], every later change
+ *    as a light [SessionUpdateDto] patch. The client builds its entire list from this socket (no
+ *    `GET /sessions` on load), applying each frame only if its `rev` is newer than the row it holds —
+ *    frames are idempotent, and an HTTP response racing a frame cannot roll a row back. There is no
+ *    periodic re-delivery and no resumption cursor: a reconnect gets a fresh snapshot as its baseline,
+ *    and a [DROP_OLDEST][EventStore.sessionUpdates] loss is prevented per-socket by the conflating
+ *    sender below rather than healed after the fact.
  *
  *    The snapshot is taken inside [onSubscription] — i.e. *after* this collector is subscribed to the
  *    shared flow — so any change emitted after subscription is buffered and delivered right after the
  *    snapshot, closing the subscribe/snapshot race (no update is both missed and absent from the
  *    snapshot).
+ *
+ *    An update for a session with no `sessions` row (an append can outrun the row's creation) produces
+ *    NO frame and does NOT mark the id as carried: the row arrives whole on the next emission after the
+ *    row exists. Marking it carried would ship every later change as a patch the client must ignore
+ *    (unknown id), leaving the session invisible on this socket until a reconnect.
  *
  *  - **Per-session (`?session=<id>&from=<seq>`).** Streams that one session's canonical
  *    [io.kotgent.core.AgentEvent] log from the restart-safe per-session cursor `from` (default 0),
@@ -63,7 +73,7 @@ fun Route.eventsWs(
     }
 }
 
-private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.streamGlobalUpdates(
+private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
     store: EventStore,
     preferencesStore: PreferencesStore,
     json: Json,
@@ -75,47 +85,70 @@ private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.strea
         // save. The per-session mode below remains the canonical event log only.
         launch {
             preferencesStore.preferences.collect { preferences ->
-                ws.send(
-                    Frame.Text(
-                        json.encodeToString(
-                            PreferencesUpdateDto.serializer(),
-                            preferences.toUpdateDto(),
-                        ),
-                    ),
-                )
+                ws.sendEventsFrame(json, preferences.toUpdateDto())
             }
         }
 
-        // Periodic full resync. `sessionUpdates` is a DROP_OLDEST buffer, so a consumer that falls far
-        // behind could miss a session's LAST update and show a stale state until it reconnects. Re-sending
-        // every session's current state on a slow tick makes any such drop self-heal (the newest state is
-        // re-delivered), so the UI can never get stuck on a stale "needs attention". Cheap: a handful of
-        // rows every few seconds. Cancelled when the collect below ends (socket closed).
+        // Per-socket conflation state. The Mutex is for Kotlin/Native memory visibility across the three
+        // writers (collector, sender, baseline), not for serializing sends — the single sender does that.
+        val lock = Mutex()
+        val pending = LinkedHashMap<SessionId, SessionUpdate>()
+        val sent = HashSet<SessionId>()
+        val wake = Channel<Unit>(Channel.CONFLATED)
+
+        // The single sequential sender. It alone touches the socket for session frames, so per-id order
+        // is (row | snapshot) first, patches after — and it sends OUTSIDE the lock, so a slow client can
+        // never stall the collector into re-opening the DROP_OLDEST window conflation exists to close.
+        // The one achievable inversion (getSession returns a row newer than the update that woke us, and
+        // that update later goes out as a patch with an older rev) is harmless: the client applies frames
+        // newest-rev-wins.
         launch {
-            while (isActive) {
-                delay(GLOBAL_RESYNC_MILLIS)
-                for (meta in store.listSessions()) {
-                    ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), meta.toUpdateDto())))
+            for (unit in wake) {
+                while (true) {
+                    val next = lock.withLock {
+                        val iterator = pending.entries.iterator()
+                        if (!iterator.hasNext()) {
+                            null
+                        } else {
+                            val entry = iterator.next()
+                            // Read out before remove(): a K/N map entry is invalidated by its removal.
+                            val banked = entry.key to entry.value
+                            iterator.remove()
+                            banked
+                        }
+                    } ?: break
+                    val (id, update) = next
+                    if (lock.withLock { id in sent }) {
+                        ws.sendEventsFrame(json, update.toDto())
+                    } else {
+                        // Order matters: fetch first, and only a DELIVERED row marks the id as carried.
+                        // No row → no frame and NOT carried (see the endpoint KDoc).
+                        val row = store.getSession(id) ?: continue
+                        ws.sendEventsFrame(json, SessionRowDto(row.toDto()))
+                        lock.withLock { sent.add(id) }
+                    }
                 }
             }
         }
+
+        // The collector never awaits a send: it banks the newest update per session and signals the
+        // sender. A burst during one slow send conflates instead of backing up into the shared flow.
         store.sessionUpdates
             .onSubscription {
-                // Baseline snapshot (after subscription so nothing between here and the first live emit is lost).
-                for (meta in store.listSessions()) {
-                    ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), meta.toUpdateDto())))
-                }
+                // Baseline: ONE snapshot frame carrying every session as a full row; all of those ids
+                // are now carried by this socket, so their later changes ship as patches.
+                val metas = store.listSessions()
+                lock.withLock { metas.forEach { sent.add(it.id) } }
+                ws.sendEventsFrame(json, SessionsSnapshotDto(metas.map { it.toDto() }))
             }
             .collect { update ->
-                ws.send(Frame.Text(json.encodeToString(SessionUpdateDto.serializer(), update.toDto())))
+                lock.withLock { pending[update.sessionId] = update }
+                wake.trySend(Unit)
             }
     }
 }
 
-/** How often the global events stream re-sends every session's current state as a drop-proof resync. */
-private const val GLOBAL_RESYNC_MILLIS: Long = 15_000
-
-private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.streamOneSession(
+private suspend fun DefaultWebSocketServerSession.streamOneSession(
     store: EventStore,
     json: Json,
     sessionParam: String,
@@ -142,10 +175,41 @@ private suspend fun io.ktor.server.websocket.DefaultWebSocketServerSession.strea
 
 // --- wire DTOs -----------------------------------------------------------------------------------
 
-/** A live session state-change notification pushed to the browser (global `/events` mode). */
+/**
+ * A frame of the GLOBAL `/events` mode. One sealed hierarchy so the wire discriminator (`type`, from
+ * [TRANSPORT_JSON]'s `classDiscriminator`) is generated, never a hand-written field that would collide
+ * with it at runtime.
+ *
+ * INVARIANT: every send of a global frame must encode through THIS base serializer
+ * ([sendEventsFrame]) — kotlinx emits the discriminator only when encoding via the sealed base; a
+ * concrete `X.serializer()` produces a frame without `type` that the client silently drops.
+ * (Same rule as [io.kotgent.core.AgentEvent] in the store.)
+ */
 @Serializable
+sealed class EventsFrame
+
+/** The connect baseline: every session as a full row. The client replaces its list with this. */
+@Serializable
+@SerialName("sessions_snapshot")
+data class SessionsSnapshotDto(
+    val sessions: List<SessionDto>,
+) : EventsFrame()
+
+/** One full row for a session this socket has not carried yet. The client upserts it newest-rev-wins. */
+@Serializable
+@SerialName("session_row")
+data class SessionRowDto(
+    val session: SessionDto,
+) : EventsFrame()
+
+/**
+ * A light patch for a session this socket already carries. Every field — [model] and its `null`
+ * included — is read from the committed row, so the patch is authoritative; the client applies it
+ * newest-[rev]-wins and silently ignores an unknown [sessionId] (the server does not produce those).
+ */
+@Serializable
+@SerialName("session_update")
 data class SessionUpdateDto(
-    val type: String = "session_update",
     val sessionId: String,
     val state: String,
     val needsAttention: Boolean,
@@ -153,22 +217,11 @@ data class SessionUpdateDto(
     val unread: Long,
     /** Whether the session is archived ("done"); the client hides/shows the row on this. */
     val archived: Boolean = false,
-    /**
-     * The discovered model, or null. Only the snapshot/resync form ([SessionMeta.toUpdateDto], marked
-     * [snapshot]) is authoritative for it — there `null` genuinely means "no model", including a model
-     * the provider-id rebind correction just CLEARED, so the client takes it verbatim. The live signal
-     * ([SessionUpdate]) does not track the model at all; its `null` here means nothing, and the client
-     * must not blank an already-shown model on it. Both forms serialize `model` (TRANSPORT_JSON has
-     * `encodeDefaults = true`), which is why [snapshot] exists as the discriminator.
-     */
+    /** The committed row's model, or null — authoritative either way (a rebind-correction clear rides here). */
     val model: String? = null,
-    /**
-     * `true` on the full-row snapshot/resync form ([SessionMeta.toUpdateDto] — the connect baseline and
-     * the 15 s resync), `false` on the live change signal ([SessionUpdate.toDto]). The client keys the
-     * [model] merge on this — see its KDoc.
-     */
-    val snapshot: Boolean = false,
-)
+    /** The row's global monotonic revision (see [SessionDto.rev]). */
+    val rev: Long = 0,
+) : EventsFrame()
 
 fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
     sessionId = sessionId.value,
@@ -177,21 +230,16 @@ fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
     lastSeq = lastSeq.value,
     unread = unread,
     archived = archived,
-)
-
-/** Snapshot form of a [SessionMeta] as a [SessionUpdateDto] (the baseline the client gets on connect). */
-fun SessionMeta.toUpdateDto(): SessionUpdateDto = SessionUpdateDto(
-    sessionId = id.value,
-    state = state.name,
-    needsAttention = state.needsAttention,
-    lastSeq = lastSeq.value,
-    unread = unread(lastSeq.value, readCursor.value),
-    archived = archived,
     model = model,
-    snapshot = true,
+    rev = rev,
 )
 
-/** A single canonical event pushed on the per-session `/events?session=…` stream. */
+/** The one send path for global frames — see the [EventsFrame] invariant. */
+private suspend fun DefaultWebSocketServerSession.sendEventsFrame(json: Json, frame: EventsFrame) {
+    send(Frame.Text(json.encodeToString(EventsFrame.serializer(), frame)))
+}
+
+/** A single canonical event pushed on the per-session `/events?session=…` stream (not an [EventsFrame]). */
 @Serializable
 data class StoredEventDto(
     val type: String = "session_event",

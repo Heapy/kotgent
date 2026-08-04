@@ -9,6 +9,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.put
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -30,14 +31,18 @@ data class PreferencesDto(
     val revision: Long,
 )
 
-/** A preference snapshot/update on the global `/events` WebSocket. */
+/**
+ * A preference snapshot/update on the global `/events` WebSocket — an [EventsFrame] variant, so its
+ * `type` discriminator comes from the sealed hierarchy's serializer, never from a hand-written field.
+ * [revision] is the preferences store's own save counter, unrelated to the sessions' `rev`.
+ */
 @Serializable
+@SerialName("preferences_update")
 data class PreferencesUpdateDto(
-    val type: String = "preferences_update",
     val basePath: String,
     val groupingLevel: Int,
     val revision: Long,
-)
+) : EventsFrame()
 
 /**
  * Authenticated daemon-wide preferences API.

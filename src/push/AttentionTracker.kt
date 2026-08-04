@@ -9,7 +9,7 @@ import io.kotgent.store.SessionUpdate
  * feature fires on.
  *
  * [io.kotgent.store.EventStore.sessionUpdates] is a *level* signal: it re-emits a session's current
- * state on every cache change, and the `/events` resync path re-sends the same state on a timer. Sending
+ * state on every cache change, no-op writes included (markRead emits unconditionally). Sending
  * a push per update would ring the phone repeatedly for one approval. So this holds
  * `SessionId → wasNeedingAttention` and answers a single question: is this update a `false → true`
  * transition?

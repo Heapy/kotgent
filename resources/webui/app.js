@@ -8,8 +8,10 @@
  * Flow:
  *   1. The browser already holds the `kotgent_session` cookie the login flow (`kotgent web`) set, so this
  *      page needs no token: every request carries the cookie ambiently (`credentials: "same-origin"`).
- *   2. GET /sessions + GET /preferences -> daemon state and daemon-wide grouping preferences.
- *   3. Open the GET /events WebSocket -> session_update and preferences_update frames patch live state.
+ *   2. GET /preferences -> daemon-wide grouping preferences (and the first-run 401 gate to /auth).
+ *   3. Open the GET /events WebSocket -> one sessions_snapshot frame builds the whole list; session_row /
+ *      session_update / preferences_update frames keep it live, applied newest-rev-wins (lib/sessions.js).
+ *      There is no GET /sessions on load — the socket is the list's only routine source.
  *   4. Selecting a live session attaches an xterm.js terminal on its binary terminal WebSocket.
  *   5. Lifecycle actions (interrupt / stop / resume) are REST calls; detaching closes only this
  *      browser's terminal client and leaves the agent running.
@@ -49,10 +51,11 @@ import {
   capitalize,
   displayName,
   isAliveState,
+  patchIfNewer,
   stateBadge,
   tmuxAttachCommand,
+  upsertIfNewer,
 } from "./lib/sessions.js";
-import { throttleLeading } from "./lib/throttle.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
@@ -100,48 +103,73 @@ function deadHint(state) {
 }
 
 /**
- * One throttled poster PER session id. A single shared throttle would silently drop a pending mark for
- * session A the moment a call for B superseded it inside the window, leaving A with a residual badge until
- * it is selected again — the /events heartbeat only re-fires for the ACTIVE session.
+ * One retrying poster PER session id. A single shared one would drop a pending mark for session A the
+ * moment a call for B superseded it, leaving A with a residual badge until it is selected again.
  *
- * Bounded by [pruneReadPosters] whenever the session list is refreshed: this page is meant to stay open for
- * days on a machine that keeps creating sessions, and each entry can hold a live `setTimeout`.
+ * Bounded by [pruneReadPosters] whenever a snapshot installs the list: this page is meant to stay open
+ * for days on a machine that keeps creating sessions, and each entry can hold a live retry timer.
  */
 const readPosters = new Map();
 
+/** Delay before a failed (but retryable) mark-read POST is attempted again. */
+const READ_RETRY_DELAY_MS = 2000;
+
 /**
- * Drop the posters of sessions GET /sessions no longer lists. Insurance, not a live path: nothing removes a
- * session row today (marking one "done" archives it, and the list returns archived rows too), so this
- * normally deletes nothing — it mirrors the setActiveId/setAttachedId guards at its call site so the Map
- * cannot grow without bound if that ever changes. A pruned poster's pending timer fires at most once more,
- * into a request [postRead] swallows.
+ * Drop the posters (and their retry timers) of sessions the snapshot no longer lists. Insurance, not a
+ * live path: nothing removes a session row today (marking one "done" archives it, and the snapshot
+ * carries archived rows too), so this normally deletes nothing — it mirrors the setActiveId/setAttachedId
+ * guards at its call site so the Map cannot grow without bound if that ever changes.
  */
 function pruneReadPosters(ids) {
-  for (const id of readPosters.keys()) {
-    if (!ids.has(id)) readPosters.delete(id);
+  for (const [id, poster] of readPosters) {
+    if (ids.has(id)) continue;
+    if (poster.timer !== null) clearTimeout(poster.timer);
+    readPosters.delete(id);
   }
 }
 
 /**
- * "I have seen this session through [seq]" — fire-and-forget, throttled to one request per window.
+ * "I have seen this session through [seq]" — retried until the daemon confirms, coalesced to the newest
+ * seq, one request in flight per session.
  *
  * The daemon persists the cursor and broadcasts the recomputed `unread` as an ordinary session_update, so
  * nothing is zeroed locally: the server stays the single source of truth and every other client (phone,
- * second browser) clears the same badge. A failed POST is swallowed on purpose — the next /events frame
- * re-evaluates the guard and retries.
+ * second browser) clears the same badge. The retry loop replaced the old 15 s resync heartbeat — a
+ * `needs_approval` session may emit no further frame, so a lost POST must heal itself. It stops on
+ * [isDefiniteAnswer]: a 401 (rotated token) or 404 (vanished session) can never succeed, and a page that
+ * lives for days must not hammer the daemon with unwinnable requests; a network failure (no `status`)
+ * keeps retrying.
  */
 function postRead(id, seq) {
-  let post = readPosters.get(id);
-  if (!post) {
-    post = throttleLeading((atSeq) => {
-      apiRequest("/sessions/" + encodeURIComponent(id) + "/read", {
-        method: "POST",
-        body: JSON.stringify({ seq: atSeq }),
-      }).catch(() => { /* the next /events frame retries */ });
-    });
-    readPosters.set(id, post);
+  let poster = readPosters.get(id);
+  if (!poster) {
+    poster = { seq: 0, inFlight: false, timer: null };
+    readPosters.set(id, poster);
   }
-  post(seq);
+  poster.seq = Math.max(poster.seq, seq);
+  deliverRead(id, poster);
+}
+
+function deliverRead(id, poster) {
+  if (poster.inFlight || poster.timer !== null) return; // the live loop picks the newest seq up itself
+  poster.inFlight = true;
+  const attempted = poster.seq;
+  apiRequest("/sessions/" + encodeURIComponent(id) + "/read", {
+    method: "POST",
+    body: JSON.stringify({ seq: attempted }),
+  }).then(() => {
+    poster.inFlight = false;
+    if (readPosters.get(id) !== poster) return; // pruned while in flight
+    if (poster.seq > attempted) deliverRead(id, poster); // a newer mark arrived meanwhile
+  }).catch((e) => {
+    poster.inFlight = false;
+    if (readPosters.get(id) !== poster) return;
+    if (isDefiniteAnswer(e)) return; // 4xx is final — retrying cannot ever succeed
+    poster.timer = setTimeout(() => {
+      poster.timer = null;
+      if (readPosters.get(id) === poster) deliverRead(id, poster);
+    }, READ_RETRY_DELAY_MS);
+  });
 }
 
 /**
@@ -155,10 +183,10 @@ function postRead(id, seq) {
  * TransportTest.markingAnArchivedSessionReadDoesNotUnHideItInOtherClients).
  *
  * Called imperatively from the three triggers rather than from a `useEffect` on `[id, lastSeq, unread]`:
- * when a POST fails those primitives do not change, so the 15 s resync re-sends EQUAL numbers and preact's
- * `Object.is` dep check would skip the effect — a lost POST would never be retried, exactly when it matters
- * most (a `needs_approval` session may emit no further event). Checking on every frame instead turns the
- * existing resync into a heartbeat.
+ * when a POST fails those primitives do not change, so preact's `Object.is` dep check would skip the
+ * effect and a lost POST would never be retried — exactly when it matters most (a `needs_approval`
+ * session may emit no further event). The retry itself lives in [postRead]; these triggers only decide
+ * WHEN a viewing mark is warranted.
  */
 function markReadIfViewing(id, unread, lastSeq) {
   if (!id || !(unread > 0)) return;
@@ -227,19 +255,18 @@ function App() {
     groupingLevel: prefs.groupingLevel,
     revision: prefs.revision,
   });
-  // The session a notification tap asked for, honoured once a /sessions load contains it (the id means
-  // nothing until the list exists). Seeded from the URL at mount; a focused stale client can replace it
-  // with the worker's message and trigger a refresh.
+  // The session a notification tap asked for, honoured once a snapshot (or a fetched row) contains it —
+  // the id means nothing until the row exists. Seeded from the URL at mount; a focused stale client can
+  // replace it with the worker's message.
   const deepLinkRef = useRef(deepLinkSessionId());
-  // Whether the initial /sessions phase has succeeded — before that, a current 401 means "this browser was
-  // never signed in"; afterwards it means the credential died under a running page (see loadSessions).
-  const firstLoadRef = useRef(true);
-  // Only the newest list response may mutate state. A notification can request a refresh while the initial
-  // load is still in flight, and letting that older response land last would erase the notification target.
-  const sessionsLoadVersionRef = useRef(0);
-  // The newest in-flight /sessions attempt, published synchronously at call time: a superseded call
-  // awaits THIS instead of resolving to its own losing snapshot (see loadSessions).
-  const sessionsLoadLatestRef = useRef(null);
+  // Whether the first sessions_snapshot has landed — before that the sidebar says "Loading sessions…"
+  // instead of an honest-looking but false "No sessions yet", and the routine "N session(s)." line is
+  // announced exactly once (a reconnect snapshot must not repeat it into the aria-live region).
+  const [sessionsReady, setSessionsReady] = useState(false);
+  const sessionsReadyRef = useRef(false);
+  // One disconnect announcement per outage: onclose refires every ~2 s while the daemon is down, and an
+  // aria-live region that repeats itself loops a screen reader. Re-armed by the next snapshot.
+  const disconnectAnnouncedRef = useRef(false);
   // An unexpected terminal close leaves one reattach candidate. The timer is a deliberate render
   // boundary: setting attachedId null and straight back to the same id in one turn can be batched into no
   // change, so TerminalPane's keyed effect would never build a replacement socket.
@@ -401,89 +428,123 @@ function App() {
     if (session) showSession(session);
   }, [showSession]);
 
-  // Every call supersedes any /sessions fetch still in flight (the version bump below runs before the
-  // first await), so callers that just wrote fresher row state themselves refetch through here instead
-  // of merely invalidating — a bare invalidation could discard the ONLY pending source of the full list
-  // (the initial load, the /events unknown-id reload) and leave the sidebar incomplete until the 15 s
-  // resync. [quiet] keeps the replacement's routine "N session(s)." announcement from overwriting the
-  // calling flow's own status line (e.g. the actionable resume-failure hint); errors are never silenced.
-  // Resolves to the snapshot the ELECTED winner installed (undefined when that fetch failed): a
-  // superseded call AWAITS the newest attempt instead of resolving to its own losing response — promise
-  // identity elects the winner, no protocol ordering key needed — because a caller acting on the answer
-  // (showSession's terminal-attach decision) must never read alive state whose replacement, already
-  // installed by the winner, says dead/archived. (A bare external version bump — the notification tap —
-  // starts no replacement attempt; the newest attempt's own response is then still the freshest held.)
-  const loadSessions = useCallback(async ({ quiet = false } = {}) => {
-    const version = ++sessionsLoadVersionRef.current;
-    const isFirstLoad = firstLoadRef.current;
-    const attempt = (async () => {
-      try {
-        const list = await apiRequest("/sessions");
-        if (version !== sessionsLoadVersionRef.current) return list;
-        firstLoadRef.current = false;
-        // Installed wholesale, deliberately NOT merged per-row against /events frames that arrived during
-        // the flight: rows carry no total-ordering key (control-state, archive and read changes advance no
-        // seq), so any client-side merge rule inverts as easily as a replace. Known residual: a frame that
-        // lands between the daemon taking this snapshot and the response landing here is transiently
-        // overwritten, until the next frame or the 15 s resync heals it — the flow's designed self-healing.
-        setSessions(list);
-        if (!quiet) say(list.length + " session(s).");
-        // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
-        // nor keep a mark-read throttle (and its timer) alive for the rest of the page's life.
-        const ids = new Set(list.map((s) => s.id));
-        setActiveId((id) => (id && !ids.has(id) ? null : id));
-        setAttachedId((id) => (id && !ids.has(id) ? null : id));
-        pruneReadPosters(ids);
-        if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
-        // A deep link from a notification tap: select it now that the list is here, once.
-        const wanted = deepLinkRef.current;
-        if (wanted) {
-          const target = list.find((s) => s.id === wanted);
-          if (target) {
-            deepLinkRef.current = null;
-            clearDeepLink();
-            showSession(target);
-          }
-        }
-        return list;
-      } catch (e) {
-        if (version !== sessionsLoadVersionRef.current) return;
-        // An installed home-screen app has its OWN cookie jar: it launches at start_url holding nothing, so
-        // its very first request is a 401 and there is no link to hand it. Send it to the sign-in page, where
-        // the code form is the only way in. `replace` so the back button does not bounce straight back into
-        // this dead page. Only the initial load phase routes: a 401 after one successful list (a rotated token)
-        // leaves a live page with an attached terminal on screen instead of throwing that terminal away.
-        if (isFirstLoad && isUnauthenticated(e)) {
-          window.location.replace(AUTH_PATH);
-          return;
-        }
-        say("Could not load sessions: " + errorMessage(e), true);
-      }
-    })();
-    // Published before anyone's await resumes (this whole tail is synchronous), so a superseded call
-    // always sees the attempt that superseded it.
-    sessionsLoadLatestRef.current = attempt;
-    let winner = attempt;
-    let result = await winner;
-    while (winner !== sessionsLoadLatestRef.current) {
-      // Superseded: the elected winner's installed snapshot is the authoritative answer. Loop, because
-      // an even newer call may take over while this one is being awaited; the chain always ends at the
-      // newest attempt, whose own resolution breaks it.
-      winner = sessionsLoadLatestRef.current;
-      result = await winner;
+  // The three frame applicators. Ordering across channels needs no election machinery any more: every
+  // row observation (a WS frame or an HTTP DTO) carries the daemon-stamped `rev`, and the helpers apply
+  // it only when newer — a stale response arriving late loses by comparison, not by protocol ordering.
+
+  /** Install a connect/reconnect sessions_snapshot: replace the list, diffing per row against the old one. */
+  const applySessionsSnapshot = useCallback((rows) => {
+    // Notify per row against the PREVIOUS list: a session that entered needs-attention while the socket
+    // was down (a sleeping laptop, a daemon restart) has this snapshot as its only carrier — it must ring
+    // exactly like a live transition. A row with no prior is silent, like every first sighting.
+    const prev = sessionsRef.current;
+    for (const row of rows) {
+      const prevRow = prev.find((s) => s.id === row.id);
+      if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
     }
-    return result;
+    // Wholesale replace: the daemon read this snapshot after (re)connect, so it is at least as fresh as
+    // anything this client holds — and it is also the only carrier of a row DELETION.
+    setSessions(rows);
+    // Defensive, all three: a session that disappeared from the list must not stay selected or attached,
+    // nor keep a mark-read poster (and its retry timer) alive for the rest of the page's life.
+    const ids = new Set(rows.map((s) => s.id));
+    setActiveId((id) => (id && !ids.has(id) ? null : id));
+    setAttachedId((id) => (id && !ids.has(id) ? null : id));
+    pruneReadPosters(ids);
+    if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
+    // A deep link from a notification tap: select it now that the list is here, once.
+    const wanted = deepLinkRef.current;
+    if (wanted) {
+      const target = rows.find((s) => s.id === wanted);
+      if (target) {
+        deepLinkRef.current = null;
+        clearDeepLink();
+        showSession(target);
+      }
+    }
+    // The active session's badge: the snapshot may carry unread the dead socket never told us about.
+    // Judged on the snapshot's own numbers — sessionsRef has not caught up with setSessions yet.
+    const active = rows.find((s) => s.id === activeRef.current);
+    if (active) markReadIfViewing(active.id, active.unread, active.lastSeq);
+    disconnectAnnouncedRef.current = false;
+    if (!sessionsReadyRef.current) {
+      sessionsReadyRef.current = true;
+      setSessionsReady(true);
+      // Announced on the FIRST snapshot only: a reconnect must not repeat the routine line into the
+      // aria-live region (and must not overwrite a flow's own status text).
+      say(rows.length + " session(s).");
+    }
   }, [cancelReattach, say, showSession]);
 
-  useEffect(() => { loadSessions(); }, [loadSessions]);
+  /** Upsert one full row (a session_row frame, or a fetched/POSTed SessionDto), newest-rev-wins. */
+  const applySessionRow = useCallback((row) => {
+    const prevRow = sessionsRef.current.find((s) => s.id === row.id);
+    if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
+    setSessions((prev) => upsertIfNewer(prev, row));
+    // A retained notification target can arrive as a single row (the worker's fetch) — honour it here
+    // exactly like the snapshot path does.
+    if (deepLinkRef.current === row.id) {
+      deepLinkRef.current = null;
+      clearDeepLink();
+      showSession(row);
+      return;
+    }
+    if (row.id === activeRef.current) markReadIfViewing(row.id, row.unread, row.lastSeq);
+  }, [showSession]);
+
+  /** Apply a light session_update patch. An unknown id is silently ignored — the daemon does not send those. */
+  const applySessionPatch = useCallback((msg) => {
+    const prevSession = sessionsRef.current.find((s) => s.id === msg.sessionId);
+    if (!prevSession) return;
+    // Notify on a genuine live transition INTO needs-attention (was not, now is).
+    if (!prevSession.needsAttention && msg.needsAttention) notifyAttention(prevSession);
+    setSessions((prev) => patchIfNewer(prev, msg));
+    // Judged on the frame's own numbers — `sessionsRef` has not caught up with the setSessions above yet.
+    if (msg.sessionId === activeRef.current) {
+      markReadIfViewing(msg.sessionId, msg.unread, msg.lastSeq);
+    }
+  }, []);
+
+  /**
+   * Fetch ONE session row and upsert it (newest-rev-wins — the response cannot roll back a fresher WS
+   * frame, which is what makes this targeted GET safe where the old wholesale reload was not). Resolves
+   * to the row, or null on any failure: the caller decides how loud a miss is.
+   */
+  const fetchSessionRow = useCallback(async (id) => {
+    try {
+      const row = await apiRequest("/sessions/" + encodeURIComponent(id));
+      if (row && row.id) {
+        applySessionRow(row);
+        return row;
+      }
+    } catch (_) { /* resolved below as null */ }
+    return null;
+  }, [applySessionRow]);
+  // Ref indirection for the service-worker message handler, whose effect deps must stay [selectSession].
+  const fetchSessionRowRef = useRef(fetchSessionRow);
+  fetchSessionRowRef.current = fetchSessionRow;
 
   // Preferences load independently from sessions. A concurrent save or WebSocket frame may overtake this
   // GET; applyServerPreferences's revision guard prevents that older response from rolling the UI back.
+  // This is also the page's ONE first-load 401 gate now that no GET /sessions happens on mount: an
+  // installed home-screen app has its OWN cookie jar, launches at start_url holding nothing, and its very
+  // first request answers 401 with no link to hand it — send it to the sign-in page, `replace` so the
+  // back button does not bounce into this dead page. The effect is mount-only by construction (both deps
+  // are stable useCallback([])), so its 401 is always the FIRST-load one; a later 401 (a rotated token)
+  // reaches only postRead's finality stop and the status line, never a navigation that would throw a
+  // live page with an attached terminal away.
   useEffect(() => {
     let stopped = false;
     apiRequest("/preferences")
       .then((value) => { if (!stopped) applyServerPreferences(value); })
-      .catch((e) => { if (!stopped) say("Could not load preferences: " + errorMessage(e), true); });
+      .catch((e) => {
+        if (stopped) return;
+        if (isUnauthenticated(e)) {
+          window.location.replace(AUTH_PATH);
+          return;
+        }
+        say("Could not load preferences: " + errorMessage(e), true);
+      });
     return () => { stopped = true; };
   }, [applyServerPreferences, say]);
 
@@ -502,8 +563,15 @@ function App() {
   }, []);
 
   // Live updates. The daemon re-sends a full snapshot on connect, so a reconnect resyncs cleanly.
-  const loadRef = useRef(loadSessions);
-  loadRef.current = loadSessions;
+  // The frame dispatcher reaches the socket through a ref, never through the effect's deps: any new
+  // dependency would rebuild the socket on every applicator identity change.
+  const onSessionsFrame = useCallback((msg) => {
+    if (msg.type === "sessions_snapshot") applySessionsSnapshot(msg.sessions);
+    else if (msg.type === "session_row") applySessionRow(msg.session);
+    else if (msg.type === "session_update") applySessionPatch(msg);
+  }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
+  const sessionsFrameRef = useRef(onSessionsFrame);
+  sessionsFrameRef.current = onSessionsFrame;
   // Same indirection, and load-bearing for a second reason: `opened` lives in the effect, so rebuilding
   // this socket would reset it and the next open would no longer read as a recovery.
   const scheduleReattachRef = useRef(scheduleReattach);
@@ -519,7 +587,10 @@ function App() {
       try {
         socket = new WebSocket(wsUrl("/events"));
       } catch (e) {
+        // The list has no HTTP fallback, so giving up here would mean a permanently empty UI —
+        // retry on the same cadence as onclose.
         say("events WS error: " + e, true);
+        timer = setTimeout(connect, 2000);
         return;
       }
       socket.onopen = () => {
@@ -534,42 +605,23 @@ function App() {
       socket.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch (_) { return; }
-        if (msg && msg.type === "preferences_update") {
+        if (!msg) return;
+        if (msg.type === "preferences_update") {
           applyServerPreferences(msg);
           return;
         }
-        if (!msg || msg.type !== "session_update") return;
-        // A session we have never seen (started elsewhere) — pull the list to get its metadata.
-        if (!sessionsRef.current.some((s) => s.id === msg.sessionId)) {
-          loadRef.current();
-          return;
-        }
-        // Notify on a genuine live transition INTO needs-attention (was not, now is). Comparing against the
-        // known prior row means the initial snapshot / 15s resync of an already-attention session is silent.
-        const prevSession = sessionsRef.current.find((s) => s.id === msg.sessionId);
-        if (prevSession && !prevSession.needsAttention && msg.needsAttention) {
-          notifyAttention(prevSession);
-        }
-        setSessions((prev) => prev.map((s) => (s.id === msg.sessionId
-          ? Object.assign({}, s, {
-              state: msg.state,
-              needsAttention: msg.needsAttention,
-              alive: isAliveState(msg.state),
-              lastSeq: msg.lastSeq,
-              unread: msg.unread,
-              archived: msg.archived,
-            }, msg.snapshot ? { model: msg.model } : {}) // the snapshot/resync form is authoritative for
-          // model and is taken VERBATIM — null included, so a cleared suspect model (provider-id rebind)
-          // clears here too; the live signal never tracks it, so its null must not blank anything.
-          : s)));
-        // Both a live update and the 15 s resync land here, which makes this the mark-read heartbeat: a
-        // POST that was lost heals on the next frame. Judged on the frame's own numbers — `sessionsRef`
-        // has not caught up with the setSessions above yet.
-        if (msg.sessionId === activeRef.current) {
-          markReadIfViewing(msg.sessionId, msg.unread, msg.lastSeq);
-        }
+        sessionsFrameRef.current(msg);
       };
-      socket.onclose = () => { if (!stopped) timer = setTimeout(connect, 2000); };
+      socket.onclose = () => {
+        if (stopped) return;
+        // One announcement per outage — re-armed by the next snapshot. Without any, a frozen list looks
+        // healthy; with one per retry, a screen reader loops on the 2 s reconnect cadence.
+        if (!disconnectAnnouncedRef.current) {
+          disconnectAnnouncedRef.current = true;
+          say("Daemon connection lost — reconnecting…", true);
+        }
+        timer = setTimeout(connect, 2000);
+      };
       socket.onerror = () => { /* surfaced via onclose */ };
     };
 
@@ -604,18 +656,17 @@ function App() {
       const msg = event.data;
       if (!msg || msg.type !== "select-session" || !msg.sessionId) return;
       if (sessionsRef.current.some((session) => session.id === msg.sessionId)) {
-        // This tap supersedes both an older retained target and any list already in flight. Otherwise an
-        // earlier unknown-session notification can land later and switch away from the session just tapped.
+        // This tap supersedes an older retained target: an earlier unknown-session notification's row
+        // can land later and must not switch away from the session just tapped.
         deepLinkRef.current = null;
         clearDeepLink();
-        sessionsLoadVersionRef.current += 1;
         selectSession(msg.sessionId);
         return;
       }
-      // A backgrounded page can hold an older snapshot than the worker that woke it. Retain the target so
-      // loadSessions selects it from the refreshed list instead of silently discarding the notification tap.
+      // A backgrounded page can hold an older snapshot than the worker that woke it. Retain the target
+      // and fetch that ONE row; applySessionRow honours the retained deep link when the row arrives.
       deepLinkRef.current = msg.sessionId;
-      loadRef.current();
+      fetchSessionRowRef.current(msg.sessionId);
     };
     navigator.serviceWorker.addEventListener("message", onMessage);
     return () => navigator.serviceWorker.removeEventListener("message", onMessage);
@@ -672,7 +723,9 @@ function App() {
       say("Could not start session: " + errorMessage(e), true);
       return;
     }
-    setSessions((prev) => prev.concat([created]));
+    // Upsert, not a bare concat: the session_row frame for the new session may have arrived first, and
+    // whichever observation is older loses by rev instead of duplicating the row.
+    setSessions((prev) => upsertIfNewer(prev, created));
     closeDialogFrom(submittedDialog);
     say("Started " + displayName(created) + ".");
     // From `created` directly: the ref has not caught up with setSessions yet.
@@ -690,15 +743,12 @@ function App() {
    * registration itself succeeded, so the dialog is already closed and the session is shown honestly
    * resumable with the resume error in the status line — retrying the import would only 409.
    *
-   * The HTTP DTOs (the 201, the resume response) are never MERGED into the list by hand: rows carry no
-   * total-ordering key (control-state changes advance no seq), so a DTO snapshot cannot be ordered
-   * against the /events stream — see loadSessions. Each step instead AWAITS a fresh quiet refetch,
-   * which installs the list through the one routine path (superseding any stale fetch still in flight)
-   * and resolves to the elected winner's snapshot to select from, so the terminal-attach decision
-   * (showSession) reads the freshest known state. The DTOs remain FALLBACKS for a failed refetch only:
-   * the 201 row is present-once concatenated so the imported session is never invisible (its id did not
-   * exist before, so nothing fresher can be replaced), and the resume DTO — post-resume, alive — feeds
-   * showSession so a reported success still attaches the terminal.
+   * Every HTTP DTO here (the 201, the resume response, the targeted GETs) merges into the list through
+   * upsertIfNewer: rows carry the daemon-stamped `rev`, so a DTO racing the /events stream is ordered by
+   * comparison and can never roll a fresher row back. Each step still AWAITS a targeted
+   * `GET /sessions/{id}` (fetchSessionRow) so the terminal-attach decision (showSession) reads the
+   * freshest known state; the step's own DTO remains the FALLBACK for a failed fetch — upserted too, so
+   * the imported session is never invisible.
    *
    * The whole flow occupies the one-action-at-a-time slot (`pendingAction`), like controlSession's
    * verbs: without it a Done/Stop on the just-imported row could run between registration and the
@@ -737,24 +787,19 @@ function App() {
         say(errorMessage(e), true);
         return;
       }
-      // This refetch started after the import committed, so its snapshot lists the new row at least as
-      // fresh as the 201 DTO (including the SessionBound append the response reflects — an /events push
-      // of the earlier pre-bind upsert may have installed an OLDER row), and being self-versioned it
-      // also supersedes any stale list fetch still in flight (e.g. the /events unknown-id reload). The
-      // DTO remains only the fallback for a failed or overtaken fetch.
-      const listed = await loadSessions({ quiet: true });
-      const registered = (listed && listed.find((s) => s.id === created.id)) || created;
-      // A refetch that failed (or resolved uninstalled after a bare external version bump) must not
-      // leave the imported row INVISIBLE — the 201 committed, and nothing else lists it until the next
-      // resync. Present-once concat, never a replacement: the id did not exist before this import, so
-      // an already-listed row can only come from a post-commit source at least as fresh as ours.
-      setSessions((prev) => (prev.some((s) => s.id === created.id) ? prev : prev.concat([registered])));
+      // This targeted GET started after the import committed, so its row is at least as fresh as the
+      // 201 DTO (including the SessionBound append the response reflects — an /events push of the
+      // earlier pre-bind upsert may have installed an OLDER row). fetchSessionRow upserts what it got;
+      // the DTO remains only the fallback for a failed fetch, upserted below so the imported row is
+      // never INVISIBLE — the 201 committed, and no frame lists it until its next change.
+      const fetched = await fetchSessionRow(created.id);
+      const registered = fetched || created;
+      if (!fetched) setSessions((prev) => upsertIfNewer(prev, created));
       closeDialogFrom(submittedDialog);
       if (registerOnly) {
-        // Said only when the refetch answered: after a failed refetch the status line holds
-        // loadSessions' actionable error, and announcing success would overwrite it — the selected row
-        // below is feedback enough that the import itself landed.
-        if (listed) say("Imported " + displayName(registered) + " — registered only.");
+        // Said only when the fetch answered: after a failed one the selected row below is feedback
+        // enough that the import itself landed.
+        if (fetched) say("Imported " + displayName(registered) + " — registered only.");
         if (selectionUnmoved()) showSession(registered);   // resumable → the dead hint explains the next step
         return;
       }
@@ -763,32 +808,30 @@ function App() {
           "/sessions/" + encodeURIComponent(created.id) + "/resume",
           { method: "POST" },
         );
-        // Select from a fresh post-resume snapshot first: the resumed agent's first events — or its
+        // Select from a fresh post-resume row first: the resumed agent's first events — or its
         // immediate exit — may have landed through /events while the response was in flight, and
         // attaching a terminal to an already-dead session must not happen on state known to be stale.
-        const resumed = await loadSessions({ quiet: true });
-        // When that refetch fails, the RESUME DTO is the fallback — post-resume state, alive, so
+        const freshRow = await fetchSessionRow(created.id);
+        // When that fetch fails, the RESUME DTO is the fallback — post-resume state, alive, so
         // showSession still attaches the terminal; the pre-resume `registered` row would report
         // success while silently dropping the attach. (The action route answers a plain "ok" with no
         // DTO only when the row vanished mid-request — then the pre-resume row is all that is left.)
-        // The DTO is deliberately not merged into the list: no ordering key; /events and the resync
-        // heal the sidebar row.
-        const row = (resumed && resumed.find((s) => s.id === created.id))
-          || (resumedDto && resumedDto.id ? resumedDto : registered);
-        if (resumed) say("Imported and resumed " + displayName(row) + ".");
-        if (selectionUnmoved()) showSession(row); // alive in the snapshot (or the DTO) → attaches the terminal
+        // Upserted newest-rev-wins, like every DTO.
+        const row = freshRow || (resumedDto && resumedDto.id ? resumedDto : registered);
+        if (!freshRow && resumedDto && resumedDto.id) setSessions((prev) => upsertIfNewer(prev, resumedDto));
+        if (freshRow) say("Imported and resumed " + displayName(row) + ".");
+        if (selectionUnmoved()) showSession(row); // alive in the fresh row (or the DTO) → attaches the terminal
       } catch (e) {
         // The daemon's message (e.g. the `kotgent install` hint for a missing binary) says what to fix;
-        // `quiet` keeps the refetch's routine "N session(s)." announcement off that status line, and
-        // the fresh snapshot decides what the row looks like now (still resumable, normally).
-        const after = await loadSessions({ quiet: true });
-        if (selectionUnmoved()) showSession((after && after.find((s) => s.id === created.id)) || registered);
+        // the fresh row decides what the session looks like now (still resumable, normally).
+        const after = await fetchSessionRow(created.id);
+        if (selectionUnmoved()) showSession(after || registered);
         say("Imported, but resume failed: " + errorMessage(e), true);
       }
     } finally {
       setPendingAction(null);
     }
-  }, [closeDialogFrom, loadSessions, say, showSession]);
+  }, [closeDialogFrom, fetchSessionRow, say, showSession]);
 
   const controlSession = useCallback(async (action, id) => {
     // Acts on an explicit session [id] when given (e.g. Restore from a sidebar row), else the active one.
@@ -812,7 +855,9 @@ function App() {
         { method: "POST" },
       );
       if (updated && updated.id) {
-        setSessions((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+        // Newest-rev-wins: a WS patch that landed while the POST response was in flight is fresher than
+        // the DTO, and a verbatim replacement would roll the row back.
+        setSessions((prev) => upsertIfNewer(prev, updated));
       }
       if (action === "stop" || action === "done") {
         if (s.id === activeRef.current) setAttachedId(null);
@@ -1018,6 +1063,7 @@ function App() {
       drawerOpen=${drawerOpen}
       collapsed=${sidebarCollapsed}
       showDone=${showDone}
+      sessionsReady=${sessionsReady}
       onSelect=${selectSession}
       onNewSession=${openNewSession}
       onOpenPrefs=${openPrefs}

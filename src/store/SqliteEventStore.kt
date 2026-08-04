@@ -99,9 +99,9 @@ class SqliteEventStore private constructor(
      * (`tryEmit`) under the lock: by [append] directly, and by every other mutator via [emitFromRow].
      *
      * A slow consumer that falls far behind can still miss an intermediate update; the events-WS guards
-     * against that with a periodic full resync from the store (see [io.kotgent.transport.eventsWs]), so
-     * a dropped notification can never leave the UI stuck on a stale "needs attention". The buffer is
-     * generous (1024) to make even transient drops unlikely between resyncs.
+     * against that per-socket with a conflating sender that never blocks its collector (see
+     * [io.kotgent.transport.eventsWs]), so a slow client conflates instead of backing this buffer up. The
+     * buffer is generous (1024) to make even transient drops unlikely under bursts.
      */
     private val _sessionUpdates = MutableSharedFlow<SessionUpdate>(
         replay = 0,
@@ -415,7 +415,8 @@ class SqliteEventStore private constructor(
     /**
      * Publish one committed cache change to both audiences.
      *
-     * The browser signal remains best-effort and non-blocking because its periodic snapshot self-heals.
+     * The browser signal remains best-effort and non-blocking (the events-WS conflates per socket and a
+     * reconnect re-baselines from a snapshot).
      * The notifier signal is lossless while subscribed, so its unbuffered [MutableSharedFlow.emit] applies
      * bounded backpressure until the constant-time edge collector receives the update. Publishing is
      * non-cancellable because the database change has already committed; cancellation must not make the

@@ -411,6 +411,12 @@ data class SessionDto(
     val updatedAt: Long,
     /** Whether the session is "done" — hidden from the default sidebar (the UI filters on this). */
     val archived: Boolean = false,
+    /**
+     * The row's global monotonic revision (see `Sessions.sq`). The client applies any observation of a
+     * row — an HTTP DTO or a WS frame — only if its rev is newer than the row it holds, so responses
+     * and frames merge safely in any arrival order.
+     */
+    val rev: Long = 0,
 )
 
 fun SessionMeta.toDto(): SessionDto = SessionDto(
@@ -434,4 +440,5 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     createdAt = createdAt,
     updatedAt = updatedAt,
     archived = archived,
+    rev = rev,
 )

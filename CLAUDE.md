@@ -774,24 +774,61 @@ it (`clearDoneOnResume`), including on the already-alive launch no-op, which is 
 resume left hidden. Two details are load-bearing: the un-archive is written AFTER the state update so its
 `SessionUpdate` is the last one a client sees (fresh state and `archived=false` in one step, no flicker
 back under the state signal) and the returned meta carries `archived = false`, because an HTTP client
-merges that DTO into its list verbatim and a stale `true` would keep the revived row hidden until the next
-resync. A failed launch deliberately does NOT re-archive: compensation puts the dead state back, and the
-row must stay visible to carry that failure. `model` is captured after launch — Claude from
+merges that DTO into its list newest-rev-wins and a stale `true` would keep the revived row hidden until
+its next change. A failed launch deliberately does NOT re-archive: compensation puts the dead state back,
+and the row must stay visible to carry that failure. `model` is captured after launch — Claude from
 the hook payload's `transcript_path` (a default-wired `ClaudeModelCapture` behind `hookRoutes`'
 `onHookPayload` seam, so no `Server.kt` change), Codex by polling the rollout's `turn_context` (a
-`SessionManager.captureModelInBackground` seam). A miss just leaves `model` null. Only `archived` rides
-`SessionUpdate` (live+resync must agree, or the row flickers); `model` rides only the snapshot/resync form
-of the `/events` DTO, which marks itself (`snapshot: true`, the wire discriminator — `encodeDefaults` makes
-a live frame's untracked `model` serialize as the same `null`) and which app.js merges VERBATIM — null
-included, so a model the provider-id rebind correction cleared clears in a connected UI too. `read_cursor`
-is the only **client-driven** one: `app.js` POSTs
+`SessionManager.captureModelInBackground` seam). A miss just leaves `model` null. Both `archived` and
+`model` ride `SessionUpdate` — every emitted field is re-read from the committed row, so a patch is
+authoritative for its whole payload, `model = null` included (a model the provider-id rebind correction
+cleared clears in a connected UI on that very frame; there is no snapshot/live discriminator any more).
+`read_cursor` is the only **client-driven** one: `app.js` POSTs
 `/sessions/{id}/read` for the session it displays, from three **imperative** triggers (selection, every
-`/events` frame for the active session — the 15 s resync doubles as the heartbeat that heals a lost POST —
-and `visibilitychange`), never a `useEffect` on `[id, lastSeq, unread]`, whose primitives are unchanged
-after a failed POST so an effect would never retry. Monotonicity and the clamp live in SQL
+`/events` frame for the active session, and `visibilitychange`), never a `useEffect` on
+`[id, lastSeq, unread]`, whose primitives are unchanged after a failed POST so an effect would never
+retry. A lost POST heals in `postRead` itself: a per-session retry loop, coalesced to the newest seq,
+that stops on success or on `isDefiniteAnswer` (a 401 after rotation / a 404 for a vanished session can
+never succeed, and the page lives for days) — this replaced the 15 s resync heartbeat. Monotonicity and
+the clamp live in SQL
 (`setReadCursor`), which writes **no `updated_at`** (viewing is not activity; `kotgent list` sorts by it) —
 hence `markRead` takes no clock. Each rule has one home in the code: SQL semantics in `Sessions.sq`, the
 storage contract on `EventStore`, the browser trigger in `app.js`. The CLI marks nothing read.
+
+**Every session-row write stamps `rev` — the single-master replication cursor.** `sessions.rev` is a
+global monotonic revision: each statement that touches a row writes `rev = ++counter` (the counter lives
+in `SqliteEventStore` under the existing writer mutex, seeded from `MAX(rev)` at open, so it survives
+restarts; a value consumed by a zero-row conditional write is never observable). Every observation of a
+row — a `SessionDto` from HTTP, a WS frame, the domain `SessionUpdate` — carries the row's rev, and the
+client applies an observation **only if its rev is newer** (`upsertIfNewer`/`patchIfNewer` in
+`resources/webui/lib/sessions.js`, which also stamp the frame's rev onto the stored row — without that
+the invariant self-destructs after the first patch). That one rule is what makes HTTP responses and WS
+frames safely mergeable in any arrival order; it replaced the old "never merge per-row / reload the whole
+list" discipline and its 15 s resync. `rev` is NOT a flow-resumption cursor (a reconnect re-baselines from
+a snapshot, never replays) and is orthogonal to `updated_at` (`markRead` bumps rev but not the sort key).
+
+**The global `/events` protocol: one snapshot, then per-row frames, conflated per socket.** All global
+frames form one `sealed class EventsFrame` (`EventsWs.kt`) discriminated by `TRANSPORT_JSON`'s
+`classDiscriminator = "type"`; **every send must encode through `EventsFrame.serializer()`** — kotlinx
+emits the discriminator only via the sealed base, so a concrete `X.serializer()` produces a type-less
+frame every client silently drops (`sendEventsFrame` is the one send path; pinned by
+`everyGlobalFrameKindCarriesTheTypeDiscriminator`). On connect the socket sends ONE `sessions_snapshot`
+of full `SessionDto` rows (the client builds its entire list from it — there is no `GET /sessions` on
+page load); a session the socket has not carried yet goes out as a full-row `session_row`; every later
+change as a light `session_update` patch; `preferences_update` rides the same hierarchy. Per socket, a
+collector banks the newest update per session under a Mutex and a single sequential sender ships them
+**outside** the Mutex — a slow client conflates instead of stalling the collector into the store's
+`DROP_OLDEST` window (there is no periodic resync to heal a drop after the fact, so prevention is the
+contract). The sender's order is load-bearing: for an uncarried id it fetches the row first, and **only a
+delivered row marks the id as carried** — a null row produces no frame and stays uncarried (the row
+arrives whole on its next emission), because a carried-but-never-delivered id would ship every later
+change as a patch the client ignores, leaving the session invisible until reconnect. The client applies
+frames via the if-newer helpers; the snapshot applicator additionally diffs per row against the previous
+list (notify-edge for a session that entered needs-attention while the socket was down, `markReadIfViewing`
+for the active row) and latches announcements ("N session(s)." only on the first snapshot,
+"Daemon connection lost" once per outage). Old still-open tabs keep working degraded: they drop the
+unknown frame kinds and fall back to their own HTTP reload on the first unknown-id patch —
+`GET /sessions` itself stays (CLI, service worker, targeted fetches).
 
 **PTY via `openpty` + `posix_spawn` (NOT `forkpty`).** `Pty` opens the master with `openpty` and spawns the
 child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before** the spawn. `forkpty`
@@ -894,7 +931,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **911 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **918 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

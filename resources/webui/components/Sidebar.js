@@ -158,7 +158,7 @@ function SessionGroup({
 }
 
 export function Sidebar({
-  sessions, activeId, prefs, status, currentVersion, drawerOpen, collapsed, showDone,
+  sessions, activeId, prefs, status, currentVersion, drawerOpen, collapsed, showDone, sessionsReady,
   onSelect, onNewSession, onOpenPrefs, onRestore, onCloseDrawer, onToggleShowDone,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
@@ -378,7 +378,12 @@ export function Sidebar({
               `)}
         </ul>
 
-        ${visible.length === 0 && html`
+        ${visible.length === 0 && !sessionsReady && html`
+          <div id="sessions-loading" class="empty-sessions">
+            <p>Loading sessions…</p>
+          </div>
+        `}
+        ${visible.length === 0 && sessionsReady && html`
           <div id="empty-sessions" class="empty-sessions">
             <p>No sessions yet. Start one to attach it here.</p>
             <button id="empty-new-session-button" class="button button-primary" type="button"

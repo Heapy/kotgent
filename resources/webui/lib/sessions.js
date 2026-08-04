@@ -55,3 +55,44 @@ export function sessionSubline(s) {
   const detail = [s.model, s.cliVersion].filter(Boolean).join(" · ");
   return detail ? agent + " · " + detail : agent + " · " + (s.cwd || "");
 }
+
+/**
+ * Replace-or-append a full server row into the list, newest-rev-wins: every observation of a session —
+ * an HTTP DTO or a WS session_row frame — carries the daemon-stamped `rev`, so a stale response that
+ * lands after a fresher frame compares older and cannot roll the row back, whatever order the network
+ * delivered them in. Returns the SAME array when nothing changed, so a setSessions caller keeps identity.
+ */
+export function upsertIfNewer(list, row) {
+  const index = list.findIndex((s) => s.id === row.id);
+  if (index < 0) return list.concat([row]);
+  if (!(row.rev > list[index].rev)) return list;
+  const next = list.slice();
+  next[index] = row;
+  return next;
+}
+
+/**
+ * Apply a session_update patch to the row it names, newest-rev-wins; an unknown id leaves the list
+ * untouched (the daemon only patches sessions the socket already carried as full rows). The patch is
+ * authoritative for every field it carries — `model` is taken VERBATIM, null included, so a cleared
+ * suspect model (the provider-id rebind correction) clears here too — and the patch's `rev` is written
+ * onto the row: without that, a later stale full row would compare against the old rev and win.
+ */
+export function patchIfNewer(list, msg) {
+  const index = list.findIndex((s) => s.id === msg.sessionId);
+  if (index < 0) return list;
+  const prev = list[index];
+  if (!(msg.rev > prev.rev)) return list;
+  const next = list.slice();
+  next[index] = Object.assign({}, prev, {
+    state: msg.state,
+    needsAttention: msg.needsAttention,
+    alive: isAliveState(msg.state),
+    lastSeq: msg.lastSeq,
+    unread: msg.unread,
+    archived: msg.archived,
+    model: msg.model,
+    rev: msg.rev,
+  });
+  return next;
+}

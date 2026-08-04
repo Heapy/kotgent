@@ -113,17 +113,58 @@ class WebUiServingTest {
         assertTrue(body.contains("from \"preact\""), "the entry module imports the vendored Preact")
         assertTrue(body.contains("from \"htm/preact\""), "the entry module imports htm's Preact binding")
         assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
-        // The model merge: only the snapshot/resync form (msg.snapshot) carries the model and is taken
-        // VERBATIM — null included, so a model the provider-id rebind correction cleared clears in an
-        // already-connected UI too. The old null-guarded patch (`msg.model != null`) kept a wrong model
-        // on screen until a full reload.
+        // The list is built from the /events socket alone: the frame dispatcher routes the three session
+        // frame kinds through the ref indirection, and NOTHING in app.js may fetch the whole list — the
+        // negative pin below is the regression guard this entire protocol rewrite exists for (206 ×
+        // GET /sessions on one reload). The targeted form ("/sessions/" + encodeURIComponent(...)) and
+        // the POST forms (`apiRequest("/sessions", {`) do not match the closed literal.
         assertTrue(
-            body.contains("msg.snapshot ? { model: msg.model } : {}"),
-            "the session_update merge takes the snapshot form's model verbatim, null included",
+            !body.contains("apiRequest(\"/sessions\")"),
+            "the session list must never be fetched wholesale over HTTP — the snapshot frame is the list",
+        )
+        assertTrue(!body.contains("loadSessions"), "the wholesale session loader stays deleted")
+        assertTrue(
+            body.contains("sessionsFrameRef.current(msg)"),
+            "session frames reach the applicators through the ref, not through the socket effect's deps",
         )
         assertTrue(
+            body.contains("applySessionsSnapshot(msg.sessions)") &&
+                body.contains("applySessionRow(msg.session)") &&
+                body.contains("applySessionPatch(msg)"),
+            "the dispatcher routes all three session frame kinds",
+        )
+        // The snapshot applicator's order: per-row notify-edge against the PREVIOUS list first (a session
+        // that entered needs-attention while the socket was down must ring), then the wholesale install,
+        // then the deep link, and markReadIfViewing for the active row (the reconnect badge heal).
+        val snapStart = body.indexOf("const applySessionsSnapshot = useCallback((rows) => {")
+        val snapEnd = body.indexOf("\n  }, [cancelReattach", startIndex = snapStart.coerceAtLeast(0))
+        assertTrue(snapStart >= 0 && snapEnd > snapStart, "the snapshot applicator is present and bounded")
+        val applySnapshot = body.substring(snapStart, snapEnd)
+        val notifyAt = applySnapshot.indexOf("notifyAttention(prevRow)")
+        val installAt = applySnapshot.indexOf("setSessions(rows)")
+        val wantedAt = applySnapshot.indexOf("const wanted = deepLinkRef.current;")
+        val readAt = applySnapshot.indexOf("markReadIfViewing(active.id, active.unread, active.lastSeq)")
+        assertTrue(
+            notifyAt in 0 until installAt && installAt < wantedAt && wantedAt < readAt,
+            "the snapshot diffs per row for notify-edge, installs, honours the deep link, then heals the badge",
+        )
+        // Reconnect announcements are latched: the routine list line only on the FIRST snapshot, the
+        // disconnect line once per outage (onclose refires every 2 s while the daemon is down).
+        assertTrue(
+            applySnapshot.contains("disconnectAnnouncedRef.current = false") &&
+                applySnapshot.contains("if (!sessionsReadyRef.current)"),
+            "a reconnect snapshot re-arms the outage announcement and stays quiet about the list",
+        )
+        assertTrue(
+            body.contains("if (!disconnectAnnouncedRef.current)") &&
+                body.contains("Daemon connection lost"),
+            "a lost daemon announces once per outage, not once per 2 s retry",
+        )
+        // Model correctness moved into the patch itself: patchIfNewer (lib/sessions.js) takes msg.model
+        // verbatim. app.js must not reintroduce a null-guard that would keep a cleared model on screen.
+        assertTrue(
             !body.contains("msg.model != null"),
-            "no null-guard may filter the authoritative snapshot model (a cleared model must clear)",
+            "no null-guard may filter the authoritative patch model (a cleared model must clear)",
         )
         assertTrue(body.contains("startSession"), "app.js can create sessions")
         assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
@@ -132,53 +173,43 @@ class WebUiServingTest {
         assertTrue(body.contains("markReadIfViewing"), "app.js marks the viewed session read")
         assertTrue(body.contains("/read"), "…by POSTing the displayed seq to the mark-read route")
         assertTrue(body.contains("visibilitychange"), "…and re-checks when the tab becomes visible again")
-        // The per-session throttle Map is module-level and long-lived; this page stays open for days.
-        assertTrue(body.contains("pruneReadPosters"), "…and drops the throttle of a session that vanished")
+        // The per-session poster Map is module-level and long-lived; this page stays open for days.
+        assertTrue(body.contains("pruneReadPosters"), "…and drops the poster of a session that vanished")
+        // The mark-read retry replaced the 15 s resync heartbeat: it must retry a transient failure and
+        // STOP on a definitive one — a 401 after rotation or a 404 for a vanished session never heals,
+        // and a page that lives for days must not hammer the daemon with unwinnable POSTs.
+        assertTrue(
+            body.contains("if (isDefiniteAnswer(e)) return;") &&
+                body.contains("READ_RETRY_DELAY_MS"),
+            "postRead retries transient failures and stops on a definitive 4xx",
+        )
+        // The events socket is the list's only source, so BOTH failure paths must reconnect: the
+        // constructor throw (which used to give up for the page's life) and the ordinary onclose.
+        assertTrue(
+            Regex("""setTimeout\(connect, 2000\)""").findAll(body).count() == 2,
+            "both the constructor failure and onclose reschedule the events socket",
+        )
+        // First-paint honesty: before the first snapshot the sidebar says "Loading sessions…", because
+        // an empty list is not yet a fact — and the routine announcement fires exactly once.
+        assertTrue(
+            body.contains("sessionsReady=\${sessionsReady}"),
+            "app.js tells the sidebar whether the first snapshot has landed",
+        )
+        // The one first-load 401 gate lives in the mount-only /preferences effect now (no GET /sessions
+        // exists to carry it); a later 401 must not navigate a live page away.
+        val prefsStart = body.indexOf("apiRequest(\"/preferences\")")
+        val prefsEnd = body.indexOf("}, [applyServerPreferences, say]);", startIndex = prefsStart.coerceAtLeast(0))
+        assertTrue(prefsStart >= 0 && prefsEnd > prefsStart, "the preferences effect is present and bounded")
+        val prefsEffect = body.substring(prefsStart, prefsEnd)
+        assertTrue(
+            prefsEffect.contains("if (isUnauthenticated(e))") &&
+                prefsEffect.contains("window.location.replace(AUTH_PATH)"),
+            "an unsigned installed PWA is routed to /auth from the mount-only preferences load",
+        )
+        val redirects = Regex("""window\.location\.replace\(AUTH_PATH\)""").findAll(body).count()
+        assertTrue(redirects == 1, "exactly one /auth redirect exists (found $redirects)")
         assertTrue(body.contains("apiRequest(\"/version\")"), "app.js fetches the daemon version")
         assertTrue(body.contains("currentVersion=\${currentVersion}"), "app.js passes the version to the sidebar")
-        val loadStart = body.indexOf("const loadSessions = useCallback(async ({ quiet = false } = {}) => {")
-        val loadEnd = body.indexOf("\n  }, [cancelReattach", startIndex = loadStart.coerceAtLeast(0))
-        assertTrue(loadStart >= 0 && loadEnd > loadStart, "the session loader is present and bounded")
-        val loadSessions = body.substring(loadStart, loadEnd)
-        val versionCaptureAt = loadSessions.indexOf("const version = ++sessionsLoadVersionRef.current")
-        val responseAt = loadSessions.indexOf("const list = await apiRequest(\"/sessions\")")
-        val staleGuard = "if (version !== sessionsLoadVersionRef.current) return"
-        val successGuardAt = loadSessions.indexOf(staleGuard)
-        val setSessionsAt = loadSessions.indexOf("setSessions(list)")
-        assertTrue(
-            body.contains("const sessionsLoadVersionRef = useRef(0)") &&
-                versionCaptureAt in 0 until responseAt &&
-                successGuardAt in (responseAt + 1) until setSessionsAt,
-            "only the newest concurrent /sessions response may mutate the session list",
-        )
-        val catchAt = loadSessions.indexOf("} catch (e) {")
-        val errorGuardAt = loadSessions.indexOf(
-            staleGuard,
-            startIndex = (successGuardAt + staleGuard.length).coerceAtLeast(0),
-        )
-        val redirectAt = loadSessions.indexOf("window.location.replace(AUTH_PATH)")
-        val errorStatusAt = loadSessions.indexOf("say(\"Could not load sessions:")
-        assertTrue(
-            errorGuardAt in (catchAt + 1) until minOf(redirectAt, errorStatusAt),
-            "an older failed /sessions request cannot overwrite a newer response or redirect the page",
-        )
-        assertTrue(
-            Regex(
-                """(?s)if \(isFirstLoad && isUnauthenticated\(e\)\) \{\s*""" +
-                    """window\.location\.replace\(AUTH_PATH\);\s*return;""",
-            ).containsMatchIn(loadSessions),
-            "only the first unauthenticated /sessions load redirects an unsigned installed PWA to /auth",
-        )
-        // A superseded call must not resolve to its own LOSING snapshot: it awaits the newest attempt
-        // (promise identity elects the winner — rows carry no protocol ordering key to compare instead),
-        // so a caller acting on the answer — showSession's terminal-attach decision — never reads alive
-        // state the winner already replaced with dead/archived.
-        assertTrue(
-            body.contains("const sessionsLoadLatestRef = useRef(null)") &&
-                loadSessions.contains("sessionsLoadLatestRef.current = attempt") &&
-                loadSessions.contains("while (winner !== sessionsLoadLatestRef.current)"),
-            "a superseded /sessions call resolves to the elected winner's snapshot, not its own",
-        )
         assertContentTypeContains(resp, "javascript")
     }
 
@@ -240,7 +271,7 @@ class WebUiServingTest {
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
-            "/lib/throttle.js", "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
+            "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/lib/clipboard.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js",
@@ -257,11 +288,31 @@ class WebUiServingTest {
             ctx.get("/lib/prefs.js").bodyAsText().contains("export function loadPrefs"),
             "the stored preferences are exported",
         )
-        // app.js imports this by name — a rename (or an empty file) would break the entire SPA at load
-        // time, which the 200 + content-type loop above cannot see.
+        // app.js imports these by name — a rename (or an empty file) would break the entire SPA at load
+        // time, which the 200 + content-type loop above cannot see. The rev comparison is the load-bearing
+        // half of the protocol: helpers that applied frames unconditionally would let a stale HTTP DTO
+        // roll back a fresher WS frame, and the applied rev must land ON the row or if-newer self-destructs.
+        val sessionHelpers = ctx.get("/lib/sessions.js").bodyAsText()
         assertTrue(
-            ctx.get("/lib/throttle.js").bodyAsText().contains("export function throttleLeading"),
-            "the mark-read throttle is exported under the name app.js imports",
+            sessionHelpers.contains("export function upsertIfNewer") &&
+                sessionHelpers.contains("export function patchIfNewer"),
+            "the newest-rev-wins appliers are exported under the names app.js imports",
+        )
+        assertTrue(
+            sessionHelpers.contains("if (!(row.rev > list[index].rev)) return list;") &&
+                sessionHelpers.contains("if (!(msg.rev > prev.rev)) return list;"),
+            "both appliers compare revs and keep the fresher row",
+        )
+        assertTrue(
+            sessionHelpers.contains("model: msg.model") && sessionHelpers.contains("rev: msg.rev"),
+            "the patch applier takes the model verbatim (null included) and stamps the frame's rev on the row",
+        )
+        // Before the first snapshot an empty list is not yet a fact: the sidebar must say it is loading
+        // rather than show an honest-looking but false "No sessions yet".
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(
+            sidebar.contains("!sessionsReady") && sidebar.contains("Loading sessions…"),
+            "the sidebar distinguishes 'not loaded yet' from 'genuinely empty'",
         )
     }
 
@@ -1121,39 +1172,34 @@ class WebUiServingTest {
                 app.contains("say(\"Could not start session: \" + errorMessage(e), true);"),
             "a failure landing after the dialog was dismissed reaches the status line, not a dead form",
         )
-        // The HTTP DTOs are never hand-merged into the session list: rows carry no total-ordering key
-        // (control-state, archive and read changes advance no seq), so a DTO snapshot cannot be ordered
-        // against the /events stream client-side. Each step instead AWAITS a fresh quiet refetch — the
-        // one routine install path, self-versioned so it also supersedes any stale list fetch still in
-        // flight (e.g. the /events unknown-id reload of the pre-bind upsert), with `quiet` keeping the
-        // replacement's routine "N session(s)." off the flow's own status line (the actionable
-        // resume-failure hint must survive it).
+        // Every HTTP DTO merges through upsertIfNewer: rows carry the daemon-stamped rev, so a DTO racing
+        // the /events stream is ordered by comparison — a stale response can never roll a fresher row
+        // back. Each step still AWAITS a targeted GET (fetchSessionRow) so the terminal-attach decision
+        // reads the freshest known state; the step's own DTO is the fallback for a failed fetch.
         assertTrue(
-            app.contains("const listed = await loadSessions({ quiet: true })") &&
-                app.contains("(listed && listed.find((s) => s.id === created.id)) || created"),
-            "the import awaits a fresh snapshot instead of hand-merging the 201 DTO into the list",
+            app.contains("const fetched = await fetchSessionRow(created.id)") &&
+                app.contains("const registered = fetched || created"),
+            "the import awaits a targeted row fetch instead of a wholesale list reload",
         )
-        // A failed post-import refetch must not leave the imported row INVISIBLE until the next resync
-        // (the 201 committed; nothing else lists it): the row is ensured present exactly once — a
-        // guarded concat, never a replacement, since the id did not exist before the import — and the
-        // success line never overwrites the refetch's own error report.
+        // A failed post-import fetch must not leave the imported row INVISIBLE (the 201 committed;
+        // no frame lists it until its next change): the DTO is upserted as the fallback.
         assertTrue(
-            app.contains("prev.some((s) => s.id === created.id) ? prev : prev.concat([registered])"),
-            "the imported row is made visible even when the refetch failed",
+            app.contains("if (!fetched) setSessions((prev) => upsertIfNewer(prev, created))"),
+            "the imported row is made visible even when the fetch failed",
         )
         assertTrue(
-            app.contains("if (listed) say(\"Imported \"") &&
-                app.contains("if (resumed) say(\"Imported and resumed \""),
-            "a failed refetch's error report survives instead of being masked by a success line",
+            app.contains("if (fetched) say(\"Imported \"") &&
+                app.contains("if (freshRow) say(\"Imported and resumed \""),
+            "a failed fetch's silence survives instead of being masked by a success line",
         )
-        // The terminal-attach decision reads the newest snapshot first; when that refetch fails, the
+        // The terminal-attach decision reads the freshest row first; when that fetch fails, the
         // RESUME DTO — post-resume state, alive — is the fallback, never the pre-resume `registered`
         // row, which would report success while silently dropping the terminal attach.
         assertTrue(
             app.contains("const resumedDto = await apiRequest(") &&
-                app.contains("const resumed = await loadSessions({ quiet: true })") &&
+                app.contains("const freshRow = await fetchSessionRow(created.id)") &&
                 app.contains("|| (resumedDto && resumedDto.id ? resumedDto : registered)"),
-            "the post-resume selection prefers the fresh snapshot, then the resume DTO — never the pre-resume row",
+            "the post-resume selection prefers the fresh row, then the resume DTO — never the pre-resume row",
         )
         // Every showSession in the flow runs after an await, and in that window the operator can select
         // another session (a sidebar click, a push-notification tap). The flow only auto-selects the
@@ -1171,9 +1217,7 @@ class WebUiServingTest {
         assertTrue(
             app.contains("if (selectionUnmoved()) showSession(registered);") &&
                 app.contains("if (selectionUnmoved()) showSession(row);") &&
-                app.contains(
-                    "if (selectionUnmoved()) showSession((after && after.find((s) => s.id === created.id)) || registered);",
-                ),
+                app.contains("if (selectionUnmoved()) showSession(after || registered);"),
             "all three import-flow selections (register-only, resumed, resume-failed) honour a moved selection",
         )
         assertTrue(
@@ -2164,27 +2208,34 @@ class WebUiServingTest {
             .substringBefore("\n    };")
         assertTrue(
             workerMessage.contains("deepLinkRef.current = msg.sessionId") &&
-                workerMessage.contains("loadRef.current()"),
-            "a notification target missing from a stale snapshot is retained and selected after a reload",
+                workerMessage.contains("fetchSessionRowRef.current(msg.sessionId)"),
+            "a notification target missing from a stale snapshot is retained and its ONE row fetched",
         )
         val knownTarget = workerMessage.substringAfter(
             "if (sessionsRef.current.some((session) => session.id === msg.sessionId)) {",
         ).substringBefore("\n      }")
         assertTrue(
             knownTarget.indexOf("deepLinkRef.current = null") in
-                0 until knownTarget.indexOf("sessionsLoadVersionRef.current += 1") &&
-                knownTarget.indexOf("sessionsLoadVersionRef.current += 1") in
                 0 until knownTarget.indexOf("selectSession(msg.sessionId)"),
-            "a known notification target invalidates older loads before it is selected immediately",
+            "a known notification target drops any older retained one before it is selected immediately",
         )
+        // Both carriers of a late-arriving deep-link target honour it: the snapshot applicator (bounded
+        // by its markReadIfViewing tail) and the single-row applicator (the worker's fetch lands there).
         val reloadSelection = app.substringAfter("const wanted = deepLinkRef.current;")
-            .substringBefore("\n    } catch (e) {")
+            .substringBefore("markReadIfViewing(active.id")
         val targetGuard = reloadSelection.indexOf("if (target) {")
         assertTrue(
             targetGuard >= 0 &&
                 reloadSelection.indexOf("deepLinkRef.current = null") > targetGuard &&
                 reloadSelection.indexOf("showSession(target)") > targetGuard,
-            "a list that does not contain the notification target leaves it retained for a later refresh",
+            "a snapshot that does not contain the notification target leaves it retained for a later frame",
+        )
+        val rowApplicator = app.substringAfter("const applySessionRow = useCallback((row) => {")
+            .substringBefore("\n  }, [showSession]);")
+        assertTrue(
+            rowApplicator.contains("if (deepLinkRef.current === row.id) {") &&
+                rowApplicator.contains("showSession(row)"),
+            "a retained notification target arriving as a single row is honoured too",
         )
     }
 
