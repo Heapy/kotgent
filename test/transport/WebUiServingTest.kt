@@ -2400,6 +2400,14 @@ class WebUiServingTest {
                 pane.contains("}, [terminalFontSize]);"),
             "changing the preference updates and re-fits the live xterm without reconnecting it",
         )
+        // With the DOM renderer the cursor is a <span> rebuilt on every repaint of its row, which restarts
+        // its CSS blink from the "on" phase — under a TUI repainting per keystroke the phase is reset at
+        // irregular intervals and reads as stuttering. A steady cursor has no phase to lose, and claude
+        // (measured: it sends `?12l`) asks for the same thing.
+        assertTrue(
+            pane.contains("cursorBlink: false,"),
+            "the cursor is steady, so repaint-driven blink restarts cannot stutter it",
+        )
     }
 
     /**
@@ -2588,6 +2596,17 @@ class WebUiServingTest {
         assertTrue(
             pane.contains("if (sendBytesRef.current === sendBytes) sendBytesRef.current = null"),
             "terminal teardown clears only its own sender, never a replacement socket's seam",
+        )
+        // xterm splits its output across TWO events: a mouse report whose active encoding is the legacy
+        // X10 one goes to onBinary (`CoreMouseService` routes `DEFAULT` to `triggerBinaryEvent`) because
+        // its coordinates are raw bytes above 127. Subscribing to onData alone drops those reports with no
+        // error at all — the mouse just stops working — and the encoding degrades exactly this way when
+        // tracking arrives without SGR, which is what TERMINAL_MODE_RESET's ordering rule guards against.
+        assertTrue(
+            pane.contains("const binarySubscription = term.onBinary(") &&
+                pane.contains("bytes[i] = data.charCodeAt(i) & 0xff") &&
+                pane.contains("binarySubscription.dispose()"),
+            "legacy-encoded mouse reports reach the upstream byte-wise and unsubscribe with the terminal",
         )
         for (prop in listOf(
             "barRef=\${keyBarRef}",

@@ -226,6 +226,46 @@ the agent lives on in `tmux`). Input from any subscriber goes to the one upstrea
 Do not open a second `tmux attach` or route input via `tmux send-keys` — it breaks the single-upstream
 invariant.
 
+**A repaint is one frame, and the hold keys on the cursor being TAKEN AWAY.** A TUI turns the cursor off
+before repainting and back on at the end, so a hidden cursor is the stream's own statement that the screen
+is not consistent yet. Forwarding each pty `read(2)` as its own WS frame therefore ships half-drawn
+screens: measured on a live claude pane, one repaint arrives as 4–6 reads (median 1 KiB, ~4.5 KiB total)
+within 0–10 ms, and 1183 of 1666 hide/show pairs landed in different reads. A pair separated by `dt` is
+split by the browser's 16.7 ms vsync about `dt/16.7` of the time — ~3 cursor dropouts per second, each
+exactly one frame long. `TerminalBridge.readerLoop` therefore holds a read that turned a VISIBLE cursor
+off until `?25h` arrives, then broadcasts the whole repaint at once. **Hold on the transition, never on
+"hidden"**: a full-screen app hides the cursor for its entire run (measured — htop emits ONE `?25l` at
+startup and never a `?25h`), so the "hidden" form held every later read for the full bound, batching
+output into 50 ms chunks and making htop visibly sluggish. It is also pointless: a cursor that is never
+drawn cannot be seen to drop out. A visible cursor is forwarded immediately, which keeps the hold off the
+latency path and leaves `Broadcaster`'s per-frame overflow accounting unchanged. Both bounds fail toward
+SENDING — `HIDDEN_CURSOR_HOLD` (50 ms; an app may hide the cursor forever) and `MAX_COALESCED_FRAME`
+(256 KiB; memory). `CursorVisibilityScanner` carries the last 5 bytes of each chunk into the next, because
+a read boundary falls anywhere — the measured stream's smallest message was ONE byte.
+
+**Fixing this in the browser does not work, and both attempts are recorded.** Banking incoming messages
+and writing once per `requestAnimationFrame` quantises by the very frame that splits the pair; measured
+before and after, the dropout rate did not move (3.0 → 2.8 Hz). Holding `?25l` in xterm's parser and
+replaying it after a grace does suppress the dropout, but then the cursor stays VISIBLE at the
+intermediate positions a repaint walks it through — reported as "the cursor twitches on other lines",
+i.e. worse than the dropout. `cursorBlink` is a third dead end: no blink is involved at all (claude sends
+`?12l`, asking for a steady cursor — the browser starts steady for the same reason, since with the DOM
+renderer the cursor span is rebuilt on every repaint of its row and restarts its CSS blink from the "on"
+phase). xterm's own `addon-attach` writes every message straight through with no buffering — that is the
+canonical shape; keep the browser dumb and fix the stream on the daemon.
+
+**A regression test for the hold must emit both reads before asserting either.** A hold with nothing to
+merge only DELAYS, so a test that emits one read, asserts it, then emits the next passes against the
+broken code. The merged frame is the observable: assert `rows one` and get `rows onerows two`.
+
+**xterm reports input on TWO events.** `term.onData` carries keystrokes and SGR-encoded mouse reports;
+`term.onBinary` carries mouse reports in the legacy X10 encoding, whose coordinates are raw bytes above
+127 (`CoreMouseService` routes `DEFAULT` to `triggerBinaryEvent`). Subscribing to `onData` alone drops
+those silently — the mouse just stops working — and the encoding degrades that way whenever tracking
+arrived without `?1006h`, the same failure `TERMINAL_MODE_RESET`'s ordering rule guards. Narrow that
+payload byte-wise (`charCodeAt(i) & 0xff`), never through `TextEncoder`, and never through sticky Ctrl:
+it is a pointer report, not a keystroke.
+
 **A subscriber's geometry must be known at OPEN, not only after the first resize frame.** A `tmux` client
 reads its size from `TIOCGWINSZ` exactly once, at startup, so a size that lands later is a *reflow* of the
 agent's TUI (and, before the `SIGWINCH` fix below, was silently lost). So the terminal WS carries
@@ -854,7 +894,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **896 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **911 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -884,7 +924,8 @@ src/core/                      host-free domain: AgentEvent, SessionState, Sessi
 src/crypto/                    Sha256, Hmac, Hex, Base64Url — canonical pure-Kotlin encoders/digests
                                (KT-78062: no CommonCrypto in the test binary)
 src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
-src/pty/                       TerminalBridge, Broadcaster, PtyHandle (iface), RealPtyHandle
+src/pty/                       TerminalBridge (repaint hold), Broadcaster, CursorVisibility (DECTCEM
+                               tracking), PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule),
                                LoginShell.kt (absolute executable login-shell resolution), Signals
                                (SIGINT/SIGTERM taken back from Ktor's shutdown hook)

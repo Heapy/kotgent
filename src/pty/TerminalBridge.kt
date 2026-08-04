@@ -2,7 +2,12 @@ package io.kotgent.pty
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
 
 /**
  * Per-session, **lazy** terminal bridge (Task 9): the single upstream `tmux attach` that N clients
@@ -120,11 +125,88 @@ class TerminalBridge(
      * or session died, or the attach ended externally) the broadcaster drops the dead upstream and
      * detaches remaining clients. When we close the upstream ourselves (last subscriber left) this
      * loop is cancelled instead and never reaches the EOF handler.
+     *
+     * The [CursorVisibilityScanner] lives across iterations on purpose: a repaint that was flushed early
+     * (it hit [MAX_COALESCED_FRAME]) leaves the cursor hidden, and the NEXT read is still part of that
+     * same unfinished repaint. Resetting the state per read would silently forget that.
      */
     private suspend fun readerLoop(up: PtyHandle) {
-        for (bytes in up.output) {
-            broadcaster.broadcast(bytes)
+        val cursor = CursorVisibilityScanner()
+        while (true) {
+            val first = up.output.receiveCatching().getOrNull() ?: break
+            broadcaster.broadcast(coalesceUnfinishedRepaint(first, up.output, cursor))
         }
         broadcaster.onUpstreamEof(up)
+    }
+
+    /**
+     * Hold [first] — and whatever follows it — until the repaint it belongs to is COMPLETE, then hand the
+     * whole thing to the fan-out as ONE frame.
+     *
+     * The hold triggers on the cursor being TAKEN AWAY, not on it being absent: a read is held only when
+     * it turned a visible cursor off, and only until the cursor returns. Both halves matter.
+     *
+     * **A visible cursor returns immediately.** That is what keeps this off the latency path: ordinary
+     * output — a shell's echo, a stream of log lines, the seed — carries no DECTCEM, so it is forwarded
+     * exactly as before, one read per frame, with no added delay and no change to how many frames a
+     * stalled subscriber must fail to drain before [Broadcaster] disconnects it.
+     *
+     * **An already-hidden cursor returns immediately too**, and that is not an optimisation — it is the
+     * difference between working and unusable. A full-screen app routinely hides the cursor for its whole
+     * run: measured, htop emits ONE `?25l` at startup and never a `?25h`. Holding on "hidden" rather than
+     * on the transition therefore held EVERY later read for the full timeout, turning its output into
+     * 50 ms batches — visibly sluggish scrolling. It is also pointless: a cursor that is never drawn
+     * cannot be seen to drop out, so there is nothing for a hold to protect.
+     *
+     * Two bounds keep a hold from becoming a stall, and both fail toward SENDING:
+     *  - [HIDDEN_CURSOR_HOLD] — an app may legitimately hide the cursor for a long time (or forever), and
+     *    a repaint may simply be slow. Measured gaps between hide and show were 0–10 ms with rare
+     *    excursions to ~160 ms, so this bounds the wait well above the common case while staying far
+     *    below the point where a held screen would read as a frozen terminal.
+     *  - [MAX_COALESCED_FRAME] — a repaint that never ends must not accumulate without bound. This is a
+     *    memory bound, not a policy: the observed repaint is ~4.5 KiB.
+     */
+    private suspend fun coalesceUnfinishedRepaint(
+        first: ByteArray,
+        source: ReceiveChannel<ByteArray>,
+        cursor: CursorVisibilityScanner,
+    ): ByteArray {
+        val wasVisible = !cursor.hidden
+        cursor.accept(first)
+        if (!cursor.hidden || !wasVisible) return first
+
+        val parts = mutableListOf(first)
+        var size = first.size
+        val started = TimeSource.Monotonic.markNow()
+        while (cursor.hidden && size < MAX_COALESCED_FRAME) {
+            val remaining = HIDDEN_CURSOR_HOLD - started.elapsedNow()
+            if (remaining <= Duration.ZERO) break
+            // A closed channel answers null without waiting, so EOF ends the hold instead of serving it
+            // out: the pending bytes ship here and the reader loop's next receive drives the EOF path.
+            val next = withTimeoutOrNull(remaining) { source.receiveCatching().getOrNull() } ?: break
+            cursor.accept(next)
+            parts.add(next)
+            size += next.size
+        }
+        return joinParts(parts, size)
+    }
+
+    private fun joinParts(parts: List<ByteArray>, total: Int): ByteArray {
+        if (parts.size == 1) return parts[0]
+        val joined = ByteArray(total)
+        var at = 0
+        for (part in parts) {
+            part.copyInto(joined, at)
+            at += part.size
+        }
+        return joined
+    }
+
+    companion object {
+        /** Longest a hidden cursor may hold a frame back before it is sent mid-repaint anyway. */
+        val HIDDEN_CURSOR_HOLD: Duration = 50.milliseconds
+
+        /** Memory bound on one held repaint; a repaint that never ends must not grow without limit. */
+        const val MAX_COALESCED_FRAME: Int = 256 * 1024
     }
 }

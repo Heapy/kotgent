@@ -340,7 +340,15 @@ export function TerminalPane({
 
     const term = new Terminal({
       convertEol: false,
-      cursorBlink: true,
+      // A STEADY cursor. With the DOM renderer the cursor is an ordinary <span> carrying a CSS
+      // `blink … 1s step-end infinite`, and that element is rebuilt every time its row repaints — so the
+      // animation restarts from its "on" phase at every repaint. Under an agent TUI, which repaints on
+      // each keystroke and each spinner tick, the blink phase is reset at irregular intervals and reads
+      // as stuttering rather than blinking. A steady cursor has no phase to lose. This is only the
+      // STARTING value: an app asking for a blinking shape through DECSCUSR (`CSI Ps SP q`) or
+      // `DECSET 12` still gets one, since xterm maps both onto this same option — claude, measured,
+      // sends `?12l` and therefore agrees with this default.
+      cursorBlink: false,
       fontFamily: "Menlo, Monaco, \"Courier New\", monospace",
       fontSize: fontSizeRef.current,
       theme: { background: "#000000" },
@@ -461,6 +469,19 @@ export function TerminalPane({
       }
       sendBytes(new TextEncoder().encode(data));
     });
+    // The OTHER half of xterm's output: mouse reports whose active encoding is the legacy X10 one are
+    // emitted on `onBinary`, not `onData` (`CoreMouseService` routes `DEFAULT` to `triggerBinaryEvent`),
+    // because their coordinates are raw bytes above 127 that UTF-8 encoding would corrupt. Without this
+    // subscription those reports are generated and dropped on the floor — no error, the mouse simply does
+    // nothing. The encoding goes legacy whenever tracking arrived without SGR (`?1006h`), which is the
+    // same degradation `TERMINAL_MODE_RESET`'s ordering rule exists to avoid. The payload is a string of
+    // char codes 0-255, so it is narrowed byte-wise rather than run through TextEncoder, and it never
+    // consults sticky Ctrl: these are pointer reports, not keystrokes.
+    const binarySubscription = term.onBinary((data) => {
+      const bytes = new Uint8Array(data.length);
+      for (let i = 0; i < data.length; i += 1) bytes[i] = data.charCodeAt(i) & 0xff;
+      sendBytes(bytes);
+    });
     // xterm-initiated resizes (including from fit) -> text resize control frame.
     const resizeSubscription = term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
 
@@ -517,6 +538,7 @@ export function TerminalPane({
       host.style.removeProperty("--terminal-visible-height");
       app.classList.remove("visual-viewport-shrunken");
       dataSubscription.dispose();
+      binarySubscription.dispose();
       resizeSubscription.dispose();
       ws.onopen = null;
       ws.onmessage = null;

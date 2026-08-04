@@ -130,6 +130,108 @@ class TerminalBridgeTest {
         b.close()
     }
 
+    /**
+     * A repaint reaches the daemon as several pty reads — measured on a live claude pane: 4–6 of them,
+     * median 1 KiB, ~4.5 KiB total, delivered within 0–10 ms. Forwarding each as its own frame lets a
+     * browser paint the half-drawn states between them, which is what dropped the cursor ~3 times a
+     * second. The bridge therefore holds a repaint until the stream says it finished.
+     */
+    @Test
+    fun aRepaintIsDeliveredAsOneFrameInsteadOfTheReadsItArrivedIn() = bridgeTest { bridge, factory ->
+        val sub = bridge.subscribe()
+
+        factory.current.emit("\u001b[?25lfirst ".encodeToByteArray())
+        factory.current.emit("second ".encodeToByteArray())
+        factory.current.emit("third\u001b[?25h".encodeToByteArray())
+
+        assertEquals(
+            "\u001b[?25lfirst second third\u001b[?25h",
+            sub.output.receiveText(),
+            "the whole repaint arrives as ONE frame, so no intermediate state can be painted",
+        )
+        sub.close()
+    }
+
+    /**
+     * The hold must stay off the latency path. Ordinary output — shell echo, log lines, the seed — carries
+     * no DECTCEM, so it has to be forwarded exactly as before: one read, one frame, no delay. This also
+     * keeps [Broadcaster]'s overflow accounting (frames, not bytes) unchanged for a stalled subscriber.
+     */
+    @Test
+    fun outputWithAVisibleCursorIsForwardedReadForRead() = bridgeTest { bridge, factory ->
+        val sub = bridge.subscribe()
+
+        factory.current.emit("one".encodeToByteArray())
+        assertEquals("one", sub.output.receiveText(), "a visible cursor means send now")
+        factory.current.emit("two".encodeToByteArray())
+        assertEquals("two", sub.output.receiveText(), "reads are not merged when nothing is mid-repaint")
+
+        sub.close()
+    }
+
+    /**
+     * A full-screen app routinely hides the cursor for its entire run — measured, htop emits ONE `?25l` at
+     * startup and never a `?25h`. Holding on "the cursor is hidden" rather than on "this read hid it" made
+     * every later read wait out the full timeout, batching htop's output into 50 ms chunks and turning its
+     * scrolling visibly sluggish. It is also pointless: a cursor that is never drawn cannot drop out.
+     */
+    @Test
+    fun anAppThatKeepsItsCursorHiddenIsForwardedWithoutHolding() = bridgeTest { bridge, factory ->
+        val sub = bridge.subscribe()
+
+        // The startup hide is a real transition, so this one frame is held (and released by the bound).
+        factory.current.emit("\u001b[?25l".encodeToByteArray())
+        assertEquals("\u001b[?25l", sub.output.receiveText())
+
+        // From here the cursor simply stays hidden. BOTH reads are emitted before either is asserted, so
+        // an armed hold would have a second read available inside its window and would merge the two into
+        // one frame — which is exactly the batching that made htop sluggish. Separate frames prove the
+        // hold never armed; asserting one read at a time would pass either way, since a hold with nothing
+        // to merge only delays.
+        factory.current.emit("rows one".encodeToByteArray())
+        factory.current.emit("rows two".encodeToByteArray())
+        assertEquals("rows one", sub.output.receiveText(), "an already-hidden cursor does not arm a hold")
+        assertEquals("rows two", sub.output.receiveText(), "so the next read is its own frame, not merged")
+
+        sub.close()
+    }
+
+    /**
+     * An app may hide the cursor and simply leave it hidden (or the repaint may never finish). The hold is
+     * bounded so that is a delay, never a stall: the bytes go out once [TerminalBridge.HIDDEN_CURSOR_HOLD]
+     * expires, and the terminal keeps updating.
+     */
+    @Test
+    fun aHideThatIsNeverAnsweredIsStillDeliveredOnceTheHoldExpires() = bridgeTest { bridge, factory ->
+        val sub = bridge.subscribe()
+
+        factory.current.emit("\u001b[?25lhalf a repaint".encodeToByteArray())
+
+        assertEquals(
+            "\u001b[?25lhalf a repaint",
+            sub.output.receiveText(),
+            "an unanswered hide is sent anyway rather than parking the stream",
+        )
+        sub.close()
+    }
+
+    /**
+     * The size bound is a memory bound, not a policy: a repaint that never ends must not accumulate. A
+     * read that is already over the limit is forwarded without ever entering the hold.
+     */
+    @Test
+    fun aReadPastTheSizeBoundIsForwardedWithoutHolding() = bridgeTest { bridge, factory ->
+        val sub = bridge.subscribe()
+
+        val oversized = "\u001b[?25l".encodeToByteArray() +
+            ByteArray(TerminalBridge.MAX_COALESCED_FRAME) { 'x'.code.toByte() }
+        factory.current.emit(oversized)
+
+        val received = withTimeout(5_000) { sub.output.receive() }
+        assertEquals(oversized.size, received.size, "an over-limit read is sent as it came")
+        sub.close()
+    }
+
     @Test
     fun inputFromAnySubscriberIsWrittenToTheUpstream() = bridgeTest { bridge, factory ->
         val a = bridge.subscribe()
