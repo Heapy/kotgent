@@ -35,9 +35,10 @@ data class StoredEvent(
  * and the "needs attention" queue stay live without polling.
  *
  * Carries the minimum a live UI needs to update a row in place — which [sessionId] changed, its new
- * [state] (from which the UI derives "needs attention"), the [lastSeq] high-water mark, and the
- * [unread] count (events past the session's read cursor). Fuller detail is fetched via
- * `GET /sessions/{id}`. Deliberately small: this is a change *signal*, not a snapshot.
+ * [state] (from which the UI derives "needs attention"), the [lastSeq] high-water mark, the
+ * [unread] count (events past the session's read cursor), plus the orthogonal [archived]/[model]
+ * fields and the row's [rev]. Fuller detail is fetched via `GET /sessions/{id}`. Deliberately small:
+ * this is a change *signal*, not a snapshot.
  */
 data class SessionUpdate(
     val sessionId: SessionId,
@@ -45,12 +46,24 @@ data class SessionUpdate(
     val lastSeq: Seq,
     val unread: Long,
     /**
-     * Whether the session is archived ("done"). Carried on the live signal — not only the snapshot DTO —
-     * so the live and the periodic-resync `/events` messages agree: otherwise a live update for an
-     * archived session would report `archived=false` and un-hide it in another client until the next
-     * resync. Defaults to `false` for the common case (only a live, non-archived session gets appends).
+     * Whether the session is archived ("done"). Carried on the live signal so an update for an
+     * archived session never reports `archived=false` and un-hides the row in a connected client.
+     * Defaults to `false` for the common case (only a live, non-archived session gets appends).
      */
     val archived: Boolean = false,
+    /**
+     * The row's best-effort discovered model, re-read from the committed row — so the live signal is
+     * authoritative for it, `null` included (the provider-id rebind correction clears a suspect model,
+     * and that clear must propagate). Defaults to `null` only for hand-built test constructions.
+     */
+    val model: String? = null,
+    /**
+     * The row's global monotonic revision (see `Sessions.sq`), always re-read from the committed row.
+     * `0` means the update has no persisted `sessions` row (an append can outrun the row's creation);
+     * the transport does not forward those. Clients apply a frame only if its rev is newer than the
+     * row they hold, which makes HTTP responses and WS frames safely mergeable in any arrival order.
+     */
+    val rev: Long = 0,
 )
 
 /**
@@ -214,8 +227,11 @@ interface EventStore {
      * establish a baseline and then streams subsequent changes. Buffered, so a burst of appends is not
      * lost if a subscriber briefly lags.
      *
-     * [decision] The per-session restart-safe cursor lives on [subscribe] (seq is per-session, Task 7); a
-     * global cursor over this cross-session signal is not meaningful, so it is intentionally cursor-less.
+     * [decision] The per-session restart-safe cursor lives on [subscribe] (seq is per-session, Task 7).
+     * This flow itself stays resumption-cursor-less — a late subscriber re-baselines from [listSessions],
+     * never replays — but every update carries the row's [SessionUpdate.rev], a global monotonic per-row
+     * revision, so a consumer can apply updates idempotently (newest-rev-wins) however they interleave
+     * with snapshot or HTTP reads. The rev orders observations of a row; it does not resume this flow.
      */
     val sessionUpdates: SharedFlow<SessionUpdate>
 

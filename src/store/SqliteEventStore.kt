@@ -73,6 +73,15 @@ class SqliteEventStore private constructor(
     /** Serializes all writes (single writer) and guards the in-memory maps below. */
     private val mutex = Mutex()
 
+    /**
+     * The global session-row revision counter (see `Sessions.sq`'s `rev` column). Seeded from
+     * `maxRev` in [init] (single-threaded construction), incremented only under [mutex] — every
+     * mutator stamps `++revCounter` into its statement. A value consumed by a write that touched
+     * zero rows (a rejected [setModelForProvider], a mutator on a missing row) is never persisted or
+     * emitted, so its post-restart reuse is unobservable.
+     */
+    private var revCounter: Long = 0
+
     /** Initialized from the seeded singleton row after the legacy-database DDL runs in [init]. */
     private val _preferences: MutableStateFlow<UiPreferences>
     override val preferences: StateFlow<UiPreferences> get() = _preferences
@@ -142,6 +151,13 @@ class SqliteEventStore private constructor(
         if (!driver.hasColumn("sessions", "archived")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }
+        // Same additive-migration idiom for the `rev` column (see Sessions.sq for its semantics).
+        if (!driver.hasColumn("sessions", "rev")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0", 0)
+        }
+        // Seed the revision counter from the committed rows. Runs after the guard above, so the
+        // generated query always finds the column; construction is single-threaded, so no lock yet.
+        revCounter = sessions.maxRev().executeAsOne()
 
         // A whole new table follows the same runtime-migration rule as push_subscriptions: SQLDelight's
         // generated create() covers fresh databases, while this idempotent DDL covers databases created by
@@ -176,6 +192,7 @@ class SqliteEventStore private constructor(
             meta.createdAt,
             meta.updatedAt,
             if (meta.archived) 1L else 0L,
+            ++revCounter, // the store stamps the revision; whatever `meta.rev` carries is ignored
         )
         // Emit from the COMMITTED row, not from `meta`: the upsert max-merges read_cursor, so a `meta`
         // carrying a cursor the row has already moved past would broadcast an `unread` the DB disagrees
@@ -193,19 +210,19 @@ class SqliteEventStore private constructor(
         // Update only the daemon-owned control fields — never last_seq / provider_session_id, which a
         // concurrent hook append advances under this same lock (a stale full-row upsert would clobber
         // them). The in-memory `projections` cache is the pure event-log replay and is untouched here.
-        sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, sessionId.value)
+        sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
     override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
-        sessions.setArchived(if (archived) 1L else 0L, updatedAt, sessionId.value)
+        sessions.setArchived(if (archived) 1L else 0L, updatedAt, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
     override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long): Unit = mutex.withLock {
-        sessions.setModel(model, updatedAt, sessionId.value)
-        // The model itself rides the periodic /events resync (SessionMeta.toUpdateDto); this signal just
-        // keeps state/unread fresh (it carries archived, not model).
+        sessions.setModel(model, updatedAt, ++revCounter, sessionId.value)
+        // The signal carries the committed row's model verbatim (null included), so a capture — or the
+        // rebind correction's clear — reaches connected clients on this very emission.
         emitFromRow(sessionId)
     }
 
@@ -218,7 +235,7 @@ class SqliteEventStore private constructor(
         // The WHERE carries the provider-id check, so check-and-write is one atomic statement; the
         // read-back below only decides the return value / whether to emit, and cannot go stale because
         // every writer holds this same mutex.
-        sessions.setModelForProvider(model, updatedAt, sessionId.value, providerSessionId.value)
+        sessions.setModelForProvider(model, updatedAt, ++revCounter, sessionId.value, providerSessionId.value)
         val applied = sessions.get(sessionId.value).executeAsOneOrNull()
             ?.provider_session_id == providerSessionId.value
         if (applied) emitFromRow(sessionId)
@@ -228,7 +245,7 @@ class SqliteEventStore private constructor(
     override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
         // Monotonicity (MAX) and the clamp to last_seq (MIN) live in the statement itself, so nothing is
         // computed here; the in-memory `projections` map is a pure event-log replay and is untouched.
-        sessions.setReadCursor(seq.value, sessionId.value)
+        sessions.setReadCursor(seq.value, ++revCounter, sessionId.value)
         // Emitted unconditionally — even when the MAX/MIN made the UPDATE a no-op — because this signal is
         // how a client whose earlier POST was lost gets re-synchronized.
         emitFromRow(sessionId)
@@ -282,6 +299,7 @@ class SqliteEventStore private constructor(
             val readCursor = cachedRow?.read_cursor ?: 0L
 
             // Atomic: the event row AND the session read-model cache advance together, or neither.
+            val rev = ++revCounter
             db.transaction {
                 events.insert(sessionId.value, seq, ts, type, source.name, payload)
                 sessions.updateCache(
@@ -290,6 +308,7 @@ class SqliteEventStore private constructor(
                     next.lastSeq.value,
                     next.providerSessionId?.value,
                     ts,
+                    rev,
                     sessionId.value,
                 )
             }
@@ -299,11 +318,15 @@ class SqliteEventStore private constructor(
             // Fan out to live subscribers (registered under this same lock — see subscribe).
             subscribers[sessionId]?.forEach { it.trySend(stored) }
             // Signal the (control-authoritative) cache change for the events-WS. Hand-built rather than
-            // emitFromRow — see that helper's KDoc for why, and keep the two in step.
+            // emitFromRow — see that helper's KDoc for why, and keep the two in step. With no `sessions`
+            // row, updateCache touched nothing, so the update carries rev 0 (nothing persisted holds
+            // `rev`) — the transport does not forward row-less updates anyway.
             emitSessionUpdate(
                 SessionUpdate(
                     sessionId, cacheState, next.lastSeq,
                     unread(next.lastSeq.value, readCursor), (cachedRow?.archived ?: 0L) != 0L,
+                    model = cachedRow?.model, // updateCache never touches model, so the pre-transaction row is current
+                    rev = if (cachedRow != null) rev else 0,
                 ),
             )
             Seq(seq)
@@ -361,7 +384,7 @@ class SqliteEventStore private constructor(
 
     /**
      * Broadcast a [SessionUpdate] rebuilt from the session's COMMITTED row — the tail of every mutator
-     * except [append], which builds the same five fields by hand a few lines above. Reading back is what
+     * except [append], which builds the same fields by hand a few lines above. Reading back is what
      * keeps the wire and the DB in agreement when a statement rewrote a value the caller did not supply
      * (`upsert`'s max-merged `read_cursor`) or did not touch at all.
      *
@@ -372,8 +395,8 @@ class SqliteEventStore private constructor(
      * this helper is deliberately a silent no-op there. Edit the two together: they emit the same shape.
      *
      * `archived` comes from the row, never from a default: an archived ("done") session can still be the
-     * selected one, and a live update claiming `archived=false` un-hides it in every client until the next
-     * resync. A vanished row is a silent no-op, matching every mutator's "no-op if the row does not exist".
+     * selected one, and a live update claiming `archived=false` would un-hide it in every client. A
+     * vanished row is a silent no-op, matching every mutator's "no-op if the row does not exist".
      *
      * Uses `sessions.get` directly, NOT [getSession] — [mutex] is not reentrant and the caller holds it.
      */
@@ -383,6 +406,8 @@ class SqliteEventStore private constructor(
             SessionUpdate(
                 sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
                 unread(row.last_seq, row.read_cursor), row.archived != 0L,
+                model = row.model,
+                rev = row.rev,
             ),
         )
     }
@@ -464,6 +489,7 @@ class SqliteEventStore private constructor(
         createdAt = created_at,
         updatedAt = updated_at,
         archived = archived != 0L,
+        rev = rev,
     )
 
     companion object {

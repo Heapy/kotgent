@@ -63,4 +63,10 @@ data class SessionMeta(
      * [io.kotgent.store.EventStore.setArchived] (the "Done" op archives after a kill; "Restore" clears it).
      */
     val archived: Boolean = false,
+    /**
+     * The row's global monotonic revision — stamped by the store on every write that touches the row
+     * (`Sessions.sq`), never by callers: the store overrides whatever a passed-in meta carries. Clients
+     * compare revs to apply the newest observation of a row regardless of the channel it arrived on.
+     */
+    val rev: Long = 0,
 )

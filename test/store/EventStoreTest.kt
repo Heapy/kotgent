@@ -467,6 +467,36 @@ class EventStoreTest {
         }
     }
 
+    @Test
+    fun theRevisionIsMigratedStampedOnEveryWriteAndSurvivesReopen() = runBlocking {
+        withTimeout(20_000) {
+            // The same pre-migration schema also predates `rev`, so this doubles as its ALTER test.
+            val driver = inMemoryDriver(preArchivedSchema)
+            val store = SqliteEventStore.using(driver, now = { 1L })
+            val sid = SessionId("rev01")
+            store.upsertSession(meta(sid)) // would fail with "no such column: rev" if init didn't ALTER
+            val first = store.getSession(sid)!!.rev
+            assertTrue(first > 0, "the store stamps a positive revision on the first write")
+
+            store.setArchived(sid, true, 2L)
+            val second = store.getSession(sid)!!.rev
+            assertTrue(second > first, "a targeted mutator advances the revision")
+
+            store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            val third = store.getSession(sid)!!.rev
+            assertTrue(third > second, "append's cache update advances the revision too")
+
+            // A fresh store over the same DB seeds its counter from MAX(rev), so later writes keep
+            // ascending instead of re-issuing revisions a client may already hold. markRead's cursor
+            // write is a clamped no-op here, yet the revision still advances — the unconditional emit
+            // rides a genuinely newer observation of the row.
+            val reopened = SqliteEventStore.using(driver, now = { 3L })
+            reopened.markRead(sid, Seq(0))
+            val fourth = reopened.getSession(sid)!!.rev
+            assertTrue(fourth > third, "the reopened counter continues past the persisted maximum")
+        }
+    }
+
     // ---- model (the conditional capture write) ----
 
     @Test

@@ -28,7 +28,13 @@ CREATE TABLE sessions (
   -- Orthogonal "hidden from the working set" flag (a "Done" session). Never touched by the reducer or
   -- the control-state writes; set only via setArchived. Declared LAST so create() matches the additive
   -- `ALTER TABLE ... ADD COLUMN archived` migration SqliteEventStore.init runs for pre-existing DBs.
-  archived            INTEGER NOT NULL DEFAULT 0
+  archived            INTEGER NOT NULL DEFAULT 0,
+  -- Global monotonic revision — the single-master replication cursor. Stamped by EVERY statement that
+  -- touches this row (the store's writer mutex owns the counter), so any two observations of a row are
+  -- ordered by comparing revs and a stale HTTP response can never overwrite a newer WS frame client-side.
+  -- Orthogonal to updated_at (revision ≠ activity: setReadCursor bumps rev but not updated_at). Declared
+  -- after `archived` for the same additive-ALTER reason as above.
+  rev                 INTEGER NOT NULL DEFAULT 0
 );
 
 -- Full-row upsert (daemon-owned session metadata). On conflict, every field is refreshed from the
@@ -43,9 +49,9 @@ upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
   worktree, branch, tmux_session, pane_id, state, state_source, last_seq, read_cursor,
-  created_at, updated_at, archived
+  created_at, updated_at, archived, rev
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   name                = excluded.name,
   tags                = excluded.tags,
@@ -66,13 +72,14 @@ ON CONFLICT(id) DO UPDATE SET
   read_cursor         = MAX(sessions.read_cursor, excluded.read_cursor),
   created_at          = sessions.created_at,
   updated_at          = excluded.updated_at,
-  archived            = excluded.archived;
+  archived            = excluded.archived,
+  rev                 = excluded.rev;
 
 -- Advance ONLY the reducer-derived cache fields; called inside EventStore.append's transaction
 -- (leaves identity/launch context and read_cursor untouched).
 updateCache:
 UPDATE sessions
-SET state = ?, state_source = ?, last_seq = ?, provider_session_id = ?, updated_at = ?
+SET state = ?, state_source = ?, last_seq = ?, provider_session_id = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
 -- Update ONLY the daemon-owned control fields (state, state_source, pane_id, updated_at) for a
@@ -81,13 +88,13 @@ WHERE id = ?;
 -- full-row upsert here would clobber a concurrent hook append's last_seq / provider_session_id.
 updateControlState:
 UPDATE sessions
-SET state = ?, state_source = ?, pane_id = ?, updated_at = ?
+SET state = ?, state_source = ?, pane_id = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
 -- Set ONLY the orthogonal archived flag (and updated_at). Never touches state/last_seq/provider id.
 setArchived:
 UPDATE sessions
-SET archived = ?, updated_at = ?
+SET archived = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
 -- Advance ONLY the read cursor; never touches state/last_seq/provider id or updated_at (viewing is not
@@ -99,7 +106,7 @@ WHERE id = ?;
 -- caller on a non-null Long (markRead's Seq is). The named-parameter form infers the same, so it is no fix.
 setReadCursor:
 UPDATE sessions
-SET read_cursor = MAX(read_cursor, MIN(?, last_seq))
+SET read_cursor = MAX(read_cursor, MIN(?, last_seq)), rev = ?
 WHERE id = ?;
 
 -- Set ONLY the discovered model (and updated_at); never touches state. Best-effort and REPEATABLE, not
@@ -107,7 +114,7 @@ WHERE id = ?;
 -- capture, which writes again (see EventStore.setModel).
 setModel:
 UPDATE sessions
-SET model = ?, updated_at = ?
+SET model = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
 -- Set the model ONLY IF the row still holds the provider id the capture's lookup was keyed by. The check
@@ -118,7 +125,7 @@ WHERE id = ?;
 -- right: an id-less row has nothing to condition on.
 setModelForProvider:
 UPDATE sessions
-SET model = ?, updated_at = ?
+SET model = ?, updated_at = ?, rev = ?
 WHERE id = ? AND provider_session_id = ?;
 
 get:
@@ -130,3 +137,10 @@ list:
 SELECT *
 FROM sessions
 ORDER BY created_at, id;
+
+-- Seed for the in-memory revision counter at store open (same shape as Events.sq's nextSeq). Values
+-- consumed but never persisted (a rejected conditional write, a mutator on a missing row) may be
+-- re-issued after a restart — harmless, they were never observable.
+maxRev:
+SELECT coalesce(MAX(rev), 0)
+FROM sessions;

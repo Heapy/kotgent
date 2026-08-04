@@ -10,7 +10,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /**
  * [PushStore] contract tests, driven against [SqlitePushStore] over in-memory SQLite — the same shape
@@ -99,9 +98,19 @@ class PushStoreTest {
             val reopened = SqlitePushStore(driver)
             assertEquals(listOf(one), reopened.list(), "a second open over the migrated DB still reads")
 
-            // The pre-existing tables are untouched by the migration.
-            val sessions = KotgentDatabase(driver).sessionsQueries.list().executeAsList()
-            assertTrue(sessions.isEmpty(), "creating the push table left the rest of the schema alone")
+            // The pre-existing tables are untouched by the migration. Counted via raw SQL: the fixture's
+            // `sessions` predates columns the generated SELECT * model now expects (archived-era schema
+            // without `rev`), and ONLY SqliteEventStore.init — deliberately not run here — adds them.
+            val sessionCount = driver.executeQuery(
+                identifier = null,
+                sql = "SELECT COUNT(*) FROM sessions",
+                mapper = { cursor ->
+                    cursor.next()
+                    QueryResult.Value(cursor.getLong(0)!!)
+                },
+                parameters = 0,
+            ).value
+            assertEquals(0L, sessionCount, "creating the push table left the rest of the schema alone")
         }
     }
 

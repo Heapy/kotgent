@@ -447,11 +447,14 @@ class SessionManagerTest {
             )
             store.upsertSession(initial)
             registry.register(pane, id)
+            // The committed row, not `initial`: the store stamps its own `rev` on the upsert, and the
+            // assertion below is about the CLOSE TRIGGERS not writing — any write would bump rev again.
+            val committed = store.getSession(id)!!
 
             mgr.onTmuxSessionClosed(id)
             mgr.onTmuxSessionClosed(id)
 
-            assertEquals(initial, store.getSession(id), "duplicate tmux hooks do not rewrite an unchanged row")
+            assertEquals(committed, store.getSession(id), "duplicate tmux hooks do not rewrite an unchanged row")
             assertNull(registry.lookup(pane), "unregister remains idempotent across duplicate hooks")
         }
     }
@@ -475,10 +478,11 @@ class SessionManagerTest {
                 .copy(agent = SHELL_AGENT_KIND, stateSource = EventSource.hook)
             store.upsertSession(initial)
             registry.register(pane, id)
+            val committed = store.getSession(id)!! // rev is store-stamped; compare against the row, not the input
 
             mgr.onTmuxSessionClosed(id)
 
-            assertEquals(initial, store.getSession(id), "tmux truth wins over a stale close notification")
+            assertEquals(committed, store.getSession(id), "tmux truth wins over a stale close notification")
             assertEquals(id, registry.lookup(pane), "a pane that is still alive stays registered")
         }
     }
