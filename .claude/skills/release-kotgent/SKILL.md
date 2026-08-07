@@ -25,13 +25,19 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 2. Inspect status, fetch `origin/main` and tags, and confirm:
    - `origin` and `gh repo view` identify `Heapy/kotgent`;
    - the requested version is newer than the newest stable tag reachable from `origin/main`, unless the user explicitly approves an exception;
-   - neither the remote tag nor GitHub Release exists.
+   - neither the remote tag nor GitHub Release exists;
+   - the caller's local `main` is not ahead of `origin/main` (`git rev-list --left-right --count origin/main...main`).
+
+   Unpushed local commits are not part of a release, and this workflow builds from `origin/main` — releasing over them would ship older code under the new version. Report them and stop for an explicit decision. If the user approves shipping them, push them to `main` as their own push, wait for that push's CI to pass, and only then continue; never fold them into the release push.
+
 3. Create a unique temporary root and detached worktree:
 
    ```sh
    mktemp -d /private/tmp/kotgent-release-v<version>.XXXXXX
-   git worktree add --detach <temp-root>/repo origin/main
+   git worktree add --detach <temp-root>/kotgent origin/main
    ```
+
+   The directory must be named `kotgent`. The root module takes its name from the checkout directory, so in a differently named one `./kotlin build -m kotgent` fails outright with `Unable to resolve module by name 'kotgent'`, and the link output's directory and filename follow that name too.
 
    Perform all Kotgent edits, builds, commits, and tagging there. Use `--repo Heapy/kotgent` for repository-scoped `gh release` and `gh run` commands.
 
@@ -53,16 +59,18 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
    ```sh
    git diff --check
    KOTGENT_RELEASE_BUILD=true ./kotlin build -v release -p macosArm64 -m kotgent
-   build/tasks/_kotgent_linkMacosArm64Release/kotgent.kexe --version
+   ./kotlin do releaseKexePath && "$(cat build/kexe-path)" --version
    ./kotlin build
    ./kotlin test
    ```
 
    Require exactly `kotgent <version>` and zero failures. Never run `./kotlin run`.
 
+   Ask the build for the binary instead of hard-coding a link path — `release.yml` locates the artifact it packages the same way. `releaseKexePath` only reports the last build and cannot trigger or order after one, so it must follow the release build; its machine-readable answer is the `build/kexe-path` record, not its log output.
+
 ## 3. Push and pass CI
 
-1. Stage only `version.txt` and changed current-version documentation; commit `chore: release <version>`.
+1. Stage only `version.txt` and changed current-version documentation; commit `chore: release <version>`, matching the repository's trailer convention (`git log -5 --format='%h %(trailers:key=Co-Authored-By,valueonly)'`).
 2. Fetch again. If `origin/main` advanced, rebase and rerun all verification gates.
 3. Require:
 
@@ -72,7 +80,7 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
    git log --oneline origin/main..HEAD                   # release commit only
    ```
 
-4. Push `HEAD:main` without force. Find the `CI` run whose `headSha` is the release commit and wait for success. On failure, read [references/ci-failure-policy.md](references/ci-failure-policy.md); do not tag without the approval required there.
+4. Push `HEAD:main` without force. Find the `CI` run whose `headSha` is the release commit and wait for success. Read the verdict from `gh run view <id> --repo Heapy/kotgent --json status,conclusion` — `gh run watch` prints unrelated Homebrew tap-trust noise and may end without stating one. On failure, read [references/ci-failure-policy.md](references/ci-failure-policy.md); do not tag without the approval required there.
 
 ## 4. Publish and verify
 
@@ -84,8 +92,8 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
    git push origin v<version>
    ```
 
-3. Find the `Release` workflow run for the same `headSha` and wait for success.
-4. Verify the workflow-created Release targets `v<version>`, is neither draft nor prerelease, and has exactly the expected archive and checksum assets. Publish the prepared title/notes, then verify it again.
+3. Find the `Release` workflow run for the same `headSha` and wait for success, reading its conclusion the same way as the `CI` run.
+4. Verify the workflow-created Release targets `v<version>`, is neither draft nor prerelease, and has exactly the expected archive and checksum assets. Publish the prepared notes under the title `Kotgent <version> — <headline>`, reusing the tag message's headline, then verify it again.
 5. Download into a new explicit temporary directory and run:
 
    ```sh
@@ -101,7 +109,7 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 ## 5. Update the Homebrew tap
 
 1. Clone `git@github.com:Heapy/homebrew-tap.git` into another unique temporary root and read tap-local instructions.
-2. Change only the formula's version, release URL/filename, verified SHA-256, and expected test version.
+2. Change only the formula's version, release URL/filename, verified SHA-256, and expected test version. Report anything else that has gone stale — `desc`, for instance, still names only Claude and Codex — rather than editing it here.
 3. Run tap-prescribed gates and at least:
 
    ```sh
@@ -119,4 +127,8 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 
 Report the Release URL, commit/tag target, workflow results, assets/SHA-256, local gates and accepted exceptions, tap commit, and preservation of caller changes.
 
-After confirming the worktree is clean, remove it with `git worktree remove <temp-root>/repo`. Delete only exact temporary paths created by this run. Declare completion only after remotely verifying both repositories and the published archive.
+After confirming the worktree is clean, remove it with `git worktree remove <temp-root>/kotgent` — run that from outside the worktree, or the removal succeeds and every later command fails with `Unable to read current working directory`. Delete only exact temporary paths created by this run.
+
+Leaving the caller's branch behind the released commit is the one change to their checkout worth making: fast-forward it with `git merge --ff-only` when that touches no file they have modified. Never rebase, stash, commit, or discard anything in the caller's worktree.
+
+Declare completion only after remotely verifying both repositories and the published archive.
