@@ -266,8 +266,8 @@ is merely unreachable leaves the attempt available for the next one, while a dae
 session is gone ends it rather than retrying forever.
 
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
-embedded short Git hash (for example `0.5.0+81c37fe`), while published Homebrew builds show the release
-version alone (`0.5.0`).
+embedded short Git hash (for example `0.6.0+81c37fe`), while published Homebrew builds show the release
+version alone (`0.6.0`).
 
 A session row also carries an **unread pill** — how many events have arrived since you last looked at that
 session. Looking at it clears it: the browser posts the cursor it has displayed, so the count is
