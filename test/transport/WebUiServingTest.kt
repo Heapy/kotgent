@@ -2462,10 +2462,11 @@ class WebUiServingTest {
     }
 
     /**
-     * xterm 5.5 deliberately skips its native touch handlers while mouse tracking is active. Kotgent
-     * keeps that mode active so wheel events reach tmux's pane history, therefore a phone swipe needs a
-     * small browser-side bridge into xterm's existing wheel pipeline. Pin that bridge, its gesture
-     * ownership rules, and its teardown here; real touch delivery remains a real-device check.
+     * A phone swipe reaches xterm through nothing of its own: 5.5 skipped its native touch handlers while
+     * mouse tracking was active, and 6.0 removed those handlers entirely with the new viewport. Kotgent
+     * keeps tracking active so wheel events reach tmux's pane history, therefore a swipe needs a small
+     * browser-side bridge into xterm's existing wheel pipeline. Pin that bridge, its gesture ownership
+     * rules, and its teardown here; real touch delivery remains a real-device check.
      */
     @Test
     fun theWebUiBridgesPhoneSwipesIntoXtermWheelEvents() = withServer { ctx ->
@@ -2483,7 +2484,7 @@ class WebUiServingTest {
 
         assertTrue(
             bridge.contains("term.modes.mouseTrackingMode === \"none\""),
-            "the bridge yields to xterm's native touch scrolling when mouse tracking is inactive",
+            "the bridge yields the gesture when mouse tracking is inactive and nobody asked for reports",
         )
         // Pointer capture, not TouchEvents: a touch gesture stays bound to the node it began on, and the
         // rows under the finger are exactly what a scroll repaints. Measured on a real iPhone, a swipe

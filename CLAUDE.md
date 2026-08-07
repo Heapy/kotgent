@@ -567,7 +567,7 @@ cache rule together.
 substitutes it for the `__REV__` placeholder in `index.html`. Hashing per file rather than over one
 concatenation bounds memory to a single file AND puts the path into the result, so a rename counts too;
 the sort makes the answer independent of `readdir` order. It is recomputed on **every** `index.html`
-request (~640 KB, 34 files) rather than memoized, so an edit made while the daemon runs is visible on the
+request (~840 KB, 33 files) rather than memoized, so an edit made while the daemon runs is visible on the
 next reload with no cache to invalidate. **The prefix must stay a path segment, never a `?v=` query**: an
 ES module specifier resolves against the URL of the IMPORTING MODULE, so substituting `/_v/<rev>/` once in
 `index.html` reaches the entire import graph without touching a line of JavaScript — which is exactly what
@@ -649,12 +649,16 @@ ever reads as a recovery again.
 
 The fifth is the swipe-scroll bridge (`installSwipeScroll`, `TerminalPane.js`), and it couples a browser
 gesture to tmux's forced `mouse on` and to one CSS rule — change any of the three and the other two must
-be re-measured. xterm 5.5 runs its own touch scrolling ONLY while mouse tracking is off, and kotgent keeps
+be re-measured. xterm 5.5 ran its own touch scrolling ONLY while mouse tracking is off, and kotgent keeps
 it on so a desktop wheel reaches pane history, so on a phone `touchmove` was a no-op: the seeded
-`capture-pane` screen was all a mobile viewer could ever reach. The bridge replays a claimed one-finger
+`capture-pane` screen was all a mobile viewer could ever reach. xterm 6.0 removed the terminal element's
+`touchstart`/`touchmove` handlers outright when the viewport moved onto VS Code's scrollable element, so
+there is no native path left to lose — the bridge is now the ONLY way a finger scrolls, tracking or not.
+The bridge replays a claimed one-finger
 vertical swipe as line-based `WheelEvent`s on xterm's own element, so the reports go out under whatever
 mouse protocol is live rather than as hand-spelled SGR bytes, and it yields the gesture back when
-`mouseTrackingMode` is `"none"` so xterm's native path is not double-scrolled. Five rules are measured, not
+`mouseTrackingMode` is `"none"` — nobody asked for reports there, so fabricating them would either
+double-scroll 5.5's local buffer or invent cursor keys. Five rules are measured, not
 assumed. **POINTER events with `setPointerCapture`, never TouchEvents** — a touch gesture is delivered to
 the node it began on, and the rows under the finger are exactly what a scroll repaints, so a swipe over
 glyphs produced 1-2 reports for a whole gesture while the empty gutter beside the text stayed smooth

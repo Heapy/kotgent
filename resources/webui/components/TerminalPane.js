@@ -74,11 +74,13 @@ function ctrlBytesFor(data) {
  * gutter beside the text — a node nothing repaints — stayed smooth. Capturing the pointer retargets every
  * later move to the terminal element, so the stream survives the repaint it causes.
  *
- * xterm 5.5 handles touch scrolling only while mouse tracking is OFF. Kotgent's tmux client deliberately
- * keeps tracking on so a desktop wheel reaches tmux's pane history, which leaves a bare finger drag a
- * no-op on phones. Synthetic wheel events reuse xterm's current mouse protocol and coordinate mapping instead of
- * hard-coding SGR bytes here; tmux or a mouse-aware TUI therefore sees exactly the input a real wheel
- * would have produced.
+ * A bare finger drag reaches nothing on its own. xterm 5.5 handled touch scrolling only while mouse
+ * tracking was OFF, and xterm 6.0 dropped the terminal element's own `touchstart`/`touchmove` handlers
+ * altogether when the viewport moved onto VS Code's scrollable element — so on a phone this bridge is the
+ * only path either way. Kotgent's tmux client keeps tracking on so a desktop wheel reaches tmux's pane
+ * history, which is what the bridge feeds. Synthetic wheel events reuse xterm's current mouse protocol and
+ * coordinate mapping instead of hard-coding SGR bytes here; tmux or a mouse-aware TUI therefore sees
+ * exactly the input a real wheel would have produced.
  *
  * The gesture is SEPARATED from the emission. A move only banks travel and estimates a velocity; a
  * `requestAnimationFrame` loop turns that bank into reports at a bounded, even rate and keeps running
@@ -231,8 +233,9 @@ function installSwipeScroll(term) {
     // A captured pointer is the only one that can reach here for this gesture, so the id check is the
     // whole "is this our finger" test — a second finger elsewhere is simply not this pointer.
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    // When tracking is off, xterm's own touch handler scrolls its local buffer. Taking the gesture here
-    // would double-scroll it and would turn an otherwise useful native path into synthetic key presses.
+    // With tracking off nobody asked for wheel reports, so there is nothing to fabricate: xterm would
+    // either scroll its own local buffer (5.5's native touch path) or ignore the gesture entirely (6.0).
+    // Either way the bridge yields rather than double-scrolling or inventing cursor keys.
     if (term.modes.mouseTrackingMode === "none") {
       gesture = null;
       stopMotion();
