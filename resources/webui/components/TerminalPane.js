@@ -352,6 +352,31 @@ export function TerminalPane({
       // `DECSET 12` still gets one, since xterm maps both onto this same option — claude, measured,
       // sends `?12l` and therefore agrees with this default.
       cursorBlink: false,
+      // NO local scrollback: history belongs to the tmux pane, and `mouse on` is forced precisely so a
+      // wheel reaches it. What xterm keeps beside it is at best a partial duplicate, and it costs real
+      // width — FitAddon reserves a FIXED 14px (`ViewportConstants.DEFAULT_SCROLL_BAR_WIDTH`) for the
+      // scroll bar of any terminal whose `scrollback` is non-zero, with no check that a bar could ever
+      // appear, so the grid stopped about two columns short of the right edge. (xterm 5.5 reserved 15px
+      // the same way, through `Viewport`'s "assume an OSX overlay scroll bar" fallback — this is older
+      // than the 6.0 update, not caused by it.) `scrollback: 0` is the one supported way to reclaim it:
+      // the addon short-circuits on exactly this option.
+      //
+      // What that bar could actually scroll is measured, and it differs by subscriber. The FIRST one
+      // gets the upstream's own stream, whose third sequence is tmux's `?1049h` — the client spends the
+      // entire attach on the ALTERNATE screen, and xterm builds that buffer with `hasScrollback = false`
+      // (`BufferSet`), so its scroll bar can never become visible at all. A JOINER is seeded from
+      // `capture-pane` instead, and `terminalSeed` deliberately synthesizes no app-owned modes, so it
+      // starts on the NORMAL screen — where tmux's line feeds (measured: 247 CR-LFs under a full-screen
+      // `CSI 1;24 r` region, which is exactly the `scrollTop === 0` case that pushes to scrollback) DO
+      // fill it. That was the one way the bar appeared, and it scrolled the wrong history: a mirror
+      // beginning at the capture, while the wheel reaches tmux's complete one. Zero makes every
+      // subscriber behave alike.
+      //
+      // The one behaviour that rides along is unreachable here. With NO mouse reporting AND no
+      // scrollback, xterm converts a wheel into a single cursor-key press instead of scrolling itself —
+      // but tmux's client always requests wheel reports (that is what makes the swipe bridge work at
+      // all), so the fallback never runs.
+      scrollback: 0,
       fontFamily: "Menlo, Monaco, \"Courier New\", monospace",
       fontSize: fontSizeRef.current,
       theme: { background: "#000000" },

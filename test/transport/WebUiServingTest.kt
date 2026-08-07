@@ -2612,6 +2612,21 @@ class WebUiServingTest {
             "desktop padding belongs to the element FitAddon subtracts from the available box",
         )
 
+        // Padding is not the only thing the addon takes off the width. It also reserves a FIXED 14px for
+        // a scroll bar unless `scrollback` is exactly 0 — no measurement, no "is one actually visible"
+        // check. kotgent wants neither the reservation nor the buffer: the first subscriber rides tmux's
+        // `?1049h` onto the alternate screen, whose xterm buffer has no scrollback by construction, and a
+        // joiner — seeded from `capture-pane`, which carries no app-owned modes — would otherwise fill a
+        // scrollback that duplicates the pane's history partially and divergently, reachable only by
+        // dragging that bar while the wheel goes to tmux. So the option and the addon's short-circuit are
+        // pinned together; losing either silently costs ~2 columns of grid.
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        assertTrue(pane.contains("scrollback: 0,"), "the terminal keeps no local scrollback")
+        assertTrue(
+            addon.contains("""0===this._terminal.options.scrollback?0:"""),
+            "the vendored FitAddon reserves no scroll-bar width for a terminal without scrollback",
+        )
+
         val breakpoint = css.indexOf("@media (max-width: 720px)")
         assertTrue(breakpoint > 0, "the mobile breakpoint exists")
         val nextMedia = css.indexOf("@media ", breakpoint + 1).let { if (it < 0) css.length else it }

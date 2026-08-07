@@ -363,7 +363,21 @@ deleted. **`mouse on` is the one forced row that flips a real default, and it is
 `kotgent attach`) — that history lives in the tmux pane, not in xterm.js, and a subscriber joining an
 existing bridge is seeded from `capture-pane`, so without it nothing older than the current screen is
 reachable; an app that requested SGR mouse reporting still gets its own events (measured), so alt-screen
-TUIs are unaffected. **A joiner does not get client modes for free**: `capture-pane -p -e` carries zero
+TUIs are unaffected. **The browser terminal therefore opens with `scrollback: 0`**, and the two halves of
+that are a width and a history. The width: FitAddon reserves a FIXED 14 px for the scroll bar of any
+terminal whose `scrollback` is non-zero — no measurement, no check that a bar could ever appear — which
+cost about two columns of grid permanently (xterm 5.5 reserved 15 px the same way, through `Viewport`'s
+"assume an OSX overlay scroll bar" fallback, so this predates the 6.0 update); the option is the one
+supported way to reclaim it, because the addon short-circuits on exactly it. The history is the reason
+that is not a loss, and it is **measured, and different per subscriber**. The FIRST subscriber gets the
+upstream stream itself, whose third sequence is tmux's `?1049h`: the client spends the whole attach on
+the ALTERNATE screen, whose buffer xterm builds with `hasScrollback = false` (`BufferSet`), so its bar
+could never appear at all. A JOINER is seeded from `capture-pane` and `terminalSeed` synthesizes no
+app-owned modes, so it starts on the NORMAL screen — and there tmux's line feeds do fill the scrollback
+(recorded off a real client: 247 CR-LFs under a full-screen `CSI 1;24 r` region, i.e. exactly the
+`scrollTop === 0` case that pushes lines out of the viewport). So the bar appeared for joiners only, and
+scrolled the WRONG history: a mirror starting at the capture, reachable only by dragging it, while the
+wheel reaches the pane's complete one. Zero deletes the divergent copy and makes every subscriber alike. **A joiner does not get client modes for free**: `capture-pane -p -e` carries zero
 private-mode sequences (measured) and the upstream's enables went out as live deltas when it *opened*.
 So every non-empty per-subscriber seed prepends `TERMINAL_BRACKETED_PASTE_ENABLE` (tmux enables `2004`
 for every client; without it xterm.js sends multiline paste as executable ordinary input) and, when
