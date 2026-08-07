@@ -2,17 +2,19 @@
  * Preferences have two scopes:
  *   - base path + grouping level are daemon-wide and arrive from GET /preferences plus the global
  *     /events WebSocket;
- *   - terminal font size and sidebar collapse are screen/device-specific and remain in their own
- *     localStorage keys.
+ *   - terminal font size, terminal unicode mode and sidebar collapse are screen/device-specific and
+ *     remain in their own localStorage keys.
  *
  * The old combined key is deleted but deliberately never read: silently importing one browser's old
  * grouping into daemon-wide state would surprise every other connected browser.
  */
 
 import { normalizePath } from "./paths.js";
+import { DEFAULT_TERMINAL_UNICODE, isTerminalUnicodeMode } from "./unicode.js";
 
 export const LEGACY_PREFS_KEY = "kotgent.prefs.v1";
 export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
+export const TERMINAL_UNICODE_KEY = "kotgent.terminalUnicode.v1";
 export const SIDEBAR_COLLAPSED_KEY = "kotgent.sidebarCollapsed.v1";
 export const MAX_GROUPING_LEVEL = 4;
 export const TERMINAL_FONT_SIZES = [11, 13, 16];
@@ -21,6 +23,7 @@ export const DEFAULT_PREFS = {
   groupingLevel: 1,
   revision: 0,
   terminalFontSize: 13,
+  terminalUnicode: DEFAULT_TERMINAL_UNICODE,
 };
 
 /** Coerce dialog drafts and the local terminal value into a safe combined UI shape. */
@@ -28,6 +31,7 @@ export function sanitizePrefs(raw) {
   const level = Number.parseInt(raw && raw.groupingLevel, 10);
   const revision = Number(raw && raw.revision);
   const fontSize = Number.parseInt(raw && raw.terminalFontSize, 10);
+  const unicode = raw && raw.terminalUnicode;
   return {
     basePath: normalizePath(raw && raw.basePath),
     groupingLevel: Number.isFinite(level)
@@ -39,6 +43,7 @@ export function sanitizePrefs(raw) {
     terminalFontSize: TERMINAL_FONT_SIZES.includes(fontSize)
       ? fontSize
       : DEFAULT_PREFS.terminalFontSize,
+    terminalUnicode: isTerminalUnicodeMode(unicode) ? unicode : DEFAULT_PREFS.terminalUnicode,
   };
 }
 
@@ -58,16 +63,18 @@ export function sanitizeServerPreferences(raw) {
   };
 }
 
-/** Initial UI value: discard the legacy combined object and load only the new device-local font size. */
+/** Initial UI value: discard the legacy combined object and load only the device-local terminal keys. */
 export function loadPrefs() {
   let terminalFontSize = DEFAULT_PREFS.terminalFontSize;
+  let terminalUnicode = DEFAULT_PREFS.terminalUnicode;
   try {
     window.localStorage.removeItem(LEGACY_PREFS_KEY);
     terminalFontSize = window.localStorage.getItem(TERMINAL_FONT_SIZE_KEY);
+    terminalUnicode = window.localStorage.getItem(TERMINAL_UNICODE_KEY);
   } catch (_) {
     // unreadable / disabled storage — fall back to the defaults
   }
-  return sanitizePrefs({ terminalFontSize: terminalFontSize });
+  return sanitizePrefs({ terminalFontSize: terminalFontSize, terminalUnicode: terminalUnicode });
 }
 
 export function persistTerminalFontSize(value) {
@@ -75,6 +82,13 @@ export function persistTerminalFontSize(value) {
   try {
     window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(fontSize));
   } catch (_) { /* private mode / quota — the font size still applies to this page load */ }
+}
+
+export function persistTerminalUnicode(value) {
+  const unicode = sanitizePrefs({ terminalUnicode: value }).terminalUnicode;
+  try {
+    window.localStorage.setItem(TERMINAL_UNICODE_KEY, unicode);
+  } catch (_) { /* private mode / quota — the mode still applies to this page load */ }
 }
 
 /** Grouping is what the base path buys; without one the sidebar stays a single flat list. */

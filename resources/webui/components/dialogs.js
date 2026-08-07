@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
+import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
 
@@ -518,6 +519,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
   const [basePath, setBasePath] = useState(prefs.basePath);
   const [level, setLevel] = useState(String(prefs.groupingLevel));
   const [fontSize, setFontSize] = useState(String(prefs.terminalFontSize));
+  const [unicode, setUnicode] = useState(prefs.terminalUnicode);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -538,6 +540,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
         basePath: cleaned,
         groupingLevel: level,
         terminalFontSize: fontSize,
+        terminalUnicode: unicode,
       }));
     } catch (e) {
       setError("Could not save preferences: " + errorMessage(e));
@@ -595,6 +598,23 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
           </select>
           <small class="field-hint">
             Stored only in this browser and applied immediately to an attached terminal after you save.
+          </small>
+        </label>
+
+        ${/* Off by default, and off means nothing is downloaded: the width tables live in addons this
+              browser fetches only once a mode selects one. Their table has to agree with the one tmux
+              laid the pane out with, so the choice is deliberately the operator's. */ ""}
+        <label class="field">
+          <span>Terminal unicode <small>how wide a character is measured</small></span>
+          <select id="prefs-terminal-unicode" value=${unicode}
+                  onChange=${(e) => setUnicode(e.target.value)}>
+            ${TERMINAL_UNICODE_MODES.map((mode) => html`
+              <option key=${mode.value} value=${mode.value}>${mode.label}</option>
+            `)}
+          </select>
+          <small id="prefs-terminal-unicode-hint" class="field-hint">
+            ${terminalUnicodeMode(unicode).hint} Stored only in this browser. A change applies to what the
+            pane draws next, not to the screen already on it.
           </small>
         </label>
 

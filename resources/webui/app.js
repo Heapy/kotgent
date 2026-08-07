@@ -44,6 +44,7 @@ import {
   loadSidebarCollapsed,
   persistSidebarCollapsed,
   persistTerminalFontSize,
+  persistTerminalUnicode,
   sanitizeServerPreferences,
 } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
@@ -957,7 +958,11 @@ function App() {
       // PUT was in flight. Apply only if this response is not older; the per-device font is independent.
       applyServerPreferences(saved);
       persistTerminalFontSize(next.terminalFontSize);
-      setPrefs((current) => Object.assign({}, current, { terminalFontSize: next.terminalFontSize }));
+      persistTerminalUnicode(next.terminalUnicode);
+      setPrefs((current) => Object.assign({}, current, {
+        terminalFontSize: next.terminalFontSize,
+        terminalUnicode: next.terminalUnicode,
+      }));
       // A remounted form holds a FRESHER draft than the one this save came from — leave it open and let
       // the status line below carry the outcome; closing it would discard the operator's newer edits.
       if (sameForm) closeDialogFrom(submittedDialog);
@@ -1075,6 +1080,7 @@ function App() {
       session=${activeSession}
       attachedId=${attachedId}
       terminalFontSize=${prefs.terminalFontSize}
+      terminalUnicode=${prefs.terminalUnicode}
       pendingAction=${pendingAction}
       hint=${hint}
       drawerOpen=${drawerOpen}

@@ -69,7 +69,7 @@ const val IMMUTABLE_CACHE_CONTROL: String = "max-age=31536000, immutable"
  * which a plain content concatenation would miss. The sort removes any dependence on the order `readdir`
  * happens to return, so the same set of files always yields the same revision.
  *
- * Recomputed on every `index.html` request (the tree is ~840 KB / 33 files, so tens of milliseconds per
+ * Recomputed on every `index.html` request (the tree is ~910 KB / 36 files, so tens of milliseconds per
  * page load) rather than memoized: a file edited while the daemon runs is then visible on the next reload,
  * with no cache to invalidate. Falls back to hashing `index.html` alone if the walk finds nothing, so the
  * answer is always a valid token — [isRevToken] is what stops a broken one from pinning an asset forever.

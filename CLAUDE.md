@@ -581,7 +581,7 @@ cache rule together.
 substitutes it for the `__REV__` placeholder in `index.html`. Hashing per file rather than over one
 concatenation bounds memory to a single file AND puts the path into the result, so a rename counts too;
 the sort makes the answer independent of `readdir` order. It is recomputed on **every** `index.html`
-request (~840 KB, 33 files) rather than memoized, so an edit made while the daemon runs is visible on the
+request (~910 KB, 36 files) rather than memoized, so an edit made while the daemon runs is visible on the
 next reload with no cache to invalidate. **The prefix must stay a path segment, never a `?v=` query**: an
 ES module specifier resolves against the URL of the IMPORTING MODULE, so substituting `/_v/<rev>/` once in
 `index.html` reaches the entire import graph without touching a line of JavaScript — which is exactly what
@@ -600,6 +600,30 @@ were addressed, because the shell is what hands out every other asset URL. An un
 deliberately **served, not 404'd** — the prefix is only stripped, never verified — since a client can hold
 an old revision only from an old shell it cannot have, and refusing would break the one real race (a shell
 fetched just before a daemon update asking for its assets just after it).
+
+**The unicode addons are opt-in, and the `import()` IS the gate.** xterm ships Unicode 6 widths built in;
+`@xterm/addon-unicode11` and `@xterm/addon-unicode-graphemes` are vendored beside it but appear **nowhere
+in `index.html`** — `lib/unicode.js`, the one registry of modes/labels/module paths, imports one
+dynamically when the device-local `Terminal unicode` preference selects it. A `<script>` tag would make
+every operator download 65 KB of width tables to keep a default they never changed; the specifier stays
+**relative**, so it resolves against `lib/unicode.js`'s own `/_v/<rev>/` URL and inherits the content
+revision for free — which is exactly what an importmap entry (document-relative) could not do. Defaulting
+to off is not timidity: a width the browser computes differently from the width `tmux` used to lay the
+pane out shifts every following cell on that line, and the two tables disagree in both directions
+depending on the character, so the choice is the operator's and its scope is one device — the same scope
+as the terminal font size, since it changes only how THIS browser draws bytes every other viewer receives
+unchanged. Three details are load-bearing. **`Unicode11Addon.activate()` only REGISTERS its provider** (the
+graphemes addon is the one that sets `activeVersion` itself), so `installTerminalUnicode` sets
+`term.unicode.activeVersion` explicitly — without that line the fetch happens and nothing whatsoever
+changes. **Its `dispose()` is empty** and a provider can never be unregistered, only shadowed, so the
+disposer restores the version captured at install time. And **loading is a separate call from
+installing**: `import()` is async, two mode changes have two loads in flight, and they can resolve in
+either order — a combined call would let the loser land last and leave a disposer holding a stale version
+to restore, so `TerminalPane` re-checks `cancelled` between the halves and a superseded load mutates
+nothing. Its effect keys on `[attachedId, terminalUnicode]`, because a new attachment is a new `Terminal`
+carrying only the built-in provider. A provider governs how bytes are PARSED, so a mode change lands on
+the pane's next repaint and never re-measures cells already in the buffer — under an agent TUI that is
+continuous, which is why this is documented rather than fixed.
 
 **The command palette is the home of rare Web UI actions.** `resources/webui/lib/commands.js` is the
 single command and mnemonic registry: search mode renders its filtered descriptors and leader mode renders
@@ -949,7 +973,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **918 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **919 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -1005,7 +1029,8 @@ sqldelight/io/kotgent/db/      Events.sq, Sessions.sq, PushSubscriptions.sq (sch
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
 plugins/build-info/            generates VERSION + an embedded Git revision at build time
 resources/webui/               no-build Preact PWA, network-only root service worker, manifest/icons,
-                               mobile terminal controls/lifecycle, vendored ESM; /auth is a string
+                               mobile terminal controls/lifecycle, vendored ESM; lib/unicode.js is the
+                               one registry for the opt-in xterm unicode addons; /auth is a string
                                constant in AuthRoutes.kt
 docs/plans/                    implementation plans
 ```

@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
 import { writeClipboard } from "../lib/clipboard.js";
 import { displayName, isAliveState, stateBadge, tmuxAttachCommand } from "../lib/sessions.js";
+import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.js";
 import { KeyBar } from "./KeyBar.js";
 
 function debounce(fn, ms) {
@@ -312,9 +313,9 @@ function installSwipeScroll(term) {
 }
 
 export function TerminalPane({
-  session, attachedId, terminalFontSize, pendingAction, hint, drawerOpen, sidebarCollapsed,
-  onToggleDrawer, onToggleSidebar, onOpenPalette, onAttach, onInterrupt, onResume, onDetach, onStop,
-  onDone, onTerminalClosed,
+  session, attachedId, terminalFontSize, terminalUnicode, pendingAction, hint, drawerOpen,
+  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onAttach, onInterrupt, onResume,
+  onDetach, onStop, onDone, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
   const [copyResult, setCopyResult] = useState(null);
@@ -327,6 +328,10 @@ export function TerminalPane({
   const [ctrlActive, setCtrlActive] = useState(false);
   const fontSizeRef = useRef(terminalFontSize);
   fontSizeRef.current = terminalFontSize;
+  // The live unicode addon's disposer. It is cleared — never called — by the attachment teardown below,
+  // because `term.dispose()` already disposes every addon it loaded and the restore it would perform
+  // targets a terminal that no longer exists.
+  const unicodeDisposeRef = useRef(null);
   // The close callback is read through a ref so a re-render cannot re-run the effect (which would tear
   // down a live terminal) just because the parent handed us a fresh closure.
   const closedRef = useRef(onTerminalClosed);
@@ -572,6 +577,7 @@ export function TerminalPane({
       ws.onmessage = null;
       ws.onclose = null;
       try { ws.close(); } catch (_) {}
+      unicodeDisposeRef.current = null;
       try { term.dispose(); } catch (_) {}
       host.replaceChildren();
       ctrlActiveRef.current = false;
@@ -581,6 +587,42 @@ export function TerminalPane({
       if (sendBytesRef.current === sendBytes) sendBytesRef.current = null;
     };
   }, [attachedId]);
+
+  /*
+   * The unicode provider, applied to the LIVE terminal for the same reason as the font size: it is a
+   * view preference, and rebuilding the attachment for it would drop the upstream WebSocket.
+   *
+   * `attachedId` is a dependency even though this effect never reads it: a new attachment is a new
+   * `Terminal` with only xterm's built-in provider registered, so the chosen mode has to be installed on
+   * it again. The effect ordering is what makes that safe — Preact runs every cleanup before any effect,
+   * so on a switch the attachment teardown has already replaced `terminalRef.current` and cleared the
+   * previous disposer by the time this runs.
+   *
+   * The fetch is asynchronous and the install is not, which is what lets `cancelled` be checked BETWEEN
+   * them: a load superseded by another mode, or by the attachment going away, never touches the terminal
+   * at all. Installing first and undoing afterwards would not be equivalent — two loads in flight can
+   * resolve in either order, so the loser would land last and its disposer would carry a stale version to
+   * restore.
+   */
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term) return undefined;
+    let cancelled = false;
+
+    const previous = unicodeDisposeRef.current;
+    unicodeDisposeRef.current = null;
+    if (previous) previous();
+
+    loadTerminalUnicode(terminalUnicode).then((loaded) => {
+      if (cancelled || !loaded) return;
+      unicodeDisposeRef.current = installTerminalUnicode(term, loaded);
+    }).catch(() => {
+      // A vendored addon that would not load leaves the built-in table in charge. That is a degraded
+      // rendering of wide characters, not a broken terminal, so it must not take the session down.
+    });
+
+    return () => { cancelled = true; };
+  }, [attachedId, terminalUnicode]);
 
   // Font changes are a view preference, not a new terminal attachment. Updating the live xterm instance
   // in a separate effect keeps the one upstream WebSocket intact, then re-fits and reports its new grid.

@@ -34,9 +34,17 @@
     stable URLs on purpose: an installed PWA refers to them by a fixed address.
   -->
 
-  <!-- Vendored, offline: pinned @xterm/xterm@6.0.0 + @xterm/addon-fit@0.11.0, preact@10.29.8 + htm@3.1.1.
-       vendor/qrcode.module.js is NOT one of these: it is a hand-trimmed port of Project Nayuki's QR
-       generator with no npm package behind it, so it updates by re-porting, not by pulling a version. -->
+  <!--
+    Vendored, offline: pinned @xterm/xterm@6.0.0 + @xterm/addon-fit@0.11.0, preact@10.29.8 + htm@3.1.1.
+
+    Two more are vendored but appear NOWHERE on this page: @xterm/addon-unicode11@0.9.0 and
+    @xterm/addon-unicode-graphemes@0.4.0 are opt-in, so `lib/unicode.js` imports them dynamically when —
+    and only when — the Terminal unicode preference selects one. A <script> tag here would download 65 KB
+    of width tables for every operator who leaves the setting alone.
+
+    vendor/qrcode.module.js is in none of those lists: it is a hand-trimmed port of Project Nayuki's QR
+    generator with no npm package behind it, so it updates by re-porting, not by pulling a version.
+  -->
   <link rel="stylesheet" href="/_v/__REV__/vendor/xterm.css" />
   <link rel="stylesheet" href="/_v/__REV__/style.css" />
 

@@ -272,7 +272,7 @@ class WebUiServingTest {
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
-            "/lib/clipboard.js",
+            "/lib/clipboard.js", "/lib/unicode.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js",
         )) {
@@ -2247,6 +2247,120 @@ class WebUiServingTest {
         assertTrue(body.length > 50_000, "the real vendored xterm.js bundle is substantial, was ${body.length} bytes")
         assertTrue(body.contains("Terminal"), "the vendored bundle exposes the Terminal API")
         assertContentTypeContains(resp, "javascript")
+    }
+
+    /**
+     * The two Unicode addons and their gate.
+     *
+     * The gate is not a branch around an already-loaded script — it is the absence of a `<script>` tag.
+     * Both addons are vendored, but nothing on the page mentions them: `lib/unicode.js` reaches them with
+     * a dynamic `import()` only once the preference selects one, so an operator on the default pays no
+     * bytes. That is exactly the property a well-meaning "just load them with xterm" change would delete
+     * while every other assertion here still passed, so pin the absence from the shell as hard as the
+     * presence on disk. The specifier stays RELATIVE for the same reason every other module import does:
+     * it resolves against `lib/unicode.js`'s own `/_v/<rev>/` URL and inherits the content revision,
+     * which a document-relative importmap target could not.
+     */
+    @Test
+    fun theUnicodeAddonsAreVendoredAndLoadedOnlyWhenThePreferenceSelectsThem() = withServer { ctx ->
+        for (path in listOf(
+            "/vendor/addon-unicode11.module.js",
+            "/vendor/addon-unicode-graphemes.module.js",
+        )) {
+            val resp = ctx.get(path)
+            assertEquals(HttpStatusCode.OK, resp.status, "GET $path (the vendored addon) is served")
+            assertContentTypeContains(resp, "javascript")
+            assertTrue(resp.bodyAsText().length > 20_000, "$path carries the real width tables")
+        }
+        assertTrue(
+            ctx.get("/vendor/addon-unicode11.module.js").bodyAsText().contains("as Unicode11Addon"),
+            "the vendored ESM build exports the name lib/unicode.js constructs",
+        )
+        assertTrue(
+            ctx.get("/vendor/addon-unicode-graphemes.module.js").bodyAsText()
+                .contains("as UnicodeGraphemesAddon"),
+            "the vendored graphemes ESM build exports the name lib/unicode.js constructs",
+        )
+
+        // Comments are stripped first: the shell DOCUMENTS the arrangement at length, and the thing that
+        // must not exist is markup — a <script>, a stylesheet link, an importmap entry, anything the
+        // browser would act on. Asserting over the raw text would fail on the explanation itself.
+        val shellMarkup = ctx.get("/").bodyAsText().replace(Regex("(?s)<!--.*?-->"), "")
+        assertFalse(
+            shellMarkup.contains("addon-unicode"),
+            "no addon is fetched by the shell — the dynamic import is the whole gate",
+        )
+        assertTrue(
+            shellMarkup.contains("vendor/xterm.js"),
+            "the comment stripper left the real markup intact, so the assertion above can still fail",
+        )
+
+        val unicode = ctx.get("/lib/unicode.js").bodyAsText()
+        assertTrue(
+            unicode.contains("await import(mode.module)") &&
+                unicode.contains("\"../vendor/addon-unicode11.module.js\"") &&
+                unicode.contains("\"../vendor/addon-unicode-graphemes.module.js\""),
+            "each addon is reached by a relative dynamic import, so it inherits the revision prefix",
+        )
+        // Unicode 11's addon only REGISTERS its provider — activating it without this line would download
+        // 31 KB and change absolutely nothing, a failure with no symptom at all.
+        assertTrue(
+            unicode.contains("term.unicode.activeVersion = loaded.mode.version"),
+            "installing a mode makes its provider the active one rather than merely registering it",
+        )
+        // And its dispose() is empty, so switching away is only undone by restoring the version by hand.
+        assertTrue(
+            unicode.contains("const previousVersion = term.unicode.activeVersion") &&
+                unicode.contains("term.unicode.activeVersion = previousVersion"),
+            "switching away restores the version that was active before the addon was installed",
+        )
+        assertTrue(
+            unicode.contains("export async function loadTerminalUnicode") &&
+                unicode.contains("export function installTerminalUnicode"),
+            "fetching and installing are separate calls so a superseded load can be dropped between them",
+        )
+
+        val prefs = ctx.get("/lib/prefs.js").bodyAsText()
+        assertTrue(
+            prefs.contains("TERMINAL_UNICODE_KEY = \"kotgent.terminalUnicode.v1\"") &&
+                prefs.contains("isTerminalUnicodeMode(unicode) ? unicode : DEFAULT_PREFS.terminalUnicode"),
+            "the mode is device-local like the font size, and an unknown stored value falls back",
+        )
+        assertTrue(
+            unicode.contains("DEFAULT_TERMINAL_UNICODE = \"default\""),
+            "the built-in Unicode 6 table stays the default, so nothing changes without an opt-in",
+        )
+
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        assertTrue(
+            dialogs.contains("id=\"prefs-terminal-unicode\"") &&
+                dialogs.contains("TERMINAL_UNICODE_MODES.map"),
+            "Preferences offers the modes from the one registry rather than a second hand-kept list",
+        )
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("""terminalUnicode=${'$'}{prefs.terminalUnicode}""") &&
+                app.contains("persistTerminalUnicode(next.terminalUnicode)"),
+            "the sanitized preference is persisted for this device and threaded into TerminalPane",
+        )
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        // A new attachment is a new Terminal carrying only xterm's built-in provider, so the mode has to
+        // be installed again — a dependency list of [terminalUnicode] alone would silently lose the
+        // setting on every session switch while the preference still read as enabled.
+        assertTrue(
+            pane.contains("}, [attachedId, terminalUnicode]);"),
+            "the live terminal is re-provisioned on a mode change AND on a new attachment",
+        )
+        assertTrue(
+            pane.contains("if (cancelled || !loaded) return;"),
+            "a load superseded mid-flight never touches the terminal",
+        )
+        // term.dispose() disposes every addon it loaded, and the restore the disposer would perform
+        // targets a terminal that no longer exists.
+        assertTrue(
+            pane.contains("unicodeDisposeRef.current = null;\n      try { term.dispose(); }"),
+            "attachment teardown drops the disposer instead of calling it against a dead terminal",
+        )
     }
 
     @Test
