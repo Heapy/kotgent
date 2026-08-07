@@ -34,7 +34,9 @@
     stable URLs on purpose: an installed PWA refers to them by a fixed address.
   -->
 
-  <!-- Vendored, offline: pinned @xterm/xterm@6.0.0 + @xterm/addon-fit@0.11.0, preact@10.29.7 + htm@3.1.1. -->
+  <!-- Vendored, offline: pinned @xterm/xterm@6.0.0 + @xterm/addon-fit@0.11.0, preact@10.29.8 + htm@3.1.1.
+       vendor/qrcode.module.js is NOT one of these: it is a hand-trimmed port of Project Nayuki's QR
+       generator with no npm package behind it, so it updates by re-porting, not by pulling a version. -->
   <link rel="stylesheet" href="/_v/__REV__/vendor/xterm.css" />
   <link rel="stylesheet" href="/_v/__REV__/style.css" />
 
