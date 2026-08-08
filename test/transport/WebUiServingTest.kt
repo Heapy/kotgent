@@ -406,18 +406,48 @@ class WebUiServingTest {
                 "$id keeps the '$chord' leader mnemonic in the one registry",
             )
         }
+        // `leaderKeyDown` answers K (and Backspace) with `onModeChange("search")` BEFORE it consults the
+        // registry, so a "k" chord is the loser: the way back to search shadows the command, leaving a
+        // visible grid row whose own letter can never reach it. The lookup composes
+        // `"Key" + chord.toUpperCase()`, so an uppercase registration is shadowed exactly as a lowercase
+        // one would be. Whitespace and quote style are tolerated because the reservation is about the
+        // registry's CONTENT, not its current formatting — `chord : 'k'` reserves the letter just as hard.
         assertFalse(
-            Regex("""chord: "k"""").containsMatchIn(commands),
-            "'k' stays reserved for the leader grid's own way back to search (⌘K K)",
+            Regex("""chord\s*:\s*["'][kK]["']""").containsMatchIn(commands),
+            "'k' stays reserved for the leader grid's own way back to search (⌘K K), in either case",
         )
+        // leaderKeyDown resolves the letter first-match-wins, so a duplicate silently makes one visible
+        // grid row unreachable by the very key it displays — and a multi-character chord renders a <kbd>
+        // that composes an `event.code` no keyboard can ever produce. The extraction takes whatever the
+        // registry actually says (either quote style, any spacing, malformed values included), because a
+        // spelling this regex cannot see is a chord this test cannot police.
+        val declaredChords = Regex("""chord\s*:\s*(["'])(.*?)\1""")
+            .findAll(commands)
+            .map { it.groupValues[2] }
+            .toList()
+        assertTrue(declaredChords.size >= chords.size, "every declared chord is visible to the extraction")
+        // Case-INSENSITIVE: the runtime key is `"Key" + chord.toUpperCase()`, so a "A" beside an "a" both
+        // resolve to KeyA and shadow each other while a raw-string grouping still sees two distinct values.
+        val duplicateChords = declaredChords.groupBy { it.lowercase() }.filterValues { it.size > 1 }.keys
+        assertTrue(
+            duplicateChords.isEmpty(),
+            "every leader mnemonic is claimed once — $duplicateChords would shadow a visible grid row",
+        )
+        for (chord in declaredChords) {
+            // ASCII only: `Char.isLetter()` accepts 'é', whose composed code `KeyÉ` no keyboard produces.
+            assertTrue(
+                chord.length == 1 && (chord[0] in 'a'..'z' || chord[0] in 'A'..'Z'),
+                "the '$chord' mnemonic is one ASCII letter, or its \"Key\" + chord code is unreachable",
+            )
+        }
         for (id in listOf("general.notifications")) {
-            val descriptor = commands.substringAfter("id: \"$id\"").substringBefore("\n    },")
+            val descriptor = descriptorOf(commands, id)
             assertTrue(
                 descriptor.contains("disabled: \"not implemented yet\""),
                 "$id is reserved but visibly unavailable until its designed stage",
             )
         }
-        val freeTerminal = commands.substringAfter("id: \"general.free-terminal\"").substringBefore("\n    },")
+        val freeTerminal = descriptorOf(commands, "general.free-terminal")
         assertTrue(
             freeTerminal.contains("disabled: null") &&
                 freeTerminal.contains("run: () => actions.freeTerminal()"),
@@ -440,7 +470,7 @@ class WebUiServingTest {
             "general.help" to "Help",
             "general.phone" to "Sign in from your phone",
         )) {
-            val descriptor = commands.substringAfter("id: \"$id\"").substringBefore("\n    },")
+            val descriptor = descriptorOf(commands, id)
             assertTrue(
                 descriptor.contains("title: \"$title\"") && descriptor.contains("disabled: null"),
                 "$title remains available from the command registry after leaving the sidebar header",
@@ -484,10 +514,9 @@ class WebUiServingTest {
                 palette.contains("const leaderCommands = commands.filter((item) => item.chord)"),
             "leader mode renders the mnemonic subset of the same descriptors",
         )
+        val lookupAt = palette.indexOf("event.code === \"Key\" + command.chord.toUpperCase()")
         assertTrue(
-            palette.contains("event.code === \"Key\" + command.chord.toUpperCase()") &&
-                !palette.contains("event.metaKey") &&
-                !palette.contains("event.ctrlKey"),
+            lookupAt >= 0,
             "leader letters use layout-independent bare codes after the opening modifier is released",
         )
         assertTrue(
@@ -496,10 +525,35 @@ class WebUiServingTest {
                 palette.contains("onModeChange(\"search\")"),
             "leader mode suppresses Space and returns to search on K, Backspace or the search row",
         )
+        // `leaderKeyDown`'s real order, each step of which fixed a different measured failure. Named
+        // indices with a presence precondition, because `indexOf` answers -1 for a missing needle and a
+        // bare `a < b` then passes for a branch that was deleted outright.
+        //
+        // The K/Backspace branch sits ABOVE the modifier guard on purpose: the non-mac opener is
+        // Ctrl+SHIFT+K, so releasing Shift while keeping Ctrl produces a Ctrl-K that app.js's document
+        // opener no longer matches — from under the guard this branch could not answer it and the way
+        // back to search would simply be gone.
+        //
+        // The guard then precedes the registry lookup, but what makes ⌘A stay Select All is that it
+        // precedes `preventDefault()` and the RUN: the lookup itself is a side-effect-free `.find(...)`
+        // that claims nothing. Both orderings are pinned so neither half can drift.
+        val modifierGuardAt = palette.indexOf("if (event.metaKey || event.ctrlKey) return;")
+        val backToSearchAt = palette.indexOf("event.code === \"KeyK\" || event.code === \"Backspace\"")
+        val leaderRunAt = palette.indexOf("runLeaderCommand(item);")
+        assertTrue(backToSearchAt >= 0, "the K/Backspace way back to search exists at all")
+        assertTrue(modifierGuardAt >= 0, "the modified-keystroke guard exists at all")
+        assertTrue(leaderRunAt >= 0, "the leader handler runs the matched descriptor at all")
         assertTrue(
-            palette.indexOf("event.code === \"KeyK\"") <
-                palette.indexOf("event.code === \"Key\" + command.chord.toUpperCase()"),
-            "the second K of ⌘K K is answered before the registry lookup could claim that letter",
+            backToSearchAt < modifierGuardAt,
+            "K and Backspace are answered above the modifier guard, so a Ctrl-K still reaches search",
+        )
+        assertTrue(
+            modifierGuardAt < lookupAt && lookupAt < leaderRunAt,
+            "a modified keystroke is refused before the lookup and before anything runs — ⌘A stays Select All",
+        )
+        assertTrue(
+            palette.contains("mode = \"leader\""),
+            "the palette component itself falls back to the leader grid, like every opener",
         )
         assertTrue(
             palette.contains("setLeaderMessage(item.title + \": \" + item.disabled)") &&
@@ -548,6 +602,10 @@ class WebUiServingTest {
             "the opener lands on the leader grid, from which K reaches search",
         )
         assertTrue(
+            app.contains("const openPalette = useCallback((mode = \"leader\") =>"),
+            "a caller that names no mode gets the leader grid too, not a bare search box",
+        )
+        assertTrue(
             app.contains("const commands = buildCommands({") &&
                 app.contains("copyTmux: copyTmuxCommand") &&
                 app.contains("importSession: openImportSession") &&
@@ -566,11 +624,212 @@ class WebUiServingTest {
         )
     }
 
+    /**
+     * One action at a time, stated rather than swallowed. app.js serialises the lifecycle actions through
+     * a single `pendingAction` and refuses a second one; the palette closes before a command even runs and
+     * owns no live region that outlives it, so a silently dropped action read as a dead chord. Two halves
+     * are pinned here: the registry marks those commands unavailable while a request is in flight (with
+     * their own per-session reason kept as the fallback), and the three app-owned entry points announce
+     * the refusal through the sidebar status line instead of returning in silence.
+     *
+     * The pending reason comes in TWO strengths, because two different things are protected. The four
+     * commands that reach `controlSession` are refused by ANY in-flight action — the app drops the second
+     * call whatever session it names. Attach and Detach are local state writes that nothing can drop, so
+     * they are refused only by an action that will itself rewrite `attachedId`; blocking a Detach during a
+     * pending Interrupt or Restore was a real over-block, stranding the operator on a terminal they asked
+     * to leave.
+     */
+    @Test
+    fun aSecondLifecycleActionIsRefusedOutLoudRatherThanDroppedSilently() = withServer { ctx ->
+        val commands = ctx.get("/lib/commands.js").bodyAsText()
+        assertTrue(
+            commands.contains("pendingAction = null") &&
+                commands.contains("function disabledWhilePending(pendingAction)") &&
+                commands.contains("function disabledWhileAttachmentPending(pendingAction)") &&
+                commands.contains(
+                    "return pendingAction ? \"another action is still in progress\" : null;",
+                ),
+            "the registry takes the in-flight action and turns it into a first-class disabled reason",
+        )
+        // The narrow rule has ONE home, and both the button and app.js's handler read it from there.
+        val affects = sliceBetween(
+            commands,
+            "export function affectsAttachment(pendingAction) {",
+            "\n}",
+            "the affectsAttachment predicate",
+        )
+        for (action in listOf("stop", "done", "resume", "import")) {
+            assertTrue(
+                affects.contains("pendingAction === \"$action\""),
+                "a pending $action settles into an attachment write, so Attach/Detach wait for it",
+            )
+        }
+        for (action in listOf("interrupt", "undone")) {
+            assertFalse(
+                affects.contains("\"$action\""),
+                "a pending $action can never rewrite the attachment, so it must not block Attach/Detach",
+            )
+        }
+        assertTrue(
+            commands.contains("return affectsAttachment(pendingAction) ? " +
+                "\"another action is still in progress\" : null;"),
+            "the narrow disabled reason is that same predicate, not a second copy of the rule",
+        )
+        // The pending reason must come FIRST: an in-flight request outranks every per-session condition,
+        // because the app refuses the second action whatever the selected session looks like. Each
+        // descriptor still keeps its own reason as the fallback — the ordering is the contract, not a
+        // replacement.
+        for ((id, fallback) in mapOf(
+            "session.interrupt" to "|| disabledWhenNotAlive(activeSession)",
+            "session.resume" to "|| disabledWhenAlive(activeSession)",
+            "session.stop" to "|| disabledWhenNotAlive(activeSession)",
+            "session.done" to "|| disabledWhenNoSession(activeSession)",
+        )) {
+            val descriptor = descriptorOf(commands, id)
+            val disabledAt = descriptor.indexOf("disabled: ")
+            assertTrue(disabledAt >= 0, "$id declares a disabled reason at all")
+            assertTrue(
+                descriptor.substring(disabledAt)
+                    .startsWith("disabled: disabledWhilePending(pendingAction)"),
+                "$id reaches controlSession, so ANY in-flight action refuses it, before any session reason",
+            )
+            assertTrue(descriptor.contains(fallback), "$id keeps '$fallback' as its own fallback reason")
+        }
+        // The two local state writes take the NARROW helper — and must not also carry the strict one,
+        // which is exactly the over-block that made a Detach unavailable during an unrelated Restore.
+        for ((id, fallback) in mapOf(
+            "session.attach" to "|| (!alive",
+            "session.detach" to "|| (attached ? null : \"the selected terminal is not attached\")",
+        )) {
+            val descriptor = descriptorOf(commands, id)
+            val disabledAt = descriptor.indexOf("disabled: ")
+            assertTrue(disabledAt >= 0, "$id declares a disabled reason at all")
+            assertTrue(
+                descriptor.substring(disabledAt)
+                    .startsWith("disabled: disabledWhileAttachmentPending(pendingAction)"),
+                "$id waits only for an action that will rewrite the attachment, before any session reason",
+            )
+            assertFalse(
+                descriptor.contains("disabledWhilePending(pendingAction)"),
+                "$id must not ALSO take the strict reason — an Interrupt cannot conflict with it",
+            )
+            assertTrue(descriptor.contains(fallback), "$id keeps '$fallback' as its own fallback reason")
+        }
+        // Deliberately taking NEITHER: none of these reaches controlSession or writes the attachment —
+        // the clipboard write is local and the upload dialog owns its own request.
+        for (id in listOf(
+            "session.copy-tmux", "session.upload-files",
+            "general.new", "general.import", "general.free-terminal", "general.show-done",
+            "general.help", "general.phone", "general.notifications", "general.preferences",
+        )) {
+            val descriptor = descriptorOf(commands, id)
+            assertFalse(
+                descriptor.contains("disabledWhilePending") ||
+                    descriptor.contains("disabledWhileAttachmentPending"),
+                "$id runs regardless of a pending lifecycle action — it never reaches controlSession",
+            )
+        }
+
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("pendingAction: pendingAction,"),
+            "the app feeds its one in-flight action into the registry it renders",
+        )
+        assertTrue(
+            app.contains("import { affectsAttachment, buildCommands } from \"./lib/commands.js\";"),
+            "app.js reads the attachment rule from the registry module rather than restating it",
+        )
+        // Per handler rather than a file-wide count of the sentence: a count proves nothing about WHERE
+        // the refusal sits (a commented-out call still counts, three copies in dead code satisfy it) and
+        // it punishes the legitimate refactor that extracts one shared helper called from all three.
+        // What matters is that each entry point says why and then STOPS.
+        val refusal = "say(\"Another action is still in progress — try again in a moment.\", true);"
+        val controlSession = sliceBetween(
+            app,
+            "const controlSession = useCallback(",
+            "\n  }, [cancelReattach, say]);",
+            "the controlSession handler",
+        )
+        val attach = sliceBetween(
+            app,
+            "const attach = useCallback(() => {",
+            "\n  }, [cancelReattach, say]);",
+            "the attach handler",
+        )
+        val detach = sliceBetween(
+            app,
+            "const detach = useCallback(() => {",
+            "\n  }, [cancelReattach, say]);",
+            "the detach handler",
+        )
+        for ((name, handler) in listOf(
+            "controlSession" to controlSession,
+            "attach" to attach,
+            "detach" to detach,
+        )) {
+            val saidAt = handler.indexOf(refusal)
+            assertTrue(saidAt >= 0, "$name says why it refuses, instead of returning silently")
+            assertTrue(
+                handler.indexOf("return;", startIndex = saidAt) > saidAt,
+                "$name returns after saying it — the refusal must not fall through into the action",
+            )
+        }
+        // attach/detach are local state writes rather than POSTs, which is why they were the pair that
+        // never consulted the pending slot — and why they need it: an Attach fired during a pending Stop
+        // sets attachedId with nothing in flight of its own, and the stop's completion resets it to null.
+        // They ask the NARROW question, so an unrelated Interrupt or Restore leaves them available.
+        for ((name, handler) in listOf("attach" to attach, "detach" to detach)) {
+            assertTrue(
+                handler.contains("if (affectsAttachment(pendingRef.current)) {"),
+                "$name refuses only an in-flight action that will itself rewrite the attachment",
+            )
+            assertFalse(
+                handler.contains("if (pendingRef.current) {"),
+                "$name must not go back to refusing EVERY pending action — that over-block was the bug",
+            )
+        }
+        assertTrue(
+            controlSession.contains("if (pendingRef.current) {"),
+            "controlSession keeps the strict refusal: it is the call the app actually drops",
+        )
+
+        // The resume/selection race: the POST is awaited, and a sidebar tap or a notification deep link
+        // can move the selection inside that window. TerminalPane titles itself from `session` but opens
+        // its socket from `attachedId`, so an unguarded attachment names the newly selected session in the
+        // header over the resumed one's terminal — and an unguarded `setHint(null)` erases the explanation
+        // that new selection just installed, leaving a dead pane with no socket and nothing saying why.
+        // BOTH writes therefore live inside the one guard; guarding either alone trades a wrong terminal
+        // for a blank one.
+        val resume = sliceBetween(
+            app,
+            "} else if (action === \"resume\") {",
+            "\n      }\n      say(",
+            "the resume branch of controlSession",
+        )
+        assertTrue(
+            resume.contains(
+                "if (s.id === activeRef.current) {\n" +
+                    "          setAttachedId(s.id);\n" +
+                    "          setHint(null);\n" +
+                    "        }",
+            ),
+            "the resume branch attaches AND clears the hint only for the session that is still selected",
+        )
+        assertEquals(
+            1,
+            Regex("""setHint\(null\);""").findAll(resume).count(),
+            "the resume branch clears the hint exactly once — inside that guard, never beside it",
+        )
+        assertTrue(
+            controlSession.contains("if (s.id === activeRef.current) setAttachedId(null);"),
+            "…and stop/done only detach the session that is still selected, as they always did",
+        )
+    }
+
     @Test
     fun mobilePaletteUploadsPickedFilesToTheSelectedSessionsCurrentFolder() = withServer { ctx ->
         val commands = ctx.get("/lib/commands.js").bodyAsText()
-        val uploadCommand = commands.substringAfter("id: \"session.upload-files\"")
-            .substringBefore("\n    },")
+        val uploadCommand = descriptorOf(commands, "session.upload-files")
         assertTrue(
             uploadCommand.contains("title: \"Upload files to current folder…\"") &&
                 uploadCommand.contains("disabled: disabledWhenNoSession(activeSession)") &&
@@ -650,10 +909,34 @@ class WebUiServingTest {
             "the grouping note remains a direct Preferences entry point",
         )
 
+        // Scoped to the header element rather than the whole module: a file-wide absence test both misses
+        // the wrapper spellings that would still hide the button (`${session ? html`…` : null}`,
+        // `${session && (`) and starts failing for an unrelated session guard anywhere below the header.
+        //
+        // The scope has to reach ABOVE the header, though: a guard placed AROUND it —
+        // `${session ? html`<div id="terminal-head">…` : null}` — sits outside a slice that starts at the
+        // header's own tag, so checking only the inside passes while the phone loses its one way into the
+        // palette with nothing selected. That is the exact regression this assertion exists to prevent, so
+        // the region from the component's template literal down to the header is checked too.
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        val markupStart = pane.indexOf("return html`")
+        assertTrue(markupStart >= 0, "the component's markup starts at a locatable template literal")
+        val headStart = pane.indexOf("<div id=\"terminal-head\">", startIndex = markupStart)
+        val headEnd = pane.indexOf("\n      </div>", startIndex = headStart.coerceAtLeast(0))
+        assertTrue(headStart >= 0 && headEnd > headStart, "the terminal header element is present and bounded")
+        val terminalHead = pane.substring(headStart, headEnd)
+        val aroundTheHead = pane.substring(markupStart, headStart) + terminalHead
         assertTrue(
-            pane.contains("id=\"palette-button\"") && !pane.contains("\${session && html`"),
-            "the palette button renders even when there is no selected session",
+            terminalHead.contains("id=\"palette-button\""),
+            "the palette button is part of the terminal header itself",
+        )
+        // Tightened to require the markup itself after the operator: every hiding spelling ends in an
+        // `html` template (htm has no other way to produce nodes), while a behaviour-neutral
+        // parenthesisation of the header's own title — `${session ? (displayName(session)) : "…"}` —
+        // is ordinary maintenance and must not fail this test for the wrong reason.
+        assertFalse(
+            Regex("""session\s*(?:&&|\?)\s*\(?\s*html`""").containsMatchIn(aroundTheHead),
+            "the palette button renders even when there is no selected session — the phone's only way in",
         )
         assertTrue(
             pane.contains("const openPalette = () => onOpenPalette(\"leader\")") &&
@@ -823,6 +1106,25 @@ class WebUiServingTest {
                           "session.detach", "session.stop", "session.done", "session.copy-tmux")) {
             assertTrue(commands.contains("id: \"$id\""), "the palette offers $id")
         }
+        // Copy tmux lost its header button, and with it the `${alive && tmuxCommand && html`` guard that
+        // used to decide whether the control appeared at all. app.js's `copyTmuxCommand` independently
+        // re-checks all three conditions and refuses with its own message, so a deleted ladder cannot
+        // produce a wrong clipboard write — what it would produce is a palette OFFERING a command that
+        // app.js then refuses, with the reason arriving in the status line after the palette has closed
+        // instead of on the row the operator is looking at. The ladder is what keeps the offer honest,
+        // and it is the only place that names which of the three conditions failed.
+        val copyTmux = descriptorOf(commands, "session.copy-tmux")
+        assertTrue(
+            copyTmux.contains("disabled: !activeSession") &&
+                copyTmux.contains("? \"no session is selected\"") &&
+                copyTmux.contains("? \"the selected session is not running\"") &&
+                copyTmux.contains("(tmuxAvailable ? null : \"the selected session has no tmux name\")"),
+            "copy tmux names all three reasons it cannot run: no session, not running, no tmux name",
+        )
+        assertTrue(
+            commands.contains("const tmuxAvailable = alive && !!activeSession.tmuxSession;"),
+            "…and reads that tmux name off the live session rather than assuming one exists",
+        )
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         for (id in listOf("attach-button", "interrupt-button", "resume-button",
                           "detach-button", "stop-button", "done-button", "copy-tmux-button")) {
@@ -3127,12 +3429,27 @@ class WebUiServingTest {
                 "dependency would rebuild the daemon socket and reset `opened`, disabling recovery silently",
         )
 
-        val showSession = app.substringAfter("const showSession = useCallback((session) => {")
-            .substringBefore("\n  }, [cancelReattach]);")
-        val attach = app.substringAfter("const attach = useCallback(() => {")
-            .substringBefore("\n  }, [cancelReattach]);")
-        val resume = app.substringAfter("} else if (action === \"resume\") {")
-            .substringBefore("\n      }")
+        // Bounded slices: `attach` grew a `say` dependency when it learned to refuse a conflicting
+        // action, which silently widened the old `substringBefore("\n  }, [cancelReattach]);")` to the
+        // whole rest of the module and let these ordering checks be satisfied by unrelated code.
+        val showSession = sliceBetween(
+            app,
+            "const showSession = useCallback((session) => {",
+            "\n  }, [cancelReattach]);",
+            "the showSession handler",
+        )
+        val attach = sliceBetween(
+            app,
+            "const attach = useCallback(() => {",
+            "\n  }, [cancelReattach, say]);",
+            "the attach handler",
+        )
+        val resume = sliceBetween(
+            app,
+            "} else if (action === \"resume\") {",
+            "\n      }",
+            "the resume branch of controlSession",
+        )
         for ((source, name) in listOf(
             showSession to "selecting/starting a live session",
             attach to "explicitly attaching",
@@ -3343,6 +3660,27 @@ class WebUiServingTest {
         assertTrue(start >= 0 && end > start, "the stylesheet declares `$selector`")
         return css.substring(start, end)
     }
+
+    /**
+     * One bounded `[start, end)` slice of a served source, which FAILS when either delimiter is missing.
+     *
+     * `substringAfter`/`substringBefore` default to `missingDelimiterValue = this`, so a renamed or
+     * merely reformatted handler silently widens the slice to the whole module and turns every
+     * assertion below it into a file-wide search — which then passes on unrelated code elsewhere
+     * (`importSession` carries its own `if (pendingRef.current) {`, for one). The message says the
+     * EXTRACTION failed, so a broken delimiter is never reported as a violated invariant.
+     */
+    private fun sliceBetween(source: String, start: String, end: String, what: String): String {
+        val from = source.indexOf(start)
+        assertTrue(from >= 0, "extraction of $what failed: no `$start` in the served source")
+        val to = source.indexOf(end, startIndex = from + start.length)
+        assertTrue(to > from, "extraction of $what failed: no `$end` after its start delimiter")
+        return source.substring(from, to)
+    }
+
+    /** One command descriptor from the registry, bounded so an assertion cannot read a neighbouring one. */
+    private fun descriptorOf(commands: String, id: String): String =
+        sliceBetween(commands, "id: \"$id\"", "\n    },", "the $id descriptor")
 
     /** The new-session dialog's agent `<fieldset>`, so a picker assertion cannot read the rest of the form. */
     private fun agentPickerOf(dialogs: String): String {

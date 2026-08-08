@@ -38,7 +38,7 @@ import {
   wsUrl,
 } from "./lib/api.js";
 import { writeClipboard } from "./lib/clipboard.js";
-import { buildCommands } from "./lib/commands.js";
+import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import {
   loadPrefs,
   loadSidebarCollapsed,
@@ -224,7 +224,7 @@ function App() {
   // because the toggle that flips it is display:none.
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const openPalette = useCallback((mode = "search") => setPalette({ mode: mode }), []);
+  const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
   useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
 
@@ -840,7 +840,15 @@ function App() {
   const controlSession = useCallback(async (action, id) => {
     // Acts on an explicit session [id] when given (e.g. Restore from a sidebar row), else the active one.
     const s = sessionsRef.current.find((x) => x.id === (id || activeRef.current));
-    if (!s || pendingRef.current) return;
+    if (!s) return;
+    // A vanished row has nothing to report, but a refusal does: the palette closes before the command
+    // even runs and owns no live region that outlives it, so a silently dropped second action looked
+    // exactly like a dead chord. Reached in practice from the sidebar's Restore button, which carries
+    // no disabled state of its own; every palette route is already dimmed by the registry.
+    if (pendingRef.current) {
+      say("Another action is still in progress — try again in a moment.", true);
+      return;
+    }
     if (action === "stop" &&
         !window.confirm("Stop " + displayName(s) + "? The conversation can be resumed later.")) {
       return;
@@ -870,8 +878,18 @@ function App() {
           : "Session stopped. Resume it to continue.");
       } else if (action === "resume") {
         reattachAvailableRef.current = true;
-        setAttachedId(s.id);
-        setHint(null);
+        // Both writes are guarded, and for the same reason: the POST is awaited, and in that window a
+        // sidebar tap or a notification deep link can move the selection. TerminalPane titles itself
+        // from `session` but opens its socket from `attachedId`, so an unguarded attachment names the
+        // newly selected session over the resumed one's terminal — and an unguarded `setHint(null)`
+        // erases the explanation the new selection just installed, leaving a dead pane with no title
+        // row, no socket and nothing saying why. Guarding one and not the other trades a wrong terminal
+        // for a blank one. reattachAvailableRef stays unguarded: the scheduled attempt re-checks the
+        // active id itself and destroys a candidate that no longer matches.
+        if (s.id === activeRef.current) {
+          setAttachedId(s.id);
+          setHint(null);
+        }
       }
       say(capitalize(action) + " completed for " + displayName(s) + ".");
     } catch (e) {
@@ -881,22 +899,37 @@ function App() {
     }
   }, [cancelReattach, say]);
 
+  // These two are local state writes rather than POSTs, which is why they were the pair that never
+  // consulted pendingRef at all — and exactly why they need it: an Attach fired during a pending Stop
+  // sets attachedId with nothing in flight of its own, and the stop's completion then resets it to null.
+  // The question they ask is NARROWER than controlSession's, though, and `affectsAttachment` is the one
+  // home of that rule: a pending Interrupt or Restore can never rewrite the attachment, so refusing a
+  // Detach during one would strand the operator on a live terminal they asked to leave.
   const attach = useCallback(() => {
     if (!activeRef.current) return;
+    if (affectsAttachment(pendingRef.current)) {
+      say("Another action is still in progress — try again in a moment.", true);
+      return;
+    }
     cancelReattach();
     reattachAvailableRef.current = true;
     setAttachedId(activeRef.current);
     setHint(null);
-  }, [cancelReattach]);
+  }, [cancelReattach, say]);
 
   const detach = useCallback(() => {
+    if (affectsAttachment(pendingRef.current)) {
+      say("Another action is still in progress — try again in a moment.", true);
+      return;
+    }
     const s = sessionsRef.current.find((x) => x.id === activeRef.current);
     cancelReattach();
     setAttachedId(null);
     setHint(detachedHint(s));
-  }, [cancelReattach]);
+  }, [cancelReattach, say]);
 
-  // Unlike TerminalPane's still-visible copy button, the palette owns no lasting aria-live region.
+  // The palette's own aria-live region is unmounted with the palette, and the palette closes
+  // synchronously before this clipboard work settles — nothing announced there would survive to be read.
   // Report its copy result through the sidebar status line after the palette has closed.
   const copyTmuxCommand = useCallback(async () => {
     const s = sessionsRef.current.find((x) => x.id === activeRef.current);
@@ -1027,6 +1060,7 @@ function App() {
     sessions: sessions,
     activeSession: activeSession,
     attachedId: attachedId,
+    pendingAction: pendingAction,
     actions: {
       selectSession: selectSession,
       interrupt: interrupt,

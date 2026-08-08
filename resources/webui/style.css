@@ -12,8 +12,6 @@
   --accent-hover: #6E43DF;
   --attn: #ff6b6b;
   --attn-bg: #3a1f22;
-  --danger: #dc4c43;
-  --danger-hover: #ef6a61;
   --row-hover: #232833;
   --row-active: #2a3242;
   --term-bg: #000000;
@@ -26,8 +24,10 @@
 }
 
 * { box-sizing: border-box; }
-/* An author `display` (e.g. `.key-bar { display: flex }`) beats the UA's `[hidden]` rule whatever
-   its specificity, so every `el.hidden = true` in app.js needs this to actually hide anything. */
+/* Nothing in the SPA renders a `hidden` attribute today; this is a prospective default, kept because the
+   failure it prevents is silent. An author `display` (e.g. `.key-bar { display: flex }`) beats the UA's
+   `[hidden]` rule whatever its specificity, so the first component to reach for `hidden` would stay
+   visible — and with no build step and no DOM tests there is nothing to catch that but the eye. */
 [hidden] { display: none !important; }
 .visually-hidden {
   position: absolute !important;
@@ -167,16 +167,6 @@ select:focus-visible {
 .button-primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
-}
-.button-danger {
-  background: transparent;
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
-  color: var(--danger);
-}
-.button-danger:hover:not(:disabled) {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #fff;
 }
 .button-quiet { background: transparent; }
 .icon-button {

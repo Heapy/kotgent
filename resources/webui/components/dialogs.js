@@ -989,7 +989,9 @@ export function HelpDialog({ onClose }) {
               Browser selection and tmux copy mode are separate: copying in the browser does not use
               tmux's paste buffer. Copy mode belongs to the pane and is shared by every viewer, so if
               typing appears to be ignored after someone scrolls, leave copy mode or return to the bottom.
-              Use Kotgent's Detach button instead of tmux's detach binding; it closes only this viewer.
+              To leave, use the palette's Detach command — the ⋯ button in the terminal header, or
+              <kbd>⌘</kbd>+<kbd>K</kbd>, then <kbd>E</kbd> — instead of tmux's detach binding; it closes
+              only this viewer.
             </p>
           </section>
 

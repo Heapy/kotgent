@@ -679,10 +679,10 @@ export function TerminalPane({
           </span>
         </div>
         ${/* The one lifecycle control in the header, on every screen: it opens the palette's leader grid,
-              whose mnemonic rows are interrupt/resume/stop/done/copy-tmux (attach and detach carry no
-              chord and stay one keystroke further, in search). The icon row that used to sit beside it
-              was mobile-only markup repeating those same actions and their disabled rules; the grid
-              states its own reasons, so the phone header keeps the drawer opener, the title and this
+              which is exactly the chord-bearing descriptors of lib/commands.js — disabled ones included,
+              since a disabled row announces its reason instead of running. The icon row that used to sit
+              beside it was mobile-only markup repeating those same actions and their disabled rules; the
+              grid states its own reasons, so the phone header keeps the drawer opener, the title and this
               button and nothing else. */ ""}
         <button
           id="palette-button"

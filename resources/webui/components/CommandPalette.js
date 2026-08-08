@@ -23,7 +23,7 @@ function availableIndexes(items) {
   return indexes;
 }
 
-export function CommandPalette({ commands, mode = "search", onModeChange, onClose }) {
+export function CommandPalette({ commands, mode = "leader", onModeChange, onClose }) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const [leaderMessage, setLeaderMessage] = useState("");
@@ -101,17 +101,28 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
   const leaderKeyDown = (event) => {
     if (mode !== "leader") return;
     if (event.code === "Space") {
-      event.preventDefault(); // never let Space activate the focused search-mode row
+      event.preventDefault(); // never let Space activate the focused search-mode row, modified or not
       return;
     }
     // ⌘K K reaches search: the opener leaves the palette on the leader grid, so the second K is an
     // ordinary mnemonic here. It is checked BEFORE the registry lookup, so registering a "k" chord in
     // commands.js can never silently steal the one way back to search (a test keeps that letter free).
+    // It also sits ABOVE the modifier guard on purpose: while ⌘ is held app.js's capture-phase opener
+    // consumes this key, but the non-mac opener is Ctrl+SHIFT+K, so releasing Shift first and keeping
+    // Ctrl produces a Ctrl-K that reaches neither — this branch is the one that still answers it.
     if (event.code === "KeyK" || event.code === "Backspace") {
       event.preventDefault();
       onModeChange("search");
       return;
     }
+    // Mnemonics are bare `code` matches with no modifier test, so once attach took "a" and detach "e"
+    // every ⌘A (Select All) and ⌘E ran a lifecycle command and swallowed the browser's own default. The
+    // guard must precede `preventDefault` and the run — the lookup itself is a pure `find` — and its
+    // cost is known and accepted: a mnemonic pressed with ⌘ STILL held from the opener is refused too,
+    // so the second key has to be typed bare. That is the gesture the operator already uses (⌘K,
+    // release, then the letter), which is what makes the trade free here. Alt is left alone: no browser
+    // binds ⌥-letter to anything the page can shadow, and AltGr arrives carrying Ctrl anyway.
+    if (event.metaKey || event.ctrlKey) return;
     const item = leaderCommands.find(
       (command) => event.code === "Key" + command.chord.toUpperCase(),
     );

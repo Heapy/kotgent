@@ -22,6 +22,34 @@ function disabledWhenAlive(session) {
   return isAliveState(session.state) ? "the selected session is already running" : null;
 }
 
+// app.js holds ONE pendingAction across every request it serialises, so there are two different
+// questions here and the commit that introduced only the first got the second wrong.
+//
+// `disabledWhilePending` is for the four commands that go through `controlSession`, which refuses a
+// second call outright whatever session it names — so offering one spends a chord on a request the app
+// drops. (Restore reaches the same refusal from a sidebar row, but it is not a palette command.)
+function disabledWhilePending(pendingAction) {
+  return pendingAction ? "another action is still in progress" : null;
+}
+
+/**
+ * Whether the in-flight action will write `attachedId` when it settles: stop and done detach, resume
+ * attaches, and the import flow ends in a selection that does both. Interrupt and Restore never touch
+ * the attachment, so blocking Attach/Detach during those refuses an operation that cannot conflict —
+ * the operator is left unable to detach a live terminal because an unrelated archived row is being
+ * restored. app.js guards the two handlers with this same rule, so the button and the handler agree.
+ */
+export function affectsAttachment(pendingAction) {
+  return pendingAction === "stop" || pendingAction === "done" ||
+    pendingAction === "resume" || pendingAction === "import";
+}
+
+// Attach and Detach are local state writes, NOT controlSession calls — the app cannot drop them, so
+// their reason is the narrower one: only an action that will itself rewrite the attachment conflicts.
+function disabledWhileAttachmentPending(pendingAction) {
+  return affectsAttachment(pendingAction) ? "another action is still in progress" : null;
+}
+
 function sessionSubtitle(session) {
   const tags = Array.isArray(session.tags) ? session.tags : [];
   return [session.agent, session.cwd, ...tags].filter(Boolean).join(" · ");
@@ -46,9 +74,15 @@ function sessionRows(sessions, actions) {
  * Build every command from app-owned actions. Keep this as the only command/mnemonic registry.
  *
  * `actions` contains closures rather than route names: the app remains responsible for confirmation,
- * status reporting, dialog state, and the active session changing between renders.
+ * status reporting, dialog state, and the active session changing between renders. `pendingAction` is a
+ * first-class disabled reason here, and always the FIRST one — an in-flight request outranks every
+ * per-session condition — but in two strengths, because two different things are being protected: see
+ * the pair of helpers above. Session rows deliberately take neither: selecting a session is navigation,
+ * and `showSession` writes the attachment coherently with the selection it just made.
  */
-export function buildCommands({ sessions = [], activeSession = null, attachedId = null, actions }) {
+export function buildCommands({
+  sessions = [], activeSession = null, attachedId = null, pendingAction = null, actions,
+}) {
   const alive = !!activeSession && isAliveState(activeSession.state);
   const attached = !!activeSession && activeSession.id === attachedId;
   const tmuxAvailable = alive && !!activeSession.tmuxSession;
@@ -61,7 +95,7 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "Interrupt current session",
       subtitle: "sends Ctrl-C and marks the session ready",
       hint: "⌘K i",
-      disabled: disabledWhenNotAlive(activeSession),
+      disabled: disabledWhilePending(pendingAction) || disabledWhenNotAlive(activeSession),
       run: () => actions.interrupt(),
     },
     {
@@ -69,7 +103,7 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "Resume this session",
       subtitle: "restarts the selected conversation",
       hint: "⌘K u",
-      disabled: disabledWhenAlive(activeSession),
+      disabled: disabledWhilePending(pendingAction) || disabledWhenAlive(activeSession),
       run: () => actions.resume(),
     },
     {
@@ -77,9 +111,9 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "Attach current terminal",
       subtitle: "opens the selected live session",
       hint: "⌘K a",
-      disabled: !alive
+      disabled: disabledWhileAttachmentPending(pendingAction) || (!alive
         ? disabledWhenNotAlive(activeSession)
-        : (attached ? "the selected terminal is already attached" : null),
+        : (attached ? "the selected terminal is already attached" : null)),
       run: () => actions.attach(),
     },
     {
@@ -87,7 +121,8 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "Detach current terminal",
       subtitle: "leaves the agent running in tmux",
       hint: "⌘K e",
-      disabled: attached ? null : "the selected terminal is not attached",
+      disabled: disabledWhileAttachmentPending(pendingAction)
+        || (attached ? null : "the selected terminal is not attached"),
       run: () => actions.detach(),
     },
     {
@@ -95,7 +130,7 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "Stop current session…",
       subtitle: "stops the agent but keeps the conversation resumable",
       hint: "⌘K s",
-      disabled: disabledWhenNotAlive(activeSession),
+      disabled: disabledWhilePending(pendingAction) || disabledWhenNotAlive(activeSession),
       run: () => actions.stop(),
     },
     {
@@ -103,7 +138,7 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       title: "Done current session…",
       subtitle: "stops and hides the selected session",
       hint: "⌘K d",
-      disabled: disabledWhenNoSession(activeSession),
+      disabled: disabledWhilePending(pendingAction) || disabledWhenNoSession(activeSession),
       run: () => actions.done(),
     },
     {
