@@ -1368,6 +1368,78 @@ class WebUiServingTest {
         }
     }
 
+    /**
+     * A native `<dialog>` paints a backdrop that dismisses NOTHING, so every modal used to be closable
+     * only from the keyboard (Esc) or its own ×  — and the palette, the one dialog with no head, had no
+     * × at all. Pin the two pointer gestures the wrapper adds on top of the platform: a press that both
+     * starts and ends outside the panel's box, and a downward touch swipe off the grabber or the head.
+     */
+    @Test
+    fun everyDialogIsDismissableWithoutAKeyboard() = withServer { ctx ->
+        val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+
+        // Both halves of the press are checked, and against the panel's GEOMETRY rather than the target
+        // alone: a drag that started inside (selecting a path) and a click a native <select> popup lets
+        // through both surface as a click on the <dialog> itself.
+        assertTrue(
+            dialogs.contains("event.target !== el") &&
+                dialogs.contains("el.getBoundingClientRect()") &&
+                dialogs.contains("pressedOutside.current = outside(event)") &&
+                dialogs.contains("if (!wasOutside || !outside(event)) return"),
+            "a press outside the panel closes it only when its press and its click both land there",
+        )
+        assertTrue(
+            dialogs.contains("onPointerDown=\${pointerDown}") &&
+                dialogs.contains("onClick=\${click}"),
+            "the wrapper — not each screen — owns the press-outside gesture",
+        )
+
+        // The body of every dialog either scrolls or holds fields, so only the grabber and the head start
+        // a swipe, and the pointer is captured only after a downward slop: an uncaptured pointer leaves a
+        // tap on the × or a mode toggle underneath working as an ordinary click.
+        assertTrue(
+            dialogs.contains("event.pointerType !== \"touch\"") &&
+                dialogs.contains("from.closest(\".dialog-grabber, .dialog-head\")") &&
+                dialogs.contains("from.closest(\"button, a, input, select, textarea\")"),
+            "a swipe starts only from a touch pointer on a handle that is not itself a control",
+        )
+        val slopAt = dialogs.indexOf("if (travel < SWIPE_SLOP_PX) return")
+        val captureAt = dialogs.indexOf("el.setPointerCapture(event.pointerId)")
+        assertTrue(
+            slopAt >= 0 && captureAt > slopAt,
+            "the pointer is captured only once the finger has clearly moved down",
+        )
+        assertTrue(
+            dialogs.contains("drag.travel > SWIPE_DISMISS_PX || flicked") &&
+                dialogs.contains("drag.velocity > SWIPE_FLICK_VELOCITY"),
+            "a long drag or a fast flick dismisses; anything shorter springs back",
+        )
+        assertTrue(
+            dialogs.contains("<div class=\"dialog-grabber\" aria-hidden=\"true\"></div>"),
+            "the wrapper draws the handle for every screen, including the one without a head",
+        )
+
+        val palette = ctx.get("/components/CommandPalette.js").bodyAsText()
+        assertTrue(
+            palette.contains("id=\"command-palette-close\"") &&
+                palette.contains("aria-label=\"Close\" onClick=\${onClose}"),
+            "the palette carries the close button its missing head never gave it",
+        )
+
+        val css = ctx.get("/style.css").bodyAsText()
+        assertTrue(
+            css.contains(".dialog-grabber,\n.dialog-head { touch-action: none; }"),
+            "the gesture reservation is unconditional, like the terminal's — a tablet has no Esc either",
+        )
+        val breakpoint = css.indexOf("@media (max-width: 720px)")
+        assertTrue(breakpoint > 0, "the mobile breakpoint exists")
+        assertTrue(
+            css.indexOf(".dialog-grabber { display: none; }") in 1 until breakpoint &&
+                css.substring(breakpoint).contains(".dialog-grabber {\n    display: block;"),
+            "only the grabber's ink is scoped to the phone, where the affordance is needed",
+        )
+    }
+
     @Test
     fun webUiExposesThePhoneAccessScreen() = withServer { ctx ->
         assertTrue(

@@ -576,6 +576,14 @@ dialog::backdrop {
   background: rgba(13, 18, 28, 0.58);
   backdrop-filter: blur(2px);
 }
+/* The two swipe-to-dismiss handles. The gesture reservation is UNCONDITIONAL, like the terminal's:
+   `Dialog` installs the swipe for every touch pointer (a tablet is wider than the phone breakpoint and
+   has no Esc either), and without `touch-action: none` the browser claims the vertical gesture before
+   the first pointermove reaches the dialog. Only the grabber's ink is scoped to the breakpoint — on a
+   desktop the affordance would be noise beside Esc, the ×, and a press on the backdrop. */
+.dialog-grabber,
+.dialog-head { touch-action: none; }
+.dialog-grabber { display: none; }
 
 /* --- Command palette: search list + spacemacs-style leader grid --- */
 #command-palette {
@@ -594,13 +602,23 @@ dialog::backdrop {
    the grid's own buttons keep theirs. */
 .command-palette-shell:focus,
 .command-palette-shell:focus-visible { outline: none; }
+/* The palette's own head: the mode's control plus the close button that every other dialog draws in
+   `.dialog-head`. */
+.command-palette-top {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+.command-palette-close { flex: 0 0 auto; }
 .command-palette-query {
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: 9px;
   color: var(--text);
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   min-height: 42px;
+  min-width: 0;
   padding: 8px 12px;
   width: 100%;
 }
@@ -675,7 +693,7 @@ dialog::backdrop {
   color: var(--muted);
   cursor: pointer;
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   justify-content: space-between;
   min-height: 42px;
   padding: 8px 12px;
@@ -1249,6 +1267,31 @@ dialog::backdrop {
     gap: 2px 0;
   }
   .help-list dd { margin-bottom: 10px; }
+
+  /* A thumb closes a dialog by swiping it down from here, or from the head beside its ×. The panels give
+     back the height this row costs. */
+  .dialog-grabber {
+    display: block;
+    height: 20px;
+    position: relative;
+  }
+  .dialog-grabber::after {
+    background: color-mix(in srgb, var(--muted) 55%, transparent);
+    border-radius: 2px;
+    content: "";
+    height: 4px;
+    left: 50%;
+    position: absolute;
+    top: 8px;
+    transform: translateX(-50%);
+    width: 38px;
+  }
+  #new-session-form,
+  #upload-form,
+  #prefs-form,
+  #phone-form,
+  #help-form { padding-top: 10px; }
+  .command-palette-shell { padding-top: 2px; }
 
   /* The sidebar leaves the flex row and becomes an overlay drawer: the terminal gets the whole screen,
      which is the only way a phone-sized viewport has room for one. `fixed` positions it against the

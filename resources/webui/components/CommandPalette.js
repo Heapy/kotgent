@@ -127,17 +127,44 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
       <div class=${"command-palette-shell " + mode} ref=${shellRef} tabIndex="-1"
            onKeyDown=${leaderKeyDown}>
         <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>
+        ${/* The palette is the one dialog with no head of its own, so its × lives on this row beside
+              whichever control opens the mode. Without it a phone had no visible way out at all — there
+              is no Esc there, and the palette is opened by a thumb far more often than by ⌘K. */ ""}
+        <div class="command-palette-top">
+          ${mode === "leader"
+            ? html`
+              <button
+                id="command-palette-search-mode"
+                class="command-palette-search-mode"
+                type="button"
+                onClick=${() => onModeChange("search")}
+              >
+                <span>Search commands and sessions</span>
+                <kbd>K</kbd>
+              </button>`
+            : html`
+              <input
+                id="command-palette-query"
+                class="command-palette-query"
+                type="search"
+                role="combobox"
+                placeholder="Search commands and sessions"
+                autoComplete="off"
+                autoFocus
+                ref=${queryRef}
+                aria-autocomplete="list"
+                aria-controls=${LISTBOX_ID}
+                aria-expanded="true"
+                aria-activedescendant=${activeOptionId}
+                value=${query}
+                onInput=${(event) => setQuery(event.target.value)}
+                onKeyDown=${keyDown}
+              />`}
+          <button id="command-palette-close" class="icon-button command-palette-close" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
         ${mode === "leader"
           ? html`
-            <button
-              id="command-palette-search-mode"
-              class="command-palette-search-mode"
-              type="button"
-              onClick=${() => onModeChange("search")}
-            >
-              <span>Search commands and sessions</span>
-              <kbd>K</kbd>
-            </button>
             <div class="command-palette-leader-grid" role="group" aria-label="Command shortcuts">
               ${leaderCommands.map((item) => html`
                 <button
@@ -156,23 +183,6 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
               ${leaderMessage || "Press a letter, K to search, or Esc to close."}
             </p>`
           : html`
-            <input
-              id="command-palette-query"
-              class="command-palette-query"
-              type="search"
-              role="combobox"
-              placeholder="Search commands and sessions"
-              autoComplete="off"
-              autoFocus
-              ref=${queryRef}
-              aria-autocomplete="list"
-              aria-controls=${LISTBOX_ID}
-              aria-expanded="true"
-              aria-activedescendant=${activeOptionId}
-              value=${query}
-              onInput=${(event) => setQuery(event.target.value)}
-              onKeyDown=${keyDown}
-            />
             <ul id=${LISTBOX_ID} class="command-palette-list" role="listbox">
               ${results.map((item, index) => html`
                 <li

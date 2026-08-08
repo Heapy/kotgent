@@ -1,10 +1,17 @@
 /*
  * The three modal screens: New session, Preferences, Help.
  *
- * Each one is a native `<dialog>`, so Esc, focus trapping and the backdrop come from the platform. The
- * [Dialog] wrapper below is the only place that talks to the imperative dialog API: mounting the
- * component opens it, and the native `close` event (Esc or the backdrop) reports back so the parent can
- * unmount it. Open/closed is therefore ordinary Preact state — there is no second source of truth.
+ * Each one is a native `<dialog>`, so Esc, focus trapping and the backdrop's paint come from the
+ * platform. The [Dialog] wrapper below is the only place that talks to the imperative dialog API:
+ * mounting the component opens it, and the native `close` event reports back so the parent can unmount
+ * it. Open/closed is therefore ordinary Preact state — there is no second source of truth.
+ *
+ * What the platform does NOT give is a light dismiss: `showModal()` paints a backdrop but a press on it
+ * closes nothing, so the wrapper adds the two gestures a pointer-only device has — a press outside the
+ * panel, and a downward swipe of a TOUCH pointer off the panel's grabber or head. Both are installed on
+ * every viewport (a tablet is wider than the phone breakpoint and has no Esc either); only the grabber's
+ * ink is scoped to the breakpoint. Esc, the ×, and Cancel are unchanged; a dialog that must not be
+ * dismissed by accident does not exist here, because Esc already closes every one of them mid-request.
  *
  * htm is not an HTML parser and does not decode entities, so any literal `<` in the copy below is
  * interpolated as a JS string (`${"kt-<id>"}`) rather than written as `&lt;`.
@@ -19,8 +26,18 @@ import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
 
+/** A drag this short is still a tap, so the press stays with the button or field underneath it. */
+const SWIPE_SLOP_PX = 8;
+/** Travel that dismisses on release — about a third of a phone dialog's height. */
+const SWIPE_DISMISS_PX = 96;
+/** A flick dismisses earlier: this much travel at this speed (px/ms) beats the distance rule. */
+const SWIPE_FLICK_PX = 32;
+const SWIPE_FLICK_VELOCITY = 0.5;
+
 export function Dialog({ id, labelledBy, onClose, children }) {
   const ref = useRef(null);
+  const pressedOutside = useRef(false);
+  const dragRef = useRef(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -35,7 +52,90 @@ export function Dialog({ id, labelledBy, onClose, children }) {
     return () => el.removeEventListener("close", handler);
   }, [onClose]);
 
-  return html`<dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}>${children}</dialog>`;
+  // A press on the backdrop is reported on the <dialog> itself, so the target alone is nearly enough —
+  // but a drag that STARTED on the panel (selecting a path, releasing a slider) also ends as a click on
+  // the dialog, and so does a click that a native <select> popup let through. The geometry is therefore
+  // checked against the panel's own box, and both halves of the press must land outside it.
+  const outside = (event) => {
+    const el = ref.current;
+    if (!el || event.target !== el) return false;
+    const rect = el.getBoundingClientRect();
+    return event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom;
+  };
+
+  const pointerDown = (event) => {
+    pressedOutside.current = outside(event);
+    if (pressedOutside.current || event.pointerType !== "touch") return;
+    // Only the grabber and the head start a swipe: every dialog body either scrolls (help, the palette's
+    // list) or holds fields a finger must be able to reach, and a drag claimed there would fight both.
+    const from = event.target && event.target.closest ? event.target : null;
+    if (!from || !from.closest(".dialog-grabber, .dialog-head")) return;
+    if (from.closest("button, a, input, select, textarea")) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      lastY: event.clientY,
+      lastAt: event.timeStamp,
+      velocity: 0,
+      travel: 0,
+      dragging: false,
+    };
+  };
+
+  const pointerMove = (event) => {
+    const drag = dragRef.current;
+    const el = ref.current;
+    if (!drag || !el || event.pointerId !== drag.pointerId) return;
+    const travel = event.clientY - drag.startY;
+    if (!drag.dragging) {
+      // Claimed only once the finger has clearly moved DOWN, and only then captured: an uncaptured
+      // pointer keeps a tap on the × or the mode toggle underneath working as an ordinary click.
+      if (travel < SWIPE_SLOP_PX) return;
+      drag.dragging = true;
+      el.setPointerCapture(event.pointerId);
+      el.style.transition = "none";
+    }
+    const elapsed = event.timeStamp - drag.lastAt;
+    if (elapsed > 0) drag.velocity = (event.clientY - drag.lastY) / elapsed;
+    drag.lastY = event.clientY;
+    drag.lastAt = event.timeStamp;
+    drag.travel = Math.max(0, travel);
+    el.style.transform = "translateY(" + drag.travel + "px)";
+  };
+
+  const pointerEnd = (event) => {
+    const drag = dragRef.current;
+    const el = ref.current;
+    dragRef.current = null;
+    if (!drag || !el || !drag.dragging || event.pointerId !== drag.pointerId) return;
+    if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
+    const flicked = drag.travel > SWIPE_FLICK_PX && drag.velocity > SWIPE_FLICK_VELOCITY;
+    if (drag.travel > SWIPE_DISMISS_PX || flicked) {
+      el.close();
+      return;
+    }
+    el.style.transition = "transform 160ms ease-out";
+    el.style.transform = "";
+  };
+
+  const click = (event) => {
+    const wasOutside = pressedOutside.current;
+    pressedOutside.current = false;
+    if (!wasOutside || !outside(event)) return;
+    if (ref.current) ref.current.close();
+  };
+
+  return html`
+    <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}
+            onPointerDown=${pointerDown} onPointerMove=${pointerMove}
+            onPointerUp=${pointerEnd} onPointerCancel=${pointerEnd} onClick=${click}>
+      ${/* The swipe affordance, and the one handle the palette has (it draws no `.dialog-head`). It is
+            inked only below the phone breakpoint; the gesture itself is reserved on every viewport. */ ""}
+      <div class="dialog-grabber" aria-hidden="true"></div>
+      ${children}
+    </dialog>
+  `;
 }
 
 // --- New session -----------------------------------------------------------------------------------

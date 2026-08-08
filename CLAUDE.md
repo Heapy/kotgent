@@ -632,6 +632,23 @@ keeps only the daily notification toggle (plus the structural mobile drawer clos
 reachable from the base-path note, and an empty first run keeps its direct "Start a session" action.
 Reserved future chords remain visible but disabled in this one registry until their stages are designed.
 
+**A native `<dialog>` paints a backdrop that dismisses nothing, so `Dialog` owns both pointer gestures.**
+`showModal()` gives Esc, the focus trap and the backdrop's ink — not a light dismiss — so before this every
+modal was closable only from a keyboard or its own ×, and the command palette, the one dialog that draws no
+`.dialog-head`, had no × at all: on a phone it could not be dismissed. The wrapper in
+`resources/webui/components/dialogs.js` adds the two gestures and every screen inherits them; do not
+re-implement either per dialog. **A press outside is checked against the panel's GEOMETRY, and both halves
+must land there** — a press on the backdrop reports its target as the `<dialog>` itself, but so does a drag
+that started on the panel and a click a native `<select>` popup lets through, so `pointerdown` and `click`
+are paired and each is tested against `getBoundingClientRect()`. **A swipe starts only from a touch pointer
+on `.dialog-grabber` or `.dialog-head`**, never from the body: every body either scrolls (help, the palette's
+list) or holds fields a finger must reach. The pointer is captured only after a downward slop (8 px), which
+is what keeps a tap on the × or a mode toggle underneath an ordinary click; release dismisses past 96 px or
+on a short fast flick, and springs back otherwise. `touch-action: none` on both handles is **unconditional**,
+like the terminal's — the swipe is installed for any touch pointer, a tablet is wider than the phone
+breakpoint and has no Esc either — while only the grabber's ink is scoped to `max-width: 720px`. Nothing here
+guards a dialog against accidental dismissal, because Esc already closed all of them mid-request.
+
 **Mobile file upload is a session-cwd write, never an arbitrary-path API.** The palette's `f` command opens
 the native multi-file picker and `POST`s one raw file at a time to `/sessions/{id}/files?name=…`; the browser
 shows the selected session's cwd but never submits a directory. The authenticated route re-reads that
@@ -973,7 +990,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **919 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **920 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
