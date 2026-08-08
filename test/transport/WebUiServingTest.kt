@@ -1674,7 +1674,11 @@ class WebUiServingTest {
      * A native `<dialog>` paints a backdrop that dismisses NOTHING, so every modal used to be closable
      * only from the keyboard (Esc) or its own ×  — and the palette, the one dialog with no head, had no
      * × at all. Pin the two pointer gestures the wrapper adds on top of the platform: a press that both
-     * starts and ends outside the panel's box, and a downward touch swipe off the grabber or the head.
+     * starts and ends outside the panel's box, and a downward touch swipe off the grabber.
+     *
+     * Attachment is asserted separately from behaviour, and that is the point: every assertion below
+     * greps a handler's BODY, so with the four `onPointer*` attributes deleted the gesture would be
+     * unwired dead code and this test — the invariant is its name — would still have found all of it.
      */
     @Test
     fun everyDialogIsDismissableWithoutAKeyboard() = withServer { ctx ->
@@ -1686,35 +1690,95 @@ class WebUiServingTest {
         assertTrue(
             dialogs.contains("event.target !== el") &&
                 dialogs.contains("el.getBoundingClientRect()") &&
-                dialogs.contains("pressedOutside.current = outside(event)") &&
+                dialogs.contains("outsidePointers.current.add(event.pointerId)") &&
                 dialogs.contains("if (!wasOutside || !outside(event)) return"),
             "a press outside the panel closes it only when its press and its click both land there",
         )
+        // Per POINTER, never one shared flag: a contact landing inside must not erase a pending backdrop
+        // press, and one that never produces a click must withdraw its own vote and nobody else's.
         assertTrue(
-            dialogs.contains("onPointerDown=\${pointerDown}") &&
-                dialogs.contains("onClick=\${click}"),
-            "the wrapper — not each screen — owns the press-outside gesture",
+            dialogs.contains("useRef(new Set())") &&
+                dialogs.contains("outsidePointers.current.delete(event.pointerId)"),
+            "the outside press is tracked per pointer, so concurrent contacts cannot forge one another",
         )
+        for (attribute in listOf(
+            "onPointerDown=\${pointerDown}",
+            "onPointerMove=\${pointerMove}",
+            "onPointerUp=\${pointerUp}",
+            "onPointerCancel=\${pointerCancel}",
+            "onClick=\${click}",
+        )) {
+            assertTrue(dialogs.contains(attribute), "the wrapper binds $attribute, not just declares it")
+        }
 
-        // The body of every dialog either scrolls or holds fields, so only the grabber and the head start
-        // a swipe, and the pointer is captured only after a downward slop: an uncaptured pointer leaves a
-        // tap on the × or a mode toggle underneath working as an ordinary click.
+        // The grabber is the ONLY handle. `dialog:modal` makes an overflowing dialog its own scroller, so
+        // reserving the head with `touch-action: none` would make panning the sheet by its title dead.
         assertTrue(
             dialogs.contains("event.pointerType !== \"touch\"") &&
-                dialogs.contains("from.closest(\".dialog-grabber, .dialog-head\")") &&
-                dialogs.contains("from.closest(\"button, a, input, select, textarea\")"),
-            "a swipe starts only from a touch pointer on a handle that is not itself a control",
+                dialogs.contains("from.closest(\".dialog-grabber\")") &&
+                !dialogs.contains(".dialog-grabber, .dialog-head"),
+            "a swipe starts only from a touch pointer on the grabber, never on the scrollable head",
         )
-        val slopAt = dialogs.indexOf("if (travel < SWIPE_SLOP_PX) return")
-        val captureAt = dialogs.indexOf("el.setPointerCapture(event.pointerId)")
+        assertTrue(
+            dialogs.contains("if (dragRef.current) return;"),
+            "one finger owns the swipe: a second contact cannot restart it under a new id",
+        )
+
+        val move = sliceBetween(
+            dialogs, "const pointerMove = (event)", "const pointerUp = (event)", "the swipe's move handler",
+        )
+        val slopAt = move.indexOf("if (travel < SWIPE_SLOP_PX")
+        val captureAt = move.indexOf("el.setPointerCapture(event.pointerId)")
         assertTrue(
             slopAt >= 0 && captureAt > slopAt,
             "the pointer is captured only once the finger has clearly moved down",
         )
         assertTrue(
-            dialogs.contains("drag.travel > SWIPE_DISMISS_PX || flicked") &&
-                dialogs.contains("drag.velocity > SWIPE_FLICK_VELOCITY"),
-            "a long drag or a fast flick dismisses; anything shorter springs back",
+            move.contains("travel <= Math.abs(event.clientX - drag.startX)"),
+            "a sweep across the sheet is not a dismissal, however far it happens to drift down",
+        )
+        assertTrue(
+            move.contains("elapsed <= SWIPE_FLICK_HANDOFF_MS"),
+            "a speed sample spanning a dwell is not a measurement of the flick that ended it",
+        )
+
+        val up = sliceBetween(
+            dialogs, "const pointerUp = (event)", "const pointerCancel = (event)", "the release handler",
+        )
+        val identityAt = up.indexOf("event.pointerId !== drag.pointerId")
+        val clearAt = up.indexOf("dragRef.current = null")
+        assertTrue(
+            identityAt >= 0 && clearAt > identityAt,
+            "another finger's release is not this drag's end: identity is checked before the ref is cleared",
+        )
+        assertTrue(
+            up.contains("event.timeStamp - drag.lastAt > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity") &&
+                up.contains("drag.travel > SWIPE_DISMISS_PX || flicked"),
+            "a long drag or a still-moving flick dismisses; a rested finger and anything shorter spring back",
+        )
+
+        val cancel = sliceBetween(
+            dialogs, "const pointerCancel = (event)", "const click = (event)", "the cancel handler",
+        )
+        assertTrue(
+            !cancel.contains("el.close()") && cancel.contains("springBack(el, event.pointerId)"),
+            "a gesture the platform took away springs back — a cancel is not a release and never dismisses",
+        )
+
+        // The spring-back is an inline style, which outranks the stylesheet, so `#sidebar`'s media-query
+        // remedy cannot reach it: the preference is asked in JS instead.
+        assertTrue(
+            dialogs.contains("window.matchMedia(\"(prefers-reduced-motion: reduce)\").matches") &&
+                dialogs.contains("prefersReducedMotion() ? \"none\" : \"transform 160ms ease-out\""),
+            "an operator who asked for less motion gets none of the swipe's",
+        )
+        // Unmounting the upload screen aborts its request, and the loop then returns before it can name
+        // which files landed — so while it is working, only a deliberate close may reach it.
+        assertTrue(
+            dialogs.contains("lightDismiss = true") &&
+                dialogs.contains("if (!lightDismiss) return;") &&
+                dialogs.contains("lightDismiss=\${!busy}"),
+            "a screen with work in flight opts out of both pointer gestures",
         )
         assertTrue(
             dialogs.contains("<div class=\"dialog-grabber\" aria-hidden=\"true\"></div>"),
@@ -1727,18 +1791,33 @@ class WebUiServingTest {
                 palette.contains("aria-label=\"Close\" onClick=\${onClose}"),
             "the palette carries the close button its missing head never gave it",
         )
-
-        val css = ctx.get("/style.css").bodyAsText()
         assertTrue(
-            css.contains(".dialog-grabber,\n.dialog-head { touch-action: none; }"),
-            "the gesture reservation is unconditional, like the terminal's — a tablet has no Esc either",
+            palette.contains("event.code === \"Space\" && event.target === event.currentTarget"),
+            "leader mode's Space guard belongs to the shell, not to the buttons that bubble through it",
         )
-        val breakpoint = css.indexOf("@media (max-width: 720px)")
-        assertTrue(breakpoint > 0, "the mobile breakpoint exists")
+
+        // Scoped by POINTER, not by viewport width: the gesture exists only for a touch pointer, and a
+        // width query left the palette — the one dialog with no head — unswipeable on every tablet.
+        val css = ctx.get("/style.css").bodyAsText()
+        assertFalse(
+            css.contains(".dialog-head { touch-action: none; }"),
+            "the head stays pannable: on an overflowing dialog it is the scroller",
+        )
         assertTrue(
-            css.indexOf(".dialog-grabber { display: none; }") in 1 until breakpoint &&
-                css.substring(breakpoint).contains(".dialog-grabber {\n    display: block;"),
-            "only the grabber's ink is scoped to the phone, where the affordance is needed",
+            css.contains(".dialog-grabber { display: none; }"),
+            "the handle exists only where the gesture does",
+        )
+        val coarse = sliceBetween(
+            css, "@media (any-pointer: coarse) {", "\n}\n", "the coarse-pointer block",
+        )
+        assertTrue(
+            coarse.contains(".dialog-grabber {\n    display: block;") &&
+                coarse.contains("touch-action: none;"),
+            "a coarse pointer gets the handle and its reservation, whatever the viewport width",
+        )
+        assertTrue(
+            coarse.contains(".command-palette-close {"),
+            "the palette's × gets a thumb-sized box: it sits above an option row whose tap runs a command",
         )
     }
 

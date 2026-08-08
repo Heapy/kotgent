@@ -640,14 +640,40 @@ modal was closable only from a keyboard or its own ×, and the command palette, 
 re-implement either per dialog. **A press outside is checked against the panel's GEOMETRY, and both halves
 must land there** — a press on the backdrop reports its target as the `<dialog>` itself, but so does a drag
 that started on the panel and a click a native `<select>` popup lets through, so `pointerdown` and `click`
-are paired and each is tested against `getBoundingClientRect()`. **A swipe starts only from a touch pointer
-on `.dialog-grabber` or `.dialog-head`**, never from the body: every body either scrolls (help, the palette's
-list) or holds fields a finger must reach. The pointer is captured only after a downward slop (8 px), which
-is what keeps a tap on the × or a mode toggle underneath an ordinary click; release dismisses past 96 px or
-on a short fast flick, and springs back otherwise. `touch-action: none` on both handles is **unconditional**,
-like the terminal's — the swipe is installed for any touch pointer, a tablet is wider than the phone
-breakpoint and has no Esc either — while only the grabber's ink is scoped to `max-width: 720px`. Nothing here
-guards a dialog against accidental dismissal, because Esc already closed all of them mid-request.
+are paired and each is tested against `getBoundingClientRect()`. The presses are tracked in a **Set keyed by
+`pointerId`**, not one flag: a second contact landing inside would otherwise erase a pending backdrop press,
+and a press that never produces a click (a cancel, a long-press) would leave that flag armed for the next one.
+
+**A swipe starts only from a touch pointer on `.dialog-grabber`** — the head is deliberately NOT a handle.
+`dialog:modal`'s UA rule makes an overflowing `<dialog>` its own scroller with the head as its first child, so
+the `touch-action: none` a swipe needs would turn "pan the sheet by its title" into a dead zone and put the
+fields of a long form out of reach. The grabber scrolls nothing, so reserving it costs nothing. Its box is
+scoped by **`@media (any-pointer: coarse)`, not by viewport width**: the gesture only exists for a touch
+pointer, and the old `max-width: 720px` ink left the palette — the one dialog with no head, i.e. the one with
+no other handle — unswipeable on every tablet, the exact device the reservation was written for. The same
+query gives the palette's × a 44 px box: it sits ~16 px above an option row whose tap RUNS a command, so a
+thumb that misses the desktop-sized × hits Interrupt.
+
+**Every rule in the gesture fails toward KEEPING the dialog**, because what a dialog holds is unsaved and
+local. The pointer is captured only after a downward slop (8 px) that also has to beat the horizontal travel
+(a sweep across the sheet is not a dismissal however far it drifts); `pointerup` checks the pointer id
+**before** clearing `dragRef` (clearing first let any second finger's release abandon a live swipe and strand
+the panel under its transform); `pointercancel` has its **own** handler that springs back — a gesture the
+platform took away is not a release, and evaluating distance there closed dialogs on an incoming call; and a
+flick counts only while its speed sample is fresh (`SWIPE_FLICK_HANDOFF_MS`, 90 ms, the same handoff
+`installSwipeScroll` measured), because a stationary contact emits no `pointermove` and the last sample would
+otherwise stand for however long the finger then rested. The spring-back reads `prefers-reduced-motion` **in
+JS**: it is an inline style, so it outranks the stylesheet and `#sidebar`'s media-query remedy cannot reach it.
+A screen with work in flight opts out of both gestures with **`lightDismiss`** (`UploadFilesDialog` passes
+`!busy`: unmounting aborts the request and the loop returns before it can name which files landed). Esc, the ×
+and Cancel are never gated — those are the operator saying it on purpose.
+
+Esc is **not** a uniform escape hatch to reason from: `cwdKeyDown` spends the first one on New session's open
+cwd-completion list, so the keyboard has a layer these gestures do not, and a backdrop tap while that list is
+open discards the whole draft in one step. Two residuals are recorded, not fixed: in an overflowing dialog the
+grabber scrolls out of the port and the swipe goes with it (× and backdrop remain, and giving those four forms
+`#help-form`'s internal scroller changes iOS focus/keyboard behaviour that cannot be verified from here), and
+the palette's `type="search"` input still paints the UA's own clear × a few pixels inside kotgent's.
 
 **Mobile file upload is a session-cwd write, never an arbitrary-path API.** The palette's `f` command opens
 the native multi-file picker and `POST`s one raw file at a time to `/sessions/{id}/files?name=…`; the browser
@@ -990,7 +1016,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **920 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **921 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and

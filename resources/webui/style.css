@@ -566,14 +566,47 @@ dialog::backdrop {
   background: rgba(13, 18, 28, 0.58);
   backdrop-filter: blur(2px);
 }
-/* The two swipe-to-dismiss handles. The gesture reservation is UNCONDITIONAL, like the terminal's:
-   `Dialog` installs the swipe for every touch pointer (a tablet is wider than the phone breakpoint and
-   has no Esc either), and without `touch-action: none` the browser claims the vertical gesture before
-   the first pointermove reaches the dialog. Only the grabber's ink is scoped to the breakpoint — on a
-   desktop the affordance would be noise beside Esc, the ×, and a press on the backdrop. */
-.dialog-grabber,
-.dialog-head { touch-action: none; }
+/* The one swipe-to-dismiss handle. `touch-action: none` is what keeps the browser from claiming the
+   vertical gesture before the first pointermove reaches the dialog — which is exactly why the head is
+   NOT a handle: `dialog:modal` makes an overflowing dialog its own scroller, so reserving the head
+   would turn "pan the sheet by its title" into a dead zone with the fields unreachable. The grabber
+   scrolls nothing, so reserving it costs nothing. Sized by POINTER, not by width: the gesture only
+   exists for a touch pointer, and a tablet is wider than the phone breakpoint and has no Esc either —
+   a width query left the palette (the one dialog with no head) unswipeable on every tablet. */
 .dialog-grabber { display: none; }
+@media (any-pointer: coarse) {
+  .dialog-grabber {
+    display: block;
+    height: 20px;
+    position: relative;
+    touch-action: none;
+  }
+  .dialog-grabber::after {
+    background: color-mix(in srgb, var(--muted) 55%, transparent);
+    border-radius: 2px;
+    content: "";
+    height: 4px;
+    left: 50%;
+    position: absolute;
+    top: 8px;
+    transform: translateX(-50%);
+    width: 38px;
+  }
+  /* The panels give back the height that row costs. */
+  #new-session-form,
+  #upload-form,
+  #prefs-form,
+  #phone-form,
+  #help-form { padding-top: 10px; }
+  .command-palette-shell { padding-top: 2px; }
+  /* The palette's × is the guaranteed way out of the one dialog with no head, and it sits about
+     16px above an option row whose tap RUNS a command. At the desktop `.icon-button` size a thumb
+     aiming at it can land on Interrupt instead, so it gets a thumb-sized box here. */
+  .command-palette-close {
+    min-height: 44px;
+    width: 44px;
+  }
+}
 
 /* --- Command palette: search list + spacemacs-style leader grid --- */
 #command-palette {
@@ -1257,31 +1290,6 @@ dialog::backdrop {
     gap: 2px 0;
   }
   .help-list dd { margin-bottom: 10px; }
-
-  /* A thumb closes a dialog by swiping it down from here, or from the head beside its ×. The panels give
-     back the height this row costs. */
-  .dialog-grabber {
-    display: block;
-    height: 20px;
-    position: relative;
-  }
-  .dialog-grabber::after {
-    background: color-mix(in srgb, var(--muted) 55%, transparent);
-    border-radius: 2px;
-    content: "";
-    height: 4px;
-    left: 50%;
-    position: absolute;
-    top: 8px;
-    transform: translateX(-50%);
-    width: 38px;
-  }
-  #new-session-form,
-  #upload-form,
-  #prefs-form,
-  #phone-form,
-  #help-form { padding-top: 10px; }
-  .command-palette-shell { padding-top: 2px; }
 
   /* The sidebar leaves the flex row and becomes an overlay drawer: the terminal gets the whole screen,
      which is the only way a phone-sized viewport has room for one. `fixed` positions it against the

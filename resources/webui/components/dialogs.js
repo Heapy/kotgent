@@ -8,10 +8,18 @@
  *
  * What the platform does NOT give is a light dismiss: `showModal()` paints a backdrop but a press on it
  * closes nothing, so the wrapper adds the two gestures a pointer-only device has — a press outside the
- * panel, and a downward swipe of a TOUCH pointer off the panel's grabber or head. Both are installed on
- * every viewport (a tablet is wider than the phone breakpoint and has no Esc either); only the grabber's
- * ink is scoped to the breakpoint. Esc, the ×, and Cancel are unchanged; a dialog that must not be
- * dismissed by accident does not exist here, because Esc already closes every one of them mid-request.
+ * panel, and a downward swipe of a TOUCH pointer off the panel's GRABBER. The grabber is the only handle
+ * because it is the one strip of a dialog that never scrolls anything: `dialog:modal` makes an overflowing
+ * `<dialog>` its own scroller, and `touch-action: none` on the head would turn the natural "pan the sheet
+ * by its title" gesture into a dead zone. Both gestures exist wherever a coarse pointer does, not merely
+ * below the phone breakpoint (a tablet is wider than it and has no Esc either).
+ *
+ * Every rule below fails toward KEEPING the dialog, because what it holds is unsaved and local:
+ * a swipe is claimed only once it is dominantly downward, a `pointercancel` — a gesture the platform took
+ * away — springs back instead of committing, a flick counts only while its speed sample is fresh, and a
+ * screen with work in flight opts out entirely (`lightDismiss`). Esc, the ×, and Cancel are unchanged.
+ * Esc is not a uniform escape hatch to compare against: New session deliberately spends the first one on
+ * its open cwd-completion list (`cwdKeyDown`), so the keyboard has a layer these gestures do not.
  *
  * htm is not an HTML parser and does not decode entities, so any literal `<` in the copy below is
  * interpolated as a JS string (`${"kt-<id>"}`) rather than written as `&lt;`.
@@ -33,10 +41,31 @@ const SWIPE_DISMISS_PX = 96;
 /** A flick dismisses earlier: this much travel at this speed (px/ms) beats the distance rule. */
 const SWIPE_FLICK_PX = 32;
 const SWIPE_FLICK_VELOCITY = 0.5;
+/**
+ * How fresh a speed sample has to be to count as motion, matching `installSwipeScroll`'s measured
+ * handoff. A stationary contact emits no `pointermove` at all, so without this the LAST sample stands
+ * for however long the finger then rested: a quick 40px pull, two seconds of second-guessing, and a
+ * lift would still read as a flick and throw the draft away. It cuts both ways — a sample that spans
+ * a dwell is not a measurement of the flick that ended it either, so it counts as zero rather than as
+ * a slow drag. Both directions therefore fail toward keeping the dialog.
+ */
+const SWIPE_FLICK_HANDOFF_MS = 90;
 
-export function Dialog({ id, labelledBy, onClose, children }) {
+/**
+ * The spring-back is set as an inline style, which outranks the stylesheet, so the motion preference
+ * cannot be honoured from a media query the way `#sidebar`'s is — it is asked here instead.
+ */
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
   const ref = useRef(null);
-  const pressedOutside = useRef(false);
+  // Which pointers began their press outside the panel — a SET, not a flag: a second contact landing
+  // inside must not erase a pending backdrop press, and a pointer that never produces a click (a
+  // cancel, a long-press) must be able to withdraw its own vote without touching anyone else's.
+  const outsidePointers = useRef(new Set());
   const dragRef = useRef(null);
 
   useEffect(() => {
@@ -64,16 +93,31 @@ export function Dialog({ id, labelledBy, onClose, children }) {
       event.clientY < rect.top || event.clientY > rect.bottom;
   };
 
+  /** Give the panel back to the layout, animated unless the operator asked for less motion. */
+  const springBack = (el, pointerId) => {
+    if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
+    el.style.transition = prefersReducedMotion() ? "none" : "transform 160ms ease-out";
+    el.style.transform = "";
+  };
+
   const pointerDown = (event) => {
-    pressedOutside.current = outside(event);
-    if (pressedOutside.current || event.pointerType !== "touch") return;
-    // Only the grabber and the head start a swipe: every dialog body either scrolls (help, the palette's
-    // list) or holds fields a finger must be able to reach, and a drag claimed there would fight both.
+    if (!lightDismiss) return;
+    if (outside(event)) {
+      outsidePointers.current.add(event.pointerId);
+      return;
+    }
+    if (event.pointerType !== "touch") return;
+    // One finger owns the swipe. A second contact must not restart it under a new id, or the release
+    // of the first would find a drag it does not own and leave the panel translated.
+    if (dragRef.current) return;
+    // Only the grabber starts a swipe. Not the head: an overflowing `<dialog>` is its own scroller, so
+    // the head is a scroll surface, and the `touch-action: none` this gesture needs would kill the pan.
+    // Not the body either — it scrolls (help, the palette's list) or holds fields a finger must reach.
     const from = event.target && event.target.closest ? event.target : null;
-    if (!from || !from.closest(".dialog-grabber, .dialog-head")) return;
-    if (from.closest("button, a, input, select, textarea")) return;
+    if (!from || !from.closest(".dialog-grabber")) return;
     dragRef.current = {
       pointerId: event.pointerId,
+      startX: event.clientX,
       startY: event.clientY,
       lastY: event.clientY,
       lastAt: event.timeStamp,
@@ -89,39 +133,64 @@ export function Dialog({ id, labelledBy, onClose, children }) {
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
     const travel = event.clientY - drag.startY;
     if (!drag.dragging) {
-      // Claimed only once the finger has clearly moved DOWN, and only then captured: an uncaptured
-      // pointer keeps a tap on the × or the mode toggle underneath working as an ordinary click.
-      if (travel < SWIPE_SLOP_PX) return;
+      // Claimed only once the finger has clearly moved DOWN and moved down MORE than sideways, and only
+      // then captured: an uncaptured pointer keeps a tap underneath working as an ordinary click, and a
+      // sweep across the sheet is not a dismissal however far it happens to drift.
+      if (travel < SWIPE_SLOP_PX || travel <= Math.abs(event.clientX - drag.startX)) {
+        // Keep the speed baseline current even while the gesture is unclaimed: leaving it at the press
+        // would divide the first sample after the claim by the whole press, dwell included.
+        drag.lastY = event.clientY;
+        drag.lastAt = event.timeStamp;
+        return;
+      }
       drag.dragging = true;
       el.setPointerCapture(event.pointerId);
       el.style.transition = "none";
     }
     const elapsed = event.timeStamp - drag.lastAt;
-    if (elapsed > 0) drag.velocity = (event.clientY - drag.lastY) / elapsed;
+    drag.velocity = elapsed > 0 && elapsed <= SWIPE_FLICK_HANDOFF_MS
+      ? (event.clientY - drag.lastY) / elapsed
+      : 0;
     drag.lastY = event.clientY;
     drag.lastAt = event.timeStamp;
     drag.travel = Math.max(0, travel);
     el.style.transform = "translateY(" + drag.travel + "px)";
   };
 
-  const pointerEnd = (event) => {
+  const pointerUp = (event) => {
     const drag = dragRef.current;
     const el = ref.current;
+    // Identity is checked BEFORE the ref is cleared: another finger's release is not this drag's end,
+    // and clearing first would abandon a live swipe with the panel stuck under its transform.
+    if (!drag || !el || event.pointerId !== drag.pointerId) return;
     dragRef.current = null;
-    if (!drag || !el || !drag.dragging || event.pointerId !== drag.pointerId) return;
-    if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
-    const flicked = drag.travel > SWIPE_FLICK_PX && drag.velocity > SWIPE_FLICK_VELOCITY;
+    if (!drag.dragging) return;
+    const velocity = event.timeStamp - drag.lastAt > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity;
+    const flicked = drag.travel > SWIPE_FLICK_PX && velocity > SWIPE_FLICK_VELOCITY;
     if (drag.travel > SWIPE_DISMISS_PX || flicked) {
+      if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
       el.close();
       return;
     }
-    el.style.transition = "transform 160ms ease-out";
-    el.style.transform = "";
+    springBack(el, event.pointerId);
+  };
+
+  // A cancel is the platform TAKING the gesture away (a system edge pull, palm rejection, an incoming
+  // call), never a release. It shares nothing with `pointerUp` but the cleanup: evaluating distance
+  // here would close a dialog on an interruption the operator did not perform.
+  const pointerCancel = (event) => {
+    outsidePointers.current.delete(event.pointerId);
+    const drag = dragRef.current;
+    const el = ref.current;
+    if (!drag || !el || event.pointerId !== drag.pointerId) return;
+    dragRef.current = null;
+    if (!drag.dragging) return;
+    springBack(el, event.pointerId);
   };
 
   const click = (event) => {
-    const wasOutside = pressedOutside.current;
-    pressedOutside.current = false;
+    const wasOutside = outsidePointers.current.size > 0;
+    outsidePointers.current.clear();
     if (!wasOutside || !outside(event)) return;
     if (ref.current) ref.current.close();
   };
@@ -129,9 +198,9 @@ export function Dialog({ id, labelledBy, onClose, children }) {
   return html`
     <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}
             onPointerDown=${pointerDown} onPointerMove=${pointerMove}
-            onPointerUp=${pointerEnd} onPointerCancel=${pointerEnd} onClick=${click}>
-      ${/* The swipe affordance, and the one handle the palette has (it draws no `.dialog-head`). It is
-            inked only below the phone breakpoint; the gesture itself is reserved on every viewport. */ ""}
+            onPointerUp=${pointerUp} onPointerCancel=${pointerCancel} onClick=${click}>
+      ${/* The swipe affordance and its only handle — including for the palette, which draws no
+            `.dialog-head`. It exists wherever a coarse pointer does, which is where the gesture is. */ ""}
       <div class="dialog-grabber" aria-hidden="true"></div>
       ${children}
     </dialog>
@@ -539,7 +608,11 @@ export function UploadFilesDialog({ session, onClose }) {
   };
 
   return html`
-    <${Dialog} id="upload-dialog" labelledBy="upload-title" onClose=${onClose}>
+    ${/* The one screen that opts out of light dismiss, and only while it is working: unmounting aborts
+          the in-flight request, and the loop then returns before it can name which files landed and
+          which did not. A backdrop press or a swipe is exactly the accident that costs that report;
+          Esc, the ×, and Cancel stay, because those are the operator saying it on purpose. */ ""}
+    <${Dialog} id="upload-dialog" labelledBy="upload-title" lightDismiss=${!busy} onClose=${onClose}>
       <form id="upload-form" onSubmit=${submit}>
         <div class="dialog-head">
           <div>

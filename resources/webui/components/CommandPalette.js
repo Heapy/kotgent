@@ -100,8 +100,12 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
 
   const leaderKeyDown = (event) => {
     if (mode !== "leader") return;
-    if (event.code === "Space") {
-      event.preventDefault(); // never let Space activate the focused search-mode row, modified or not
+    // Never let Space activate whatever leader mode parked the focus on, modified or not — but the
+    // guard belongs to the SHELL alone. It sits on the shell and sees everything that bubbles, so
+    // without the target test it also swallowed Space on the shell's own buttons: a Tab to the × (the
+    // control this dialog exists to offer) answered Enter and did nothing at all on Space.
+    if (event.code === "Space" && event.target === event.currentTarget) {
+      event.preventDefault();
       return;
     }
     // ⌘K K reaches search: the opener leaves the palette on the leader grid, so the second K is an
