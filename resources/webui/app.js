@@ -285,6 +285,9 @@ function App() {
   // Capture before xterm.js or a focused form field sees the opener. A native app dialog owns the
   // keyboard while it is open; the palette itself is separate state so the same binding can toggle its
   // two views. `code` keeps the shortcut tied to the physical K key across keyboard layouts.
+  // ⌘K opens the leader grid — the root view, whose every entry is one more keystroke away — and the
+  // search view is reached from it by that same K (⌘K K, handled bare inside the palette) or by
+  // repeating the opener, which is why this toggles rather than re-opening the root.
   useEffect(() => {
     const handler = (event) => {
       const opensPalette =
@@ -302,7 +305,7 @@ function App() {
       }
       setPalette((current) => current
         ? { mode: current.mode === "search" ? "leader" : "search" }
-        : { mode: "search" });
+        : { mode: "leader" });
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
@@ -1081,19 +1084,12 @@ function App() {
       attachedId=${attachedId}
       terminalFontSize=${prefs.terminalFontSize}
       terminalUnicode=${prefs.terminalUnicode}
-      pendingAction=${pendingAction}
       hint=${hint}
       drawerOpen=${drawerOpen}
       sidebarCollapsed=${sidebarCollapsed}
       onToggleDrawer=${toggleDrawer}
       onToggleSidebar=${toggleSidebar}
       onOpenPalette=${openPalette}
-      onAttach=${attach}
-      onInterrupt=${interrupt}
-      onResume=${resume}
-      onDetach=${detach}
-      onStop=${stop}
-      onDone=${done}
       onTerminalClosed=${onTerminalClosed}
     />
     ${dialog && dialog.kind === "new" && html`

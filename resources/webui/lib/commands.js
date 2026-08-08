@@ -73,20 +73,20 @@ export function buildCommands({ sessions = [], activeSession = null, attachedId 
       run: () => actions.resume(),
     },
     {
-      id: "session.attach", group: "session", chord: null,
+      id: "session.attach", group: "session", chord: "a",
       title: "Attach current terminal",
       subtitle: "opens the selected live session",
-      hint: null,
+      hint: "⌘K a",
       disabled: !alive
         ? disabledWhenNotAlive(activeSession)
         : (attached ? "the selected terminal is already attached" : null),
       run: () => actions.attach(),
     },
     {
-      id: "session.detach", group: "session", chord: null,
+      id: "session.detach", group: "session", chord: "e",
       title: "Detach current terminal",
       subtitle: "leaves the agent running in tmux",
-      hint: null,
+      hint: "⌘K e",
       disabled: attached ? null : "the selected terminal is not attached",
       run: () => actions.detach(),
     },

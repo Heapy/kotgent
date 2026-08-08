@@ -104,7 +104,10 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
       event.preventDefault(); // never let Space activate the focused search-mode row
       return;
     }
-    if (event.code === "Backspace") {
+    // ⌘K K reaches search: the opener leaves the palette on the leader grid, so the second K is an
+    // ordinary mnemonic here. It is checked BEFORE the registry lookup, so registering a "k" chord in
+    // commands.js can never silently steal the one way back to search (a test keeps that letter free).
+    if (event.code === "KeyK" || event.code === "Backspace") {
       event.preventDefault();
       onModeChange("search");
       return;
@@ -133,7 +136,7 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
               onClick=${() => onModeChange("search")}
             >
               <span>Search commands and sessions</span>
-              <kbd>⌘K</kbd>
+              <kbd>K</kbd>
             </button>
             <div class="command-palette-leader-grid" role="group" aria-label="Command shortcuts">
               ${leaderCommands.map((item) => html`
@@ -150,7 +153,7 @@ export function CommandPalette({ commands, mode = "search", onModeChange, onClos
               `)}
             </div>
             <p class="command-palette-footer" role="status" aria-live="polite">
-              ${leaderMessage || "Press a letter, Backspace to search, or Esc to close."}
+              ${leaderMessage || "Press a letter, K to search, or Esc to close."}
             </p>`
           : html`
             <input

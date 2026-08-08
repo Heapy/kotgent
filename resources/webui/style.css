@@ -26,7 +26,7 @@
 }
 
 * { box-sizing: border-box; }
-/* An author `display` (e.g. `.session-actions { display: flex }`) beats the UA's `[hidden]` rule whatever
+/* An author `display` (e.g. `.key-bar { display: flex }`) beats the UA's `[hidden]` rule whatever
    its specificity, so every `el.hidden = true` in app.js needs this to actually hide anything. */
 [hidden] { display: none !important; }
 .visually-hidden {
@@ -476,11 +476,6 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.session-actions {
-  display: none;
-  align-items: center;
-  gap: 6px;
 }
 .palette-button {
   flex: 0 0 auto;
@@ -1322,34 +1317,17 @@ dialog::backdrop {
     justify-content: flex-end;
   }
 
-  /* The header stays a single row: the title truncates, the controls do not. */
+  /* The header stays a single row: the drawer opener, the truncating title, and the palette button that
+     replaced the lifecycle icon row this breakpoint used to draw. */
   #terminal-head {
     gap: 8px;
     padding: 6px 10px;
   }
-  .copy-tmux-button { display: none; }
   .terminal-identity {
     flex: 1 1 auto;
     gap: 6px;
   }
   #terminal-title { font-size: 12px; }
-  /* The lifecycle controls collapse to an icon row: the label text is still the button's content (and its
-     accessible name comes from aria-label either way), but it is drawn from `data-icon` instead. */
-  .session-actions {
-    display: flex;
-    gap: 4px;
-  }
-  .session-actions .button {
-    font-size: 0;
-    min-height: 34px;
-    min-width: 36px;
-    padding: 0;
-  }
-  .session-actions .button::before {
-    content: attr(data-icon);
-    font-size: 15px;
-    line-height: 1;
-  }
 
   #terminal-host .xterm { padding: 4px 6px; }
   .key-bar {

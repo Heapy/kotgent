@@ -11,8 +11,7 @@
 import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
-import { writeClipboard } from "../lib/clipboard.js";
-import { displayName, isAliveState, stateBadge, tmuxAttachCommand } from "../lib/sessions.js";
+import { displayName, stateBadge } from "../lib/sessions.js";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.js";
 import { KeyBar } from "./KeyBar.js";
 
@@ -313,12 +312,10 @@ function installSwipeScroll(term) {
 }
 
 export function TerminalPane({
-  session, attachedId, terminalFontSize, terminalUnicode, pendingAction, hint, drawerOpen,
-  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onAttach, onInterrupt, onResume,
-  onDetach, onStop, onDone, onTerminalClosed,
+  session, attachedId, terminalFontSize, terminalUnicode, hint, drawerOpen,
+  sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
-  const [copyResult, setCopyResult] = useState(null);
   const keyBarRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
@@ -638,19 +635,7 @@ export function TerminalPane({
   }, [terminalFontSize]);
 
   const badge = session ? stateBadge(session.state) : null;
-  const alive = session ? isAliveState(session.state) : false;
   const attached = !!session && session.id === attachedId;
-  const busy = pendingAction !== null;
-  const tmuxCommand = session && session.tmuxSession ? tmuxAttachCommand(session.tmuxSession) : "";
-  const copyState = copyResult && copyResult.command === tmuxCommand ? copyResult.state : "idle";
-  const copyTmuxCommand = async () => {
-    try {
-      await writeClipboard(tmuxCommand);
-      setCopyResult({ command: tmuxCommand, state: "copied" });
-    } catch (_) {
-      setCopyResult({ command: tmuxCommand, state: "failed" });
-    }
-  };
   const toggleCtrl = () => {
     const next = !ctrlActiveRef.current;
     ctrlActiveRef.current = next;
@@ -660,10 +645,7 @@ export function TerminalPane({
     ctrlActiveRef.current = false;
     setCtrlActive(false);
   };
-  const openPalette = () => {
-    const mode = window.matchMedia("(max-width: 720px)").matches ? "leader" : "search";
-    onOpenPalette(mode);
-  };
+  const openPalette = () => onOpenPalette("leader");
 
   return html`
     <main id="terminal-pane">
@@ -696,6 +678,12 @@ export function TerminalPane({
             ${badge ? badge.label : ""}
           </span>
         </div>
+        ${/* The one lifecycle control in the header, on every screen: it opens the palette's leader grid,
+              whose mnemonic rows are interrupt/resume/stop/done/copy-tmux (attach and detach carry no
+              chord and stay one keystroke further, in search). The icon row that used to sit beside it
+              was mobile-only markup repeating those same actions and their disabled rules; the grid
+              states its own reasons, so the phone header keeps the drawer opener, the title and this
+              button and nothing else. */ ""}
         <button
           id="palette-button"
           class="icon-button icon-button-small palette-button"
@@ -704,43 +692,6 @@ export function TerminalPane({
           title="Commands"
           onClick=${openPalette}
         >⋯</button>
-        ${/* Each control carries its label as text AND an icon in `data-icon`. Above the mobile
-              breakpoint the palette replaces this row; below it, the text collapses and style.css draws
-              `data-icon` through ::before, so one row of markup serves both without a JS branch. The
-              aria-label keeps the accessible name identical to the wording either way. */ ""}
-        ${session && html`
-          <div id="session-actions" class="session-actions">
-            ${alive && tmuxCommand && html`
-              <button id="copy-tmux-button" class="button button-quiet copy-tmux-button" type="button"
-                      title=${tmuxCommand} onClick=${copyTmuxCommand}>
-                ${copyState === "copied" ? "Copied tmux" :
-                  copyState === "failed" ? "Copy failed" : "Copy tmux"}
-              </button>
-              <span class="visually-hidden" role="status" aria-live="polite">
-                ${copyState === "copied" ? "Tmux command copied to clipboard." :
-                  copyState === "failed" ? "Could not copy the tmux command." : ""}
-              </span>
-            `}
-            ${alive && !attached && html`
-              <button id="attach-button" class="button button-primary" type="button" data-icon="🔗"
-                      aria-label="Attach" disabled=${busy} onClick=${onAttach}>Attach</button>`}
-            ${alive && html`
-              <button id="interrupt-button" class="button button-quiet" type="button" data-icon="⏸"
-                      aria-label="Interrupt" disabled=${busy} onClick=${onInterrupt}>Interrupt</button>`}
-            ${!alive && html`
-              <button id="resume-button" class="button button-primary" type="button" data-icon="▶"
-                      aria-label="Resume" disabled=${busy} onClick=${onResume}>Resume</button>`}
-            ${attached && html`
-              <button id="detach-button" class="button button-quiet" type="button" data-icon="⏏"
-                      aria-label="Detach" disabled=${busy} onClick=${onDetach}>Detach</button>`}
-            ${alive && html`
-              <button id="stop-button" class="button button-danger" type="button" data-icon="⏹"
-                      aria-label="Stop" disabled=${busy} onClick=${onStop}>Stop</button>`}
-            <button id="done-button" class="button button-quiet" type="button" data-icon="✓"
-                    aria-label="Done" disabled=${busy} onClick=${onDone}
-                    title="Stop the agent and hide this session from the sidebar">Done</button>
-          </div>
-        `}
       </div>
 
       ${/* Owned by xterm.js, never by the vdom: rendered childless so Preact has nothing to diff. */ ""}

@@ -386,6 +386,8 @@ class WebUiServingTest {
         val chords = mapOf(
             "session.interrupt" to "i",
             "session.resume" to "u",
+            "session.attach" to "a",
+            "session.detach" to "e",
             "session.stop" to "s",
             "session.done" to "d",
             "session.copy-tmux" to "c",
@@ -404,6 +406,10 @@ class WebUiServingTest {
                 "$id keeps the '$chord' leader mnemonic in the one registry",
             )
         }
+        assertFalse(
+            Regex("""chord: "k"""").containsMatchIn(commands),
+            "'k' stays reserved for the leader grid's own way back to search (⌘K K)",
+        )
         for (id in listOf("general.notifications")) {
             val descriptor = commands.substringAfter("id: \"$id\"").substringBefore("\n    },")
             assertTrue(
@@ -486,9 +492,14 @@ class WebUiServingTest {
         )
         assertTrue(
             palette.contains("event.code === \"Space\"") &&
-                palette.contains("event.code === \"Backspace\"") &&
+                palette.contains("event.code === \"KeyK\" || event.code === \"Backspace\"") &&
                 palette.contains("onModeChange(\"search\")"),
-            "leader mode suppresses Space and returns to search on Backspace or the search row",
+            "leader mode suppresses Space and returns to search on K, Backspace or the search row",
+        )
+        assertTrue(
+            palette.indexOf("event.code === \"KeyK\"") <
+                palette.indexOf("event.code === \"Key\" + command.chord.toUpperCase()"),
+            "the second K of ⌘K K is answered before the registry lookup could claim that letter",
         )
         assertTrue(
             palette.contains("setLeaderMessage(item.title + \": \" + item.disabled)") &&
@@ -531,6 +542,10 @@ class WebUiServingTest {
             app.contains("if ((!opensPalette && !togglesSidebar) || dialogRef.current) return") &&
                 app.contains("current.mode === \"search\" ? \"leader\" : \"search\""),
             "an app dialog owns its keyboard and a repeated opener toggles palette mode",
+        )
+        assertTrue(
+            app.contains(": { mode: \"leader\" })"),
+            "the opener lands on the leader grid, from which K reaches search",
         )
         assertTrue(
             app.contains("const commands = buildCommands({") &&
@@ -636,27 +651,20 @@ class WebUiServingTest {
         )
 
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
-        val paletteButtonAt = pane.indexOf("id=\"palette-button\"")
-        val sessionGuardAt = pane.indexOf("\${session && html`")
         assertTrue(
-            paletteButtonAt >= 0 && paletteButtonAt < sessionGuardAt,
+            pane.contains("id=\"palette-button\"") && !pane.contains("\${session && html`"),
             "the palette button renders even when there is no selected session",
         )
         assertTrue(
-            pane.contains("window.matchMedia(\"(max-width: 720px)\").matches ? \"leader\" : \"search\"") &&
-                pane.contains("onOpenPalette(mode)") &&
+            pane.contains("const openPalette = () => onOpenPalette(\"leader\")") &&
+                !pane.contains("window.matchMedia(\"(max-width: 720px)\")") &&
                 ctx.get("/app.js").bodyAsText().contains("onOpenPalette=\${openPalette}"),
-            "the header opens the compact leader on phones and search on wider screens",
+            "the header button opens the leader grid on every screen, like the ⌘K opener",
         )
-
-        val css = ctx.get("/style.css").bodyAsText()
-        val desktop = css.substringBefore("@media (max-width: 720px)")
-        val mobile = css.substringAfter("@media (max-width: 720px)")
-            .substringBefore("@media (prefers-reduced-motion: reduce)")
         assertTrue(
-            desktop.contains(".session-actions {\n  display: none;") &&
-                mobile.contains(".session-actions {\n    display: flex;"),
-            "lifecycle buttons stay in markup but switch from palette-only desktop to direct mobile controls",
+            !pane.contains("id=\"session-actions\"") &&
+                !ctx.get("/style.css").bodyAsText().contains(".session-actions"),
+            "the leader grid is the only lifecycle surface — no second icon row in the terminal header",
         )
     }
 
@@ -808,19 +816,21 @@ class WebUiServingTest {
 
     @Test
     fun webUiExposesSessionCreationAndLifecycleControls() = withServer { ctx ->
+        // Every lifecycle control lives in the one command registry now; the terminal header renders
+        // none of them, on any screen.
+        val commands = ctx.get("/lib/commands.js").bodyAsText()
+        for (id in listOf("session.attach", "session.interrupt", "session.resume",
+                          "session.detach", "session.stop", "session.done", "session.copy-tmux")) {
+            assertTrue(commands.contains("id: \"$id\""), "the palette offers $id")
+        }
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
-        assertTrue(pane.contains("id=\"attach-button\""), "the UI includes attach")
-        assertTrue(pane.contains("id=\"interrupt-button\""), "the UI includes interrupt")
-        assertTrue(pane.contains("id=\"resume-button\""), "the UI includes resume")
-        assertTrue(pane.contains("id=\"detach-button\""), "the UI includes detach")
-        assertTrue(pane.contains("id=\"stop-button\""), "the UI includes stop")
-        assertTrue(pane.contains("id=\"copy-tmux-button\""), "the UI keeps the direct copy-tmux control")
+        for (id in listOf("attach-button", "interrupt-button", "resume-button",
+                          "detach-button", "stop-button", "done-button", "copy-tmux-button")) {
+            assertFalse(pane.contains("id=\"$id\""), "the terminal header no longer duplicates #$id")
+        }
+        val app = ctx.get("/app.js").bodyAsText()
         assertTrue(
-            pane.contains("\${alive && tmuxCommand && html`"),
-            "copy tmux is offered only while the tmux session is alive",
-        )
-        assertTrue(
-            pane.contains("tmuxAttachCommand(session.tmuxSession)"),
+            app.contains("tmuxAttachCommand(s.tmuxSession)"),
             "copy tmux targets the selected session's canonical tmux name",
         )
         assertTrue(
@@ -829,9 +839,9 @@ class WebUiServingTest {
             "copy tmux uses kotgent's dedicated socket and UTF-8 attach command",
         )
         assertTrue(
-            pane.contains("import { writeClipboard } from \"../lib/clipboard.js\"") &&
-                !pane.contains("async function writeClipboard"),
-            "TerminalPane imports the shared clipboard helper instead of hiding a local copy",
+            app.contains("import { writeClipboard } from \"./lib/clipboard.js\"") &&
+                !app.contains("async function writeClipboard"),
+            "the app imports the shared clipboard helper instead of hiding a local copy",
         )
         val clipboard = ctx.get("/lib/clipboard.js").bodyAsText()
         assertTrue(
@@ -839,16 +849,11 @@ class WebUiServingTest {
                 clipboard.contains("document.execCommand(\"copy\")"),
             "the shared helper keeps the legacy clipboard fallback",
         )
-        val app = ctx.get("/app.js").bodyAsText()
         assertTrue(
             app.contains("const copyTmuxCommand = useCallback(async () => {") &&
                 app.contains("say(\"Tmux command copied to clipboard.\")") &&
                 app.contains("say(\"Could not copy the tmux command.\", true)"),
             "the app-owned copy action reports through the persistent sidebar status line",
-        )
-        assertTrue(
-            ctx.get("/style.css").bodyAsText().contains(".copy-tmux-button { display: none; }"),
-            "copy tmux is omitted from the mobile terminal head",
         )
         assertTrue(
             ctx.get("/components/dialogs.js").bodyAsText().let { dialogs ->
@@ -2398,31 +2403,22 @@ class WebUiServingTest {
         )
         assertTrue(css.contains("@media (max-width: 720px)"), "one width breakpoint drives the mobile layout")
         assertTrue(css.contains("#sidebar.open"), "below it the sidebar is a drawer with an open state")
-        assertTrue(
-            css.contains("content: attr(data-icon)"),
-            "and the lifecycle controls collapse to the icons the markup declares",
-        )
 
-        // Every lifecycle control must carry BOTH halves of that collapse: the icon the narrow layout
-        // draws, and an aria-label so the accessible name survives the label being sized to 0.
+        // The narrow header carries exactly two controls, and each needs an accessible name of its own:
+        // one is a bare glyph, the other an ellipsis. The lifecycle actions they replaced are in the
+        // palette's leader grid, which labels every row in text.
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         val buttons = pane.split("<button")
-        val drawerButton = assertNotNull(
-            buttons.firstOrNull { it.contains("id=\"drawer-toggle\"") },
-            "the terminal header carries the drawer opener",
-        )
-        assertTrue(
-            drawerButton.contains("onClick=\${onToggleDrawer}"),
-            "the visible drawer opener is bound to the handler supplied by App",
-        )
-        for (id in listOf("attach-button", "interrupt-button", "resume-button",
-                          "detach-button", "stop-button", "done-button")) {
+        for ((id, handler) in mapOf(
+            "drawer-toggle" to "onClick=\${onToggleDrawer}",
+            "palette-button" to "onClick=\${openPalette}",
+        )) {
             val markup = assertNotNull(
                 buttons.firstOrNull { it.contains("id=\"$id\"") },
-                "the terminal header still renders #$id",
+                "the terminal header carries #$id",
             )
-            assertTrue(markup.contains("data-icon="), "#$id declares the icon its narrow-screen form shows")
-            assertTrue(markup.contains("aria-label="), "#$id keeps its name when the label collapses")
+            assertTrue(markup.contains(handler), "#$id is bound to its handler")
+            assertTrue(markup.contains("aria-label="), "#$id names itself for a screen reader")
         }
 
         val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
