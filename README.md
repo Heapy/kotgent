@@ -276,7 +276,7 @@ reload) and **persistent** (restarting the daemon does not resurrect a cleared b
 not count as activity, so `kotgent list`'s ordering is unaffected.
 
 The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
-`false → true` attention transition sends a payload-less push; the service worker fetches `/sessions`
+`false → true` attention transition sends a payload-less push; the service worker fetches `/api/v1/sessions`
 under a ten-second deadline, shows one notification per waiting, non-archived session, and opens or
 focuses that session when tapped. If the fetch fails or stalls it still shows a generic attention
 notification. If Web Push is unsupported, denied, or unavailable on the daemon, the live tab falls back
@@ -300,7 +300,7 @@ The Web UI's **phone** button (📱) then issues a code and renders a credential
 Screen**, launch Kotgent, and type the displayed code into that form. The `/auth` landing page carries the
 PWA install metadata but the QR intentionally does not carry or spend the credential: Safari and an
 installed iOS PWA have separate cookie jars, so signing Safari in would not sign in the home-screen app.
-An unsigned PWA that launches at `/` also routes its first `/sessions` `401` to the same form; a later
+An unsigned PWA that launches at `/` also routes its first `/api/v1/sessions` `401` to the same form; a later
 expired credential leaves the live terminal visible and reports the error instead.
 
 Without a configured `public-url` the dialog prints the `cloudflared` ingress snippet to add instead of a
@@ -407,14 +407,14 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `adapter/` | `AgentAdapter` contract + the Claude, Codex and Junie adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
 | `push/` | Attention-edge tracking, SQLite subscription store, VAPID key/JWT signing, Darwin/NSURLSession delivery, and notifier lifecycle. |
-| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. |
+| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. Every client-facing route lives under `/api/v1`; the hook ingresses and the whole `/auth` bootstrap surface deliberately do not. |
 | `cli/` | Subcommands + the raw `attach` passthrough. |
 | `launchd/` | `plist` generation + install/uninstall. |
 | `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |
 | `plugins/sqldelight-gen/` (build plugin) | Runs SQLDelight codegen from `sqldelight/*.sq` at build time. |
 
-The authenticated push HTTP surface is `GET /push/vapid-key`, `POST /push/subscribe`, and
-`POST /push/unsubscribe`. The GET returns the VAPID application-server key; the POSTs persist or remove
+The authenticated push HTTP surface is `GET /api/v1/push/vapid-key`, `POST /api/v1/push/subscribe`, and
+`POST /api/v1/push/unsubscribe`. The GET returns the VAPID application-server key; the POSTs persist or remove
 the browser endpoint and its keys. Both POST routes inherit the transport's required, same-origin
 `Origin` check. They are not loopback-only, because a PWA must register through the configured public
 host.

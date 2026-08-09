@@ -6,8 +6,8 @@
  *
  * ## Why a push carries no payload
  * The daemon POSTs an EMPTY message to the push service (RFC 8030 allows it), so this worker is told
- * "something happened" and nothing else. It then fetches `/sessions` with the page's cookie to learn WHICH
- * sessions are waiting. That is what buys the whole feature without RFC 8291 payload encryption
+ * "something happened" and nothing else. It then fetches `/api/v1/sessions` with the page's cookie to learn
+ * WHICH sessions are waiting. That is what buys the whole feature without RFC 8291 payload encryption
  * (ECDH P-256 + HKDF + AES-128-GCM, which Kotlin/Native has no BigInteger to implement).
  *
  * The cost is that this handler needs the network at wake time. When the fetch fails — an expired
@@ -26,11 +26,14 @@
 
 /* eslint-env serviceworker */
 
+// The three daemon paths this worker talks to. They spell `/api/v1` out rather than importing it: a
+// classic worker has no module graph, and this file is the ONE client that can outlive every page that
+// could have told it the prefix moved (see the third compatibility break on `API_PREFIX`).
 const TITLE = "Kotgent — needs attention";
-const SESSIONS_URL = "/sessions";
+const SESSIONS_URL = "/api/v1/sessions";
 const SESSIONS_TIMEOUT_MS = 10_000;
-const PUSH_SUBSCRIBE_URL = "/push/subscribe";
-const PUSH_UNSUBSCRIBE_URL = "/push/unsubscribe";
+const PUSH_SUBSCRIBE_URL = "/api/v1/push/subscribe";
+const PUSH_UNSUBSCRIBE_URL = "/api/v1/push/unsubscribe";
 const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 const PUSH_PREFERENCE_CACHE = "kotgent-push-preference-v1";
 const PUSH_PREFERENCE_URL = "/.kotgent-push-preference";

@@ -2218,7 +2218,12 @@ class WebUiServingTest {
             )
         }
         // Payload-less push: the worker is told only THAT something happened and asks the daemon what.
-        assertTrue(body.contains("\"/sessions\""), "the worker learns which sessions are waiting from /sessions")
+        // The worker spells the /api/v1 prefix out: a classic worker has no module graph to import it from,
+        // and it is the one client that can outlive every page that could have told it the prefix moved.
+        assertTrue(
+            body.contains("\"/api/v1/sessions\""),
+            "the worker learns which sessions are waiting from /api/v1/sessions",
+        )
         assertTrue(body.contains("credentials: \"include\""), "that fetch carries the session cookie")
         val waitingSessions = body.substringAfter("async function waitingSessions() {")
             .substringBefore("\n}\n\nfunction sessionName")
@@ -3693,21 +3698,27 @@ class WebUiServingTest {
 
     @Test
     fun theStaticCatchAllDoesNotShadowTheTokenGatedApi() = withServer { ctx ->
-        // With the static catch-all mounted, an authenticated GET /sessions must still route to the API
-        // (200 + JSON list), NOT be swallowed by the `/{path...}` file route (which would 404 "sessions").
-        val resp = ctx.get("/sessions") { header(HttpHeaders.Authorization, "Bearer $token") }
-        assertEquals(HttpStatusCode.OK, resp.status, "the literal /sessions API route outranks the static catch-all")
+        // With the static catch-all mounted, an authenticated GET /api/v1/sessions must still route to the
+        // API (200 + JSON list), NOT be swallowed by the `/{path...}` file route (which would 404).
+        val resp = ctx.get("$API_PREFIX/sessions") { header(HttpHeaders.Authorization, "Bearer $token") }
+        assertEquals(HttpStatusCode.OK, resp.status, "the literal API route outranks the static catch-all")
         assertEquals("[]", resp.bodyAsText().trim(), "the API (empty session list), not a static file, answered")
+
+        // The other half of the same property, and the one Task 17's SPA fallback is built on: the bare
+        // path is now the SPA's, so it reaches the catch-all — which has no such file and says so.
+        val bare = ctx.get("/sessions") { header(HttpHeaders.Authorization, "Bearer $token") }
+        assertEquals(HttpStatusCode.NotFound, bare.status, "the bare /sessions now falls through to the SPA route")
+        assertEquals("not found", bare.bodyAsText().trim(), "the static catch-all answered it, not the API")
     }
 
     @Test
     fun versionApiIsAuthenticatedAndOutranksTheStaticCatchAll() = withServer { ctx ->
         // No credential reaches the literal, authenticated API route and is rejected there. If the open
         // static catch-all had won instead, this missing file would answer 404.
-        assertEquals(HttpStatusCode.Unauthorized, ctx.get("/version").status)
+        assertEquals(HttpStatusCode.Unauthorized, ctx.get("$API_PREFIX/version").status)
 
-        val resp = ctx.get("/version") { header(HttpHeaders.Authorization, "Bearer $token") }
-        assertEquals(HttpStatusCode.OK, resp.status, "the literal /version API route outranks the static catch-all")
+        val resp = ctx.get("$API_PREFIX/version") { header(HttpHeaders.Authorization, "Bearer $token") }
+        assertEquals(HttpStatusCode.OK, resp.status, "the literal API route outranks the static catch-all")
         assertContentTypeContains(resp, "json")
         val body = resp.bodyAsText()
         assertEquals("""{"version":"$currentVersion"}""", body, "the server returns the injected display version")
@@ -3715,6 +3726,31 @@ class WebUiServingTest {
             VersionDto(currentVersion),
             TRANSPORT_JSON.decodeFromString(VersionDto.serializer(), body),
             "the response is the public VersionDto wire shape",
+        )
+
+        // Bare `/version` is open static ground now: no credential, and the catch-all — not the gate —
+        // answers. A 401 here would mean the API is still mounted at the SPA's path.
+        assertEquals(HttpStatusCode.NotFound, ctx.get("/version").status, "the bare path is the SPA's, and 404s")
+    }
+
+    @Test
+    fun theBrowserLearnsTheApiPrefixInExactlyOnePlaceAndExemptsTheAuthBootstrap() = withServer { ctx ->
+        val api = ctx.get("/lib/api.js").bodyAsText()
+        assertTrue(
+            api.contains("const API_PREFIX = \"/api/v1\"") &&
+                api.contains("function apiPath(path)") &&
+                api.contains("path.indexOf(AUTH_PATH) === 0 ? path : API_PREFIX + path"),
+            "one registry of the prefix, with the /auth bootstrap surface exempted from it",
+        )
+        assertTrue(
+            api.contains("await fetch(apiPath(path), opts)") &&
+                api.contains("return proto + \"//\" + loc.host + apiPath(path);"),
+            "both doors — apiRequest and wsUrl — go through it, which is what keeps every call site bare",
+        )
+        // The exemption has a live caller: the phone dialog mints its ticket through apiRequest.
+        assertTrue(
+            ctx.get("/components/dialogs.js").bodyAsText().contains("apiRequest(\"/auth/ticket\""),
+            "the phone ticket rides the exemption rather than a hand-built URL",
         )
     }
 

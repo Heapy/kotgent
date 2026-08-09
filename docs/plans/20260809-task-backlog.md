@@ -617,42 +617,42 @@ After wave 2 merges and wave 3 lands, review in rounds rather than once:
 
 **Runs alone.** It rewrites every client of the daemon; nothing may be in flight beside it.
 
-- [ ] add a single `API_PREFIX = "/api/v1"` constant and wrap the **body of the existing
+- [x] add a single `API_PREFIX = "/api/v1"` constant and wrap the **body of the existing
       `authenticated { … }` block** (`Server.kt:177-191`) in `route(API_PREFIX) { … }` — that block already
       contains exactly the cookie/Bearer-gated surface (`controlRoutes`, `fileUploadRoutes`,
       `directoryCompletionRoutes`, `preferencesRoutes`, `eventsWs`, `terminalWs`, `pushRoutes`), so this is
       one structural change rather than per-route edits; `AuthRouteSelector` evaluates to `Transparent`
       (`Auth.kt:200-206`), so the nesting is sound
-- [ ] leave `/hooks/*` and the whole `/auth*` surface outside the prefix, with a KDoc recording why: each
+- [x] leave `/hooks/*` and the whole `/auth*` surface outside the prefix, with a KDoc recording why: each
       adapter bakes `ingressUrl(port)` into a per-session shell script on disk, and `/auth` is addressed by
       the QR code, the PWA's `location.replace(AUTH_PATH)` and an inline `fetch("/auth/exchange")` inside
       the page the daemon serves (`AuthRoutes.kt:577`)
-- [ ] apply the prefix **inside `apiRequest` and `wsUrl`** (`lib/api.js:50`, `:34`) with an exemption for
+- [x] apply the prefix **inside `apiRequest` and `wsUrl`** (`lib/api.js:50`, `:34`) with an exemption for
       paths starting with `/auth` — `components/dialogs.js:886` mints the phone ticket through
       `apiRequest("/auth/ticket")`. Centralizing here also covers `app.js`, `components/TerminalPane.js:450`,
       `components/dialogs.js:317,640` and `lib/push.js:255,269,324` for free
-- [ ] apply the **same exemption on the Kotlin side**: `ApiClient` mixes moved paths (`"$baseUrl/sessions"`)
+- [x] apply the **same exemption on the Kotlin side**: `ApiClient` mixes moved paths (`"$baseUrl/sessions"`)
       with unmoved ones (`AUTH_TICKET_PATH`, `AUTH_ROTATE_PATH`); a blanket prefix helper breaks
       `kotgent web` and `kotgent token rotate`
-- [ ] update **all three** `sw.js` URL constants — `SESSIONS_URL` (`:30`), `PUSH_SUBSCRIBE_URL` (`:32`),
+- [x] update **all three** `sw.js` URL constants — `SESSIONS_URL` (`:30`), `PUSH_SUBSCRIBE_URL` (`:32`),
       `PUSH_UNSUBSCRIBE_URL` (`:33`)
-- [ ] update `AttachClient`, including the WebSocket URLs
-- [ ] retarget **both** API-vs-static canaries rather than deleting either:
+- [x] update `AttachClient`, including the WebSocket URLs
+- [x] retarget **both** API-vs-static canaries rather than deleting either:
       `theStaticCatchAllDoesNotShadowTheTokenGatedApi` (`WebUiServingTest.kt:3694`) and
       `versionApiIsAuthenticatedAndOutranksTheStaticCatchAll` (`:3704`) — each should assert the prefixed
       path works **and** the bare path falls through, because that literal-beats-tailcard property is what
       Task 17's SPA fallback depends on. Also fix the served-`sw.js` literal assertion at `:2221`
-- [ ] write tests: `GET /api/v1/sessions` works; `/hooks/claude` and `/auth` are untouched; the WS endpoints
+- [x] write tests: `GET /api/v1/sessions` works; `/hooks/claude` and `/auth` are untouched; the WS endpoints
       answer on their prefixed paths; the phone ticket still mints through the unprefixed path
-- [ ] record **three** compatibility breaks in the KDoc and in CLAUDE.md: an older `kotgent` binary cannot
+- [x] record **three** compatibility breaks in the KDoc and in CLAUDE.md: an older `kotgent` binary cannot
       talk to a newer daemon; an already-open browser tab breaks hard rather than degrading (its `/events`
       upgrade falls to the static catch-all and 404s instead of 401ing, so the sign-out recovery never fires
       — a reload is the recovery); and **an installed service worker outlives its pages**, so with every tab
       closed it can wake on a push still holding the old paths until a navigation replaces it. The last one
       is silent; say so
-- [ ] update every documented path in `README.md` and `CLAUDE.md` (search both for `/sessions`, `/events`,
+- [x] update every documented path in `README.md` and `CLAUDE.md` (search both for `/sessions`, `/events`,
       `/push/`, `/preferences`, `/version`, `/directories/` and fix each hit — do not work from a fixed list)
-- [ ] `./kotlin build && ./kotlin test`
+- [x] `./kotlin build && ./kotlin test`
 
 ### Wave 1 — contracts
 

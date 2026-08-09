@@ -6,6 +6,7 @@ import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.DuplicateImportException
 import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.SHELL_AGENT_KIND
+import io.kotgent.transport.API_PREFIX
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
@@ -350,7 +351,7 @@ class CliTest {
 
         val req = stub.requests.receive()
         assertEquals("GET", req.method)
-        assertEquals("/sessions", req.path)
+        assertEquals("$API_PREFIX/sessions", req.path)
         assertEquals("Bearer secret", req.auth, "the token is sent as a Bearer header")
     }
 
@@ -361,7 +362,7 @@ class CliTest {
 
         val req = stub.requests.receive()
         assertEquals("POST", req.method)
-        assertEquals("/sessions", req.path)
+        assertEquals("$API_PREFIX/sessions", req.path)
         val decoded = TRANSPORT_JSON.decodeFromString(StartSessionRequest.serializer(), req.body)
         assertEquals("claude", decoded.agent, "agent is posted")
         assertEquals("/tmp/project", decoded.cwd, "cwd is posted")
@@ -374,7 +375,7 @@ class CliTest {
 
         val req = stub.requests.receive()
         assertEquals("POST", req.method)
-        assertEquals("/sessions/import", req.path)
+        assertEquals("$API_PREFIX/sessions/import", req.path)
         assertEquals("Bearer secret", req.auth, "import is Bearer-authenticated like every control call")
         val decoded = TRANSPORT_JSON.decodeFromString(ImportSessionRequest.serializer(), req.body)
         assertEquals("codex", decoded.agent, "agent is posted")
@@ -395,7 +396,7 @@ class CliTest {
         api.stop("abc123")
         val req = stub.requests.receive()
         assertEquals("POST", req.method)
-        assertEquals("/sessions/abc123/stop", req.path)
+        assertEquals("$API_PREFIX/sessions/abc123/stop", req.path)
         assertEquals("Bearer secret", req.auth)
     }
 
@@ -426,6 +427,18 @@ class CliTest {
     fun missingTokenFailsFastBeforeAnyNetworkCall() = withStub(token = null) { stub, api ->
         assertFailsWith<MissingTokenException> { api.listSessions() }
         assertNull(stub.requests.tryReceive().getOrNull(), "no request was ever sent")
+    }
+
+    @Test
+    fun daemonPathPrefixesTheControlSurfaceAndExemptsTheAuthBootstrap() {
+        // The rule this one client cannot do without: a blanket prefix would send `kotgent web` and
+        // `kotgent token rotate` to routes that do not exist. The browser's `lib/api.js` carries the
+        // identical exemption, and the two must agree.
+        assertEquals("$API_PREFIX/sessions", daemonPath("/sessions"))
+        assertEquals("$API_PREFIX/sessions/abc/stop", daemonPath("/sessions/abc/stop"))
+        assertEquals(AUTH_TICKET_PATH, daemonPath(AUTH_TICKET_PATH), "the phone ticket did not move")
+        assertEquals(AUTH_ROTATE_PATH, daemonPath(AUTH_ROTATE_PATH), "neither did token rotation")
+        assertEquals(AUTH_PAGE_PATH, daemonPath(AUTH_PAGE_PATH), "nor the login page")
     }
 
     // ---- 3. list rendering (pure) ---------------------------------------------------------------
@@ -690,21 +703,21 @@ class CliTest {
         // No token in the URL any more (Task 9): AttachClient presents it as an Authorization header on
         // the handshake, so the WS URL is a plain same-origin path with the scheme upgraded to ws(s).
         assertEquals(
-            "ws://127.0.0.1:27508/sessions/sess1/terminal",
+            "ws://127.0.0.1:27508$API_PREFIX/sessions/sess1/terminal",
             terminalWsUrl("http://127.0.0.1:27508", "sess1"),
         )
         assertEquals(
-            "wss://host:8443/sessions/s/terminal",
+            "wss://host:8443$API_PREFIX/sessions/s/terminal",
             terminalWsUrl("https://host:8443/", "s"),
         )
         // A known geometry rides in the query so the daemon can open the upstream attach at OUR size
         // instead of the pty default; a bogus one is omitted rather than sent as `?cols=0`.
         assertEquals(
-            "ws://127.0.0.1:27508/sessions/sess1/terminal?cols=143&rows=53",
+            "ws://127.0.0.1:27508$API_PREFIX/sessions/sess1/terminal?cols=143&rows=53",
             terminalWsUrl("http://127.0.0.1:27508", "sess1", WinSize(143, 53)),
         )
         assertEquals(
-            "ws://h/sessions/s/terminal",
+            "ws://h$API_PREFIX/sessions/s/terminal",
             terminalWsUrl("http://h", "s", WinSize(0, 24)),
         )
     }
@@ -797,14 +810,14 @@ class CliTest {
 
         val server = embeddedServer(CIO, port = 0, host = "127.0.0.1") {
             routing {
-                get("/sessions") {
+                get("$API_PREFIX/sessions") {
                     record("GET", "")
                     call.respondText(
                         TRANSPORT_JSON.encodeToString(ListSerializer(SessionDto.serializer()), cannedList),
                         ContentType.Application.Json,
                     )
                 }
-                post("/sessions") {
+                post("$API_PREFIX/sessions") {
                     val body = call.receiveText()
                     record("POST", body)
                     call.respondText(
@@ -813,7 +826,7 @@ class CliTest {
                         HttpStatusCode.Created,
                     )
                 }
-                post("/sessions/import") {
+                post("$API_PREFIX/sessions/import") {
                     val body = call.receiveText()
                     record("POST", body)
                     call.respondText(
@@ -822,7 +835,7 @@ class CliTest {
                         HttpStatusCode.Created,
                     )
                 }
-                post("/sessions/{id}/{action}") {
+                post("$API_PREFIX/sessions/{id}/{action}") {
                     val body = call.receiveText()
                     record("POST", body)
                     call.respondText(

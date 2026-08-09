@@ -27,6 +27,7 @@ import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.util.logging.KtorSimpleLogger
@@ -41,6 +42,44 @@ import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
 import platform.posix.F_OK
 import platform.posix.access
+
+/**
+ * The one prefix every **client-facing** daemon route lives under.
+ *
+ * ## Why the API moved
+ * Ktor scores a literal path segment above the `get("/{path...}")` tailcard that serves the SPA
+ * ([staticWebUi]), which is why `GET /sessions` has always answered JSON and never the shell. The flip
+ * side is that a **UI** route named after any API route would be permanently unreachable — so the SPA
+ * could never own `/tasks`, `/s/{id}` or anything else it wants in the address bar. Moving the whole
+ * cookie/`Bearer`-gated surface under one prefix separates the two URL spaces once, structurally,
+ * instead of negotiating each new name against the API's.
+ *
+ * ## What deliberately did NOT move
+ *  - **The `/hooks/…` ingresses.** Each adapter bakes `ingressUrl(port)` into a per-session shell script ON DISK
+ *    (`ClaudeHookConfig.kt` and its codex/junie siblings). Those files belong to sessions that are
+ *    already running: moving the ingress would silently stop every one of them from ever reporting
+ *    again — no error anywhere, just a projection that stops advancing — until each was relaunched.
+ *  - **The whole `/auth*` bootstrap surface.** `/auth` is addressed by the phone QR code and by the
+ *    PWA's `location.replace(AUTH_PATH)`; `/auth/exchange` is fetched by an inline script inside the
+ *    page the daemon itself serves ([authRoutes]); and `/auth/ticket` is called from BOTH the browser
+ *    (`components/dialogs.js`, through `apiRequest`) and the CLI (`ApiClient`, via [AUTH_TICKET_PATH] /
+ *    [AUTH_ROTATE_PATH]). It is the surface a client reaches when it has no credential yet, so it
+ *    cannot be allowed to move under a client's feet — hence the matching `/auth` exemption in
+ *    `lib/api.js`'s `apiRequest`/`wsUrl` and in `ApiClient.daemonPath`.
+ *
+ * ## Three compatibility breaks, recorded rather than papered over
+ *  1. **An older `kotgent` binary cannot talk to a newer daemon.** Every control call 404s at the bare
+ *     path. There is no dual-mount grace period; upgrade both halves together.
+ *  2. **An already-open browser tab breaks hard rather than degrading.** Its `/events` upgrade now falls
+ *     through to the static catch-all and answers `404`, not `401`, so the sign-out recovery in `app.js`
+ *     (which keys on `401`) never fires. A reload is the recovery.
+ *  3. **An installed service worker outlives its pages, and this one is SILENT.** With every tab closed
+ *     the worker can still be woken by a push while holding the old `/sessions` and `/push/…` paths; its
+ *     fetch 404s and the operator gets the generic "a session needs your attention" banner instead of a
+ *     per-session one, with nothing anywhere saying why. `sw.js` is served `no-cache`, so the next
+ *     navigation replaces it — but until one happens, nobody is told.
+ */
+const val API_PREFIX: String = "/api/v1"
 
 /**
  * The real kotgent transport server (plan Task 14) — assembles the control REST, the events WS, the
@@ -63,7 +102,11 @@ import platform.posix.access
  *  - The **control REST + both WebSockets** are wrapped in [authenticated], i.e. the one [authorize] rule:
  *    a `Host` allowlist built from [publicUrl], the `Origin` requirement on non-GET and on WS handshakes,
  *    then a `Bearer` master token or the browser's session cookie. A refusal is written before any upgrade,
- *    so a rejected WS handshake never becomes a socket.
+ *    so a rejected WS handshake never becomes a socket. That same block — and only it — sits under
+ *    [API_PREFIX]: the gated surface and the moved surface are the same set, so the prefix is one
+ *    `route(API_PREFIX)` around the block's body rather than an edit per route. The nesting is sound
+ *    because [authenticated]'s selector evaluates `Transparent` (`Auth.kt`), adding no path segment of
+ *    its own.
  *  - The **static Web UI** is deliberately UNauthenticated: the browser fetches it before it has any
  *    credential, then the SPA calls the API with the cookie the login flow set. Serving the bootstrap
  *    HTML/JS openly is what makes that first paint possible at all.
@@ -172,22 +215,26 @@ class KotgentServer(
                         )
                         tmuxHookRoutes(tokens::current, onTmuxSessionClosed)
                         // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
+                        // Deliberately OUTSIDE API_PREFIX — see the constant's KDoc: this is the surface a
+                        // client reaches while it still has no credential.
                         authRoutes(tokens, tickets, publicUrl, json)
-                        // Token-gated control plane.
+                        // Token-gated control plane, all of it under /api/v1 so the SPA owns the bare paths.
                         authenticated(tokens::current, publicUrl) {
-                            fileUploadRoutes(store, fileUploader, json)
-                            controlRoutes(sessionManager, store, inputSink, currentVersion, json)
-                            directoryCompletionRoutes(directoryCompleter, json)
-                            preferencesRoutes(preferencesStore, json)
-                            eventsWs(store, preferencesStore, json)
-                            terminalWs(registry, store, json)
-                            // Web Push registration, only when the daemon actually has push wired (a store AND a key
-                            // provider). Absent either, the routes simply do not exist — a 404 the page reads as "this
-                            // daemon cannot do push", rather than a half-mounted surface that accepts subscriptions
-                            // nothing will ever send to.
-                            val subscriptions = pushStore
-                            val key = vapidPublicKey
-                            if (subscriptions != null && key != null) pushRoutes(subscriptions, key, json)
+                            route(API_PREFIX) {
+                                fileUploadRoutes(store, fileUploader, json)
+                                controlRoutes(sessionManager, store, inputSink, currentVersion, json)
+                                directoryCompletionRoutes(directoryCompleter, json)
+                                preferencesRoutes(preferencesStore, json)
+                                eventsWs(store, preferencesStore, json)
+                                terminalWs(registry, store, json)
+                                // Web Push registration, only when the daemon actually has push wired (a store AND a
+                                // key provider). Absent either, the routes simply do not exist — a 404 the page reads
+                                // as "this daemon cannot do push", rather than a half-mounted surface that accepts
+                                // subscriptions nothing will ever send to.
+                                val subscriptions = pushStore
+                                val key = vapidPublicKey
+                                if (subscriptions != null && key != null) pushRoutes(subscriptions, key, json)
+                            }
                         }
                         // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
                         staticWebUi(webUiDir)

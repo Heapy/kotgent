@@ -1,6 +1,7 @@
 package io.kotgent.cli
 
 import io.kotgent.pty.NativeTty
+import io.kotgent.transport.API_PREFIX
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
@@ -102,6 +103,9 @@ class PosixTty(private val fd: Int = STDIN_FILENO) : LocalTty {
  *  no longer carried in the URL — [AttachClient] presents it as an `Authorization: Bearer` handshake header
  *  (a native client, unlike a browser, can set headers on a WebSocket handshake).
  *
+ *  The path carries [API_PREFIX] like every other client-facing route (the `/auth` exemption does not
+ *  apply here — a terminal socket is never part of the bootstrap surface).
+ *
  *  [size], when known, rides along as `?cols=&rows=`: the daemon then opens the upstream `tmux attach`
  *  at our geometry, so the first bytes are already the right shape instead of the pty default reflowing
  *  to ours once the initial resize frame lands. A non-positive dimension is omitted. */
@@ -111,7 +115,7 @@ fun terminalWsUrl(baseUrl: String, sessionId: String, size: WinSize? = null): St
         .replaceFirst("http://", "ws://")
         .trimEnd('/')
     val query = size?.takeIf { it.cols > 0 && it.rows > 0 }?.let { "?cols=${it.cols}&rows=${it.rows}" } ?: ""
-    return "$origin/sessions/$sessionId/terminal$query"
+    return "$origin$API_PREFIX/sessions/$sessionId/terminal$query"
 }
 
 /**
@@ -162,7 +166,7 @@ fun resizeFrame(cols: Int, rows: Int): String = """{"type":"resize","cols":$cols
 
 /**
  * Raw-passthrough client for `kotgent attach <id>` (plan Task 15): it bridges the local terminal to a
- * session's terminal fan-out over the binary WebSocket `GET /sessions/{id}/terminal`.
+ * session's terminal fan-out over the binary WebSocket `GET /api/v1/sessions/{id}/terminal`.
  *
  *  - the local tty is put into **raw mode** on entry and RESTORED on any exit;
  *  - **stdin → WS**: local input is forwarded as binary frames;

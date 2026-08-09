@@ -15,6 +15,27 @@
  */
 export const AUTH_PATH = "/auth";
 
+/**
+ * The prefix every client-facing daemon route lives under (`API_PREFIX` in `src/transport/Server.kt`).
+ * It exists so the SPA can own the bare paths: Ktor scores a literal segment above the `/{path...}`
+ * tailcard that serves this app, so a UI route named after an API route would be unreachable.
+ *
+ * Applied in exactly two places — [apiPath], reached from [apiRequest] and [wsUrl] — which is what makes
+ * every call site in `app.js`, `components/` and `lib/push.js` keep writing the bare path it always did.
+ */
+const API_PREFIX = "/api/v1";
+
+/**
+ * Where [path] actually lives on the daemon. Everything moved under [API_PREFIX] EXCEPT the `/auth*`
+ * bootstrap surface: `/auth` is where a browser with no cookie is sent (the QR code and the PWA's
+ * `location.replace`), and `/auth/ticket` is minted from the phone dialog through [apiRequest]. Those are
+ * the routes a client reaches before it has a credential, so they must not move under it. The daemon's
+ * `ApiClient.daemonPath` carries the identical exemption; the two must agree.
+ */
+function apiPath(path) {
+  return path.indexOf(AUTH_PATH) === 0 ? path : API_PREFIX + path;
+}
+
 /** True for the error [apiRequest] throws on a `401` — the caller decides whether to route to [AUTH_PATH]. */
 export function isUnauthenticated(error) {
   return !!(error && error.unauthenticated);
@@ -34,7 +55,7 @@ export function isDefiniteAnswer(error) {
 export function wsUrl(path, base) {
   const loc = base || window.location;
   const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-  return proto + "//" + loc.host + path;
+  return proto + "//" + loc.host + apiPath(path);
 }
 
 /** The text control frame the terminal WS expects for a resize (matches TerminalWs's protocol). */
@@ -58,7 +79,7 @@ export async function apiRequest(path, options) {
     opts.headers["Content-Type"] = "application/json";
   }
 
-  const resp = await fetch(path, opts);
+  const resp = await fetch(apiPath(path), opts);
   const text = await resp.text();
   if (resp.status === 401) {
     // Not "run `kotgent web`": on a phone — the case this message exists for — there is no shell to run it

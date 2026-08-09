@@ -86,7 +86,9 @@ class ShutdownSignalsTest {
             try {
                 val port = server.port()
                 suspend fun sessionsStatus() = client
-                    .get("http://127.0.0.1:$port/sessions") { header(HttpHeaders.Authorization, "Bearer $token") }
+                    .get("http://127.0.0.1:$port$API_PREFIX/sessions") {
+                        header(HttpHeaders.Authorization, "Bearer $token")
+                    }
                     .status
 
                 assertEquals(HttpStatusCode.OK, sessionsStatus(), "the server serves before the signal")

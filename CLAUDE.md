@@ -164,8 +164,8 @@ startup reconciliation. tmux exposes no exit status, so an unrequested clean exi
 are indistinguishable and both classify from pane liveness, stop intent and whether the cwd still exists.
 
 **Import is registration, not launch.** `kotgent import` / the Web UI's Import mode →
-`POST /sessions/import` → `SessionManager.importSession` brings a session started *outside* kotgent under
-management with **zero tmux side-effects**: it writes a full `resumable` row (provider id set,
+`POST /api/v1/sessions/import` → `SessionManager.importSession` brings a session started *outside* kotgent
+under management with **zero tmux side-effects**: it writes a full `resumable` row (provider id set,
 `paneId = null`) and appends `SessionBound` via `ProviderIdCapture.bind`; the actual launch is the
 existing `resume()` path (`claude --resume` / `codex resume` / `junie --resume --session-id`), so there is
 no second launch codepath and
@@ -408,7 +408,7 @@ its two halves, and copy-mode auto-exiting when the wheel reaches the bottom cov
 scrolls back down. A swallowed `send-keys` throws `TmuxCopyModeException` — a **subtype** of
 `TmuxException` so the action route can answer it **409 + hint** (transient, retryable) instead of the
 plain `TmuxException`'s generic operation-failure 400; catch it *before* the `TmuxException` branch.
-The same hazard reaches `POST /sessions/{id}/input`, which cannot chain (its bytes go into the shared
+The same hazard reaches `POST /api/v1/sessions/{id}/input`, which cannot chain (its bytes go into the shared
 upstream pty), so it calls `Tmux.leaveCopyMode` first and answers **409** when that provably fails instead
 of `ok` for discarded input; the interactive terminal WS deliberately does neither. Two rules keep that
 endpoint honest: `leaveCopyMode` answers `true` **only** for an answered `#{pane_in_mode}` of `0` or a
@@ -474,6 +474,33 @@ authenticate requests; otherwise a newly rotated daemon and its installed callba
 daemon start. Hooks report `$TMUX_PANE`. **Never trust an inherited env var** (`KOTGENT_SESSION_ID` is a
 debug label only) — env is poisoned across nested shells/agents.
 
+**Two URL spaces: the client-facing API is `/api/v1`, the bare paths belong to the SPA.** Ktor scores a
+literal path segment above the `get("/{path...}")` tailcard that serves the Web UI (`staticWebUi`), which
+is why `GET /sessions` always answered JSON and never the shell — and equally why a UI route named after
+any API route would be permanently unreachable. So the whole cookie/`Bearer`-gated surface sits under
+`API_PREFIX` (`src/transport/Server.kt`), applied as ONE `route(API_PREFIX) { … }` around the body of the
+existing `authenticated { … }` block: the gated set and the moved set are the same set, and
+`authenticated`'s selector evaluates `Transparent`, so it contributes no segment of its own. **Two
+surfaces deliberately did NOT move.** The `/hooks/…` ingresses, because every adapter baked
+`ingressUrl(port)` into a per-session shell script ON DISK (`ClaudeHookConfig.kt` and siblings) — moving
+them would silently stop every already-running session from ever reporting again, with no error anywhere,
+until each was relaunched. And the whole `/auth` bootstrap surface, which is what a client reaches while
+it still has no credential: `/auth` is addressed by the phone QR and the PWA's
+`location.replace(AUTH_PATH)`, `/auth/exchange` by an inline script inside the page the daemon itself
+serves, and `/auth/ticket` by **both** the browser (`components/dialogs.js` through `apiRequest`) and the
+CLI (`ApiClient`). That exemption therefore exists **twice and must agree**: `apiPath()` in
+`resources/webui/lib/api.js` (the one place `apiRequest` and `wsUrl` learn the prefix, which is what keeps
+every JS call site writing the bare path) and `daemonPath()` in `src/cli/ApiClient.kt` — a blanket prefix
+on either side breaks `kotgent web` and `kotgent token rotate`. `sw.js` spells `/api/v1` out in its three
+URL constants because a classic worker has no module graph to import from. **Three compatibility breaks,
+recorded rather than fixed:** an older `kotgent` binary cannot talk to a newer daemon (every control call
+404s; there is no dual-mount grace period); an already-open browser tab breaks hard rather than degrading,
+because its `/events` upgrade now falls to the static catch-all and answers `404` instead of `401`, so the
+sign-out recovery — which keys on `401` — never fires and a reload is the only recovery; and **an
+installed service worker outlives its pages**, so with every tab closed it can still wake on a push while
+holding the old paths, fetch a `404`, and show the generic banner instead of a per-session one. That last
+one is **silent** — nothing anywhere says why — and heals only when a navigation replaces the worker.
+
 **Two keys, one authorization rule.** Access is guarded by **two** distinct secrets with different roles,
 and `authorize(...)` (`src/transport/Authorization.kt`) is the single pure function that decides every
 request:
@@ -532,7 +559,7 @@ with the short format.
 **An installed iOS PWA has a separate cookie jar from Safari.** The phone QR therefore opens the
 credential-free public `/auth` page: Safari can add it to the home screen without being signed in, and
 cannot accidentally spend the one code the installed PWA needs. The manifest's `start_url` is `/`, so the
-installed app launches there with an empty cookie jar; its first `/sessions` `401` uses
+installed app launches there with an empty cookie jar; its first `/api/v1/sessions` `401` uses
 `location.replace("/auth")` to reach the form and exchange the typed 8-character code. Only the first-load
 `401` redirects — a later rotation must leave the live UI and its terminal visible instead of navigating
 out from under it.
@@ -547,19 +574,19 @@ the same committed order to an unbuffered companion that backpressures only unti
 constant-time collector receives each update. The tracker records only a `false → true` waiting transition
 (`state.needsAttention && !archived`), so restart does not ring again and archived sessions are not
 targets. Potentially slow delivery runs in a separate worker with one conflated pending wake: payload-less
-push always makes the worker fetch the complete `/sessions` list, so retaining every stale session id adds
-no information and would make memory unbounded. `PushSender` POSTs an empty RFC 8030 message with VAPID,
+push always makes the worker fetch the complete `/api/v1/sessions` list, so retaining every stale session
+id adds no information and would make memory unbounded. `PushSender` POSTs an empty RFC 8030 message with VAPID,
 TTL and a per-session `Topic`; this deliberately avoids RFC 8291 payload encryption (`p256dh`/`auth` are
-stored now for that future path). The service worker wakes, fetches `/sessions` with the session cookie
+stored now for that future path). The service worker wakes, fetches `/api/v1/sessions` with the session cookie
 under a ten-second abort deadline and shows one notification per waiting session (or a generic notification
 when the fetch fails or stalls). Permanent `404`/`410` endpoints are pruned; other delivery failures are
 logged and never make the daemon unhealthy.
 
 **Push permission ordering is a user-gesture invariant on iOS.** The notifications toggle must call
 `Notification.requestPermission()` before its first `await`; only after permission resolves may it await
-root service-worker registration, `GET /push/vapid-key`, `pushManager.subscribe`, and
-`POST /push/subscribe`, in that order. Awaiting worker readiness or any other async operation before the
-permission request leaves the click's user-activation task and prevents iOS from showing the prompt.
+root service-worker registration, `GET /api/v1/push/vapid-key`, `pushManager.subscribe`, and
+`POST /api/v1/push/subscribe`, in that order. Awaiting worker readiness or any other async operation before
+the permission request leaves the click's user-activation task and prevents iOS from showing the prompt.
 Transitions carry a monotonically increasing generation and a ten-second deadline, so a stalled
 reconciliation cannot block a later off click forever. Turning off starts an idempotent daemon delete from
 the remembered endpoint before it awaits browser subscription lookup, then drops the browser subscription;
@@ -722,8 +749,8 @@ no stranded transform. And open every dialog on a phone, a tablet and a touch-pl
 handle, the compensated padding, a head that still pans, and a 44 px palette ×.
 
 **Mobile file upload is a session-cwd write, never an arbitrary-path API.** The palette's `f` command opens
-the native multi-file picker and `POST`s one raw file at a time to `/sessions/{id}/files?name=…`; the browser
-shows the selected session's cwd but never submits a directory. The authenticated route re-reads that
+the native multi-file picker and `POST`s one raw file at a time to `/api/v1/sessions/{id}/files?name=…`; the
+browser shows the selected session's cwd but never submits a directory. The authenticated route re-reads that
 session row and supplies its stored cwd to `FileUploader`, while the filename gate accepts one leaf only
 (no `/`, dot entries, control/NUL characters, or overlong UTF-8 component). Production streams at most 100
 MiB under a ten-minute deadline into a `mkstemp` sibling (`0600`), `fsync`s and closes it, then publishes via
@@ -829,8 +856,8 @@ P-256 PEM and `OpensslVapidSigner` signs ES256 through the existing CLOEXEC-safe
 absolute system path avoids Homebrew/launchd PATH drift. Generation omits openssl's `-out` (which creates
 a private key under the process umask and was observed as `0644`): PEM bytes return on stdout and
 `createPrivateFileExclusive` persists `~/.kotgent/vapid.pem` as `0600`, first-writer-wins. Key creation and
-public-point extraction are lazy on the first `GET /push/vapid-key`; failures make push unavailable without
-stopping the daemon, and JWTs are cached per push-service origin.
+public-point extraction are lazy on the first `GET /api/v1/push/vapid-key`; failures make push unavailable
+without stopping the daemon, and JWTs are cached per push-service origin.
 
 **SHA-256 and HMAC are pure Kotlin** (`src/crypto/`), *not* CommonCrypto via cinterop — because of KT-78062
 (custom cinterop does not link into the test binary), the same reason the PTY path is behind an interface.
@@ -915,8 +942,8 @@ the hook payload's `transcript_path` (a default-wired `ClaudeModelCapture` behin
 authoritative for its whole payload, `model = null` included (a model the provider-id rebind correction
 cleared clears in a connected UI on that very frame; there is no snapshot/live discriminator any more).
 `read_cursor` is the only **client-driven** one: `app.js` POSTs
-`/sessions/{id}/read` for the session it displays, from three **imperative** triggers (selection, every
-`/events` frame for the active session, and `visibilitychange`), never a `useEffect` on
+`/api/v1/sessions/{id}/read` for the session it displays, from three **imperative** triggers (selection, every
+`/api/v1/events` frame for the active session, and `visibilitychange`), never a `useEffect` on
 `[id, lastSeq, unread]`, whose primitives are unchanged after a failed POST so an effect would never
 retry. A lost POST heals in `postRead` itself: a per-session retry loop, coalesced to the newest seq,
 that stops on success or on `isDefiniteAnswer` (a 401 after rotation / a 404 for a vanished session can
@@ -938,13 +965,13 @@ frames safely mergeable in any arrival order; it replaced the old "never merge p
 list" discipline and its 15 s resync. `rev` is NOT a flow-resumption cursor (a reconnect re-baselines from
 a snapshot, never replays) and is orthogonal to `updated_at` (`markRead` bumps rev but not the sort key).
 
-**The global `/events` protocol: one snapshot, then per-row frames, conflated per socket.** All global
+**The global `/api/v1/events` protocol: one snapshot, then per-row frames, conflated per socket.** All global
 frames form one `sealed class EventsFrame` (`EventsWs.kt`) discriminated by `TRANSPORT_JSON`'s
 `classDiscriminator = "type"`; **every send must encode through `EventsFrame.serializer()`** — kotlinx
 emits the discriminator only via the sealed base, so a concrete `X.serializer()` produces a type-less
 frame every client silently drops (`sendEventsFrame` is the one send path; pinned by
 `everyGlobalFrameKindCarriesTheTypeDiscriminator`). On connect the socket sends ONE `sessions_snapshot`
-of full `SessionDto` rows (the client builds its entire list from it — there is no `GET /sessions` on
+of full `SessionDto` rows (the client builds its entire list from it — there is no `GET /api/v1/sessions` on
 page load); a session the socket has not carried yet goes out as a full-row `session_row`; every later
 change as a light `session_update` patch; `preferences_update` rides the same hierarchy. Per socket, a
 collector banks the newest update per session under a Mutex and a single sequential sender ships them
@@ -959,7 +986,7 @@ list (notify-edge for a session that entered needs-attention while the socket wa
 for the active row) and latches announcements ("N session(s)." only on the first snapshot,
 "Daemon connection lost" once per outage). Old still-open tabs keep working degraded: they drop the
 unknown frame kinds and fall back to their own HTTP reload on the first unknown-id patch —
-`GET /sessions` itself stays (CLI, service worker, targeted fetches).
+`GET /api/v1/sessions` itself stays (CLI, service worker, targeted fetches).
 
 **PTY via `openpty` + `posix_spawn` (NOT `forkpty`).** `Pty` opens the master with `openpty` and spawns the
 child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before** the spawn. `forkpty`
@@ -1062,7 +1089,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **921 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **927 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -1106,10 +1133,11 @@ src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, Ve
                                VendorStoreFs (listDir/readHead/readTail/JSON field scans),
                                Claude/Codex/Junie vendor-store probes + scans, ShellVendorStoreProbe.kt
 src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
-src/transport/                 Server, Auth/Authorization, session cookies, tickets/rate limit,
-                               WebUiAssets (content revision + the one caching rule),
+src/transport/                 Server (API_PREFIX = /api/v1), Auth/Authorization, session cookies,
+                               tickets/rate limit, WebUiAssets (content revision + the one caching rule),
                                auth/push/control/event/terminal/hook routes
-src/cli/                       Cli (parseArgs), ApiClient, AttachClient, Commands, Config (~/.kotgent/config.json)
+src/cli/                       Cli (parseArgs), ApiClient (daemonPath = the /api/v1 + /auth-exemption rule),
+                               AttachClient, Commands, Config (~/.kotgent/config.json)
 src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)
 sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers)
@@ -1119,7 +1147,8 @@ plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen
 plugins/build-info/            generates VERSION + an embedded Git revision at build time
 resources/webui/               no-build Preact PWA, network-only root service worker, manifest/icons,
                                mobile terminal controls/lifecycle, vendored ESM; lib/unicode.js is the
-                               one registry for the opt-in xterm unicode addons; /auth is a string
-                               constant in AuthRoutes.kt
+                               one registry for the opt-in xterm unicode addons; lib/api.js's apiPath is
+                               the one place the browser learns /api/v1; /auth is a string constant in
+                               AuthRoutes.kt
 docs/plans/                    implementation plans
 ```

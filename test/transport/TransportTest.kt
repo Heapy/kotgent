@@ -3,6 +3,7 @@ package io.kotgent.transport
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.cli.DUPLICATE_IMPORT_ID_IN_BODY
 import io.kotgent.cli.DaemonPush
 import io.kotgent.cli.startDaemonServer
@@ -143,7 +144,7 @@ class TransportTest {
             },
         ) { ctx ->
             assertTrue(assembled, "the push assembler completed its notifier readiness barrier before bind")
-            val response = ctx.client.get("http://127.0.0.1:${ctx.port}$PUSH_VAPID_KEY_PATH") {
+            val response = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX$PUSH_VAPID_KEY_PATH") {
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
             assertEquals(
@@ -370,7 +371,7 @@ class TransportTest {
         val sid = SessionId(created.id)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             // Draining the baseline snapshot proves we are subscribed — so the append below is not raced.
@@ -392,7 +393,7 @@ class TransportTest {
         val b = ctx.startSession(cwd = "/tmp/b")
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             // The FIRST session-kind frame must be the one snapshot — a per-session baseline would
@@ -414,7 +415,7 @@ class TransportTest {
     @Test
     fun aSessionStartedAfterConnectArrivesAsAFullRowAndThenPatches() = withServer { ctx ->
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             assertTrue(receiveSnapshot().sessions.isEmpty(), "the baseline is empty before any session")
@@ -437,7 +438,7 @@ class TransportTest {
         val sid = SessionId(created.id)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             receiveSnapshot()
@@ -455,7 +456,7 @@ class TransportTest {
     @Test
     fun aRowlessUpdateIsNotForwardedAndTheRowStillArrivesWholeLater() = withServer { ctx ->
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             receiveSnapshot()
@@ -487,7 +488,7 @@ class TransportTest {
         val sid = SessionId(created.id)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             receiveSnapshot()
@@ -508,7 +509,7 @@ class TransportTest {
         val created = ctx.startSession()
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             // The first subscriber lazily opened the single upstream (recorded by the fake factory).
@@ -539,7 +540,7 @@ class TransportTest {
         // geometry once, at startup — so the size must reach the upstream at OPEN. Regression guard for
         // "a freshly attached terminal renders 80x24 until you detach and re-attach".
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal?cols=143&rows=53",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal?cols=143&rows=53",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
@@ -556,7 +557,7 @@ class TransportTest {
 
         // Attach a terminal so the lazy upstream is open, then POST /input to the SAME session.
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
@@ -680,7 +681,7 @@ class TransportTest {
         // local-only gate would 403 every request arriving under the published host — with the rest of the
         // suite still green, since every other test drives it over 127.0.0.1.
         val created = ctx.startSession()
-        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/read") {
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/read") {
             header(HttpHeaders.Authorization, "Bearer $token")
             header(HttpHeaders.Host, publicHost)
             header(HttpHeaders.Origin, publicUrl)
@@ -708,7 +709,7 @@ class TransportTest {
         val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             // Draining the baseline snapshot proves this "second client" is subscribed before the POST.
@@ -733,7 +734,7 @@ class TransportTest {
         ctx.store.setArchived(SessionId(created.id), true, 2L)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             receiveSnapshot() // the baseline snapshot
@@ -757,7 +758,7 @@ class TransportTest {
         ctx.store.setArchived(sid, true, 2L)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             receiveSnapshot() // the baseline snapshot
@@ -788,13 +789,13 @@ class TransportTest {
         val created = ctx.startSession()
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/sessions/${created.id}/terminal",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
             receiveBinary() // consume the seed
 
-            val ok = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+            val ok = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
                 header(HttpHeaders.Authorization, "Bearer $token")
                 setBody("delivered")
             }
@@ -808,7 +809,7 @@ class TransportTest {
 
             // Now the cancel does not take (a viewer's wheel keeps dragging the pane back).
             ctx.tmux.copyModeStuck = true
-            val refused = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+            val refused = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
                 header(HttpHeaders.Authorization, "Bearer $token")
                 setBody("swallowed")
             }
@@ -836,7 +837,7 @@ class TransportTest {
     fun postInputRefusesWhenNoTerminalIsAttachedToTheSession() = withServer { ctx ->
         val created = ctx.startSession()
 
-        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody("nobody-is-watching")
         }
@@ -863,7 +864,7 @@ class TransportTest {
         // body must still answer ok, because neither one can lose anything that was never sent.
         ctx.tmux.copyModeStuck = true
 
-        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/${created.id}/input") {
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody("")
         }
@@ -918,11 +919,11 @@ class TransportTest {
         // REST: no token at all.
         assertEquals(
             HttpStatusCode.Unauthorized,
-            ctx.client.get("http://127.0.0.1:${ctx.port}/sessions").status,
+            ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions").status,
             "a control call with no token is 401",
         )
         // REST: wrong token.
-        val wrong = ctx.client.get("http://127.0.0.1:${ctx.port}/sessions") {
+        val wrong = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Authorization, "Bearer not-the-token")
         }
         assertEquals(HttpStatusCode.Unauthorized, wrong.status, "a control call with a wrong token is 401")
@@ -931,7 +932,7 @@ class TransportTest {
         var wsRejected = false
         try {
             ctx.client.webSocket(
-                "ws://127.0.0.1:${ctx.port}/events",
+                "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
                 request = { header(HttpHeaders.Authorization, "Bearer not-the-token") },
             ) {
                 // Unreachable if the handshake is correctly rejected.
@@ -945,7 +946,7 @@ class TransportTest {
         // the query must be rejected, so the secret can never live in a URL again (Task 9).
         var queryTokenRejected = false
         try {
-            ctx.client.webSocket("ws://127.0.0.1:${ctx.port}/events?token=$token") {
+            ctx.client.webSocket("ws://127.0.0.1:${ctx.port}$API_PREFIX/events?token=$token") {
                 // Unreachable if the query token is correctly ignored and the handshake refused.
             }
         } catch (_: Throwable) {
@@ -961,12 +962,12 @@ class TransportTest {
         // The real server, not a bare route: this is what proves KotgentServer actually mounts the gate
         // that knows about cookies. No Origin is sent, exactly as a browser does on a same-origin GET.
         val cookie = issueSessionCookie(token, issuedAt = 1_700_000_000_000)
-        val resp = ctx.client.get("http://127.0.0.1:${ctx.port}/sessions") {
+        val resp = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
         }
         assertEquals(HttpStatusCode.OK, resp.status, "a cookie minted from the master token is accepted")
 
-        val forged = ctx.client.get("http://127.0.0.1:${ctx.port}/sessions") {
+        val forged = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=v1.1700000000000.deadbeef")
         }
         assertEquals(HttpStatusCode.Unauthorized, forged.status, "a forged one is not")
@@ -981,7 +982,7 @@ class TransportTest {
         // Subscribe per-session with a cursor far beyond lastSeq+1 → StaleCursorException → the server
         // closes the socket with VIOLATED_POLICY (the client must resync, not silently skip).
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events?session=${created.id}&from=999",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events?session=${created.id}&from=999",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val reason = closeReason.await()
@@ -1027,7 +1028,7 @@ class TransportTest {
     @Test
     fun startingAnUnsupportedAgentIs400() = withServer { ctx ->
         // The factory only builds the kinds it was registered with, so an unknown one is a client error.
-        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions") {
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody("""{"agent":"aider","cwd":"/tmp"}""")
         }
@@ -1058,7 +1059,7 @@ class TransportTest {
         // misconfiguration, not a 500, carrying the actionable `kotgent install` hint.
         factory = agentFactoryOf(mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") })),
     ) { ctx ->
-        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions") {
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody("""{"agent":"claude","cwd":"/tmp"}""")
         }
@@ -1232,7 +1233,7 @@ class TransportTest {
         val cookie = issueSessionCookie(token, issuedAt = 1_700_000_000_000)
         val body = """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp"}"""
 
-        val noOrigin = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/import") {
+        val noOrigin = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/import") {
             header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
             setBody(body)
         }
@@ -1243,7 +1244,7 @@ class TransportTest {
         )
         assertTrue(ctx.getSessions().isEmpty(), "and the refused import registered nothing")
 
-        val withOrigin = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/import") {
+        val withOrigin = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/import") {
             header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
             header(HttpHeaders.Origin, "http://127.0.0.1")
             setBody(body)
@@ -1262,7 +1263,7 @@ class TransportTest {
     ) { ctx ->
         // The phone case: /sessions/import is mounted inside `authenticated`, NOT `loopbackOnly` —
         // exactly like /sessions/{id}/resume, whose flow it feeds.
-        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}/sessions/import") {
+        val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/import") {
             header(HttpHeaders.Authorization, "Bearer $token")
             header(HttpHeaders.Host, publicHost)
             header(HttpHeaders.Origin, publicUrl)
@@ -1356,7 +1357,7 @@ class TransportTest {
     @Test
     fun preferencesAreReachableThroughThePublishedTunnel() =
         withServer(publicUrl = publicUrl) { ctx ->
-            val response = ctx.client.put("http://127.0.0.1:${ctx.port}/preferences") {
+            val response = ctx.client.put("http://127.0.0.1:${ctx.port}$API_PREFIX/preferences") {
                 header(HttpHeaders.Authorization, "Bearer $token")
                 header(HttpHeaders.Host, publicHost)
                 header(HttpHeaders.Origin, publicUrl)
@@ -1377,7 +1378,7 @@ class TransportTest {
         assertEquals(HttpStatusCode.OK, firstSave.status)
 
         ctx.client.webSocket(
-            "ws://127.0.0.1:${ctx.port}/events",
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             assertEquals(
@@ -1437,7 +1438,7 @@ class TransportTest {
     fun directoryCompletionIsReachableThroughThePublicHost() {
         val completer = DirectoryCompleter { _, _ -> listOf("/work/kotgent") }
         withServer(publicUrl = publicUrl, directoryCompleter = completer) { ctx ->
-            val response = ctx.client.post("http://127.0.0.1:${ctx.port}/directories/complete") {
+            val response = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/directories/complete") {
                 header(HttpHeaders.Authorization, "Bearer $token")
                 header(HttpHeaders.Host, publicHost)
                 header(HttpHeaders.Origin, publicUrl)
@@ -1455,6 +1456,110 @@ class TransportTest {
         }
     }
 
+    // ---- the /api/v1 namespace (Task 1) ---------------------------------------------------------
+    //
+    // Two URL spaces: everything cookie/Bearer-gated lives under API_PREFIX so the SPA can own the bare
+    // paths. These tests state the split from both sides — the moved surface answers ONLY prefixed, and
+    // the two deliberately unmoved surfaces answer ONLY bare. `webUiDir = null` in this harness, so an
+    // unrouted path is a clean 404 with no static catch-all in the way (the catch-all's own side of the
+    // property is WebUiServingTest's two API-vs-static canaries).
+
+    @Test
+    fun theGatedSurfaceAnswersUnderTheApiPrefixAndNoLongerOnTheBarePaths() = withServer { ctx ->
+        for (path in listOf("/sessions", "/version", "/preferences")) {
+            val prefixed = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX$path") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(HttpStatusCode.OK, prefixed.status, "$API_PREFIX$path is the API")
+
+            val bare = ctx.client.get("http://127.0.0.1:${ctx.port}$path") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(
+                HttpStatusCode.NotFound,
+                bare.status,
+                "$path is no longer the API — the bare paths belong to the SPA now",
+            )
+        }
+    }
+
+    @Test
+    fun theHookIngressDidNotMoveBecauseRunningSessionsHaveItsUrlOnDisk() = withServer { ctx ->
+        // Every adapter baked ingressUrl(port) into a per-session shell script on disk before this change.
+        // Unauthenticated is the cheapest proof the route is still THERE: a 404 would mean it moved.
+        val bare = ctx.client.post("http://127.0.0.1:${ctx.port}${ClaudeHookConfig.INGRESS_PATH}?event=Stop")
+        assertEquals(HttpStatusCode.Unauthorized, bare.status, "the hook ingress still answers at its baked-in path")
+
+        val moved = ctx.client.post(
+            "http://127.0.0.1:${ctx.port}$API_PREFIX${ClaudeHookConfig.INGRESS_PATH}?event=Stop",
+        )
+        assertEquals(HttpStatusCode.NotFound, moved.status, "and it was NOT also mounted under the prefix")
+    }
+
+    @Test
+    fun theWholeAuthBootstrapSurfaceStayedWhereEveryClientAlreadyPointsAtIt() = withServer { ctx ->
+        // The page the QR code and the PWA's location.replace(AUTH_PATH) address.
+        assertEquals(
+            HttpStatusCode.OK,
+            ctx.client.get("http://127.0.0.1:${ctx.port}$AUTH_PAGE_PATH").status,
+            "the login page is still at /auth",
+        )
+        assertEquals(
+            HttpStatusCode.NotFound,
+            ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX$AUTH_PAGE_PATH").status,
+            "and did not move under the prefix",
+        )
+
+        // The phone ticket: minted by the CLI (`kotgent web`) AND by the browser's phone dialog, through
+        // the /auth exemption both apiRequest and ApiClient.daemonPath carry.
+        val ticket = ctx.client.post("http://127.0.0.1:${ctx.port}$AUTH_TICKET_PATH") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+        }
+        assertEquals(HttpStatusCode.OK, ticket.status, "the phone ticket still mints through the unprefixed path")
+        assertTrue(
+            TRANSPORT_JSON.decodeFromString(TicketResponse.serializer(), ticket.bodyAsText()).ticket.isNotBlank(),
+            "and answers a real ticket",
+        )
+        assertEquals(
+            HttpStatusCode.NotFound,
+            ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX$AUTH_TICKET_PATH") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }.status,
+            "ticket issuance was not also mounted under the prefix",
+        )
+    }
+
+    @Test
+    fun bothWebSocketsUpgradeOnTheirPrefixedPathAndNotOnTheBareOne() = withServer { ctx ->
+        val created = ctx.startSession()
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            assertTrue(receiveSnapshot().sessions.any { it.id == created.id }, "the prefixed /events socket speaks")
+        }
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            ctx.ptyFactory.opened.receive()
+            assertContentEquals(seed, receiveBinary(), "the prefixed terminal socket delivers its seed")
+        }
+
+        // Compatibility break #2, asserted rather than described: an already-open tab's bare upgrade no
+        // longer reaches the gate, so it 404s instead of 401ing and the sign-out recovery never fires.
+        for (bare in listOf("/events", "/sessions/${created.id}/terminal")) {
+            val failure = runCatching {
+                ctx.client.webSocket(
+                    "ws://127.0.0.1:${ctx.port}$bare",
+                    request = { header(HttpHeaders.Authorization, "Bearer $token") },
+                ) { }
+            }
+            assertTrue(failure.isFailure, "the bare $bare no longer upgrades")
+        }
+    }
+
     // --- harness -------------------------------------------------------------------------------------
 
     /** The wired-up server + client + fakes handed to each test body. */
@@ -1466,7 +1571,7 @@ class TransportTest {
         val tmux: FakeTmux,
     ) {
         suspend fun startSession(agent: String = "claude", cwd: String = "/tmp/work"): SessionDto {
-            val resp = client.post("http://127.0.0.1:$port/sessions") {
+            val resp = client.post("http://127.0.0.1:$port$API_PREFIX/sessions") {
                 header(HttpHeaders.Authorization, "Bearer $token")
                 setBody("""{"agent":"$agent","cwd":"$cwd"}""")
             }
@@ -1475,7 +1580,7 @@ class TransportTest {
         }
 
         suspend fun getSessions(): List<SessionDto> {
-            val resp = client.get("http://127.0.0.1:$port/sessions") {
+            val resp = client.get("http://127.0.0.1:$port$API_PREFIX/sessions") {
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
             assertEquals(HttpStatusCode.OK, resp.status)
@@ -1483,7 +1588,7 @@ class TransportTest {
         }
 
         suspend fun getSession(id: String): SessionDto {
-            val resp = client.get("http://127.0.0.1:$port/sessions/$id") {
+            val resp = client.get("http://127.0.0.1:$port$API_PREFIX/sessions/$id") {
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
             assertEquals(HttpStatusCode.OK, resp.status)
@@ -1491,25 +1596,25 @@ class TransportTest {
         }
 
         suspend fun getPreferences(): PreferencesDto {
-            val resp = client.get("http://127.0.0.1:$port/preferences") {
+            val resp = client.get("http://127.0.0.1:$port$API_PREFIX/preferences") {
                 header(HttpHeaders.Authorization, "Bearer $token")
             }
             assertEquals(HttpStatusCode.OK, resp.status)
             return TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), resp.bodyAsText())
         }
 
-        suspend fun putPreferences(body: String) = client.put("http://127.0.0.1:$port/preferences") {
+        suspend fun putPreferences(body: String) = client.put("http://127.0.0.1:$port$API_PREFIX/preferences") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody(body)
         }
 
         /** An authenticated `POST` with no body — for the control ops (stop/resume/interrupt/…). */
-        suspend fun post(path: String) = client.post("http://127.0.0.1:$port$path") {
+        suspend fun post(path: String) = client.post("http://127.0.0.1:$port$API_PREFIX$path") {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
 
         /** An authenticated `POST` carrying a body — the no-body [post] helper cannot drive `/read`. */
-        suspend fun postBody(path: String, body: String) = client.post("http://127.0.0.1:$port$path") {
+        suspend fun postBody(path: String, body: String) = client.post("http://127.0.0.1:$port$API_PREFIX$path") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody(body)
         }
@@ -1520,7 +1625,7 @@ class TransportTest {
             body: ByteArray,
             encodedName: Boolean = false,
         ) = client.post(
-            "http://127.0.0.1:$port/sessions/$id/files?name=" +
+            "http://127.0.0.1:$port$API_PREFIX/sessions/$id/files?name=" +
                 if (encodedName) name else encodeQueryComponent(name),
         ) {
             header(HttpHeaders.Authorization, "Bearer $token")

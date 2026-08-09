@@ -1,5 +1,7 @@
 package io.kotgent.cli
 
+import io.kotgent.transport.API_PREFIX
+import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
 import io.kotgent.transport.ImportSessionRequest
@@ -36,6 +38,18 @@ class ApiException(val status: Int, val body: String) :
     RuntimeException("kotgent daemon returned HTTP $status: ${body.trim().ifEmpty { "(no body)" }}")
 
 /**
+ * Where [path] actually lives on the daemon: under [API_PREFIX], **except** for the `/auth*` bootstrap
+ * surface, which deliberately did not move (see [API_PREFIX]'s KDoc).
+ *
+ * The exemption is not cosmetic. This one client mixes both kinds — `"/sessions"` moved,
+ * [AUTH_TICKET_PATH] and [AUTH_ROTATE_PATH] did not — so a blanket `"$API_PREFIX$path"` helper would
+ * silently break `kotgent web` (which mints a login ticket) and `kotgent token rotate`. It is the exact
+ * counterpart of the `/auth` exemption inside `resources/webui/lib/api.js`'s `apiRequest`/`wsUrl`; both
+ * sides need it, and they must agree.
+ */
+fun daemonPath(path: String): String = if (path.startsWith(AUTH_PAGE_PATH)) path else "$API_PREFIX$path"
+
+/**
  * A thin Ktor CIO **client** for the kotgent daemon's control REST (plan Task 15). It talks to the same
  * surface [io.kotgent.transport.controlRoutes] serves, reusing the transport's wire types
  * ([SessionDto] / [StartSessionRequest] / [TRANSPORT_JSON]) so the CLI and the server can never drift.
@@ -55,14 +69,14 @@ class ApiClient(
     private val tokenPath: String = defaultTokenPath(),
 ) : AutoCloseable {
 
-    /** `GET /sessions` — all sessions from the daemon's cache. */
+    /** `GET /api/v1/sessions` — all sessions from the daemon's cache. */
     suspend fun listSessions(): List<SessionDto> {
-        val resp = client.get("$baseUrl/sessions") { bearer() }
+        val resp = client.get(url("/sessions")) { bearer() }
         ensureSuccess(resp)
         return json.decodeFromString(ListSerializer(SessionDto.serializer()), resp.bodyAsText())
     }
 
-    /** `POST /sessions` — start a new [agent] session in [cwd]; returns the created session (with its id). */
+    /** `POST /api/v1/sessions` — start a new [agent] session in [cwd]; returns the created session (with its id). */
     suspend fun startSession(
         agent: String,
         cwd: String,
@@ -70,7 +84,7 @@ class ApiClient(
         tags: List<String> = emptyList(),
     ): SessionDto {
         val body = json.encodeToString(StartSessionRequest.serializer(), StartSessionRequest(agent, cwd, name, tags))
-        val resp = client.post("$baseUrl/sessions") {
+        val resp = client.post(url("/sessions")) {
             bearer()
             contentType(ContentType.Application.Json)
             setBody(body)
@@ -80,7 +94,7 @@ class ApiClient(
     }
 
     /**
-     * `POST /sessions/import` — register a provider session started OUTSIDE kotgent as a `resumable`
+     * `POST /api/v1/sessions/import` — register a provider session started OUTSIDE kotgent as a `resumable`
      * row (no launch, no tmux side effect); returns the created session. A null [cwd] lets the daemon
      * discover the project directory from the provider's on-disk store. Import failures surface as
      * [ApiException]: 409 = the provider id is already held by an existing kotgent session (the body
@@ -97,7 +111,7 @@ class ApiClient(
             ImportSessionRequest.serializer(),
             ImportSessionRequest(agent, providerSessionId, cwd, name, tags),
         )
-        val resp = client.post("$baseUrl/sessions/import") {
+        val resp = client.post(url("/sessions/import")) {
             bearer()
             contentType(ContentType.Application.Json)
             setBody(body)
@@ -106,17 +120,17 @@ class ApiClient(
         return json.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
     }
 
-    /** `POST /sessions/{id}/stop`. Returns the updated session if the daemon echoed one. */
+    /** `POST /api/v1/sessions/{id}/stop`. Returns the updated session if the daemon echoed one. */
     suspend fun stop(id: String): SessionDto? = control(id, "stop")
 
-    /** `POST /sessions/{id}/resume`. Throws [ApiException] (409) if the provider id is still pending. */
+    /** `POST /api/v1/sessions/{id}/resume`. Throws [ApiException] (409) if the provider id is still pending. */
     suspend fun resume(id: String): SessionDto? = control(id, "resume")
 
-    /** `POST /sessions/{id}/interrupt`. */
+    /** `POST /api/v1/sessions/{id}/interrupt`. */
     suspend fun interrupt(id: String): SessionDto? = control(id, "interrupt")
 
     private suspend fun control(id: String, action: String): SessionDto? {
-        val resp = client.post("$baseUrl/sessions/$id/$action") { bearer() }
+        val resp = client.post(url("/sessions/$id/$action")) { bearer() }
         ensureSuccess(resp)
         val text = resp.bodyAsText()
         // The daemon returns the updated SessionDto for a live session, or a plain "ok" otherwise.
@@ -129,7 +143,7 @@ class ApiClient(
      * browser's. Backs `kotgent web` and the Task-11 QR dialog.
      */
     suspend fun issueTicket(): TicketResponse {
-        val resp = client.post("$baseUrl$AUTH_TICKET_PATH") { bearer() }
+        val resp = client.post(url(AUTH_TICKET_PATH)) { bearer() }
         ensureSuccess(resp)
         return json.decodeFromString(TicketResponse.serializer(), resp.bodyAsText())
     }
@@ -140,7 +154,7 @@ class ApiClient(
      * old key stops authenticating new requests the moment this returns.
      */
     suspend fun rotateToken(): String {
-        val resp = client.post("$baseUrl$AUTH_ROTATE_PATH") { bearer() }
+        val resp = client.post(url(AUTH_ROTATE_PATH)) { bearer() }
         ensureSuccess(resp)
         return json.decodeFromString(RotateResponse.serializer(), resp.bodyAsText()).token
     }
@@ -148,6 +162,9 @@ class ApiClient(
     override fun close(): Unit = client.close()
 
     // --- internals -------------------------------------------------------------------------------
+
+    /** [baseUrl] plus [daemonPath] of [path] — the one place a CLI call learns where a route lives. */
+    private fun url(path: String): String = "$baseUrl${daemonPath(path)}"
 
     private fun HttpRequestBuilder.bearer() {
         val t = token ?: throw MissingTokenException(tokenPath)
