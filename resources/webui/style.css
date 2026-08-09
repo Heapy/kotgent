@@ -1220,6 +1220,456 @@ dialog::backdrop {
   padding: 10px 12px;
 }
 
+/* --- Task board: the /tasks screen, its cards, and the task detail view ---
+   Every selector below is spelled from the plan's frozen "Board CSS vocabulary". `Board.js`,
+   `TaskCard.js`, `TaskDetail.js`, `Sidebar.js` and `TerminalPane.js` were written by other hands at the
+   same time as this block and ship no CSS of their own, so the list IS the contract: a class invented on
+   either side is a rule that matches nothing, or an element that draws nothing, with no build step to
+   catch it. That also shapes how defensively this is written — the markup's nesting is not knowable from
+   here, so the layout leans on `flex-wrap` and full-row basis rather than explicit grid placement, which
+   would collapse into one illegible row the moment a component wrapped two of its children in a div.
+
+   The board reuses the shell's furniture rather than inventing a second one: the same 14px pane radius,
+   panel fill, card shadow and 12px inset the terminal pane draws, so switching screens changes the
+   contents and not the frame. */
+.board {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  margin: 12px;
+  overflow: hidden;
+}
+
+/* The project selector takes the `margin-right: auto`, not the actions: which of the two buttons comes
+   first in the markup is not knowable from here, and pushing off the SELECT puts both of them right
+   whichever order they arrive in. */
+.board-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.board-project {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  flex: 0 1 260px;
+  margin-right: auto;
+  min-height: 30px;
+  min-width: 0;
+  padding: 0 8px;
+}
+.board-new-task,
+.board-new-project { flex: 0 0 auto; }
+/* The chrome is `:not(.button)`-scoped so it dresses a bare header button but never outranks
+   `.button-primary`, which is declared far above and would otherwise lose on source order. */
+.board-new-task:not(.button),
+.board-new-project:not(.button) {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  min-height: 30px;
+  padding: 0 11px;
+}
+.board-new-task:not(.button):hover:not(:disabled),
+.board-new-project:not(.button):hover:not(:disabled) { background: var(--row-hover); }
+.board-new-task:focus-visible,
+.board-new-project:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Four equal tracks that never scroll the page: the track clips, and each column scrolls its own list,
+   so a long `todo` cannot push `done` off the bottom of the screen. */
+.board-columns {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+}
+.board-column {
+  --column-accent: var(--muted);
+  --column-fill: var(--bg);
+  background: var(--column-fill);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 8px 8px;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+/* One custom property per column carries the whole state colour: the head's label and the drop
+   highlight both derive from it, so a column's identity is set in exactly one place. */
+.board-column[data-state="todo"] { --column-accent: #8a93a2; }
+.board-column[data-state="in_progress"] { --column-accent: var(--accent); }
+.board-column[data-state="review"] { --column-accent: #d9a441; }
+.board-column[data-state="done"] { --column-accent: #4fae72; }
+/* Opaque by inheritance of `--column-fill`, not by repeating a colour: the head is sticky, so cards
+   scrolling under it must not show through, and a column that is currently a drop target must tint as
+   ONE surface rather than leaving its header on the old shade. Reading the property (rather than the
+   parent's `background`) is also what survives the head being wrapped in a div this file cannot see. */
+.board-column-head {
+  align-items: baseline;
+  background: var(--column-fill);
+  border-bottom: 1px solid var(--border);
+  color: var(--column-accent);
+  display: flex;
+  font-size: 10px;
+  font-weight: 700;
+  gap: 6px;
+  letter-spacing: 0.1em;
+  margin: 0 -8px 8px;
+  padding: 9px 10px 7px;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+/* Added to whichever column the pointer is currently over. It sets the FILL rather than the background,
+   so the tint reaches the sticky head through the same property the column already publishes — and it
+   rides the column's own accent, so a drag reads as "this state", not merely "somewhere". */
+.board-drop-target {
+  --column-fill: color-mix(in srgb, var(--column-accent) 11%, var(--bg));
+  border-color: color-mix(in srgb, var(--column-accent) 60%, transparent);
+}
+/* The phone-only switcher: hidden here so a desktop grid is laid out from exactly the boxes it always
+   had, and turned on inside the width breakpoint below. */
+.board-column-switch { display: none; }
+/* `done` is capped at the last N; this reveals the rest without leaving the board. */
+.board-show-all-done {
+  align-self: stretch;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 6px;
+  min-height: 28px;
+  padding: 0 8px;
+}
+.board-show-all-done:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+.board-show-all-done:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* One card. Wrapping flex rather than a placed grid: `task-card-meta` takes a full-row basis so the
+   badges always start their own line, while the handle, title and menu share the first. */
+.task-card {
+  align-items: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 8px;
+  padding: 9px 10px;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+.task-card:hover { background: var(--row-hover); }
+.task-card:focus-within { border-color: var(--pill-active-border); }
+.task-card.is-dragging {
+  border-color: var(--accent);
+  box-shadow: var(--card-shadow);
+  cursor: grabbing;
+  opacity: 0.85;
+}
+/* The drag handle is the ONE board element that reserves the vertical gesture, for the same reason
+   `.dialog-grabber` and the terminal do: a pointer drag the browser has already claimed for scrolling
+   never reaches `pointermove`. Scoping it to the handle is what leaves the column itself scrollable
+   under a finger. */
+.task-card-handle {
+  color: var(--muted);
+  cursor: grab;
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1.35;
+  touch-action: none;
+  user-select: none;
+}
+.task-card-handle:hover { color: var(--text); }
+/* Written to survive being a div, an <a> or a <button>: the title is the card's link to its detail. */
+.task-card-title {
+  background: none;
+  border: 0;
+  color: var(--text);
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
+  text-decoration: none;
+}
+a.task-card-title:hover,
+button.task-card-title:hover,
+.task-card-title a:hover {
+  color: var(--accent);
+  cursor: pointer;
+}
+.task-card-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  gap: 6px;
+  min-width: 0;
+}
+/* Amber, matching `.badge-resumable`: blocked is "not yet", not "wrong". */
+.task-blocked {
+  background: #4a3610;
+  border-radius: 9px;
+  color: #ffe0a3;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.task-dep-count {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.task-sessions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+/* One linked session's state dot. `data-state` is accepted in BOTH spellings the vocabulary line can be
+   read as — the raw `SessionState` and the `cls` half of `stateBadge`'s return — because the components
+   that emit it are written in parallel with this file and cannot be consulted. The two collapse to the
+   same six colours either way, so accepting both costs a selector list and buys a dot that is never
+   silently grey. */
+.task-session-dot {
+  --dot: var(--muted);
+  background: var(--dot);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dot) 26%, transparent);
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 8px;
+  width: 8px;
+}
+.task-session-dot[data-state="running"],
+.task-session-dot[data-state="badge-running"] { --dot: #6f9cff; }
+.task-session-dot[data-state="ready"],
+.task-session-dot[data-state="badge-ready"] { --dot: #58c47c; }
+.task-session-dot[data-state="needs_approval"],
+.task-session-dot[data-state="needs_answer"],
+.task-session-dot[data-state="badge-attention"] { --dot: var(--attn); }
+.task-session-dot[data-state="stopped"],
+.task-session-dot[data-state="badge-dead"] { --dot: #6c7482; }
+.task-session-dot[data-state="crashed"],
+.task-session-dot[data-state="badge-crashed"] { --dot: #ff8f8f; }
+.task-session-dot[data-state="resumable"],
+.task-session-dot[data-state="badge-resumable"] { --dot: #d9a441; }
+/* Delete, plus the move actions a phone gets instead of dragging. Kept out of the way until the card is
+   in play, the way each folder's "+" is. */
+.task-card-menu {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  margin-left: auto;
+  min-height: 22px;
+  opacity: 0;
+  padding: 0 4px;
+  transition: opacity 120ms ease-in-out;
+}
+.task-card:hover .task-card-menu,
+.task-card:focus-within .task-card-menu { opacity: 1; }
+.task-card-menu:hover { color: var(--text); }
+.task-card-menu:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* A pointer that cannot hover can never reveal it, and that includes every touch tablet above the width
+   breakpoint — same reservation `.group-new` makes for the folder "+". */
+@media (hover: none) {
+  .task-card-menu { opacity: 1; }
+}
+
+/* The detail screen takes the terminal pane's slot, so it carries the same card geometry; unlike the
+   board it scrolls as one document, because the feed is the long thing on it. */
+.task-detail {
+  background: var(--panel);
+  border-radius: 14px;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin: 12px;
+  min-width: 0;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+.task-detail-head {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+/* `width` is spelled against the margins rather than left to `auto`: this is the editable body, and a
+   <textarea> is a replaced element whose `auto` width is its `cols` attribute, not its container. */
+.task-detail-body {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  display: block;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 12px 14px;
+  min-height: 120px;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  resize: vertical;
+  white-space: pre-wrap;
+  width: calc(100% - 28px);
+}
+.task-deps {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0 14px 12px;
+  padding: 0;
+}
+.task-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0 14px;
+  padding: 0;
+}
+/* One feed entry, keyed on its `ActivityKind`. The left rule is the only thing that differs, so the feed
+   stays readable as a column of text rather than a set of coloured blocks. */
+.task-activity-row {
+  --activity-accent: var(--border);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  padding: 7px 10px;
+  border-left: 3px solid var(--activity-accent);
+}
+.task-activity-row[data-kind="created"] { --activity-accent: var(--accent); }
+.task-activity-row[data-kind="comment"] { --activity-accent: #6f9cff; }
+.task-activity-row[data-kind="transition"] { --activity-accent: #d9a441; }
+.task-activity-row[data-kind="linked"] { --activity-accent: #4fae72; }
+.task-activity-row[data-kind="unlinked"] { --activity-accent: #6c7482; }
+
+/* The session → task badge, in the sidebar row and the terminal header. It is a link to /tasks/{ref},
+   so it must not look like the state badge beside it: an outlined accent pill, never a filled one. */
+.task-badge {
+  background: var(--pill-active);
+  border: 1px solid var(--pill-active-border);
+  border-radius: 8px;
+  color: var(--text);
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  max-width: 120px;
+  overflow: hidden;
+  padding: 0 6px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-badge:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.task-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* A ref whose task the browser does not know — briefly true right after a delete. It carries the bare
+   ref, so it is set in the monospace face and drops the accent: the pill is still a link, but it is no
+   longer claiming to name anything. The geometry is repeated rather than merely overridden, because
+   whether this class arrives beside `.task-badge` or on its own is a decision made in a file this one
+   cannot read. */
+.task-badge-unknown {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 10px;
+  line-height: 15px;
+  max-width: 120px;
+  overflow: hidden;
+  padding: 0 6px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-badge-unknown:hover {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
 /* --- Mobile drawer: the three controls that exist only below the breakpoint ---
    All three are in the DOM on every screen (the scrim only while the drawer is open) and hidden here, so
    the desktop layout is laid out from exactly the boxes it always had — a display:none flex item takes no
@@ -1344,6 +1794,55 @@ dialog::backdrop {
   .key-bar {
     display: flex;
     padding-bottom: calc(5px + var(--active-safe-area-bottom));
+  }
+
+  /* The board and the detail view become the whole screen, exactly like the terminal card above.
+     The four tracks collapse to one and the TRACK takes over the scrolling from the columns, so a
+     phone scrolls the board the way it scrolls any other page. The switcher below is what picks which
+     state is on screen; a Board that still renders all four simply stacks them, which is degraded but
+     never broken. */
+  .board,
+  .task-detail {
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
+  }
+  .board-head {
+    flex-wrap: wrap;
+    padding: 6px 10px;
+  }
+  .board-columns {
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .board-column {
+    min-height: 0;
+    overflow-y: visible;
+  }
+  /* `width: 100%` rather than a flex basis: whether this row lands inside `.board-head` (a flex ROW)
+     or directly under `.board` (a flex COLUMN) is not knowable from here, and a basis means height in
+     the second one. */
+  .board-column-switch {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .task-card { padding: 11px 12px; }
+  .task-card-menu {
+    min-height: 34px;
+    padding: 0 8px;
+  }
+  .task-detail-head { padding: 8px 10px; }
+  .task-deps,
+  .task-activity { margin-inline: 10px; }
+  .task-detail-body {
+    margin-inline: 10px;
+    width: calc(100% - 20px);
   }
 }
 
