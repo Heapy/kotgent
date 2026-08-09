@@ -53,6 +53,10 @@ import kotlin.test.assertTrue
  *  3. **Nothing else about tasks is reconciled.** [FakeTaskStore] implements exactly the three members
  *     this pass may touch and throws from all twenty-odd others, so "the reconciler wrote a task" is a
  *     test failure by construction rather than an assertion somebody has to remember to write.
+ *  4. **Neither task-pass write is activity, so neither moves `updated_at`** — the key `kotgent list`
+ *     sorts by. [theTaskPassCarriesTheRowsOwnSortKeyRatherThanTheRestartTime] is the only place the
+ *     timestamp handed to the two targeted setters is observable, which is why [TaskLinkStore] records
+ *     it: these two overrides deliberately never reach the real SQL.
  *
  * Host-free throughout: [FakeTmux] + an in-memory [SqliteEventStore] + a fake tree behind [ProjectFs], so
  * no `.kotgent.json` and no `.git` is ever read off the real disk. The `sessions` side is wrapped in
@@ -221,6 +225,29 @@ class TaskProjectWiringTest {
         }
     }
 
+    /**
+     * The same "write both or neither" rule, taken from the other direction: with a filesystem but no
+     * task store there is nowhere to register, so there is no id to report either. The two are
+     * independent constructor parameters, and answering the resolved id here would stamp
+     * `sessions.project_id` with a project that has no `projects` row AND no backfill left to repair it —
+     * `Reconciler.backfillProjectId` only ever looks at rows whose `project_id` is null.
+     */
+    @Test
+    fun withNoTaskStoreToRegisterInTheProjectIsNotStampedEither() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture(this)
+
+            val started = f.manager(taskStore = null).start("claude", "/repo/sub")
+
+            assertEquals(SessionState.running, started.state, "the launch is unaffected")
+            assertNull(started.projectId, "an unregistered project is not reported")
+            assertNull(
+                f.store.getSession(started.id)!!.projectId,
+                "and it is certainly not persisted — nothing would ever repair that row",
+            )
+        }
+    }
+
     // --- startup reconciliation ---------------------------------------------------------------------
 
     /**
@@ -325,6 +352,63 @@ class TaskProjectWiringTest {
     }
 
     /**
+     * Neither task-pass write is ACTIVITY, so neither may move `updated_at` — the key `kotgent list`
+     * sorts by. Without this the first daemon start after a `.kotgent.json` was committed re-stamped
+     * every session under that repository with the restart time, collapsing the whole history into one
+     * timestamp, once and permanently.
+     *
+     * Both halves are here, and the second is what makes the fix a RE-READ rather than "pass
+     * `meta.updatedAt`": `quiet001`'s state does not change, so its sort key must survive untouched;
+     * `moved001` is a genuine liveness change (`running` → `crashed`, which IS activity), so the state
+     * loop stamps it and the clear that follows must carry that FRESH value instead of rolling it back
+     * to the snapshot the pass started from.
+     */
+    @Test
+    fun theTaskPassCarriesTheRowsOwnSortKeyRatherThanTheRestartTime() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture(this)
+            val gone = TaskRef("local:404")
+            // Already `crashed` with no pane: `classify` answers `crashed`, so the state loop writes nothing.
+            f.seedSession(
+                "quiet001",
+                cwd = "/repo/sub",
+                taskRef = gone,
+                state = SessionState.crashed,
+                updatedAt = SEEDED,
+            )
+            f.seedSession(
+                "moved001",
+                cwd = "/repo",
+                projectId = alpha,
+                taskRef = gone,
+                state = SessionState.running,
+                updatedAt = SEEDED,
+            )
+
+            f.reconciler(now = RESTART).reconcile()
+
+            assertEquals(
+                SessionState.crashed,
+                f.store.getSession(SessionId("moved001"))!!.state,
+                "the second row really did take a state write, or its half of this test is vacuous",
+            )
+            assertNull(f.store.getSession(SessionId("quiet001"))!!.taskRef, "and both clears happened")
+            assertNull(f.store.getSession(SessionId("moved001"))!!.taskRef)
+            assertEquals(
+                alpha,
+                f.store.getSession(SessionId("quiet001"))!!.projectId,
+                "as did the backfill the quiet row needed",
+            )
+
+            assertEquals(
+                mapOf(SessionId("quiet001") to SEEDED, SessionId("moved001") to RESTART),
+                f.store.writeTimestamps.toMap(),
+                "a derived backfill and a reference GC keep the row's own sort key; a liveness change owns its",
+            )
+        }
+    }
+
+    /**
      * The pass runs before the daemon binds its server, so one unreadable row must not take the daemon
      * down with it: the failure is logged and the remaining sessions are still reconciled.
      */
@@ -363,6 +447,7 @@ class TaskProjectWiringTest {
         fun manager(
             fs: ProjectFs = tree(),
             newIds: List<SessionId> = listOf(SessionId("sess0001")),
+            taskStore: TaskStore? = tasks,
         ): SessionManager {
             val ids = newIds.iterator()
             return SessionManager(
@@ -382,14 +467,14 @@ class TaskProjectWiringTest {
                 setOf("claude", "codex"),
                 newSessionId = { ids.next() },
                 now = { CLOCK },
-                taskStore = tasks,
+                taskStore = taskStore,
                 projectFs = fs,
             )
         }
 
-        fun reconciler(fs: ProjectFs = tree()): Reconciler = Reconciler(
+        fun reconciler(fs: ProjectFs = tree(), now: Long = CLOCK): Reconciler = Reconciler(
             tmux, store, VendorStoreProbe { _, _, _ -> false }, PaneRegistry(),
-            now = { CLOCK },
+            now = { now },
             taskStore = tasks,
             projectFs = fs,
         )
@@ -400,6 +485,7 @@ class TaskProjectWiringTest {
             projectId: ProjectId? = null,
             taskRef: TaskRef? = null,
             state: SessionState = SessionState.resumable,
+            updatedAt: Long = CLOCK,
         ) = runBlocking {
             store.upsertSession(
                 SessionMeta(
@@ -413,7 +499,7 @@ class TaskProjectWiringTest {
                     state = state,
                     stateSource = EventSource.system,
                     createdAt = CLOCK,
-                    updatedAt = CLOCK,
+                    updatedAt = updatedAt,
                     taskRef = taskRef,
                     projectId = projectId,
                 ),
@@ -574,6 +660,13 @@ class TaskProjectWiringTest {
         /** (session, new value) for every targeted project write, in order. */
         val projectWrites = mutableListOf<Pair<SessionId, ProjectId?>>()
 
+        /**
+         * The `updated_at` each targeted write was handed, per session. Kept apart from the two lists
+         * above so their assertions stay readable; this is the only place the sort key is observable,
+         * because these two overrides deliberately do not reach the real SQL.
+         */
+        val writeTimestamps = mutableListOf<Pair<SessionId, Long>>()
+
         private val taskRefs = HashMap<SessionId, TaskRef?>()
         private val projectIds = HashMap<SessionId, ProjectId?>()
 
@@ -587,12 +680,14 @@ class TaskProjectWiringTest {
             if (delegate.getSession(sessionId) == null) return // a no-op on a missing row, per the contract
             taskRefs[sessionId] = taskRef
             taskRefWrites += sessionId to taskRef
+            writeTimestamps += sessionId to updatedAt
         }
 
         override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
             if (delegate.getSession(sessionId) == null) return
             projectIds[sessionId] = projectId
             projectWrites += sessionId to projectId
+            writeTimestamps += sessionId to updatedAt
         }
 
         override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
@@ -612,5 +707,11 @@ class TaskProjectWiringTest {
     private companion object {
         /** One frozen clock for the whole fixture; nothing here asserts on time. */
         const val CLOCK: Long = 7_000L
+
+        /** A seeded row's own `updated_at` — its place in `kotgent list`'s ordering. */
+        const val SEEDED: Long = 1_000L
+
+        /** A reconciler clock distinct from every seeded row's, so "the restart time" is visible. */
+        const val RESTART: Long = 90_000L
     }
 }

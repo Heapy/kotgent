@@ -642,13 +642,20 @@ class SessionManager(
      * degrades to "no project yet" and heals on the next daemon start, instead of pinning a session to a
      * project the board cannot list. It never fails the launch: a session that runs is worth more than the
      * index of the directory it runs in. Cancellation is rethrown — it is not a store failure.
+     *
+     * A MISSING [taskStore] is the same case, not a lesser one: with no task layer there is nowhere to
+     * register, so there is no id to report. It is checked FIRST, before the filesystem walk — the two
+     * collaborators are independent parameters, and answering `resolved.id` here would stamp a session
+     * with a project that has no `projects` row and no backfill left to repair it, which is precisely
+     * what the paragraph above forbids. (Production wires both together; this keeps the rule true of the
+     * type, not of one call site.)
      */
     private suspend fun resolveAndRegisterProject(cwd: String): ProjectId? {
         val fs = projectFs ?: return null
+        val tasks = taskStore ?: return null
         // Pure and total by contract (`ProjectFs` degrades an unreadable path to "absent" and
         // `parseProjectFile` never throws), so an unguarded call here cannot take a launch with it.
         val resolved = resolveProject(fs, cwd) ?: return null
-        val tasks = taskStore ?: return resolved.id
         return try {
             tasks.upsertProject(resolved.id, resolved.name, resolved.root)
             resolved.id
@@ -722,10 +729,23 @@ class SessionManager(
      * holders one at a time. **The two stores' locks are never nested** — each [EventStore] call returns
      * before the [TaskStore] call that follows it is made.
      *
-     * It is spelled out here rather than delegated to `TaskService` because [SessionManager] holds the
-     * two STORES, not the service: the service is constructed beside the manager in the daemon
-     * bootstrap and taking it as a parameter would invert that wiring for a method that needs none of
-     * its other collaborators (project resolution, the project-file writer).
+     * ## Why this is a second implementation, re-examined
+     * The original reason — "the service is constructed beside the manager" — has expired: the daemon
+     * bootstrap builds `TaskService` BEFORE the manager today, so taking it as a parameter would wire
+     * fine. It stays a second implementation for a different reason. `TaskService` publishes `projectFs`
+     * and `projectFiles` as public properties, carried purely so the transport's write routes can reach
+     * them; injecting it would hand the session lifecycle a `ProjectFileWriter` — a thing that creates
+     * files in the operator's repositories — to reach one sequence built from the two stores this class
+     * already holds. Narrower reach is worth three lines.
+     *
+     * What that trade actually costs is not the second copy, it is **silent** divergence — a `message`,
+     * an extra activity kind or a different unlink order landing in one path only. So it is answered
+     * where a divergence can be caught rather than by a comment: `SessionDoneTaskTest`'s
+     * `theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer` drives BOTH paths over identical
+     * fixtures and compares the ordered store-call trace, the activity feed and every holder's cleared
+     * link. It was verified to fail for a change made to EITHER copy alone — including one no other test
+     * in the suite noticed. That test is what makes keeping two copies safe; do not delete it while they
+     * both exist.
      *
      * An unknown ref transitions nothing and unlinks nobody, matching `TaskService`: the task store's
      * `null` is the only place "does this task exist" is asked, and startup reconciliation is what

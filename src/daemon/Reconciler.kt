@@ -223,7 +223,7 @@ class Reconciler(
     private suspend fun clearDanglingTaskRef(tasks: TaskStore, meta: SessionMeta) {
         val ref = meta.taskRef ?: return
         if (tasks.entry(ref) != null) return
-        store.setTaskRef(meta.id, null, now())
+        store.setTaskRef(meta.id, null, sortKeyOf(meta))
     }
 
     /**
@@ -240,8 +240,28 @@ class Reconciler(
         val fs = projectFs ?: return
         val resolved = resolveProject(fs, meta.cwd) ?: return
         tasks.upsertProject(resolved.id, resolved.name, resolved.root)
-        store.setProjectId(meta.id, resolved.id, now())
+        store.setProjectId(meta.id, resolved.id, sortKeyOf(meta))
     }
+
+    /**
+     * The `updated_at` both task-pass writes must carry: the row's CURRENT one, never [now].
+     *
+     * `updated_at` is **activity** — it is what `kotgent list` sorts by (`Commands.kt`), and the task
+     * store writes the same rule down for itself (`Backlog.sq`'s `restamp` stamps a fresh `rev` and
+     * deliberately leaves `updated_at` alone, "the same reason `setReadCursor` leaves it alone in
+     * `Sessions.sq`"). Neither of this pass's writes is activity: one is a derived backfill, the other is
+     * garbage collection of a dangling reference. Passing [now] made the first daemon start after a
+     * `.kotgent.json` was committed re-stamp EVERY session under that repository — archived ones included
+     * — collapsing the whole list into one restart timestamp, once and permanently.
+     *
+     * It is RE-READ rather than taken from [meta]: the state loop above may already have stamped a fresh
+     * `updated_at` for this same row (a real liveness change, which IS activity), and reusing the stale
+     * snapshot would roll that back. So the pass neither advances nor rewinds the sort key. The read
+     * happens only on the write path, i.e. for the rare row that actually needs one; a row that vanished
+     * between the two passes falls back to the snapshot, and its write is a no-op anyway.
+     */
+    private suspend fun sortKeyOf(meta: SessionMeta): Long =
+        store.getSession(meta.id)?.updatedAt ?: meta.updatedAt
 
     companion object {
         /**

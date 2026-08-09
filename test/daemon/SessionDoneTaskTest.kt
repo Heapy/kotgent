@@ -66,6 +66,11 @@ import kotlin.test.assertTrue
  *  4. **A daemon without the task layer, and a session without a link, must behave exactly as before.**
  *     Both cases run against a [TaskStore] whose every member throws, so a `markDone` that consulted it
  *     speculatively fails loudly instead of passing on an empty answer.
+ *  5. **The two implementations of "close this task" may not drift apart in silence.**
+ *     `SessionManager.closeLinkedTask` re-spells [TaskService.transition]`(done)` rather than delegating
+ *     to it, so [theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer] drives both over
+ *     identical fixtures and compares everything they say to the task layer. That test is what makes the
+ *     second copy safe to keep; the mechanism's rationale lives on `closeLinkedTask`'s KDoc.
  *
  * Every body is bounded by [withTimeout] as an anti-hang tripwire.
  */
@@ -200,6 +205,78 @@ class SessionDoneTaskTest {
             assertFalse(row.archived, "but leaves it in the sidebar — that is what hands it back to `task next`")
             assertEquals(SessionState.running, row.state, "and alive")
             assertTrue(f.tmux.killed.isEmpty(), "the board never touches tmux")
+        }
+    }
+
+    /**
+     * The guard that makes two implementations of "close this task" safe to keep.
+     *
+     * [SessionManager.closeLinkedTask] re-spells [TaskService.transition]`(done)` rather than delegating
+     * to it (see its KDoc: injecting the service would hand the session lifecycle a `ProjectFileWriter`
+     * it must never touch). The hazard that carries is not the copy, it is SILENT divergence — a
+     * `message`, an extra activity kind, a different unlink order or a conditional clear landing in one
+     * path only. So both are driven over identical fixtures and everything they say to the task layer is
+     * compared: the ordered call trace across BOTH stores, the whole activity feed, and every holder's
+     * cleared link. The one deliberate difference stays outside the comparison — Done also kills and
+     * archives ITS session, which is what [closingFromTheBoardUnlinksTheSessionAndLeavesItAlive] pins.
+     *
+     * The board close is given the worker's id as its author precisely so the traces are comparable: the
+     * author is the caller's, not the mechanism's.
+     */
+    @Test
+    fun theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer() = runBlocking {
+        withTimeout(20_000) {
+            suspend fun closeWith(
+                close: suspend (SessionManager, TaskService) -> Unit,
+            ): Triple<List<String>, List<TaskActivityEntry>, List<TaskRef?>> {
+                val f = Fixture()
+                val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
+                val mgr = managerOver(f, tasks)
+                val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter, now = { 1L })
+
+                mgr.start("claude", "/tmp")
+                f.store.setTaskRef(worker, ref, 1L)
+                f.seedNeighbour(neighbour, ref)
+                f.journal.clear()
+
+                close(mgr, service)
+
+                // Row reads are each path's own business (Done reads to learn the ref, terminate reads to
+                // classify); the archive is the deliberate difference. What is compared is what the two
+                // paths WRITE to the task layer and to `sessions.task_ref`.
+                val trace = f.journal
+                    .filterNot { it.startsWith("sessions.getSession(") }
+                    .filterNot { it.startsWith("sessions.setArchived(") }
+                return Triple(
+                    trace,
+                    tasks.activity.toList(),
+                    listOf(f.store.getSession(worker)!!.taskRef, f.store.getSession(neighbour)!!.taskRef),
+                )
+            }
+
+            val fromSession = closeWith { mgr, _ -> mgr.markDone(worker) }
+            val fromBoard = closeWith { _, service ->
+                service.transition(ref, TaskState.done, author = worker.value, message = null)
+            }
+
+            assertEquals(
+                fromSession.first,
+                fromBoard.first,
+                "the two closes must issue the same store calls, in the same order",
+            )
+            assertEquals(fromSession.second, fromBoard.second, "and record the same activity feed")
+            assertEquals(fromSession.third, fromBoard.third, "and leave the same holders unlinked")
+            assertEquals(
+                listOf(
+                    "tasks.transition(local:1 -> done)",
+                    "sessions.setTaskRef(done01 -> null)",
+                    "tasks.appendActivity(local:1, unlinked)",
+                    "sessions.setTaskRef(other1 -> null)",
+                    "tasks.appendActivity(local:1, unlinked)",
+                ),
+                fromSession.first,
+                "spelled out once, so a change that moves BOTH copies together is still visible here",
+            )
         }
     }
 
