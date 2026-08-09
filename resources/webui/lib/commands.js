@@ -4,6 +4,12 @@
  * Components render these descriptors; they do not carry a second list of actions or mnemonics. The
  * closures keep routes and session-id handling in app.js, while this browser-free module owns which
  * commands exist, when they apply, and how they are found.
+ *
+ * That division is why the three task commands call `actions.openBoard` / `actions.newTask` /
+ * `actions.openSessionTask` rather than building a route or looking a session up here: navigation and the
+ * session list are app state, and reaching for either would make this file a second holder of it as well
+ * as the registry. The one session fact this file reads is the `taskRef` already on the descriptor's
+ * `activeSession`, and it reads it only to decide whether the command applies.
  */
 
 import { displayName, isAliveState, isNeedsAttention, stateBadge } from "./sessions.js";
@@ -20,6 +26,17 @@ function disabledWhenNotAlive(session) {
 function disabledWhenAlive(session) {
   if (!session) return "no session is selected";
   return isAliveState(session.state) ? "the selected session is already running" : null;
+}
+
+/**
+ * "Open this session's task" is a no-op for a session that carries no `taskRef`, so it is refused on
+ * exactly that condition rather than offered as a chord that does nothing. Liveness is deliberately not
+ * part of it: a stopped or archived session still points at the task it was working on, and reading that
+ * task is precisely what an operator does after the agent finished.
+ */
+function disabledWhenNoSessionTask(session) {
+  if (!session) return "no session is selected";
+  return session.taskRef ? null : "the selected session is not linked to a task";
 }
 
 // app.js holds ONE pendingAction across every request it serialises, so there are two different
@@ -163,6 +180,14 @@ export function buildCommands({
       disabled: disabledWhenNoSession(activeSession),
       run: () => actions.uploadFiles(),
     },
+    {
+      id: "session.open-task", group: "session", chord: "j",
+      title: "Open this session's task",
+      subtitle: "jumps to the task this session is linked to",
+      hint: "⌘K j",
+      disabled: disabledWhenNoSessionTask(activeSession),
+      run: () => actions.openSessionTask(),
+    },
 
     {
       id: "general.new", group: "general", chord: "n",
@@ -187,6 +212,22 @@ export function buildCommands({
       hint: "⌘K t",
       disabled: null,
       run: () => actions.freeTerminal(),
+    },
+    {
+      id: "general.task-board", group: "general", chord: "o",
+      title: "Open the task board",
+      subtitle: "shows the project backlog and what every session is working on",
+      hint: "⌘K o",
+      disabled: null,
+      run: () => actions.openBoard(),
+    },
+    {
+      id: "general.new-task", group: "general", chord: "w",
+      title: "New task",
+      subtitle: "goes to the board and opens its create form",
+      hint: "⌘K w",
+      disabled: null,
+      run: () => actions.newTask(),
     },
     {
       id: "general.show-done", group: "general", chord: null,
