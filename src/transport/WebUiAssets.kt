@@ -132,6 +132,28 @@ fun isRevToken(value: String): Boolean =
     value.length == WEBUI_REV_LENGTH && value.all { it in '0'..'9' || it in 'a'..'f' }
 
 /**
+ * Whether [rel] is a History-API route the SPA owns, and therefore a request that must be answered with
+ * the shell instead of `404` when no such file exists.
+ *
+ * The grammar is `/`, `/tasks`, `/tasks/{ref}` and `/s/{id}` — and it is an **exact segment grammar, not
+ * a prefix match**. A prefix match would serve a `200` shell for `/s/id/extra` and for a mistyped asset
+ * path like `/tasks/id/missing.js`, which makes the promise "a wrong asset path 404s" false and turns
+ * every such typo into a page that loads and then does nothing. There is deliberately no arm for the
+ * empty path: `staticWebUi` already substitutes `index.html` for it before this is ever consulted.
+ *
+ * Matched against the ORIGINAL request-relative path, not the rev-stripped one, because `stripRevPrefix`
+ * runs first in `serveStaticFile` — a UI route never carries a `/_v/<rev>/` prefix, so a stripped path
+ * that suddenly looks like one is not a route request.
+ *
+ * Returns `false` here on purpose: Task 17 of the task-backlog plan implements the grammar. Until then
+ * static serving behaves exactly as before, which is what keeps the suite green with stubs.
+ */
+fun isSpaRoute(rel: String): Boolean {
+    // Task 17.
+    return false
+}
+
+/**
  * The two files that must revalidate no matter how they were requested. Both are entry points whose URL is
  * fixed: `index.html` is the shell that carries the revision itself (caching it would pin every asset URL
  * with it), and `sw.js` must stay at the root for its scope to cover the app. Neither is ever referenced

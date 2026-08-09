@@ -678,71 +678,81 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 
 **Declarations (no behaviour).** Write the full signatures and KDoc from Technical Details:
 
-- [ ] `src/core/Ids.kt` — add `TaskRef` and `ProjectId` value classes with their `init` validation, beside
+- [x] `src/core/Ids.kt` — add `TaskRef` and `ProjectId` value classes with their `init` validation, beside
       `SessionId` (**not** in `src/task/`, or `SessionMeta` would make `core` depend on `task`)
-- [ ] `src/task/Task.kt` — `TaskState`, `Task`, `BacklogEntry` (with derived `blocked`), `TaskActivityEntry`,
+- [x] `src/task/Task.kt` — `TaskState`, `Task`, `BacklogEntry` (with derived `blocked`), `TaskActivityEntry`,
       `ActivityKind`, `TaskUpdate`
-- [ ] `src/task/TaskTracker.kt`, `src/task/ProjectFs.kt` (interface only — the posix implementation belongs
+- [x] `src/task/TaskTracker.kt`, `src/task/ProjectFs.kt` (interface only — the posix implementation belongs
       to Task 3), `src/task/TaskErrors.kt` (the typed failures the routes map: unknown ref, bad dependency
       edge, bad project path)
-- [ ] `src/store/TaskStore.kt` — the complete interface including `taskUpdates: SharedFlow<TaskUpdate>`
-- [ ] `src/store/EventStore.kt` — add `setTaskRef`, `setProjectId`, `sessionsHoldingTask`; add `taskRef` and
+- [x] `src/store/TaskStore.kt` — the complete interface including `taskUpdates: SharedFlow<TaskUpdate>`
+- [x] `src/store/EventStore.kt` — add `setTaskRef`, `setProjectId`, `sessionsHoldingTask`; add `taskRef` and
       `projectId` to the domain `SessionUpdate`
-- [ ] `src/core/SessionMeta.kt` — add the two nullable fields
-- [ ] `src/transport/TaskDtos.kt` — every wire DTO (`TaskDto`, `BacklogEntryDto`, `TaskDetailDto` carrying
+- [x] `src/core/SessionMeta.kt` — add the two nullable fields
+- [x] `src/transport/TaskDtos.kt` — every wire DTO (`TaskDto`, `BacklogEntryDto`, `TaskDetailDto` carrying
       deps, linked sessions, activity and the project path, `ProjectDto`, `ActivityEntryDto`), each with `rev`
-- [ ] `src/transport/EventsWs.kt` — the four new `EventsFrame` subclasses and `taskRef` on `SessionUpdateDto`
+- [x] `src/transport/EventsWs.kt` — the four new `EventsFrame` subclasses and `taskRef` on `SessionUpdateDto`
       + `SessionUpdate.toDto()`
-- [ ] `src/cli/TaskCliCommands.kt` — the new `CliCommand` variants (a separate file in the same package, so
+- [x] `src/cli/TaskCliCommands.kt` — the new `CliCommand` variants (a separate file in the same package, so
       Task 19 can own `Cli.kt` alone)
 
 **Schema (complete, so nobody edits SQL later).**
 
-- [ ] the three new `.sq` files with every table **and every query** the plan needs — CRUD, activity,
-      projects, `maxPosition`, `minPosition`, `neighboursAround`, `renormalize`, `nextCandidate`, the
-      dependency reads and writes, reverse-dependent lookup
-- [ ] `Sessions.sq` — the two columns declared **last**, `COALESCE(excluded.x, sessions.x)` in `upsert`
+- [x] the three new `.sq` files with every table **and every query** the plan needs — CRUD, activity,
+      projects, `maxPosition`, `minPosition`, `neighboursAround`, `nextCandidate`, the
+      dependency reads and writes, reverse-dependent lookup. **There is deliberately no `renormalize`
+      statement**: every rewritten row must stamp its OWN `rev` and emit its own `TaskUpdate`, which a bulk
+      `UPDATE` cannot do, so renormalizing is a loop over `selectPositionsOrdered` + `setPosition` inside one
+      transaction. `Backlog.sq` says so at both queries
+- [x] `Sessions.sq` — the two columns declared **last**, `COALESCE(excluded.x, sessions.x)` in `upsert`
       (the `MAX(read_cursor, …)` precedent at `:72`), `setTaskRef`, `setProjectId`, `sessionsHoldingTask`
-- [ ] `SqliteEventStore.init` — the two `driver.hasColumn`-guarded `ALTER TABLE` statements
+- [x] `SqliteEventStore.init` — the two `driver.hasColumn`-guarded `ALTER TABLE` statements
 
 **Skeletons (compile, throw if called).**
 
-- [ ] `SqliteTaskStore` with its `Mutex`, `revCounter`, `taskUpdates` flow, `CREATE TABLE IF NOT EXISTS`
+- [x] `SqliteTaskStore` with its `Mutex`, `revCounter`, `taskUpdates` flow, `CREATE TABLE IF NOT EXISTS`
       block, and construction of `BacklogOrdering` / `BacklogDependencies`; every method body `TODO()`.
       The collaborator split exists so three agents can implement the store in parallel — say so in the KDoc,
       because it is otherwise an odd shape for a 600-line class
-- [ ] `BacklogOrdering`, `BacklogDependencies`, `TaskService`, `TaskCommands`, `TmuxSelf`, `ProjectFile`,
+- [x] `BacklogOrdering`, `BacklogDependencies`, `TaskService`, `TaskCommands`, `TmuxSelf`, `ProjectFile`,
       `ProjectFileWriter`, `Ordering`, `Dependencies` — declarations with `TODO()` bodies
-- [ ] `TaskRoutes.kt` — the aggregator calling `taskReadRoutes()`, `taskWriteRoutes()`, `taskLinkRoutes()`;
+- [x] `TaskRoutes.kt` — the aggregator calling `taskReadRoutes()`, `taskWriteRoutes()`, `taskLinkRoutes()`;
       the three route files with empty extension functions
-- [ ] `WebUiAssets.kt` — `isSpaRoute(rel): Boolean` returning `false`, so Task 17 owns only this file
+- [x] `WebUiAssets.kt` — `isSpaRoute(rel): Boolean` returning `false`, so Task 17 owns only this file
 
 **Wiring (so no wave-2 task touches an integration file).**
 
-- [ ] `Server.kt` — nullable `taskStore` / `taskService` on the constructor and factory (the
+- [x] `Server.kt` — nullable `taskStore` / `taskService` on the constructor and factory (the
       `pushStore`/`vapidPublicKey` precedent at `:189-191`), `taskRoutes(...)` mounted inside the
       `route(API_PREFIX)` block, the task store passed to `eventsWs`, and the `isSpaRoute` call site added to
       `serveStaticFile` (absent file + match → serve through the existing `path == "index.html"` branch at
       `:374`, keeping the `..` guard first)
-- [ ] `Commands.kt` — construct `SqliteTaskStore` **before** `SessionManager`, build `TaskService`, pass both
-      plus a real `ProjectFs` into `SessionManager(...)` and `Reconciler(...)` (`:491`), dispatch the new
-      `CliCommand` variants to `TaskCommands`, pass `--task` through to `startSession`, and add the task
-      column to `renderSessions`
-- [ ] `SessionManager.kt` / `Reconciler.kt` — nullable `taskStore` / `projectFs` constructor parameters with
+- [x] `Commands.kt` — construct `SqliteTaskStore` **before** `SessionManager`, build `TaskService`, pass both
+      plus a real `ProjectFs` into `SessionManager(...)` and `Reconciler(...)` (`:491`), and dispatch the new
+      `CliCommand` variants to `TaskCommands`. `--task` does **not** go through `Commands.start`: `runCli`
+      routes a `start` carrying one to `TaskCommands.startWithTask`, because Task 21 owns the "which cwd"
+      rule and Task 20 owns `ApiClient.startSession`'s new argument — neither exists in wave 1
+- ⚠️ the task column in `renderSessions` is **not** here, and could not be: it needs `SessionDto.taskRef`,
+      and `SessionDto` lives in `src/transport/ControlRoutes.kt`, which Task 2 does not own. See the ➕
+      under Task 15
+- [x] `SessionManager.kt` / `Reconciler.kt` — nullable `taskStore` / `projectFs` constructor parameters with
       **null defaults**, so `test/daemon/ReconcilerTest.kt`, `ImportWiringTest.kt`, `SessionImportTest.kt` and
       `test/transport/ShutdownSignalsTest.kt` keep compiling untouched
-- [ ] `ControlRoutes.kt` is **not** owned here — the optional `taskRef` on `POST /sessions` belongs to
+- [x] `ControlRoutes.kt` is **not** owned here — the optional `taskRef` on `POST /sessions` belongs to
       Task 15. If that forces a signature change, it is a contract bug: fix it here, before wave 2
-- [ ] `app.js` — mount the router, dispatch the four new frame kinds to `lib/tasks.js`, and route between the
+- [x] `app.js` — mount the router, dispatch the four new frame kinds to `lib/tasks.js`, and route between the
       session view and the board
-- [ ] `index.html` — make the three document-relative links root-absolute (`/manifest.webmanifest`,
+- [x] `index.html` — make the three document-relative links root-absolute (`/manifest.webmanifest`,
       `/icons/logo.svg`, `/icons/apple-touch-icon.png`); a deep-linked `/tasks/{ref}` would otherwise serve a
       shell whose manifest 404s, taking the iOS install path and push with it
-- [ ] the new JS modules as **stubs exporting their documented signatures**, so `WebUiServingTest.kt` can
+- [x] the new JS modules as **stubs exporting their documented signatures**, so `WebUiServingTest.kt` can
       register them now and no wave-2 task has to touch that shared file
-- [ ] `WebUiServingTest.kt` — register all six new modules in the list at `:272`
+- [x] `WebUiServingTest.kt` — register the new modules in the list at `:272`. There are **five**, not six:
+      `lib/router.js`, `lib/tasks.js`, `components/Board.js`, `components/TaskCard.js`,
+      `components/TaskDetail.js` (Task 25 also edits `components/dialogs.js`, which is already registered).
+      The index.html install-surface assertion moved to the root-absolute spellings in the same pass
 
-- [ ] `./kotlin build && ./kotlin test` — green with stubs. No test may assert stubbed behaviour
+- [x] `./kotlin build && ./kotlin test` — green with stubs. No test may assert stubbed behaviour
 
 ### Wave 2 — implementations, one file each
 
@@ -881,6 +891,13 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       refused rather than silently attributed; `next` under contention hands out two different tasks;
       `next` with nothing eligible is not an error status; `POST /sessions` with a `taskRef` returns a
       session already carrying it
+- ➕ also add `taskRef` (and `projectId`) to `SessionDto` and to `SessionMeta.toDto()` in the same file.
+      Task 2 declared them on `SessionMeta`, on the domain `SessionUpdate` and on `SessionUpdateDto`, but
+      `ControlRoutes.kt` is yours, not its — and without the DTO field the snapshot/full-row frames carry
+      no ref, so Task 26's sidebar badge only appears after the session's next patch, and
+      `renderSessions` cannot grow its task column at all
+- ➕ once that field exists, add the task column to `renderSessions` in `src/cli/Commands.kt` (nobody else
+      owns that file after wave 1). Keep the existing header/format assertions in `CliTest.kt` passing
 
 ### Task 16: Task frames on the events socket
 **Owns:** `src/transport/EventsWs.kt`, `test/transport/TaskEventsTest.kt`
@@ -1038,7 +1055,9 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       `SqliteTaskStore` behind real routes behind a real server — create a task, link a session, watch the
       frame arrive on a real `/events` socket, delete it and watch the session unlink
 - [ ] a `POST /sessions` carrying `taskRef` produces a linked session through the real `SessionManager`
-- [ ] `grep -rn 'TODO()' src/` returns nothing from this plan's files
+- [ ] `grep -rn 'TODO(' src/` returns nothing from this plan's files — note the OPEN paren: Task 2's
+      skeletons carry a message (`TODO("Task 7: tracker create")`), so the literal `TODO()` matches none
+      of them and the check as originally written would pass over every unfilled stub
 
 ### Task 31: Agent Skill contract
 **Owns:** `docs/agent-task-skill.md`

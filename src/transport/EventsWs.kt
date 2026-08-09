@@ -8,6 +8,7 @@ import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
+import io.kotgent.store.TaskStore
 import io.ktor.server.routing.Route
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
@@ -61,6 +62,13 @@ import kotlinx.serialization.json.Json
 fun Route.eventsWs(
     store: EventStore,
     preferencesStore: PreferencesStore,
+    /**
+     * The task layer, or `null` for a daemon without one — in which case the whole task branch of the
+     * global stream is skipped and an old or task-less client sees exactly today's protocol. Task 16 of
+     * the task-backlog plan adds the collector; the parameter is declared now so no wave-2 task has to
+     * change this function's signature or `Server.kt`'s call site.
+     */
+    taskStore: TaskStore? = null,
     json: Json = TRANSPORT_JSON,
 ) {
     webSocket("/events") {
@@ -221,6 +229,14 @@ data class SessionUpdateDto(
     val model: String? = null,
     /** The row's global monotonic revision (see [SessionDto.rev]). */
     val rev: Long = 0,
+    /**
+     * The task this session is linked to, or null — authoritative either way, like [model]. The sidebar's
+     * task badge is rendered from it, so a link made by `kotgent task claim` inside a pane moves the
+     * badge on this frame instead of on the next reload.
+     */
+    val taskRef: String? = null,
+    /** The session's resolved project, or null outside one. */
+    val projectId: String? = null,
 ) : EventsFrame()
 
 fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
@@ -232,7 +248,59 @@ fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
     archived = archived,
     model = model,
     rev = rev,
+    taskRef = taskRef?.value,
+    projectId = projectId?.value,
 )
+
+/*
+ * --- task frames ---------------------------------------------------------------------------------
+ *
+ * The same protocol as the session frames, on the same socket: ONE `tasks_snapshot` baseline, then a
+ * full `task_row` for a ref this socket has not carried yet, a `task_update` for every later change, and
+ * a `task_removed` when the ref is deleted. Same conflating per-socket sender, same "only a DELIVERED
+ * row marks the ref as carried" rule, same `EventsFrame.serializer()`-only send path. No second socket.
+ *
+ * `task_row` and `task_update` carry the SAME payload on purpose. A backlog entry is small, and the
+ * source signal (`TaskUpdate`) carries no tracker fields, so a patch would have to re-read the joined
+ * row anyway — a lighter subset would buy nothing and could silently omit a changed title. The
+ * discriminator still matters to the client: a `task_row` may ADD a row, a `task_update` only updates a
+ * ref it already knows.
+ *
+ * The tasks baseline must NOT be sent from inside `.onSubscription { }` the way the sessions baseline
+ * is. That closes the subscribe/snapshot race but leaves a second one: while the send is suspended the
+ * collector has not begun draining, and the source flow drops the oldest past 1024 buffered updates —
+ * which ONE renormalization of a large project can produce by itself. So `.onSubscription { }` READS the
+ * snapshot and queues it to the sequential sender as its first item; the collector starts draining
+ * immediately and never waits on a socket write.
+ */
+
+/** The connect baseline for tasks: every entry of every known project as a full row. */
+@Serializable
+@SerialName("tasks_snapshot")
+data class TasksSnapshotDto(
+    val tasks: List<BacklogEntryDto>,
+) : EventsFrame()
+
+/** One full entry for a ref this socket has not carried yet. The client upserts it newest-rev-wins. */
+@Serializable
+@SerialName("task_row")
+data class TaskRowDto(
+    val task: BacklogEntryDto,
+) : EventsFrame()
+
+/** A change to a ref this socket already carries. Applied newest-rev-wins; an unknown ref is ignored. */
+@Serializable
+@SerialName("task_update")
+data class TaskUpdateDto(
+    val task: BacklogEntryDto,
+) : EventsFrame()
+
+/** The ref was deleted. The client drops the row and the sender forgets that it carried it. */
+@Serializable
+@SerialName("task_removed")
+data class TaskRemovedDto(
+    val ref: String,
+) : EventsFrame()
 
 /** The one send path for global frames — see the [EventsFrame] invariant. */
 private suspend fun DefaultWebSocketServerSession.sendEventsFrame(json: Json, frame: EventsFrame) {

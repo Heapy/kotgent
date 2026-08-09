@@ -69,4 +69,22 @@ data class SessionMeta(
      * compare revs to apply the newest observation of a row regardless of the channel it arrived on.
      */
     val rev: Long = 0,
+    /**
+     * The task this session is working on, or `null`. A session works ONE task at a time (pointing it at
+     * another overwrites the link; there is no error case), while a task may be linked from ANY number of
+     * sessions — kotgent deliberately enforces no exclusivity, because it cannot: the operator opens a
+     * second terminal in the same repository and the daemon never hears about it.
+     *
+     * A **reference, not a foreign key**: a task deleted while a link write is in flight leaves a
+     * dangling ref, which the UI renders as the bare ref and startup reconciliation clears. Written only
+     * by [io.kotgent.store.EventStore.setTaskRef] — a `SessionMeta` snapshot read before a link must not
+     * clear it, which is why `Sessions.sq`'s `upsert` COALESCEs this column.
+     */
+    val taskRef: TaskRef? = null,
+    /**
+     * The project the session's cwd resolves to (`.kotgent.json`'s uuid), or `null` outside one.
+     * Resolved by the daemon at `start`/`import` and backfilled by startup reconciliation. COALESCEd in
+     * `upsert` for the same reason as [taskRef].
+     */
+    val projectId: ProjectId? = null,
 )

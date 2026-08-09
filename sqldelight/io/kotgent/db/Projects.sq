@@ -1,0 +1,40 @@
+-- Known projects — what the board's selector lists (the task-backlog plan).
+--
+-- `id` is the canonical uuid committed in the project's `.kotgent.json`, which is why a project survives
+-- a move, a rename and a clone while a path key would not. EVERY path that reads or creates a project
+-- file upserts this row: without that, a project created by `kotgent task add` in a fresh repository
+-- would have backlog rows but never appear in `GET /api/v1/projects`, so the board's selector could
+-- never reach its backlog.
+--
+-- `path` is explicitly "the checkout the daemon saw MOST RECENTLY", not "the project's location":
+-- worktrees deliberately share one uuid and overwrite one row. It is a convenience default only.
+--
+-- NOTE for pre-existing databases: see the header of Tasks.sq — this CREATE runs on a fresh database
+-- only, and SqliteTaskStore's init repeats it as `CREATE TABLE IF NOT EXISTS`.
+CREATE TABLE projects (
+  id         TEXT NOT NULL PRIMARY KEY,
+  name       TEXT NOT NULL,
+  path       TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+-- Insert-or-refresh. `name` is always refreshed (the file is the authority and may have been renamed);
+-- `path` is COALESCEd so a caller that does not know one — a project reached by uuid rather than by
+-- walking a directory — cannot blank the last-seen checkout.
+upsertProject:
+INSERT INTO projects(id, name, path, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+  name       = excluded.name,
+  path       = coalesce(excluded.path, projects.path),
+  updated_at = excluded.updated_at;
+
+selectProject:
+SELECT id, name, path, updated_at
+FROM projects
+WHERE id = ?;
+
+selectAllProjects:
+SELECT id, name, path, updated_at
+FROM projects
+ORDER BY name, id;

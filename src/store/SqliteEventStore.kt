@@ -6,12 +6,14 @@ import app.cash.sqldelight.driver.native.inMemoryDriver
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.ProjectId
 import io.kotgent.core.Projection
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.core.TaskRef
 import io.kotgent.core.reduce
 import io.kotgent.core.replay
 import io.kotgent.core.unread
@@ -155,6 +157,16 @@ class SqliteEventStore private constructor(
         if (!driver.hasColumn("sessions", "rev")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN rev INTEGER NOT NULL DEFAULT 0", 0)
         }
+        // ... and for the two task-layer columns. Both are nullable with no default, so an existing row
+        // reads as "no task, no project" — which is exactly true for every session created before the
+        // backlog existed. Same guard, same reason: a duplicate-column ALTER makes sqliter log a
+        // SQLITE_ERROR with a full stack trace before throwing, on every daemon start, for a no-op.
+        if (!driver.hasColumn("sessions", "task_ref")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN task_ref TEXT", 0)
+        }
+        if (!driver.hasColumn("sessions", "project_id")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN project_id TEXT", 0)
+        }
         // Seed the revision counter from the committed rows. Runs after the guard above, so the
         // generated query always finds the column; construction is single-threaded, so no lock yet.
         revCounter = sessions.maxRev().executeAsOne()
@@ -193,6 +205,10 @@ class SqliteEventStore private constructor(
             meta.updatedAt,
             if (meta.archived) 1L else 0L,
             ++revCounter, // the store stamps the revision; whatever `meta.rev` carries is ignored
+            // COALESCEd in the statement: a caller writing a snapshot it read BEFORE a link landed must
+            // not clear it. Only setTaskRef / setProjectId can ever null these columns.
+            meta.taskRef?.value,
+            meta.projectId?.value,
         )
         // Emit from the COMMITTED row, not from `meta`: the upsert max-merges read_cursor, so a `meta`
         // carrying a cursor the row has already moved past would broadcast an `unread` the DB disagrees
@@ -241,6 +257,17 @@ class SqliteEventStore private constructor(
         if (applied) emitFromRow(sessionId)
         applied
     }
+
+    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
+        TODO("Task 10: targeted task_ref write + emit")
+    }
+
+    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
+        TODO("Task 10: targeted project_id write + emit")
+    }
+
+    override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
+        TODO("Task 10: every session linked to this task")
 
     override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
         // Monotonicity (MAX) and the clamp to last_seq (MIN) live in the statement itself, so nothing is
@@ -327,6 +354,9 @@ class SqliteEventStore private constructor(
                     unread(next.lastSeq.value, readCursor), (cachedRow?.archived ?: 0L) != 0L,
                     model = cachedRow?.model, // updateCache never touches model, so the pre-transaction row is current
                     rev = if (cachedRow != null) rev else 0,
+                    // updateCache touches neither column either, so the pre-transaction row is current.
+                    taskRef = cachedRow?.task_ref?.let(::TaskRef),
+                    projectId = cachedRow?.project_id?.let(::ProjectId),
                 ),
             )
             Seq(seq)
@@ -408,6 +438,8 @@ class SqliteEventStore private constructor(
                 unread(row.last_seq, row.read_cursor), row.archived != 0L,
                 model = row.model,
                 rev = row.rev,
+                taskRef = row.task_ref?.let(::TaskRef),
+                projectId = row.project_id?.let(::ProjectId),
             ),
         )
     }
@@ -491,6 +523,8 @@ class SqliteEventStore private constructor(
         updatedAt = updated_at,
         archived = archived != 0L,
         rev = rev,
+        taskRef = task_ref?.let(::TaskRef),
+        projectId = project_id?.let(::ProjectId),
     )
 
     companion object {

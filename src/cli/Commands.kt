@@ -24,6 +24,7 @@ import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.Reconciler
 import io.kotgent.daemon.SHELL_AGENT_KIND
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.TaskService
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.daemon.captureCodexModelOnce
@@ -46,6 +47,9 @@ import io.kotgent.push.VapidTokenCache
 import io.kotgent.push.vapidSubject
 import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
+import io.kotgent.store.SqliteTaskStore
+import io.kotgent.task.PosixProjectFileWriter
+import io.kotgent.task.PosixProjectFs
 import io.kotgent.sys.installShutdownSignals
 import io.kotgent.sys.currentLoginShell
 import io.kotgent.sys.pendingShutdownSignal
@@ -337,6 +341,14 @@ object Commands {
             },
         )
         val store = SqliteEventStore.using(driver)
+        // The task/backlog layer, over the SAME driver. Constructed BEFORE the SessionManager because the
+        // manager takes it (a session start upserts the `projects` row for the cwd it resolves to), and
+        // its own init runs the `CREATE TABLE IF NOT EXISTS` migration for databases that predate it.
+        // It never writes `sessions`: that table has exactly one writer, and TaskService calls the two
+        // stores sequentially rather than nesting their locks.
+        val taskStore = SqliteTaskStore.using(driver)
+        val projectFs = PosixProjectFs()
+        val taskService = TaskService(taskStore, store, projectFs, PosixProjectFileWriter())
         val tmuxHookScriptPath = writeTmuxHookScript(port, token)
         val tmux = Tmux(TMUX_SOCKET, hookScriptPath = tmuxHookScriptPath)
         tmux.ensureServer()
@@ -483,12 +495,18 @@ object Commands {
                     }
                 }
             },
+            taskStore = taskStore,
+            projectFs = projectFs,
         )
 
         // Restart-safe reconciliation: reclassify persisted sessions against tmux reality and rebuild
         // the pane→session registry from live panes (Task 13). Terminal bridges stay lazy (Task 9).
+        // It also backfills `sessions.project_id` and clears a `task_ref` naming a task that is gone —
+        // and deliberately reconciles nothing else about tasks: an `in_progress` entry with no linked
+        // session is legitimate (a human dragged the card), so there is nothing to recover.
         manager.rebuildRegistryFromStore()
-        Reconciler(tmux, store, vendorProbe, registry).reconcile()
+        Reconciler(tmux, store, vendorProbe, registry, taskStore = taskStore, projectFs = projectFs)
+            .reconcile()
 
         // Web Push (optional). It needs a subscription table, `/usr/bin/openssl` for the VAPID keypair and
         // its ES256 signatures, and outbound HTTPS — none of which the daemon's actual job depends on. So
@@ -513,6 +531,8 @@ object Commands {
                         pushStore = push?.store,
                         vapidPublicKey = push?.publicKey,
                         onTmuxSessionClosed = manager::onTmuxSessionClosed,
+                        taskStore = taskStore,
+                        taskService = taskService,
                         port = port,
                     )
                 },

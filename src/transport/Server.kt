@@ -3,6 +3,7 @@ package io.kotgent.transport
 import io.kotgent.currentUiVersion
 import io.kotgent.core.SessionId
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.TaskService
 import io.kotgent.exe.NativeExe
 import io.kotgent.push.PushStore
 import io.kotgent.pty.PtyFactory
@@ -11,6 +12,7 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
+import io.kotgent.store.TaskStore
 import io.kotgent.sys.markOpenFdsCloexec
 import io.kotgent.tmux.Tmux
 import io.ktor.http.ContentType
@@ -136,6 +138,13 @@ const val API_PREFIX: String = "/api/v1"
  *   harness that does not pass them, behaves exactly as before.
  * @param onTmuxSessionClosed receives authenticated tmux close triggers. Production forwards this to
  *   [SessionManager.onTmuxSessionClosed], which re-derives truth under the per-session control lock.
+ * @param taskStore the local task/backlog layer, or `null` to leave [taskRoutes] unmounted and the
+ *   events socket's task branch inert. Optional exactly like [pushStore]: both this and [taskService]
+ *   must be present for the routes to exist at all, so a daemon (or a harness) without them behaves
+ *   precisely as before rather than serving a half-wired surface.
+ * @param taskService the two-store link/transition/delete coordinator. It also carries the project
+ *   filesystem and the project-file writer, which is why the task surface costs two parameters here and
+ *   not four.
  * @param port `0` binds an ephemeral port (tests); [port] reports the resolved one.
  */
 class KotgentServer(
@@ -153,6 +162,8 @@ class KotgentServer(
     private val pushStore: PushStore? = null,
     private val vapidPublicKey: (suspend () -> String)? = null,
     private val onTmuxSessionClosed: suspend (SessionId) -> Unit = {},
+    private val taskStore: TaskStore? = null,
+    private val taskService: TaskService? = null,
     host: String = "127.0.0.1",
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
@@ -225,8 +236,25 @@ class KotgentServer(
                                 controlRoutes(sessionManager, store, inputSink, currentVersion, json)
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
-                                eventsWs(store, preferencesStore, json)
+                                eventsWs(store, preferencesStore, taskStore, json)
                                 terminalWs(registry, store, json)
+                                // The task/backlog surface, only when the daemon actually has one (a
+                                // store AND the two-store service). Same shape as push below: absent
+                                // either, the routes do not exist, and `/tasks` falls through to the
+                                // static catch-all — which is exactly what the SPA route wants anyway.
+                                val backlog = taskStore
+                                val coordinator = taskService
+                                if (backlog != null && coordinator != null) {
+                                    taskRoutes(
+                                        TaskRouting(
+                                            tasks = backlog,
+                                            service = coordinator,
+                                            sessions = store,
+                                            paneLookup = sessionManager.paneLookup,
+                                            json = json,
+                                        ),
+                                    )
+                                }
                                 // Web Push registration, only when the daemon actually has push wired (a store AND a
                                 // key provider). Absent either, the routes simply do not exist — a 404 the page reads
                                 // as "this daemon cannot do push", rather than a half-mounted surface that accepts
@@ -338,6 +366,8 @@ class KotgentServer(
             pushStore: PushStore? = null,
             vapidPublicKey: (suspend () -> String)? = null,
             onTmuxSessionClosed: suspend (SessionId) -> Unit = {},
+            taskStore: TaskStore? = null,
+            taskService: TaskService? = null,
             host: String = "127.0.0.1",
             port: Int = 0,
         ): KotgentServer = KotgentServer(
@@ -353,6 +383,8 @@ class KotgentServer(
             pushStore = pushStore,
             vapidPublicKey = vapidPublicKey,
             onTmuxSessionClosed = onTmuxSessionClosed,
+            taskStore = taskStore,
+            taskService = taskService,
             host = host,
             port = port,
         )
@@ -406,12 +438,19 @@ fun Route.staticWebUi(dir: String?) {
 
 private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: String, rel: String) {
     // Strip the revision BEFORE the traversal guard, so `_v/<rev>/../../etc/passwd` is still rejected.
-    val (rev, path) = stripRevPrefix(rel)
-    if (path.contains("..") || path.startsWith("/")) {
+    val (rev, stripped) = stripRevPrefix(rel)
+    if (stripped.contains("..") || stripped.startsWith("/")) {
         call.respondText("bad path", status = HttpStatusCode.Forbidden)
         return
     }
-    val bytes = readFileBytesOrNull("$dir/$path")
+    val direct = readFileBytesOrNull("$dir/$stripped")
+    // A History-API deep link (`/tasks`, `/tasks/{ref}`, `/s/{id}`) names no file on disk, so an absent
+    // file plus an exact route match is answered with the shell. It falls through to the `index.html`
+    // branch below rather than short-circuiting, because that branch is what substitutes the revision:
+    // skipping it would ship a shell whose every asset URL is literally `/_v/__REV__/…`. The traversal
+    // guard stays FIRST, and the grammar is exact — `/s/id/extra` and `/tasks/id/missing.js` still 404.
+    val path = if (direct == null && isSpaRoute(rel)) "index.html" else stripped
+    val bytes = direct ?: if (path != stripped) readFileBytesOrNull("$dir/$path") else null
     if (bytes == null) {
         call.respondText("not found", status = HttpStatusCode.NotFound)
         return

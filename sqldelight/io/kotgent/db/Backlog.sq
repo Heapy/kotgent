@@ -1,0 +1,203 @@
+-- kotgent's own workflow layer over a tracker's tasks (the task-backlog plan): where a task sits in a
+-- project's ordered backlog, how far along it is, and what it waits for.
+--
+-- `position` is a gap-based REAL rank, not an index, so a move rewrites ONE row. `rev` is this store's
+-- global monotonic revision — the same single-master replication cursor `sessions.rev` is: every
+-- statement that touches a row stamps `++revCounter` (owned by SqliteTaskStore under its writer mutex),
+-- and a client applies an observation only if its rev is newer than the row it holds.
+--
+-- `blocked` is NOT a column: it is derived in the read path (`state = todo` AND some dependency is not
+-- `done`), which is why every dependency edit and every state transition re-stamps the affected ref's
+-- REVERSE dependents — their blocked-ness changed without their rows being touched.
+--
+-- NOTE for pre-existing databases: see the header of Tasks.sq. These CREATEs run on a fresh database
+-- only; SqliteTaskStore's init repeats them as `CREATE TABLE IF NOT EXISTS`.
+CREATE TABLE backlog_entries (
+  task_ref   TEXT NOT NULL PRIMARY KEY,
+  project    TEXT NOT NULL,
+  position   REAL NOT NULL,
+  state      TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  rev        INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX backlog_entries_by_project ON backlog_entries(project, position);
+
+-- An edge means "task_ref depends on depends_on": depends_on must be `done` before task_ref is workable.
+-- Both directions are queried (dependencies of X, dependents of X), hence the second index. Validated on
+-- insert against all four refusals (self, unknown ref, cross-project, cycle) — a dangling or
+-- cross-project edge would be read as "already satisfied" by nextCandidate's join and silently unblock a
+-- task that is not ready.
+CREATE TABLE backlog_deps (
+  task_ref   TEXT NOT NULL,
+  depends_on TEXT NOT NULL,
+  PRIMARY KEY (task_ref, depends_on)
+);
+
+CREATE INDEX backlog_deps_by_dependency ON backlog_deps(depends_on, task_ref);
+
+-- --- entries: reads ------------------------------------------------------------------------------
+
+selectEntry:
+SELECT task_ref, project, position, state, created_at, updated_at, rev
+FROM backlog_entries
+WHERE task_ref = ?;
+
+-- The board's list for one project, in rank order. `task_ref` breaks a position tie deterministically,
+-- so two entries that briefly share a rank (a renormalization observed mid-flight) never swap places
+-- between two reads.
+selectEntriesByProject:
+SELECT task_ref, project, position, state, created_at, updated_at, rev
+FROM backlog_entries
+WHERE project = ?
+ORDER BY position, task_ref;
+
+-- Every entry joined with its tracker fields — what `GET /tasks?project=` answers in one query instead
+-- of one per card.
+selectBacklogWithTasks:
+SELECT b.task_ref, b.project, b.position, b.state, b.created_at, b.updated_at, b.rev, t.title, t.body
+FROM backlog_entries b
+JOIN tasks t ON t.id = b.task_ref
+WHERE b.project = ?
+ORDER BY b.position, b.task_ref;
+
+-- The next task `kotgent task next` may hand out: the first `todo` entry in rank order with no
+-- unfinished dependency. The NOT EXISTS join is what implements `blocked` as a filter; a dangling edge
+-- cannot appear here because dependency insertion refuses one.
+nextCandidate:
+SELECT b.task_ref, b.project, b.position, b.state, b.created_at, b.updated_at, b.rev
+FROM backlog_entries b
+WHERE b.project = ?
+  AND b.state = 'todo'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM backlog_deps d
+    JOIN backlog_entries e ON e.task_ref = d.depends_on
+    WHERE d.task_ref = b.task_ref AND e.state <> 'done'
+  )
+ORDER BY b.position, b.task_ref
+LIMIT 1;
+
+-- How many of one task's dependencies are not `done` — the single-entry form of the filter above, for
+-- computing `blocked` on a detail read without loading the whole project's graph.
+unfinishedDependencyCount:
+SELECT count(*)
+FROM backlog_deps d
+JOIN backlog_entries e ON e.task_ref = d.depends_on
+WHERE d.task_ref = ? AND e.state <> 'done';
+
+-- Seed for the in-memory revision counter at store open (the `Sessions.sq` maxRev shape). Values
+-- consumed but never persisted (a rejected conditional write, a mutator on a missing row) may be
+-- re-issued after a restart — harmless, they were never observable.
+maxRev:
+SELECT coalesce(MAX(rev), 0)
+FROM backlog_entries;
+
+maxPosition:
+SELECT MAX(position)
+FROM backlog_entries
+WHERE project = ?;
+
+minPosition:
+SELECT MIN(position)
+FROM backlog_entries
+WHERE project = ?;
+
+-- The two ranks bracketing :position in :project — the neighbours a `before`/`after` move lands between.
+-- One aggregate row rather than two round trips, and both halves are nullable (moving to an end has no
+-- neighbour on that side). The CASE form keeps a FROM clause, which is the portable spelling.
+neighboursAround:
+SELECT MAX(CASE WHEN position < :position THEN position END) AS below,
+       MIN(CASE WHEN position > :position THEN position END) AS above
+FROM backlog_entries
+WHERE project = :project;
+
+-- The project's whole column in rank order — the input to a renormalization. Renormalizing is
+-- deliberately a LOOP over this plus setPosition rather than one bulk UPDATE: every rewritten row must
+-- stamp its OWN rev and emit its own TaskUpdate, or a connected board silently holds stale positions.
+selectPositionsOrdered:
+SELECT task_ref, position
+FROM backlog_entries
+WHERE project = ?
+ORDER BY position, task_ref;
+
+-- --- entries: writes -----------------------------------------------------------------------------
+
+insertEntry:
+INSERT INTO backlog_entries(task_ref, project, position, state, created_at, updated_at, rev)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+setState:
+UPDATE backlog_entries
+SET state = ?, updated_at = ?, rev = ?
+WHERE task_ref = ?;
+
+-- The ONE conditional write in the whole design, and it is a SELECTION CONVENTION, not an invariant:
+-- its only job is to stop `kotgent task next` handing the same task to two agents in a row. ZERO ROWS IS
+-- NORMAL — it means the task was already in_progress/review/done — and the session link is still made,
+-- unconditionally, by Sessions.sq's setTaskRef. An explicit `task claim <ref>` on a task already in
+-- progress is allowed and simply adds another link. kotgent cannot enforce one worker per task (the
+-- operator opens a second terminal and the daemon never hears about it), so it does not pretend to.
+startIfTodo:
+UPDATE backlog_entries
+SET state = 'in_progress', updated_at = ?, rev = ?
+WHERE task_ref = ? AND state = 'todo';
+
+setPosition:
+UPDATE backlog_entries
+SET position = ?, updated_at = ?, rev = ?
+WHERE task_ref = ?;
+
+-- Stamp a fresh rev WITHOUT touching updated_at: used for the reverse dependents of a ref whose
+-- done-ness changed. Their derived `blocked` moved, but nothing about them was edited, and `updated_at`
+-- is activity (the same reason setReadCursor leaves it alone in Sessions.sq).
+restamp:
+UPDATE backlog_entries
+SET rev = ?
+WHERE task_ref = ?;
+
+deleteEntry:
+DELETE FROM backlog_entries
+WHERE task_ref = ?;
+
+-- --- dependencies --------------------------------------------------------------------------------
+
+-- OR IGNORE: re-adding an existing edge is a no-op, not a 409. The four real refusals are decided before
+-- this statement runs (see backlog_deps' comment) and answer 400.
+insertDep:
+INSERT OR IGNORE INTO backlog_deps(task_ref, depends_on)
+VALUES (?, ?);
+
+deleteDep:
+DELETE FROM backlog_deps
+WHERE task_ref = ? AND depends_on = ?;
+
+-- Both directions, for a task being deleted. An edge naming a vanished task on EITHER side would be read
+-- as "already satisfied" by nextCandidate's join.
+deleteDepsForTask:
+DELETE FROM backlog_deps
+WHERE task_ref = ? OR depends_on = ?;
+
+selectDependencies:
+SELECT depends_on
+FROM backlog_deps
+WHERE task_ref = ?
+ORDER BY depends_on;
+
+-- The REVERSE lookup: everything that depends on this ref. Read after every dependency edit and every
+-- state transition, because those rows' derived `blocked` just changed without being touched.
+selectDependents:
+SELECT task_ref
+FROM backlog_deps
+WHERE depends_on = ?
+ORDER BY task_ref;
+
+-- The whole project's edge set in one query — what the cycle check walks, and what gives each card its
+-- dependency count without a query per card.
+selectDependencyEdges:
+SELECT d.task_ref, d.depends_on
+FROM backlog_deps d
+JOIN backlog_entries b ON b.task_ref = d.task_ref
+WHERE b.project = ?
+ORDER BY d.task_ref, d.depends_on;

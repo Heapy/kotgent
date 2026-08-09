@@ -57,6 +57,20 @@ import {
   tmuxAttachCommand,
   upsertIfNewer,
 } from "./lib/sessions.js";
+import {
+  SCREEN_TASK,
+  SCREEN_TASKS,
+  parseRoute,
+  subscribeToRoute,
+} from "./lib/router.js";
+import {
+  applyTasksSnapshot,
+  patchTaskIfNewer,
+  removeTask,
+  upsertTaskIfNewer,
+} from "./lib/tasks.js";
+import { Board } from "./components/Board.js";
+import { TaskDetail } from "./components/TaskDetail.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
@@ -207,6 +221,12 @@ function detachedHint(session) {
 
 function App() {
   const [sessions, setSessions] = useState([]);
+  // The task layer. `tasks` is a flat list of BacklogEntryDto across every project, merged
+  // newest-rev-wins exactly like `sessions`; the board filters it by the selected project. `route` is
+  // the History-API screen — while `lib/router.js` is still a stub it always answers the session view,
+  // so mounting the router here changes nothing until Task 22 lands.
+  const [tasks, setTasks] = useState([]);
+  const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
   const [activeId, setActiveId] = useState(null);
   const [attachedId, setAttachedId] = useState(null);   // the session whose terminal is open here
@@ -227,6 +247,26 @@ function App() {
   const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
   useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
+  // One subscription for both directions of navigation: the browser's Back/Forward (`popstate`) and the
+  // app's own `navigate()`. The router owns both so no component has to know about `history`.
+  useEffect(() => subscribeToRoute(setRoute), []);
+
+  /** Replace the task list from a `tasks_snapshot` — a connect/reconnect baseline, so it REPLACES. */
+  const applyTasksBaseline = useCallback((rows) => {
+    setTasks((current) => applyTasksSnapshot(current, rows));
+  }, []);
+  /** Upsert one full entry (a `task_row` frame, or a fetched/POSTed DTO), newest-rev-wins. */
+  const applyTaskRow = useCallback((row) => {
+    setTasks((current) => upsertTaskIfNewer(current, row));
+  }, []);
+  /** Apply a `task_update`. An unknown ref is ignored — the daemon does not send those. */
+  const applyTaskPatch = useCallback((msg) => {
+    setTasks((current) => patchTaskIfNewer(current, msg));
+  }, []);
+  /** Drop a deleted ref (`task_removed`). */
+  const applyTaskRemoved = useCallback((ref) => {
+    setTasks((current) => removeTask(current, ref));
+  }, []);
 
   // Latest values for handlers that must not be re-created on every update.
   const sessionsRef = useRef(sessions);
@@ -573,7 +613,16 @@ function App() {
     if (msg.type === "sessions_snapshot") applySessionsSnapshot(msg.sessions);
     else if (msg.type === "session_row") applySessionRow(msg.session);
     else if (msg.type === "session_update") applySessionPatch(msg);
-  }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
+    // The task frames ride the SAME socket, with the same protocol: one baseline, a full row for a ref
+    // this socket has not carried yet, a patch for every later change, and a removal.
+    else if (msg.type === "tasks_snapshot") applyTasksBaseline(msg.tasks);
+    else if (msg.type === "task_row") applyTaskRow(msg.task);
+    else if (msg.type === "task_update") applyTaskPatch(msg.task);
+    else if (msg.type === "task_removed") applyTaskRemoved(msg.ref);
+  }, [
+    applySessionsSnapshot, applySessionRow, applySessionPatch,
+    applyTasksBaseline, applyTaskRow, applyTaskPatch, applyTaskRemoved,
+  ]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;
   // Same indirection, and load-bearing for a second reason: `opened` lives in the effect, so rebuilding
@@ -1083,6 +1132,10 @@ function App() {
 
   // --- render ----------------------------------------------------------------------------------
 
+  // `/tasks` and `/tasks/{ref}` replace the session view; the palette, the drawer scrim and every dialog
+  // stay outside the branch, because they belong to the shell rather than to either screen.
+  const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK;
+
   return html`
     ${palette && html`
       <${CommandPalette}
@@ -1096,36 +1149,50 @@ function App() {
     ${drawerOpen && html`
       <button type="button" class="drawer-scrim" aria-label="Close the session list"
               onClick=${closeDrawer}></button>`}
-    <${Sidebar}
-      sessions=${sessions}
-      activeId=${activeId}
-      prefs=${prefs}
-      status=${status}
-      currentVersion=${currentVersion}
-      drawerOpen=${drawerOpen}
-      collapsed=${sidebarCollapsed}
-      showDone=${showDone}
-      sessionsReady=${sessionsReady}
-      onSelect=${selectSession}
-      onNewSession=${openNewSession}
-      onOpenPrefs=${openPrefs}
-      onRestore=${restore}
-      onCloseDrawer=${closeDrawer}
-      onToggleShowDone=${toggleShowDone}
-    />
-    <${TerminalPane}
-      session=${activeSession}
-      attachedId=${attachedId}
-      terminalFontSize=${prefs.terminalFontSize}
-      terminalUnicode=${prefs.terminalUnicode}
-      hint=${hint}
-      drawerOpen=${drawerOpen}
-      sidebarCollapsed=${sidebarCollapsed}
-      onToggleDrawer=${toggleDrawer}
-      onToggleSidebar=${toggleSidebar}
-      onOpenPalette=${openPalette}
-      onTerminalClosed=${onTerminalClosed}
-    />
+    ${/* The one place the router decides what the page IS. While `lib/router.js` is a stub every
+          route parses as the session view, so this branch is inert until Task 22 lands — which is
+          deliberate: the wiring ships in the contract commit, the behaviour with the router. */ ""}
+    ${onBoard ? html`
+      <${Board}
+        tasks=${tasks}
+        sessions=${sessions}
+        route=${route}
+        onAnnounce=${say}
+      />
+      ${route.screen === SCREEN_TASK && html`
+        <${TaskDetail} taskRef=${route.id} sessions=${sessions} onAnnounce=${say} />`}
+    ` : html`
+      <${Sidebar}
+        sessions=${sessions}
+        activeId=${activeId}
+        prefs=${prefs}
+        status=${status}
+        currentVersion=${currentVersion}
+        drawerOpen=${drawerOpen}
+        collapsed=${sidebarCollapsed}
+        showDone=${showDone}
+        sessionsReady=${sessionsReady}
+        onSelect=${selectSession}
+        onNewSession=${openNewSession}
+        onOpenPrefs=${openPrefs}
+        onRestore=${restore}
+        onCloseDrawer=${closeDrawer}
+        onToggleShowDone=${toggleShowDone}
+      />
+      <${TerminalPane}
+        session=${activeSession}
+        attachedId=${attachedId}
+        terminalFontSize=${prefs.terminalFontSize}
+        terminalUnicode=${prefs.terminalUnicode}
+        hint=${hint}
+        drawerOpen=${drawerOpen}
+        sidebarCollapsed=${sidebarCollapsed}
+        onToggleDrawer=${toggleDrawer}
+        onToggleSidebar=${toggleSidebar}
+        onOpenPalette=${openPalette}
+        onTerminalClosed=${onTerminalClosed}
+      />
+    `}
     ${dialog && dialog.kind === "new" && html`
       <${NewSessionDialog} initialCwd=${dialog.cwd} initialMode=${dialog.initialMode}
                            initialAgent=${dialog.initialAgent}

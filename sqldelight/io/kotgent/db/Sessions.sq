@@ -34,7 +34,17 @@ CREATE TABLE sessions (
   -- ordered by comparing revs and a stale HTTP response can never overwrite a newer WS frame client-side.
   -- Orthogonal to updated_at (revision ≠ activity: setReadCursor bumps rev but not updated_at). Declared
   -- after `archived` for the same additive-ALTER reason as above.
-  rev                 INTEGER NOT NULL DEFAULT 0
+  rev                 INTEGER NOT NULL DEFAULT 0,
+  -- The task this session is working on — a REFERENCE, not a foreign key. The task layer lives in its
+  -- own store (SqliteTaskStore) over the same driver, and NOTHING but SqliteEventStore may write this
+  -- table: `rev` is stamped from an in-memory counter owned by that one class, so a second writer would
+  -- fork it into duplicate and regressing revisions the client's newest-rev-wins rule then silently
+  -- drops, and would emit no SessionUpdate at all, so the sidebar badge would never move. A task deleted
+  -- while a link write is in flight therefore leaves a dangling ref; the UI renders the bare ref and
+  -- startup reconciliation clears it. Declared LAST, after `rev`, for the same additive-ALTER reason.
+  task_ref            TEXT,
+  -- The project the session's cwd resolves to (`.kotgent.json`'s uuid), or null outside one.
+  project_id          TEXT
 );
 
 -- Full-row upsert (daemon-owned session metadata). On conflict, every field is refreshed from the
@@ -45,13 +55,18 @@ CREATE TABLE sessions (
 -- caller can carry a stale cursor today (SessionManager.start inserts a fresh row; Reconciler.reconcile
 -- runs ONCE at daemon start, before the server binds, over metas it read moments earlier), so the MAX
 -- always selects sessions.read_cursor. It guards a future periodic or concurrent reconciler.
+--
+-- `task_ref` and `project_id` follow the same defensive shape for a different reason: they are set by
+-- their own targeted setters, and a caller writing a SessionMeta snapshot it read BEFORE a link landed
+-- would otherwise clear the link. COALESCE(excluded.x, sessions.x) keeps the stored value whenever the
+-- incoming one is null, so only setTaskRef/setProjectId can ever clear a column.
 upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
   worktree, branch, tmux_session, pane_id, state, state_source, last_seq, read_cursor,
-  created_at, updated_at, archived, rev
+  created_at, updated_at, archived, rev, task_ref, project_id
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   name                = excluded.name,
   tags                = excluded.tags,
@@ -73,7 +88,9 @@ ON CONFLICT(id) DO UPDATE SET
   created_at          = sessions.created_at,
   updated_at          = excluded.updated_at,
   archived            = excluded.archived,
-  rev                 = excluded.rev;
+  rev                 = excluded.rev,
+  task_ref            = coalesce(excluded.task_ref, sessions.task_ref),
+  project_id          = coalesce(excluded.project_id, sessions.project_id);
 
 -- Advance ONLY the reducer-derived cache fields; called inside EventStore.append's transaction
 -- (leaves identity/launch context and read_cursor untouched).
@@ -127,6 +144,36 @@ setModelForProvider:
 UPDATE sessions
 SET model = ?, updated_at = ?, rev = ?
 WHERE id = ? AND provider_session_id = ?;
+
+-- Point this session at a task, or clear the link (a null argument CLEARS — that is what makes it the
+-- only way a link goes away, and what startup reconciliation uses on a ref no longer in
+-- backlog_entries). Touches ONLY its column plus updated_at and rev, the setArchived/setModel shape:
+-- never state / last_seq / provider_session_id, which append advances under the same lock.
+--
+-- Unconditional on purpose. Linking is TWO INDEPENDENT WRITES — Backlog.sq's conditional `startIfTodo`
+-- and this one — with neither conditional on the other and no compensation between them. A crash in
+-- between leaves either a task `in_progress` with no session (indistinguishable from, and as legitimate
+-- as, a card a human dragged into that column) or a session pointing at a task still marked `todo`
+-- (fixed by the next link or a board drag). Neither is an inconsistency worth code.
+setTaskRef:
+UPDATE sessions
+SET task_ref = ?, updated_at = ?, rev = ?
+WHERE id = ?;
+
+-- Set (or clear) the resolved project. Same targeted shape as setTaskRef.
+setProjectId:
+UPDATE sessions
+SET project_id = ?, updated_at = ?, rev = ?
+WHERE id = ?;
+
+-- Every session currently linked to one task. A task may be linked from ANY NUMBER of sessions — kotgent
+-- deliberately enforces no exclusivity — so this is a list, and it is what `done` and `delete` iterate to
+-- unlink every holder.
+sessionsHoldingTask:
+SELECT *
+FROM sessions
+WHERE task_ref = ?
+ORDER BY created_at, id;
 
 get:
 SELECT *

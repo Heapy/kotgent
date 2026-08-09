@@ -43,8 +43,19 @@ sealed interface CliCommand {
     /** `daemon [--port N]` — run the control-plane server (the launchd entry point). */
     data class Daemon(val port: Int) : CliCommand
 
-    /** `start <agent> [cwd] [--name N] [--tag T]...` — start a session ([cwd] null = current dir). */
-    data class Start(val agent: String, val cwd: String?, val name: String?, val tags: List<String>) : CliCommand
+    /**
+     * `start <agent> [cwd] [--name N] [--tag T]... [--task R]` — start a session ([cwd] null = current
+     * dir). A non-null [task] links the new session to that task in the SAME `POST /sessions`, so a
+     * failed launch leaves no link behind; [runStart] routes it to [TaskCommands.startWithTask], which
+     * also owns the "which cwd" rule when the task's project lives elsewhere.
+     */
+    data class Start(
+        val agent: String,
+        val cwd: String?,
+        val name: String?,
+        val tags: List<String>,
+        val task: String? = null,
+    ) : CliCommand
 
     /**
      * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]` — register a provider
@@ -293,6 +304,22 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.TokenRotate -> Commands.tokenRotate()
     is CliCommand.ConfigGet -> Commands.configGet()
     is CliCommand.ConfigSet -> Commands.configSet(command.key, command.value)
+    // The task/backlog families. Parsing is Task 19's (in this file); execution is Task 21's, in
+    // TaskCommands — so the dispatch is here and nothing else about these commands is.
+    is TaskAdd -> TaskCommands.add(command.title, command.body, command.project, command.session)
+    is TaskList -> TaskCommands.list(command.project, command.session)
+    is TaskShow -> TaskCommands.show(command.ref, command.session)
+    is TaskNext -> TaskCommands.next(command.project, command.session)
+    is TaskClaim -> TaskCommands.claim(command.ref, command.session)
+    is TaskComment -> TaskCommands.comment(command.ref, command.message, command.session)
+    is TaskReview -> TaskCommands.review(command.ref, command.message, command.session)
+    is TaskDone -> TaskCommands.done(command.ref, command.message, command.session)
+    is TaskUnlink -> TaskCommands.unlink(command.ref, command.session)
+    is TaskMove -> TaskCommands.move(command.ref, command.target, command.session)
+    is TaskDep -> TaskCommands.dep(command.ref, command.on, command.remove, command.session)
+    is TaskDelete -> TaskCommands.delete(command.ref, command.session)
+    is ProjectList -> TaskCommands.projectList()
+    is ProjectInit -> TaskCommands.projectInit(command.path, command.name)
 }
 
 /**
@@ -302,7 +329,11 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
  * daemon a relative path it would resolve against its own launchd cwd `/` — i.e. the wrong directory.
  */
 private fun runStart(command: CliCommand.Start): Int = try {
-    Commands.start(command.agent, resolveCwdAgainst(currentWorkingDir(), command.cwd), command.name, command.tags)
+    val cwd = resolveCwdAgainst(currentWorkingDir(), command.cwd)
+    val task = command.task
+    // `--task` is one POST carrying the ref, not a start followed by a link — see TaskCommands.
+    if (task != null) TaskCommands.startWithTask(command.agent, cwd, task, command.name, command.tags)
+    else Commands.start(command.agent, cwd, command.name, command.tags)
 } catch (e: UnresolvableCwdException) {
     eprintln(e.message ?: "cannot resolve the working directory")
     2

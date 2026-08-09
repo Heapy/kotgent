@@ -273,8 +273,12 @@ class WebUiServingTest {
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/lib/clipboard.js", "/lib/unicode.js",
+            // The task layer's modules. Registered here from the moment they exist, so a wave-2 task
+            // that fills one in never has to touch this shared suite to prove it is served.
+            "/lib/router.js", "/lib/tasks.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js",
+            "/components/Board.js", "/components/TaskCard.js", "/components/TaskDetail.js",
         )) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
@@ -2040,10 +2044,14 @@ class WebUiServingTest {
         )
         // The manifest and the home-screen icon deliberately keep stable URLs: an installed PWA refers to
         // them by a fixed address, so a revision in their path would be churn, not invalidation.
+        // ROOT-absolute, not document-relative: the SPA owns deep paths now, and at `/tasks/local:42` a
+        // relative `manifest.webmanifest` would resolve to `/tasks/manifest.webmanifest` and 404 — taking
+        // the iOS install path, and therefore push, with it for anyone who arrived by a deep link.
         assertTrue(
-            body.contains("href=\"manifest.webmanifest\"") &&
-                body.contains("href=\"icons/apple-touch-icon.png\""),
-            "the install surface stays on stable URLs the installed app can keep referring to",
+            body.contains("href=\"/manifest.webmanifest\"") &&
+                body.contains("href=\"/icons/apple-touch-icon.png\"") &&
+                body.contains("href=\"/icons/logo.svg\""),
+            "the install surface stays on stable, root-absolute URLs the installed app can keep referring to",
         )
     }
 

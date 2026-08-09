@@ -13,9 +13,9 @@
     not a nicety. `black-translucent` draws the app under the status bar, which is what viewport-fit=cover
     and the safe-area padding are for.
   -->
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="icon" href="icons/logo.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/logo.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Kotgent" />
@@ -32,6 +32,11 @@
     own /_v/<rev>/ URL, so the prefix reaches the whole module graph for free — but the importmap resolves
     against the DOCUMENT, so its targets have to spell the prefix out. The manifest and the icons stay on
     stable URLs on purpose: an installed PWA refers to them by a fixed address.
+
+    Those three stable URLs are ROOT-ABSOLUTE, and that is load-bearing now that the SPA owns deep paths:
+    a document-relative `manifest.webmanifest` resolves to `/tasks/manifest.webmanifest` at /tasks/local:42,
+    which 404s — taking the iOS install path, and therefore push, with it for anyone who arrived by a deep
+    link. Root-absolute keeps them at the one fixed address an installed PWA already refers to.
   -->
 
   <!--

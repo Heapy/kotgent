@@ -1,0 +1,98 @@
+-- The tracker's own rows plus each task's append-only activity feed (the task-backlog plan).
+--
+-- `tasks` is deliberately narrow: it is what ANY tracker, local or external, can answer about a task.
+-- The workflow (state, ordering, dependencies) lives in Backlog.sq, keyed by the same `task_ref`. There
+-- is no `url` column: io.kotgent.task.Task carries one for a future external tracker, and TaskTracker
+-- exposes no setter for it, so the built-in tracker always reports null.
+--
+-- NOTE for pre-existing databases: the sqldelight-gen plugin drops `.sqm` files and leaves the generated
+-- `Schema.migrate()` empty, so these CREATEs only run on a FRESH database. An existing
+-- `~/.kotgent/kotgent.db` gets them from the `CREATE TABLE IF NOT EXISTS` block in
+-- io.kotgent.store.SqliteTaskStore's init — a whole-table create needs no `PRAGMA table_info` guard
+-- (`IF NOT EXISTS` neither fails nor logs, unlike a duplicate-column ALTER). Keep the two in exact step.
+CREATE TABLE tasks (
+  id         TEXT NOT NULL PRIMARY KEY,
+  title      TEXT NOT NULL,
+  body       TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- One row per activity event. `id` is the feed's order (append-only, never rewritten); `kind` is an
+-- io.kotgent.task.ActivityKind name; `from_state`/`to_state` are set only for a `transition`. The feed
+-- is fetched with the task detail and deliberately does NOT ride the events socket.
+CREATE TABLE task_activity (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_ref   TEXT NOT NULL,
+  ts         INTEGER NOT NULL,
+  kind       TEXT NOT NULL,
+  author     TEXT NOT NULL,
+  text       TEXT,
+  from_state TEXT,
+  to_state   TEXT
+);
+
+CREATE INDEX task_activity_by_task ON task_activity(task_ref, id);
+
+-- --- tasks -------------------------------------------------------------------------------------
+
+insertTask:
+INSERT INTO tasks(id, title, body, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?);
+
+selectTask:
+SELECT id, title, body, created_at, updated_at
+FROM tasks
+WHERE id = ?;
+
+-- Every task in one project, tracker fields only (the backlog owns ordering, so no ORDER BY position
+-- here). TaskTracker.list's query.
+selectTasksByProject:
+SELECT t.id, t.title, t.body, t.created_at, t.updated_at
+FROM tasks t
+JOIN backlog_entries b ON b.task_ref = t.id
+WHERE b.project = ?
+ORDER BY t.id;
+
+-- A null argument means "leave unchanged", never "clear": both columns are NOT NULL and a PATCH that
+-- omits one must not blank it (TaskTracker.update's contract). COALESCE is what implements that, so the
+-- read and the write stay one statement.
+updateTaskFields:
+UPDATE tasks
+SET title = coalesce(?, title), body = coalesce(?, body), updated_at = ?
+WHERE id = ?;
+
+deleteTask:
+DELETE FROM tasks
+WHERE id = ?;
+
+-- The highest numeric key the built-in tracker has minted, for the next `local:<n>`. Refs are text, so
+-- the cast is explicit; a non-numeric key (a ref adopted from another tracker) casts to 0 and cannot
+-- push the counter backwards. Seeded once per store open, then kept in memory under the writer mutex.
+-- The literal prefix is io.kotgent.core.TaskRef.LOCAL_TRACKER plus ':' — 6 characters, hence substr(id, 7);
+-- keep the two in step if that constant ever changes.
+maxLocalTaskKey:
+SELECT coalesce(MAX(CAST(substr(id, 7) AS INTEGER)), 0)
+FROM tasks
+WHERE id LIKE 'local:%';
+
+-- --- activity ----------------------------------------------------------------------------------
+
+insertActivity:
+INSERT INTO task_activity(task_ref, ts, kind, author, text, from_state, to_state)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- The row id the last insert on this connection produced — the feed's order key, echoed back into the
+-- returned TaskActivityEntry. Read under the store's writer mutex, immediately after insertActivity.
+lastActivityId:
+SELECT last_insert_rowid();
+
+selectActivity:
+SELECT id, task_ref, ts, kind, author, text, from_state, to_state
+FROM task_activity
+WHERE task_ref = ?
+ORDER BY id;
+
+deleteActivityForTask:
+DELETE FROM task_activity
+WHERE task_ref = ?;

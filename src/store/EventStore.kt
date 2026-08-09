@@ -3,12 +3,14 @@ package io.kotgent.store
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.ProjectId
 import io.kotgent.core.Projection
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.core.TaskRef
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 
@@ -64,6 +66,14 @@ data class SessionUpdate(
      * row they hold, which makes HTTP responses and WS frames safely mergeable in any arrival order.
      */
     val rev: Long = 0,
+    /**
+     * The task this session is linked to, re-read from the committed row (`null` included — an unlink is
+     * authoritative). It rides the live signal because the sidebar's task badge is rendered from it: a
+     * link written by `kotgent task claim` inside a pane must move the badge without a reload.
+     */
+    val taskRef: TaskRef? = null,
+    /** The session's resolved project, re-read from the committed row. */
+    val projectId: ProjectId? = null,
 )
 
 /**
@@ -185,6 +195,51 @@ interface EventStore {
      * exist.
      */
     suspend fun markRead(sessionId: SessionId, seq: Seq)
+
+    /**
+     * Point [sessionId] at [taskRef], or clear the link with `null`, leaving `state` / `last_seq` /
+     * `provider_session_id` untouched — the [setArchived] / [setModel] shape. Emits a [sessionUpdates]
+     * signal carrying the new ref, without which the sidebar's task badge would only move on a reload.
+     * A no-op if the row does not exist.
+     *
+     * **Unconditional, and that is the design.** A task may be linked from any number of sessions —
+     * kotgent cannot enforce "one worker per task", because the operator opens a second terminal in the
+     * same repository and the daemon never hears about it, and an invariant that only holds against your
+     * own API is not an invariant. Pointing a session at a different task simply overwrites the link;
+     * there is no error case and nothing to compensate. The one conditional write in the design lives in
+     * the TASK store (`Backlog.sq`'s `startIfTodo`) and is a selection convention, not a protected
+     * invariant — see [io.kotgent.store.TaskStore.startIfTodo].
+     *
+     * **`sessions` has exactly one writer, and it is this store.** `rev` comes from an in-memory counter
+     * owned by [SqliteEventStore]; a second store writing this table would fork the counter and emit no
+     * update at all. That is why the task store never touches `sessions` and why
+     * [io.kotgent.daemon.TaskService] calls the two stores sequentially rather than nesting them.
+     *
+     * The three task-link members carry a **default no-op / empty implementation**, the same
+     * compatibility affordance [reliableSessionUpdates] uses: the suite's hand-written fake stores
+     * predate the task layer and none of them models a session link. Any store a task-linking path
+     * actually runs against must override all three.
+     */
+    suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
+        // no-op: a store that does not model task links has nothing to write.
+    }
+
+    /**
+     * Set (or clear) the session's resolved project, with the same targeted-write and emission contract
+     * as [setTaskRef]. Written by the daemon at `start` / `import` and backfilled by startup
+     * reconciliation. A no-op if the row does not exist. Defaulted for the reason on [setTaskRef].
+     */
+    suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
+        // no-op: see setTaskRef.
+    }
+
+    /**
+     * Every session currently linked to [taskRef], oldest first. A list, not an optional: linking is
+     * many-sessions-to-one-task by design (see [setTaskRef]). This is what `transition(done)` and
+     * `delete` iterate to unlink every holder, and what a task's detail view renders. Defaulted for the
+     * reason on [setTaskRef].
+     */
+    suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = emptyList()
 
     /** The session's current metadata row, or `null` if no such session has been upserted. */
     suspend fun getSession(sessionId: SessionId): SessionMeta?

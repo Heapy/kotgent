@@ -6,6 +6,8 @@ import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionState
 import io.kotgent.store.EventStore
+import io.kotgent.store.TaskStore
+import io.kotgent.task.ProjectFs
 import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxPane
 
@@ -97,6 +99,21 @@ class Reconciler(
     private val vendorProbe: VendorStoreProbe,
     private val registry: PaneRegistry,
     private val now: () -> Long = ::daemonEpochMillis,
+    /**
+     * The task layer, or `null` for a daemon (or a test) without one. Startup reconciliation uses it to
+     * BACKFILL `sessions.project_id` and to clear a `sessions.task_ref` naming a task no longer in
+     * `backlog_entries` (a reference, not a foreign key — see `Sessions.sq`).
+     *
+     * **Nothing else about tasks is reconciled.** An `in_progress` entry with no linked session is
+     * legitimate — a human dragged the card — so there is nothing to recover, and a pass that "fixed" it
+     * could not tell its target from that card.
+     *
+     * Nullable with a null DEFAULT, appended after [now], so `ReconcilerTest`, `ImportWiringTest`,
+     * `SessionImportTest` and `ShutdownSignalsTest` keep compiling untouched.
+     */
+    private val taskStore: TaskStore? = null,
+    /** Filesystem access for the `project_id` backfill, or `null` to skip it. Same rationale as [taskStore]. */
+    private val projectFs: ProjectFs? = null,
 ) {
     suspend fun reconcile(): ReconcileResult {
         val sessions = store.listSessions()

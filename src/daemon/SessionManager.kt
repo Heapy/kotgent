@@ -14,6 +14,8 @@ import io.kotgent.core.SessionState
 import io.kotgent.core.isCanonicalUuid
 import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
+import io.kotgent.store.TaskStore
+import io.kotgent.task.ProjectFs
 import io.kotgent.tmux.TmuxControl
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.NonCancellable
@@ -339,6 +341,21 @@ class SessionManager(
     private val now: () -> Long = ::daemonEpochMillis,
     private val cols: Int = DEFAULT_COLS,
     private val rows: Int = DEFAULT_ROWS,
+    /**
+     * The task layer, or `null` for a daemon (or a test) without one. Used to upsert the `projects` row
+     * whenever a session's cwd resolves to a project — without that, a project first seen through a
+     * session start would have backlog rows but never appear in `GET /api/v1/projects`.
+     *
+     * Nullable with a null DEFAULT so every existing construction — the suite's fakes, the transport
+     * harnesses — keeps compiling untouched. Appended after [rows] rather than grouped with the other
+     * collaborators for the same reason: a positional caller must not shift.
+     */
+    private val taskStore: TaskStore? = null,
+    /**
+     * Filesystem access for project resolution at `start` / `importSession`, or `null` to resolve no
+     * project at all. Same nullability rationale as [taskStore].
+     */
+    private val projectFs: ProjectFs? = null,
 ) {
     /** Convenience view of [registry] as the `paneLookup` shape [io.kotgent.transport.claudeHookRoutes] takes. */
     val paneLookup: suspend (PaneId) -> SessionId? get() = registry::lookup
