@@ -1,6 +1,7 @@
 package io.kotgent.transport
 
 import io.kotgent.core.ProjectId
+import io.kotgent.core.SessionId
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.task.BacklogEntry
@@ -46,8 +47,22 @@ import kotlinx.serialization.SerializationException
  *  - `DELETE` goes through [io.kotgent.daemon.TaskService.delete], which unlinks every holder first.
  *  - `/deps` answers `400` for each of the four refusals (self, unknown ref, cross-project, cycle) with a
  *    message that says which.
- *  - `POST /projects` writes `.kotgent.json` at a browser-supplied ABSOLUTE path — the bounded departure
- *    from the upload rule recorded on [CreateProjectRequest].
+ *  - `POST /projects` writes `.kotgent.json` for a browser-supplied ABSOLUTE path — the bounded departure
+ *    from the upload rule recorded on [CreateProjectRequest]. The path says WHICH checkout, not where the
+ *    file lands: like every other creating path it anchors at [mainCheckoutRoot] (see below).
+ *
+ * ## Creation anchors at the main checkout root, on BOTH creating paths
+ * A project is a committed FILE, not a path, and the uuid inside it is what makes `/repo` and
+ * `/repo-wt/feature` one backlog. Writing at the literal directory a caller named breaks exactly that: a
+ * `kotgent project init` run from `/repo/src/cli` puts a second uuid there, `resolveProject` walks up and
+ * NEAREST WINS, so every session under `src/cli` silently belongs to a different project than the rest of
+ * the repository — and the same call inside a linked worktree commits the file into the worktree, where the
+ * main checkout can never see it. So `POST /projects` anchors the same way `POST /tasks`' step 4 does
+ * ([mainCheckoutRoot] of the canonicalized path, degrading to that path when it is in no repository), and
+ * the default display name is taken from the ROOT rather than from the subdirectory that was named.
+ * The cost is recorded, not overlooked: a deliberately NESTED project (a monorepo package with its own
+ * backlog) can no longer be created through this endpoint, only by committing a `.kotgent.json` by hand —
+ * which the resolver still honours, because step 1 of resolution is still "nearest wins".
  *
  * ## Where the "the `projects` row is upserted" obligation actually lands
  * On the two branches that touch a `.kotgent.json`, and only those. `resolveProject` READ a file, so the
@@ -132,6 +147,9 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             )
             return@patch
         }
+        // Resolved BEFORE the tracker edit below, even though only the transition uses it: a refusal after
+        // `update` would leave the title/body written and the state not, for a request that answered 400.
+        val author = if (to == null) null else (attributedAuthor(routing, req.sessionId) ?: return@patch)
         if (req.title != null || req.body != null) {
             if (req.title != null && req.title.isBlank()) {
                 call.respondText("a task needs a title", status = HttpStatusCode.BadRequest)
@@ -142,8 +160,7 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
                 return@patch
             }
         }
-        if (to != null) {
-            val author = resolveCallerSession(routing, req.sessionId)?.value ?: TaskService.BOARD_AUTHOR
+        if (to != null && author != null) {
             if (routing.service.transition(ref, to, author, req.message) == null) {
                 fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
                 return@patch
@@ -269,9 +286,12 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
     }
 
     /*
-     * `POST /projects` — create or ADOPT a project at an absolute path. Idempotent by construction (an
-     * existing `.kotgent.json` always wins the `link(2)` race and is read back), so the answer is `200`
+     * `POST /projects` — create or ADOPT the project OWNING an absolute path. Idempotent by construction
+     * (an existing `.kotgent.json` always wins the `link(2)` race and is read back), so the answer is `200`
      * and not `201`: the caller cannot tell whether it wrote the file, and does not need to.
+     *
+     * The named directory selects the checkout; the file itself lands at that checkout's main root — see
+     * the file header's "Creation anchors at the main checkout root".
      */
     post("/projects") {
         val req = decodeBody(CreateProjectRequest.serializer(), routing) ?: return@post
@@ -282,14 +302,18 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             fail(HttpStatusCode.BadRequest, ProjectPathException(req.path, "project path must be absolute: '${req.path}'"))
             return@post
         }
-        val dir = routing.service.projectFs.canonicalize(requested)
-        if (dir == null) {
+        val fs = routing.service.projectFs
+        val canonical = fs.canonicalize(requested)
+        if (canonical == null) {
             fail(
                 HttpStatusCode.BadRequest,
                 ProjectPathException(requested, "no such directory: '$requested'"),
             )
             return@post
         }
+        // `mainCheckoutRoot` requires a canonical absolute path (it answers null for anything else), which
+        // is why it runs after `canonicalize` and not on `requested`.
+        val dir = mainCheckoutRoot(fs, canonical) ?: canonical
         val name = if (req.name == null) {
             defaultProjectName(dir)
         } else {
@@ -380,6 +404,29 @@ private suspend fun RoutingContext.requireCallerSession(routing: TaskRouting, ex
         )
         return null
     }
+    return existingCallerSession(routing, id)
+}
+
+/**
+ * The `author` for a write that MAY come from the board: the caller's session id, or
+ * [TaskService.BOARD_AUTHOR] when there is no caller session at all — and `null` after answering `400`
+ * when a session WAS named and there is no such row.
+ *
+ * The three-way answer is the whole point, and it is what separates this from [requireCallerSession]. A
+ * `PATCH` really can arrive with nobody behind it (the board dragging a card), so "no session" is
+ * legitimate here. But a caller who NAMED one and got it wrong must not have their write quietly
+ * re-attributed to `board`: the activity feed is the one place the no-exclusivity design tells operators
+ * to look to see who is doing what, and `kotgent task review --session <typo>` recording a human action
+ * for an agent's write makes it lie. `comment` refuses the same input for the same reason; this endpoint
+ * used to be the one attributed write in the package that did not.
+ */
+private suspend fun RoutingContext.attributedAuthor(routing: TaskRouting, explicitSessionId: String?): String? {
+    val id = resolveCallerSession(routing, explicitSessionId) ?: return TaskService.BOARD_AUTHOR
+    return existingCallerSession(routing, id)
+}
+
+/** [id]'s value once its row is confirmed to exist, or `null` after answering `400` naming `--session`. */
+private suspend fun RoutingContext.existingCallerSession(routing: TaskRouting, id: SessionId): String? {
     if (routing.sessions.getSession(id) == null) {
         fail(HttpStatusCode.BadRequest, NoSessionException("no such session '${id.value}' — name a live one with --session"))
         return null

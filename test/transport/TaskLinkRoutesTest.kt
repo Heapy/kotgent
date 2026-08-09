@@ -353,9 +353,52 @@ class TaskLinkRoutesTest {
         assertEquals(t3, env.sessions.linkOf(s1))
     }
 
+    /**
+     * A project the daemon has never seen is a `404`, NOT "nothing eligible".
+     *
+     * This is the one answer `next` must never get wrong: a null task is the single value the CLI maps to
+     * exit `3`, and the agent loop stops on that code. Reporting an empty backlog for a mistyped or stale
+     * `--project` would retire an agent silently and forever, while `kotgent task list` on the same uuid
+     * prints a clean `404`. The assertion is the STATUS, because a body nobody parses cannot stop a loop.
+     */
+    @Test
+    fun nextForAProjectTheDaemonHasNeverSeenIs404RatherThanNothingEligible() = withLinkServer { env ->
+        env.seedSession(s1, pane1, alpha)
+        env.seedProject(alpha)
+
+        val resp = env.post("/tasks/next", pane = pane1, body = """{"project":"${beta.value}"}""")
+
+        assertEquals(HttpStatusCode.NotFound, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue(beta.value in resp.bodyAsText(), "the body names the project it could not find")
+        assertNull(env.sessions.linkOf(s1), "a refused pickup links nothing")
+    }
+
+    /**
+     * The same check on the session-derived project, which is the shape an agent inside a pane actually
+     * sends (`kotgent task next` with no argument). `GET /tasks` validates both spellings of the question;
+     * validating only the explicit one would leave the ref-less loop — the common case — unguarded.
+     */
+    @Test
+    fun nextIs404WhenTheSessionsOwnProjectHasNoRow() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+        env.seedSession(s1, pane1, alpha)
+        env.tasks.forgetProject(alpha)
+
+        val resp = env.post("/tasks/next", pane = pane1)
+
+        assertEquals(HttpStatusCode.NotFound, resp.status, "answered ${resp.bodyAsText()}")
+        assertNull(env.sessions.linkOf(s1), "and nothing was taken")
+        assertEquals(
+            TaskState.todo,
+            env.tasks.stateOf(t1),
+            "the refusal precedes linkNext, so no candidate was started either",
+        )
+    }
+
     @Test
     fun theNextLiteralIsNeverShadowedByTheRefPattern() = withLinkServer { env ->
         env.seedSession(s1, pane1, alpha)
+        env.seedProject(alpha)
         assertNull(
             TaskRef.parseOrNull("next"),
             "the mandatory ':' is what makes a bare literal unshadowable — this is the whole guarantee",
@@ -416,6 +459,29 @@ class TaskLinkRoutesTest {
         assertEquals(emptyList(), env.tmux.newSessionCommands, "refused before any tmux side effect")
     }
 
+    /**
+     * A `taskRef` naming no task is refused BEFORE the launch, exactly as `POST /tasks/{ref}/link` refuses
+     * it — the two halves of one feature used to disagree.
+     *
+     * `sessions.task_ref` being "a reference, not a foreign key" tolerates a delete that races an
+     * in-flight link, a window microseconds wide; it does not license manufacturing one from a request
+     * that could have looked. Without the check `kotgent start --task local:99` (a typo, or a task closed a
+     * second earlier) really launches an agent and pins an unknown-task badge on it until the next daemon
+     * restart. The tmux assertion is the load-bearing half: a refusal AFTER `start()` would be the very
+     * outcome "one request" exists to prevent.
+     */
+    @Test
+    fun startingASessionWithATaskRefNamingNoTaskIs400BeforeTheLaunch() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+
+        val resp = env.post("/sessions", body = """{"agent":"claude","cwd":"/tmp/work","taskRef":"local:404"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue("local:404" in resp.bodyAsText(), "the refusal names the ref it could not find")
+        assertEquals(emptyList(), env.sessions.all(), "no session row was written")
+        assertEquals(emptyList(), env.tmux.newSessionCommands, "and no tmux side effect happened")
+    }
+
     @Test
     fun startingASessionWithoutATaskRefIsUnchanged() = withLinkServer { env ->
         val resp = env.post("/sessions", body = """{"agent":"claude","cwd":"/tmp/work"}""")
@@ -458,6 +524,8 @@ class TaskLinkRoutesTest {
             state: TaskState = TaskState.todo,
             position: Double = 1.0,
         ) = tasks.seed(ref, project, state, position)
+
+        suspend fun seedProject(project: ProjectId) = tasks.seedProject(project)
 
         suspend fun seedSession(id: SessionId, pane: PaneId, project: ProjectId?) {
             sessions.upsertSession(
@@ -553,6 +621,8 @@ class TaskLinkRoutesTest {
                                 { _, _ -> true },
                                 "test-version",
                                 if (withTaskLayer) service else null,
+                                TRANSPORT_JSON,
+                                if (withTaskLayer) tasks else null,
                             )
                             if (withTaskLayer) taskLinkRoutes(routing)
                         }
@@ -594,6 +664,7 @@ class TaskLinkRoutesTest {
     private class FakeTaskStore : TaskStore {
         private val mutex = Mutex()
         private val entries = LinkedHashMap<TaskRef, BacklogEntry>()
+        private val projects = LinkedHashMap<ProjectId, ProjectRecord>()
         private val feed = mutableListOf<TaskActivityEntry>()
         private var rev = 0L
         private var activityId = 0L
@@ -604,7 +675,21 @@ class TaskLinkRoutesTest {
         suspend fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double) =
             mutex.withLock {
                 entries[ref] = BacklogEntry(ref, project, position, state, false, 1_000L, 1_000L, ++rev)
+                // Every path that reads or creates a `.kotgent.json` upserts the row, so a project with a
+                // backlog always has one; a test that wants the opposite seeds the task and forgets the
+                // project deliberately.
+                projects.getOrPut(project) { ProjectRecord(project, project.value.take(8), "/repo", 0L) }
+                Unit
             }
+
+        /** Register a project that has no backlog yet — what `GET /projects` would list. */
+        suspend fun seedProject(project: ProjectId) = mutex.withLock {
+            projects[project] = ProjectRecord(project, project.value.take(8), "/repo", 0L)
+            Unit
+        }
+
+        /** Drop the `projects` row while leaving the backlog — the stale/mistyped uuid case. */
+        suspend fun forgetProject(project: ProjectId) = mutex.withLock { projects.remove(project); Unit }
 
         /** Delete a task behind the routes' back — the dangling-ref case `unlink` must still clear. */
         suspend fun forget(ref: TaskRef) = mutex.withLock { entries.remove(ref); Unit }
@@ -676,7 +761,7 @@ class TaskLinkRoutesTest {
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun listProjects(): List<ProjectRecord> = unused("listProjects")
-        override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
+        override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
 
         private fun unused(name: String): Nothing = error("the link routes must not call TaskStore.$name")
     }

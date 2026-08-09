@@ -317,6 +317,63 @@ class TaskWriteRoutesTest {
         )
     }
 
+    /**
+     * A `sessionId` naming no row is refused, rather than silently re-attributed to the board.
+     *
+     * `comment` already refuses exactly this input; `PATCH` was the one attributed write in the package
+     * that did not, so `kotgent task review --session <typo> -m "…"` committed the transition and recorded
+     * a human action for an agent's write — in the one feed the no-exclusivity design tells operators to
+     * read to see who is doing what. The title assertion is the second half: the refusal is settled BEFORE
+     * the tracker edit, so a rejected patch leaves nothing half-written.
+     */
+    @Test
+    fun aStateChangeNamingASessionThatDoesNotExistIs400AndWritesNothing() = withTaskServer { env ->
+        val ref = env.seedTask(alpha, "old title")
+        env.tasks.clearActivity()
+
+        val resp = env.patch(
+            "/tasks/${ref.value}",
+            """{"title":"new title","state":"review","sessionId":"s-ghost"}""",
+        )
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("s-ghost"), "the refusal names the session it could not find")
+        assertEquals(TaskState.todo, env.tasks.snapshotEntries().getValue(ref).state, "no transition landed")
+        assertEquals(
+            "old title",
+            env.tasks.snapshotTasks().getValue(ref).title,
+            "and the tracker edit did not land either — the author is resolved before the first write",
+        )
+        assertTrue(
+            env.tasks.snapshotActivity().isEmpty(),
+            "nothing was attributed to the board on the caller's behalf",
+        )
+    }
+
+    /**
+     * The boundary of that refusal, pinned so it is not widened by accident: only a session that was
+     * NAMED and is missing is refused. An unresolvable pane header stays "no session at all", which is
+     * the board's own legitimate shape — and is why `PATCH` cannot simply reuse `comment`'s
+     * `requireCallerSession`. (Recorded residual: the CLI does send that header from inside a kotgent
+     * pane, so a pane the registry has lost is attributed to `board` rather than refused. Narrowing that
+     * means distinguishing "no header" from "header the registry rejected", which is a separate decision.)
+     */
+    @Test
+    fun aStateChangeFromAPaneTheRegistryDoesNotKnowIsAttributedToTheBoard() = withTaskServer { env ->
+        val ref = env.seedTask(alpha, "drag me")
+        env.tasks.clearActivity()
+
+        assertEquals(
+            HttpStatusCode.OK,
+            env.patch("/tasks/${ref.value}", """{"state":"in_progress"}""", pane = "%99").status,
+            "an unresolvable pane is 'no session', which the board path legitimately is",
+        )
+        assertEquals(
+            listOf(TaskService.BOARD_AUTHOR),
+            env.tasks.snapshotActivity().filter { it.ref == ref }.map { it.author },
+        )
+    }
+
     /** Tracker fields and the state travel together, and the answer is re-read rather than half of it. */
     @Test
     fun aPatchCanCarryTrackerFieldsAndAStateAtOnce() = withTaskServer { env ->
@@ -598,6 +655,58 @@ class TaskWriteRoutesTest {
         assertEquals("/srv/new-repo", dto.path)
         assertEquals(listOf("/srv/new-repo" to "new-repo"), env.writer.calls)
         assertNotNull(env.tasks.snapshotProjects()[minted])
+    }
+
+    /**
+     * The named path says WHICH checkout; the file lands at that checkout's root.
+     *
+     * `kotgent project init` defaults to the caller's cwd, so the broken case was the ordinary one: run
+     * from `/repo/src`, it used to write `/repo/src/.kotgent.json`, and because resolution walks up with
+     * NEAREST WINS every session under `src` then belonged to a different project than the rest of the
+     * repository — two backlogs for one body of work, which is exactly what "a project is a file, not a
+     * path" exists to prevent. The name comes from the ROOT too: a project called `src` would be the same
+     * mistake wearing a label.
+     */
+    @Test
+    fun postProjectsAnchorsASubdirectoryAtTheMainCheckoutRoot() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/src")
+
+        val resp = env.post("/projects", """{"path":"/repo/src"}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+        assertEquals("/repo", dto.path, "the registered path is the checkout, not the subdirectory")
+        assertEquals("repo", dto.name, "and the default name is the root's, not 'src'")
+        assertEquals(
+            listOf("/repo" to "repo"),
+            env.writer.calls,
+            "the file goes to the main checkout root — the same anchor POST /tasks' step 4 uses",
+        )
+        assertEquals(
+            ProjectRecord(minted, "repo", "/repo", 0L),
+            env.tasks.snapshotProjects()[minted],
+        )
+    }
+
+    /**
+     * The worktree half of the same rule, and the one that would be committed wrong: pointed at a linked
+     * worktree, the file must land in the MAIN checkout — a `.kotgent.json` written inside the worktree is
+     * committed on that branch alone, so `/repo` resolves to no project (or mints a second uuid) and the
+     * plan's "a worktree and its main checkout share one backlog" criterion is false.
+     */
+    @Test
+    fun postProjectsPointedAtALinkedWorktreeWritesIntoTheMainCheckout() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature")
+        env.fs.files["/wt/feature/.git"] = "gitdir: /repo/.git/worktrees/feature\n"
+
+        val resp = env.post("/projects", """{"path":"/wt/feature"}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        assertEquals(listOf("/repo" to "repo"), env.writer.calls)
+        assertEquals(
+            "/repo",
+            TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText()).path,
+        )
     }
 
     @Test

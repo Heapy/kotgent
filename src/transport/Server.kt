@@ -233,7 +233,18 @@ class KotgentServer(
                         authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
                                 fileUploadRoutes(store, fileUploader, json)
-                                controlRoutes(sessionManager, store, inputSink, currentVersion, taskService, json)
+                                controlRoutes(
+                                    sessionManager,
+                                    store,
+                                    inputSink,
+                                    currentVersion,
+                                    taskService,
+                                    json,
+                                    // `POST /sessions {taskRef}` must refuse a ref naming no task, and
+                                    // TaskService validates nothing by design — so the route needs the
+                                    // backlog too. Both nullable together: no task layer, no link.
+                                    taskStore,
+                                )
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
                                 eventsWs(store, preferencesStore, taskStore, json)

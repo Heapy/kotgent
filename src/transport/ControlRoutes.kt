@@ -17,7 +17,9 @@ import io.kotgent.daemon.TranscriptNotFoundException
 import io.kotgent.daemon.UnknownAgentKindException
 import io.kotgent.daemon.UnsupportedAgentException
 import io.kotgent.store.EventStore
+import io.kotgent.store.TaskStore
 import io.kotgent.task.MalformedTaskRefException
+import io.kotgent.task.UnknownTaskException
 import io.kotgent.tmux.TmuxCopyModeException
 import io.kotgent.tmux.TmuxException
 import io.ktor.http.ContentType
@@ -80,8 +82,8 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
  *  - `GET  /sessions/{id}`                  — one session, or `404`.
  *  - `POST /sessions`                       — start a new session (`{agent, cwd, name?, tags?, taskRef?}`)
  *    → `201`. A `taskRef` links the fresh session to that task in the same request (`start --task`, and
- *    the board's "Start session"); it is `400` when the ref is malformed or this daemon has no task
- *    layer, both settled BEFORE the launch so a refusal never leaves a started session behind.
+ *    the board's "Start session"); it is `400` when the ref is malformed, names no task, or this daemon
+ *    has no task layer — all settled BEFORE the launch so a refusal never leaves a started session behind.
  *  - `POST /sessions/import`                — register a provider session started OUTSIDE kotgent
  *    (`{agent, providerSessionId, cwd?, name?, tags?}`) as a `resumable` row → `201`; `400` for an unknown
  *    kind / malformed id / cwd failures / a transcript the probe cannot see (distinguishable messages —
@@ -107,6 +109,14 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
  *   `ControlRoutes.kt` and `Server.kt` to two different agents: without it, the one that owns this file
  *   could not be wired at all. When it is `null` the handler owes a `400` for a request that carries a
  *   `taskRef` — a daemon with no task layer must refuse the link, not start the session and drop it.
+ * @param taskStore the same daemon's backlog, wired beside [taskService] for ONE question: does the
+ *   `taskRef` name a task? [io.kotgent.daemon.TaskService] deliberately validates nothing (its own KDoc
+ *   says the ROUTES check), and every one of its writes is a silent no-op for an unknown ref except the
+ *   unconditional `sessions.task_ref`, so without this a mistyped `start --task local:99` really launches
+ *   an agent and pins a permanent phantom badge on it. `sessions.task_ref` being "a reference, not a
+ *   foreign key" exists to TOLERATE a delete racing an in-flight link — a window microseconds wide — not
+ *   to bless manufacturing one from a request that could have looked. Null only when [taskService] is,
+ *   and a `taskRef` against a daemon missing either is the same `400`.
  */
 fun Route.controlRoutes(
     sessionManager: SessionManager,
@@ -115,6 +125,7 @@ fun Route.controlRoutes(
     currentVersion: String,
     taskService: TaskService? = null,
     json: Json = TRANSPORT_JSON,
+    taskStore: TaskStore? = null,
 ) {
     get("/version") {
         call.respondText(
@@ -154,10 +165,22 @@ fun Route.controlRoutes(
                 )
                 return@post
             }
-            if (taskService == null) {
+            if (taskService == null || taskStore == null) {
                 call.respondText(
                     "cannot start session: this daemon has no task layer, so taskRef " +
                         "'$requestedTaskRef' cannot be linked",
+                    status = HttpStatusCode.BadRequest,
+                )
+                return@post
+            }
+            // Settled here with the other two, BEFORE the launch: a refusal afterwards would mean a live
+            // agent whose link was dropped. It is a 400 rather than the 404 `POST /tasks/{ref}/link`
+            // answers because the ref arrived in a BODY — by this package's convention 404 means "no such
+            // {ref}" for a ref in the PATH, and this request addresses `/sessions` (the same reason
+            // `requireCallerSession` answers 400 for a body-supplied session id).
+            if (taskStore.entry(linkTo) == null) {
+                call.respondText(
+                    "cannot start session: ${UnknownTaskException(linkTo).message}",
                     status = HttpStatusCode.BadRequest,
                 )
                 return@post
@@ -181,10 +204,8 @@ fun Route.controlRoutes(
             return@post
         }
         // The link is unconditional and cannot fail once the row exists (see EventStore.setTaskRef), so
-        // there is no partial state to roll back. The ref's EXISTENCE is deliberately not checked: this
-        // route holds a TaskService and no TaskStore, and a ref naming nothing is the dangling reference
-        // `sessions.task_ref` already tolerates — `POST /tasks/{ref}/link`, which does hold the store, is
-        // where an unknown ref is a 404.
+        // there is no partial state to roll back. Everything that COULD refuse it — malformed ref, no task
+        // layer, no such task — was settled above, before the launch.
         val started = if (linkTo != null && taskService != null) {
             taskService.link(meta.id, linkTo)
             // Re-read rather than patching the captured row: the link stamped a new rev and updatedAt,

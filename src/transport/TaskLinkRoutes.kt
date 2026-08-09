@@ -7,6 +7,7 @@ import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MalformedTaskRefException
 import io.kotgent.task.NoProjectException
 import io.kotgent.task.NoSessionException
+import io.kotgent.task.UnknownProjectException
 import io.kotgent.task.UnknownTaskException
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -56,10 +57,16 @@ import kotlinx.serialization.SerializationException
  *     link to `local:7`. A session that holds nothing is already in the requested state, so that is an
  *     idempotent `ok`; a session that holds a DIFFERENT task is a conflicting action, answered the way
  *     the control plane answers those, with a `409` that names what it actually holds and writes nothing.
- *  4. **`next` does not verify that the project exists.** Its answer space is exactly what the CLI maps:
- *     a task, "nothing eligible" (`200` + null), or a refusal. An unknown project has nothing eligible
- *     in it, and adding a `404` would cost a read on every pickup and misfire on a project whose
- *     `projects` row is missing while its backlog is not.
+ *  4. **`next` DOES verify that the project exists, and a uuid the daemon has never seen is a `404`.**
+ *     This was decided the other way once — "an unknown project has nothing eligible in it" — and that is
+ *     the one answer this endpoint must never give for it. `null` is not a neutral report here: it is the
+ *     single value the CLI maps to exit `3` (`TASK_NEXT_NOTHING_ELIGIBLE`), and the agent loop the whole
+ *     backlog exists to drive STOPS on that code. So a mistyped or stale `--project` would make an agent
+ *     report "the backlog is empty" and go idle forever, with no error anywhere — while
+ *     `kotgent task list --project <the same typo>` prints a clean `404` from `GET /tasks`
+ *     ([io.kotgent.transport.taskReadRoutes], same question, same table). One read per pickup is a small
+ *     price for not silently ending a work loop, and every path that reads or creates a `.kotgent.json`
+ *     upserts the `projects` row, so a missing row really does mean "never seen".
  */
 fun Route.taskLinkRoutes(routing: TaskRouting) {
     /**
@@ -109,7 +116,8 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
     /**
      * Take the next eligible task in a project and link it to the calling session.
      *
-     * The project comes from the body or, failing that, from the calling session's own `project_id`.
+     * The project comes from the body or, failing that, from the calling session's own `project_id`, and
+     * either way it must be one the daemon knows — a `404` otherwise (decision 4 above).
      * A null `task` in the answer is **"nothing eligible"**, not a failure: it is a `200`, precisely so
      * the CLI can tell it apart from an error and map it to exit `3`.
      *
@@ -138,6 +146,13 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
                 )
                 return@post
             }
+        }
+        // Checked for BOTH the explicit and the session-derived project, exactly as `GET /tasks` does: a
+        // session whose stored `project_id` has no `projects` row behind it is as broken as a typo, and
+        // answering "nothing eligible" would retire the agent instead of reporting it.
+        if (routing.tasks.project(project) == null) {
+            refuseTaskLink(UnknownProjectException(project), HttpStatusCode.NotFound)
+            return@post
         }
         val taken = routing.service.linkNext(session.id, project)
         call.respondText(
