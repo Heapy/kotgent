@@ -895,19 +895,36 @@ wave 2 otherwise — own your files, test against fakes, finish on `./kotlin bui
 
 **Called by Tasks 12 and 14** (`resolveProject`, `mainCheckoutRoot`) — hence wave 1.5.
 
-- [ ] implement `parseProjectFile` (8 KiB cap, `isCanonicalUuid`, name trimmed/capped at 100/no control
+- [x] implement `parseProjectFile` (8 KiB cap, `isCanonicalUuid`, name trimmed/capped at 100/no control
       characters, malformed JSON → null, never a throw), `mainCheckoutRoot` (relative `gitdir:` resolved
       against the `.git` file's directory then canonicalized **before** looking for `/worktrees/<name>`), and
       `resolveProject`; plus `PosixProjectFs` implementing the contract's interface
-- [ ] tests over a fake `ProjectFs`: file in cwd; in an ancestor; nearest-wins in a monorepo; ordinary linked
+- [x] tests over a fake `ProjectFs`: file in cwd; in an ancestor; nearest-wins in a monorepo; ordinary linked
       worktree; relative `gitdir:`; symlinked common dir; and each recorded unsupported layout degrading to
       cwd — `--separate-git-dir`, a submodule `gitdir: …/modules/<name>`, a bare repository, no git at all
-- [ ] parse tests: malformed JSON, non-uuid `id`, control characters, 200-char name, a 1 MiB file
-- [ ] `ProjectId` has a **private constructor**: build one with `ProjectId.of(...)` / `ProjectId.parseOrNull(...)`,
+- [x] parse tests: malformed JSON, non-uuid `id`, control characters, 200-char name, a 1 MiB file
+- [x] `ProjectId` has a **private constructor**: build one with `ProjectId.of(...)` / `ProjectId.parseOrNull(...)`,
       which lower-case it. A test that an upper-case `id` in the file parses to the same `ProjectId` as its
       lower-case spelling belongs here
-- [ ] one test against the **real** posix implementation in `TMPDIR`, with a real `.git` directory and a real
+- [x] one test against the **real** posix implementation in `TMPDIR`, with a real `.git` directory and a real
       `.git` worktree file
+
+➕ **The common dir must be named `.git`, and that check is what makes two recorded layouts degrade.** The
+plan's rule ("a `/worktrees/<name>` segment → the root is the common dir's parent") is not sufficient on its
+own: a worktree of a BARE repository (`gitdir: /srv/repo.git/worktrees/f`) and a worktree of a
+`--separate-git-dir` checkout (`gitdir: /meta/checkout-git/worktrees/f`) both carry that segment and both
+have a parent that is not a checkout — so without a further test they would have adopted `/srv` / `/meta` as
+a project root instead of degrading. In the ordinary layout the common dir is always `<root>/.git`, so
+`mainCheckoutRoot` additionally requires that basename; both unsupported shapes then fall through to "the
+current directory is the root", which for a worktree is its own (correct) checkout. Recorded in
+`ProjectFile.kt`'s header and pinned by two tests.
+
+➕ Three smaller calls made without a human, each documented at its site: an unparseable `.kotgent.json`
+warns (through `io.kotgent.cli.eprintln`, the `HookRoutes` precedent) and the walk CONTINUES upward, so a
+broken file in a monorepo subdirectory fails to add a project rather than hiding the repository's real one;
+the `id` is **not** trimmed while the name is, because a uuid padded inside a JSON string is a broken file
+rather than a formatting preference; and `mainCheckoutRoot` answers `null` for a non-absolute `dir` instead
+of walking a relative path apart, since every caller's value comes from `ProjectFs.canonicalize`.
 
 ### Task 5: Ordering rules
 **Owns:** `src/task/Ordering.kt`, `test/task/OrderingTest.kt`
