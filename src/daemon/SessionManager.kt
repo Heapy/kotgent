@@ -2,10 +2,12 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.cli.eprintln
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ControlSignal
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.ProjectId
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -16,8 +18,10 @@ import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.store.TaskStore
 import io.kotgent.task.ProjectFs
+import io.kotgent.task.resolveProject
 import io.kotgent.tmux.TmuxControl
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -474,6 +478,11 @@ class SessionManager(
         // to clean up.
         val adapter = agentFactory.create(agentKind, cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.New)
+        // Resolved OUTSIDE the control lock: a walk up the filesystem plus a `projects` upsert say nothing
+        // about this session's lifecycle, and holding its lock across them would only make a concurrent
+        // `stop` wait on a stat(2). It runs before the launch so the row carries the project from its very
+        // first appearance — see [resolveAndRegisterProject].
+        val projectId = resolveAndRegisterProject(cwd)
 
         return withControlLock(sessionId) {
             // Null until the launch reports a pane; the compensation below tolerates that (it may have to
@@ -500,6 +509,7 @@ class SessionManager(
                     stateSource = EventSource.system,
                     createdAt = ts,
                     updatedAt = ts,
+                    projectId = projectId,
                 )
                 // Upsert the row BEFORE registering the pane: a hook that resolves the pane must find the
                 // sessions row already present (else its append would race the row into existence). The hook
@@ -604,6 +614,50 @@ class SessionManager(
      */
     private suspend fun releaseSessionId(sessionId: SessionId): Unit = withContext(NonCancellable) {
         idAllocationGuard.withLock { reservedIds.remove(sessionId) }
+    }
+
+    /**
+     * The project owning [cwd] — its `.kotgent.json` uuid — with the `projects` row refreshed as a side
+     * effect, or `null` when there is no project above [cwd] (or this daemon carries no task layer).
+     *
+     * ## Why the answer goes into the session row rather than through [EventStore.setProjectId]
+     * [start] and [importSession] both INSERT their row, so carrying the id in the [SessionMeta] writes it
+     * in the same statement instead of following the insert with a second targeted write and a second
+     * `SessionUpdate`. The row is therefore never observable without its project, and the targeted setter
+     * keeps its one real caller: [Reconciler]'s backfill, which patches rows that already exist.
+     *
+     * ## Registering the project is REQUIRED, not decorative
+     * Every path that reads a `.kotgent.json` upserts the `projects` row (`TaskStore.upsertProject`):
+     * without it a project first seen through a session start has backlog rows but never appears in
+     * `GET /api/v1/projects`, so the board's selector can never reach its backlog. `path` is the checkout
+     * this daemon saw most recently — worktrees deliberately share one uuid and overwrite one row.
+     *
+     * ## A failed registration answers `null`, on purpose
+     * The two facts are written together or not at all. Reporting the id while the `projects` row is
+     * missing would persist `sessions.project_id` and thereby remove the ONE thing that ever retries the
+     * pair — [Reconciler]'s backfill only looks at rows whose `project_id` is null. So a store failure
+     * degrades to "no project yet" and heals on the next daemon start, instead of pinning a session to a
+     * project the board cannot list. It never fails the launch: a session that runs is worth more than the
+     * index of the directory it runs in. Cancellation is rethrown — it is not a store failure.
+     */
+    private suspend fun resolveAndRegisterProject(cwd: String): ProjectId? {
+        val fs = projectFs ?: return null
+        // Pure and total by contract (`ProjectFs` degrades an unreadable path to "absent" and
+        // `parseProjectFile` never throws), so an unguarded call here cannot take a launch with it.
+        val resolved = resolveProject(fs, cwd) ?: return null
+        val tasks = taskStore ?: return resolved.id
+        return try {
+            tasks.upsertProject(resolved.id, resolved.name, resolved.root)
+            resolved.id
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            eprintln(
+                "warning: could not register project '${resolved.name}' (${resolved.id.value}) " +
+                    "at ${resolved.root}: $e",
+            )
+            null
+        }
     }
 
     /** Stop [sessionId] according to [mode] (defaults to a full [StopMode.Kill]). */
@@ -873,6 +927,9 @@ class SessionManager(
         if (!vendorProbe.hasTranscript(agentKind, canonicalCwd, id)) {
             throw TranscriptNotFoundException(agentKind, id, canonicalCwd)
         }
+        // The canonical cwd is exactly what project resolution wants (it canonicalizes anyway, so this
+        // is idempotent) — an import registers the same `project_id` a `start` in that directory would.
+        val projectId = resolveAndRegisterProject(canonicalCwd)
 
         // Reserved until the finally below: [importMutex] serializes imports against each other, but a
         // concurrent [start] holds a different lock — only the reservation keeps both from drawing the
@@ -897,6 +954,7 @@ class SessionManager(
                 stateSource = EventSource.system,
                 createdAt = ts,
                 updatedAt = ts,
+                projectId = projectId,
             )
             store.upsertSession(meta)
             // The append never resurrects a dead cache state (see SqliteEventStore.append), so the row

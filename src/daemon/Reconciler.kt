@@ -1,15 +1,19 @@
 package io.kotgent.daemon
 
+import io.kotgent.cli.eprintln
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionId
+import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.store.EventStore
 import io.kotgent.store.TaskStore
 import io.kotgent.task.ProjectFs
+import io.kotgent.task.resolveProject
 import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxPane
+import kotlinx.coroutines.CancellationException
 
 /**
  * Probes an agent's vendor store for a session's transcript — whether the provider still holds the
@@ -88,6 +92,9 @@ data class ReconcileResult(
  * dead + clean-stop → `stopped`; dead + transcript → `resumable`; dead + neither → `crashed`. Changed
  * classifications (and refreshed `pane_id` correlations) are written to the sessions cache with source
  * [EventSource.liveness]. The registry is replaced with the live pane→session map.
+ *
+ * When a task layer is wired ([taskStore] + [projectFs]) it then runs [reconcileTaskLinks] — the project
+ * backfill and the dangling-link clear, and nothing else about tasks; see that method.
  *
  * It deliberately does NOT re-raise terminal bridges: those are lazy and restored on the first
  * terminal-WS subscribe (Task 9). Host-free: [tmux] / [store] / [vendorProbe] / [registry] are all
@@ -169,8 +176,71 @@ class Reconciler(
             reconciled.add(ReconciledSession(meta.id, meta.state, newState, paneAlive))
         }
 
+        // AFTER every state write, never interleaved with them: the loop above upserts a FULL row built
+        // from the meta it read, and `upsert` COALESCEs `task_ref` / `project_id` (Sessions.sq) — so a
+        // clear written first would be resurrected by the stale snapshot that follows it.
+        reconcileTaskLinks(sessions)
+
         registry.replaceAll(livePanes)
         return ReconcileResult(reconciled, livePanes)
+    }
+
+    /**
+     * The task layer's half of a reconcile, and deliberately only two things:
+     *
+     *  - **backfill `sessions.project_id`** for a row that has none — a session started before the backlog
+     *    existed, one whose `.kotgent.json` was committed after it launched, or one whose registration lost
+     *    a store failure (see `SessionManager.resolveAndRegisterProject`, which answers `null` so that this
+     *    pass is what retries it);
+     *  - **clear a `sessions.task_ref` naming a task no longer in `backlog_entries`**. The column is a
+     *    REFERENCE, not a foreign key: `TaskService.delete` unlinks every holder first, so the ordinary
+     *    case never reaches here, and this closes the racing one rather than making the delete atomic
+     *    across two stores.
+     *
+     * **Nothing else about tasks is reconciled.** An `in_progress` entry with no linked session is
+     * legitimate — a human dragged the card, or the worker session was archived — so there is nothing to
+     * recover, and a pass that "fixed" it could not tell its target from that card.
+     *
+     * Per session, and per row, a failure is logged and the pass CONTINUES: this runs before the daemon
+     * binds its server ([io.kotgent.cli.Commands]), so letting one unreadable directory or one store error
+     * escape would turn a cosmetic backfill into a daemon that does not start.
+     */
+    private suspend fun reconcileTaskLinks(sessions: List<SessionMeta>) {
+        val tasks = taskStore ?: return
+        for (meta in sessions) {
+            try {
+                clearDanglingTaskRef(tasks, meta)
+                backfillProjectId(tasks, meta)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                eprintln("warning: task reconciliation failed for session '${meta.id.value}': $e")
+            }
+        }
+    }
+
+    /** Drop a link whose task is gone from `backlog_entries`; a link that still resolves is left alone. */
+    private suspend fun clearDanglingTaskRef(tasks: TaskStore, meta: SessionMeta) {
+        val ref = meta.taskRef ?: return
+        if (tasks.entry(ref) != null) return
+        store.setTaskRef(meta.id, null, now())
+    }
+
+    /**
+     * Resolve [meta]'s cwd and persist the answer, registering the `projects` row FIRST — the same
+     * write-both-or-neither order `SessionManager` uses, so a failure between the two leaves `project_id`
+     * null and the next daemon start simply tries again.
+     *
+     * A row that already names a project is left alone: re-resolving every session on every start would
+     * walk the filesystem once per row for an answer that only a moved `.kotgent.json` could change, and
+     * would silently re-point a session whose directory has since been adopted by a nearer project.
+     */
+    private suspend fun backfillProjectId(tasks: TaskStore, meta: SessionMeta) {
+        if (meta.projectId != null) return
+        val fs = projectFs ?: return
+        val resolved = resolveProject(fs, meta.cwd) ?: return
+        tasks.upsertProject(resolved.id, resolved.name, resolved.root)
+        store.setProjectId(meta.id, resolved.id, now())
     }
 
     companion object {
