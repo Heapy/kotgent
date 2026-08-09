@@ -1,5 +1,5 @@
 /*
- * The three modal screens: New session, Preferences, Help.
+ * The modal screens: New session, Upload files, Preferences, Phone access, Help.
  *
  * Each one is a native `<dialog>`, so Esc, focus trapping and the backdrop's paint come from the
  * platform. The [Dialog] wrapper below is the only place that talks to the imperative dialog API:
@@ -62,10 +62,14 @@ function prefersReducedMotion() {
 
 export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
   const ref = useRef(null);
-  // Which pointers began their press outside the panel — a SET, not a flag: a second contact landing
-  // inside must not erase a pending backdrop press, and a pointer that never produces a click (a
-  // cancel, a long-press) must be able to withdraw its own vote without touching anyone else's.
-  const outsidePointers = useRef(new Set());
+  // The pointer whose press began outside the panel, or null. ONE slot, held by the most recent
+  // PRIMARY press: a set of votes is worse than a flag here, because a press that answers with no
+  // `click` at all (a secondary button reports `contextmenu`/`auxclick`) would stay armed until some
+  // later drag OUT of the panel spent it — the very false close this pairing exists to prevent. So
+  // only the button that can produce a click arms it, every later press replaces it, and the pointer
+  // has to release outside too. The cost is a false negative that costs one tap: a second contact
+  // landing inside disarms a pending backdrop press.
+  const outsidePress = useRef(null);
   const dragRef = useRef(null);
 
   useEffect(() => {
@@ -101,12 +105,11 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const pointerDown = (event) => {
-    if (!lightDismiss) return;
-    if (outside(event)) {
-      outsidePointers.current.add(event.pointerId);
-      return;
-    }
-    if (event.pointerType !== "touch") return;
+    // The bookkeeping runs whatever `lightDismiss` says, so a press made while a screen was busy
+    // cannot survive as a stale arm and dismiss it later; only the CLOSING is gated.
+    const isOutside = outside(event);
+    if (event.button === 0) outsidePress.current = isOutside ? event.pointerId : null;
+    if (isOutside || !lightDismiss || event.pointerType !== "touch") return;
     // One finger owns the swipe. A second contact must not restart it under a new id, or the release
     // of the first would find a drag it does not own and leave the panel translated.
     if (dragRef.current) return;
@@ -135,7 +138,8 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     if (!drag.dragging) {
       // Claimed only once the finger has clearly moved DOWN and moved down MORE than sideways, and only
       // then captured: an uncaptured pointer keeps a tap underneath working as an ordinary click, and a
-      // sweep across the sheet is not a dismissal however far it happens to drift.
+      // sweep across the sheet is not a dismissal just because it drifted 8px down. The axis test is a
+      // LOCK, not a running condition — a claimed gesture stays claimed, the way a native sheet does.
       if (travel < SWIPE_SLOP_PX || travel <= Math.abs(event.clientX - drag.startX)) {
         // Keep the speed baseline current even while the gesture is unclaimed: leaving it at the press
         // would divide the first sample after the claim by the whole press, dwell included.
@@ -158,6 +162,8 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const pointerUp = (event) => {
+    // A press that began outside but released INSIDE is a drag onto the panel, not a backdrop press.
+    if (outsidePress.current === event.pointerId && !outside(event)) outsidePress.current = null;
     const drag = dragRef.current;
     const el = ref.current;
     // Identity is checked BEFORE the ref is cleared: another finger's release is not this drag's end,
@@ -165,6 +171,12 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
     dragRef.current = null;
     if (!drag.dragging) return;
+    // A screen can become busy under a gesture that is already owned (a second pointer pressing
+    // Upload), so the opt-out is re-read HERE, where the dismissal is actually decided.
+    if (!lightDismiss) {
+      springBack(el, event.pointerId);
+      return;
+    }
     const velocity = event.timeStamp - drag.lastAt > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity;
     const flicked = drag.travel > SWIPE_FLICK_PX && velocity > SWIPE_FLICK_VELOCITY;
     if (drag.travel > SWIPE_DISMISS_PX || flicked) {
@@ -179,7 +191,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   // call), never a release. It shares nothing with `pointerUp` but the cleanup: evaluating distance
   // here would close a dialog on an interruption the operator did not perform.
   const pointerCancel = (event) => {
-    outsidePointers.current.delete(event.pointerId);
+    if (outsidePress.current === event.pointerId) outsidePress.current = null;
     const drag = dragRef.current;
     const el = ref.current;
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
@@ -189,9 +201,9 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const click = (event) => {
-    const wasOutside = outsidePointers.current.size > 0;
-    outsidePointers.current.clear();
-    if (!wasOutside || !outside(event)) return;
+    const wasOutside = outsidePress.current !== null;
+    outsidePress.current = null;
+    if (!wasOutside || !lightDismiss || !outside(event)) return;
     if (ref.current) ref.current.close();
   };
 

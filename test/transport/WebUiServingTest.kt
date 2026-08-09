@@ -1690,16 +1690,19 @@ class WebUiServingTest {
         assertTrue(
             dialogs.contains("event.target !== el") &&
                 dialogs.contains("el.getBoundingClientRect()") &&
-                dialogs.contains("outsidePointers.current.add(event.pointerId)") &&
-                dialogs.contains("if (!wasOutside || !outside(event)) return"),
+                dialogs.contains("const outsidePress = useRef(null)") &&
+                dialogs.contains("if (!wasOutside || !lightDismiss || !outside(event)) return"),
             "a press outside the panel closes it only when its press and its click both land there",
         )
-        // Per POINTER, never one shared flag: a contact landing inside must not erase a pending backdrop
-        // press, and one that never produces a click must withdraw its own vote and nobody else's.
+        // Only the button that can produce a `click` may arm one, and the press has to RELEASE outside
+        // too: a secondary-button press answers with `contextmenu`, so an arm it left behind would be
+        // spent by some later drag out of the panel — the false close this pairing exists to prevent.
         assertTrue(
-            dialogs.contains("useRef(new Set())") &&
-                dialogs.contains("outsidePointers.current.delete(event.pointerId)"),
-            "the outside press is tracked per pointer, so concurrent contacts cannot forge one another",
+            dialogs.contains("if (event.button === 0) outsidePress.current = isOutside ? event.pointerId : null;") &&
+                dialogs.contains(
+                    "if (outsidePress.current === event.pointerId && !outside(event)) outsidePress.current = null;",
+                ),
+            "an outside press arms the dismissal only when it can produce a click and ends where it began",
         )
         for (attribute in listOf(
             "onPointerDown=\${pointerDown}",
@@ -1735,7 +1738,7 @@ class WebUiServingTest {
         )
         assertTrue(
             move.contains("travel <= Math.abs(event.clientX - drag.startX)"),
-            "a sweep across the sheet is not a dismissal, however far it happens to drift down",
+            "a sweep across the sheet cannot claim the gesture just by drifting past the slop",
         )
         assertTrue(
             move.contains("elapsed <= SWIPE_FLICK_HANDOFF_MS"),
@@ -1773,12 +1776,17 @@ class WebUiServingTest {
             "an operator who asked for less motion gets none of the swipe's",
         )
         // Unmounting the upload screen aborts its request, and the loop then returns before it can name
-        // which files landed — so while it is working, only a deliberate close may reach it.
+        // which files landed — so while it is working, only a deliberate close may reach it. The opt-out
+        // is re-read where each dismissal is DECIDED, not only where a gesture starts: a screen can turn
+        // busy under a swipe that is already owned, and a start-time check alone would still close it.
         assertTrue(
-            dialogs.contains("lightDismiss = true") &&
-                dialogs.contains("if (!lightDismiss) return;") &&
-                dialogs.contains("lightDismiss=\${!busy}"),
-            "a screen with work in flight opts out of both pointer gestures",
+            dialogs.contains("lightDismiss = true") && dialogs.contains("lightDismiss=\${!busy}"),
+            "the upload screen opts out of light dismiss for exactly as long as it is working",
+        )
+        assertTrue(
+            up.contains("if (!lightDismiss) {") &&
+                dialogs.contains("if (!wasOutside || !lightDismiss || !outside(event)) return;"),
+            "both completion paths — the swipe's release and the outside click — honour the opt-out",
         )
         assertTrue(
             dialogs.contains("<div class=\"dialog-grabber\" aria-hidden=\"true\"></div>"),
@@ -1807,6 +1815,16 @@ class WebUiServingTest {
             css.contains(".dialog-grabber { display: none; }"),
             "the handle exists only where the gesture does",
         )
+        val coarseAt = css.indexOf("@media (any-pointer: coarse) {")
+        assertTrue(coarseAt > 0, "the coarse-pointer block exists")
+        // A media query carries no extra specificity, so the compensation below wins on SOURCE ORDER
+        // alone: written above the forms' own `padding` shorthands it computes to nothing at all, and
+        // a phone would pay the grabber's height twice over while the rule looked present.
+        assertTrue(
+            coarseAt > css.indexOf("#phone-form { padding: 20px; }") &&
+                coarseAt > css.indexOf("#help-form {"),
+            "the coarse-pointer overrides come after every base `padding` they have to beat",
+        )
         val coarse = sliceBetween(
             css, "@media (any-pointer: coarse) {", "\n}\n", "the coarse-pointer block",
         )
@@ -1816,7 +1834,12 @@ class WebUiServingTest {
             "a coarse pointer gets the handle and its reservation, whatever the viewport width",
         )
         assertTrue(
-            coarse.contains(".command-palette-close {"),
+            coarse.contains("#help-form { padding-top: 10px; }") &&
+                coarse.contains(".command-palette-shell { padding-top: 2px; }"),
+            "the panels give back the height the handle costs",
+        )
+        assertTrue(
+            coarse.contains(".command-palette-close {\n    min-height: 44px;\n    width: 44px;\n  }"),
             "the palette's × gets a thumb-sized box: it sits above an option row whose tap runs a command",
         )
     }

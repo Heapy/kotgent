@@ -640,9 +640,12 @@ modal was closable only from a keyboard or its own ×, and the command palette, 
 re-implement either per dialog. **A press outside is checked against the panel's GEOMETRY, and both halves
 must land there** — a press on the backdrop reports its target as the `<dialog>` itself, but so does a drag
 that started on the panel and a click a native `<select>` popup lets through, so `pointerdown` and `click`
-are paired and each is tested against `getBoundingClientRect()`. The presses are tracked in a **Set keyed by
-`pointerId`**, not one flag: a second contact landing inside would otherwise erase a pending backdrop press,
-and a press that never produces a click (a cancel, a long-press) would leave that flag armed for the next one.
+are paired and each is tested against `getBoundingClientRect()`. The arming record is **one slot holding the
+most recent PRIMARY press's `pointerId`**, and the pointer must also RELEASE outside. A *set* of votes was
+tried and is worse than a flag: a press that answers with no `click` at all (a secondary button reports
+`contextmenu`/`auxclick`) stays armed, and the next drag out of the panel spends it — closing a dialog from
+a gesture that began inside it, the exact false close the pairing exists to prevent. The accepted cost is
+the opposite error, worth one tap: a second contact landing inside disarms a pending backdrop press.
 
 **A swipe starts only from a touch pointer on `.dialog-grabber`** — the head is deliberately NOT a handle.
 `dialog:modal`'s UA rule makes an overflowing `<dialog>` its own scroller with the head as its first child, so
@@ -652,7 +655,10 @@ scoped by **`@media (any-pointer: coarse)`, not by viewport width**: the gesture
 pointer, and the old `max-width: 720px` ink left the palette — the one dialog with no head, i.e. the one with
 no other handle — unswipeable on every tablet, the exact device the reservation was written for. The same
 query gives the palette's × a 44 px box: it sits ~16 px above an option row whose tap RUNS a command, so a
-thumb that misses the desktop-sized × hits Interrupt.
+thumb that misses the desktop-sized × hits Interrupt. **That block must stay BELOW every dialog's own
+`padding` shorthand in `style.css`** — a media query adds no specificity, so its `padding-top` compensation
+for the handle's height wins on source order alone; written up beside the base `.dialog-grabber` rule it
+computes to nothing while looking present, and the phone pays the handle's height twice.
 
 **Every rule in the gesture fails toward KEEPING the dialog**, because what a dialog holds is unsaved and
 local. The pointer is captured only after a downward slop (8 px) that also has to beat the horizontal travel
@@ -665,8 +671,10 @@ flick counts only while its speed sample is fresh (`SWIPE_FLICK_HANDOFF_MS`, 90 
 otherwise stand for however long the finger then rested. The spring-back reads `prefers-reduced-motion` **in
 JS**: it is an inline style, so it outranks the stylesheet and `#sidebar`'s media-query remedy cannot reach it.
 A screen with work in flight opts out of both gestures with **`lightDismiss`** (`UploadFilesDialog` passes
-`!busy`: unmounting aborts the request and the loop returns before it can name which files landed). Esc, the ×
-and Cancel are never gated — those are the operator saying it on purpose.
+`!busy`: unmounting aborts the request and the loop returns before it can name which files landed). The flag
+is re-read where each dismissal is DECIDED, never only where a gesture starts: a screen can turn busy under a
+swipe another pointer already owns, and a start-time check alone would still let that swipe close it. Esc, the
+× and Cancel are never gated — those are the operator saying it on purpose.
 
 Esc is **not** a uniform escape hatch to reason from: `cwdKeyDown` spends the first one on New session's open
 cwd-completion list, so the keyboard has a layer these gestures do not, and a backdrop tap while that list is

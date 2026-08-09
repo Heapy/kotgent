@@ -572,41 +572,11 @@ dialog::backdrop {
    would turn "pan the sheet by its title" into a dead zone with the fields unreachable. The grabber
    scrolls nothing, so reserving it costs nothing. Sized by POINTER, not by width: the gesture only
    exists for a touch pointer, and a tablet is wider than the phone breakpoint and has no Esc either —
-   a width query left the palette (the one dialog with no head) unswipeable on every tablet. */
+   a width query left the palette (the one dialog with no head) unswipeable on every tablet. The rest
+   of the handle lives in the `any-pointer: coarse` block far below, because a media query adds no
+   specificity: written here it would lose its `padding-top` compensation to the `padding` shorthands
+   that every dialog form declares LATER in this file. */
 .dialog-grabber { display: none; }
-@media (any-pointer: coarse) {
-  .dialog-grabber {
-    display: block;
-    height: 20px;
-    position: relative;
-    touch-action: none;
-  }
-  .dialog-grabber::after {
-    background: color-mix(in srgb, var(--muted) 55%, transparent);
-    border-radius: 2px;
-    content: "";
-    height: 4px;
-    left: 50%;
-    position: absolute;
-    top: 8px;
-    transform: translateX(-50%);
-    width: 38px;
-  }
-  /* The panels give back the height that row costs. */
-  #new-session-form,
-  #upload-form,
-  #prefs-form,
-  #phone-form,
-  #help-form { padding-top: 10px; }
-  .command-palette-shell { padding-top: 2px; }
-  /* The palette's × is the guaranteed way out of the one dialog with no head, and it sits about
-     16px above an option row whose tap RUNS a command. At the desktop `.icon-button` size a thumb
-     aiming at it can land on Interrupt instead, so it gets a thumb-sized box here. */
-  .command-palette-close {
-    min-height: 44px;
-    width: 44px;
-  }
-}
 
 /* --- Command palette: search list + spacemacs-style leader grid --- */
 #command-palette {
@@ -1270,6 +1240,45 @@ dialog::backdrop {
     background: color-mix(in srgb, var(--panel) 84%, transparent);
     -webkit-backdrop-filter: blur(20px);
     backdrop-filter: blur(20px);
+  }
+}
+
+/* The swipe handle, scoped by POINTER rather than by viewport width — the gesture only ever runs for a
+   touch pointer, and a `max-width: 720px` query left the palette (the one dialog with no head, and so
+   with no other handle) unswipeable on every tablet, the exact device the reservation was written for.
+   This block sits AFTER every dialog's own `padding` shorthand on purpose: a media query carries no
+   extra specificity, so the compensation below only wins from source order. */
+@media (any-pointer: coarse) {
+  .dialog-grabber {
+    display: block;
+    height: 20px;
+    position: relative;
+    touch-action: none;
+  }
+  .dialog-grabber::after {
+    background: color-mix(in srgb, var(--muted) 55%, transparent);
+    border-radius: 2px;
+    content: "";
+    height: 4px;
+    left: 50%;
+    position: absolute;
+    top: 8px;
+    transform: translateX(-50%);
+    width: 38px;
+  }
+  /* The panels give back the height that row costs. */
+  #new-session-form,
+  #upload-form,
+  #prefs-form,
+  #phone-form,
+  #help-form { padding-top: 10px; }
+  .command-palette-shell { padding-top: 2px; }
+  /* The palette's × is the guaranteed way out of the one dialog with no head, and it sits about
+     16px above an option row whose tap RUNS a command. At the desktop `.icon-button` size a thumb
+     aiming at it can land on Interrupt instead, so it gets a thumb-sized box here. */
+  .command-palette-close {
+    min-height: 44px;
+    width: 44px;
   }
 }
 
