@@ -1070,13 +1070,53 @@ builds the tables by opening a `SqliteTaskStore` (its `init` runs the `CREATE TA
 block) and then drives `KotgentDatabase(driver).backlogQueries` directly for seeding — `dependencies` is
 a public val on the store, so the collaborator itself is reachable without waiting for Task 7.
 
-- [ ] add/remove validating that both refs exist, are in the same project, differ, and do not close a cycle;
+- [x] add/remove validating that both refs exist, are in the same project, differ, and do not close a cycle;
       compute `blocked` in the read path; after every edit re-stamp and re-emit the **reverse dependents**;
       `nextCandidate(project)`
-- [ ] the cycle refusal is `wouldCycle` from `src/task/Dependencies.kt` (Task 6, already shipped) — call
+- [x] the cycle refusal is `wouldCycle` from `src/task/Dependencies.kt` (Task 6, already shipped) — call
       it. The eight delegating members in `SqliteTaskStore.kt` are Task 7's lines, not yours
-- [ ] tests: the four refusals; a blocked task is skipped by `nextCandidate` and returned once its dependency
+- [x] tests: the four refusals; a blocked task is skipped by `nextCandidate` and returned once its dependency
       is `done`; closing a dependency emits an update for every reverse dependent; an empty backlog is null
+
+➕ **`blocked` is answered by THREE statements, and the two SQL ones read a dangling edge as SATISFIED —
+so the in-memory fold does too.** `entryLocked` asks `unfinishedDependencyCount`, `listBacklogLocked`
+folds `selectDependencyEdges` against the project's own rows, and `nextCandidateLocked` gets the answer
+as `nextCandidate`'s `NOT EXISTS`. Both SQL forms JOIN `backlog_deps` to `backlog_entries`, so an edge
+naming a ref with no row contributes nothing. The fold could have failed safe the other way (unknown
+dependency → blocked), and that was rejected: a board card and a detail view disagreeing about one task
+is worse than either answer, the state is unreachable through `add` (it is the `unknownRef` refusal) and
+`delete` cascades both directions of `backlog_deps`. A test writes the dangling edge directly and pins
+all three paths to the same answer, because nothing else in the suite could reach that row.
+
+➕ **The re-stamp is exactly one level deep, and that is the rule rather than a shortcut.** A dependent's
+`blocked` asks about its dependencies' STATE; a re-stamp moves a `rev`, not a state — so closing A moves
+A's direct dependents and stops there. Pinned by a `c → b → a` test that asserts only `b` is emitted.
+Two smaller shapes ride with it: a re-stamp reads the entry BEFORE the write and re-emits it with the
+new rev (`restamp` touches no other column, so the copy is what a second `selectEntry` would answer, at
+one query instead of two), and a ref with no row spends no revision and emits nothing — a null-entry
+`TaskUpdate` means DELETED, which a re-stamp must never manufacture.
+
+➕ Four smaller calls made without a human, each documented at its site. **A no-op emits nothing**: the
+duplicate check comes from the edge map the cycle walk needs anyway and returns before the write, and
+`remove` checks membership first — `INSERT OR IGNORE` / a zero-row `DELETE` would make the statement a
+no-op regardless, but the emissions after it would not be, and an idempotent retry storm must not become
+a board update storm. **An accepted edit re-stamps `ref` ITSELF and then its reverse dependents**, per
+`TaskStore.addDependency`'s declared contract; the second half is conservative and the KDoc says so —
+an edge edit changes no state, so a dependent's `blocked` cannot actually have moved, but a redundant
+emission is invisible under newest-rev-wins while a missing one is a stale marker until a reload.
+**`add`/`remove` wrap their write plus the re-stamps in one `queries.transaction { }`**, inside the
+mutex and with no suspension, so one dependency edit is one atomic change and N restamps are one commit
+(the emissions happen inside it, the shape Task 7's `transition` also uses). And the constructor's `now`
+is **unused on purpose**: nothing here is timestamped (`backlog_deps` has no timestamp column, `restamp`
+deliberately leaves `updated_at` alone), and dropping it would change a signature Task 2 declared and
+`SqliteTaskStore` constructs against — the test's clock throws to prove nothing reaches it.
+
+➕ The implementation was **falsified against three mutations** before being committed: a dangling
+`depends_on` read as unsatisfied, `blocked` computed without the `state == todo` guard, and the
+re-stamped entry re-emitted with its old rev. Each failed exactly one test and no others
+(`anEdgeOntoARefWithNoRowIsReadTheWayTheSqlReadsIt`, `onlyATodoTaskIsEverBlocked`,
+`closingADependencyReStampsAndReEmitsEveryReverseDependent`), which is what says the suite is measuring
+the derived rule rather than the row it is derived from.
 
 ### Task 11: TaskService
 **Owns:** `src/daemon/TaskService.kt`, `test/daemon/TaskServiceTest.kt`
