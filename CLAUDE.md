@@ -643,9 +643,10 @@ that started on the panel and a click a native `<select>` popup lets through, so
 are paired and each is tested against `getBoundingClientRect()`. **A dismiss is a positively completed
 down → up → click transaction by ONE pointer**, and every word of that was paid for. The record is one slot
 (`{ pointerId, released }`) armed only by `event.isPrimary && event.button === 0` — BOTH, because on a
-touchscreen every contact reports button 0 while only the primary pointer produces a `click` at all, so a
-second finger could otherwise arm a press the FIRST finger's click then spent. The button half matters
-because a press that answers with no `click` at all (a
+touchscreen a second finger also reports button 0 while only the primary pointer produces a `click` at all,
+so it could otherwise arm a press the FIRST finger's click then spent. (The button half is about the tip:
+a touch contact and a pen tip report 0, a barrel button or an eraser does not.) It matters because a press
+that answers with no `click` at all (a
 secondary button reports `contextmenu`/`auxclick`) would stay armed until the next drag OUT of the panel
 spent it, closing a dialog from a gesture that began inside it. A *set* of votes was tried and is worse than
 a flag for exactly that reason. `released` is the other half: without it a finger merely HOLDING the backdrop
@@ -657,7 +658,8 @@ accepted cost is the opposite error, worth one tap: a second contact landing ins
 **A swipe starts only from a touch pointer on `.dialog-grabber`** — the head is deliberately NOT a handle.
 `dialog:modal`'s UA rule makes an overflowing `<dialog>` its own scroller with the head as its first child, so
 the `touch-action: none` a swipe needs would turn "pan the sheet by its title" into a dead zone and put the
-fields of a long form out of reach. The grabber scrolls nothing, so reserving it costs nothing. Its box is
+fields of a long form out of reach. The grabber scrolls nothing, so reserving its `touch-action` takes no
+gesture away from anyone (its 20 px of height is a real cost, half of it paid back below). Its box is
 scoped by **`@media (any-pointer: coarse)`, not by viewport width**: the gesture only exists for a touch
 pointer, and the old `max-width: 720px` ink left the palette — the one dialog with no head, i.e. the one with
 no other handle — unswipeable on every tablet, the exact device the reservation was written for. The query

@@ -11,8 +11,10 @@
  * panel, and a downward swipe of a TOUCH pointer off the panel's GRABBER. The grabber is the only handle
  * because it is the one strip of a dialog that never scrolls anything: `dialog:modal` makes an overflowing
  * `<dialog>` its own scroller, and `touch-action: none` on the head would turn the natural "pan the sheet
- * by its title" gesture into a dead zone. Both gestures exist wherever a coarse pointer does, not merely
- * below the phone breakpoint (a tablet is wider than it and has no Esc either).
+ * by its title" gesture into a dead zone. The two have different reaches, deliberately: a press outside
+ * works for any pointer that can click, while the swipe needs `pointerType === "touch"` and a drawn
+ * handle — and that handle is drawn wherever a COARSE pointer exists, not merely below the phone
+ * breakpoint, because a tablet is wider than it and has no Esc either.
  *
  * Every rule below fails toward KEEPING the dialog, because what it holds is unsaved and local:
  * a swipe is claimed only once it is dominantly downward, a `pointercancel` — a gesture the platform took
@@ -68,10 +70,12 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   // of that is load-bearing. A set of votes is worse than a flag: a press that answers with no
   // `click` at all (a secondary button reports `contextmenu`/`auxclick`) stays armed until a later
   // drag OUT of the panel spends it — the very false close this pairing exists to prevent. Hence
-  // `event.button === 0` (the primary BUTTON, not `isPrimary`: every touch and pen contact reports
-  // 0), one slot that each later press replaces, and `released`, which is what stops a pointer that
-  // is still down from authorizing a DIFFERENT pointer's click. The cost is a false negative worth
-  // one tap: a second contact landing inside disarms a pending backdrop press.
+  // `event.button === 0` — the primary BUTTON, which a touch contact and a pen TIP both report while a
+  // barrel button or an eraser does not — plus `event.isPrimary`, because on a touchscreen a SECOND
+  // finger also reports button 0 and only the primary pointer produces a click at all. Then one slot
+  // that each later press replaces, and `released`, which is what stops a pointer that is still down
+  // from authorizing a DIFFERENT pointer's click. The cost is a false negative worth one tap: a second
+  // contact landing inside disarms a pending backdrop press.
   const outsidePress = useRef(null);
   const dragRef = useRef(null);
 

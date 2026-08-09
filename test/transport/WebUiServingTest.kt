@@ -1725,7 +1725,9 @@ class WebUiServingTest {
         // that the FIRST finger's click then spent, closing from a gesture that began on the panel.
         assertTrue(
             down.contains("if (event.isPrimary && event.button === 0) {") &&
-                down.contains("{ pointerId: event.pointerId, released: false }"),
+                down.contains(
+                    "outsidePress.current = isOutside ? { pointerId: event.pointerId, released: false } : null;",
+                ),
             "only the primary pointer's primary button, pressed outside the panel, arms a dismissal",
         )
         assertTrue(
@@ -1736,7 +1738,8 @@ class WebUiServingTest {
         )
         assertTrue(
             clicked.contains("!press.released") &&
-                clicked.contains("event.pointerId !== press.pointerId"),
+                clicked.contains("event.pointerId !== press.pointerId") &&
+                clicked.contains("ref.current.close()"),
             "an unfinished press authorizes nothing, and a named click pointer has to be the one that pressed",
         )
 
@@ -1784,7 +1787,7 @@ class WebUiServingTest {
             "the release position decides the dismissal; a rested finger only ages the sample before it",
         )
         assertTrue(
-            up.contains("travel > SWIPE_DISMISS_PX || flicked"),
+            up.contains("travel > SWIPE_DISMISS_PX || flicked") && up.contains("el.close();"),
             "a long drag or a still-moving flick dismisses; anything shorter springs back",
         )
 
@@ -1793,10 +1796,13 @@ class WebUiServingTest {
             "a gesture the platform took away springs back — a cancel is not a release and never dismisses",
         )
         // A cancelled press answers with no click ever, so its arm has to be withdrawn here or it waits
-        // for an unrelated click to spend it.
+        // for an unrelated click to spend it — and both pieces of state are withdrawn by OWNER only.
         assertTrue(
-            cancel.contains("outsidePress.current = null"),
-            "a press the platform took away withdraws its own arm instead of waiting for a stray click",
+            cancel.contains("press.pointerId === event.pointerId") &&
+                cancel.contains("outsidePress.current = null") &&
+                cancel.contains("event.pointerId !== drag.pointerId") &&
+                cancel.contains("dragRef.current = null"),
+            "a press the platform took away withdraws its own arm and its own drag, and nobody else's",
         )
 
         // The spring-back is an inline style, which outranks the stylesheet, so `#sidebar`'s media-query
@@ -1866,11 +1872,16 @@ class WebUiServingTest {
         // alone: written above the forms' own `padding` shorthands it computes to nothing at all, and
         // a phone would pay the grabber's height twice over while the rule looked present. Each base
         // declaration is located first, so a renamed or deleted one fails here instead of reading as
-        // correctly ordered on `indexOf`'s -1.
+        // correctly ordered on `indexOf`'s -1. The block's own text is cut out first and the LAST
+        // remaining occurrence is the one that counts, so a SECOND declaration added below the block —
+        // which would win the cascade exactly as the original bug did — fails here too.
+        val coarseEnd = css.indexOf("\n}\n", coarseAt)
+        assertTrue(coarseEnd > coarseAt, "the coarse-pointer block closes")
+        val outsideCoarse = css.substring(0, coarseAt) + css.substring(coarseEnd + 3)
         for (base in listOf("#phone-form { padding: 20px; }", "#help-form {", ".command-palette-shell {")) {
-            val baseAt = css.indexOf(base)
+            val baseAt = outsideCoarse.lastIndexOf(base)
             assertTrue(baseAt > 0, "the stylesheet still declares the base padding for `$base`")
-            assertTrue(coarseAt > baseAt, "the coarse-pointer overrides come after `$base`, which they beat")
+            assertTrue(baseAt < coarseAt, "the coarse-pointer overrides come after `$base`, which they beat")
         }
         val coarse = sliceBetween(
             css, "@media (any-pointer: coarse) {", "\n}\n", "the coarse-pointer block",
@@ -1880,14 +1891,15 @@ class WebUiServingTest {
                 coarse.contains("touch-action: none;"),
             "a coarse pointer gets the handle and its reservation, whatever the viewport width",
         )
-        // Every panel that draws the handle also gives its height back — one missing id is 20px of a
-        // phone's dialog spent on nothing.
-        for (form in listOf("#new-session-form", "#upload-form", "#prefs-form", "#phone-form", "#help-form")) {
-            assertTrue(coarse.contains(form), "$form compensates for the handle's height")
+        // Every panel that draws the handle also gives its height back, and each is checked INSIDE the
+        // compensating rule rather than merely somewhere in the block: narrowing the selector group is
+        // the regression, and a name mentioned in a neighbouring comment would hide it.
+        val compensation = sliceBetween(coarse, "#new-session-form", "padding-top: 10px;", "the compensation")
+        for (form in listOf("#upload-form", "#prefs-form", "#phone-form", "#help-form")) {
+            assertTrue(compensation.contains(form), "$form compensates for the handle's height")
         }
         assertTrue(
-            coarse.contains("padding-top: 10px;") &&
-                coarse.contains(".command-palette-shell { padding-top: 2px; }"),
+            coarse.contains(".command-palette-shell { padding-top: 2px; }"),
             "the panels give back half the height the handle costs",
         )
         // The block's own position guards another test's meaning: `theShellFloats…` slices the sheet
