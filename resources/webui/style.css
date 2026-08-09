@@ -1243,45 +1243,6 @@ dialog::backdrop {
   }
 }
 
-/* The swipe handle, scoped by POINTER rather than by viewport width — the gesture only ever runs for a
-   touch pointer, and a `max-width: 720px` query left the palette (the one dialog with no head, and so
-   with no other handle) unswipeable on every tablet, the exact device the reservation was written for.
-   This block sits AFTER every dialog's own `padding` shorthand on purpose: a media query carries no
-   extra specificity, so the compensation below only wins from source order. */
-@media (any-pointer: coarse) {
-  .dialog-grabber {
-    display: block;
-    height: 20px;
-    position: relative;
-    touch-action: none;
-  }
-  .dialog-grabber::after {
-    background: color-mix(in srgb, var(--muted) 55%, transparent);
-    border-radius: 2px;
-    content: "";
-    height: 4px;
-    left: 50%;
-    position: absolute;
-    top: 8px;
-    transform: translateX(-50%);
-    width: 38px;
-  }
-  /* The panels give back the height that row costs. */
-  #new-session-form,
-  #upload-form,
-  #prefs-form,
-  #phone-form,
-  #help-form { padding-top: 10px; }
-  .command-palette-shell { padding-top: 2px; }
-  /* The palette's × is the guaranteed way out of the one dialog with no head, and it sits about
-     16px above an option row whose tap RUNS a command. At the desktop `.icon-button` size a thumb
-     aiming at it can land on Interrupt instead, so it gets a thumb-sized box here. */
-  .command-palette-close {
-    min-height: 44px;
-    width: 44px;
-  }
-}
-
 @media (max-width: 720px) {
   :root {
     --bg: #000;
@@ -1383,6 +1344,51 @@ dialog::backdrop {
   .key-bar {
     display: flex;
     padding-bottom: calc(5px + var(--active-safe-area-bottom));
+  }
+}
+
+/* The swipe handle, scoped by POINTER rather than by viewport width — the gesture only ever runs for a
+   touch pointer, and a `max-width: 720px` query left the palette (the one dialog with no head, and so
+   with no other handle) unswipeable on every tablet, the exact device the reservation was written for.
+   Its position in the file is load-bearing twice over. It must come AFTER every dialog's own `padding`
+   shorthand, because a media query carries no extra specificity and the compensation below wins from
+   source order alone. And it must come after `max-width: 720px` rather than before it, or it lands
+   inside the slice `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` reads as DESKTOP — and
+   a future composite blur written here would then reach every phone past the guard that forbids it.
+   (That guard is a plain text search over the mobile slice, so it reads comments too: name the
+   property in prose here rather than spelling it, the way this sentence does.) */
+@media (any-pointer: coarse) {
+  .dialog-grabber {
+    display: block;
+    height: 20px;
+    position: relative;
+    touch-action: none;
+  }
+  .dialog-grabber::after {
+    background: color-mix(in srgb, var(--muted) 55%, transparent);
+    border-radius: 2px;
+    content: "";
+    height: 4px;
+    left: 50%;
+    position: absolute;
+    top: 8px;
+    transform: translateX(-50%);
+    width: 38px;
+  }
+  /* The panels give back HALF the 20px the handle costs — the rest stays as breathing room between the
+     grabber's ink and the title, which is the gap a native sheet draws there too. */
+  #new-session-form,
+  #upload-form,
+  #prefs-form,
+  #phone-form,
+  #help-form { padding-top: 10px; }
+  .command-palette-shell { padding-top: 2px; }
+  /* The palette's × is the guaranteed way out of the one dialog with no head, and it sits about
+     16px above an option row whose tap RUNS a command. At the desktop `.icon-button` size a thumb
+     aiming at it can land on Interrupt instead, so it gets a thumb-sized box here. */
+  .command-palette-close {
+    min-height: 44px;
+    width: 44px;
   }
 }
 

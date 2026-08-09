@@ -108,13 +108,19 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const pointerDown = (event) => {
-    // The bookkeeping runs whatever `lightDismiss` says, so a press made while a screen was busy
-    // cannot survive as a stale arm and dismiss it later; only the CLOSING is gated.
+    // A press made while the screen is busy arms NOTHING. Gating only the closing was not enough: a
+    // batch can finish between a backdrop press and its click, and the arm would then be spent on the
+    // freshly rendered result. The slot is cleared by the click that follows a press, so nothing armed
+    // before a busy period can outlive it either.
+    if (!lightDismiss) return;
     const isOutside = outside(event);
-    if (event.button === 0) {
+    // `isPrimary` as well as the primary BUTTON: on a touchscreen every contact reports `button === 0`,
+    // but only the primary one produces a `click` at all — so a second finger could otherwise arm a
+    // press that the FIRST finger's click then spent, closing from a gesture that began on the panel.
+    if (event.isPrimary && event.button === 0) {
       outsidePress.current = isOutside ? { pointerId: event.pointerId, released: false } : null;
     }
-    if (isOutside || !lightDismiss || event.pointerType !== "touch") return;
+    if (isOutside || event.pointerType !== "touch") return;
     // One finger owns the swipe. A second contact must not restart it under a new id, or the release
     // of the first would find a drag it does not own and leave the panel translated.
     if (dragRef.current) return;
@@ -139,6 +145,14 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     const drag = dragRef.current;
     const el = ref.current;
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
+    // The screen can turn busy under a gesture that is already owned. Hand the panel back at once
+    // instead of letting a finger drag the one screen that must stay visible off its own progress —
+    // a contact that then rests without lifting would park it there with no release to spring it.
+    if (!lightDismiss) {
+      dragRef.current = null;
+      if (drag.dragging) springBack(el, event.pointerId);
+      return;
+    }
     const travel = event.clientY - drag.startY;
     if (!drag.dragging) {
       // Claimed only once the finger has clearly moved DOWN and moved down MORE than sideways, and only
@@ -424,7 +438,11 @@ export function NewSessionDialog({
   };
 
   return html`
-    <${Dialog} id="new-session-dialog" labelledBy="new-session-title" onClose=${onClose}>
+    ${/* Every button is already disabled while the launch is in flight, for the same reason the light
+          dismiss is: a close here unmounts a fully typed draft — agent, cwd, name, tags — while the
+          request completes invisibly. Esc, the ×, and Cancel still work; those are deliberate. */ ""}
+    <${Dialog} id="new-session-dialog" labelledBy="new-session-title" lightDismiss=${!busy}
+               onClose=${onClose}>
       <form id="new-session-form" onSubmit=${submit}>
         <div class="dialog-head">
           <div>
@@ -766,7 +784,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
   }), sessions);
 
   return html`
-    <${Dialog} id="prefs-dialog" labelledBy="prefs-title" onClose=${onClose}>
+    <${Dialog} id="prefs-dialog" labelledBy="prefs-title" lightDismiss=${!busy} onClose=${onClose}>
       <form id="prefs-form" onSubmit=${submit}>
         <div class="dialog-head">
           <div>

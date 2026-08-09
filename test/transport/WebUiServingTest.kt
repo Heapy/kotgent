@@ -1720,10 +1720,13 @@ class WebUiServingTest {
         // button that can produce a click arms it — a secondary press answers with `contextmenu`, and an
         // arm it left behind would be spent by a later drag OUT of the panel — and `released` is what
         // stops a finger merely HOLDING the backdrop from authorizing a different pointer's click.
+        // `isPrimary` as well as the primary BUTTON: on a touchscreen every contact reports 0, but only
+        // the primary pointer produces a click at all — so a second finger could otherwise arm a press
+        // that the FIRST finger's click then spent, closing from a gesture that began on the panel.
         assertTrue(
-            down.contains("if (event.button === 0) {") &&
+            down.contains("if (event.isPrimary && event.button === 0) {") &&
                 down.contains("{ pointerId: event.pointerId, released: false }"),
-            "only a primary press, and only one that began outside the panel, arms a dismissal",
+            "only the primary pointer's primary button, pressed outside the panel, arms a dismissal",
         )
         assertTrue(
             up.contains("press.pointerId === event.pointerId") &&
@@ -1789,6 +1792,12 @@ class WebUiServingTest {
             !cancel.contains("el.close()") && cancel.contains("springBack(el, event.pointerId)"),
             "a gesture the platform took away springs back — a cancel is not a release and never dismisses",
         )
+        // A cancelled press answers with no click ever, so its arm has to be withdrawn here or it waits
+        // for an unrelated click to spend it.
+        assertTrue(
+            cancel.contains("outsidePress.current = null"),
+            "a press the platform took away withdraws its own arm instead of waiting for a stray click",
+        )
 
         // The spring-back is an inline style, which outranks the stylesheet, so `#sidebar`'s media-query
         // remedy cannot reach it: the preference is asked in JS instead.
@@ -1801,13 +1810,28 @@ class WebUiServingTest {
         // which files landed — so while it is working, only a deliberate close may reach it. The opt-out
         // is re-read where each dismissal is DECIDED, not only where a gesture starts: a screen can turn
         // busy under a swipe that is already owned, and a start-time check alone would still close it.
+        assertTrue(dialogs.contains("lightDismiss = true"), "light dismiss is the default a screen opts out of")
+        // Every screen that holds a draft AND a request: New session (a typed agent/cwd/name/tags),
+        // Preferences, and the upload batch. Each disables its own buttons while working for the same
+        // reason, so a gesture that unmounts it mid-flight is the hole those `disabled` attributes leave.
+        for (screen in listOf("new-session-dialog", "prefs-dialog", "upload-dialog")) {
+            val opening = sliceBetween(dialogs, "\${Dialog} id=\"$screen\"", ">", "the $screen element")
+            assertTrue(
+                opening.contains("lightDismiss=\${!busy}"),
+                "$screen opts out of light dismiss for exactly as long as it is working",
+            )
+        }
+        // The gate has to be read where the dismissal is DECIDED and BEFORE it: a screen can turn busy
+        // under a gesture another pointer already owns, and a start-time check alone would still close.
+        val gateAt = up.indexOf("if (!lightDismiss) {")
+        val dismissAt = up.indexOf("travel > SWIPE_DISMISS_PX")
         assertTrue(
-            dialogs.contains("lightDismiss = true") && dialogs.contains("lightDismiss=\${!busy}"),
-            "the upload screen opts out of light dismiss for exactly as long as it is working",
+            gateAt >= 0 && dismissAt > gateAt && up.contains("springBack(el, event.pointerId);\n      return;"),
+            "the release refuses a busy screen before it weighs the swipe, and hands the panel back",
         )
         assertTrue(
-            up.contains("if (!lightDismiss) {") && clicked.contains("!lightDismiss"),
-            "both completion paths — the swipe's release and the outside click — honour the opt-out",
+            clicked.contains("!lightDismiss") && move.contains("if (!lightDismiss) {"),
+            "the outside click honours the opt-out, and a claimed swipe is abandoned when one begins",
         )
         assertTrue(
             dialogs.contains("<div class=\"dialog-grabber\" aria-hidden=\"true\"></div>"),
@@ -1862,9 +1886,16 @@ class WebUiServingTest {
             assertTrue(coarse.contains(form), "$form compensates for the handle's height")
         }
         assertTrue(
-            coarse.contains("#help-form { padding-top: 10px; }") &&
+            coarse.contains("padding-top: 10px;") &&
                 coarse.contains(".command-palette-shell { padding-top: 2px; }"),
-            "the panels give back the height the handle costs",
+            "the panels give back half the height the handle costs",
+        )
+        // The block's own position guards another test's meaning: `theShellFloats…` slices the sheet
+        // into desktop `[min-width: 721px, max-width: 720px)` and mobile `[max-width: 720px, …)`, so a
+        // block written between them reads as desktop-only while applying to every phone.
+        assertTrue(
+            coarseAt > css.indexOf("@media (max-width: 720px)"),
+            "the coarse-pointer block sits in the mobile half, where the phone-only guards can see it",
         )
         assertTrue(
             coarse.contains(".command-palette-close {\n    min-height: 44px;\n    width: 44px;\n  }"),

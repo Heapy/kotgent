@@ -642,8 +642,10 @@ must land there** — a press on the backdrop reports its target as the `<dialog
 that started on the panel and a click a native `<select>` popup lets through, so `pointerdown` and `click`
 are paired and each is tested against `getBoundingClientRect()`. **A dismiss is a positively completed
 down → up → click transaction by ONE pointer**, and every word of that was paid for. The record is one slot
-(`{ pointerId, released }`) armed only by a press of the primary BUTTON — `event.button === 0`, not
-`isPrimary`; every touch and pen contact reports 0 — because a press that answers with no `click` at all (a
+(`{ pointerId, released }`) armed only by `event.isPrimary && event.button === 0` — BOTH, because on a
+touchscreen every contact reports button 0 while only the primary pointer produces a `click` at all, so a
+second finger could otherwise arm a press the FIRST finger's click then spent. The button half matters
+because a press that answers with no `click` at all (a
 secondary button reports `contextmenu`/`auxclick`) would stay armed until the next drag OUT of the panel
 spent it, closing a dialog from a gesture that began inside it. A *set* of votes was tried and is worse than
 a flag for exactly that reason. `released` is the other half: without it a finger merely HOLDING the backdrop
@@ -665,10 +667,16 @@ is coarse without being touch would draw a handle the JS then refuses, since `po
 `pointerType === "touch"`. Drawing an unused 20 px strip is the safe direction; `pointer: coarse` would take
 the working affordance away from the hybrid laptop instead. The same
 query gives the palette's × a 44 px box: it sits ~16 px above an option row whose tap RUNS a command, so a
-thumb that misses the desktop-sized × hits Interrupt. **That block must stay BELOW every dialog's own
-`padding` shorthand in `style.css`** — a media query adds no specificity, so its `padding-top` compensation
-for the handle's height wins on source order alone; written up beside the base `.dialog-grabber` rule it
-computes to nothing while looking present, and the phone pays the handle's height twice.
+thumb that misses the desktop-sized × hits Interrupt. **That block's position in the file is load-bearing
+twice.** It must sit BELOW every dialog's own `padding` shorthand — a media query adds no specificity, so its
+compensation for the handle's height wins on source order alone; written up beside the base `.dialog-grabber`
+rule it computes to nothing while looking present, and the phone pays the handle twice. And it must sit
+BELOW `@media (max-width: 720px)`, because `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost`
+slices the sheet into a desktop half `[min-width: 721px, max-width: 720px)` and a mobile half: a block
+written between them reads as desktop-only while applying to every phone, which would carry a future
+composite blur straight past the guard that keeps one off the phone drawer. That guard is a plain text
+search, so it reads comments too — describe such a property in prose there, never spell it. (The
+compensation returns 10 px of the handle's 20; the rest is deliberate breathing room above the title.)
 
 **Every rule in the gesture fails toward KEEPING the dialog**, because what a dialog holds is unsaved and
 local. The pointer is captured only after a downward slop (8 px) that also has to beat the horizontal travel,
@@ -684,11 +692,17 @@ sample is fresh (`SWIPE_FLICK_HANDOFF_MS`, 90 ms, the same handoff `installSwipe
 stationary contact emits no `pointermove` and the last sample would otherwise stand for however long the
 finger then rested. The spring-back reads `prefers-reduced-motion` **in
 JS**: it is an inline style, so it outranks the stylesheet and `#sidebar`'s media-query remedy cannot reach it.
-A screen with work in flight opts out of both gestures with **`lightDismiss`** (`UploadFilesDialog` passes
-`!busy`: unmounting aborts the request and the loop returns before it can name which files landed). The flag
-is re-read where each dismissal is DECIDED, never only where a gesture starts: a screen can turn busy under a
-swipe another pointer already owns, and a start-time check alone would still let that swipe close it. Esc, the
-× and Cancel are never gated — those are the operator saying it on purpose.
+A screen with work in flight opts out of both gestures with **`lightDismiss`**, and all three screens that
+hold a draft AND a request pass `!busy`: `UploadFilesDialog` (unmounting aborts the request and the loop
+returns before it can name which files landed), `NewSessionDialog` (a typed agent/cwd/name/tags) and
+`PreferencesDialog`. Each already disables its own buttons while working for the same reason; the gesture is
+the hole those `disabled` attributes leave. The flag is read at **all three** points, and each is a different
+failure: `pointerdown` (a press made while busy arms nothing — the batch can finish between that press and
+its click, and the arm would be spent on the freshly rendered result), `pointermove` (a screen can turn busy
+under a swipe another pointer already owns; the panel is handed back at once, because a contact that then
+rests without lifting would park the one screen that must stay visible off its own progress), and the
+release/click that actually dismiss. Esc, the × and Cancel are never gated — those are the operator saying it
+on purpose.
 
 Esc is **not** a uniform escape hatch to reason from: `cwdKeyDown` spends the first one on New session's open
 cwd-completion list, so the keyboard has a layer these gestures do not, and a backdrop tap while that list is
