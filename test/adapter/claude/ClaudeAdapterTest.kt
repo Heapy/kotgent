@@ -3,6 +3,7 @@ package io.kotgent.adapter.claude
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.newUuidV4
 import io.kotgent.tmux.ProcessResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.flow.emptyFlow

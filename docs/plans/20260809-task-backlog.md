@@ -95,7 +95,11 @@ live in `src/core/Ids.kt` beside `SessionId` so the dependency runs `task → co
   at `:381`; two API-vs-static canaries — `theStaticCatchAllDoesNotShadowTheTokenGatedApi` at `:3694`
   (asserts `GET /sessions` is `200`) and `versionApiIsAuthenticatedAndOutranksTheStaticCatchAll` at `:3704`;
   a literal `"/sessions"` is asserted inside the served `sw.js` at `:2221`.
-- Frame discriminator test to extend: `test/transport/TransportTest.kt:310`.
+- Frame discriminator invariant: `everyGlobalFrameKindCarriesTheTypeDiscriminator`
+  (`test/transport/TransportTest.kt:310`) asserts it for the four existing kinds. **Do not extend that
+  file** — it is a shared suite rule 3 closes to wave 2, and it is in no wave-2 `Owns:` block. The four
+  new task kinds are asserted the same way from `test/transport/TaskEventsTest.kt`, which Task 16 owns;
+  read the existing test for the shape (encode through `EventsFrame.serializer()`, read back `type`).
 - CLI stub-server harness: `test/cli/CliTest.kt:855` (`withStub`); `renderSessions` already covered at `:434`.
   `test/cli/` contains only `CliTest.kt` and `ConfigTest.kt` — there is no `ApiClientTest.kt` or
   `CommandsTest.kt`, and no `EventsWsTest.kt` (the socket is covered by `TransportTest.kt`).
@@ -161,6 +165,8 @@ live in `src/core/Ids.kt` beside `SessionId` so the dependency runs `task → co
 - **baseline**: 927 native tests passed / 0 skipped after wave 1 (the plan was written against 921;
   Tasks 1 and 2 added six), plus the build-info plugin's 7 JVM
   tests and `ptycheck`'s 11 real-PTY checks. Keep skips at zero.
+  **983 / 0 skipped** after Tasks 3, 5 and 6 and the `ProjectId.mint` move (Task 4's ➕ note) — that is
+  the number a wave-2 executor must not go below.
 
 ## Progress Tracking
 
@@ -624,14 +630,31 @@ launching a wave, extract each task's `Owns:` block and assert that no file appe
 wave. Every `Owns:` block is one paragraph, terminated by a blank line, with each path in backticks — kept
 that way deliberately so the check is a dozen lines of script rather than a careful read.
 
-Five files are owned by two tasks each, all in *different* waves and therefore sequential:
-`CLAUDE.md` and `README.md` (Tasks 1 and 32), `src/cli/ApiClient.kt` (Tasks 1 and 20),
-`src/cli/Commands.kt` (Tasks 2 and 15), and `src/daemon/SessionManager.kt` (Tasks 12 and 29). Nothing
-overlaps inside wave 2, inside wave 1.5, or between the two.
+Re-derived from the `**Owns:**` blocks themselves — not maintained by hand, because a hand-maintained
+list goes stale the first time a repair moves a file, which is exactly what happened to the previous
+spelling of this paragraph. **Four** files are owned by two tasks each, all in *different* waves and
+therefore sequential:
 
-**Task 2 is excluded from that count on purpose.** It creates or modifies nearly every file waves 1.5 and
-2 then implement — that is what a contracts wave *is* — so listing those pairs would drown the check. Run
-the overlap assertion across the tasks of one wave, not across the whole document.
+| File | Tasks | Waves |
+|---|---|---|
+| `CLAUDE.md` | 1, 32 | 0, 3 |
+| `README.md` | 1, 32 | 0, 3 |
+| `src/cli/ApiClient.kt` | 1, 20 | 0, 2 |
+| `src/daemon/SessionManager.kt` | 12, 29 | 2, 3 |
+
+Nothing overlaps inside wave 1.5, inside wave 2, or between the two.
+
+**Task 2 is excluded from that derivation, and it is excluded structurally, not by hand.** It is the one
+task with no `**Owns:**` paragraph — it lists `Create:` / `Modify:` bullets instead — so the extractor
+described above simply never sees it. That is deliberate: it creates or modifies nearly every file waves
+1.5 and 2 then implement (which is what a contracts wave *is*), so its pairs number in the dozens and
+would drown the check. Two of them are worth naming only because a reader keeps rediscovering them and
+mistaking them for a conflict: `src/cli/Commands.kt` and `src/transport/ControlRoutes.kt` are both
+modified by Task 2 in wave 1 and then owned by Task 15 in wave 2 — the second of those introduced by the
+contracts repair, which moved `ControlRoutes.kt`'s declarations into Task 2. Both are the ordinary
+wave-1-then-wave-2 relationship every Task 2 file has, not an exception to it.
+
+Run the overlap assertion across the tasks of **one wave**, not across the whole document.
 
 ### Waves
 
@@ -639,21 +662,49 @@ the overlap assertion across the tasks of one wave, not across the whole documen
 |---|---|---|---|
 | 0 | 1 | serial | The `/api/v1` move rewrites every client. Nothing else can be in flight. |
 | 1 | 2 | serial | Contracts. Creates every shared file so wave 2 has none. |
-| 1.5 | 3, 5, 6 | parallel (3) | The pure rules five wave-2 tasks CALL. A free function cannot be faked. |
-| 2 | 4, 7–28 | parallel | 23 tasks, one file each. |
+| 1.5 | 3, 5, 6, 9, 11 | parallel (up to 5) | Everything wave 2 reaches by NAME instead of through a seam. Neither shape can be faked. |
+| 2 | 4, 7, 8, 10, 12–28 | parallel | 21 tasks, one file each. |
 | 3 | 29–32 | serial | Integration assertions, the skill contract, acceptance, docs. |
 
-**Why wave 1.5 exists, and why it is not a design change.** `Ordering.kt`, `Dependencies.kt` and
-`ProjectFile.kt` expose **top-level functions**. That is the right shape for a pure rule — there is
-nothing to inject and nothing to configure — but it means a caller cannot substitute a fake for them:
-`positionForEnd`, `positionBetween`, `wouldCycle`, `resolveProject` and `mainCheckoutRoot` are reached by
-name, so while their bodies are `TODO()` every caller hits a live `NotImplementedError` in its own
-worktree, whatever it passes in. Five wave-2 tasks call them and could not have written a passing test:
+**Why wave 1.5 exists, and why it is not a design change.** The wave holds everything a wave-2 task
+reaches **by name** rather than through a substitutable seam. There are exactly **two shapes** of that,
+and the first repair of this plan found only the first one:
+
+1. **A top-level function.** `Ordering.kt`, `Dependencies.kt` and `ProjectFile.kt` expose free functions.
+   That is the right shape for a pure rule — there is nothing to inject and nothing to configure — but a
+   caller cannot substitute a fake for one: `positionForEnd`, `positionBetween`, `wouldCycle`,
+   `resolveProject` and `mainCheckoutRoot` are reached by name, so while their bodies are `TODO()` every
+   caller hits a live `NotImplementedError` in its own worktree, whatever it passes in.
+2. **A concrete class held in a field.** `TaskService` and `BacklogDependencies` are ordinary Kotlin
+   classes — final, no interface — and their callers hold them by that concrete type:
+   `TaskRouting.service: TaskService` (`TaskRoutes.kt`) and
+   `BacklogOrdering(… dependencies: BacklogDependencies …)`. Nothing about them is injectable in the
+   sense that matters, because there is no supertype to pass a stub as. Constructor injection is a red
+   herring here: the constructor takes the *only* implementation. So a `TODO()` body in either is the
+   same live `NotImplementedError`, one indirection further away.
+
+Between them they blocked seven wave-2 tasks that could not have written a passing test. Shape 1:
 Task 7's `create` positions the new entry, Task 8's whole job is position arithmetic, Task 9's cycle
-refusal is `wouldCycle`, and Tasks 12 and 14 both resolve a project. The mistake was the schedule, not the
-design, so the three files move one wave earlier instead of growing an interface nobody needs. **Task
-numbers are stable identities and are deliberately NOT renumbered** — wave 1.5 is Tasks 3, 5 and 6, wave 2
+refusal is `wouldCycle`, and Tasks 12 and 14 both resolve a project. Shape 2: Task 7's `create`/
+`transition` and every `BacklogOrdering` read go through `BacklogDependencies` for the derived `blocked`,
+and Tasks 14 and 15 reach `TaskService.transition` / `.delete` / `.link` / `.unlink` / `.linkNext`
+through `TaskRouting.service`.
+
+The mistake was the schedule, not the design, both times. Promoting Task 9 and Task 11 turns Tasks 7, 8,
+14 and 15 green **with no signature change at all** — which is precisely why it is the fix rather than
+extracting two more interfaces whose only implementation would be the one already there. **Task numbers
+are stable identities and are deliberately NOT renumbered** — wave 1.5 is Tasks 3, 5, 6, 9 and 11, wave 2
 picks up at Task 4, and the task blocks below are grouped under their wave rather than in numeric order.
+
+**One ordering constraint lives inside wave 1.5**: Task 9's cycle refusal calls Task 6's `wouldCycle`, so
+on a cold re-run of this plan Task 9 follows Task 6 rather than running beside it. In the actual
+execution that never bites — Tasks 3, 5 and 6 had already shipped when 9 and 11 were promoted, so the
+promoted pair is independent of everything and of each other, and runs as a concurrency of 2.
+
+**The test for "is this really wave 1.5" is mechanical**, and worth applying to any future addition: take
+the task's declared file, list every symbol its callers touch, and ask of each whether a caller in a
+worktree where this task is unstarted can substitute something else for it. An interface or a function
+parameter passes. A top-level function and a concrete class do not.
 
 **Concurrency is a guess, not a measurement.** Ten concurrent Kotlin/Native builds share one `~/.konan` and
 one machine; the toolchain's behaviour under that contention has not been measured here. Start at 4–6
@@ -760,9 +811,15 @@ that it did not do its one job. Three categories, all fixed before any fan-out:
 
   1. **A declaration nobody can fake.** `Ordering.kt` / `Dependencies.kt` / `ProjectFile.kt` are top-level
      functions, so five wave-2 tasks would have hit a live `NotImplementedError`. Fixed by the schedule
-     (wave 1.5), not by the design.
+     (wave 1.5), not by the design. **That repair was itself incomplete**, and a later readiness re-check
+     caught it: the same defect has a second shape — a **final class reached by concrete type through a
+     field** — and `TaskService` (`TaskRouting.service`) and `BacklogDependencies`
+     (`BacklogOrdering.dependencies`) were both still `TODO()` in wave 2, blocking Tasks 7, 8, 14 and 15.
+     Fixed the same way, by promoting Tasks 9 and 11. The generalisable lesson is that "can it be faked"
+     is a question about the **type at the call site**, not about how the collaborator is constructed:
+     constructor injection proves nothing when the parameter's type is the only implementation.
   2. **Declarations that were simply missing**, each blocking a task that does not own the file they belong
-     in: `ApiClient`'s fifteen task methods (Task 21 calls them, Task 20 owns the file), `taskRef` on
+     in: `ApiClient`'s fourteen task methods (Task 21 calls them, Task 20 owns the file), `taskRef` on
      `StartSessionRequest` / `SessionDto` / `SessionMeta.toDto()`, a `TaskService` parameter on
      `controlRoutes`, four `TaskDtos` mappers that four agents in one package would otherwise each declare
      (a redeclaration error at merge), and three `app.js` wirings — `tasks` on `Sidebar`/`TerminalPane`,
@@ -808,7 +865,7 @@ plausibility.
       (passed from `Server.kt`). Task 15 owns this file but not `Server.kt`, so without the parameter it
       could not wire `POST /sessions` + `taskRef` to the linking path at all; and the DTO fields must exist
       before Task 26's badge, because the socket's snapshot and full-row frames carry `SessionDto`
-- [x] `src/cli/ApiClient.kt` — declare `whoami()` and the fourteen task/project methods with `TODO()`
+- [x] `src/cli/ApiClient.kt` — declare `whoami()` and the thirteen task/project methods with `TODO()`
       bodies, plus the `paneId` constructor parameter, the `paneHeader()` helper and the (implemented)
       `taskRef` argument on `startSession`. Task 21 calls every one of them and may not touch this file
 - [x] `src/transport/EventsWs.kt` — the four new `EventsFrame` subclasses and `taskRef` on `SessionUpdateDto`
@@ -883,12 +940,17 @@ plausibility.
 
 - [x] `./kotlin build && ./kotlin test` — green with stubs. No test may assert stubbed behaviour
 
-### Wave 1.5 — the pure rules wave 2 calls by name
+### Wave 1.5 — everything wave 2 reaches by name
 
-*Three tasks, all independent, all in `src/task/`. They ship BEFORE wave 2 because they are top-level
-functions: a wave-2 task cannot fake one, so a `TODO()` body in any of them is a live
-`NotImplementedError` in five other agents' worktrees. See "Why wave 1.5 exists" above. Same rules as
-wave 2 otherwise — own your files, test against fakes, finish on `./kotlin build && ./kotlin test`.*
+*Five tasks: 3, 5 and 6 in `src/task/` (top-level functions), plus 9 in `src/store/` and 11 in
+`src/daemon/` (concrete classes their callers hold by that concrete type). They ship BEFORE wave 2
+because a wave-2 task cannot substitute anything for either shape, so a `TODO()` body in any of them is a
+live `NotImplementedError` in seven other agents' worktrees. See "Why wave 1.5 exists" above for the two
+shapes and the mechanical test that separates them. Same rules as wave 2 otherwise — own your files, test
+against fakes, finish on `./kotlin build && ./kotlin test`.*
+
+*Tasks 3, 5 and 6 shipped in the first pass; 9 and 11 were promoted afterwards, when a readiness re-check
+found that the first repair had fixed only the free-function shape.*
 
 ### Task 3: Project resolution rules
 **Owns:** `src/task/ProjectFile.kt`, `test/task/ProjectFileTest.kt`
@@ -960,7 +1022,8 @@ column rewrite, which a pure function cannot perform, so the check stays the cal
 ### Task 6: Dependency rules
 **Owns:** `src/task/Dependencies.kt`, `test/task/DependenciesTest.kt`
 
-**Called by Task 9** (`wouldCycle` is its cycle refusal) — hence wave 1.5.
+**Called by Task 9** (`wouldCycle` is its cycle refusal) — hence wave 1.5. Task 9 was later promoted into
+this same wave; it still follows this task, which is the one ordering constraint inside wave 1.5.
 
 - [x] `wouldCycle(edges, from, to)` as a pure ancestor walk
 - [x] tests: direct, transitive (A→B→C→A), self, and a legal diamond
@@ -990,12 +1053,73 @@ duplicate-edge retry. Worth the two-minute cycle for this function specifically:
 ring into `backlog_deps`, every task on the ring is then blocked by another task on it, and `nextCandidate`
 skips all of it forever while `task next` just answers "nothing eligible".
 
+### Task 9: Backlog dependencies
+**Owns:** `src/store/BacklogDependencies.kt`, `test/store/BacklogDependenciesTest.kt`
+
+**Called by Tasks 7 and 8** — hence wave 1.5. Not through an interface: `SqliteTaskStore` and
+`BacklogOrdering` both hold this class by its own concrete type (`BacklogOrdering`'s
+`private val dependencies: BacklogDependencies`), and there is no supertype either could accept a stub
+as. Task 7 needs it for the derived `blocked` on every entry it emits and for `transition`'s
+reverse-dependent re-stamp; Task 8 reads through it rather than growing a second copy of the `blocked`
+rule. Both own files this task may not touch, and vice versa.
+
+**Ready as soon as Task 6 has shipped.** Everything else it needs is Task 2's: the generated
+`BacklogQueries` (including `insertEntry`, `nextCandidate`, `unfinishedDependencyCount`, `restamp` and
+the three dependency reads) and the `Mutex` / `nextRev` / `emit` / `now` the store passes in. A test
+builds the tables by opening a `SqliteTaskStore` (its `init` runs the `CREATE TABLE IF NOT EXISTS`
+block) and then drives `KotgentDatabase(driver).backlogQueries` directly for seeding — `dependencies` is
+a public val on the store, so the collaborator itself is reachable without waiting for Task 7.
+
+- [ ] add/remove validating that both refs exist, are in the same project, differ, and do not close a cycle;
+      compute `blocked` in the read path; after every edit re-stamp and re-emit the **reverse dependents**;
+      `nextCandidate(project)`
+- [ ] the cycle refusal is `wouldCycle` from `src/task/Dependencies.kt` (Task 6, already shipped) — call
+      it. The eight delegating members in `SqliteTaskStore.kt` are Task 7's lines, not yours
+- [ ] tests: the four refusals; a blocked task is skipped by `nextCandidate` and returned once its dependency
+      is `done`; closing a dependency emits an update for every reverse dependent; an empty backlog is null
+
+### Task 11: TaskService
+**Owns:** `src/daemon/TaskService.kt`, `test/daemon/TaskServiceTest.kt`
+
+**Called by Tasks 14 and 15** — hence wave 1.5. Not through an interface: the routes reach it as
+`TaskRouting.service`, declared as the concrete `TaskService` (`src/transport/TaskRoutes.kt`), so a route
+test cannot pass a stub in its place. Task 14's `PATCH` and `DELETE` are `service.transition` /
+`service.delete`; Task 15's three routes and `POST /sessions`-with-a-`taskRef` are `service.link` /
+`.unlink` / `.linkNext`.
+
+**Ready today: it needs only interfaces.** `TaskStore`, `EventStore`, `ProjectFs` and `ProjectFileWriter`
+are all interfaces declared by Task 2, so every collaborator is fakeable in this task's own test file.
+In particular it does **not** wait on Task 4: `ProjectFileWriter` is the interface and
+`PosixProjectFileWriter` merely one implementation of it, which this class carries as a public property
+for the write routes and never calls itself.
+
+- [ ] `link` as the two independent writes (conditional `todo → in_progress` where zero rows is normal, then
+      unconditional `setTaskRef`); `linkNext` looping over `nextCandidate` and terminating on null;
+      `unlink` leaving the task's state alone; `transition` (state + activity + reverse-dependent
+      re-emission in one task-store transaction, unlinking every holder on `done`); `delete` unlinking every
+      holder first, then deleting through the tracker. Never nest the two stores' locks
+- [ ] tests against fake stores: two sessions link the same task and both appear in `sessionsHoldingTask`; a
+      link to a task already `in_progress` succeeds and leaves the state alone; `linkNext` under contention
+      gives two sessions two different tasks; `linkNext` on an empty backlog reports nothing eligible;
+      `unlink` does not change state; `transition(done)` and `delete` each unlink every holder
+
+⚠️ **`TaskService`'s `now` defaults to `::daemonEpochMillis`, which is declared at
+`src/daemon/SessionManager.kt:1032`** — a file Tasks 12 and 29 own. Recorded rather than changed, on
+three grounds. It is a *compile-time* reference to a public top-level function that four other files
+already default to (`Reconciler`, `SessionManager`, `CodexRolloutScan`, `JunieSessionScan`), so neither
+of those tasks can plausibly remove it and neither one's checklist goes near it. Moving it would mean
+editing `SessionManager.kt` — the one file with a genuine two-task overlap — to fix a dependency that has
+not bitten. And promoting this task to wave 1.5 removes the window entirely: `TaskService` now ships
+*before* Task 12 or Task 29 opens that file. Your tests must still inject `now` explicitly, like every
+other clock in this repository. If a future change does move `daemonEpochMillis`, `src/sys/` is the
+neutral home — not `src/core/`, which is host-free and must not learn what time it is.
+
 ### Wave 2 — implementations, one file each
 
-*Twenty-three tasks (4 and 7–28), all independent. Each owns its files exclusively, tests against fakes,
-and finishes on `./kotlin build && ./kotlin test`. None may edit a file another task owns or a signature
-from Task 2. Numbering is not contiguous because Tasks 3, 5 and 6 moved to wave 1.5 and keep their
-numbers.*
+*Twenty-one tasks (4, 7, 8, 10 and 12–28), all independent. Each owns its files exclusively, tests against
+fakes, and finishes on `./kotlin build && ./kotlin test`. None may edit a file another task owns or a
+signature from Task 2. Numbering is not contiguous because Tasks 3, 5, 6, 9 and 11 moved to wave 1.5 and
+keep their numbers.*
 
 ### Task 4: Project file creation
 **Owns:** `src/task/ProjectFileWriter.kt`, `schema/project.v1.json`, `test/task/ProjectFileWriterTest.kt`
@@ -1003,10 +1127,37 @@ numbers.*
 - [ ] `mkstemp` sibling → write → `fsync` → `chmod` to `0666 & ~umask` → `link(2)`, unlinking the temp on
       every path including success (mirror `FileUploadRoutes.kt:185-273`); `EEXIST` re-reads and returns the
       existing descriptor; a relative or non-directory target is a typed error
+- [ ] mint the fresh uuid with **`ProjectId.mint(random)`** (`src/core/Ids.kt`) — see the ➕ note below.
+      Inject the source into `PosixProjectFileWriter` as a defaulted constructor parameter
+      (`newId: () -> ProjectId = { ProjectId.mint() }`) so your test is deterministic; a default keeps
+      the no-argument construction Task 2 declared and `Commands.kt` performs
 - [ ] `schema/project.v1.json`: `{$schema, id, name}`, uuid pattern, `maxLength: 100`,
       `additionalProperties: false`
 - [ ] tests: shape and mode; a second call returns the first call's id; a pre-created target keeps its
       content; relative and non-directory targets refused; no temp survives any branch
+
+➕ **The uuid minter moved to `src/core/Ids.kt` before this task could start, and the decision is
+recorded here because it is the only place a reader will look for it.** The plan needed a canonical v4
+uuid and the repository had exactly one, `newUuidV4` in `src/adapter/claude/ClaudeAdapter.kt`. Neither
+available option was free:
+
+- importing `io.kotgent.adapter.claude` from `src/task/` inverts the layering the task layer states
+  twice — `Ids.kt`'s "`core` must not depend on `task`" and `ProjectFile.kt`'s "the layering runs
+  `daemon -> task`, and importing them back would make the pure rules in this file depend on the daemon
+  they are called from"; `ShellAdapter` gets that import for free only because it is another adapter;
+- writing a second minter in `src/task/` walks straight into CLAUDE.md's "`randomBytes`/`hex` live once
+  in `Auth.kt`/`Hex.kt`; don't add a second entropy source or hex encoder". That rule already tolerates
+  this one non-crypto minter as an exception; a *third* copy of the same sixteen random bytes and the
+  same hex table is what it exists to refuse.
+
+So `newUuidV4` was **moved** (not copied) to `src/core/Ids.kt`, beside the `isCanonicalUuid` that
+validates its output, and `ProjectId.mint(random)` was added to `ProjectId`'s companion as the one place
+that CREATES a project identity rather than reading one back. Import-only edits followed in
+`ClaudeAdapter.kt`, `ShellAdapter.kt` and `ClaudeAdapterTest.kt` — none of them is in any task's `Owns:`
+block, and the move landed between waves, so no worktree saw it change under them. `ProjectId.mint` is
+covered by `test/core/DomainTest.kt` (canonical, lower-cased, seeded-deterministic, RFC-4122
+version/variant nibbles, 64 distinct from the default source); this task does not need to re-test the
+uuid itself, only that its writer persists the one it was handed.
 
 ### Task 7: Task store core
 **Owns:** `src/store/SqliteTaskStore.kt`, `test/store/TaskStoreTest.kt`
@@ -1014,6 +1165,15 @@ numbers.*
 - [ ] fill the tracker CRUD, activity append/read, project upsert/list, and `taskUpdates` emission; `delete`
       cascades to `backlog_entries`, `backlog_deps` (both directions) and `task_activity` in one transaction
       and emits a null-entry `TaskUpdate`. The `sessions` unlink is **not** here — it is Task 11's
+- [ ] **`startIfTodo` and `transition` are yours as well**, and neither was named by the two bullets
+      around them until a readiness re-check noticed the gap. `startIfTodo` is the conditional
+      `todo → in_progress` (`Backlog.sq:142`) whose **zero-row answer is normal, not an error** — the
+      whole selection convention rests on that, so return the row count as a Boolean and let
+      `TaskService.link` read `false` as "already started". `transition` is the **largest method in the
+      file**: the state write, the `transition` activity row and the reverse-dependent re-stamp all inside
+      ONE `db.transaction { }` (so a review can never commit without its explanation), with
+      `lastActivityId` read inside that same transaction per the bullet below, and the re-stamp
+      delegating to `dependencies.restampDependentsLocked` — Task 9's code, real by the time you start
 - [ ] **the nine delegating members are yours too.** `SqliteTaskStore.kt` carries nine `TODO()`s whose
       messages name Tasks 8 and 9 (`entry`, `listBacklog`, `nextCandidate`, `move`, `dependenciesOf`,
       `dependentsOf`, `dependencyEdges`, `addDependency`, `removeDependency`). Those tasks own
@@ -1021,7 +1181,10 @@ numbers.*
       fill them. Each is a one-line delegation to the collaborator this class already constructs
       (`ordering.move(...)`, `mutex.withLock { dependencies.…Locked(...) }` for the read path) — the
       behaviour is theirs, the wiring is yours, and the labels in the stub messages were a bookkeeping
-      error, not a second owner. **Leave no `TODO()` in this file.**
+      error, not a second owner. **Leave no `TODO()` in this file.** Eight of the nine delegate to
+      `dependencies`, which is REAL in your worktree (Task 9 shipped in wave 1.5); only `move` delegates
+      to `BacklogOrdering`, which Task 8 is filling beside you — so `move` is the one member you wire
+      without being able to exercise it, and it is deliberately absent from your test list below
 - [ ] `lastActivityId` (`Tasks.sq`) must be read inside the **same `db.transaction { }`** as the
       `insertActivity` whose id it reports — not merely under the mutex. See that query's comment: outside
       a transaction the native driver answers it from a `query_only` reader connection and returns `0`, and
@@ -1038,19 +1201,11 @@ numbers.*
       emits
 - [ ] the arithmetic is `src/task/Ordering.kt`'s, implemented in wave 1.5 — call it, do not re-derive it.
       `SqliteTaskStore.move` is a one-line delegation to your class and is Task 7's line, not yours
+- [ ] the `BacklogDependencies` your constructor already receives is **real** (Task 9, wave 1.5), so the
+      `blocked` on every entry you emit comes from it — do not grow a second copy of that rule here, and
+      do not stub the collaborator out in your test: construct the real one over the same queries
 - [ ] tests: each move produces the expected order; 60 consecutive midpoint inserts between one pair still
       yield a strictly ordered list; a renormalization bumps and emits for every row
-
-### Task 9: Backlog dependencies
-**Owns:** `src/store/BacklogDependencies.kt`, `test/store/BacklogDependenciesTest.kt`
-
-- [ ] add/remove validating that both refs exist, are in the same project, differ, and do not close a cycle;
-      compute `blocked` in the read path; after every edit re-stamp and re-emit the **reverse dependents**;
-      `nextCandidate(project)`
-- [ ] the cycle refusal is `wouldCycle` from `src/task/Dependencies.kt`, implemented in wave 1.5 — call it.
-      The eight delegating members in `SqliteTaskStore.kt` are Task 7's lines, not yours
-- [ ] tests: the four refusals; a blocked task is skipped by `nextCandidate` and returned once its dependency
-      is `done`; closing a dependency emits an update for every reverse dependent; an empty backlog is null
 
 ### Task 10: Session link columns
 **Owns:** `src/store/SqliteEventStore.kt`, `test/store/EventStoreTaskLinkTest.kt`
@@ -1060,19 +1215,6 @@ numbers.*
 - [ ] tests: `setTaskRef` leaves `state`/`last_seq`/`provider_session_id` alone, bumps `rev` and emits with
       the new ref; a full-row `upsert` carrying a null `task_ref` does **not** clear an existing link; open
       over a pre-`task_ref` schema and re-open over the migrated one
-
-### Task 11: TaskService
-**Owns:** `src/daemon/TaskService.kt`, `test/daemon/TaskServiceTest.kt`
-
-- [ ] `link` as the two independent writes (conditional `todo → in_progress` where zero rows is normal, then
-      unconditional `setTaskRef`); `linkNext` looping over `nextCandidate` and terminating on null;
-      `unlink` leaving the task's state alone; `transition` (state + activity + reverse-dependent
-      re-emission in one task-store transaction, unlinking every holder on `done`); `delete` unlinking every
-      holder first, then deleting through the tracker. Never nest the two stores' locks
-- [ ] tests against fake stores: two sessions link the same task and both appear in `sessionsHoldingTask`; a
-      link to a task already `in_progress` succeeds and leaves the state alone; `linkNext` under contention
-      gives two sessions two different tasks; `linkNext` on an empty backlog reports nothing eligible;
-      `unlink` does not change state; `transition(done)` and `delete` each unlink every holder
 
 ### Task 12: Project resolution in the daemon
 **Owns:** `src/daemon/SessionManager.kt`, `src/daemon/Reconciler.kt`, `test/daemon/TaskProjectWiringTest.kt`
@@ -1110,6 +1252,11 @@ numbers.*
 - [ ] `resolveProject` / `mainCheckoutRoot` (`src/task/ProjectFile.kt`) are real by the time you start —
       wave 1.5 — and you reach the filesystem and the writer through `routing.service.projectFs` /
       `.projectFiles`, which `TaskService` carries for exactly this reason
+- [ ] `TaskRouting.service` is the concrete `TaskService`, not an interface, so your test constructs the
+      **real** one over fake stores. Its bodies are real too (Task 11 moved to wave 1.5 for exactly this
+      reason): `PATCH …/{ref}` with a state change is `service.transition` and `DELETE` is
+      `service.delete`. `ProjectFileWriter` **is** an interface — fake it; Task 4 is filling
+      `PosixProjectFileWriter` beside you and you must not depend on its body
 - [ ] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
       `TaskActivityEntry.toDto`, `SessionMeta.toLinkedSessionDto`). Use them; declaring your own in this
       file collides with Tasks 13/15/16 at merge
@@ -1130,6 +1277,10 @@ numbers.*
       `taskService` is `null` (a daemon with no task layer) a request carrying a `taskRef` is `400`: refuse
       the link rather than starting the session and dropping it silently
 - [ ] answer "nothing eligible" from `next` distinguishably from every error, so the CLI can map exit `3`
+- [ ] `TaskRouting.service` is the concrete `TaskService`, not an interface, so your test constructs the
+      **real** one over fake stores; its `link` / `unlink` / `linkNext` bodies are real (Task 11 moved to
+      wave 1.5 for exactly this reason). That is also what makes the contention test meaningful: the
+      conditional `todo → in_progress` it relies on is the service's, not a stub's
 - [ ] tests: two sessions link one task and both appear in the detail; a link from an unknown pane is
       refused rather than silently attributed; `next` under contention hands out two different tasks;
       `next` with nothing eligible is not an error status; `POST /sessions` with a `taskRef` returns a
@@ -1155,6 +1306,14 @@ numbers.*
       when the server has no task store
 - [ ] the DTO mappers are already in `TaskDtos.kt`; use them rather than declaring another
       `BacklogEntry.toDto` in this file, which would collide with Tasks 13/14/15 at merge
+- [ ] **pin the four new discriminators in `TaskEventsTest.kt`** — `tasks_snapshot`, `task_row`,
+      `task_update`, `task_removed` — by encoding each through `EventsFrame.serializer()` and reading
+      `type` back off the JSON, the `everyGlobalFrameKindCarriesTheTypeDiscriminator` shape
+      (`TransportTest.kt:310`). Copy the assertion into your own file rather than extending that one:
+      `TransportTest.kt` is a shared suite no wave-2 task may touch, so without this bullet the four
+      kinds ship **unasserted**, which is precisely the regression the invariant exists to catch — a send
+      site that reaches for a concrete `X.serializer()` emits a type-less frame every client silently
+      drops, and no other test in this plan would notice
 - [ ] tests: a link arrives as a patch; a task created after connect arrives as a full row first; a delete
       arrives as `task_removed`; a renormalization reaches the socket; a burst during the baseline is not lost
 
@@ -1198,11 +1357,15 @@ numbers.*
 ### Task 20: ApiClient
 **Owns:** `src/cli/ApiClient.kt`, `test/cli/ApiClientTaskTest.kt`
 
-- [ ] fill the bodies of the fifteen task/project methods **already declared** on `ApiClient` — every route
-      from Tasks 13–15 plus `whoami()`. They are declared (with `TODO()` bodies and a `paneId` constructor
-      parameter) because Task 21 calls all of them and may not touch this file. The `taskRef` argument on
-      `startSession` and the private `paneHeader()` helper are already implemented; **do not change a
-      signature** — if one is wrong, stop and report it
+- [ ] fill the bodies of the **fourteen** methods already declared with `TODO("Task 20: …")` on
+      `ApiClient` — thirteen task/project routes from Tasks 13–15 (`listTasks`, `createTask`,
+      `taskDetail`, `patchTask`, `deleteTask`, `moveTask`, `editTaskDependency`, `commentOnTask`,
+      `linkTask`, `unlinkTask`, `nextTask`, `listProjects`, `createProject`) plus `whoami()`. Counted off
+      the file, not off an earlier draft: the plan said "fifteen" in three places and the code has
+      fourteen — `grep -c 'TODO("Task 20' src/cli/ApiClient.kt` is the check. They are declared (with a
+      `paneId` constructor parameter) because Task 21 calls all of them and may not touch this file. The
+      `taskRef` argument on `startSession` and the private `paneHeader()` helper are already implemented;
+      **do not change a signature** — if one is wrong, stop and report it
 - [ ] send `TASK_PANE_HEADER` via `paneHeader()` when a pane was resolved and `sessionId` in the body when
       `--session` was given; surface the HTTP status on failures; keep the `HttpTimeout` discipline
 - [ ] tests against a stub server (the `withStub` shape at `test/cli/CliTest.kt:855`, reimplemented in your
@@ -1385,7 +1548,7 @@ numbers.*
       deleting unlinks
 - [ ] `/tasks` serves the shell, `/api/v1/tasks` serves JSON, `/s/id/extra` is `404`, and a deep-linked
       `/tasks/{ref}` serves a shell whose manifest and icon links resolve
-- [ ] `./kotlin build && ./kotlin test` — 0 skips, at or above the 927 post-wave-1 baseline plus the
+- [ ] `./kotlin build && ./kotlin test` — 0 skips, at or above the 983 post-wave-1.5 baseline plus the
       new tests;
       `node --check` over every changed `.js`; every new module registered in `WebUiServingTest.kt`;
       `git grep '/Users/' -- '*.yaml'` still empty

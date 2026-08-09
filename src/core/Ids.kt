@@ -1,6 +1,7 @@
 package io.kotgent.core
 
 import kotlin.jvm.JvmInline
+import kotlin.random.Random
 import kotlinx.serialization.Serializable
 
 /*
@@ -97,6 +98,41 @@ fun isCanonicalUuid(value: String): Boolean = UUID_FORMAT.matches(value)
 
 private val UUID_FORMAT =
     Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+private const val HEX_DIGITS = "0123456789abcdef"
+
+/**
+ * Generate a canonical RFC-4122 version-4 (random) UUID string, `8-4-4-4-12` lowercase hex — the
+ * form [isCanonicalUuid] accepts, [ProviderSessionId] validates and `claude --session-id` expects.
+ * Draws 16 bytes from [random] (injectable for deterministic tests), then stamps the version (`4`)
+ * and variant (`10xx`) bits.
+ *
+ * ## Why it lives in `core` rather than beside its first caller
+ * It was written in `io.kotgent.adapter.claude` and moved here the moment a SECOND layer needed it.
+ * `ShellAdapter` could import it across the adapter package for free, but [ProjectId] cannot: the
+ * layering runs `task → core` and `adapter → core`, so a `src/task/` minter reaching into
+ * `adapter.claude` would invert it (the same argument `ProjectFile.kt`'s `PosixProjectFs` makes about
+ * reusing `VendorStoreFs`). Moving it is deliberately preferred over a second copy — `CLAUDE.md`'s
+ * "`randomBytes`/`hex` live once; don't add a second entropy source or hex encoder" rule already
+ * tolerates this one non-crypto minter and must not be asked to tolerate two.
+ *
+ * Public rather than `internal`: Kotlin Toolchain 0.11.x does not compile `test/` as a friend module,
+ * so the tests that assert the generated ids could not see an `internal` declaration.
+ */
+fun newUuidV4(random: Random = Random.Default): String {
+    val bytes = random.nextBytes(16)
+    bytes[6] = ((bytes[6].toInt() and 0x0f) or 0x40).toByte() // version 4
+    bytes[8] = ((bytes[8].toInt() and 0x3f) or 0x80).toByte() // variant 10xx
+    val hex = buildString(32) {
+        for (b in bytes) {
+            val v = b.toInt() and 0xff
+            append(HEX_DIGITS[v ushr 4])
+            append(HEX_DIGITS[v and 0x0f])
+        }
+    }
+    return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-" +
+        "${hex.substring(16, 20)}-${hex.substring(20, 32)}"
+}
 
 /**
  * A task's stable handle, `"<tracker>:<key>"` — e.g. `"local:42"`.
@@ -195,6 +231,15 @@ value class ProjectId private constructor(val value: String) {
         /** [value] as a lower-cased [ProjectId], or `null` when it is not a canonical uuid. */
         fun parseOrNull(value: String): ProjectId? =
             if (isCanonicalUuid(value)) ProjectId(value.lowercase()) else null
+
+        /**
+         * A freshly minted project identity for a `.kotgent.json` that does not exist yet — the one
+         * place in the codebase that CREATES a [ProjectId] rather than reading one back.
+         *
+         * [random] is injectable so a writer's test is deterministic. The result is always canonical
+         * and already lower-cased ([newUuidV4] emits lowercase hex), so this can never throw.
+         */
+        fun mint(random: Random = Random.Default): ProjectId = of(newUuidV4(random))
     }
 }
 

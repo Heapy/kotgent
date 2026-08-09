@@ -3,9 +3,9 @@ package io.kotgent.adapter.shell
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
-import io.kotgent.adapter.claude.newUuidV4
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.newUuidV4
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 

@@ -3,6 +3,7 @@ package io.kotgent.core
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -236,5 +237,22 @@ class DomainTest {
         assertEquals(Seq(4), bound.lastSeq)
         // copy must not mutate the original
         assertEquals(null, meta.providerSessionId)
+    }
+
+    @Test
+    fun projectIdMintsACanonicalLowercaseUuidFromAnInjectableRandom() {
+        // The ONE minter reachable from `src/task/` — `newUuidV4` used to live in
+        // `io.kotgent.adapter.claude`, which a project-file writer cannot import without inverting the
+        // `task -> core` layering. Determinism is what makes Task 4's writer test assertable.
+        val minted = ProjectId.mint(Random(7))
+        assertEquals(minted, ProjectId.mint(Random(7)), "same seed -> same project id")
+        assertTrue(isCanonicalUuid(minted.value), "a minted id must satisfy the boundary check")
+        assertEquals(minted.value.lowercase(), minted.value, "minted ids are already lower-cased")
+        assertEquals('4', minted.value[14], "RFC-4122 version nibble")
+        assertTrue(minted.value[19] in "89ab", "RFC-4122 variant nibble")
+        assertEquals(minted, ProjectId.of(minted.value), "round-trips through the parsing constructor")
+
+        val many = (1..64).map { ProjectId.mint().value }.toSet()
+        assertEquals(64, many.size, "the default source is not constant")
     }
 }

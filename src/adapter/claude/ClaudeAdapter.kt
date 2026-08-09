@@ -5,8 +5,8 @@ import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.newUuidV4
 import kotlinx.coroutines.flow.Flow
-import kotlin.random.Random
 
 /**
  * The Claude [AgentAdapter] (plan Task 11) — the OUTGOING side of the Claude integration:
@@ -91,29 +91,4 @@ class ClaudeAdapter(
                 cliPath = cliPath,
             )
     }
-}
-
-private const val HEX_DIGITS = "0123456789abcdef"
-
-/**
- * Generate a canonical RFC-4122 version-4 (random) UUID string, `8-4-4-4-12` lowercase hex — the
- * form [ProviderSessionId] validates and `claude --session-id` expects. Draws 16 bytes from [random]
- * (injectable for deterministic tests), then stamps the version (`4`) and variant (`10xx`) bits.
- *
- * Public rather than `internal`: Kotlin Toolchain 0.11.x does not compile `test/` as a friend module,
- * so the adapter test (which asserts the generated ids) could not see an `internal` declaration.
- */
-fun newUuidV4(random: Random = Random.Default): String {
-    val bytes = random.nextBytes(16)
-    bytes[6] = ((bytes[6].toInt() and 0x0f) or 0x40).toByte() // version 4
-    bytes[8] = ((bytes[8].toInt() and 0x3f) or 0x80).toByte() // variant 10xx
-    val hex = buildString(32) {
-        for (b in bytes) {
-            val v = b.toInt() and 0xff
-            append(HEX_DIGITS[v ushr 4])
-            append(HEX_DIGITS[v and 0x0f])
-        }
-    }
-    return "${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-" +
-        "${hex.substring(16, 20)}-${hex.substring(20, 32)}"
 }
