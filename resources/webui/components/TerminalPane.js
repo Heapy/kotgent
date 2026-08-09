@@ -11,7 +11,8 @@
 import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { resizeFrame, wsUrl } from "../lib/api.js";
-import { displayName, stateBadge } from "../lib/sessions.js";
+import { displayName, stateBadge, taskBadge } from "../lib/sessions.js";
+import { navigate, taskPath } from "../lib/router.js";
 import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.js";
 import { KeyBar } from "./KeyBar.js";
 
@@ -312,7 +313,7 @@ function installSwipeScroll(term) {
 }
 
 export function TerminalPane({
-  session, attachedId, terminalFontSize, terminalUnicode, hint, drawerOpen,
+  session, tasks, attachedId, terminalFontSize, terminalUnicode, hint, drawerOpen,
   sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
@@ -677,6 +678,11 @@ export function TerminalPane({
           <span id="terminal-state" class=${badge ? "badge " + badge.cls : "badge"}>
             ${badge ? badge.label : ""}
           </span>
+          ${/* Rendered unconditionally, on purpose: the component itself answers null both when nothing
+                is selected and when the selection is linked to no task, so a conditional here would buy
+                nothing — and no part of this header may be wrapped in one, which is what keeps the
+                palette button reachable on a phone with no session selected. */ ""}
+          <${HeaderTaskBadge} session=${session} tasks=${tasks} />
         </div>
         ${/* The one lifecycle control in the header, on every screen: it opens the palette's leader grid,
               which is exactly the chord-bearing descriptors of lib/commands.js — disabled ones included,
@@ -709,5 +715,41 @@ export function TerminalPane({
 
       ${hint && html`<p id="terminal-hint" class="terminal-hint">${hint}</p>`}
     </main>
+  `;
+}
+
+/**
+ * The header's task badge — the same text builder and the same two classes the sidebar row uses, so the
+ * two places a session's task is named can never disagree. See `TaskBadge` in `Sidebar.js` for why this
+ * is an `<a href>` that steals only the plain left click; here there is no enclosing click target, so the
+ * `stopPropagation` that matters there is merely harmless.
+ *
+ * It answers null both for a header with nothing selected and for a session linked to nothing, so the
+ * header renders it unconditionally — a guard there would buy nothing and would trip the serving test
+ * that keeps every conditional rendering out of the region around that header.
+ *
+ * Declared BELOW the component it serves, which a function declaration's hoisting makes free: it keeps
+ * the pane's own markup the first one in this module, and `WebUiServingTest` bounds its terminal-header
+ * assertions from exactly there.
+ */
+function HeaderTaskBadge({ session, tasks }) {
+  const task = session ? taskBadge(session, tasks) : null;
+  if (!task) return null;
+  const open = (event) => {
+    event.stopPropagation();
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(taskPath(task.ref));
+  };
+  return html`
+    <a
+      id="terminal-task"
+      class=${"task-badge" + (task.known ? "" : " task-badge-unknown")}
+      href=${taskPath(task.ref)}
+      title=${task.tooltip}
+      onClick=${open}
+    >
+      <span class="task-session-dot" data-state=${session.state}></span>${task.label}
+    </a>
   `;
 }

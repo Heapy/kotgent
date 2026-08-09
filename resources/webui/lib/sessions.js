@@ -57,6 +57,39 @@ export function sessionSubline(s) {
 }
 
 /**
+ * The session→task badge: what a session row and the terminal header show for `session.taskRef`.
+ *
+ * ONE builder, because both callers must degrade identically. Returns null when the session is linked to
+ * nothing at all — the ordinary case, and the reason a caller renders nothing rather than an empty pill.
+ *
+ * [tasks] is the flat `BacklogEntryDto[]` the `/events` socket keeps current — the same list the board
+ * renders — and is what turns a bare `local:42` into a title. Without it every badge would take the
+ * unknown arm below, which is a post-delete fallback and not the normal case.
+ *
+ * A ref that names no known task still renders, as the bare ref: `sessions.task_ref` is a REFERENCE and
+ * not a foreign key, so a task deleted while a link write was in flight leaves one dangling until the
+ * next daemon start clears it. Hiding the badge there would hide the anomaly; showing the ref names it.
+ *
+ * `known` decides only which class the caller spells (`task-badge` vs `task-badge-unknown`) — a resolved
+ * entry whose tracker row is momentarily missing arrives with its ref as the title (the daemon's own
+ * `BacklogEntry.toDto` fallback) and is still `known`, because the backlog really does carry it.
+ */
+export function taskBadge(session, tasks) {
+  const ref = session && session.taskRef ? session.taskRef : null;
+  if (!ref) return null;
+  const entry = (tasks || []).find((t) => t && t.ref === ref) || null;
+  const title = entry && entry.title ? entry.title : "";
+  return {
+    ref: ref,
+    label: title || ref,
+    known: !!entry,
+    tooltip: entry
+      ? ref + (title && title !== ref ? " — " + title : "")
+      : ref + " — no such task (it may have just been deleted)",
+  };
+}
+
+/**
  * Replace-or-append a full server row into the list, newest-rev-wins: every observation of a session —
  * an HTTP DTO or a WS session_row frame — carries the daemon-stamped `rev`, so a stale response that
  * lands after a fresher frame compares older and cannot roll the row back, whatever order the network
@@ -77,6 +110,11 @@ export function upsertIfNewer(list, row) {
  * authoritative for every field it carries — `model` is taken VERBATIM, null included, so a cleared
  * suspect model (the provider-id rebind correction) clears here too — and the patch's `rev` is written
  * onto the row: without that, a later stale full row would compare against the old rev and win.
+ *
+ * `taskRef` and `projectId` follow the same verbatim rule, and that is what MOVES the task badge: a
+ * `kotgent task claim` typed inside a pane writes `sessions.task_ref` and the daemon emits exactly this
+ * patch, so dropping either field here would leave every badge frozen at whatever the last full row
+ * said until a reload. An unlink arrives as `taskRef: null` and must clear the badge, not keep it.
  */
 export function patchIfNewer(list, msg) {
   const index = list.findIndex((s) => s.id === msg.sessionId);
@@ -92,6 +130,8 @@ export function patchIfNewer(list, msg) {
     unread: msg.unread,
     archived: msg.archived,
     model: msg.model,
+    taskRef: msg.taskRef,
+    projectId: msg.projectId,
     rev: msg.rev,
   });
   return next;

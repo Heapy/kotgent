@@ -18,7 +18,8 @@ import {
   syncWorkerPushPreference,
   unsubscribe as pushUnsubscribe,
 } from "../lib/push.js";
-import { displayName, isNeedsAttention, sessionSubline, stateBadge } from "../lib/sessions.js";
+import { displayName, isNeedsAttention, sessionSubline, stateBadge, taskBadge } from "../lib/sessions.js";
+import { navigate, taskPath } from "../lib/router.js";
 
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
@@ -53,7 +54,40 @@ function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onC
   });
 }
 
-function SessionRow({ session, active, onSelect, onRestore }) {
+/**
+ * The row's task badge, or nothing when the session is linked to no task.
+ *
+ * It is a real `<a href>` so ⌘-click, middle-click and "copy link" all behave: a plain left click is the
+ * only one this steals, handing it to the router instead of a reload. `stopPropagation` is load-bearing —
+ * the whole row is a click target that selects the session, and without it opening a task would select
+ * the session underneath at the same time.
+ *
+ * The markup is duplicated in TerminalPane's header rather than extracted: a shared component would be a
+ * fourth file, and the two badges differ in what surrounds them. What they must NOT differ in is the
+ * text, which is why [taskBadge] and not a local string is the source of it.
+ */
+function TaskBadge({ session, tasks }) {
+  const task = taskBadge(session, tasks);
+  if (!task) return null;
+  const open = (event) => {
+    event.stopPropagation();
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigate(taskPath(task.ref));
+  };
+  return html`
+    <a
+      class=${"task-badge" + (task.known ? "" : " task-badge-unknown")}
+      href=${taskPath(task.ref)}
+      title=${task.tooltip}
+      onClick=${open}
+    >
+      <span class="task-session-dot" data-state=${session.state}></span>${task.label}
+    </a>
+  `;
+}
+
+function SessionRow({ session, tasks, active, onSelect, onRestore }) {
   const badge = stateBadge(session.state);
   const select = () => onSelect(session.id);
   const onKeyDown = (event) => {
@@ -80,6 +114,7 @@ function SessionRow({ session, active, onSelect, onRestore }) {
       <div class="session-main">
         <div class="session-name">${displayName(session)}</div>
         <div class="session-sub">${sessionSubline(session)}</div>
+        <${TaskBadge} session=${session} tasks=${tasks} />
       </div>
       ${session.unread > 0 &&
         html`<span class="unread-pill" title=${session.unread + " unread event(s)"}>
@@ -103,7 +138,7 @@ function groupNeedsAttention(group) {
 }
 
 function SessionGroup({
-  group, activeId, collapsedGroups, onSelect, onToggle, onNewSession,
+  group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession,
 }) {
   // The head is a toggle BUTTON with the group's "+" as its sibling, not a child — a button inside a
   // button is invalid, and the "+" must not double as an expand.
@@ -138,12 +173,14 @@ function SessionGroup({
       ${!collapsed && html`
         <ul class="session-list group-contents">
           ${group.sessions.map((s) => html`
-            <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
+            <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
+                           active=${s.id === activeId} onSelect=${onSelect} />
           `)}
           ${group.children.map((child) => html`
             <${SessionGroup}
               key=${child.path}
               group=${child}
+              tasks=${tasks}
               activeId=${activeId}
               collapsedGroups=${collapsedGroups}
               onSelect=${onSelect}
@@ -158,7 +195,7 @@ function SessionGroup({
 }
 
 export function Sidebar({
-  sessions, activeId, prefs, status, currentVersion, drawerOpen, collapsed, showDone, sessionsReady,
+  sessions, tasks, activeId, prefs, status, currentVersion, drawerOpen, collapsed, showDone, sessionsReady,
   onSelect, onNewSession, onOpenPrefs, onRestore, onCloseDrawer, onToggleShowDone,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
@@ -339,7 +376,8 @@ export function Sidebar({
           <h2 class="section-title attn">Needs attention</h2>
           <ul id="attention-list" class="session-list">
             ${attention.map((s) => html`
-              <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
+              <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
+                             active=${s.id === activeId} onSelect=${onSelect} />
             `)}
           </ul>
         </section>
@@ -366,6 +404,7 @@ export function Sidebar({
                 <${SessionGroup}
                   key=${g.path}
                   group=${g}
+                  tasks=${tasks}
                   activeId=${activeId}
                   collapsedGroups=${collapsedGroups}
                   onSelect=${onSelect}
@@ -374,7 +413,8 @@ export function Sidebar({
                 />
               `)
             : visible.map((s) => html`
-                <${SessionRow} key=${s.id} session=${s} active=${s.id === activeId} onSelect=${onSelect} />
+                <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
+                               active=${s.id === activeId} onSelect=${onSelect} />
               `)}
         </ul>
 
@@ -407,6 +447,7 @@ export function Sidebar({
                 <${SessionRow}
                   key=${s.id}
                   session=${s}
+                  tasks=${tasks}
                   active=${s.id === activeId}
                   onSelect=${onSelect}
                   onRestore=${onRestore}
