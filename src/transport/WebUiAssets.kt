@@ -145,13 +145,31 @@ fun isRevToken(value: String): Boolean =
  * runs first in `serveStaticFile` — a UI route never carries a `/_v/<rev>/` prefix, so a stripped path
  * that suddenly looks like one is not a route request.
  *
- * Returns `false` here on purpose: Task 17 of the task-backlog plan implements the grammar. Until then
- * static serving behaves exactly as before, which is what keeps the suite green with stubs.
+ * An empty segment anywhere is a miss, which is what keeps `""`, `tasks/` and `s//x` out: the first is
+ * `staticWebUi`'s job, and the other two are malformed rather than routes. The two `{ref}` / `{id}`
+ * segments are otherwise **not** inspected — a [io.kotgent.core.TaskRef] is `<tracker>:<id>` and a
+ * [io.kotgent.core.SessionId] is a uuid, but validating either here would move the "unknown task" answer
+ * from the SPA (which can render it, and can offer the board) into a bare `404` from the file server.
+ * The cost of not validating is bounded to one shape — a single mistyped segment directly under `/tasks/`
+ * or `/s/`, e.g. `/tasks/aap.js` for `/tasks/app.js` — and only when no such file exists. Every deeper
+ * typo (`/tasks/id/missing.js`) still `404`s, which is the case that actually occurs, because every asset
+ * the shell references is addressed from the root through `/_v/<rev>/`.
  */
 fun isSpaRoute(rel: String): Boolean {
-    // Task 17.
-    return false
+    val segments = rel.split('/')
+    if (segments.any { it.isEmpty() }) return false
+    return when (segments.size) {
+        1 -> segments[0] == SPA_TASKS_SEGMENT
+        2 -> segments[0] == SPA_TASKS_SEGMENT || segments[0] == SPA_SESSION_SEGMENT
+        else -> false
+    }
 }
+
+/** The board's own segment: `/tasks` is the list, `/tasks/{ref}` one task's detail view. */
+private const val SPA_TASKS_SEGMENT: String = "tasks"
+
+/** `/s/{id}` — a session's terminal, deliberately short because it is the link a human pastes. */
+private const val SPA_SESSION_SEGMENT: String = "s"
 
 /**
  * The two files that must revalidate no matter how they were requested. Both are entry points whose URL is
