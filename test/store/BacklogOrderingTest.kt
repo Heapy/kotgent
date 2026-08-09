@@ -76,6 +76,12 @@ class BacklogOrderingTest {
         val emitted: MutableList<TaskUpdate> = mutableListOf()
 
         /**
+         * The store's staging buffer, with the test's list as its publisher: a mutator STAGES while its
+         * transaction is open and the batch is published only after the locked body succeeded.
+         */
+        val outbox: TaskUpdateOutbox = TaskUpdateOutbox { emitted += it }
+
+        /**
          * The real collaborator, over the same queries and the same mutex the store shares between the
          * two. Its own clock refuses to answer: nothing it writes is timestamped, so a move that routed
          * a timestamp through it would fail here instead of silently stamping `updated_at` twice.
@@ -84,7 +90,7 @@ class BacklogOrderingTest {
             queries = queries,
             mutex = mutex,
             nextRev = { ++revCounter },
-            emit = { emitted += it },
+            outbox = outbox,
             now = { error("BacklogDependencies must not need a clock") },
         )
 
@@ -93,7 +99,7 @@ class BacklogOrderingTest {
             mutex = mutex,
             dependencies = deps,
             nextRev = { ++revCounter },
-            emit = { emitted += it },
+            outbox = outbox,
             now = { ++clock },
         )
 

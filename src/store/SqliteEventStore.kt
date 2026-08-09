@@ -367,7 +367,8 @@ class SqliteEventStore private constructor(
                     model = cachedRow?.model, // updateCache never touches model, so the pre-transaction row is current
                     rev = if (cachedRow != null) rev else 0,
                     // updateCache touches neither column either, so the pre-transaction row is current.
-                    taskRef = cachedRow?.task_ref?.let(::TaskRef),
+                    // Both read through `parseOrNull` — see [toMeta] for why a read may not throw.
+                    taskRef = cachedRow?.task_ref?.let(TaskRef::parseOrNull),
                     projectId = cachedRow?.project_id?.let(ProjectId::parseOrNull),
                 ),
             )
@@ -450,7 +451,8 @@ class SqliteEventStore private constructor(
                 unread(row.last_seq, row.read_cursor), row.archived != 0L,
                 model = row.model,
                 rev = row.rev,
-                taskRef = row.task_ref?.let(::TaskRef),
+                // Both read through `parseOrNull` — see [toMeta] for why a read may not throw.
+                taskRef = row.task_ref?.let(TaskRef::parseOrNull),
                 projectId = row.project_id?.let(ProjectId::parseOrNull),
             ),
         )
@@ -535,10 +537,15 @@ class SqliteEventStore private constructor(
         updatedAt = updated_at,
         archived = archived != 0L,
         rev = rev,
-        taskRef = task_ref?.let(::TaskRef),
-        // `parseOrNull`, not the constructor: [ProjectId] has a private constructor precisely so every
-        // value is case-normalized on the way in, and a READ must not throw on a column somebody edited
-        // by hand — an unparseable project reads as "no project", which is the honest degradation.
+        // `parseOrNull` on BOTH, never the constructor. A READ must not throw on a column somebody edited
+        // by hand (or on one a restored backup / a future external tracker spelled differently): `toMeta`
+        // is what `listSessions` maps, and `Reconciler.reconcile` calls that before the daemon binds its
+        // server — one malformed cell would turn a cosmetic degradation into a daemon that does not start,
+        // naming no row. So an unparseable value reads as "no task" / "no project", which is the honest
+        // answer for a column the design documents as a loose REFERENCE rather than a foreign key.
+        // ([ProjectId] additionally has a private constructor so every value is case-normalized on the way
+        // in; that is a second, independent reason it can only be parsed, not constructed, here.)
+        taskRef = task_ref?.let(TaskRef::parseOrNull),
         projectId = project_id?.let(ProjectId::parseOrNull),
     )
 

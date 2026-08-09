@@ -29,7 +29,7 @@ import kotlin.time.ExperimentalTime
  *
  * ## Why this class has two collaborators
  * [BacklogOrdering] and [BacklogDependencies] each take the generated queries object, this store's
- * [mutex], its revision allocator and its emitter. The honest reason for the split is **parallel
+ * [mutex], its revision allocator and its [outbox]. The honest reason for the split is **parallel
  * execution**: it lets three agents implement the store at once without touching one file. It is not a
  * bad shape on its own — the class would otherwise be ~600 lines covering three unrelated concerns
  * (tracker CRUD, gap-based ranking, a dependency graph) — but the fleet is why it exists, and this KDoc
@@ -46,6 +46,9 @@ import kotlin.time.ExperimentalTime
  *    signal the board gets; a write that moves a row without stamping [nextRev] and emitting leaves a
  *    connected board stale until a reload. A revision consumed by a write that touched zero rows is
  *    never persisted or emitted, so its post-restart reuse is unobservable.
+ *  - **The emission happens AFTER the commit, never inside the transaction.** Every mutator's locked
+ *    body runs inside [TaskUpdateOutbox.publishing], which stages each change and publishes the batch
+ *    only once the body returned normally — see that class for what a rolled-back emission costs.
  *  - **The derived `blocked` is never recomputed here.** Every emitted entry comes from
  *    [BacklogDependencies.entryLocked] (or, for a brand-new task, from the fact that it can have no
  *    dependencies yet), so this file holds no second copy of that rule.
@@ -101,20 +104,23 @@ class SqliteTaskStore private constructor(
     /** Allocate the next revision. Callers hold [mutex]; handed to the collaborators so the counter has one owner. */
     private val nextRev: () -> Long = { ++revCounter }
 
-    /** Publish one committed change. Non-suspending (`tryEmit`), so it is safe to call under [mutex]. */
-    private val emit: (TaskUpdate) -> Unit = { _taskUpdates.tryEmit(it) }
+    /**
+     * Where every mutator's [TaskUpdate]s go while its transaction is open, and what publishes them onto
+     * [taskUpdates] once it has committed. Shared with the two collaborators so all three obey one rule.
+     */
+    private val outbox: TaskUpdateOutbox = TaskUpdateOutbox { _taskUpdates.tryEmit(it) }
 
     /**
      * The dependency graph: the four insert refusals, the derived `blocked` read path, `nextCandidate`,
      * and the reverse-dependent re-stamp that every state transition and dependency edit owes. Task 9.
      */
-    val dependencies: BacklogDependencies = BacklogDependencies(backlog, mutex, nextRev, emit, now)
+    val dependencies: BacklogDependencies = BacklogDependencies(backlog, mutex, nextRev, outbox, now)
 
     /**
      * Gap-based ranking: `move` plus the renormalize-and-retry-once path. Takes [dependencies] because
      * every entry it emits carries the derived `blocked`, whose one implementation lives there. Task 8.
      */
-    val ordering: BacklogOrdering = BacklogOrdering(backlog, mutex, dependencies, nextRev, emit, now)
+    val ordering: BacklogOrdering = BacklogOrdering(backlog, mutex, dependencies, nextRev, outbox, now)
 
     init {
         for (statement in CREATE_TABLES_IF_NOT_EXISTS) driver.execute(null, statement, 0)
@@ -144,37 +150,39 @@ class SqliteTaskStore private constructor(
      * only answer what is already known here.
      */
     override suspend fun create(project: ProjectId, title: String, body: String): Task = mutex.withLock {
-        val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++localKeyCounter}")
-        val ts = now()
-        val rev = nextRev()
-        db.transaction {
-            // Appending consumes no gap, so this is the one placement that can never need a
-            // renormalization — see `Ordering.kt`. A project with no rows yet answers `null` and takes 1.0.
-            val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
-            tasks.insertTask(ref.value, title, body, ts, ts)
-            backlog.insertEntry(ref.value, project.value, position, TaskState.todo.name, ts, ts, rev)
-            // `text` is deliberately left null: the row records WHEN a task appeared and WHO made it,
-            // while the title lives in `tasks` and is always current there. Snapshotting it into an
-            // append-only feed would invent content the interface never asked for.
-            appendActivityLocked(ref, ActivityKind.created, CREATED_BY, null, null, null, ts)
-            emit(
-                TaskUpdate(
-                    ref = ref,
-                    entry = BacklogEntry(
+        outbox.publishing {
+            val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++localKeyCounter}")
+            val ts = now()
+            val rev = nextRev()
+            db.transaction {
+                // Appending consumes no gap, so this is the one placement that can never need a
+                // renormalization — see `Ordering.kt`. A project with no rows yet answers `null` and takes 1.0.
+                val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
+                tasks.insertTask(ref.value, title, body, ts, ts)
+                backlog.insertEntry(ref.value, project.value, position, TaskState.todo.name, ts, ts, rev)
+                // `text` is deliberately left null: the row records WHEN a task appeared and WHO made it,
+                // while the title lives in `tasks` and is always current there. Snapshotting it into an
+                // append-only feed would invent content the interface never asked for.
+                appendActivityLocked(ref, ActivityKind.created, CREATED_BY, null, null, null, ts)
+                outbox.stage(
+                    TaskUpdate(
                         ref = ref,
-                        project = project,
-                        position = position,
-                        state = TaskState.todo,
-                        blocked = false,
-                        createdAt = ts,
-                        updatedAt = ts,
+                        entry = BacklogEntry(
+                            ref = ref,
+                            project = project,
+                            position = position,
+                            state = TaskState.todo,
+                            blocked = false,
+                            createdAt = ts,
+                            updatedAt = ts,
+                            rev = rev,
+                        ),
                         rev = rev,
                     ),
-                    rev = rev,
-                ),
-            )
+                )
+            }
+            Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
         }
-        Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
     }
 
     /**
@@ -188,14 +196,16 @@ class SqliteTaskStore private constructor(
      * revision bump. Without it a rename is invisible until a reload.
      */
     override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = mutex.withLock {
-        var updated: Task? = null
-        db.transaction {
-            if (!existsLocked(ref)) return@transaction
-            tasks.updateTaskFields(title, body, now(), ref.value)
-            updated = taskLocked(ref)
-            restampAndEmitLocked(ref)
+        outbox.publishing {
+            var updated: Task? = null
+            db.transaction {
+                if (!existsLocked(ref)) return@transaction
+                tasks.updateTaskFields(title, body, now(), ref.value)
+                updated = taskLocked(ref)
+                restampAndStageLocked(ref)
+            }
+            updated
         }
-        updated
     }
 
     /**
@@ -209,19 +219,21 @@ class SqliteTaskStore private constructor(
      * rather than the one the vanished edge used to force.
      */
     override suspend fun delete(ref: TaskRef): Boolean = mutex.withLock {
-        var removed = false
-        db.transaction {
-            if (!existsLocked(ref)) return@transaction
-            val dependents = dependencies.dependentsOfLocked(ref)
-            backlog.deleteDepsForTask(ref.value, ref.value)
-            backlog.deleteEntry(ref.value)
-            tasks.deleteActivityForTask(ref.value)
-            tasks.deleteTask(ref.value)
-            emit(TaskUpdate(ref, null, nextRev()))
-            for (dependent in dependents) restampAndEmitLocked(dependent)
-            removed = true
+        outbox.publishing {
+            var removed = false
+            db.transaction {
+                if (!existsLocked(ref)) return@transaction
+                val dependents = dependencies.dependentsOfLocked(ref)
+                backlog.deleteDepsForTask(ref.value, ref.value)
+                backlog.deleteEntry(ref.value)
+                tasks.deleteActivityForTask(ref.value)
+                tasks.deleteTask(ref.value)
+                outbox.stage(TaskUpdate(ref, null, nextRev()))
+                for (dependent in dependents) restampAndStageLocked(dependent)
+                removed = true
+            }
+            removed
         }
-        removed
     }
 
     // --- backlog reads (delegated to BacklogDependencies, which owns the derived `blocked`) ---------
@@ -246,10 +258,12 @@ class SqliteTaskStore private constructor(
      * column, and its own `blocked` drops to false with the state that carried it.
      */
     override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
-        val rev = nextRev()
-        val changed = backlog.startIfTodo(now(), rev, ref.value).value > 0L
-        if (changed) dependencies.entryLocked(ref)?.let { emit(TaskUpdate(ref, it, it.rev)) }
-        changed
+        outbox.publishing {
+            val rev = nextRev()
+            val changed = backlog.startIfTodo(now(), rev, ref.value).value > 0L
+            if (changed) dependencies.entryLocked(ref)?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
+            changed
+        }
     }
 
     /**
@@ -269,7 +283,20 @@ class SqliteTaskStore private constructor(
         author: String,
         message: String?,
     ): BacklogEntry? = mutex.withLock {
-        val before = dependencies.entryLocked(ref) ?: return@withLock null
+        outbox.publishing { transitionLocked(ref, to, author, message) }
+    }
+
+    /**
+     * [transition]'s body, extracted so the "unknown ref" exit is a plain `return` rather than a
+     * non-local one out of [TaskUpdateOutbox.publishing] — which would skip the publish.
+     */
+    private fun transitionLocked(
+        ref: TaskRef,
+        to: TaskState,
+        author: String,
+        message: String?,
+    ): BacklogEntry? {
+        val before = dependencies.entryLocked(ref) ?: return null
         val ts = now()
         val rev = nextRev()
         var after: BacklogEntry? = null
@@ -279,10 +306,10 @@ class SqliteTaskStore private constructor(
             // Re-read rather than copy: `blocked` is derived from the state that was just written, and
             // moving BACK to `todo` can make an entry blocked again.
             after = dependencies.entryLocked(ref)
-            after?.let { emit(TaskUpdate(ref, it, it.rev)) }
+            after?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
             dependencies.restampDependentsLocked(ref)
         }
-        after
+        return after
     }
 
     override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = ordering.move(ref, target)
@@ -321,13 +348,17 @@ class SqliteTaskStore private constructor(
         fromState: TaskState?,
         toState: TaskState?,
     ): TaskActivityEntry? = mutex.withLock {
-        val ts = now()
-        var appended: TaskActivityEntry? = null
-        db.transaction {
-            if (!existsLocked(ref)) return@transaction
-            appended = appendActivityLocked(ref, kind, author, text, fromState, toState, ts)
+        // Wrapped although it stages nothing today: uniformity is what keeps the rule from drifting — a
+        // future emission added here would otherwise be staged and never published.
+        outbox.publishing {
+            val ts = now()
+            var appended: TaskActivityEntry? = null
+            db.transaction {
+                if (!existsLocked(ref)) return@transaction
+                appended = appendActivityLocked(ref, kind, author, text, fromState, toState, ts)
+            }
+            appended
         }
-        appended
     }
 
     /**
@@ -423,18 +454,18 @@ class SqliteTaskStore private constructor(
     }
 
     /**
-     * Stamp one row a fresh rev and emit it — the shape [BacklogDependencies] uses for a reverse
+     * Stamp one row a fresh rev and stage it — the shape [BacklogDependencies] uses for a reverse
      * dependent, repeated here because that one is private and this file may not reach into it. The entry
-     * is read BEFORE the write and re-emitted with the new rev: `restamp` touches no other column, so the
+     * is read BEFORE the write and re-staged with the new rev: `restamp` touches no other column, so the
      * copy is exactly what a second `selectEntry` would answer, at one query instead of two. A ref with no
-     * row consumes no revision and emits nothing — a null-entry [TaskUpdate] means DELETED, which a
+     * row consumes no revision and stages nothing — a null-entry [TaskUpdate] means DELETED, which a
      * re-stamp must never manufacture.
      */
-    private fun restampAndEmitLocked(ref: TaskRef) {
+    private fun restampAndStageLocked(ref: TaskRef) {
         val entry = dependencies.entryLocked(ref) ?: return
         val rev = nextRev()
         backlog.restamp(rev, ref.value)
-        emit(TaskUpdate(ref, entry.copy(rev = rev), rev))
+        outbox.stage(TaskUpdate(ref, entry.copy(rev = rev), rev))
     }
 
     companion object {
@@ -508,3 +539,54 @@ class SqliteTaskStore private constructor(
 /** Default wall-clock for task timestamps: epoch millis. Injectable so tests stay deterministic. */
 @OptIn(ExperimentalTime::class)
 fun taskStoreEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
+
+/**
+ * The one-write buffer between a task mutator's transaction and [TaskStore.taskUpdates].
+ *
+ * ## Why staging, when `tryEmit` would be legal
+ * Every mutator in this layer publishes a [TaskUpdate] for each row a client can see change, and every
+ * one of them does its writing inside a `db.transaction { }`. Publishing from *inside* that block is
+ * legal — `tryEmit` never suspends — but it is wrong: **a subscriber must never see a change a rollback
+ * then takes back.** Most such phantoms would self-heal, because the in-memory revision counter keeps
+ * advancing and the next write re-emits the row; a rolled-back `create` is the one that never does. No
+ * row was committed, so no later [TaskUpdate] and no `task_removed` ever names that ref, and the phantom
+ * card sits on every connected board until somebody reloads.
+ *
+ * ## The contract
+ * A mutator [stage]s; [publishing] wraps its whole locked body and hands the staged updates to the
+ * publisher, in order, only once that body returned normally. A throw publishes nothing, and either way
+ * the buffer is empty afterwards, so a failed mutator cannot leak its updates into the next one.
+ *
+ * One consequence is deliberate and conservative. A locked body may contain more than one commit —
+ * `move` can renormalize a whole column in its own transaction and then write the moved row — and a
+ * throw after the first of them publishes NOTHING, even for what committed. That leaves a connected
+ * board stale (healed by the next write to those rows, or by a reload) rather than showing positions the
+ * database never took, which is the direction this rule exists to choose.
+ *
+ * Not thread-safe, and does not need to be: every [stage] and every [publishing] runs under the task
+ * store's single writer `Mutex`, and [publishing] is never nested — each mutator wraps its locked body
+ * exactly once, and a mutator that delegates (`SqliteTaskStore.move` → [BacklogOrdering.move]) delegates
+ * the wrapping with it.
+ */
+class TaskUpdateOutbox(private val publish: (TaskUpdate) -> Unit) {
+
+    private val staged: MutableList<TaskUpdate> = mutableListOf()
+
+    /** Record one change, to be published if — and only if — the surrounding [publishing] block succeeds. */
+    fun stage(update: TaskUpdate) {
+        staged += update
+    }
+
+    /** Run [block], then publish everything it staged, oldest first. A throw discards them instead. */
+    fun <T> publishing(block: () -> T): T {
+        try {
+            val result = block()
+            // By index: `publish` is the store's `tryEmit`, but iterating a MutableList this way cannot
+            // be tripped by a future publisher that stages something of its own.
+            for (index in staged.indices) publish(staged[index])
+            return result
+        } finally {
+            staged.clear()
+        }
+    }
+}

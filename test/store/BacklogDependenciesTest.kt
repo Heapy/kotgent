@@ -70,15 +70,27 @@ class BacklogDependenciesTest {
         val queries: BacklogQueries = KotgentDatabase(driver).backlogQueries
         var revCounter: Long = 0
         val emitted: MutableList<TaskUpdate> = mutableListOf()
+
+        /**
+         * The store's staging buffer, with the test's list as its publisher. The `…Locked` members STAGE
+         * rather than publish (nothing may leave a transaction that can still roll back), so a test that
+         * drives one of them directly has to spend it through [publishing] — the same wrapper the store
+         * puts around every locked body.
+         */
+        val outbox: TaskUpdateOutbox = TaskUpdateOutbox { emitted += it }
+
         val deps: BacklogDependencies = BacklogDependencies(
             queries = queries,
             mutex = Mutex(),
             nextRev = { ++revCounter },
-            emit = { emitted += it },
+            outbox = outbox,
             // Nothing this class writes is timestamped (`backlog_deps` has no timestamp column and
             // `restamp` leaves `updated_at` alone), so a clock that refuses to answer proves it.
             now = { error("BacklogDependencies must not need a clock") },
         )
+
+        /** Run a `…Locked` mutator the way the store does: staged inside, published on the way out. */
+        fun <T> publishing(block: () -> T): T = outbox.publishing(block)
 
         /**
          * Insert one backlog row directly. `tasks` rows are deliberately not seeded: nothing this class
@@ -278,7 +290,7 @@ class BacklogDependenciesTest {
         // What Task 7's `transition` does inside its transaction: write the state, then hand the ref to
         // the re-stamp so the rows whose derived `blocked` just moved are re-published.
         f.setState(a, TaskState.done)
-        f.deps.restampDependentsLocked(a)
+        f.publishing { f.deps.restampDependentsLocked(a) }
 
         assertEquals(listOf(b, c), f.emitted.map { it.ref }, "one update per reverse dependent")
         for (update in f.emitted) {
@@ -305,15 +317,15 @@ class BacklogDependenciesTest {
         f.deps.add(c, b)
         f.emitted.clear()
 
-        f.deps.restampDependentsLocked(a)
+        f.publishing { f.deps.restampDependentsLocked(a) }
         assertEquals(listOf(b), f.emitted.map { it.ref }, "only the direct reverse dependents")
 
         // A ref nobody depends on costs nothing, and neither does one with no row: a null-entry
         // TaskUpdate means DELETED, so a re-stamp must never manufacture one.
         f.emitted.clear()
         val revBefore = f.revCounter
-        f.deps.restampDependentsLocked(c)
-        f.deps.restampDependentsLocked(absent)
+        f.publishing { f.deps.restampDependentsLocked(c) }
+        f.publishing { f.deps.restampDependentsLocked(absent) }
         assertEquals(emptyList(), f.emitted)
         assertEquals(revBefore, f.revCounter, "no revision is spent on a row that is not there")
     }

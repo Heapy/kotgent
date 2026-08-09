@@ -24,9 +24,12 @@ import kotlinx.coroutines.sync.withLock
  *    then writing under a different lock would let two concurrent moves compute the same midpoint.
  *  - When the gap the move would land in falls below [io.kotgent.task.POSITION_EPSILON], the project's
  *    whole column is renormalized to `1.0, 2.0, 3.0, …` in ONE transaction and the move is retried
- *    **once**. Renormalizing is a LOOP over `selectPositionsOrdered` + `setPosition`, deliberately not a
- *    bulk `UPDATE`: **every** rewritten row must stamp its own `rev` and emit its own [TaskUpdate], or a
- *    connected board silently holds stale positions.
+ *    **once**. Renormalizing is a LOOP over the project's rows + `setPosition`, deliberately not a bulk
+ *    `UPDATE`: **every** rewritten row must stamp its own `rev` and emit its own [TaskUpdate], or a
+ *    connected board silently holds stale positions. (The rows come from
+ *    [BacklogDependencies.listBacklogLocked], NOT from `Backlog.sq`'s `selectPositionsOrdered` — see
+ *    [renormalizeLocked]. That query is currently unused; its own comment still describes it as this
+ *    input and is the stale one.)
  *  - Every emitted entry carries the derived `blocked`, so this class reads through [dependencies]
  *    rather than growing a second implementation of that rule.
  *
@@ -47,14 +50,15 @@ import kotlinx.coroutines.sync.withLock
  *
  * @param queries the generated `Backlog.sq` accessor — nothing here may touch `sessions` (see [TaskStore]).
  * @param nextRev the store's revision allocator; callers hold [mutex].
- * @param emit the store's non-suspending publisher onto `taskUpdates`.
+ * @param outbox the store's staged-emission buffer: [moveLocked] and [renormalizeLocked] STAGE, and
+ *   [move] publishes the batch after its locked body returned — see [TaskUpdateOutbox].
  */
 class BacklogOrdering(
     private val queries: BacklogQueries,
     private val mutex: Mutex,
     private val dependencies: BacklogDependencies,
     private val nextRev: () -> Long,
-    private val emit: (TaskUpdate) -> Unit,
+    private val outbox: TaskUpdateOutbox,
     private val now: () -> Long,
 ) {
 
@@ -64,12 +68,21 @@ class BacklogOrdering(
      * belongs to a different project.
      */
     suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = mutex.withLock {
-        val row = queries.selectEntry(ref.value).executeAsOneOrNull() ?: return@withLock null
+        outbox.publishing { moveLocked(ref, target) }
+    }
+
+    /**
+     * [move]'s body. Extracted so its four "nothing to rank" exits are plain returns: a non-local return
+     * out of [TaskUpdateOutbox.publishing] would skip the publish, which on the post-renormalization path
+     * would silently drop a whole column's worth of rewritten positions.
+     */
+    private fun moveLocked(ref: TaskRef, target: MoveTarget): BacklogEntry? {
+        val row = queries.selectEntry(ref.value).executeAsOneOrNull() ?: return null
         // `backlog_entries.project` is only ever written from a ProjectId, so a value that fails here is
         // a corrupted database and says so loudly — the rule `BacklogDependencies.entryLocked` follows.
         val project = ProjectId.of(row.project)
 
-        val placement = placementLocked(row.project, target) ?: return@withLock null
+        val placement = placementLocked(row.project, target) ?: return null
         val position = if (!placement.collapsed) {
             placement.position
         } else {
@@ -79,7 +92,7 @@ class BacklogOrdering(
             // is `(0.0, 1.0)`. A second collapse would mean the project holds more entries than there
             // are doubles between two integers — unreachable, and looping on it would be worse than
             // taking a rank that is still strictly ordered.
-            (placementLocked(row.project, target) ?: return@withLock null).position
+            (placementLocked(row.project, target) ?: return null).position
         }
 
         val rev = nextRev()
@@ -87,9 +100,9 @@ class BacklogOrdering(
         // Read the row back rather than patching the pre-move copy: this is the one place the derived
         // `blocked` and the freshly written position have to agree, and `entryLocked` is where that rule
         // lives. A null here would mean the row vanished under the store's own mutex.
-        val moved = dependencies.entryLocked(ref) ?: return@withLock null
-        emit(TaskUpdate(ref, moved, rev))
-        moved
+        val moved = dependencies.entryLocked(ref) ?: return null
+        outbox.stage(TaskUpdate(ref, moved, rev))
+        return moved
     }
 
     // --- placement ------------------------------------------------------------------------------------
@@ -141,25 +154,23 @@ class BacklogOrdering(
      * one implementation, which is the collaborator's. Re-reading each row instead would be a query per
      * card to rebuild what one read already answered.
      *
-     * The updates are emitted **after** the transaction commits. `tryEmit` is non-suspending so
-     * publishing inside the block would be legal, but a subscriber must never see a position a rollback
-     * would take back.
+     * The updates are STAGED, never published from in here. `tryEmit` is non-suspending so publishing
+     * inside the block would be legal, but a subscriber must never see a position a rollback would take
+     * back; [move]'s [TaskUpdateOutbox.publishing] ships the batch once its whole locked body succeeded.
      */
     private fun renormalizeLocked(project: ProjectId) {
         val entries = dependencies.listBacklogLocked(project)
         if (entries.isEmpty()) return
         val stamped = now()
-        val rewritten = ArrayList<TaskUpdate>(entries.size)
         queries.transaction {
             entries.forEachIndexed { index, entry ->
                 val position = (index + 1).toDouble()
                 val rev = nextRev()
                 queries.setPosition(position, stamped, rev, entry.ref.value)
                 val renumbered = entry.copy(position = position, updatedAt = stamped, rev = rev)
-                rewritten += TaskUpdate(entry.ref, renumbered, rev)
+                outbox.stage(TaskUpdate(entry.ref, renumbered, rev))
             }
         }
-        for (update in rewritten) emit(update)
     }
 
     /**

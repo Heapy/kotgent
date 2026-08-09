@@ -4,6 +4,7 @@ import app.cash.sqldelight.db.AfterVersion
 import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.db.SqlSchema
+import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
@@ -12,6 +13,13 @@ import io.kotgent.db.KotgentDatabase
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskUpdate
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.pointed
+import kotlinx.cinterop.set
+import kotlinx.cinterop.toKString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.take
@@ -19,8 +27,15 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.closedir
+import platform.posix.mkdtemp
+import platform.posix.opendir
+import platform.posix.readdir
+import platform.posix.rmdir
+import platform.posix.unlink
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -56,6 +71,7 @@ import kotlin.test.assertTrue
  * [move] is deliberately absent: it is a one-line delegation to [BacklogOrdering], which is being
  * implemented in parallel and whose body this file must not depend on.
  */
+@OptIn(ExperimentalForeignApi::class)
 class TaskStoreTest {
 
     // --- the vocabulary ---------------------------------------------------------------------------
@@ -241,6 +257,40 @@ class TaskStoreTest {
     }
 
     @Test
+    fun aMutatorWhoseTransactionRollsBackPublishesNothingItStaged() = test { f ->
+        // The rule the whole [TaskUpdateOutbox] exists for: a subscriber must never see a change a
+        // rollback then takes back. `delete` is where it is REACHABLE — it stages the null-entry removal
+        // and only then re-stamps the dependents it unblocked, so a throw in that tail rolls the delete
+        // back with an update already staged. (Publishing from inside the transaction, as every mutator
+        // but `renormalize` used to, put a `task_removed` on every connected board for a task that is
+        // still there — and unlike a state change nothing later corrects it: no row changed, so no
+        // further update and no second `task_removed` ever names that ref again.)
+        f.store.create(alpha, "one", "")
+        f.store.create(alpha, "two", "")
+        f.store.addDependency(second, first)
+
+        // A value no production write can produce, and the one read on the delete's tail that refuses
+        // it: `entryLocked` parses `backlog_entries.project` with `ProjectId.of`, which throws loudly on
+        // a corrupted column rather than making a card vanish.
+        f.driver.execute(null, "UPDATE backlog_entries SET project = 'not-a-uuid' WHERE task_ref = '${second.value}'", 0)
+
+        val seen = recording(f.store, 1) {
+            assertFailsWith<IllegalArgumentException> { f.store.delete(first) }
+            // The known-loud action: a single frame recorded means the rolled-back delete produced none.
+            f.store.update(first, title = "still here", body = null)
+        }
+
+        val only = seen.single()
+        assertEquals(first, only.ref)
+        assertNotNull(
+            only.entry,
+            "the one frame is the rename, not the removal the rolled-back delete staged",
+        )
+        assertNotNull(f.store.get(first), "and the row really is still there — the transaction rolled back")
+        assertNotNull(f.store.entry(first))
+    }
+
+    @Test
     fun deletingAnUnknownRefIsFalseAndSilent() = test { f ->
         f.store.create(alpha, "present", "")
 
@@ -274,6 +324,51 @@ class TaskStoreTest {
         assertEquals("first note", feed[1].text)
         assertEquals("s-2", feed[2].author)
         assertNull(feed[2].fromState, "only a transition carries states")
+    }
+
+    @Test
+    fun onAFileBackedDatabaseTheActivityIdStillComesFromTheInsertsOwnConnection() = runBlocking {
+        withTimeout(20_000) {
+            // The ONE test in the suite that is not over `inMemoryDriver`, and it has to be.
+            // `Tasks.sq`'s `lastActivityId` carries a contract that holding the writer mutex is NOT
+            // enough for: the read must be inside the same `db.transaction { }` as its insert, because
+            // the native driver routes a transaction-less SELECT to its `query_only` READER POOL, whose
+            // connections have never inserted anything. For an EPHEMERAL database the driver makes
+            // `readerPool = transactionPool`, so every other test here would pass with the rule broken —
+            // a future fourth call site of `appendActivityLocked` placed outside a transaction would
+            // ship `id = 0` on every activity row in production with the whole suite green.
+            withTempDbDir { dir ->
+                val driver = NativeSqliteDriver(
+                    schema = KotgentDatabase.Schema,
+                    name = "tasks-activity-test.db",
+                    onConfiguration = { it.copy(extendedConfig = it.extendedConfig.copy(basePath = dir)) },
+                )
+                try {
+                    val store = SqliteTaskStore.using(driver) { 1_000L }
+                    store.create(alpha, "one", "")
+                    val comment = assertNotNull(store.comment(first, author = "s-1", text = "a note"))
+
+                    assertTrue(comment.id > 0, "the id is the insert's own rowid, not the reader pool's 0")
+                    assertEquals(
+                        listOf(comment.id),
+                        store.activity(first).filter { it.kind == ActivityKind.comment }.map { it.id },
+                        "…and it is the id the feed reads back, so the detail view can key on it",
+                    )
+
+                    // The other half, and what gives the assertion above its teeth: the SAME query run
+                    // WITHOUT a transaction answers 0 on this database. Should a future driver stop
+                    // doing that, this line fails and `Tasks.sq`'s contract can be relaxed — which is
+                    // the signal worth having, rather than a comment nothing checks.
+                    assertEquals(
+                        0L,
+                        KotgentDatabase(driver).tasksQueries.lastActivityId().executeAsOne(),
+                        "a transaction-less last_insert_rowid() is answered by a connection that never inserted",
+                    )
+                } finally {
+                    driver.close()
+                }
+            }
+        }
     }
 
     @Test
@@ -516,6 +611,38 @@ class TaskStoreTest {
         // rather than importing `io.kotgent.daemon` (the layering runs daemon -> store), and this is the
         // assertion that keeps the copy from drifting.
         assertEquals(TaskService.BOARD_AUTHOR, SqliteTaskStore.CREATED_BY)
+    }
+
+    /**
+     * A throwaway directory for the one file-backed database this suite opens, deleted with everything
+     * SQLite left in it (the `.db`, and the `-wal` / `-shm` a WAL journal adds).
+     */
+    private inline fun withTempDbDir(block: (String) -> Unit) {
+        val dir = memScoped {
+            val template = "/tmp/kotgent-taskstore-test-XXXXXX"
+            val encoded = template.encodeToByteArray()
+            val chars = allocArray<ByteVar>(encoded.size + 1)
+            encoded.forEachIndexed { index, byte -> chars[index] = byte }
+            chars[encoded.size] = 0
+            mkdtemp(chars)?.toKString() ?: error("could not create the task-store test directory")
+        }
+        try {
+            block(dir)
+        } finally {
+            val handle = opendir(dir)
+            if (handle != null) {
+                val names = buildList {
+                    while (true) {
+                        val entry = readdir(handle) ?: break
+                        val name = entry.pointed.d_name.toKString()
+                        if (name != "." && name != "..") add(name)
+                    }
+                }
+                closedir(handle)
+                for (name in names) unlink("$dir/$name")
+            }
+            rmdir(dir)
+        }
     }
 
     /** A database whose schema predates the whole task layer — no `tasks`, `backlog_*` or `projects`. */

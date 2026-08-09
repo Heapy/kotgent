@@ -46,7 +46,9 @@ import kotlinx.coroutines.sync.withLock
  * @param queries the generated `Backlog.sq` accessor. Deliberately NOT the whole database: nothing here
  *   may touch `sessions` (see [TaskStore]).
  * @param nextRev the store's revision allocator — one owner for the counter, callers hold [mutex].
- * @param emit the store's non-suspending publisher onto `taskUpdates`.
+ * @param outbox the store's staged-emission buffer. The `…Locked` members STAGE, never publish: they run
+ *   inside a `db.transaction { }` and a subscriber must not see an edge a rollback takes back. Each
+ *   suspending entry point below wraps its locked body in [TaskUpdateOutbox.publishing].
  * @param now the store's injected clock. **Unused, and that is not an oversight**: the constructor shape
  *   is the contract [SqliteTaskStore] constructs against, and nothing this class writes is timestamped —
  *   `backlog_deps` has no timestamp column, and `restamp` deliberately leaves `updated_at` alone (a
@@ -57,7 +59,7 @@ class BacklogDependencies(
     private val queries: BacklogQueries,
     private val mutex: Mutex,
     private val nextRev: () -> Long,
-    private val emit: (TaskUpdate) -> Unit,
+    private val outbox: TaskUpdateOutbox,
     @Suppress("unused") private val now: () -> Long,
 ) {
 
@@ -150,7 +152,8 @@ class BacklogDependencies(
     fun edgesLocked(project: ProjectId): Map<TaskRef, List<TaskRef>> = edgesOfProjectLocked(project.value)
 
     /**
-     * Re-stamp every reverse dependent of [ref] with a fresh revision and emit each on `taskUpdates`.
+     * Re-stamp every reverse dependent of [ref] with a fresh revision and STAGE each for `taskUpdates`
+     * (the surrounding [TaskUpdateOutbox.publishing] publishes them once the transaction has committed).
      * Called after every dependency edit and every state transition — including a DELETE, where the
      * dependents must be read BEFORE the `backlog_deps` rows go away.
      *
@@ -178,6 +181,16 @@ class BacklogDependencies(
      * @throws io.kotgent.task.DependencyRefusedException self / unknown ref / cross-project / cycle.
      */
     suspend fun add(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
+        outbox.publishing { addLocked(ref, dependsOn) }
+    }
+
+    /**
+     * [add]'s body. Extracted so the duplicate-edge no-op exits with a plain `return` rather than a
+     * non-local one out of [TaskUpdateOutbox.publishing], which would skip the publish. (The four
+     * refusals leave by throwing, which [TaskUpdateOutbox.publishing] handles as it must: nothing was
+     * staged, and anything that had been is discarded.)
+     */
+    private fun addLocked(ref: TaskRef, dependsOn: TaskRef) {
         if (ref == dependsOn) {
             refuse(DependencyRefusal.self, ref, dependsOn, "a task cannot depend on itself: '${ref.value}'")
         }
@@ -193,7 +206,7 @@ class BacklogDependencies(
             )
         }
         val edges = edgesOfProjectLocked(source.project)
-        if (dependsOn in edges[ref].orEmpty()) return@withLock
+        if (dependsOn in edges[ref].orEmpty()) return
         if (wouldCycle(edges, ref, dependsOn)) {
             refuse(
                 DependencyRefusal.cycle, ref, dependsOn,
@@ -209,7 +222,12 @@ class BacklogDependencies(
 
     /** Remove the edge and re-stamp as [add] does. Removing a missing edge is a no-op. */
     suspend fun remove(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
-        if (dependsOn !in dependenciesOfLocked(ref)) return@withLock
+        outbox.publishing { removeLocked(ref, dependsOn) }
+    }
+
+    /** [remove]'s body — extracted for the same reason [addLocked] is. */
+    private fun removeLocked(ref: TaskRef, dependsOn: TaskRef) {
+        if (dependsOn !in dependenciesOfLocked(ref)) return
         queries.transaction {
             queries.deleteDep(ref.value, dependsOn.value)
             restampAfterEditLocked(ref)
@@ -234,16 +252,16 @@ class BacklogDependencies(
     }
 
     /**
-     * Stamp one row a fresh rev and emit it. The entry is read BEFORE the write and re-emitted with the
+     * Stamp one row a fresh rev and stage it. The entry is read BEFORE the write and re-staged with the
      * new rev rather than re-read after it: `restamp` touches no other column, so the copy is exactly
      * what a second `selectEntry` would answer, at one query instead of two. A ref with no row consumes
-     * no revision and emits nothing — a null-entry [TaskUpdate] means DELETED, which this is not.
+     * no revision and stages nothing — a null-entry [TaskUpdate] means DELETED, which this is not.
      */
     private fun restampLocked(ref: TaskRef) {
         val entry = entryLocked(ref) ?: return
         val rev = nextRev()
         queries.restamp(rev, ref.value)
-        emit(TaskUpdate(ref, entry.copy(rev = rev), rev))
+        outbox.stage(TaskUpdate(ref, entry.copy(rev = rev), rev))
     }
 
     /** [edgesLocked] over the raw column value, so an edit path need not re-parse a [ProjectId]. */

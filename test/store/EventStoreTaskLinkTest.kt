@@ -226,6 +226,48 @@ class EventStoreTaskLinkTest {
     }
 
     @Test
+    fun anUnreadableTaskRefDegradesToNoTaskInsteadOfBreakingEverySessionRead() = runBlocking {
+        withTimeout(20_000) {
+            // The same rule as the project column on the adjacent line of `toMeta`, and it matters MORE
+            // here: `task_ref` is documented as a loose REFERENCE rather than a foreign key, so a hand
+            // edit, a restored backup or a future external tracker's charset can leave a value TaskRef's
+            // constructor rejects. Reading it through the constructor would make `toMeta` throw, which
+            // takes down `listSessions()` — and `Reconciler.reconcile` calls that BEFORE the daemon binds
+            // its server, so one bad cell would stop the daemon from starting at all, naming no row.
+            val driver = inMemoryDriver(KotgentDatabase.Schema)
+            val store = SqliteEventStore.using(driver, now = { 1L })
+            val healthy = SessionId("ref-ok")
+            val corrupt = SessionId("ref-bad")
+            store.upsertSession(meta(healthy))
+            store.upsertSession(meta(corrupt))
+            store.setTaskRef(healthy, TaskRef("local:7"), updatedAt = 2L)
+            store.setTaskRef(corrupt, TaskRef("local:8"), updatedAt = 3L)
+
+            // Values no production write can produce: a bare word (no ':' half) and a charset the ref
+            // rejects precisely because a ref travels in URLs and in argv.
+            driver.execute(null, "UPDATE sessions SET task_ref = '../etc' WHERE id = '${corrupt.value}'", 0)
+
+            assertNull(store.getSession(corrupt)!!.taskRef, "an unparseable ref reads as null, not a throw")
+            assertEquals(
+                listOf(null, TaskRef("local:7")),
+                store.listSessions().sortedBy { it.id.value }.map { it.taskRef },
+                "…and the whole list still reads, the healthy row's link included",
+            )
+
+            // The hand-built SessionUpdate in `append` reads the same column and owes the same rule: the
+            // pre-transaction row is what it carries, so a corrupt cell there would throw out of a hook.
+            val updates = mutableListOf<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
+            yield()
+            store.append(corrupt, AgentEvent.ToolCall("grep"), EventSource.hook)
+            repeat(20) { yield() }
+            assertEquals(1, updates.size, "the append still emits: $updates")
+            assertNull(updates.single().taskRef, "…carrying 'no task' rather than throwing")
+            collector.cancel()
+        }
+    }
+
+    @Test
     fun everySessionLinkedToATaskIsReturnedOldestFirst() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })

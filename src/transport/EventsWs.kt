@@ -178,26 +178,39 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
  * for a delete — conflated per ref by the same collector/sender split the sessions branch uses, and
  * sending only through [sendEventsFrame].
  *
- * ## Why the baseline is QUEUED rather than sent from `.onSubscription { }`
+ * ## Why the baseline is READ BY THE SENDER, and `.onSubscription { }` only rings a bell
  * The sessions baseline sends from inside its `.onSubscription { }`, which closes the subscribe/snapshot
  * race but leaves a second one: while that send is suspended the collector has not begun draining, and
  * [TaskStore.taskUpdates] is `DROP_OLDEST` past 1024 entries — a burst ONE renormalization of a large
- * project can produce by itself, since every rewritten row stamps a rev and emits. So here
- * `.onSubscription { }` only READS the snapshot and hands it to the sequential sender as its first item;
- * the collector starts draining immediately and never waits on a socket write.
+ * project can produce by itself, since every rewritten row stamps a rev and emits.
  *
- * Nothing can overtake that first item: the collector cannot bank anything until `.onSubscription { }`
- * has returned, and the sender empties the baseline slot before it ever looks at the pending map.
+ * **The socket write is not the only thing that can suspend there.** [readTasksBaseline] takes the task
+ * store's single writer mutex three times per project, and releases it between each — so a read
+ * performed inside `.onSubscription { }` reopens exactly the window it was moved out of the send path to
+ * close, and with two or more projects a burst can land after project A's reads and still be absent from
+ * the snapshot. So `.onSubscription { }` does the one thing that cannot suspend at all: it signals the
+ * sender. The collector starts draining on the very next line, and the READ happens on the sender, whose
+ * whole job is to be the thing that may block.
+ *
+ * The baseline is still consistent with the subscription point, which is what matters: the collector is
+ * subscribed before `baselineDue` can be spent, so anything emitted from then on is banked in `pending`
+ * (an unbounded, per-ref conflating map — not the flow's fixed buffer). A row the read then picks up
+ * *and* that is banked simply goes out twice, snapshot first and patch second, at a rev the client has
+ * already applied; `newest-rev-wins` ignores the second. Nothing can overtake the snapshot either: the
+ * sender spends the baseline flag before it ever looks at the pending map.
  */
 private fun CoroutineScope.launchTaskStream(
     ws: DefaultWebSocketServerSession,
     tasks: TaskStore,
     json: Json,
 ) {
-    // As on the sessions branch, the Mutex is for Kotlin/Native memory visibility across the three
-    // writers (collector, sender, baseline reader) — the single sender is what serializes the sends.
+    // As on the sessions branch, the Mutex is for Kotlin/Native memory visibility across the two
+    // writers (collector, sender) — the single sender is what serializes the sends.
     val lock = Mutex()
-    var baseline: QueuedTasksBaseline? = null
+    // Owed to the client and not yet read. Set before either coroutine starts and spent by the sender on
+    // its first turn, which `.onSubscription { }` is what triggers — so the read happens after this
+    // socket is subscribed, but on a coroutine that is free to block.
+    var baselineDue = true
     val pending = LinkedHashMap<TaskRef, TaskUpdate>()
     val sent = HashSet<TaskRef>()
     val wake = Channel<Unit>(Channel.CONFLATED)
@@ -207,8 +220,11 @@ private fun CoroutineScope.launchTaskStream(
     launch {
         for (unit in wake) {
             while (true) {
-                val queued = lock.withLock { baseline.also { baseline = null } }
-                if (queued != null) {
+                if (lock.withLock { baselineDue.also { baselineDue = false } }) {
+                    // Three store reads per project, each taking and releasing the store's writer mutex.
+                    // Whatever is emitted while they run is banked by the collector, which is already
+                    // draining — that is the whole reason this read is here and not in the collector.
+                    val queued = readTasksBaseline(tasks)
                     // Marked before the send, like the sessions snapshot: this one frame IS the delivery
                     // of every row in it, and a send that fails takes the whole socket with it anyway.
                     lock.withLock { sent.addAll(queued.refs) }
@@ -256,11 +272,10 @@ private fun CoroutineScope.launchTaskStream(
 
     launch {
         tasks.taskUpdates
-            .onSubscription {
-                val read = readTasksBaseline(tasks)
-                lock.withLock { baseline = read }
-                wake.trySend(Unit)
-            }
+            // `trySend` on a CONFLATED channel and nothing else: this must not suspend, or the collector
+            // below has not begun draining while it runs — the very hazard the baseline read was moved
+            // onto the sender to avoid.
+            .onSubscription { wake.trySend(Unit) }
             .collect { update ->
                 lock.withLock { pending[update.ref] = update }
                 wake.trySend(Unit)
@@ -268,7 +283,7 @@ private fun CoroutineScope.launchTaskStream(
     }
 }
 
-/** The first item the task sender ships: the baseline rows plus the refs they mark as carried. */
+/** The first frame the task sender ships: the baseline rows plus the refs they mark as carried. */
 private class QueuedTasksBaseline(val refs: Set<TaskRef>, val rows: List<BacklogEntryDto>)
 
 /**
@@ -407,12 +422,13 @@ fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
  * discriminator still matters to the client: a `task_row` may ADD a row, a `task_update` only updates a
  * ref it already knows.
  *
- * The tasks baseline must NOT be sent from inside `.onSubscription { }` the way the sessions baseline
- * is. That closes the subscribe/snapshot race but leaves a second one: while the send is suspended the
+ * The tasks baseline must NOT be produced from inside `.onSubscription { }` the way the sessions baseline
+ * is. That closes the subscribe/snapshot race but leaves a second one: while that block is suspended the
  * collector has not begun draining, and the source flow drops the oldest past 1024 buffered updates —
- * which ONE renormalization of a large project can produce by itself. So `.onSubscription { }` READS the
- * snapshot and queues it to the sequential sender as its first item; the collector starts draining
- * immediately and never waits on a socket write.
+ * which ONE renormalization of a large project can produce by itself. Neither the socket write NOR the
+ * read may live there: the read takes the task store's writer mutex three times per project. So
+ * `.onSubscription { }` only signals the sequential sender, which reads the snapshot and ships it as its
+ * first frame while the collector banks everything that lands in the meantime.
  */
 
 /** The connect baseline for tasks: every entry of every known project as a full row. */

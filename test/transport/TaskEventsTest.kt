@@ -237,10 +237,10 @@ class TaskEventsTest {
     @Test
     fun aBurstEmittedWhileTheBaselineIsBeingReadIsDeliveredAfterIt() = runBlocking {
         withTimeout(30_000) {
-            // The window the design shrinks: `.onSubscription { }` READS the snapshot and queues it, so
-            // the collector starts draining as soon as the read returns instead of waiting on a socket
-            // write. What is observable from out here is the other half of the same contract — nothing
-            // emitted during that window is lost, and the snapshot still goes out FIRST.
+            // The window the design closes: `.onSubscription { }` only signals the sender, which READS
+            // the snapshot, so the collector is draining for the whole read instead of waiting on it.
+            // What is observable from out here is the other half of the same contract — nothing emitted
+            // during that window is lost, and the snapshot still goes out FIRST.
             val tasks = FakeTaskStore()
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
@@ -261,6 +261,48 @@ class TaskEventsTest {
                     )
                     val delivered = burst.map { expectRow().task.ref }
                     assertEquals(burst.map { it.value }, delivered, "every banked update reached the socket")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun theCollectorIsAlreadyDrainingWhileTheBaselineIsBeingRead() = runBlocking {
+        withTimeout(30_000) {
+            // The sibling above shows that nothing emitted during the baseline window is LOST; this one
+            // shows WHY, and it is the half a 20-entry burst cannot demonstrate. The baseline read is
+            // three store calls per project, each taking and releasing the task store's writer mutex —
+            // so performing it inside `.onSubscription { }` leaves the collector parked for its whole
+            // duration and puts every emission at the mercy of the source flow's fixed buffer, which
+            // ONE renormalization of a large project overruns by itself.
+            //
+            // A 1025-update burst would be the literal reproduction and a flaky test (it would depend on
+            // the collector out-racing a tight emit loop). A RENDEZVOUS flow makes the same property
+            // exact at one update: `emit` completes only once the collector has received it, so a
+            // collector that has not started collecting deadlocks here instead of quietly dropping the
+            // 1025th frame.
+            val tasks = FakeTaskStore(updatesBuffer = 0)
+            tasks.seedProject(alpha, "alpha", "/repo/alpha")
+            tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
+
+            withServer(tasks) { port, client ->
+                client.webSocket("ws://127.0.0.1:$port/events") {
+                    tasks.baselineEntered.await()
+                    withTimeout(5_000) {
+                        tasks.addTask(TaskRef("local:1"), alpha, "banked", position = 1.0)
+                    }
+                    tasks.baselineGate.complete(Unit)
+
+                    assertEquals(
+                        listOf("local:0"),
+                        expectSnapshot().tasks.map { it.ref },
+                        "the snapshot is still the FIRST task frame",
+                    )
+                    assertEquals(
+                        "local:1",
+                        expectRow().task.ref,
+                        "…and what was banked during the read follows it, whole",
+                    )
                 }
             }
         }
@@ -400,7 +442,14 @@ class TaskEventsTest {
      * makes a burst emitted there genuinely absent from the snapshot, instead of being picked up by a
      * `listBacklog` that has not run yet. Tests that do not care complete the gate before connecting.
      */
-    private class FakeTaskStore : TaskStore {
+    private class FakeTaskStore(
+        /**
+         * `taskUpdates`' spare capacity. The default mirrors the real store; `0` turns the flow into a
+         * RENDEZVOUS — see [theCollectorIsAlreadyDrainingWhileTheBaselineIsBeingRead], which needs "the
+         * collector is not draining" to be a deadlock rather than a 1025-deep race.
+         */
+        updatesBuffer: Int = 1024,
+    ) : TaskStore {
         private val lock = Mutex()
         private val projects = LinkedHashMap<ProjectId, ProjectRecord>()
         private val entries = LinkedHashMap<TaskRef, BacklogEntry>()
@@ -420,8 +469,10 @@ class TaskEventsTest {
          * rests on.
          */
         private val updates = MutableSharedFlow<TaskUpdate>(
-            extraBufferCapacity = 1024,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+            extraBufferCapacity = updatesBuffer,
+            // A zero-capacity SharedFlow may only SUSPEND, which is exactly what makes the rendezvous
+            // variant a deterministic probe of whether anybody is collecting.
+            onBufferOverflow = if (updatesBuffer == 0) BufferOverflow.SUSPEND else BufferOverflow.DROP_OLDEST,
         )
         override val taskUpdates: SharedFlow<TaskUpdate> = updates
 
