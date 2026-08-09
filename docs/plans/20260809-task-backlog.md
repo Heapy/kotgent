@@ -962,8 +962,33 @@ column rewrite, which a pure function cannot perform, so the check stays the cal
 
 **Called by Task 9** (`wouldCycle` is its cycle refusal) — hence wave 1.5.
 
-- [ ] `wouldCycle(edges, from, to)` as a pure ancestor walk
-- [ ] tests: direct, transitive (A→B→C→A), self, and a legal diamond
+- [x] `wouldCycle(edges, from, to)` as a pure ancestor walk
+- [x] tests: direct, transitive (A→B→C→A), self, and a legal diamond
+
+➕ **Re-adding an edge already in `edges` must answer `false`, and that is a contract, not an
+optimisation.** `BacklogDependencies.add`'s KDoc makes a duplicate edge a no-op, so an idempotent retry of
+a request that already landed reaches `wouldCycle` with the proposed edge *present* in the graph it is
+asked about. The walk starts at `to` and looks for `from`, which is precisely the question the existing
+edge does not answer — so a duplicate is legal for free, whereas the mirror-image walk (start at `from`,
+look for `to`) would refuse every retry. It has its own test because nothing else in the suite would
+notice: the direction bug is invisible on a graph that does not contain the edge yet.
+
+➕ Three smaller calls made without a human. The walk is **iterative and `seen`-guarded**, so a graph that
+somehow already holds a ring terminates with an answer rather than recursing forever — unreachable if this
+function has guarded every insert, but the caller runs holding the store mutex and a wedged writer is a
+worse failure than one redundant `MutableSet`; a 10 000-link chain pins it. `wouldCycle` **re-asks none of
+the other three refusals**: a ref absent from `edges` is a leaf, so an unknown ref answers `false` exactly
+like a task with no dependencies, and "the refs exist" / "same project" stay questions about rows that
+only the store can ask — pinned by a test so a later reader does not mistake a `false` here for proof the
+ref exists. And the file declares **exactly one top-level symbol**, with no private helpers hoisted out of
+the body, because `io.kotgent.task` is written concurrently and a package-level helper is the
+redeclaration hazard the executor conventions warn about.
+
+➕ The implementation was **falsified against the direction bug** before being committed — seeding the
+walk at `from` and searching for `to` — which fails 10 of the 14 tests, including the diamond and the
+duplicate-edge retry. Worth the two-minute cycle for this function specifically: a false negative writes a
+ring into `backlog_deps`, every task on the ring is then blocked by another task on it, and `nextCandidate`
+skips all of it forever while `task next` just answers "nothing eligible".
 
 ### Wave 2 — implementations, one file each
 
