@@ -612,7 +612,8 @@ class TaskEventsTest {
             toState: TaskState?,
         ): TaskActivityEntry? = unused("appendActivity")
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = unused("create")
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+            unused("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")

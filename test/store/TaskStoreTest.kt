@@ -12,6 +12,7 @@ import io.kotgent.daemon.TaskService
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.TaskState
+import io.kotgent.task.TaskTracker
 import io.kotgent.task.TaskUpdate
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -28,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.closedir
+import platform.posix.getenv
 import platform.posix.mkdtemp
 import platform.posix.opendir
 import platform.posix.readdir
@@ -163,8 +165,26 @@ class TaskStoreTest {
         val feed = f.store.activity(first)
         assertEquals(1, feed.size)
         assertEquals(ActivityKind.created, feed.single().kind)
-        assertEquals(SqliteTaskStore.CREATED_BY, feed.single().author)
+        assertEquals(TaskTracker.BOARD_AUTHOR, feed.single().author)
         assertNull(feed.single().text, "the title lives in `tasks`; the feed does not snapshot it")
+    }
+
+    @Test
+    fun aCreateRecordsItsAuthorAndFallsBackToTheBoardOnlyWhenThereIsNone() = test { f ->
+        // The whole point of the feed is telling the operator who did what, so a card an agent filed from
+        // inside its own pane must carry that session id. Before `create` took an author the store wrote
+        // the symbolic "board" for every create, including this one — an answer that is not merely
+        // missing but wrong, and wrong confidently enough that nobody would go looking.
+        val filedByAnAgent = f.store.create(alpha, "an agent's own card", "", author = "s-7")
+        val filedByTheBoard = f.store.create(alpha, "the board's card", "")
+
+        assertEquals("s-7", f.store.activity(filedByAnAgent.ref).single().author)
+        assertEquals(ActivityKind.created, f.store.activity(filedByAnAgent.ref).single().kind)
+        assertEquals(
+            TaskTracker.BOARD_AUTHOR,
+            f.store.activity(filedByTheBoard.ref).single().author,
+            "the default is the board, which is the honest answer only when no session is behind the call",
+        )
     }
 
     @Test
@@ -606,11 +626,12 @@ class TaskStoreTest {
     // --- the one copied string ------------------------------------------------------------------------
 
     @Test
-    fun theCreatedRowsAuthorIsTheSameSymbolicActorTheServiceUses() {
-        // `TaskTracker.create` takes no author, so the store has to name one. It spells the constant out
-        // rather than importing `io.kotgent.daemon` (the layering runs daemon -> store), and this is the
-        // assertion that keeps the copy from drifting.
-        assertEquals(TaskService.BOARD_AUTHOR, SqliteTaskStore.CREATED_BY)
+    fun theTrackersFallbackAuthorIsTheSameSymbolicActorTheServiceUses() {
+        // `TaskTracker.create`'s default has to be visible at the interface that declares it, and the
+        // layering runs daemon -> task, so the string is spelled twice. This is the assertion that keeps
+        // the copy from drifting: a route attributing a board write to `TaskService.BOARD_AUTHOR` and a
+        // store defaulting to something else would split one actor into two rows in the same feed.
+        assertEquals(TaskService.BOARD_AUTHOR, TaskTracker.BOARD_AUTHOR)
     }
 
     /**
@@ -619,7 +640,13 @@ class TaskStoreTest {
      */
     private inline fun withTempDbDir(block: (String) -> Unit) {
         val dir = memScoped {
-            val template = "/tmp/kotgent-taskstore-test-XXXXXX"
+            // `$TMPDIR`, not a hardcoded `/tmp` — the rule every other temp-dir user in this repo follows
+            // (`ProcessRunner`, `VapidSigner`, `AuthTest`). On macOS the per-user temp directory is where
+            // a sandboxed or CI run is actually permitted to write, and `mkdtemp` reports failure by
+            // returning null, so hardcoding `/tmp` turns an environment kotgent supports into an
+            // "could not create the task-store test directory" error with nothing to do with the test.
+            val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
+            val template = "$tmp/kotgent-taskstore-test-XXXXXX"
             val encoded = template.encodeToByteArray()
             val chars = allocArray<ByteVar>(encoded.size + 1)
             encoded.forEachIndexed { index, byte -> chars[index] = byte }

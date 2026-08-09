@@ -148,8 +148,17 @@ class SqliteTaskStore private constructor(
      * The emitted entry is BUILT rather than re-read, and its `blocked` is `false` by construction: an
      * entry inserted a statement ago can have no dependency edge, so a `selectEntry` round trip could
      * only answer what is already known here.
+     *
+     * [author] is written straight through onto the `created` row — the caller's session id, or
+     * [io.kotgent.task.TaskTracker.BOARD_AUTHOR] when the caller had none. This store does not second-guess
+     * it: who is behind a request is knowable at the route, not here.
      */
-    override suspend fun create(project: ProjectId, title: String, body: String): Task = mutex.withLock {
+    override suspend fun create(
+        project: ProjectId,
+        title: String,
+        body: String,
+        author: String,
+    ): Task = mutex.withLock {
         outbox.publishing {
             val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++localKeyCounter}")
             val ts = now()
@@ -163,7 +172,7 @@ class SqliteTaskStore private constructor(
                 // `text` is deliberately left null: the row records WHEN a task appeared and WHO made it,
                 // while the title lives in `tasks` and is always current there. Snapshotting it into an
                 // append-only feed would invent content the interface never asked for.
-                appendActivityLocked(ref, ActivityKind.created, CREATED_BY, null, null, null, ts)
+                appendActivityLocked(ref, ActivityKind.created, author, null, null, null, ts)
                 outbox.stage(
                     TaskUpdate(
                         ref = ref,
@@ -469,18 +478,6 @@ class SqliteTaskStore private constructor(
     }
 
     companion object {
-        /**
-         * The `author` this store records on a `created` row.
-         *
-         * [io.kotgent.task.TaskTracker.create] takes no author — a tracker's create is `(project, title,
-         * body)` and changing that signature would break every other agent's file — so the only honest
-         * value is the symbolic actor for a change with no session behind it. That actor is spelled
-         * `io.kotgent.daemon.TaskService.BOARD_AUTHOR`, and it is COPIED rather than imported because the
-         * layering runs `daemon → store` and a store reaching back up into the daemon inverts it. The two
-         * spellings are pinned equal by a test in `test/store/TaskStoreTest.kt`, so the copy cannot drift.
-         */
-        const val CREATED_BY: String = "board"
-
         /**
          * Mirrors of the `Tasks.sq` / `Backlog.sq` / `Projects.sq` DDL, for databases created before the
          * task layer existed. Keep in exact step with those files.

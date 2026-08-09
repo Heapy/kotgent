@@ -906,13 +906,20 @@ class TaskWriteRoutesTest {
 
         override suspend fun get(ref: TaskRef): Task? = mutex.withLock { tasks[ref] }
 
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = mutex.withLock {
+        override suspend fun create(
+            project: ProjectId,
+            title: String,
+            body: String,
+            author: String,
+        ): Task = mutex.withLock {
             val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
             val task = Task(ref, title, body, url = null, updatedAt = 0L)
             tasks[ref] = task
             val end = entries.values.filter { it.project == project }.maxOfOrNull { it.position } ?: 0.0
             entries[ref] = BacklogEntry(ref, project, end + 1.0, TaskState.todo, false, 0L, 0L, ++rev)
-            activity += TaskActivityEntry(++activityId, ref, 0L, ActivityKind.created, "board", null, null, null)
+            // The author the caller passed, exactly as the real store records it — a fake that hardcoded
+            // "board" here would answer the same whether or not the route ever attributes the create.
+            activity += TaskActivityEntry(++activityId, ref, 0L, ActivityKind.created, author, null, null, null)
             task
         }
 

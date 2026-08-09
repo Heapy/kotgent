@@ -455,7 +455,8 @@ class SessionDoneTaskTest {
         override suspend fun entry(ref: TaskRef): BacklogEntry? = unused("entry")
         override suspend fun list(project: ProjectId): List<Task> = unused("list")
         override suspend fun get(ref: TaskRef): Task? = unused("get")
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = unused("create")
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+            unused("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
         override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
@@ -486,7 +487,8 @@ class SessionDoneTaskTest {
         override suspend fun entry(ref: TaskRef): BacklogEntry? = unused("entry")
         override suspend fun list(project: ProjectId): List<Task> = unused("list")
         override suspend fun get(ref: TaskRef): Task? = unused("get")
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = unused("create")
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+            unused("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
         override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")

@@ -740,7 +740,8 @@ class TaskLinkRoutesTest {
         override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = emptyList()
 
         override suspend fun list(project: ProjectId): List<Task> = unused("list")
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = unused("create")
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+            unused("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
         override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")

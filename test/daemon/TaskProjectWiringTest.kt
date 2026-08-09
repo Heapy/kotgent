@@ -632,7 +632,8 @@ class TaskProjectWiringTest {
 
         override suspend fun get(ref: TaskRef): Task? = unused("get")
 
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = unused("create")
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+            unused("create")
 
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
 

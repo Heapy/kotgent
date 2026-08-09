@@ -113,15 +113,6 @@ SELECT MAX(CASE WHEN position < :position THEN position END) AS below,
 FROM backlog_entries
 WHERE project = :project;
 
--- The project's whole column in rank order — the input to a renormalization. Renormalizing is
--- deliberately a LOOP over this plus setPosition rather than one bulk UPDATE: every rewritten row must
--- stamp its OWN rev and emit its own TaskUpdate, or a connected board silently holds stale positions.
-selectPositionsOrdered:
-SELECT task_ref, position
-FROM backlog_entries
-WHERE project = ?
-ORDER BY position, task_ref;
-
 -- --- entries: writes -----------------------------------------------------------------------------
 
 insertEntry:
@@ -144,6 +135,11 @@ UPDATE backlog_entries
 SET state = 'in_progress', updated_at = ?, rev = ?
 WHERE task_ref = ? AND state = 'todo';
 
+-- Also the whole of a renormalization, which is deliberately a LOOP over this one-row statement rather
+-- than a single bulk UPDATE: every rewritten row must stamp its OWN rev and emit its own TaskUpdate, or a
+-- connected board silently holds stale positions. The loop reads its input through
+-- BacklogDependencies.listBacklogLocked (each entry already carrying the derived `blocked` it must be
+-- re-emitted with), which is why this file has no `SELECT task_ref, position` companion to it.
 setPosition:
 UPDATE backlog_entries
 SET position = ?, updated_at = ?, rev = ?

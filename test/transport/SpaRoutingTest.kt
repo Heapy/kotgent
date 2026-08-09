@@ -335,7 +335,7 @@ class SpaRoutingTest {
         override val id: String get() = unused()
         override suspend fun list(project: ProjectId): List<Task> = unused()
         override suspend fun get(ref: TaskRef): Task? = unused()
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = unused()
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task = unused()
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused()
         override suspend fun delete(ref: TaskRef): Boolean = unused()
         override suspend fun entry(ref: TaskRef): BacklogEntry? = unused()

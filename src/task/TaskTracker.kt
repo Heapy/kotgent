@@ -31,8 +31,22 @@ interface TaskTracker {
     /** One task, or `null` when the tracker does not know [ref]. */
     suspend fun get(ref: TaskRef): Task?
 
-    /** Create a task in [project] and return it. The built-in tracker mints the next `local:<n>` ref. */
-    suspend fun create(project: ProjectId, title: String, body: String): Task
+    /**
+     * Create a task in [project] and return it. The built-in tracker mints the next `local:<n>` ref.
+     *
+     * [author] is who filed it, recorded on the `created` activity row: the calling **session id** when
+     * the create came from inside a pane (`kotgent task add` runs there), and [BOARD_AUTHOR] only when
+     * there genuinely is no session behind it. The default exists so the board — which has no pane and no
+     * session — stays a three-argument call; a caller that HAS a session must pass it. The feed is the one
+     * place the no-exclusivity design tells an operator to look to see who is doing what, so attributing
+     * an agent's own card to "board" is not a missing detail, it is a confidently wrong answer.
+     */
+    suspend fun create(
+        project: ProjectId,
+        title: String,
+        body: String,
+        author: String = BOARD_AUTHOR,
+    ): Task
 
     /**
      * Update the tracker fields of [ref]. A `null` argument means "leave unchanged" — not "clear" —
@@ -43,4 +57,16 @@ interface TaskTracker {
 
     /** Remove [ref] entirely. Returns whether a task was actually removed. */
     suspend fun delete(ref: TaskRef): Boolean
+
+    companion object {
+        /**
+         * The `author` [create] records when nothing but the board is behind it.
+         *
+         * It is spelled here rather than imported from `io.kotgent.daemon.TaskService.BOARD_AUTHOR`
+         * because the layering runs `daemon → task` and a default parameter value has to be visible at
+         * the interface that declares it. The two spellings are pinned equal by a test in
+         * `test/store/TaskStoreTest.kt`, so the copy cannot drift.
+         */
+        const val BOARD_AUTHOR: String = "board"
+    }
 }

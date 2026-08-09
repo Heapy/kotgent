@@ -606,7 +606,8 @@ class TaskReadRoutesTest {
         override suspend fun project(id: ProjectId): ProjectRecord? = record("project", projects[id])
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = readOnly("nextCandidate")
-        override suspend fun create(project: ProjectId, title: String, body: String): Task = readOnly("create")
+        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+            readOnly("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = readOnly("update")
         override suspend fun delete(ref: TaskRef): Boolean = readOnly("delete")
         override suspend fun startIfTodo(ref: TaskRef): Boolean = readOnly("startIfTodo")
