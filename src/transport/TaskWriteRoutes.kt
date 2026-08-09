@@ -2,6 +2,7 @@ package io.kotgent.transport
 
 import io.kotgent.core.ProjectId
 import io.kotgent.core.SessionId
+import io.kotgent.core.SessionMeta
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.task.BacklogEntry
@@ -48,8 +49,19 @@ import kotlinx.serialization.SerializationException
  *  - `/deps` answers `400` for each of the four refusals (self, unknown ref, cross-project, cycle) with a
  *    message that says which.
  *  - `POST /projects` writes `.kotgent.json` for a browser-supplied ABSOLUTE path — the bounded departure
- *    from the upload rule recorded on [CreateProjectRequest]. The path says WHICH checkout, not where the
- *    file lands: like every other creating path it anchors at [mainCheckoutRoot] (see below).
+ *    from the upload rule recorded on [CreateProjectRequest]. It ADOPTS whatever already owns the path
+ *    before it considers writing (see below), and the path says WHICH checkout, not where the file lands:
+ *    like every other creating path it anchors at [mainCheckoutRoot] (see below).
+ *
+ * ## Adopt before creating
+ * `POST /projects` is documented as "create or ADOPT the project owning an absolute path", and the adopt
+ * half is not a convenience — it is what keeps the endpoint from producing the split the anchor below
+ * exists to prevent. Pointed at `/repo/packages/api`, which carries its own committed `.kotgent.json`,
+ * a straight jump to [mainCheckoutRoot] writes a SECOND file at `/repo`: one repository with two projects,
+ * and the uuid it answers with is one that no session under `packages/api` will ever resolve to, because
+ * [resolveProject] is nearest-wins. So the canonical path is resolved FIRST and an existing owner — its
+ * own file, or one committed above it, or the main checkout's when the path is a linked worktree — is
+ * returned untouched. Only a path that belongs to no project reaches the writer.
  *
  * ## Creation anchors at the main checkout root, on BOTH creating paths
  * A project is a committed FILE, not a path, and the uuid inside it is what makes `/repo` and
@@ -61,18 +73,25 @@ import kotlinx.serialization.SerializationException
  * ([mainCheckoutRoot] of the canonicalized path, degrading to that path when it is in no repository), and
  * the default display name is taken from the ROOT rather than from the subdirectory that was named.
  * The cost is recorded, not overlooked: a deliberately NESTED project (a monorepo package with its own
- * backlog) can no longer be created through this endpoint, only by committing a `.kotgent.json` by hand —
- * which the resolver still honours, because step 1 of resolution is still "nearest wins".
+ * backlog) can no longer be CREATED through this endpoint, only by committing a `.kotgent.json` by hand —
+ * which the resolver still honours, because step 1 of resolution is still "nearest wins", and which the
+ * adopt step above then answers with rather than shadowing.
  *
  * ## Where the "the `projects` row is upserted" obligation actually lands
- * On the two branches that touch a `.kotgent.json`, and only those. `resolveProject` READ a file, so the
+ * On the branches that touch a `.kotgent.json`, and only those. `resolveProject` READ a file, so the
  * project it found is registered (that also refreshes `projects.path` to the checkout the daemon just
- * saw, which is exactly what that column means); the creating branch obviously registers what it wrote.
- * The other two branches deliberately do not write: an explicit `project` is required to be a project the
- * daemon already knows — a uuid it has never seen is a `404` rather than a row invented from a name
- * nobody supplied — and a session's stored `project_id` was registered when the session started. That
- * keeps the rule the plan states ("every path that reads or creates a project file upserts the row")
- * literally true without inventing a display name for a project this request never opened.
+ * saw, which is exactly what that column means) — on both `POST /tasks`' step 3 and `POST /projects`'
+ * adopt branch; a creating branch obviously registers what it wrote. The other two branches deliberately
+ * do not write: an explicit `project` is required to be a project the daemon already knows — a uuid it
+ * has never seen is a `404` rather than a row invented from a name nobody supplied — and a session's
+ * stored `project_id` was registered when the session started. That keeps the rule the plan states
+ * ("every path that reads or creates a project file upserts the row") literally true without inventing a
+ * display name for a project this request never opened.
+ *
+ * ## …and the session row is bound along with it
+ * A `POST /tasks` that had to READ or WRITE a project file also persists the answer onto the calling
+ * session's `project_id` — see [bindSessionProject]. Without it the session that bootstraps a project
+ * cannot use `task show` / `task next` / `task list` until the daemon restarts.
  *
  * ## Status conventions, shared with the other two task route files
  * `404` means "no such task `{ref}`" (or `{project}`), so a ref that cannot even be parsed is a `400`;
@@ -92,8 +111,13 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             call.respondText("a task needs a title", status = HttpStatusCode.BadRequest)
             return@post
         }
+        // Resolved BEFORE the project, and that order is load-bearing: resolving the project can WRITE
+        // (a `projects` row, a `.kotgent.json`, the session's `project_id`), and a caller who NAMED a
+        // session that is not there gets a `400` — leaving a file on disk for a request that refused is
+        // exactly what the `PATCH` handler avoids by resolving its own author before the tracker edit.
+        val author = attributedAuthor(routing, req.sessionId) ?: return@post
         val project = resolveProjectForCreate(routing, req) ?: return@post
-        val created = routing.tasks.create(project, title, req.body)
+        val created = routing.tasks.create(project, title, req.body, author)
         val entry = routing.tasks.entry(created.ref)
         if (entry == null) {
             // The built-in tracker writes the `tasks` row, its `backlog_entries` row and the `created`
@@ -149,7 +173,15 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
         }
         // Resolved BEFORE the tracker edit below, even though only the transition uses it: a refusal after
         // `update` would leave the title/body written and the state not, for a request that answered 400.
-        val author = if (to == null) null else (attributedAuthor(routing, req.sessionId) ?: return@patch)
+        //
+        // The state and its author are carried as ONE nullable value rather than two, because two
+        // nullables can spell a state with no author — a combination this route can never perform and
+        // would silently SKIP, answering `200` for an un-transitioned entry. [StateChange] cannot spell it.
+        val change = if (to == null) {
+            null
+        } else {
+            StateChange(to, attributedAuthor(routing, req.sessionId) ?: return@patch)
+        }
         if (req.title != null || req.body != null) {
             if (req.title != null && req.title.isBlank()) {
                 call.respondText("a task needs a title", status = HttpStatusCode.BadRequest)
@@ -160,8 +192,8 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
                 return@patch
             }
         }
-        if (to != null && author != null) {
-            if (routing.service.transition(ref, to, author, req.message) == null) {
+        if (change != null) {
+            if (routing.service.transition(ref, change.to, change.author, req.message) == null) {
                 fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
                 return@patch
             }
@@ -287,11 +319,13 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
 
     /*
      * `POST /projects` — create or ADOPT the project OWNING an absolute path. Idempotent by construction
-     * (an existing `.kotgent.json` always wins the `link(2)` race and is read back), so the answer is `200`
-     * and not `201`: the caller cannot tell whether it wrote the file, and does not need to.
+     * (the adopt branch below writes nothing, and an existing `.kotgent.json` always wins the `link(2)`
+     * race and is read back), so the answer is `200` and not `201`: the caller cannot tell whether it
+     * wrote the file, and does not need to.
      *
-     * The named directory selects the checkout; the file itself lands at that checkout's main root — see
-     * the file header's "Creation anchors at the main checkout root".
+     * ADOPT comes first, and CREATE only when nothing owns the path — see the file header's "Adopt before
+     * creating". The named directory then selects the checkout; the file itself lands at that checkout's
+     * main root — see "Creation anchors at the main checkout root".
      */
     post("/projects") {
         val req = decodeBody(CreateProjectRequest.serializer(), routing) ?: return@post
@@ -311,11 +345,12 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             )
             return@post
         }
-        // `mainCheckoutRoot` requires a canonical absolute path (it answers null for anything else), which
-        // is why it runs after `canonicalize` and not on `requested`.
-        val dir = mainCheckoutRoot(fs, canonical) ?: canonical
-        val name = if (req.name == null) {
-            defaultProjectName(dir)
+        // Validated BEFORE the adopt lookup, even though only the creating branch can use it: a name a
+        // `.kotgent.json` could never carry is a malformed REQUEST, and it must be refused for the same
+        // input whether or not the directory happens to be adopted. Answering `200` with somebody else's
+        // name would report success for a name that was rejected a moment ago at the same path.
+        val requestedName = if (req.name == null) {
+            null
         } else {
             validProjectName(req.name) ?: run {
                 call.respondText(
@@ -326,6 +361,19 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
                 return@post
             }
         }
+        // Adopt: `resolveProject` walks up from the canonical path (nearest wins) and reaches a linked
+        // worktree's main root, so anything already owning this path answers here and nothing is written.
+        // The row is upserted because a file was READ — the same obligation `POST /tasks`' step 3 has.
+        val owner = resolveProject(fs, canonical)
+        if (owner != null) {
+            routing.tasks.upsertProject(owner.id, owner.name, owner.root)
+            respondProject(routing, owner.id, owner.root)
+            return@post
+        }
+        // `mainCheckoutRoot` requires a canonical absolute path (it answers null for anything else), which
+        // is why it runs after `canonicalize` and not on `requested`.
+        val dir = mainCheckoutRoot(fs, canonical) ?: canonical
+        val name = requestedName ?: defaultProjectName(dir)
         val file = try {
             routing.service.projectFiles.ensureProjectFile(dir, name)
         } catch (e: ProjectPathException) {
@@ -333,18 +381,7 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             return@post
         }
         routing.tasks.upsertProject(file.id, file.name, dir)
-        val record = routing.tasks.project(file.id)
-        if (record == null) {
-            call.respondText(
-                "project '${file.id.value}' was written to $dir but is not registered",
-                status = HttpStatusCode.InternalServerError,
-            )
-            return@post
-        }
-        call.respondText(
-            routing.json.encodeToString(ProjectDto.serializer(), record.toDto()),
-            ContentType.Application.Json,
-        )
+        respondProject(routing, file.id, dir)
     }
 }
 
@@ -354,6 +391,16 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
 // `TaskLinkRoutes` and `EventsWs` are written by other agents in this same package at this same moment, so
 // a non-private top-level declaration here is a redeclaration error nobody sees until the branches merge.
 // The shared mappers live in `TaskDtos.kt` for exactly that reason.
+
+/**
+ * A `PATCH`'s workflow state together with the author it will be attributed to.
+ *
+ * The pair exists to make an unrepresentable combination unrepresentable: a `TaskState?` and a `String?`
+ * beside each other can spell "a state change with no author", which [io.kotgent.daemon.TaskService.transition]
+ * has no signature for, so the route would have to guard the pair with a conjunct that is dead today and
+ * silently skips the transition the day it is not.
+ */
+private data class StateChange(val to: TaskState, val author: String)
 
 /** Decode a request body, answering `400` (and returning `null`) when it is not the expected JSON. */
 private suspend fun <T> RoutingContext.decodeBody(
@@ -413,12 +460,16 @@ private suspend fun RoutingContext.requireCallerSession(routing: TaskRouting, ex
  * when a session WAS named and there is no such row.
  *
  * The three-way answer is the whole point, and it is what separates this from [requireCallerSession]. A
- * `PATCH` really can arrive with nobody behind it (the board dragging a card), so "no session" is
- * legitimate here. But a caller who NAMED one and got it wrong must not have their write quietly
- * re-attributed to `board`: the activity feed is the one place the no-exclusivity design tells operators
- * to look to see who is doing what, and `kotgent task review --session <typo>` recording a human action
- * for an agent's write makes it lie. `comment` refuses the same input for the same reason; this endpoint
- * used to be the one attributed write in the package that did not.
+ * `PATCH` (dragging a card) and a `POST /tasks` (filing one) really can arrive with nobody behind them,
+ * so "no session" is legitimate here. But a caller who NAMED one and got it wrong must not have their
+ * write quietly re-attributed to `board`: the activity feed is the one place the no-exclusivity design
+ * tells operators to look to see who is doing what, and `kotgent task review --session <typo>` recording
+ * a human action for an agent's write makes it lie. `comment` refuses the same input for the same reason.
+ *
+ * Both callers pass what they get straight through — `PATCH` to
+ * [io.kotgent.daemon.TaskService.transition]'s activity row, `POST /tasks` to the `created` row
+ * [io.kotgent.task.TaskTracker.create] writes — and the default on that create signature exists for the
+ * board alone, which is exactly the case this function answers [TaskService.BOARD_AUTHOR] for.
  */
 private suspend fun RoutingContext.attributedAuthor(routing: TaskRouting, explicitSessionId: String?): String? {
     val id = resolveCallerSession(routing, explicitSessionId) ?: return TaskService.BOARD_AUTHOR
@@ -488,6 +539,7 @@ private suspend fun RoutingContext.resolveProjectForCreate(
     val fs = routing.service.projectFs
     resolveProject(fs, session.cwd)?.let { resolved ->
         routing.tasks.upsertProject(resolved.id, resolved.name, resolved.root)
+        bindSessionProject(routing, session, resolved.id)
         return resolved.id
     }
 
@@ -504,7 +556,64 @@ private suspend fun RoutingContext.resolveProjectForCreate(
         return null
     }
     routing.tasks.upsertProject(file.id, file.name, root)
+    bindSessionProject(routing, session, file.id)
     return file.id
+}
+
+/**
+ * Persist [project] onto [session]'s row, for the two `POST /tasks` branches that had to consult the
+ * filesystem to find it.
+ *
+ * ## Why the create path owes this write at all
+ * `sessions.project_id` is what `GET /tasks` and `POST /tasks/next` resolve a ref-less request through
+ * (`TaskReadRoutes.resolveProjectParameter`, `TaskLinkRoutes`' `post("/tasks/next")`), and until this was
+ * written back the ONLY production caller of [io.kotgent.store.EventStore.setProjectId] was the
+ * `Reconciler`'s startup backfill. So the session that BOOTSTRAPPED a project — the one that filed the
+ * first card in a repository that had no `.kotgent.json` — could not then run `task next` or `task list`
+ * without a `--project` uuid until the daemon was restarted, which is the whole ref-less agent loop.
+ * Steps 1 and 2 owe nothing: an explicit `project` is the board naming someone else's backlog and must not
+ * re-point the session that relayed it, and step 2 read the column it would be writing.
+ *
+ * ## Order and stamp
+ * The `projects` row is upserted by the caller FIRST and the session bound second — the same
+ * write-both-or-neither order `SessionManager` and `Reconciler.backfillProjectId` use, so a failure
+ * between them leaves `project_id` null and the next create (or the next daemon start) simply tries again;
+ * the reverse order would pin a session to a project the board cannot list, with nothing left to repair it.
+ *
+ * The stamp is the row's CURRENT `updated_at`, never a fresh clock, for the reason
+ * `Reconciler.sortKeyOf` writes down: `updated_at` is ACTIVITY and is what `kotgent list` sorts by, while
+ * this is a derived backfill, which must neither advance nor rewind the sort key. It is RE-READ for the
+ * same reason that function re-reads: [session] was snapshotted before a filesystem walk and possibly a
+ * file write, and a hook that advanced this row in that window (a real state change, which IS activity)
+ * must not be rolled back by the stale value. A row that vanished meanwhile falls back to the snapshot,
+ * and its write is a no-op anyway.
+ */
+private suspend fun bindSessionProject(routing: TaskRouting, session: SessionMeta, project: ProjectId) {
+    val sortKey = routing.sessions.getSession(session.id)?.updatedAt ?: session.updatedAt
+    routing.sessions.setProjectId(session.id, project, sortKey)
+}
+
+/**
+ * Answer `POST /projects` with the registered row for [project], or `500` when it is not registered.
+ *
+ * Shared by the adopt and the create branch so both report a project the board can actually reach: the
+ * row is what `GET /projects` lists, and answering a uuid whose row is missing would hand the caller a
+ * project its own selector cannot show. [dir] is named in the failure only — it is the directory the
+ * answer came from, which is the one thing an operator needs to look at.
+ */
+private suspend fun RoutingContext.respondProject(routing: TaskRouting, project: ProjectId, dir: String) {
+    val record = routing.tasks.project(project)
+    if (record == null) {
+        call.respondText(
+            "project '${project.value}' at $dir is not registered",
+            status = HttpStatusCode.InternalServerError,
+        )
+        return
+    }
+    call.respondText(
+        routing.json.encodeToString(ProjectDto.serializer(), record.toDto()),
+        ContentType.Application.Json,
+    )
 }
 
 /** Serialize one backlog entry with its tracker fields and its dependency slice. */

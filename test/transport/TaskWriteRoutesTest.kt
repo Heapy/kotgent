@@ -31,6 +31,7 @@ import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskUpdate
+import io.kotgent.task.parseProjectFile
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.HttpRequestBuilder
@@ -260,6 +261,124 @@ class TaskWriteRoutesTest {
             beta.value,
             TRANSPORT_JSON.decodeFromString(BacklogEntryDto.serializer(), resp.bodyAsText()).project,
         )
+    }
+
+    // --- POST /tasks: the resolved project is bound onto the calling session ---------------------------
+
+    /**
+     * Step 3 must WRITE `sessions.project_id`, not merely answer with the project it read.
+     *
+     * That column is what `GET /tasks` and `POST /tasks/next` resolve a ref-less request through
+     * (`TaskReadRoutes.resolveProjectParameter`, `TaskLinkRoutes`' `/tasks/next`), and the only other
+     * production caller of `setProjectId` is the `Reconciler`'s STARTUP backfill. So without this write the
+     * session that filed the first card could not then run `task show` / `task next` / `task list` until
+     * the daemon was restarted — the ref-less agent loop, which is the feature's headline path.
+     *
+     * `updated_at` is asserted UNCHANGED for the reason `Reconciler.sortKeyOf` writes down: it is activity,
+     * `kotgent list` sorts by it, and a derived backfill must neither advance nor rewind it.
+     */
+    @Test
+    fun createFromAPaneBindsTheProjectItResolvedOntoTheCallingSession() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/sub")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null, updatedAt = 4242L)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        assertEquals(HttpStatusCode.Created, env.post("/tasks", """{"title":"resolved"}""", pane = paneOne).status)
+
+        val row = assertNotNull(env.sessions.snapshot()[sessionOne])
+        assertEquals(
+            alpha,
+            row.projectId,
+            "the session that resolved a project keeps it, or its next ref-less task command has no project",
+        )
+        assertEquals(4242L, row.updatedAt, "a derived backfill is not activity and must not restamp the sort key")
+    }
+
+    /** Step 4 owes the same write: the session that BOOTSTRAPPED the project is the one that will use it. */
+    @Test
+    fun createFromAPaneInAProjectlessDirectoryBindsTheProjectItCreatedOntoTheCallingSession() =
+        withTaskServer { env ->
+            env.fs.dirs += setOf("/repo", "/repo/sub", "/repo/.git")
+            env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+            env.panes[PaneId(paneOne)] = sessionOne
+
+            assertEquals(HttpStatusCode.Created, env.post("/tasks", """{"title":"first ever"}""", pane = paneOne).status)
+
+            assertEquals(minted, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
+        }
+
+    /**
+     * The other direction, and the reason the bind lives in steps 3 and 4 only: an explicit `project` is
+     * the BOARD naming a backlog, and a session that merely relayed that request must not be re-pointed at
+     * it. Its own project is the one its cwd resolves to, and its next `task next` must still use that.
+     */
+    @Test
+    fun createWithAnExplicitProjectDoesNotRePointTheCallingSession() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/other")
+        env.sessions.seed(sessionOne, cwd = "/repo", projectId = beta)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"someone else's"}""", pane = paneOne)
+
+        assertEquals(HttpStatusCode.Created, resp.status)
+        assertEquals(beta, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
+    }
+
+    // --- POST /tasks: who filed it ---------------------------------------------------------------------
+
+    /**
+     * A card filed from a pane is attributed to that SESSION, not to `board`.
+     *
+     * The `created` row is the feed's first entry and the no-exclusivity design tells operators to read the
+     * feed to see who is doing what; `TaskTracker.create`'s author default exists for the board alone, so a
+     * route that never passes one makes every agent's own card claim a human filed it.
+     */
+    @Test
+    fun aCreateFromAPaneIsAttributedToTheCallingSession() = withTaskServer { env ->
+        env.tasks.seedProject(beta, "beta", "/repo")
+        env.sessions.seed(sessionOne, cwd = "/repo", projectId = beta)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        assertEquals(HttpStatusCode.Created, env.post("/tasks", """{"title":"mine"}""", pane = paneOne).status)
+
+        val created = env.tasks.snapshotActivity().single { it.kind == ActivityKind.created }
+        assertEquals(sessionOne.value, created.author)
+    }
+
+    /** And one with genuinely nobody behind it stays the board's — the case the default was written for. */
+    @Test
+    fun aCreateFromTheBoardIsAttributedToTheBoard() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+
+        assertEquals(
+            HttpStatusCode.Created,
+            env.post("/tasks", """{"project":"${alpha.value}","title":"from the browser"}""").status,
+        )
+
+        assertEquals(
+            TaskService.BOARD_AUTHOR,
+            env.tasks.snapshotActivity().single { it.kind == ActivityKind.created }.author,
+        )
+    }
+
+    /**
+     * A NAMED session that is not there is a `400`, and nothing is written — not the task, and not the
+     * project the resolution step would otherwise have created on disk on the way past. `comment` and
+     * `PATCH` refuse the same input for the same reason: a typo must not be re-attributed to `board`.
+     */
+    @Test
+    fun aCreateNamingASessionThatDoesNotExistIs400AndWritesNothing() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+
+        val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"x","sessionId":"s-ghost"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("s-ghost"), resp.bodyAsText())
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "no task")
+        assertTrue(env.tasks.snapshotActivity().isEmpty(), "and no activity attributed to anyone")
+        assertTrue(env.writer.calls.isEmpty(), "the author is resolved before anything can be written")
     }
 
     @Test
@@ -709,6 +828,67 @@ class TaskWriteRoutesTest {
         )
     }
 
+    /**
+     * The endpoint is "create or ADOPT the project owning an absolute path", and this is the adopt half —
+     * the one the anchor rule above silently broke while every test seeded a tree with no project file.
+     *
+     * `/repo/packages/api` carries its own committed `.kotgent.json` (the deliberately nested monorepo
+     * project the anchor's recorded cost still allows by hand). Jumping straight to the main checkout root
+     * writes a SECOND file at `/repo`: one repository with two projects, which is exactly the split the
+     * anchor exists to prevent, moved one level up. Worse, the uuid answered would be one no session under
+     * `packages/api` can ever resolve to — `resolveProject` is nearest-wins, so those sessions keep
+     * answering `alpha` while the browser was handed a project nobody's backlog is in.
+     */
+    @Test
+    fun postProjectsAdoptsTheProjectAlreadyCommittedAtThePathInsteadOfMintingOneAbove() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/packages", "/repo/packages/api")
+        env.fs.files["/repo/packages/api/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"api"}"""
+
+        val resp = env.post("/projects", """{"path":"/repo/packages/api"}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+        assertEquals(alpha.value, dto.id, "the answer is the project that OWNS the path, not a fresh uuid")
+        assertEquals("api", dto.name)
+        assertEquals("/repo/packages/api", dto.path)
+        assertTrue(env.writer.calls.isEmpty(), "an owned path is adopted, never written to")
+        assertNull(
+            env.fs.files["/repo/$PROJECT_FILE_NAME"],
+            "and no competing project file appears at the checkout root",
+        )
+        assertEquals(
+            ProjectRecord(alpha, "api", "/repo/packages/api", 0L),
+            env.tasks.snapshotProjects()[alpha],
+            "reading a project file registers it, so the board's selector can reach its backlog",
+        )
+    }
+
+    /**
+     * Adoption is the same walk `POST /tasks`' step 3 does, so a path with no file of its OWN adopts the
+     * project committed above it — the ordinary "run `project init` twice" case, which must be idempotent
+     * rather than a second write at the root under a re-derived default name.
+     */
+    @Test
+    fun postProjectsAdoptsTheProjectCommittedAboveTheNamedDirectory() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/src")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+
+        val resp = env.post("/projects", """{"path":"/repo/src"}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+        assertEquals(alpha.value, dto.id)
+        assertEquals("kotgent", dto.name, "the committed name wins over a default derived from the directory")
+        assertEquals("/repo", dto.path)
+        assertTrue(env.writer.calls.isEmpty())
+    }
+
+    /**
+     * The second half also pins the ORDER of the name gate against the adopt step above it: by then the
+     * first call has committed a file at that very path, so a route that adopted before validating would
+     * answer `200` with the existing project for a name it had just refused at the same path. A malformed
+     * name is a malformed request whatever the filesystem says.
+     */
     @Test
     fun postProjectsHonoursAGivenNameAndRefusesOneAFileCouldNotCarry() = withTaskServer { env ->
         env.fs.dirs += "/srv/new-repo"
@@ -1081,7 +1261,13 @@ class TaskWriteRoutesTest {
         /** Nothing here ever archives a session; the set exists so a test can assert that. */
         val archived: MutableSet<SessionId> = mutableSetOf()
 
-        fun seed(id: SessionId, cwd: String, projectId: ProjectId?, taskRef: TaskRef? = null) {
+        fun seed(
+            id: SessionId,
+            cwd: String,
+            projectId: ProjectId?,
+            taskRef: TaskRef? = null,
+            updatedAt: Long = 0L,
+        ) {
             rows[id] = SessionMeta(
                 id = id,
                 name = id.value,
@@ -1091,7 +1277,7 @@ class TaskWriteRoutesTest {
                 state = SessionState.running,
                 stateSource = EventSource.system,
                 createdAt = rows.size.toLong(),
-                updatedAt = 0L,
+                updatedAt = updatedAt,
                 taskRef = taskRef,
                 projectId = projectId,
             )
@@ -1131,8 +1317,17 @@ class TaskWriteRoutesTest {
             updatedAt: Long,
         ): Boolean = unused("setModelForProvider")
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) =
-            unused("setProjectId")
+
+        /**
+         * Implemented, unlike the throwing stubs below it, because `POST /tasks` binds the project it
+         * resolved onto the calling session — a missing row is a documented no-op (the SQL is a targeted
+         * `UPDATE … WHERE id = ?`), so an unknown id must write nothing rather than throw.
+         */
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
+            mutex.withLock {
+                rows[sessionId]?.let { rows[sessionId] = it.copy(projectId = projectId, updatedAt = updatedAt) }
+            }
+        }
         override suspend fun listSessions(): List<SessionMeta> = unused("listSessions")
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
             unused("append")
@@ -1170,6 +1365,10 @@ class TaskWriteRoutesTest {
      * A fake [ProjectFileWriter]. Task 4 is filling `PosixProjectFileWriter` in parallel, so this test may
      * not depend on its body — only on the interface's contract: an existing file wins, a fresh one gets a
      * new uuid, and a refusal is a [ProjectPathException].
+     *
+     * "An existing file wins" is modelled by PARSING it, not by answering [mint] regardless: the real
+     * writer reads the winner's file back, so a fake that returned its own uuid for a directory somebody
+     * else's project already owns would hide exactly the confusion the adopt tests are about.
      */
     private class FakeProjectFileWriter(
         private val fs: FakeProjectFs,
@@ -1185,7 +1384,7 @@ class TaskWriteRoutesTest {
             calls += dir to name
             if (dir in failOn) throw ProjectPathException(dir, "cannot write $PROJECT_FILE_NAME in '$dir'")
             val path = "$dir/$PROJECT_FILE_NAME"
-            fs.files[path]?.let { return ProjectFile(mint, name) }
+            fs.files[path]?.let { existing -> return parseProjectFile(existing) ?: ProjectFile(mint, name) }
             fs.files[path] = """{"id":"${mint.value}","name":"$name"}"""
             return ProjectFile(mint, name)
         }
