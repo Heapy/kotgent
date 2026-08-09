@@ -8,8 +8,16 @@ import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
 import io.kotgent.transport.ActivityEntryDto
 import io.kotgent.transport.BacklogEntryDto
+import io.kotgent.transport.CommentRequest
+import io.kotgent.transport.CreateProjectRequest
 import io.kotgent.transport.CreateTaskRequest
+import io.kotgent.transport.DepsRequest
 import io.kotgent.transport.ImportSessionRequest
+import io.kotgent.transport.LinkRequest
+import io.kotgent.transport.MoveTaskRequest
+import io.kotgent.transport.NextTaskRequest
+import io.kotgent.transport.NextTaskResponse
+import io.kotgent.transport.PatchTaskRequest
 import io.kotgent.transport.ProjectDto
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
@@ -25,8 +33,10 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -34,6 +44,8 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import io.ktor.http.encodeURLParameter
+import io.ktor.http.encodeURLPathPart
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
@@ -189,9 +201,10 @@ class ApiClient(
     // --- the task / project surface (Tasks 13-15's routes) -----------------------------------------
 
     /*
-     * Declared here in the contracts wave, with `TODO()` bodies, because `src/cli/TaskCommands.kt`
-     * (Task 21) calls every one of them and may not touch this file — Task 20 owns it. A signature that
-     * only appeared when Task 20 landed would leave Task 21 unable to compile in its own worktree.
+     * These fourteen signatures were declared in the contracts wave and filled in later, because
+     * `src/cli/TaskCommands.kt` calls every one of them and may not touch this file. A signature that
+     * only appeared with its body would have left that file unable to compile beside this one. The
+     * signatures are therefore fixed: a caller depends on each parameter list as written.
      *
      * Two identity rules every method below shares, and they are the reason the parameters look the way
      * they do:
@@ -207,10 +220,14 @@ class ApiClient(
      * `GET /api/v1/whoami` — what the calling PANE resolves to. Pane resolution, not a session lookup:
      * a caller that was given `--session <id>` must never come here.
      */
-    suspend fun whoami(): WhoamiDto = TODO("Task 20: whoami")
+    suspend fun whoami(): WhoamiDto =
+        json.decodeFromString(WhoamiDto.serializer(), taskGet("/whoami"))
 
     /** `GET /api/v1/tasks?project=` — one project's backlog in `position` order, each entry with `blocked`. */
-    suspend fun listTasks(project: String?): List<BacklogEntryDto> = TODO("Task 20: list tasks")
+    suspend fun listTasks(project: String?): List<BacklogEntryDto> {
+        val query = project?.takeIf { it.isNotBlank() }?.let { "?project=${it.encodeURLParameter()}" } ?: ""
+        return json.decodeFromString(ListSerializer(BacklogEntryDto.serializer()), taskGet("/tasks$query"))
+    }
 
     /** `POST /api/v1/tasks` — create. A null [project] lets the daemon resolve one (see [CreateTaskRequest]). */
     suspend fun createTask(
@@ -218,10 +235,17 @@ class ApiClient(
         body: String = "",
         project: String? = null,
         sessionId: String? = null,
-    ): BacklogEntryDto = TODO("Task 20: create task")
+    ): BacklogEntryDto {
+        val request = json.encodeToString(
+            CreateTaskRequest.serializer(),
+            CreateTaskRequest(title = title, body = body, project = project, sessionId = sessionId),
+        )
+        return json.decodeFromString(BacklogEntryDto.serializer(), taskPost("/tasks", request))
+    }
 
     /** `GET /api/v1/tasks/{ref}` — entry, project path, both dependency directions, sessions, activity. */
-    suspend fun taskDetail(ref: String): TaskDetailDto = TODO("Task 20: task detail")
+    suspend fun taskDetail(ref: String): TaskDetailDto =
+        json.decodeFromString(TaskDetailDto.serializer(), taskGet("/tasks/${refSegment(ref)}"))
 
     /**
      * `PATCH /api/v1/tasks/{ref}` — title / body / state. A null field means "leave unchanged", never
@@ -235,31 +259,78 @@ class ApiClient(
         state: String? = null,
         message: String? = null,
         sessionId: String? = null,
-    ): BacklogEntryDto = TODO("Task 20: patch task")
+    ): BacklogEntryDto {
+        val request = json.encodeToString(
+            PatchTaskRequest.serializer(),
+            PatchTaskRequest(title = title, body = body, state = state, message = message, sessionId = sessionId),
+        )
+        val resp = client.patch(url("/tasks/${refSegment(ref)}")) {
+            bearer()
+            paneHeader()
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+        ensureSuccess(resp)
+        return json.decodeFromString(BacklogEntryDto.serializer(), resp.bodyAsText())
+    }
 
-    /** `DELETE /api/v1/tasks/{ref}` — unlinks every holder, then removes the task, its deps and its feed. */
-    suspend fun deleteTask(ref: String): Boolean = TODO("Task 20: delete task")
+    /**
+     * `DELETE /api/v1/tasks/{ref}` — unlinks every holder, then removes the task, its deps and its feed.
+     *
+     * `false` is the daemon's `404`, i.e. "there was no such task", which is the only reading a `Boolean`
+     * return can have next to [ApiException]: the route convention says `404` means "no such task `{ref}`"
+     * (`TaskReadRoutes`), and `TaskService.delete` answers the same `Boolean`. Every other non-2xx —
+     * including the `400` of a ref that cannot be parsed — is a failure and throws, because a caller that
+     * cannot tell "gone already" from "you asked wrong" would report a malformed ref as a successful
+     * no-op.
+     */
+    suspend fun deleteTask(ref: String): Boolean {
+        val resp = client.delete(url("/tasks/${refSegment(ref)}")) {
+            bearer()
+            paneHeader()
+        }
+        if (resp.status.value == HTTP_NOT_FOUND) return false
+        ensureSuccess(resp)
+        return true
+    }
 
     /** `POST /api/v1/tasks/{ref}/move` — never carries a state; a column change is a separate [patchTask]. */
-    suspend fun moveTask(ref: String, target: MoveTarget): BacklogEntryDto = TODO("Task 20: move task")
+    suspend fun moveTask(ref: String, target: MoveTarget): BacklogEntryDto {
+        val request = json.encodeToString(MoveTaskRequest.serializer(), target.toRequest())
+        return json.decodeFromString(
+            BacklogEntryDto.serializer(),
+            taskPost("/tasks/${refSegment(ref)}/move", request),
+        )
+    }
 
     /** `POST /api/v1/tasks/{ref}/deps` — [action] is `"add"` or `"remove"`; the four refusals are `400`s. */
     suspend fun editTaskDependency(ref: String, action: String, on: String) {
-        TODO("Task 20: dependency edit")
+        val request = json.encodeToString(DepsRequest.serializer(), DepsRequest(action = action, on = on))
+        taskPost("/tasks/${refSegment(ref)}/deps", request)
     }
 
     /** `POST /api/v1/tasks/{ref}/comment` — requires session identity, so an activity row is attributable. */
-    suspend fun commentOnTask(ref: String, text: String, sessionId: String? = null): ActivityEntryDto =
-        TODO("Task 20: comment")
+    suspend fun commentOnTask(ref: String, text: String, sessionId: String? = null): ActivityEntryDto {
+        val request = json.encodeToString(
+            CommentRequest.serializer(),
+            CommentRequest(text = text, sessionId = sessionId),
+        )
+        return json.decodeFromString(
+            ActivityEntryDto.serializer(),
+            taskPost("/tasks/${refSegment(ref)}/comment", request),
+        )
+    }
 
     /** `POST /api/v1/tasks/{ref}/link` — unconditional; a task already `in_progress` simply gains a session. */
     suspend fun linkTask(ref: String, sessionId: String? = null) {
-        TODO("Task 20: link")
+        val request = json.encodeToString(LinkRequest.serializer(), LinkRequest(sessionId = sessionId))
+        taskPost("/tasks/${refSegment(ref)}/link", request)
     }
 
     /** `POST /api/v1/tasks/{ref}/unlink` — drops this session's link and leaves the task's state alone. */
     suspend fun unlinkTask(ref: String, sessionId: String? = null) {
-        TODO("Task 20: unlink")
+        val request = json.encodeToString(LinkRequest.serializer(), LinkRequest(sessionId = sessionId))
+        taskPost("/tasks/${refSegment(ref)}/unlink", request)
     }
 
     /**
@@ -269,14 +340,26 @@ class ApiClient(
      * precisely so this can be told apart from an error, and it is what `kotgent task next` maps to
      * exit `3`.
      */
-    suspend fun nextTask(project: String? = null, sessionId: String? = null): BacklogEntryDto? =
-        TODO("Task 20: next")
+    suspend fun nextTask(project: String? = null, sessionId: String? = null): BacklogEntryDto? {
+        val request = json.encodeToString(
+            NextTaskRequest.serializer(),
+            NextTaskRequest(project = project, sessionId = sessionId),
+        )
+        return json.decodeFromString(NextTaskResponse.serializer(), taskPost("/tasks/next", request)).task
+    }
 
     /** `GET /api/v1/projects` — every known project (the board selector's source, and `project list`'s). */
-    suspend fun listProjects(): List<ProjectDto> = TODO("Task 20: list projects")
+    suspend fun listProjects(): List<ProjectDto> =
+        json.decodeFromString(ListSerializer(ProjectDto.serializer()), taskGet("/projects"))
 
     /** `POST /api/v1/projects` — write `.kotgent.json` at an absolute path; an existing file always wins. */
-    suspend fun createProject(path: String, name: String? = null): ProjectDto = TODO("Task 20: create project")
+    suspend fun createProject(path: String, name: String? = null): ProjectDto {
+        val request = json.encodeToString(
+            CreateProjectRequest.serializer(),
+            CreateProjectRequest(path = path, name = name),
+        )
+        return json.decodeFromString(ProjectDto.serializer(), taskPost("/projects", request))
+    }
 
     override fun close(): Unit = client.close()
 
@@ -284,6 +367,42 @@ class ApiClient(
 
     /** [baseUrl] plus [daemonPath] of [path] — the one place a CLI call learns where a route lives. */
     private fun url(path: String): String = "$baseUrl${daemonPath(path)}"
+
+    /**
+     * A `GET` on the task surface: the two credentials ([bearer], [paneHeader]) and the status check, so
+     * each method above is its route plus its decode and nothing else.
+     */
+    private suspend fun taskGet(path: String): String {
+        val resp = client.get(url(path)) {
+            bearer()
+            paneHeader()
+        }
+        ensureSuccess(resp)
+        return resp.bodyAsText()
+    }
+
+    /** The `POST` counterpart of [taskGet]. Every task write carries a JSON body, even `link`'s. */
+    private suspend fun taskPost(path: String, body: String): String {
+        val resp = client.post(url(path)) {
+            bearer()
+            paneHeader()
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        ensureSuccess(resp)
+        return resp.bodyAsText()
+    }
+
+    /**
+     * A [io.kotgent.core.TaskRef] as one path segment.
+     *
+     * A well-formed ref needs no escaping at all — its charset is `[A-Za-z0-9_-]` either side of the one
+     * mandatory `:`, and `:` is a legal `pchar` that [encodeURLPathPart] leaves alone, so `local:42`
+     * survives verbatim and the daemon's `{ref}` sees exactly what the operator typed. The encode is for
+     * the ref that is *not* well formed: `kotgent task show "no such ref"` must reach the daemon and come
+     * back a `400`, not fail while the client is still assembling a URL.
+     */
+    private fun refSegment(ref: String): String = ref.encodeURLPathPart()
 
     private fun HttpRequestBuilder.bearer() {
         val t = token ?: throw MissingTokenException(tokenPath)
@@ -319,6 +438,23 @@ fun defaultHttpClient(): HttpClient = HttpClient(CIO) {
         socketTimeoutMillis = REQUEST_TIMEOUT_MS
     }
 }
+
+/**
+ * The one place the CLI turns a [MoveTarget] into `POST /tasks/{ref}/move`'s wire body.
+ *
+ * The domain type is a sealed hierarchy and the wire body is four optional fields of which exactly one is
+ * set, so this `when` is the whole translation — and being exhaustive, a fifth target would fail to
+ * compile here rather than silently posting an empty move the daemon would reject at runtime.
+ */
+private fun MoveTarget.toRequest(): MoveTaskRequest = when (this) {
+    is MoveTarget.Top -> MoveTaskRequest(top = true)
+    is MoveTarget.Bottom -> MoveTaskRequest(bottom = true)
+    is MoveTarget.Before -> MoveTaskRequest(before = ref.value)
+    is MoveTarget.After -> MoveTaskRequest(after = ref.value)
+}
+
+/** The daemon's "no such task" for `DELETE /tasks/{ref}` — the one non-2xx [ApiClient] reads as an answer. */
+private const val HTTP_NOT_FOUND: Int = 404
 
 /** TCP connect budget — loopback, so anything slower than this is not a live daemon. */
 private const val CONNECT_TIMEOUT_MS: Long = 3_000
