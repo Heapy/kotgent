@@ -58,11 +58,13 @@ import {
   upsertIfNewer,
 } from "./lib/sessions.js";
 import {
+  SCREEN_SESSIONS,
   SCREEN_TASK,
   SCREEN_TASKS,
   navigate,
   parseRoute,
   routePath,
+  sessionPath,
   subscribeToRoute,
   taskPath,
 } from "./lib/router.js";
@@ -191,6 +193,20 @@ function deliverRead(id, poster) {
 }
 
 /**
+ * Whether the session view — the ONLY screen that displays a session — is the one on screen.
+ *
+ * Before the router there was one screen, so `activeId` and "the operator is looking at it" were the
+ * same statement. The board replaced the whole session view as a route while `activeId` kept pointing at
+ * a session nobody can see: grooming the backlog for ten minutes silently zeroed that session's unread
+ * pill, and the operator came back unable to tell that anything had happened. CLAUDE.md's rule is
+ * "`app.js` POSTs `/sessions/{id}/read` for the session it DISPLAYS", so displaying it is the gate.
+ *
+ * Assigned from `App`'s render body, which is legal precisely because it is never READ there: all four
+ * mark-read triggers run from a handler or an effect, i.e. after the render that set it.
+ */
+let sessionViewOnScreen = true;
+
+/**
  * Mark the session the user is looking at as read. Takes the three values the guard reads rather than a row,
  * because two of its three callers do not have one: a `session_update` frame carries newer numbers than
  * `sessionsRef` (which has not re-rendered yet), and only the visibility trigger looks a row up.
@@ -208,10 +224,13 @@ function deliverRead(id, poster) {
  */
 function markReadIfViewing(id, unread, lastSeq) {
   if (!id || !(unread > 0)) return;
+  // Two independent questions, and both must answer yes. Is this tab in front of the operator —
   // `visible` is the closest the platform gets: it stays true for an unfocused or occluded window, so a
   // badge can clear while the user is in another app. `document.hasFocus()` would be stricter but also
-  // false whenever devtools has focus, which would look broken while debugging.
+  // false whenever devtools has focus, which would look broken while debugging. And is the session view
+  // the screen this tab is showing at all: see [sessionViewOnScreen].
   if (document.visibilityState !== "visible") return;
+  if (!sessionViewOnScreen) return;
   postRead(id, lastSeq);
 }
 
@@ -226,8 +245,8 @@ function App() {
   const [sessions, setSessions] = useState([]);
   // The task layer. `tasks` is a flat list of BacklogEntryDto across every project, merged
   // newest-rev-wins exactly like `sessions`; the board filters it by the selected project. `route` is
-  // the History-API screen — while `lib/router.js` is still a stub it always answers the session view,
-  // so mounting the router here changes nothing until Task 22 lands.
+  // the History-API screen, and it is the app's single owner of BOTH "which screen" and "which session":
+  // `/s/{id}` selects, and every selection navigates back into it (see showSession).
   const [tasks, setTasks] = useState([]);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
@@ -246,6 +265,14 @@ function App() {
   // breakpoint the drawer classes mean nothing (the sidebar is a plain flex column) and this stays false,
   // because the toggle that flips it is display:none.
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Which screen the router has put on. `/tasks` and `/tasks/{ref}` replace the session view entirely
+  // (the branch at the bottom of this render), and four things below need that answer, so it is computed
+  // once here rather than at the render site.
+  const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK;
+  // The mark-read gate, set from the render body and read only from handlers and effects. See the
+  // [sessionViewOnScreen] header: `activeId` outlives the screen that shows it.
+  sessionViewOnScreen = !onBoard;
 
   const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
@@ -458,6 +485,13 @@ function App() {
     // behind it. This covers every entry point (a tap in the list, a freshly started session, a
     // notification deep link), which is why it lives here and not in the click handler.
     setDrawerOpen(false);
+    // The URL names the selected session, and navigating is therefore what LEAVES the board. Without
+    // this the address bar and the selection were two independent owners: `onBoard` is computed from the
+    // route alone, so while the board was on screen a palette row, a notification tap and the session a
+    // task had just started all changed state nobody could see — the terminal socket opened and the
+    // unread badge cleared behind a kanban board. `navigate` is a no-op when the page is already at that
+    // path, which is what keeps the route→selection effect below from bouncing against this.
+    navigate(sessionPath(session.id));
     if (isAliveState(session.state)) {
       reattachAvailableRef.current = true;
       setAttachedId(session.id);
@@ -474,6 +508,48 @@ function App() {
     const session = sessionsRef.current.find((s) => s.id === id);
     if (session) showSession(session);
   }, [showSession]);
+
+  // The other half of that coupling, and the one consumer `/s/{id}` never had: a route naming a session
+  // SELECTS it. That is a pasted link, a reload, ⌘-click into a new tab, a session dot on a task card or
+  // in the task detail, and the browser's Back out of the board — every one of which used to land on the
+  // session view with nothing selected. `?session=` arrives here too, because `parseRoute` folds the
+  // notification deep link into the same `{screen, id}`.
+  //
+  // Held until the row exists: an id means nothing before the first snapshot lands, so a deep-linked
+  // reload retries on each list change. Guarded on the active id, which is what makes it idempotent —
+  // showSession's own `navigate` re-enters this effect and finds its work already done.
+  //
+  // One-directional on purpose: a route naming NO session (`/`) deselects nothing. `/` is where a plain
+  // load starts and where the board's "Sessions" link goes, and clearing the selection there would tear
+  // down a live terminal for a navigation the operator made to reach exactly that terminal.
+  const routeSessionId = route.screen === SCREEN_SESSIONS ? route.id : null;
+  useEffect(() => {
+    if (!routeSessionId || routeSessionId === activeId) return;
+    const target = sessions.find((s) => s.id === routeSessionId);
+    if (!target) return;
+    // This honours the retained notification target as well, so retire it here too: a later row for the
+    // same id must not re-select a session the operator has since left.
+    if (deepLinkRef.current === routeSessionId) deepLinkRef.current = null;
+    showSession(target);
+  }, [routeSessionId, sessions, activeId, showSession]);
+
+  // Leaving the session view must not strand its overlay drawer. On a phone the sidebar IS the drawer,
+  // the branch at the bottom of this render unmounts it, and the scrim is rendered OUTSIDE that branch —
+  // so a task badge tapped inside the drawer (Sidebar's badge navigates and closes nothing) left a
+  // full-screen scrim over a board with no drawer in front of it, dismissable only by tapping the ink.
+  useEffect(() => {
+    if (onBoard) setDrawerOpen(false);
+  }, [onBoard]);
+
+  // Coming back to the session view is the fourth mark-read trigger, and the only one that can fire
+  // here: the tab never stopped being visible, and the active session may have emitted nothing while the
+  // board owned the screen. Without it a badge the gate correctly refused to clear would sit there until
+  // the session's next frame.
+  useEffect(() => {
+    if (onBoard) return;
+    const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+    if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
+  }, [onBoard]);
 
   // The three frame applicators. Ordering across channels needs no election machinery any more: every
   // row observation (a WS frame or an HTTP DTO) carries the daemon-stamped `rev`, and the helpers apply
@@ -1115,6 +1191,15 @@ function App() {
     navigate(routePath({ screen: SCREEN_TASKS, id: null }));
     setNewTaskRequest((n) => n + 1);
   }, []);
+  // Retired the moment the board goes away, and that is the whole reason it can be a counter at all.
+  // `Board` compares against a ref it recreates on every MOUNT (starting from 0, because the palette
+  // navigates and bumps in one event, so the board is usually mounting with the counter already at 1) —
+  // so a counter that only ever grew re-opened the create form on every LATER visit: ⌘K w once, back to
+  // a session, then a task badge tapped weeks later pops a New-task modal over the detail, unasked.
+  // Resetting on the way out puts both sides back at 0, which is exactly "never asked".
+  useEffect(() => {
+    if (!onBoard) setNewTaskRequest(0);
+  }, [onBoard]);
   /** "Open this session's task" — disabled upstream when the active session carries no `taskRef`. */
   const openSessionTask = useCallback(() => {
     const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
@@ -1177,9 +1262,8 @@ function App() {
 
   // --- render ----------------------------------------------------------------------------------
 
-  // `/tasks` and `/tasks/{ref}` replace the session view; the palette, the drawer scrim and every dialog
-  // stay outside the branch, because they belong to the shell rather than to either screen.
-  const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK;
+  // `onBoard` is computed at the top of this component; the palette, the drawer scrim and every dialog
+  // stay outside the branch below, because they belong to the shell rather than to either screen.
 
   return html`
     ${palette && html`
@@ -1194,15 +1278,24 @@ function App() {
     ${drawerOpen && html`
       <button type="button" class="drawer-scrim" aria-label="Close the session list"
               onClick=${closeDrawer}></button>`}
-    ${/* The one place the router decides what the page IS. While `lib/router.js` is a stub every
-          route parses as the session view, so this branch is inert until Task 22 lands — which is
-          deliberate: the wiring ships in the contract commit, the behaviour with the router.
+    ${/* The one place the router decides what the page IS.
 
           `tasks` reaches BOTH sides of this branch on purpose. The board obviously needs it; the
           sidebar and the terminal header need it to render a session's task badge as a TITLE rather
           than a bare `local:42`, because a session row carries only the ref. Without the prop the
           badge could only ever render its unknown-task arm — which is the fallback for the brief
-          window after a delete, not the normal case. */ ""}
+          window after a delete, not the normal case.
+
+          At `/tasks/{ref}` the board and the detail render TOGETHER, as siblings: the board keeps
+          highlighting the open card (`aria-current`) and its project selector stays live, which is the
+          master-detail shape every card's `active` prop was written for. `style.css` sizes the pair —
+          the detail is a bounded right-hand panel on a desktop and takes the whole screen on a phone,
+          where two half-screens were unusable.
+
+          The board's announcements need a renderer of their own: `status` has exactly ONE elsewhere,
+          `#status-line` in the sidebar footer, and the sidebar is precisely what this branch unmounts.
+          Without it a refused drag, a failed delete, a dependency refused for a cycle and every palette
+          action run from here produced nothing at all — the click simply did not happen. */ ""}
     ${onBoard ? html`
       <${Board}
         tasks=${tasks}
@@ -1214,6 +1307,8 @@ function App() {
       ${route.screen === SCREEN_TASK && html`
         <${TaskDetail} taskRef=${route.id} sessions=${sessions}
                        onStartSession=${startSessionForTask} onAnnounce=${say} />`}
+      <p id="board-status" class=${"status-line board-status" + (status.error ? " error" : "")}
+         role="status" aria-live="polite">${status.text}</p>
     ` : html`
       <${Sidebar}
         sessions=${sessions}

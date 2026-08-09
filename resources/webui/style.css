@@ -1290,6 +1290,40 @@ dialog::backdrop {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* The way back to the session view. It is an `<a>` so a modified click still opens a tab, which is why
+   it needs the two declarations `.button` never had to make for a `<button>`: an anchor is inline and
+   underlined, and neither survives contact with a 30px pill. */
+#go-to-sessions {
+  align-items: center;
+  color: var(--text);
+  display: inline-flex;
+  flex: 0 0 auto;
+  text-decoration: none;
+}
+
+/* Every announcement the board and the detail make used to render NOWHERE. `status` has exactly one
+   renderer in the app — `#status-line`, in the sidebar footer — and the sidebar is precisely what the
+   route branch that mounts these two screens unmounts, so a refused drag, a failed delete and a
+   dependency refused for a cycle all came out as silence. This is the same live region for the screens
+   that have no sidebar: a toast rather than a footer line, because neither screen has a chrome row to
+   spare, and `:empty`-hidden so a quiet board draws nothing at all. */
+.board-status {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  bottom: calc(12px + var(--active-safe-area-bottom, 0px));
+  box-shadow: var(--card-shadow);
+  font-size: 12px;
+  left: 50%;
+  margin: 0;
+  max-width: min(560px, calc(100vw - 24px));
+  padding: 8px 12px;
+  position: fixed;
+  transform: translateX(-50%);
+  /* Above the drawer scrim (20), below a `<dialog>`, which the browser puts in the top layer. */
+  z-index: 30;
+}
+.board-status:empty { display: none; }
 
 /* Four equal tracks that never scroll the page: the track clips, and each column scrolls its own list,
    so a long `todo` cannot push `done` off the bottom of the screen. */
@@ -1550,6 +1584,19 @@ button.task-card-title:hover,
   overflow-y: auto;
   padding-bottom: 16px;
 }
+/* At `/tasks/{ref}` the board and the detail are SIBLINGS in `#app`'s flex row — `app.js` renders both,
+   because the board goes on highlighting the open card (`aria-current` on `.task-card`) and keeps its
+   project selector live while one task is read. Two `flex: 1 1 auto` claimants split the viewport in
+   half, though, which crushed the four tracks into half a window; so on a desktop the detail becomes a
+   bounded right-hand panel and the board keeps the rest, and the two cards share ONE 12px gutter rather
+   than butting their margins together. The phone answer is the opposite and lives in the width
+   breakpoint below: there is no room for a master AND a detail, so the detail takes the screen. */
+@media (min-width: 721px) {
+  #app:has(.task-detail) .task-detail {
+    flex: 0 1 clamp(320px, 34%, 520px);
+    margin-left: 0;
+  }
+}
 .task-detail-head {
   align-items: center;
   background: var(--panel);
@@ -1807,6 +1854,12 @@ button.task-card-title:hover,
     box-shadow: none;
     margin: 0;
   }
+  /* "The whole screen" is a claim only one of them can make. A phone splitting 390px between a master
+     and a detail gives each about 195px — a single board column beside a title input, a state select,
+     a textarea and a feed, with the column switcher and the sticky detail head competing side by side.
+     So here the detail replaces the board outright, which is also what `.task-detail-head`'s × already
+     promised: it goes back to `/tasks`, i.e. back to a board this hid. */
+  #app:has(.task-detail) .board { display: none; }
   .board-head {
     flex-wrap: wrap;
     padding: 6px 10px;

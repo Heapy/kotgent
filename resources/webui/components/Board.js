@@ -41,7 +41,7 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { apiRequest, errorMessage } from "../lib/api.js";
-import { navigate, sessionPath, taskPath } from "../lib/router.js";
+import { SCREEN_SESSIONS, navigate, routePath, sessionPath, taskPath } from "../lib/router.js";
 import {
   createProject,
   createTask,
@@ -72,6 +72,9 @@ const DRAG_SLOP_PX = 8;
 
 /** The phone breakpoint, the same one `style.css` uses for its single-column layout. */
 const PHONE_QUERY = "(max-width: 720px)";
+
+/** Where the "Sessions" link goes — the router's own spelling of the session view, not a literal. */
+const SESSIONS_PATH = routePath({ screen: SCREEN_SESSIONS, id: null });
 
 /** Debounce before a keystroke in the project-path field asks the daemon to complete it. */
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
@@ -269,6 +272,13 @@ export function Board({ tasks = [], sessions = [], route = null, newTaskRequest 
 
   const openTask = useCallback((ref) => navigate(taskPath(ref)), []);
   const openSession = useCallback((id) => navigate(sessionPath(id)), []);
+  /** The way out of this screen without picking a session — see the header row's own comment. */
+  const leaveForSessions = useCallback((event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    navigate(SESSIONS_PATH);
+  }, []);
 
   const applyDrop = useCallback(async (ref, target) => {
     const entry = entriesRef.current.find((row) => row.ref === ref);
@@ -465,6 +475,13 @@ export function Board({ tasks = [], sessions = [], route = null, newTaskRequest 
   return html`
     <main class="board" aria-label="Task board">
       <header class="board-head">
+        ${/* The only in-app way off this screen that does not require picking a session. On a desktop
+              the browser's Back button covers it, but an installed PWA draws no browser chrome at all,
+              and the two shell controls that could — the drawer opener and the palette opener — both
+              live in the terminal header, which this screen unmounts. A real link, so a modified click
+              still opens a tab; the ordinary one goes to the router. */ ""}
+        <a id="go-to-sessions" class="button button-quiet" href=${SESSIONS_PATH}
+           title="Back to the sessions" onClick=${leaveForSessions}>Sessions</a>
         <select class="board-project" aria-label="Project" value=${projectId || ""}
                 disabled=${projects.length === 0}
                 onChange=${(event) => setProjectId(event.target.value)}>
