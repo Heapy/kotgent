@@ -174,20 +174,28 @@ class SpaRoutingTest {
 
     @Test
     fun theSpaGrammarDoesNotSwallowTheApiNamespace() = withServer { ctx ->
-        // The task routes ARE mounted here (see the class KDoc); their bodies are empty in this wave, so
-        // the prefixed path has no handler and reaches the static catch-all. 404 — NOT a 200 shell — is
-        // the property: the grammar must never claim anything under `/api/v1`.
-        val credentialed = ctx.get("$API_PREFIX/tasks") { header(HttpHeaders.Authorization, "Bearer $token") }
-        assertEquals(
-            HttpStatusCode.NotFound,
-            credentialed.status,
-            "the API namespace is not a UI route; the SPA grammar must not answer it with the shell",
-        )
-        assertEquals("not found", credentialed.bodyAsText().trim(), "the static catch-all answered, with no shell")
-
-        for (path in listOf("$API_PREFIX/tasks/local:42", "$API_PREFIX/whoami", "$API_PREFIX/projects")) {
+        // The property is that the grammar never CLAIMS anything under `/api/v1` — never answers it with
+        // the shell. It deliberately asserts no status: which status the API answers is the API's
+        // business and moves as handlers land. This test first read `404` because the route bodies were
+        // still stubs when it was written, so the path fell through to the static catch-all; a real
+        // handler now answers `400` naming `--project` for a `/tasks` with no project and no caller pane,
+        // and `/projects` answers `200` with a list. Every one of those is correct, and none is the
+        // shell. Pinning the status would re-break this test on each landing while proving less.
+        for (path in listOf(
+            "$API_PREFIX/tasks",
+            "$API_PREFIX/tasks/local:42",
+            "$API_PREFIX/whoami",
+            "$API_PREFIX/projects",
+        )) {
             val resp = ctx.get(path) { header(HttpHeaders.Authorization, "Bearer $token") }
-            assertEquals(HttpStatusCode.NotFound, resp.status, "$path is API ground, never the shell")
+            assertFalse(
+                resp.headers[HttpHeaders.ContentType].orEmpty().contains("html", ignoreCase = true),
+                "$path is API ground: the SPA grammar must never answer it with the shell",
+            )
+            assertFalse(
+                resp.bodyAsText().contains("<!doctype", ignoreCase = true),
+                "$path answered with the shell document body",
+            )
         }
     }
 
