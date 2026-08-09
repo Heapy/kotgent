@@ -932,8 +932,30 @@ of walking a relative path apart, since every caller's value comes from `Project
 **Called by Tasks 7 and 8** (`positionForEnd`, `positionBetween`, `positionForTop`,
 `needsRenormalization`) — hence wave 1.5.
 
-- [ ] `positionForEnd`, `positionBetween`, `positionForTop`, `needsRenormalization` at `1e-9`
-- [ ] tests: midpoint ordering holds; a top insert halves toward zero; repeated midpoints trip the threshold
+- [x] `positionForEnd`, `positionBetween`, `positionForTop`, `needsRenormalization` at `1e-9`
+- [x] tests: midpoint ordering holds; a top insert halves toward zero; repeated midpoints trip the threshold
+
+➕ **`needsRenormalization` backstops the `1e-9` threshold with the midpoint itself**, because the
+threshold is a FIXED distance and an ulp is not. Two *adjacent* doubles near `1e7` are `2^-29 = 1.86e-9`
+apart, so their gap clears a bare `1e-9` test while holding no value at all — `positionBetween` would
+answer a rank equal to one of the neighbours, i.e. a silently wrong board order tie-broken by `task_ref`,
+and only the NEXT move (gap `0`) would trip renormalization. The implemented rule is therefore "under the
+threshold, **or** the midpoint does not land strictly inside", which is a strict superset of the plan's
+rule and makes the pair total: **whenever `needsRenormalization` answers `false`, `positionBetween` is
+guaranteed strictly between**, which is exactly what Task 8 gets to assume. Nothing a real backlog
+produces reaches that magnitude (ranks grow by `1.0` per append and the collapsing direction runs toward
+zero), so this changes no reachable behaviour — it makes "too small to subdivide" literally true instead
+of true-for-the-expected-range. Renormalizing more often is always safe: the rewritten column has gaps of
+`1.0`, so Task 8's single retry always succeeds.
+
+➕ Four smaller calls made without a human, each documented at its site: the threshold comparison is
+written NEGATED (`!(upper - lower >= POSITION_EPSILON)`) so a `NaN`, an inverted pair and equal ranks all
+fall on the renormalizing side — failing toward a column rewrite is recoverable, handing back a tie is
+not; "falls below `1e-9`" is read strictly, so a gap of *exactly* `POSITION_EPSILON` still subdivides;
+`positionForEnd(null)` and `positionForTop(null)` both answer `1.0`, so a project's first entry takes the
+same rank whichever end it was inserted at (and the same rank a renormalization starts the column at);
+and `positionBetween` validates nothing itself — the only correct response to an unsubdividable pair is a
+column rewrite, which a pure function cannot perform, so the check stays the caller's.
 
 ### Task 6: Dependency rules
 **Owns:** `src/task/Dependencies.kt`, `test/task/DependenciesTest.kt`
