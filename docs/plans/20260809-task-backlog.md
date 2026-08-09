@@ -1530,14 +1530,26 @@ uuid itself, only that its writer persists the one it was handed.
 ### Task 29: Session "Done" closes the task
 **Owns:** `src/daemon/SessionManager.kt`, `test/daemon/SessionDoneTaskTest.kt`
 
-- [ ] on "Done", transition the linked task to `done` (which unlinks every holder) before archiving the
+- [x] on "Done", transition the linked task to `done` (which unlinks every holder) before archiving the
       session, calling the two stores sequentially, never nested
-- [ ] state the honest guarantee in the KDoc: `NonCancellable` prevents **coroutine cancellation** between
+- [x] state the honest guarantee in the KDoc: `NonCancellable` prevents **coroutine cancellation** between
       the two writes; it is not a transaction and does not survive process death or a throw from the second
       write. The residual — a task `done` while its session is still unarchived — is visible, benign, and
       fixed by pressing Done again. Do not call it atomic
-- [ ] tests: Done on a linked session closes the task, unlinks it and archives the session; Done on an
+- [x] tests: Done on a linked session closes the task, unlinks it and archives the session; Done on an
       unlinked session behaves exactly as today; closing from the board leaves the session alive
+- ➕ **the close is spelled out in `SessionManager`, not delegated to `TaskService`.** The manager holds the
+      two STORES (`taskStore` / `store`), and the service is constructed beside it in `Commands.kt`, which
+      this task does not own — so taking a `TaskService` parameter was not reachable, and it would have
+      inverted the wiring for a method needing none of the service's other collaborators. `closeLinkedTask`
+      therefore repeats `TaskService.transition(done)`'s sequence (task-store transaction, then the
+      `EventStore` clear per holder, never nested) and its KDoc names it as the sibling. An unknown ref
+      transitions nothing and unlinks nobody, matching the service exactly
+- ➕ a fourth test pins the `NonCancellable` claim itself: cancelling the caller between the two writes
+      still archives the row. It is falsifiable — verified failing with the wrapper removed — because its
+      journaling store yields before archiving, the shape a contended store mutex takes (an uncontended
+      `Mutex.lock()` has a fast path with no cancellation check, so without the yield the test would pass
+      against the broken code)
 
 ### Task 30: End-to-end integration
 **Owns:** `test/transport/TaskIntegrationTest.kt`

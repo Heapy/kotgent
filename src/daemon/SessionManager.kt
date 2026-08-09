@@ -17,7 +17,9 @@ import io.kotgent.core.isCanonicalUuid
 import io.kotgent.core.reduce
 import io.kotgent.store.EventStore
 import io.kotgent.store.TaskStore
+import io.kotgent.task.ActivityKind
 import io.kotgent.task.ProjectFs
+import io.kotgent.task.TaskState
 import io.kotgent.task.resolveProject
 import io.kotgent.tmux.TmuxControl
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -346,9 +348,10 @@ class SessionManager(
     private val cols: Int = DEFAULT_COLS,
     private val rows: Int = DEFAULT_ROWS,
     /**
-     * The task layer, or `null` for a daemon (or a test) without one. Used to upsert the `projects` row
-     * whenever a session's cwd resolves to a project — without that, a project first seen through a
-     * session start would have backlog rows but never appear in `GET /api/v1/projects`.
+     * The task layer, or `null` for a daemon (or a test) without one. Two uses: upserting the `projects`
+     * row whenever a session's cwd resolves to a project — without that, a project first seen through a
+     * session start would have backlog rows but never appear in `GET /api/v1/projects` — and closing the
+     * task a session was working on when the operator presses Done ([closeLinkedTask]).
      *
      * Nullable with a null DEFAULT so every existing construction — the suite's fakes, the transport
      * harnesses — keeps compiling untouched. Appended after [rows] rather than grouped with the other
@@ -670,17 +673,72 @@ class SessionManager(
     }
 
     /**
-     * "Done" — finish with a session: kill the agent, then archive the row off the sidebar (its history
-     * survives; "Restore" via [undone] brings it back, still resumable).
+     * "Done" — finish with a session: kill the agent, close the task it was working on, then archive the
+     * row off the sidebar (its history survives; "Restore" via [undone] brings it back, still resumable).
      *
      * Composed like [stop], NOT wrapped in [withControlLock]: [terminate] already takes the session's
      * control lock internally, and that [Mutex] is non-reentrant, so an outer lock here would deadlock.
      * [store.setArchived][EventStore.setArchived] is orthogonal (it never touches control state), so a
      * control op racing between the kill and the archive is harmless.
+     *
+     * ## One session, one task, end to end
+     * The human reviews *this* session's terminal and diff, so "Done" on the session is what closes the
+     * task ([closeLinkedTask], which also unlinks every other holder). Closing from the BOARD is the
+     * mirror image and deliberately different: `TaskService.transition(done)` unlinks the sessions and
+     * leaves them **alive**, which is what hands a long-lived worker session back to `task next`.
+     * A session holding no link (or a daemon built without the task layer) archives exactly as before.
+     *
+     * ## The honest guarantee, which is NOT atomicity
+     * Closing the task and archiving the session are **two writes to two stores** — deliberately
+     * sequential and never nested, because `backlog_entries` and `sessions` have different writers with
+     * different mutexes over one driver, and nesting their locks deadlocks a thread apiece. Wrapping
+     * them in [NonCancellable] buys exactly one property: **coroutine cancellation cannot land between
+     * them**, so a client that walks away mid-request cannot leave the pair half-applied. It is not a
+     * transaction, it does not roll back, and it does not survive process death or a throw out of the
+     * second write. Do not call this pair atomic.
+     *
+     * The one residual it leaves is a task marked `done` whose session is still unarchived. That state
+     * is visible (the row is still in the sidebar, its badge gone), benign (the agent is already dead)
+     * and self-healing: pressing Done again archives the row, and by then the session holds no link, so
+     * nothing is closed twice. A throw out of the FIRST write is the same shape from the other side —
+     * the session is killed but neither closed nor archived, and Done again finishes the job.
      */
     suspend fun markDone(sessionId: SessionId) {
         terminate(sessionId)
-        store.setArchived(sessionId, true, now())
+        withContext(NonCancellable) {
+            closeLinkedTask(sessionId)
+            store.setArchived(sessionId, true, now())
+        }
+    }
+
+    /**
+     * Move the task [sessionId] is linked to into [TaskState.done] and unlink **every** session holding
+     * it — the session-side half of "Done", and a no-op when this daemon has no task layer
+     * ([taskStore] is `null`), when the row is gone, or when it holds no link.
+     *
+     * Sequenced exactly like `TaskService.transition(ref, done, …)`, which is the same operation reached
+     * from the board: the task store's own transaction writes the state, the `transition` activity row
+     * and the reverse-dependent re-stamp, and only after it returns does the [EventStore] clear the
+     * holders one at a time. **The two stores' locks are never nested** — each [EventStore] call returns
+     * before the [TaskStore] call that follows it is made.
+     *
+     * It is spelled out here rather than delegated to `TaskService` because [SessionManager] holds the
+     * two STORES, not the service: the service is constructed beside the manager in the daemon
+     * bootstrap and taking it as a parameter would invert that wiring for a method that needs none of
+     * its other collaborators (project resolution, the project-file writer).
+     *
+     * An unknown ref transitions nothing and unlinks nobody, matching `TaskService`: the task store's
+     * `null` is the only place "does this task exist" is asked, and startup reconciliation is what
+     * clears a `task_ref` naming a task that is gone.
+     */
+    private suspend fun closeLinkedTask(sessionId: SessionId) {
+        val tasks = taskStore ?: return
+        val ref = store.getSession(sessionId)?.taskRef ?: return
+        tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
+        for (holder in store.sessionsHoldingTask(ref)) {
+            store.setTaskRef(holder.id, null, now())
+            tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
+        }
     }
 
     /** Un-archive a "Done" session so it reappears in the sidebar (leaves its dead/resumable state as-is). */
