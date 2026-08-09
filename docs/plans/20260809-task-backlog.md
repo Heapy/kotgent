@@ -1554,17 +1554,36 @@ uuid itself, only that its writer persists the one it was handed.
 ### Task 30: End-to-end integration
 **Owns:** `test/transport/TaskIntegrationTest.kt`
 
-- [ ] the assertions wave 2 could not make, because everything there ran against fakes: a real
+- [x] the assertions wave 2 could not make, because everything there ran against fakes: a real
       `SqliteTaskStore` behind real routes behind a real server — create a task, link a session, watch the
       frame arrive on a real `/events` socket, delete it and watch the session unlink
-- [ ] a `POST /sessions` carrying `taskRef` produces a linked session through the real `SessionManager`
-- [ ] the two URL spaces, asserted against real route bodies (moved here from Task 17, whose worktree has
+- [x] a `POST /sessions` carrying `taskRef` produces a linked session through the real `SessionManager`
+- [x] the two URL spaces, asserted against real route bodies (moved here from Task 17, whose worktree has
       only empty ones): `GET /api/v1/tasks` returns JSON **and** `GET /tasks` returns the shell, from the
       same server. Task 17 can only prove the negative half — that its SPA grammar does not swallow the
       prefixed path — because in its wave nothing answers it
-- [ ] `grep -rn 'TODO(' src/` returns nothing from this plan's files — note the OPEN paren: Task 2's
+- [x] `grep -rn 'TODO(' src/` returns nothing from this plan's files — note the OPEN paren: Task 2's
       skeletons carry a message (`TODO("Task 7: tracker create")`), so the literal `TODO()` matches none
-      of them and the check as originally written would pass over every unfilled stub
+      of them and the check as originally written would pass over every unfilled stub. **Run: one hit,
+      and it is PROSE** — `TaskDtos.kt:150` explains why the mappers "have real bodies rather than
+      `TODO()`". No stub survives anywhere under `src/`
+- ➕ **the two baselines race, and a discarding frame waiter cannot be written against this socket.**
+      `launchTaskStream` is launched before the session collector subscribes and each stream has its own
+      conflating sender, so `tasks_snapshot` and `sessions_snapshot` arrive in EITHER order. The obvious
+      waiter — read frames, skip the wrong kind — therefore threw the task baseline away while waiting
+      for the session one and hung forever, on 6 of 20 runs (measured; the shape every other socket test
+      in this repo uses, because until now no test awaited two independent baselines). The harness banks
+      every frame and answers from the bank, consuming what it returns so "first unclaimed match in
+      arrival order" still holds. This is the one defect the fan-out's fakes could not have surfaced
+- ➕ two edges stay faked and neither is what is under test: `tmux`/the agent binary (a real launch is
+      forbidden in automation) and the project FILESYSTEM — a fake tree holding one `.kotgent.json`, so
+      `resolveProject`, the `projects` upsert and `sessions.project_id` all run for real without writing
+      into anybody's checkout. A fourth test rides on that: a session start registers its project, which
+      is what makes `GET /tasks?project=` answer `200` instead of `404` — the plan's "every path that
+      reads or creates a project file upserts the row", and unobservable below the full stack
+- ➕ the in-memory driver is deliberately **not** closed in the teardown: `idScope.cancel()` does not JOIN
+      the background provider-id capture, so closing the connection there would be a use-after-close race
+      rather than a cleanup
 
 ### Task 31: Agent Skill contract
 **Owns:** `docs/agent-task-skill.md`
