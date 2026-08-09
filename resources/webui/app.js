@@ -60,8 +60,11 @@ import {
 import {
   SCREEN_TASK,
   SCREEN_TASKS,
+  navigate,
   parseRoute,
+  routePath,
   subscribeToRoute,
+  taskPath,
 } from "./lib/router.js";
 import {
   applyTasksSnapshot,
@@ -1066,14 +1069,24 @@ function App() {
     }
   }, [applyServerPreferences, closeDialogFrom, say]);
 
-  /** An explicit directory (a group's "+") wins, then the selected session's, then the base path. */
-  const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "") => {
+  /**
+   * Open the ONE New-session dialog. An explicit directory (a group's "+") wins, then the selected
+   * session's, then the base path.
+   *
+   * [taskRef] is what the task detail view's "Start session" passes:
+   * the dialog pre-fills it, puts it in the submitted body, and `startSession` POSTs that body verbatim
+   * — so a task-launched session goes through the same single `POST /api/v1/sessions` as every other
+   * one. There is deliberately no second launch path, which is why this callback (and not a bespoke
+   * one) is what `TaskDetail` is handed.
+   */
+  const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
     const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
     setDialog({
       kind: "new",
       cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath,
       initialMode: initialMode,
       initialAgent: initialAgent,
+      taskRef: taskRef,
     });
   }, []);
   const openImportSession = useCallback(() => openNewSession(null, "import"), [openNewSession]);
@@ -1081,6 +1094,32 @@ function App() {
     () => openNewSession(null, "start", "shell"),
     [openNewSession],
   );
+  /** `TaskDetail`'s "Start session": the ordinary dialog, pre-filled with the project cwd and the task. */
+  const startSessionForTask = useCallback(
+    (cwd, taskRef) => openNewSession(cwd, "start", "", taskRef),
+    [openNewSession],
+  );
+
+  // --- task navigation (the palette's three task commands) ---------------------------------------
+
+  const openBoard = useCallback(() => navigate(routePath({ screen: SCREEN_TASKS, id: null })), []);
+  /**
+   * "New task" goes to the board and asks it to open its create form. It is a one-shot COUNTER rather
+   * than a boolean: the palette can be used again while the board is already open, and a boolean would
+   * need a reset round-trip to fire twice. `0` means "never asked", so `Board` opens nothing on mount.
+   * The board owns the form because it owns the project selector — the browser has no session to infer
+   * a project from, so a create must name one.
+   */
+  const [newTaskRequest, setNewTaskRequest] = useState(0);
+  const newTask = useCallback(() => {
+    navigate(routePath({ screen: SCREEN_TASKS, id: null }));
+    setNewTaskRequest((n) => n + 1);
+  }, []);
+  /** "Open this session's task" — disabled upstream when the active session carries no `taskRef`. */
+  const openSessionTask = useCallback(() => {
+    const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
+    if (selected && selected.taskRef) navigate(taskPath(selected.taskRef));
+  }, []);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
@@ -1127,6 +1166,12 @@ function App() {
       help: openHelp,
       phone: openPhone,
       preferences: openPrefs,
+      // The three task commands Task 27 registers in `lib/commands.js`. They live here, in the one
+      // `actions` object, because that file is the ONLY command registry and it owns no state of its
+      // own — a command that reached for `history` or the session list itself would be a second one.
+      openBoard: openBoard,
+      newTask: newTask,
+      openSessionTask: openSessionTask,
     },
   });
 
@@ -1151,19 +1196,28 @@ function App() {
               onClick=${closeDrawer}></button>`}
     ${/* The one place the router decides what the page IS. While `lib/router.js` is a stub every
           route parses as the session view, so this branch is inert until Task 22 lands — which is
-          deliberate: the wiring ships in the contract commit, the behaviour with the router. */ ""}
+          deliberate: the wiring ships in the contract commit, the behaviour with the router.
+
+          `tasks` reaches BOTH sides of this branch on purpose. The board obviously needs it; the
+          sidebar and the terminal header need it to render a session's task badge as a TITLE rather
+          than a bare `local:42`, because a session row carries only the ref. Without the prop the
+          badge could only ever render its unknown-task arm — which is the fallback for the brief
+          window after a delete, not the normal case. */ ""}
     ${onBoard ? html`
       <${Board}
         tasks=${tasks}
         sessions=${sessions}
         route=${route}
+        newTaskRequest=${newTaskRequest}
         onAnnounce=${say}
       />
       ${route.screen === SCREEN_TASK && html`
-        <${TaskDetail} taskRef=${route.id} sessions=${sessions} onAnnounce=${say} />`}
+        <${TaskDetail} taskRef=${route.id} sessions=${sessions}
+                       onStartSession=${startSessionForTask} onAnnounce=${say} />`}
     ` : html`
       <${Sidebar}
         sessions=${sessions}
+        tasks=${tasks}
         activeId=${activeId}
         prefs=${prefs}
         status=${status}
@@ -1181,6 +1235,7 @@ function App() {
       />
       <${TerminalPane}
         session=${activeSession}
+        tasks=${tasks}
         attachedId=${attachedId}
         terminalFontSize=${prefs.terminalFontSize}
         terminalUnicode=${prefs.terminalUnicode}
@@ -1196,6 +1251,7 @@ function App() {
     ${dialog && dialog.kind === "new" && html`
       <${NewSessionDialog} initialCwd=${dialog.cwd} initialMode=${dialog.initialMode}
                            initialAgent=${dialog.initialAgent}
+                           initialTaskRef=${dialog.taskRef}
                            basePath=${prefs.basePath}
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "upload" && html`

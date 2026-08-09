@@ -1,5 +1,11 @@
 package io.kotgent.transport
 
+import io.kotgent.core.SessionMeta
+import io.kotgent.core.TaskRef
+import io.kotgent.task.BacklogEntry
+import io.kotgent.task.ProjectRecord
+import io.kotgent.task.Task
+import io.kotgent.task.TaskActivityEntry
 import kotlinx.serialization.Serializable
 
 /*
@@ -127,6 +133,84 @@ data class WhoamiDto(
     val sessionId: String? = null,
     val projectId: String? = null,
     val taskRef: String? = null,
+)
+
+// --- domain → wire mappers -------------------------------------------------------------------------
+
+/*
+ * These live HERE, once, and not in the route file that happens to need one first.
+ *
+ * `TaskReadRoutes.kt`, `TaskWriteRoutes.kt`, `TaskLinkRoutes.kt` and `EventsWs.kt` are four files in the
+ * package `io.kotgent.transport`, owned by four different agents working at the same time, and all four
+ * need the same four conversions. An extension function is package-level, so two agents writing
+ * `fun BacklogEntry.toDto(...)` in their own file is a redeclaration error the moment the branches merge
+ * — the one failure mode the contracts wave exists to prevent. `SessionUpdate.toDto()` in `EventsWs.kt`
+ * is the precedent: one mapper, one home, every caller shares it.
+ *
+ * They have real bodies rather than `TODO()`: a mapping is not a task's design work, and a stub here
+ * would make every route's own test fail on a `NotImplementedError` from somebody else's file.
+ */
+
+/**
+ * A backlog entry joined with its tracker row.
+ *
+ * [task] is nullable and a null renders the bare ref as the title — the same honest degradation the Web
+ * UI's badge makes. A `tasks` row and a `backlog_entries` row are created in one transaction, so the
+ * only way to observe the mismatch is the microsecond window `sessions.task_ref`'s "reference, not a
+ * foreign key" rule already documents; answering `500` for it would be worse than showing the ref.
+ *
+ * [dependsOn] is passed in rather than read here: the list view resolves the whole project's edges in
+ * ONE query and hands each entry its slice, and a mapper that fetched per card would undo that.
+ */
+fun BacklogEntry.toDto(task: Task?, dependsOn: List<TaskRef> = emptyList()): BacklogEntryDto = BacklogEntryDto(
+    ref = ref.value,
+    project = project.value,
+    title = task?.title ?: ref.value,
+    body = task?.body ?: "",
+    url = task?.url,
+    position = position,
+    state = state.name,
+    blocked = blocked,
+    dependsOn = dependsOn.map { it.value },
+    createdAt = createdAt,
+    updatedAt = updatedAt,
+    rev = rev,
+)
+
+/** A known project, for the board selector and the detail view's project path. */
+fun ProjectRecord.toDto(): ProjectDto = ProjectDto(
+    id = id.value,
+    name = name,
+    path = path,
+    updatedAt = updatedAt,
+)
+
+/** One activity row. Enum names cross the wire, matching `backlog_entries.state`'s storage convention. */
+fun TaskActivityEntry.toDto(): ActivityEntryDto = ActivityEntryDto(
+    id = id,
+    ref = ref.value,
+    ts = ts,
+    kind = kind.name,
+    author = author,
+    text = text,
+    fromState = fromState?.name,
+    toState = toState?.name,
+)
+
+/**
+ * A session as the task detail view renders it. Deliberately NOT [SessionMeta.toDto] — that is the full
+ * row, and the detail view needs a name, a state dot and a link target. Named `toLinkedSessionDto` rather
+ * than overloading `toDto`, because `SessionMeta.toDto()` already exists in this package
+ * (`ControlRoutes.kt`) and two extensions on one receiver differing only in return type do not compile.
+ */
+fun SessionMeta.toLinkedSessionDto(): LinkedSessionDto = LinkedSessionDto(
+    id = id.value,
+    name = name,
+    agent = agent,
+    state = state.name,
+    needsAttention = state.needsAttention,
+    alive = state.isAlive,
+    archived = archived,
 )
 
 // --- request bodies --------------------------------------------------------------------------------

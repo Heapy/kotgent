@@ -11,6 +11,7 @@ import io.kotgent.daemon.ImportCwdException
 import io.kotgent.daemon.NoSuchSessionException
 import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.TaskService
 import io.kotgent.daemon.TranscriptNotFoundException
 import io.kotgent.daemon.UnknownAgentKindException
 import io.kotgent.daemon.UnsupportedAgentException
@@ -92,12 +93,22 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
  * NOT [loopbackOnly] — so every endpoint takes either credential (the CLI's master-token `Bearer` or the
  * browser's session cookie) and is reachable through the tunnel. That is deliberate for `/read`, whose only
  * real caller is the cookie-authenticated Web UI, on the phone as much as on the desktop.
+ *
+ * @param taskService the two-store link coordinator, or `null` on a daemon with no task layer (the same
+ *   optional-subsystem shape as [KotgentServer]'s `taskStore`/`taskService` pair). It is here for exactly
+ *   one endpoint: `POST /sessions` carrying [StartSessionRequest.taskRef] links the freshly created
+ *   session through [io.kotgent.daemon.TaskService.link], so `start --task` is one request. It is a
+ *   parameter rather than something the route reaches for because the task-backlog plan gives
+ *   `ControlRoutes.kt` and `Server.kt` to two different agents: without it, the one that owns this file
+ *   could not be wired at all. When it is `null` the handler owes a `400` for a request that carries a
+ *   `taskRef` — a daemon with no task layer must refuse the link, not start the session and drop it.
  */
 fun Route.controlRoutes(
     sessionManager: SessionManager,
     store: EventStore,
     input: TerminalInputSink,
     currentVersion: String,
+    taskService: TaskService? = null,
     json: Json = TRANSPORT_JSON,
 ) {
     get("/version") {
@@ -345,13 +356,25 @@ private fun sessionId(raw: String?): SessionId? =
 @Serializable
 data class VersionDto(val version: String)
 
-/** Request body for `POST /sessions`. `name`/`tags` are optional. */
+/**
+ * Request body for `POST /sessions`. `name`/`tags` are optional.
+ *
+ * [taskRef] is what makes `kotgent start --task <ref>` and the board's "Start session" ONE request: the
+ * session row and its link are written by the same call, so a failed launch leaves no link behind. It is
+ * a plain `String` — like every other field here — because [io.kotgent.core.TaskRef]'s value-class
+ * serializer would throw [IllegalArgumentException] rather than `SerializationException` on a malformed
+ * ref and sail past the route's decode catch as a 500 (the trap [ImportSessionRequest] records); the
+ * handler parses it with `TaskRef.parseOrNull` and answers `400` itself. The link cannot fail once the
+ * session exists (it is unconditional — see [io.kotgent.store.EventStore.setTaskRef]), so there is no
+ * partial state to roll back.
+ */
 @Serializable
 data class StartSessionRequest(
     val agent: String,
     val cwd: String,
     val name: String? = null,
     val tags: List<String> = emptyList(),
+    val taskRef: String? = null,
 )
 
 /**
@@ -417,6 +440,15 @@ data class SessionDto(
      * and frames merge safely in any arrival order.
      */
     val rev: Long = 0,
+    /**
+     * The task this session is linked to (`"local:42"`), or null. It rides the FULL row — not only
+     * [SessionUpdateDto] — because the `/events` socket's baseline and its first frame for an
+     * unseen session are both full rows: without it the sidebar's task badge would appear only after
+     * that session's next patch, and `kotgent list` could not grow a task column at all.
+     */
+    val taskRef: String? = null,
+    /** The session's resolved project (the uuid from its `.kotgent.json`), or null outside one. */
+    val projectId: String? = null,
 )
 
 fun SessionMeta.toDto(): SessionDto = SessionDto(
@@ -441,4 +473,6 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     updatedAt = updatedAt,
     archived = archived,
     rev = rev,
+    taskRef = taskRef?.value,
+    projectId = projectId?.value,
 )

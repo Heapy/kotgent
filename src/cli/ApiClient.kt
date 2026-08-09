@@ -1,15 +1,24 @@
 package io.kotgent.cli
 
+import io.kotgent.core.PaneId
+import io.kotgent.task.MoveTarget
 import io.kotgent.transport.API_PREFIX
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.ActivityEntryDto
+import io.kotgent.transport.BacklogEntryDto
+import io.kotgent.transport.CreateTaskRequest
 import io.kotgent.transport.ImportSessionRequest
+import io.kotgent.transport.ProjectDto
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.StartSessionRequest
+import io.kotgent.transport.TASK_PANE_HEADER
 import io.kotgent.transport.TRANSPORT_JSON
+import io.kotgent.transport.TaskDetailDto
 import io.kotgent.transport.TicketResponse
+import io.kotgent.transport.WhoamiDto
 import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readTokenOrNull
 import io.ktor.client.HttpClient
@@ -67,6 +76,14 @@ class ApiClient(
     private val client: HttpClient = defaultHttpClient(),
     private val json: Json = TRANSPORT_JSON,
     private val tokenPath: String = defaultTokenPath(),
+    /**
+     * The kotgent pane this process is running in, sent as [TASK_PANE_HEADER] on every task call — how a
+     * ref-less `kotgent task show` finds its own session. Deliberately a constructor parameter with a
+     * `null` default rather than a call to [TmuxSelf.currentPane]: resolving it is a socket-path check
+     * with an injected environment (Task 18), the caller does it once, and a client built for a stub
+     * server must be able to say "no pane" without one.
+     */
+    private val paneId: PaneId? = null,
 ) : AutoCloseable {
 
     /** `GET /api/v1/sessions` — all sessions from the daemon's cache. */
@@ -76,14 +93,24 @@ class ApiClient(
         return json.decodeFromString(ListSerializer(SessionDto.serializer()), resp.bodyAsText())
     }
 
-    /** `POST /api/v1/sessions` — start a new [agent] session in [cwd]; returns the created session (with its id). */
+    /**
+     * `POST /api/v1/sessions` — start a new [agent] session in [cwd]; returns the created session (with
+     * its id).
+     *
+     * [taskRef] backs `kotgent start --task <ref>`: the session row and its task link are written by this
+     * one request, so a failed launch leaves no link behind and there is nothing to roll back.
+     */
     suspend fun startSession(
         agent: String,
         cwd: String,
         name: String? = null,
         tags: List<String> = emptyList(),
+        taskRef: String? = null,
     ): SessionDto {
-        val body = json.encodeToString(StartSessionRequest.serializer(), StartSessionRequest(agent, cwd, name, tags))
+        val body = json.encodeToString(
+            StartSessionRequest.serializer(),
+            StartSessionRequest(agent, cwd, name, tags, taskRef),
+        )
         val resp = client.post(url("/sessions")) {
             bearer()
             contentType(ContentType.Application.Json)
@@ -159,6 +186,98 @@ class ApiClient(
         return json.decodeFromString(RotateResponse.serializer(), resp.bodyAsText()).token
     }
 
+    // --- the task / project surface (Tasks 13-15's routes) -----------------------------------------
+
+    /*
+     * Declared here in the contracts wave, with `TODO()` bodies, because `src/cli/TaskCommands.kt`
+     * (Task 21) calls every one of them and may not touch this file — Task 20 owns it. A signature that
+     * only appeared when Task 20 landed would leave Task 21 unable to compile in its own worktree.
+     *
+     * Two identity rules every method below shares, and they are the reason the parameters look the way
+     * they do:
+     *  - [paneHeader] goes out whenever a pane was resolved, which is how the daemon attributes a call
+     *    made from inside a kotgent pane to that pane's session.
+     *  - an explicit `sessionId` in the BODY wins and is not re-resolved: `--session <id>` is the escape
+     *    hatch for a caller outside any pane, and it means the CLI must skip `GET /whoami` entirely
+     *    rather than asking a question it already knows the answer to.
+     * Failures surface as [ApiException] carrying the HTTP status, like every other method here.
+     */
+
+    /**
+     * `GET /api/v1/whoami` — what the calling PANE resolves to. Pane resolution, not a session lookup:
+     * a caller that was given `--session <id>` must never come here.
+     */
+    suspend fun whoami(): WhoamiDto = TODO("Task 20: whoami")
+
+    /** `GET /api/v1/tasks?project=` — one project's backlog in `position` order, each entry with `blocked`. */
+    suspend fun listTasks(project: String?): List<BacklogEntryDto> = TODO("Task 20: list tasks")
+
+    /** `POST /api/v1/tasks` — create. A null [project] lets the daemon resolve one (see [CreateTaskRequest]). */
+    suspend fun createTask(
+        title: String,
+        body: String = "",
+        project: String? = null,
+        sessionId: String? = null,
+    ): BacklogEntryDto = TODO("Task 20: create task")
+
+    /** `GET /api/v1/tasks/{ref}` — entry, project path, both dependency directions, sessions, activity. */
+    suspend fun taskDetail(ref: String): TaskDetailDto = TODO("Task 20: task detail")
+
+    /**
+     * `PATCH /api/v1/tasks/{ref}` — title / body / state. A null field means "leave unchanged", never
+     * "clear"; [message] is meaningful only alongside [state] and is what makes `task review -m` one
+     * operation.
+     */
+    suspend fun patchTask(
+        ref: String,
+        title: String? = null,
+        body: String? = null,
+        state: String? = null,
+        message: String? = null,
+        sessionId: String? = null,
+    ): BacklogEntryDto = TODO("Task 20: patch task")
+
+    /** `DELETE /api/v1/tasks/{ref}` — unlinks every holder, then removes the task, its deps and its feed. */
+    suspend fun deleteTask(ref: String): Boolean = TODO("Task 20: delete task")
+
+    /** `POST /api/v1/tasks/{ref}/move` — never carries a state; a column change is a separate [patchTask]. */
+    suspend fun moveTask(ref: String, target: MoveTarget): BacklogEntryDto = TODO("Task 20: move task")
+
+    /** `POST /api/v1/tasks/{ref}/deps` — [action] is `"add"` or `"remove"`; the four refusals are `400`s. */
+    suspend fun editTaskDependency(ref: String, action: String, on: String) {
+        TODO("Task 20: dependency edit")
+    }
+
+    /** `POST /api/v1/tasks/{ref}/comment` — requires session identity, so an activity row is attributable. */
+    suspend fun commentOnTask(ref: String, text: String, sessionId: String? = null): ActivityEntryDto =
+        TODO("Task 20: comment")
+
+    /** `POST /api/v1/tasks/{ref}/link` — unconditional; a task already `in_progress` simply gains a session. */
+    suspend fun linkTask(ref: String, sessionId: String? = null) {
+        TODO("Task 20: link")
+    }
+
+    /** `POST /api/v1/tasks/{ref}/unlink` — drops this session's link and leaves the task's state alone. */
+    suspend fun unlinkTask(ref: String, sessionId: String? = null) {
+        TODO("Task 20: unlink")
+    }
+
+    /**
+     * `POST /api/v1/tasks/next` — link the next eligible task to the calling session.
+     *
+     * A `null` return is **"nothing eligible"**, not a failure: the route answers `200` with a null task
+     * precisely so this can be told apart from an error, and it is what `kotgent task next` maps to
+     * exit `3`.
+     */
+    suspend fun nextTask(project: String? = null, sessionId: String? = null): BacklogEntryDto? =
+        TODO("Task 20: next")
+
+    /** `GET /api/v1/projects` — every known project (the board selector's source, and `project list`'s). */
+    suspend fun listProjects(): List<ProjectDto> = TODO("Task 20: list projects")
+
+    /** `POST /api/v1/projects` — write `.kotgent.json` at an absolute path; an existing file always wins. */
+    suspend fun createProject(path: String, name: String? = null): ProjectDto = TODO("Task 20: create project")
+
     override fun close(): Unit = client.close()
 
     // --- internals -------------------------------------------------------------------------------
@@ -169,6 +288,16 @@ class ApiClient(
     private fun HttpRequestBuilder.bearer() {
         val t = token ?: throw MissingTokenException(tokenPath)
         header(HttpHeaders.Authorization, "Bearer $t")
+    }
+
+    /**
+     * Send [TASK_PANE_HEADER] when — and only when — a pane was resolved. Absent, the daemon has no pane
+     * to resolve and answers `400` naming `--session`, which is the honest outcome: a fabricated or
+     * foreign pane id would resolve against kotgent's tmux server and attribute the call to an unrelated
+     * session (see [TmuxSelf]).
+     */
+    private fun HttpRequestBuilder.paneHeader() {
+        paneId?.let { header(TASK_PANE_HEADER, it.value) }
     }
 
     private suspend fun ensureSuccess(resp: HttpResponse) {

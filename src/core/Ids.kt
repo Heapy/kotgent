@@ -168,16 +168,33 @@ value class TaskRef(val value: String) {
  * The file arrives with somebody else's repository, so the value is untrusted input and the invariant is
  * checked here with [isCanonicalUuid] — the same boundary rule the Claude/Codex hook normalizers apply.
  * Not `@Serializable`, for the reason spelled out on [TaskRef].
+ *
+ * ## Case is NORMALIZED here, and that is a correctness rule
+ * [isCanonicalUuid] is case-INSENSITIVE, but `projects.id`, `backlog_entries.project` and
+ * `sessions.project_id` are `TEXT` columns SQLite compares **binary**. So two spellings of one uuid —
+ * `.kotgent.json` hand-edited to upper case in one worktree, lower case in another — would key two
+ * `projects` rows with two backlogs that can never see each other. The constructor is therefore private
+ * and every value arrives through [of] / [parseOrNull], which lower-case it: exactly the rule
+ * `SessionManager.importSession` already applies to a UUID-shaped provider id, moved to the type so
+ * there is no boundary left to forget it at. Lower-casing is safe *because* the value is a uuid — case
+ * is not significant in one — which is why it is not done to [TaskRef] or [ProviderSessionId].
  */
 @JvmInline
-value class ProjectId(val value: String) {
-    init {
-        require(isCanonicalUuid(value)) { "ProjectId must be a canonical uuid: '$value'" }
-    }
+value class ProjectId private constructor(val value: String) {
 
     companion object {
-        /** [value] as a [ProjectId], or `null` when it is not a canonical uuid. */
-        fun parseOrNull(value: String): ProjectId? = runCatching { ProjectId(value) }.getOrNull()
+        /**
+         * [value] as a [ProjectId], lower-cased. Throws [IllegalArgumentException] when it is not a
+         * canonical uuid — use [parseOrNull] at a boundary that must answer `400` instead.
+         */
+        fun of(value: String): ProjectId {
+            require(isCanonicalUuid(value)) { "ProjectId must be a canonical uuid: '$value'" }
+            return ProjectId(value.lowercase())
+        }
+
+        /** [value] as a lower-cased [ProjectId], or `null` when it is not a canonical uuid. */
+        fun parseOrNull(value: String): ProjectId? =
+            if (isCanonicalUuid(value)) ProjectId(value.lowercase()) else null
     }
 }
 

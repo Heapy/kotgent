@@ -158,7 +158,8 @@ live in `src/core/Ids.kt` beside `SessionId` so the dependency runs `task → co
 - **harness caveat that already bit this plan once**: `withServer` in `WebUiServingTest.kt` builds a
   `KotgentServer` without the task subsystem. Any test whose point is the *interaction* between API routes
   and static serving must mount the task routes explicitly, or it passes vacuously.
-- **baseline**: 921 native tests passed / 0 skipped (`CLAUDE.md:1065`), plus the build-info plugin's 7 JVM
+- **baseline**: 927 native tests passed / 0 skipped after wave 1 (the plan was written against 921;
+  Tasks 1 and 2 added six), plus the build-info plugin's 7 JVM
   tests and `ptycheck`'s 11 real-PTY checks. Keep skips at zero.
 
 ## Progress Tracking
@@ -245,7 +246,11 @@ depend on `src/task/`, inverting the layering.
 ```kotlin
 // src/core/Ids.kt
 @JvmInline value class TaskRef(val value: String)   // "local:42"
-@JvmInline value class ProjectId(val value: String) // canonical uuid
+// canonical uuid, LOWER-CASED. The constructor is private and every value arrives through
+// ProjectId.of(...) / ProjectId.parseOrNull(...): isCanonicalUuid is case-insensitive but SQLite
+// compares TEXT binary, so two spellings of one uuid would key two projects with two backlogs.
+// This is `SessionManager.importSession`'s lowercase-a-UUID-shaped-id rule, moved into the type.
+@JvmInline value class ProjectId private constructor(val value: String)
 
 // src/task/Task.kt
 enum class TaskState { todo, in_progress, review, done }
@@ -510,6 +515,50 @@ Deep routes break the shell's three **document-relative** links (`index.html:16-
 "the manifest and icons stay on stable URLs" rule and keeps the iOS install path, and therefore push, working
 from a deep link.
 
+### Board CSS vocabulary (Tasks 24, 25 and 28 share exactly this list)
+
+Three agents write the board's markup and its stylesheet at the same time and share no file: Task 24 owns
+`Board.js` + `TaskCard.js`, Task 25 owns `TaskDetail.js`, Task 28 owns **all** of `style.css` and the
+components ship no CSS of their own. Nothing in the code connects them, so the class names are frozen
+here. **Use these spellings and no others**; a component that needs a class not on this list adds it to
+this list first (and tells Task 28), rather than inventing one Task 28 will never style.
+
+The prefix is `task-`/`board-` throughout, matching the existing `session-*` / `terminal-*` families.
+
+| Class | Where | What it is |
+|---|---|---|
+| `board` | Board | the screen's root grid |
+| `board-head` | Board | the row holding the project selector and the two actions |
+| `board-project` | Board | the project `<select>` |
+| `board-new-task` / `board-new-project` | Board | the two header buttons |
+| `board-columns` | Board | the four-column flex/grid track (one column below the breakpoint) |
+| `board-column` | Board | one column; `data-state="todo|in_progress|review|done"` carries which |
+| `board-column-head` | Board | its title + count |
+| `board-column-switch` | Board | the phone-only column switcher |
+| `board-show-all-done` | Board | the "show all" toggle under the capped `done` column |
+| `board-drop-target` | Board | added to the column a drag is currently over |
+| `task-card` | TaskCard | one card; `is-dragging` while it is the pointer-captured one |
+| `task-card-handle` | TaskCard | the drag handle — **the only element with `touch-action: none`** |
+| `task-card-title` | TaskCard | the title line |
+| `task-card-meta` | TaskCard | the row holding the badges below the title |
+| `task-blocked` | TaskCard, TaskDetail | the blocked marker |
+| `task-dep-count` | TaskCard, TaskDetail | the dependency count |
+| `task-sessions` | TaskCard, TaskDetail | the linked-session list |
+| `task-session-dot` | TaskCard, TaskDetail, Sidebar | one session's state dot; reuses `stateBadge`'s value in `data-state` |
+| `task-card-menu` | TaskCard | the per-card menu (delete; plus the move actions on a phone) |
+| `task-detail` | TaskDetail | the detail screen's root |
+| `task-detail-head` | TaskDetail | title + state + the "Start session" action |
+| `task-detail-body` | TaskDetail | the editable body |
+| `task-deps` | TaskDetail | the dependency editor |
+| `task-activity` | TaskDetail | the feed |
+| `task-activity-row` | TaskDetail | one feed entry; `data-kind` carries the `ActivityKind` |
+| `task-badge` | Sidebar, TerminalPane | the session→task badge (Task 26); links to `/tasks/{ref}` |
+| `task-badge-unknown` | Sidebar, TerminalPane | the same badge when the ref names no known task |
+
+Task 28's serving test asserts every one of these appears in `style.css`; Tasks 24/25/26's serving tests
+assert their components emit the ones they own. That is the whole coupling — there is no build step that
+could catch a typo, so the two halves are asserted from opposite ends.
+
 ## Parallel execution protocol
 
 This plan is written to be executed by a fleet: one agent per task, many at once, each in its own git
@@ -556,6 +605,17 @@ features, which is much looser than it looks once everything compiles against in
 - **Never start the daemon or a live agent** (`kotgent daemon`, `./kotlin run`, real `claude`/`codex`/`junie`,
   `launchctl`). Only `./kotlin build` / `./kotlin test`.
 - Changed `.js` files must pass `node --check <file>`.
+- `ProjectId` has a **private constructor**: build one with `ProjectId.of(...)` (throws) or
+  `ProjectId.parseOrNull(...)` (`null`), both of which lower-case the uuid. `TaskRef` keeps a public
+  constructor plus `TaskRef.parseOrNull`.
+- **Do not declare a package-level extension function in your own file if another task might need the
+  same one.** `io.kotgent.transport` alone holds four concurrently-written files; an extension is
+  package-level, so two of them declaring `fun BacklogEntry.toDto(...)` is a redeclaration error that only
+  appears at merge, in nobody's worktree. The shared mappers are already in `TaskDtos.kt`; if you need one
+  that is not there, stop and report it rather than adding it locally.
+- The three new `EventStore` writes (`setTaskRef`, `setProjectId`, `sessionsHoldingTask`) default to
+  **throwing**. A fake store on a path that links a task must override all three — a green test whose fake
+  silently did nothing is exactly what that default exists to prevent.
 
 ### Checking the ownership claim
 
@@ -564,9 +624,14 @@ launching a wave, extract each task's `Owns:` block and assert that no file appe
 wave. Every `Owns:` block is one paragraph, terminated by a blank line, with each path in backticks — kept
 that way deliberately so the check is a dozen lines of script rather than a careful read.
 
-Four files are owned by two tasks each, all in *different* waves and therefore sequential:
-`CLAUDE.md` and `README.md` (Tasks 1 and 32), `src/cli/ApiClient.kt` (Tasks 1 and 20), and
-`src/daemon/SessionManager.kt` (Tasks 12 and 29). Nothing overlaps inside wave 2.
+Five files are owned by two tasks each, all in *different* waves and therefore sequential:
+`CLAUDE.md` and `README.md` (Tasks 1 and 32), `src/cli/ApiClient.kt` (Tasks 1 and 20),
+`src/cli/Commands.kt` (Tasks 2 and 15), and `src/daemon/SessionManager.kt` (Tasks 12 and 29). Nothing
+overlaps inside wave 2, inside wave 1.5, or between the two.
+
+**Task 2 is excluded from that count on purpose.** It creates or modifies nearly every file waves 1.5 and
+2 then implement — that is what a contracts wave *is* — so listing those pairs would drown the check. Run
+the overlap assertion across the tasks of one wave, not across the whole document.
 
 ### Waves
 
@@ -574,8 +639,21 @@ Four files are owned by two tasks each, all in *different* waves and therefore s
 |---|---|---|---|
 | 0 | 1 | serial | The `/api/v1` move rewrites every client. Nothing else can be in flight. |
 | 1 | 2 | serial | Contracts. Creates every shared file so wave 2 has none. |
-| 2 | 3–28 | parallel | 26 tasks, one file each. |
+| 1.5 | 3, 5, 6 | parallel (3) | The pure rules five wave-2 tasks CALL. A free function cannot be faked. |
+| 2 | 4, 7–28 | parallel | 23 tasks, one file each. |
 | 3 | 29–32 | serial | Integration assertions, the skill contract, acceptance, docs. |
+
+**Why wave 1.5 exists, and why it is not a design change.** `Ordering.kt`, `Dependencies.kt` and
+`ProjectFile.kt` expose **top-level functions**. That is the right shape for a pure rule — there is
+nothing to inject and nothing to configure — but it means a caller cannot substitute a fake for them:
+`positionForEnd`, `positionBetween`, `wouldCycle`, `resolveProject` and `mainCheckoutRoot` are reached by
+name, so while their bodies are `TODO()` every caller hits a live `NotImplementedError` in its own
+worktree, whatever it passes in. Five wave-2 tasks call them and could not have written a passing test:
+Task 7's `create` positions the new entry, Task 8's whole job is position arithmetic, Task 9's cycle
+refusal is `wouldCycle`, and Tasks 12 and 14 both resolve a project. The mistake was the schedule, not the
+design, so the three files move one wave earlier instead of growing an interface nobody needs. **Task
+numbers are stable identities and are deliberately NOT renumbered** — wave 1.5 is Tasks 3, 5 and 6, wave 2
+picks up at Task 4, and the task blocks below are grouped under their wave rather than in numeric order.
 
 **Concurrency is a guess, not a measurement.** Ten concurrent Kotlin/Native builds share one `~/.konan` and
 one machine; the toolchain's behaviour under that contention has not been measured here. Start at 4–6
@@ -669,17 +747,41 @@ After wave 2 merges and wave 3 lands, review in rounds rather than once:
 - Create: `sqldelight/io/kotgent/db/{Tasks,Backlog,Projects}.sq`
 - Create: `resources/webui/lib/{router,tasks}.js`, `resources/webui/components/{Board,TaskCard,TaskDetail}.js`
 - Modify: `src/core/{Ids,SessionMeta}.kt`, `src/store/{EventStore,SqliteEventStore}.kt`,
-  `sqldelight/io/kotgent/db/Sessions.sq`, `src/transport/{EventsWs,Server,WebUiAssets}.kt`,
-  `src/daemon/{SessionManager,Reconciler}.kt`, `src/cli/{Cli,Commands}.kt`,
+  `sqldelight/io/kotgent/db/Sessions.sq`, `src/transport/{EventsWs,Server,WebUiAssets,ControlRoutes}.kt`,
+  `src/daemon/{SessionManager,Reconciler}.kt`, `src/cli/{Cli,Commands,ApiClient}.kt`,
   `resources/webui/{app.js,index.html}`, `test/transport/WebUiServingTest.kt`
 
 This task is the whole plan's single point of failure: a wrong signature here blocks or corrupts work in
 26 agents at once. It gets its own review pass before anything fans out.
 
+⚠️ **It failed that review the first time**, and the repair is recorded here rather than rewritten away,
+because the failure mode is the interesting part. Two independent reviews of the contracts commit found
+that it did not do its one job. Three categories, all fixed before any fan-out:
+
+  1. **A declaration nobody can fake.** `Ordering.kt` / `Dependencies.kt` / `ProjectFile.kt` are top-level
+     functions, so five wave-2 tasks would have hit a live `NotImplementedError`. Fixed by the schedule
+     (wave 1.5), not by the design.
+  2. **Declarations that were simply missing**, each blocking a task that does not own the file they belong
+     in: `ApiClient`'s fifteen task methods (Task 21 calls them, Task 20 owns the file), `taskRef` on
+     `StartSessionRequest` / `SessionDto` / `SessionMeta.toDto()`, a `TaskService` parameter on
+     `controlRoutes`, four `TaskDtos` mappers that four agents in one package would otherwise each declare
+     (a redeclaration error at merge), and three `app.js` wirings — `tasks` on `Sidebar`/`TerminalPane`,
+     `onStartSession` on `TaskDetail`, the three task entries in `buildCommands`' `actions`.
+  3. **Wrong contracts**: `lastActivityId`'s KDoc understated its requirement, `ProjectId` did not
+     normalize case, the three new `EventStore` writes defaulted to a *silent* no-op, and
+     `TASK_PANE_HEADER` was a fourth uncoupled copy of a string.
+
+The lesson for the next contracts wave: review it by asking, per wave-2 task, "can this one compile AND
+pass a test in a worktree where every other task is unstarted?" — not by reading the declarations for
+plausibility.
+
 **Declarations (no behaviour).** Write the full signatures and KDoc from Technical Details:
 
 - [x] `src/core/Ids.kt` — add `TaskRef` and `ProjectId` value classes with their `init` validation, beside
-      `SessionId` (**not** in `src/task/`, or `SessionMeta` would make `core` depend on `task`)
+      `SessionId` (**not** in `src/task/`, or `SessionMeta` would make `core` depend on `task`).
+      `ProjectId`'s constructor is **private** and `of` / `parseOrNull` lower-case the uuid: the columns
+      that key a project compare `TEXT` binary, so two spellings would mean two backlogs. Read-back from
+      SQL uses `parseOrNull` (a hand-edited column must not throw out of a read)
 - [x] `src/task/Task.kt` — `TaskState`, `Task`, `BacklogEntry` (with derived `blocked`), `TaskActivityEntry`,
       `ActivityKind`, `TaskUpdate`
 - [x] `src/task/TaskTracker.kt`, `src/task/ProjectFs.kt` (interface only — the posix implementation belongs
@@ -687,10 +789,28 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       edge, bad project path)
 - [x] `src/store/TaskStore.kt` — the complete interface including `taskUpdates: SharedFlow<TaskUpdate>`
 - [x] `src/store/EventStore.kt` — add `setTaskRef`, `setProjectId`, `sessionsHoldingTask`; add `taskRef` and
-      `projectId` to the domain `SessionUpdate`
+      `projectId` to the domain `SessionUpdate`. All three are **defaulted so the seven pre-existing fake
+      stores keep compiling**, and the default **throws `UnsupportedOperationException`** rather than
+      no-op'ing: they are the first defaulted WRITES on this interface, and a fake that forgot to override
+      a silent one would let `TaskService.link()` pass its test while persisting nothing
 - [x] `src/core/SessionMeta.kt` — add the two nullable fields
 - [x] `src/transport/TaskDtos.kt` — every wire DTO (`TaskDto`, `BacklogEntryDto`, `TaskDetailDto` carrying
       deps, linked sessions, activity and the project path, `ProjectDto`, `ActivityEntryDto`), each with `rev`
+- [x] `src/transport/TaskDtos.kt` — and the four **mappers**, with real bodies:
+      `BacklogEntry.toDto(task, dependsOn)`, `ProjectRecord.toDto()`, `TaskActivityEntry.toDto()`,
+      `SessionMeta.toLinkedSessionDto()`. Tasks 13, 14, 15 and 16 all need them and all four files are in
+      `package io.kotgent.transport`, where an extension function is package-level — two agents writing
+      `fun BacklogEntry.toDto(...)` is a redeclaration error the moment their branches merge. The
+      `SessionUpdate.toDto()` precedent in `EventsWs.kt`. Not `TODO()`: a mapping is nobody's design work,
+      and a stub would fail four tasks' tests from a file none of them owns
+- [x] `src/transport/ControlRoutes.kt` — `taskRef` on `StartSessionRequest`, `taskRef`/`projectId` on
+      `SessionDto` and `SessionMeta.toDto()`, and a nullable `taskService` parameter on `controlRoutes`
+      (passed from `Server.kt`). Task 15 owns this file but not `Server.kt`, so without the parameter it
+      could not wire `POST /sessions` + `taskRef` to the linking path at all; and the DTO fields must exist
+      before Task 26's badge, because the socket's snapshot and full-row frames carry `SessionDto`
+- [x] `src/cli/ApiClient.kt` — declare `whoami()` and the fourteen task/project methods with `TODO()`
+      bodies, plus the `paneId` constructor parameter, the `paneHeader()` helper and the (implemented)
+      `taskRef` argument on `startSession`. Task 21 calls every one of them and may not touch this file
 - [x] `src/transport/EventsWs.kt` — the four new `EventsFrame` subclasses and `taskRef` on `SessionUpdateDto`
       + `SessionUpdate.toDto()`
 - [x] `src/cli/TaskCliCommands.kt` — the new `CliCommand` variants (a separate file in the same package, so
@@ -732,16 +852,25 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       `CliCommand` variants to `TaskCommands`. `--task` does **not** go through `Commands.start`: `runCli`
       routes a `start` carrying one to `TaskCommands.startWithTask`, because Task 21 owns the "which cwd"
       rule and Task 20 owns `ApiClient.startSession`'s new argument — neither exists in wave 1
-- ⚠️ the task column in `renderSessions` is **not** here, and could not be: it needs `SessionDto.taskRef`,
-      and `SessionDto` lives in `src/transport/ControlRoutes.kt`, which Task 2 does not own. See the ➕
-      under Task 15
+- [x] the task column in `renderSessions` is still **not** here — it is Task 15's, which now owns
+      `src/cli/Commands.kt` for exactly that. What blocked it (`SessionDto` had no `taskRef`) is gone: the
+      field is declared here now, so Task 15 only has to render it
 - [x] `SessionManager.kt` / `Reconciler.kt` — nullable `taskStore` / `projectFs` constructor parameters with
       **null defaults**, so `test/daemon/ReconcilerTest.kt`, `ImportWiringTest.kt`, `SessionImportTest.kt` and
       `test/transport/ShutdownSignalsTest.kt` keep compiling untouched
-- [x] `ControlRoutes.kt` is **not** owned here — the optional `taskRef` on `POST /sessions` belongs to
-      Task 15. If that forces a signature change, it is a contract bug: fix it here, before wave 2
+- [x] `ControlRoutes.kt` **is** owned here after all — for its DECLARATIONS only (the three DTO fields and
+      the `taskService` parameter, listed above). The behaviour behind them is Task 15's and this file is
+      in its `Owns:` block. The original plan left the whole file to Task 15 and said "if that forces a
+      signature change, it is a contract bug: fix it here, before wave 2" — it did, and this is that fix
 - [x] `app.js` — mount the router, dispatch the four new frame kinds to `lib/tasks.js`, and route between the
       session view and the board
+- [x] `app.js` — and the three wirings the new components cannot add themselves, because no wave-2 task
+      owns this file: **`tasks` on `Sidebar` and `TerminalPane`** (without it Task 26's badge can only
+      render its unknown-task arm, since a session row carries a ref and not a title);
+      **`onStartSession(cwd, taskRef)` on `TaskDetail`** plus `initialTaskRef` on `NewSessionDialog`, which
+      is what lets Task 25 reuse the ordinary New-session dialog instead of adding the second launch path
+      the plan forbids; and **`openBoard` / `newTask` / `openSessionTask` in `buildCommands`' `actions`**
+      for Task 27
 - [x] `index.html` — make the three document-relative links root-absolute (`/manifest.webmanifest`,
       `/icons/logo.svg`, `/icons/apple-touch-icon.png`); a deep-linked `/tasks/{ref}` would otherwise serve a
       shell whose manifest 404s, taking the iOS install path and push with it
@@ -754,13 +883,17 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 
 - [x] `./kotlin build && ./kotlin test` — green with stubs. No test may assert stubbed behaviour
 
-### Wave 2 — implementations, one file each
+### Wave 1.5 — the pure rules wave 2 calls by name
 
-*Twenty-six tasks, all independent. Each owns its files exclusively, tests against fakes, and finishes on
-`./kotlin build && ./kotlin test`. None may edit a file another task owns or a signature from Task 2.*
+*Three tasks, all independent, all in `src/task/`. They ship BEFORE wave 2 because they are top-level
+functions: a wave-2 task cannot fake one, so a `TODO()` body in any of them is a live
+`NotImplementedError` in five other agents' worktrees. See "Why wave 1.5 exists" above. Same rules as
+wave 2 otherwise — own your files, test against fakes, finish on `./kotlin build && ./kotlin test`.*
 
 ### Task 3: Project resolution rules
 **Owns:** `src/task/ProjectFile.kt`, `test/task/ProjectFileTest.kt`
+
+**Called by Tasks 12 and 14** (`resolveProject`, `mainCheckoutRoot`) — hence wave 1.5.
 
 - [ ] implement `parseProjectFile` (8 KiB cap, `isCanonicalUuid`, name trimmed/capped at 100/no control
       characters, malformed JSON → null, never a throw), `mainCheckoutRoot` (relative `gitdir:` resolved
@@ -770,8 +903,35 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       worktree; relative `gitdir:`; symlinked common dir; and each recorded unsupported layout degrading to
       cwd — `--separate-git-dir`, a submodule `gitdir: …/modules/<name>`, a bare repository, no git at all
 - [ ] parse tests: malformed JSON, non-uuid `id`, control characters, 200-char name, a 1 MiB file
+- [ ] `ProjectId` has a **private constructor**: build one with `ProjectId.of(...)` / `ProjectId.parseOrNull(...)`,
+      which lower-case it. A test that an upper-case `id` in the file parses to the same `ProjectId` as its
+      lower-case spelling belongs here
 - [ ] one test against the **real** posix implementation in `TMPDIR`, with a real `.git` directory and a real
       `.git` worktree file
+
+### Task 5: Ordering rules
+**Owns:** `src/task/Ordering.kt`, `test/task/OrderingTest.kt`
+
+**Called by Tasks 7 and 8** (`positionForEnd`, `positionBetween`, `positionForTop`,
+`needsRenormalization`) — hence wave 1.5.
+
+- [ ] `positionForEnd`, `positionBetween`, `positionForTop`, `needsRenormalization` at `1e-9`
+- [ ] tests: midpoint ordering holds; a top insert halves toward zero; repeated midpoints trip the threshold
+
+### Task 6: Dependency rules
+**Owns:** `src/task/Dependencies.kt`, `test/task/DependenciesTest.kt`
+
+**Called by Task 9** (`wouldCycle` is its cycle refusal) — hence wave 1.5.
+
+- [ ] `wouldCycle(edges, from, to)` as a pure ancestor walk
+- [ ] tests: direct, transitive (A→B→C→A), self, and a legal diamond
+
+### Wave 2 — implementations, one file each
+
+*Twenty-three tasks (4 and 7–28), all independent. Each owns its files exclusively, tests against fakes,
+and finishes on `./kotlin build && ./kotlin test`. None may edit a file another task owns or a signature
+from Task 2. Numbering is not contiguous because Tasks 3, 5 and 6 moved to wave 1.5 and keep their
+numbers.*
 
 ### Task 4: Project file creation
 **Owns:** `src/task/ProjectFileWriter.kt`, `schema/project.v1.json`, `test/task/ProjectFileWriterTest.kt`
@@ -784,27 +944,27 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] tests: shape and mode; a second call returns the first call's id; a pre-created target keeps its
       content; relative and non-directory targets refused; no temp survives any branch
 
-### Task 5: Ordering rules
-**Owns:** `src/task/Ordering.kt`, `test/task/OrderingTest.kt`
-
-- [ ] `positionForEnd`, `positionBetween`, `positionForTop`, `needsRenormalization` at `1e-9`
-- [ ] tests: midpoint ordering holds; a top insert halves toward zero; repeated midpoints trip the threshold
-
-### Task 6: Dependency rules
-**Owns:** `src/task/Dependencies.kt`, `test/task/DependenciesTest.kt`
-
-- [ ] `wouldCycle(edges, from, to)` as a pure ancestor walk
-- [ ] tests: direct, transitive (A→B→C→A), self, and a legal diamond
-
 ### Task 7: Task store core
 **Owns:** `src/store/SqliteTaskStore.kt`, `test/store/TaskStoreTest.kt`
 
 - [ ] fill the tracker CRUD, activity append/read, project upsert/list, and `taskUpdates` emission; `delete`
       cascades to `backlog_entries`, `backlog_deps` (both directions) and `task_activity` in one transaction
       and emits a null-entry `TaskUpdate`. The `sessions` unlink is **not** here — it is Task 11's
+- [ ] **the nine delegating members are yours too.** `SqliteTaskStore.kt` carries nine `TODO()`s whose
+      messages name Tasks 8 and 9 (`entry`, `listBacklog`, `nextCandidate`, `move`, `dependenciesOf`,
+      `dependentsOf`, `dependencyEdges`, `addDependency`, `removeDependency`). Those tasks own
+      `BacklogOrdering.kt` / `BacklogDependencies.kt` and may not touch this file, so nobody but you can
+      fill them. Each is a one-line delegation to the collaborator this class already constructs
+      (`ordering.move(...)`, `mutex.withLock { dependencies.…Locked(...) }` for the read path) — the
+      behaviour is theirs, the wiring is yours, and the labels in the stub messages were a bookkeeping
+      error, not a second owner. **Leave no `TODO()` in this file.**
+- [ ] `lastActivityId` (`Tasks.sq`) must be read inside the **same `db.transaction { }`** as the
+      `insertActivity` whose id it reports — not merely under the mutex. See that query's comment: outside
+      a transaction the native driver answers it from a `query_only` reader connection and returns `0`, and
+      an in-memory store cannot reproduce it because there the reader pool *is* the transaction pool
 - [ ] tests: create → get; update bumps `rev` and emits; delete removes everything and emits; activity is
-      ordered and append-only; project upsert refreshes name and path; re-open resumes `revCounter`; opening
-      over a database missing the tables recreates them without logging an error
+      ordered and append-only **with non-zero ids**; project upsert refreshes name and path; re-open resumes
+      `revCounter`; opening over a database missing the tables recreates them without logging an error
 
 ### Task 8: Backlog ordering
 **Owns:** `src/store/BacklogOrdering.kt`, `test/store/BacklogOrderingTest.kt`
@@ -812,6 +972,8 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] `move` for top/bottom/before/after inside the store mutex; on a collapsed gap, renormalize the
       project's column in one transaction and retry once; **every** renormalized row stamps a new `rev` and
       emits
+- [ ] the arithmetic is `src/task/Ordering.kt`'s, implemented in wave 1.5 — call it, do not re-derive it.
+      `SqliteTaskStore.move` is a one-line delegation to your class and is Task 7's line, not yours
 - [ ] tests: each move produces the expected order; 60 consecutive midpoint inserts between one pair still
       yield a strictly ordered list; a renormalization bumps and emits for every row
 
@@ -821,6 +983,8 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] add/remove validating that both refs exist, are in the same project, differ, and do not close a cycle;
       compute `blocked` in the read path; after every edit re-stamp and re-emit the **reverse dependents**;
       `nextCandidate(project)`
+- [ ] the cycle refusal is `wouldCycle` from `src/task/Dependencies.kt`, implemented in wave 1.5 — call it.
+      The eight delegating members in `SqliteTaskStore.kt` are Task 7's lines, not yours
 - [ ] tests: the four refusals; a blocked task is skipped by `nextCandidate` and returned once its dependency
       is `done`; closing a dependency emits an update for every reverse dependent; an empty backlog is null
 
@@ -854,6 +1018,8 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       `sessions.task_ref` naming a task no longer in `backlog_entries`
 - [ ] **nothing else about tasks is reconciled**: an `in_progress` entry with no linked session is
       legitimate (a human dragged the card), so there is nothing to recover
+- [ ] `resolveProject` / `mainCheckoutRoot` come from `src/task/ProjectFile.kt` (wave 1.5) and are real by
+      the time you start; you own neither that file nor the `ProjectFs` interface
 - [ ] tests with a fake `ProjectFs`: a session in a project gets its id and creates the row; outside one it
       is null; two worktrees of one repository agree; a dangling `task_ref` is cleared and a valid one is
       not; an `in_progress` entry with no session survives untouched
@@ -863,6 +1029,9 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 
 - [ ] `GET /whoami` (pane → session through the registry; unresolvable → `400` naming `--session`),
       `GET /tasks?project=`, `GET /tasks/{ref}`, `GET /projects`
+- [ ] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
+      `TaskActivityEntry.toDto`, `SessionMeta.toLinkedSessionDto`). Use them; declaring your own in this
+      file collides with Tasks 14/15/16 at merge, because an extension function is package-level
 - [ ] tests: the list is ordered by position and carries `blocked`; detail carries deps, linked sessions,
       activity and the project path; unknown ref `404`, malformed ref `400`; all require authentication
 
@@ -874,30 +1043,41 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       session resolves at all); `PATCH /tasks/{ref}` (title/body/state, with an optional message on a state
       change so `task review -m` is one operation); `DELETE`; `POST /tasks/{ref}/{move,deps,comment}`;
       `POST /projects`
+- [ ] `resolveProject` / `mainCheckoutRoot` (`src/task/ProjectFile.kt`) are real by the time you start —
+      wave 1.5 — and you reach the filesystem and the writer through `routing.service.projectFs` /
+      `.projectFiles`, which `TaskService` carries for exactly this reason
+- [ ] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
+      `TaskActivityEntry.toDto`, `SessionMeta.toLinkedSessionDto`). Use them; declaring your own in this
+      file collides with Tasks 13/15/16 at merge
 - [ ] tests: create with an explicit project and **no pane header** (the board's path); create from a pane
       whose session has a project; create from a pane in a projectless directory creates the file and the
       `projects` row rather than `400`ing; create with neither is `400`; a state change with a message writes
       exactly one activity row; the four dependency `400`s; a delete unlinks every holder
 
 ### Task 15: Link routes
-**Owns:** `src/transport/TaskLinkRoutes.kt`, `src/transport/ControlRoutes.kt`,
+**Owns:** `src/transport/TaskLinkRoutes.kt`, `src/transport/ControlRoutes.kt`, `src/cli/Commands.kt`,
 `test/transport/TaskLinkRoutesTest.kt`
 
 - [ ] `POST /tasks/{ref}/link`, `…/unlink`, `POST /tasks/next` (optional `project`, defaulting to the
-      session's) — all three **require** session identity; and the optional `taskRef` on `POST /sessions` in
-      `ControlRoutes.kt`, so `start --task` is one call with nothing to roll back
+      session's) — all three **require** session identity
+- [ ] honour `StartSessionRequest.taskRef` in `ControlRoutes.kt`'s `POST /sessions`: parse it with
+      `TaskRef.parseOrNull` (`400` on a malformed ref), start the session, then link through the
+      `taskService` the route now receives — so `start --task` is one call with nothing to roll back. When
+      `taskService` is `null` (a daemon with no task layer) a request carrying a `taskRef` is `400`: refuse
+      the link rather than starting the session and dropping it silently
 - [ ] answer "nothing eligible" from `next` distinguishably from every error, so the CLI can map exit `3`
 - [ ] tests: two sessions link one task and both appear in the detail; a link from an unknown pane is
       refused rather than silently attributed; `next` under contention hands out two different tasks;
       `next` with nothing eligible is not an error status; `POST /sessions` with a `taskRef` returns a
-      session already carrying it
-- ➕ also add `taskRef` (and `projectId`) to `SessionDto` and to `SessionMeta.toDto()` in the same file.
-      Task 2 declared them on `SessionMeta`, on the domain `SessionUpdate` and on `SessionUpdateDto`, but
-      `ControlRoutes.kt` is yours, not its — and without the DTO field the snapshot/full-row frames carry
-      no ref, so Task 26's sidebar badge only appears after the session's next patch, and
-      `renderSessions` cannot grow its task column at all
-- ➕ once that field exists, add the task column to `renderSessions` in `src/cli/Commands.kt` (nobody else
-      owns that file after wave 1). Keep the existing header/format assertions in `CliTest.kt` passing
+      session already carrying it; `POST /sessions` with a `taskRef` against a task-less server is `400`
+- ✅ `taskRef` / `projectId` on `SessionDto` and `SessionMeta.toDto()` are **already there** — the
+      contracts repair added them, because the events socket's snapshot and full-row frames carry
+      `SessionDto` and Task 26's badge would otherwise appear only after a session's next patch. Nothing
+      to do here beyond not removing them
+- ➕ add the task column to `renderSessions` in `src/cli/Commands.kt`, now listed in your `Owns:` block
+      (Task 2 is the only other owner and it is a wave behind). Keep the existing header/format assertions
+      in `CliTest.kt` passing — they match substrings, so a new column does not need a test edit, which is
+      just as well: `CliTest.kt` is a shared suite no wave-2 task may touch
 
 ### Task 16: Task frames on the events socket
 **Owns:** `src/transport/EventsWs.kt`, `test/transport/TaskEventsTest.kt`
@@ -909,6 +1089,8 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] extend the conflating sender to bank by `TaskRef`, keeping "only a delivered row marks the ref as
       carried"; a null-entry `TaskUpdate` becomes `task_removed` and clears the mark; skip the whole branch
       when the server has no task store
+- [ ] the DTO mappers are already in `TaskDtos.kt`; use them rather than declaring another
+      `BacklogEntry.toDto` in this file, which would collide with Tasks 13/14/15 at merge
 - [ ] tests: a link arrives as a patch; a task created after connect arrives as a full row first; a delete
       arrives as `task_removed`; a renormalization reaches the socket; a burst during the baseline is not lost
 
@@ -920,8 +1102,13 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       match: that would serve a `200` shell for `/s/id/extra` and for a mistyped asset path. No arm for the
       empty path, which `staticWebUi` already turns into `index.html` at `:356`
 - [ ] tests (mounting the task routes, so an API/UI collision would actually fail): `/tasks` and
-      `/tasks/local:42` serve the shell with a substituted revision and `no-cache`; `/api/v1/tasks` returns
-      JSON; `/s/id/extra`, `/tasks/id/missing.js`, `/lib/nope.js`, `/nope` all `404`; `/_v/<rev>/app.js` is
+      `/tasks/local:42` serve the shell with a substituted revision and `no-cache`;
+      **`/api/v1/tasks` does NOT serve the shell** — assert that, not that it serves JSON: in your worktree
+      Task 13's route bodies are still empty, so the prefixed path 404s, and 404-not-200 is exactly the
+      property that proves the SPA grammar did not swallow the API namespace. The positive
+      "`/api/v1/tasks` returns JSON while `/tasks` returns the shell" assertion belongs to Task 30, which
+      has real route bodies
+- [ ] `/s/id/extra`, `/tasks/id/missing.js`, `/lib/nope.js`, `/nope` all `404`; `/_v/<rev>/app.js` is
       still `immutable`; `/sw.js` and `/manifest.webmanifest` unaffected; traversal still `403`
 
 ### Task 18: `TmuxSelf`
@@ -947,8 +1134,12 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 ### Task 20: ApiClient
 **Owns:** `src/cli/ApiClient.kt`, `test/cli/ApiClientTaskTest.kt`
 
-- [ ] request methods for every route from Tasks 13–15, `whoami()`, and the `taskRef` argument on
-      `startSession`; send `X-Kotgent-Tmux-Pane` when a pane was resolved and `sessionId` in the body when
+- [ ] fill the bodies of the fifteen task/project methods **already declared** on `ApiClient` — every route
+      from Tasks 13–15 plus `whoami()`. They are declared (with `TODO()` bodies and a `paneId` constructor
+      parameter) because Task 21 calls all of them and may not touch this file. The `taskRef` argument on
+      `startSession` and the private `paneHeader()` helper are already implemented; **do not change a
+      signature** — if one is wrong, stop and report it
+- [ ] send `TASK_PANE_HEADER` via `paneHeader()` when a pane was resolved and `sessionId` in the body when
       `--session` was given; surface the HTTP status on failures; keep the `HttpTimeout` discipline
 - [ ] tests against a stub server (the `withStub` shape at `test/cli/CliTest.kt:855`, reimplemented in your
       own file — do not edit `CliTest.kt`): each method, the pane header only when resolved, `--session`
@@ -961,6 +1152,14 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       through `/whoami` but **skip that call entirely when `--session` was given**; `task next` with nothing
       eligible exits `3`; choose `start --task`'s cwd as caller cwd when it resolves to the task's project,
       else the stored path, else the caller's cwd, and say which in the JSON
+- ⚠️ **`ApiClient`'s task methods are `TODO()` in your worktree** — Task 20 is filling them at the same
+      time and you may not touch that file. So a test that routes through a live `ApiClient` throws
+      `NotImplementedError` and cannot pass. Test through the repository's existing seam pattern instead:
+      `runWebCommand` (`Commands.kt:805`) and `runImportCommand` (`:852`) are pure functions taking
+      suspending lambdas plus `stdout`/`stderr` sinks, and `CliTest:559-690` drives every branch of the
+      import command with fakes and no daemon at all. Add the same shape **inside your own file** — the
+      thin `TaskCommands.x(...)` entry points build the client and delegate to a `runXCommand(...)` your
+      tests call directly. That also solves capturing stdout, which Kotlin/Native gives you no way to do
 - [ ] tests: each command prints parseable JSON; `task next` exits `3` on an empty backlog; `--session` works
       outside any pane without calling `/whoami`; a ref-less command outside a pane fails cleanly; a stale
       `projects.path` falls back to the caller's cwd
@@ -996,6 +1195,11 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       drop **into another column** is one `PATCH …/{ref}` carrying the state; a drop that does both is the
       `PATCH` then the `move` — `/move` takes no state and `PATCH` takes no position
 - [ ] surface rejected mutations through the existing announcement channel rather than failing silently
+- [ ] use **only** the class names in "Board CSS vocabulary" above — Task 28 writes `style.css` at the same
+      time as you and has no other way to learn what you emitted
+- [ ] the props `app.js` passes are fixed and documented in `Board.js`'s stub header; note
+      **`newTaskRequest`**, a monotonically increasing counter (`0` = never asked) that the palette's
+      "new task" command bumps. Open the create form when it CHANGES, not when it is truthy
 - [ ] `node --check`; serving tests for the columns, the `done` cap, the project id on create, more than one
       linked session on a card, the pointer handlers, the scoped `touch-action`, the mobile switcher
 
@@ -1006,7 +1210,13 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] editable title and body, dependency editor, the linked-session list, the activity feed (fetched with
       the task, not from the socket), delete
 - [ ] "Start session" opens the **ordinary** New-session dialog pre-filled with the project cwd and the task,
-      submitting the single `POST /api/v1/sessions` with `taskRef` — do not add a second launch path
+      submitting the single `POST /api/v1/sessions` with `taskRef` — do not add a second launch path. The
+      hook is already wired: `app.js` passes `TaskDetail` an **`onStartSession(cwd, taskRef)`** callback
+      that opens that dialog, and passes `NewSessionDialog` a new **`initialTaskRef`** prop. You own
+      `dialogs.js`, so making the dialog carry that prop into its submitted body is the other half of the
+      same task; `app.js` POSTs the body verbatim and needs no change
+- [ ] use **only** the class names in "Board CSS vocabulary" above (`task-detail*`, `task-deps`,
+      `task-activity*`, plus the shared `task-blocked` / `task-sessions` / `task-session-dot`)
 - [ ] `node --check`; serving tests for the feed, the session list, and the dialog reuse
 
 ### Task 26: Task badges on sessions
@@ -1016,6 +1226,11 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] one badge-text builder in `lib/sessions.js`, rendering a ref whose task is unknown as the bare ref
       (a delete can leave one briefly); render it in `SessionRow` and the terminal header, linking to
       `/tasks/{ref}`
+- [ ] both components already receive a **`tasks`** prop from `app.js` (the same flat `BacklogEntryDto[]`
+      the board gets) — that is what turns a `session.taskRef` into a title. Without it the builder could
+      only ever take its unknown-task branch, which is the post-delete fallback, not the normal case
+- [ ] the classes are `task-badge` / `task-badge-unknown` / `task-session-dot` from "Board CSS vocabulary";
+      Task 28 styles them
 - [ ] `node --check`; serving tests that the builder is exported, both components use it, and an unknown ref
       still renders
 
@@ -1024,6 +1239,11 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 
 - [ ] add the task commands to `buildCommands` (open board, new task, open this session's task) with chords
       from the currently free letters — **this file is the only registry**
+- [ ] the three callbacks are already in `app.js`'s one `actions` object: **`actions.openBoard`**,
+      **`actions.newTask`**, **`actions.openSessionTask`**. Call those; do not reach for `history` or the
+      session list from here, which would make this file a second piece of app state as well as the registry.
+      `openSessionTask` is a no-op when the active session carries no `taskRef` — disable the command on
+      exactly that condition, the `disabledWhenNotAlive` shape
 - [ ] `node --check`; tests that the new ids are present and no chord collides with an existing one
 
 ### Task 28: Board styles
@@ -1032,7 +1252,11 @@ This task is the whole plan's single point of failure: a wrong signature here bl
 - [ ] all board, card and detail styles, inside the existing unconditional dark palette; phone variables stay
       inside the current `@media (max-width: 720px)` block. **This is the only task that may touch
       `style.css`** — the components above ship no CSS of their own
-- [ ] serving tests for the rules the components depend on
+- [ ] style **every** class in "Board CSS vocabulary" above and nothing invented beside it. Tasks 24, 25 and
+      26 are writing the markup while you write the rules and you cannot read their files, so that list is
+      the entire contract between you
+- [ ] serving tests asserting each class from that list is present in the served `style.css` — the only
+      end of the coupling you can check; the components assert the other end
 
 ### Wave 3 — integration, contract, verification
 
@@ -1055,6 +1279,10 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       `SqliteTaskStore` behind real routes behind a real server — create a task, link a session, watch the
       frame arrive on a real `/events` socket, delete it and watch the session unlink
 - [ ] a `POST /sessions` carrying `taskRef` produces a linked session through the real `SessionManager`
+- [ ] the two URL spaces, asserted against real route bodies (moved here from Task 17, whose worktree has
+      only empty ones): `GET /api/v1/tasks` returns JSON **and** `GET /tasks` returns the shell, from the
+      same server. Task 17 can only prove the negative half — that its SPA grammar does not swallow the
+      prefixed path — because in its wave nothing answers it
 - [ ] `grep -rn 'TODO(' src/` returns nothing from this plan's files — note the OPEN paren: Task 2's
       skeletons carry a message (`TODO("Task 7: tracker create")`), so the literal `TODO()` matches none
       of them and the check as originally written would pass over every unfilled stub
@@ -1093,7 +1321,8 @@ This task is the whole plan's single point of failure: a wrong signature here bl
       deleting unlinks
 - [ ] `/tasks` serves the shell, `/api/v1/tasks` serves JSON, `/s/id/extra` is `404`, and a deep-linked
       `/tasks/{ref}` serves a shell whose manifest and icon links resolve
-- [ ] `./kotlin build && ./kotlin test` — 0 skips, at or above the 921 baseline plus the new tests;
+- [ ] `./kotlin build && ./kotlin test` — 0 skips, at or above the 927 post-wave-1 baseline plus the
+      new tests;
       `node --check` over every changed `.js`; every new module registered in `WebUiServingTest.kt`;
       `git grep '/Users/' -- '*.yaml'` still empty
 - [ ] CLAUDE.md: the two-layer split; `.kotgent.json` as the project key with its supported and unsupported

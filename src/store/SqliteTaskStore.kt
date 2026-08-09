@@ -44,8 +44,11 @@ import kotlin.time.ExperimentalTime
  * duplicate-column ALTER makes sqliter log a SQLITE_ERROR stack trace on every start); keep these
  * statements in exact step with the `.sq` DDL.
  *
- * Bodies below are [TODO] on purpose. Task 7 of the task-backlog plan fills this file, Task 8
- * [BacklogOrdering] and Task 9 [BacklogDependencies]; the delegating members say which.
+ * Bodies below are [TODO] on purpose, and **every one of them is Task 7's** — this file has one owner.
+ * Task 8 fills [BacklogOrdering] and Task 9 [BacklogDependencies], but the members here that delegate to
+ * them are still lines in this file, which those tasks may not touch; each is a one-line hand-off
+ * (`ordering.move(...)`, `mutex.withLock { dependencies.…Locked(...) }` for the read path), so the
+ * behaviour is theirs and the wiring is Task 7's.
  */
 class SqliteTaskStore private constructor(
     driver: SqlDriver,
@@ -142,13 +145,13 @@ class SqliteTaskStore private constructor(
 
     // --- backlog reads (delegated to BacklogDependencies, which owns the derived `blocked`) ---------
 
-    override suspend fun entry(ref: TaskRef): BacklogEntry? = TODO("Task 9: delegate to dependencies")
+    override suspend fun entry(ref: TaskRef): BacklogEntry? = TODO("Task 7: delegate to dependencies")
 
     override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> =
-        TODO("Task 9: delegate to dependencies")
+        TODO("Task 7: delegate to dependencies")
 
     override suspend fun nextCandidate(project: ProjectId): BacklogEntry? =
-        TODO("Task 9: delegate to dependencies")
+        TODO("Task 7: delegate to dependencies")
 
     // --- backlog writes ----------------------------------------------------------------------------
 
@@ -162,23 +165,23 @@ class SqliteTaskStore private constructor(
     ): BacklogEntry? = TODO("Task 7: state + activity + reverse-dependent re-stamp, one transaction")
 
     override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? =
-        TODO("Task 8: delegate to ordering")
+        TODO("Task 7: delegate to ordering")
 
     // --- dependencies (all delegated to BacklogDependencies) ---------------------------------------
 
-    override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = TODO("Task 9: delegate to dependencies")
+    override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = TODO("Task 7: delegate to dependencies")
 
-    override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = TODO("Task 9: delegate to dependencies")
+    override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = TODO("Task 7: delegate to dependencies")
 
     override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> =
-        TODO("Task 9: delegate to dependencies")
+        TODO("Task 7: delegate to dependencies")
 
     override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) {
-        TODO("Task 9: delegate to dependencies")
+        TODO("Task 7: delegate to dependencies")
     }
 
     override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) {
-        TODO("Task 9: delegate to dependencies")
+        TODO("Task 7: delegate to dependencies")
     }
 
     // --- activity ----------------------------------------------------------------------------------

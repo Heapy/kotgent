@@ -356,7 +356,7 @@ class SqliteEventStore private constructor(
                     rev = if (cachedRow != null) rev else 0,
                     // updateCache touches neither column either, so the pre-transaction row is current.
                     taskRef = cachedRow?.task_ref?.let(::TaskRef),
-                    projectId = cachedRow?.project_id?.let(::ProjectId),
+                    projectId = cachedRow?.project_id?.let(ProjectId::parseOrNull),
                 ),
             )
             Seq(seq)
@@ -439,7 +439,7 @@ class SqliteEventStore private constructor(
                 model = row.model,
                 rev = row.rev,
                 taskRef = row.task_ref?.let(::TaskRef),
-                projectId = row.project_id?.let(::ProjectId),
+                projectId = row.project_id?.let(ProjectId::parseOrNull),
             ),
         )
     }
@@ -524,7 +524,10 @@ class SqliteEventStore private constructor(
         archived = archived != 0L,
         rev = rev,
         taskRef = task_ref?.let(::TaskRef),
-        projectId = project_id?.let(::ProjectId),
+        // `parseOrNull`, not the constructor: [ProjectId] has a private constructor precisely so every
+        // value is case-normalized on the way in, and a READ must not throw on a column somebody edited
+        // by hand — an unparseable project reads as "no project", which is the honest degradation.
+        projectId = project_id?.let(ProjectId::parseOrNull),
     )
 
     companion object {

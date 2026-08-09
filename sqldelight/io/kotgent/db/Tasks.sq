@@ -82,8 +82,22 @@ insertActivity:
 INSERT INTO task_activity(task_ref, ts, kind, author, text, from_state, to_state)
 VALUES (?, ?, ?, ?, ?, ?, ?);
 
--- The row id the last insert on this connection produced — the feed's order key, echoed back into the
--- returned TaskActivityEntry. Read under the store's writer mutex, immediately after insertActivity.
+-- The row id the last insert on THIS CONNECTION produced — the feed's order key, echoed back into the
+-- returned TaskActivityEntry.
+--
+-- CONTRACT, and it is not the obvious one: this must be read inside the SAME `db.transaction { }` as the
+-- insertActivity whose id it is asking about. Holding the store's writer mutex is necessary and NOT
+-- sufficient. SQLDelight generates this as an ExecutableQuery (it starts with SELECT), and the native
+-- driver routes a query with no transaction bound to the calling thread to its READER POOL — separate
+-- connections it opens with `PRAGMA query_only = 1`, which have never inserted anything, so the answer is
+-- 0 and every activity row comes back with id 0. Inside a transaction the driver has a connection
+-- thread-aligned to the caller (`borrowedConnectionThread`) and both statements run on it, which is what
+-- makes the rowid the insert's own.
+--
+-- The trap has a second half: for an EPHEMERAL database the driver sets `readerPool = transactionPool`
+-- (one connection), so a test over SqliteTaskStore.inMemory() answers correctly with or without the
+-- transaction. Only the daemon's file-backed database exposes the bug. Do not "verify" this rule against
+-- an in-memory store.
 lastActivityId:
 SELECT last_insert_rowid();
 

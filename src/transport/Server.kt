@@ -233,7 +233,7 @@ class KotgentServer(
                         authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
                                 fileUploadRoutes(store, fileUploader, json)
-                                controlRoutes(sessionManager, store, inputSink, currentVersion, json)
+                                controlRoutes(sessionManager, store, inputSink, currentVersion, taskService, json)
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
                                 eventsWs(store, preferencesStore, taskStore, json)

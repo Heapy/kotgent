@@ -1,5 +1,6 @@
 package io.kotgent.transport
 
+import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.core.PaneId
 import io.kotgent.core.SessionId
 import io.kotgent.daemon.TaskService
@@ -28,14 +29,23 @@ class TaskRouting(
 )
 
 /**
- * The header a caller inside a kotgent pane identifies itself with — the SAME header the provider hooks
- * send, so an agent's shell has one thing to know.
+ * The header a caller inside a kotgent pane identifies itself with — literally the SAME header the
+ * provider hooks send, so an agent's shell has one thing to know.
+ *
+ * It is **defined as** [ClaudeHookConfig.TMUX_PANE_HEADER] rather than re-spelling the string, and that
+ * is the whole point: the hook ingress reads the header through those adapter constants
+ * (`HookRoutes.kt:83,120,157`), so a fourth independent literal here could drift from the value the
+ * scripts on disk actually send, and the only symptom would be `/whoami` quietly answering "no session".
+ * Claude's is the one chosen because this package already sits downstream of the adapters — `HookRoutes`
+ * imports all three. The three ADAPTER constants remain three copies: each adapter owns its own
+ * generated script and its own tests assert the literal inside it. That duplication predates the task
+ * layer and is deliberately not extended by a fourth.
  *
  * The CLI sends it only when `$TMUX`'s socket path is kotgent's (see `io.kotgent.cli.TmuxSelf`): pane ids
  * are unique per tmux SERVER, so a `%2` from the operator's own tmux would otherwise resolve to an
  * unrelated kotgent pane and attribute the link to the wrong session.
  */
-const val TASK_PANE_HEADER: String = "X-Kotgent-Tmux-Pane"
+const val TASK_PANE_HEADER: String = ClaudeHookConfig.TMUX_PANE_HEADER
 
 /**
  * The task/backlog REST surface, mounted inside the `route(API_PREFIX)` block (so it is cookie/`Bearer`

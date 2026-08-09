@@ -215,31 +215,43 @@ interface EventStore {
      * update at all. That is why the task store never touches `sessions` and why
      * [io.kotgent.daemon.TaskService] calls the two stores sequentially rather than nesting them.
      *
-     * The three task-link members carry a **default no-op / empty implementation**, the same
-     * compatibility affordance [reliableSessionUpdates] uses: the suite's hand-written fake stores
-     * predate the task layer and none of them models a session link. Any store a task-linking path
-     * actually runs against must override all three.
+     * ## The three task-link members are defaulted, and the default THROWS
+     * They carry a default body only so the suite's hand-written fake stores — all of which predate the
+     * task layer and none of which models a session link — keep compiling untouched; making them
+     * abstract would mean editing seven shared test files, which the parallel-execution plan forbids.
+     * But the default is [UnsupportedOperationException], **not** a silent no-op: these are the first
+     * defaulted WRITES on this interface, and a fake that forgot to override a silent one would let
+     * `TaskService.link()` pass its test while persisting nothing — a green test for a feature that does
+     * not work. Failing loudly turns that into a one-line fix in the fake that owns the test. Any store
+     * a task-linking path actually runs against must override all three.
      */
-    suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
-        // no-op: a store that does not model task links has nothing to write.
-    }
+    suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long): Unit =
+        throw UnsupportedOperationException(
+            "${this::class.simpleName} does not model session task links: override setTaskRef",
+        )
 
     /**
      * Set (or clear) the session's resolved project, with the same targeted-write and emission contract
      * as [setTaskRef]. Written by the daemon at `start` / `import` and backfilled by startup
-     * reconciliation. A no-op if the row does not exist. Defaulted for the reason on [setTaskRef].
+     * reconciliation. A no-op if the row does not exist. Defaulted — and the default throws — for the
+     * reason on [setTaskRef].
      */
-    suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
-        // no-op: see setTaskRef.
-    }
+    suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
+        throw UnsupportedOperationException(
+            "${this::class.simpleName} does not model session projects: override setProjectId",
+        )
 
     /**
      * Every session currently linked to [taskRef], oldest first. A list, not an optional: linking is
      * many-sessions-to-one-task by design (see [setTaskRef]). This is what `transition(done)` and
-     * `delete` iterate to unlink every holder, and what a task's detail view renders. Defaulted for the
-     * reason on [setTaskRef].
+     * `delete` iterate to unlink every holder, and what a task's detail view renders. Defaulted — and
+     * the default throws — for the reason on [setTaskRef]: an empty list here would read as "nothing is
+     * linked", so `transition(done)` and `delete` would silently unlink nobody and still report success.
      */
-    suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = emptyList()
+    suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
+        throw UnsupportedOperationException(
+            "${this::class.simpleName} does not model session task links: override sessionsHoldingTask",
+        )
 
     /** The session's current metadata row, or `null` if no such session has been upserted. */
     suspend fun getSession(sessionId: SessionId): SessionMeta?
