@@ -13,10 +13,12 @@ import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskUpdate
+import io.kotgent.task.positionForEnd
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
@@ -36,6 +38,18 @@ import kotlin.time.ExperimentalTime
  * The collaborators' `…Locked` members are **non-suspending and assume the caller already holds
  * [mutex]** (a Kotlin `Mutex` is not reentrant). Their suspending entry points take it themselves.
  *
+ * ## What every mutator here owes
+ *  - **One transaction per logical change.** A create is three inserts, a delete is four deletes plus a
+ *    re-stamp, and a transition is a state write plus its activity row plus a re-stamp — each an
+ *    all-or-nothing unit, so a review can never commit without its explanation.
+ *  - **A revision and an emission for every row a client can see change.** `taskUpdates` is the only
+ *    signal the board gets; a write that moves a row without stamping [nextRev] and emitting leaves a
+ *    connected board stale until a reload. A revision consumed by a write that touched zero rows is
+ *    never persisted or emitted, so its post-restart reuse is unobservable.
+ *  - **The derived `blocked` is never recomputed here.** Every emitted entry comes from
+ *    [BacklogDependencies.entryLocked] (or, for a brand-new task, from the fact that it can have no
+ *    dependencies yet), so this file holds no second copy of that rule.
+ *
  * ## Migration for pre-existing databases
  * The `sqldelight-gen` plugin drops `.sqm` files and leaves `Schema.migrate()` empty, so the five
  * `CREATE`s in `Tasks.sq` / `Backlog.sq` / `Projects.sq` only run on a FRESH database. An existing
@@ -43,12 +57,6 @@ import kotlin.time.ExperimentalTime
  * precedent. A whole-table create needs no `PRAGMA table_info` guard (unlike an additive column, whose
  * duplicate-column ALTER makes sqliter log a SQLITE_ERROR stack trace on every start); keep these
  * statements in exact step with the `.sq` DDL.
- *
- * Bodies below are [TODO] on purpose, and **every one of them is Task 7's** — this file has one owner.
- * Task 8 fills [BacklogOrdering] and Task 9 [BacklogDependencies], but the members here that delegate to
- * them are still lines in this file, which those tasks may not touch; each is a one-line hand-off
- * (`ordering.move(...)`, `mutex.withLock { dependencies.…Locked(...) }` for the read path), so the
- * behaviour is theirs and the wiring is Task 7's.
  */
 class SqliteTaskStore private constructor(
     driver: SqlDriver,
@@ -118,20 +126,77 @@ class SqliteTaskStore private constructor(
 
     override val id: String get() = TaskRef.LOCAL_TRACKER
 
-    override suspend fun list(project: ProjectId): List<Task> = TODO("Task 7: tracker list")
+    override suspend fun list(project: ProjectId): List<Task> = mutex.withLock {
+        tasks.selectTasksByProject(project.value) { id, title, body, _, updatedAt ->
+            Task(ref = TaskRef(id), title = title, body = body, url = null, updatedAt = updatedAt)
+        }.executeAsList()
+    }
 
-    override suspend fun get(ref: TaskRef): Task? = TODO("Task 7: tracker get")
+    override suspend fun get(ref: TaskRef): Task? = mutex.withLock { taskLocked(ref) }
 
     /**
      * Mint the next `local:<n>`, and in ONE transaction insert the `tasks` row, its `backlog_entries` row
      * at [io.kotgent.task.positionForEnd] with state `todo`, and its `created` activity row. Emits the
      * new entry on [taskUpdates].
+     *
+     * The emitted entry is BUILT rather than re-read, and its `blocked` is `false` by construction: an
+     * entry inserted a statement ago can have no dependency edge, so a `selectEntry` round trip could
+     * only answer what is already known here.
      */
-    override suspend fun create(project: ProjectId, title: String, body: String): Task =
-        TODO("Task 7: tracker create")
+    override suspend fun create(project: ProjectId, title: String, body: String): Task = mutex.withLock {
+        val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++localKeyCounter}")
+        val ts = now()
+        val rev = nextRev()
+        db.transaction {
+            // Appending consumes no gap, so this is the one placement that can never need a
+            // renormalization — see `Ordering.kt`. A project with no rows yet answers `null` and takes 1.0.
+            val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
+            tasks.insertTask(ref.value, title, body, ts, ts)
+            backlog.insertEntry(ref.value, project.value, position, TaskState.todo.name, ts, ts, rev)
+            // `text` is deliberately left null: the row records WHEN a task appeared and WHO made it,
+            // while the title lives in `tasks` and is always current there. Snapshotting it into an
+            // append-only feed would invent content the interface never asked for.
+            appendActivityLocked(ref, ActivityKind.created, CREATED_BY, null, null, null, ts)
+            emit(
+                TaskUpdate(
+                    ref = ref,
+                    entry = BacklogEntry(
+                        ref = ref,
+                        project = project,
+                        position = position,
+                        state = TaskState.todo,
+                        blocked = false,
+                        createdAt = ts,
+                        updatedAt = ts,
+                        rev = rev,
+                    ),
+                    rev = rev,
+                ),
+            )
+        }
+        Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
+    }
 
-    override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? =
-        TODO("Task 7: tracker update")
+    /**
+     * A tracker edit: `coalesce` in the statement is what makes a `null` argument mean "leave unchanged"
+     * rather than "clear" (both columns are `NOT NULL`).
+     *
+     * The row that MOVED is `tasks`, so `tasks.updated_at` advances and `backlog_entries.updated_at`
+     * deliberately does not — the entry's rank and state are untouched, and `updated_at` there is the
+     * entry's own activity. What the entry does owe is a fresh `rev` and an emission: the board renders
+     * the title, `TaskUpdate` carries no tracker fields, and the socket re-reads the joined row from the
+     * revision bump. Without it a rename is invisible until a reload.
+     */
+    override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = mutex.withLock {
+        var updated: Task? = null
+        db.transaction {
+            if (!existsLocked(ref)) return@transaction
+            tasks.updateTaskFields(title, body, now(), ref.value)
+            updated = taskLocked(ref)
+            restampAndEmitLocked(ref)
+        }
+        updated
+    }
 
     /**
      * Cascade: the `tasks` row, its `backlog_entries` row, BOTH directions of `backlog_deps` and its
@@ -139,55 +204,114 @@ class SqliteTaskStore private constructor(
      *
      * The `sessions` unlink is deliberately NOT here (it is a `sessions` write, hence
      * [io.kotgent.daemon.TaskService]'s, before this call). Re-stamping the reverse dependents that this
-     * removal unblocked IS here: read them BEFORE the `backlog_deps` rows go away.
+     * removal unblocked IS here: read them BEFORE the `backlog_deps` rows go away, and re-stamp them
+     * AFTER, so the entry each one is re-emitted with carries the `blocked` the deletion just produced
+     * rather than the one the vanished edge used to force.
      */
-    override suspend fun delete(ref: TaskRef): Boolean = TODO("Task 7: tracker delete + cascade")
+    override suspend fun delete(ref: TaskRef): Boolean = mutex.withLock {
+        var removed = false
+        db.transaction {
+            if (!existsLocked(ref)) return@transaction
+            val dependents = dependencies.dependentsOfLocked(ref)
+            backlog.deleteDepsForTask(ref.value, ref.value)
+            backlog.deleteEntry(ref.value)
+            tasks.deleteActivityForTask(ref.value)
+            tasks.deleteTask(ref.value)
+            emit(TaskUpdate(ref, null, nextRev()))
+            for (dependent in dependents) restampAndEmitLocked(dependent)
+            removed = true
+        }
+        removed
+    }
 
     // --- backlog reads (delegated to BacklogDependencies, which owns the derived `blocked`) ---------
 
-    override suspend fun entry(ref: TaskRef): BacklogEntry? = TODO("Task 7: delegate to dependencies")
+    override suspend fun entry(ref: TaskRef): BacklogEntry? = mutex.withLock { dependencies.entryLocked(ref) }
 
     override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> =
-        TODO("Task 7: delegate to dependencies")
+        mutex.withLock { dependencies.listBacklogLocked(project) }
 
     override suspend fun nextCandidate(project: ProjectId): BacklogEntry? =
-        TODO("Task 7: delegate to dependencies")
+        mutex.withLock { dependencies.nextCandidateLocked(project) }
 
     // --- backlog writes ----------------------------------------------------------------------------
 
-    override suspend fun startIfTodo(ref: TaskRef): Boolean = TODO("Task 7: conditional todo -> in_progress")
+    /**
+     * The conditional `todo → in_progress`, answered by the statement's own row count — **zero rows is
+     * normal, not an error**: it means the task was already `in_progress`/`review`/`done` (or is unknown),
+     * and [io.kotgent.daemon.TaskService.link] still makes the session link unconditionally.
+     *
+     * No reverse-dependent re-stamp: a dependent's `blocked` asks whether this task is `done`, and
+     * `todo → in_progress` moves it no closer to that. The entry itself DOES emit — the card changes
+     * column, and its own `blocked` drops to false with the state that carried it.
+     */
+    override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
+        val rev = nextRev()
+        val changed = backlog.startIfTodo(now(), rev, ref.value).value > 0L
+        if (changed) dependencies.entryLocked(ref)?.let { emit(TaskUpdate(ref, it, it.rev)) }
+        changed
+    }
 
+    /**
+     * The state write, its `transition` activity row and the reverse-dependent re-stamp, all inside ONE
+     * transaction — so `kotgent task review -m "…"` cannot leave a review with no explanation or a
+     * comment on an unreviewed task.
+     *
+     * The re-stamp runs AFTER the state write, which is what makes the dependents' recomputed `blocked`
+     * the post-transition one. It runs for EVERY transition, not only for one that reaches or leaves
+     * `done`: a redundant emission is invisible under the client's newest-rev-wins rule, while a missing
+     * one is a stale blocked marker until a reload — the same conservative trade
+     * [BacklogDependencies] makes after a dependency edit.
+     */
     override suspend fun transition(
         ref: TaskRef,
         to: TaskState,
         author: String,
         message: String?,
-    ): BacklogEntry? = TODO("Task 7: state + activity + reverse-dependent re-stamp, one transaction")
+    ): BacklogEntry? = mutex.withLock {
+        val before = dependencies.entryLocked(ref) ?: return@withLock null
+        val ts = now()
+        val rev = nextRev()
+        var after: BacklogEntry? = null
+        db.transaction {
+            backlog.setState(to.name, ts, rev, ref.value)
+            appendActivityLocked(ref, ActivityKind.transition, author, message, before.state, to, ts)
+            // Re-read rather than copy: `blocked` is derived from the state that was just written, and
+            // moving BACK to `todo` can make an entry blocked again.
+            after = dependencies.entryLocked(ref)
+            after?.let { emit(TaskUpdate(ref, it, it.rev)) }
+            dependencies.restampDependentsLocked(ref)
+        }
+        after
+    }
 
-    override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? =
-        TODO("Task 7: delegate to ordering")
+    override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = ordering.move(ref, target)
 
     // --- dependencies (all delegated to BacklogDependencies) ---------------------------------------
 
-    override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = TODO("Task 7: delegate to dependencies")
+    override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
+        mutex.withLock { dependencies.dependenciesOfLocked(ref) }
 
-    override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = TODO("Task 7: delegate to dependencies")
+    override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> =
+        mutex.withLock { dependencies.dependentsOfLocked(ref) }
 
     override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> =
-        TODO("Task 7: delegate to dependencies")
+        mutex.withLock { dependencies.edgesLocked(project) }
 
     override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) {
-        TODO("Task 7: delegate to dependencies")
+        // The collaborator's suspending entry points take the store mutex themselves — taking it here
+        // too would deadlock, a Kotlin Mutex being non-reentrant.
+        dependencies.add(ref, dependsOn)
     }
 
     override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) {
-        TODO("Task 7: delegate to dependencies")
+        dependencies.remove(ref, dependsOn)
     }
 
     // --- activity ----------------------------------------------------------------------------------
 
     override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-        TODO("Task 7: activity append")
+        appendActivity(ref, ActivityKind.comment, author, text)
 
     override suspend fun appendActivity(
         ref: TaskRef,
@@ -196,21 +320,136 @@ class SqliteTaskStore private constructor(
         text: String?,
         fromState: TaskState?,
         toState: TaskState?,
-    ): TaskActivityEntry? = TODO("Task 7: activity append")
+    ): TaskActivityEntry? = mutex.withLock {
+        val ts = now()
+        var appended: TaskActivityEntry? = null
+        db.transaction {
+            if (!existsLocked(ref)) return@transaction
+            appended = appendActivityLocked(ref, kind, author, text, fromState, toState, ts)
+        }
+        appended
+    }
 
-    override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = TODO("Task 7: activity read")
+    /**
+     * The feed, oldest first. Emits nothing: an activity row changes no `backlog_entries` row, and the
+     * feed deliberately does not ride the events socket — the detail view fetches it.
+     */
+    override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = mutex.withLock {
+        tasks.selectActivity(ref.value) { id, taskRef, ts, kind, author, text, fromState, toState ->
+            TaskActivityEntry(
+                id = id,
+                ref = TaskRef(taskRef),
+                ts = ts,
+                kind = ActivityKind.valueOf(kind),
+                author = author,
+                text = text,
+                fromState = fromState?.let(TaskState::valueOf),
+                toState = toState?.let(TaskState::valueOf),
+            )
+        }.executeAsList()
+    }
 
     // --- projects ----------------------------------------------------------------------------------
 
-    override suspend fun upsertProject(id: ProjectId, name: String, path: String?) {
-        TODO("Task 7: project upsert")
+    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Unit = mutex.withLock {
+        // A null `path` is COALESCEd in the statement, so a caller that reached the project by uuid
+        // rather than by walking a directory cannot blank the last-seen checkout.
+        projects.upsertProject(id.value, name, path, now())
     }
 
-    override suspend fun listProjects(): List<ProjectRecord> = TODO("Task 7: project list")
+    /**
+     * Every known project, by name.
+     *
+     * A row whose `id` is not a canonical uuid can only come from a hand edit, and it is DROPPED rather
+     * than thrown out of a read: `ProjectId.parseOrNull` is the declared read-back rule, and a board that
+     * cannot list any project because one row is corrupt is worse than one that cannot list that row.
+     */
+    override suspend fun listProjects(): List<ProjectRecord> = mutex.withLock {
+        // The generated row type rather than a mapper lambda, because a mapper must answer a non-null
+        // value and the whole point here is to drop a row whose id will not parse.
+        projects.selectAllProjects().executeAsList().mapNotNull { row ->
+            ProjectId.parseOrNull(row.id)?.let { ProjectRecord(it, row.name, row.path, row.updated_at) }
+        }
+    }
 
-    override suspend fun project(id: ProjectId): ProjectRecord? = TODO("Task 7: project read")
+    /** One project. The row is addressed BY [id], so the caller's already-normalized value is the row's. */
+    override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock {
+        projects.selectProject(id.value) { _, name, path, updatedAt ->
+            ProjectRecord(id = id, name = name, path = path, updatedAt = updatedAt)
+        }.executeAsOneOrNull()
+    }
+
+    // --- internals ---------------------------------------------------------------------------------
+
+    /** Whether the tracker knows [ref]. The `tasks` row is what a task's existence means here. */
+    private fun existsLocked(ref: TaskRef): Boolean =
+        tasks.selectTask(ref.value) { id, _, _, _, _ -> id }.executeAsOneOrNull() != null
+
+    private fun taskLocked(ref: TaskRef): Task? =
+        tasks.selectTask(ref.value) { _, title, body, _, updatedAt ->
+            Task(ref = ref, title = title, body = body, url = null, updatedAt = updatedAt)
+        }.executeAsOneOrNull()
+
+    /**
+     * Insert one activity row and report it with the id the insert produced.
+     *
+     * **Callers must already be inside a `db.transaction { }`**, and holding [mutex] is necessary but NOT
+     * sufficient: `lastActivityId` is a plain `SELECT last_insert_rowid()`, which the native driver
+     * routes to its `query_only` READER POOL when no transaction is bound to the calling thread — those
+     * connections have never inserted anything, so every row would come back with id `0`. See that
+     * query's comment in `Tasks.sq`; an in-memory database cannot reproduce it, because there the reader
+     * pool IS the transaction pool.
+     */
+    private fun appendActivityLocked(
+        ref: TaskRef,
+        kind: ActivityKind,
+        author: String,
+        text: String?,
+        fromState: TaskState?,
+        toState: TaskState?,
+        ts: Long,
+    ): TaskActivityEntry {
+        tasks.insertActivity(ref.value, ts, kind.name, author, text, fromState?.name, toState?.name)
+        return TaskActivityEntry(
+            id = tasks.lastActivityId().executeAsOne(),
+            ref = ref,
+            ts = ts,
+            kind = kind,
+            author = author,
+            text = text,
+            fromState = fromState,
+            toState = toState,
+        )
+    }
+
+    /**
+     * Stamp one row a fresh rev and emit it — the shape [BacklogDependencies] uses for a reverse
+     * dependent, repeated here because that one is private and this file may not reach into it. The entry
+     * is read BEFORE the write and re-emitted with the new rev: `restamp` touches no other column, so the
+     * copy is exactly what a second `selectEntry` would answer, at one query instead of two. A ref with no
+     * row consumes no revision and emits nothing — a null-entry [TaskUpdate] means DELETED, which a
+     * re-stamp must never manufacture.
+     */
+    private fun restampAndEmitLocked(ref: TaskRef) {
+        val entry = dependencies.entryLocked(ref) ?: return
+        val rev = nextRev()
+        backlog.restamp(rev, ref.value)
+        emit(TaskUpdate(ref, entry.copy(rev = rev), rev))
+    }
 
     companion object {
+        /**
+         * The `author` this store records on a `created` row.
+         *
+         * [io.kotgent.task.TaskTracker.create] takes no author — a tracker's create is `(project, title,
+         * body)` and changing that signature would break every other agent's file — so the only honest
+         * value is the symbolic actor for a change with no session behind it. That actor is spelled
+         * `io.kotgent.daemon.TaskService.BOARD_AUTHOR`, and it is COPIED rather than imported because the
+         * layering runs `daemon → store` and a store reaching back up into the daemon inverts it. The two
+         * spellings are pinned equal by a test in `test/store/TaskStoreTest.kt`, so the copy cannot drift.
+         */
+        const val CREATED_BY: String = "board"
+
         /**
          * Mirrors of the `Tasks.sq` / `Backlog.sq` / `Projects.sq` DDL, for databases created before the
          * task layer existed. Keep in exact step with those files.
