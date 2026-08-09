@@ -1676,34 +1676,29 @@ class WebUiServingTest {
      * × at all. Pin the two pointer gestures the wrapper adds on top of the platform: a press that both
      * starts and ends outside the panel's box, and a downward touch swipe off the grabber.
      *
-     * Attachment is asserted separately from behaviour, and that is the point: every assertion below
-     * greps a handler's BODY, so with the four `onPointer*` attributes deleted the gesture would be
-     * unwired dead code and this test — the invariant is its name — would still have found all of it.
+     * Attachment is asserted separately from behaviour, and that is the point: the behavioural
+     * assertions grep a handler's BODY, so with the five `onPointer*`/`onClick` attributes deleted the
+     * gesture would be unwired dead code and this test — the invariant is its name — would still have
+     * found every line of it. For the same reason each assertion is bounded to the handler it is about:
+     * a file-wide `contains` passes for logic stranded in a function nothing calls.
      */
     @Test
     fun everyDialogIsDismissableWithoutAKeyboard() = withServer { ctx ->
         val dialogs = ctx.get("/components/dialogs.js").bodyAsText()
+        val down = sliceBetween(
+            dialogs, "const pointerDown = (event)", "const pointerMove = (event)", "the press handler",
+        )
+        val move = sliceBetween(
+            dialogs, "const pointerMove = (event)", "const pointerUp = (event)", "the swipe's move handler",
+        )
+        val up = sliceBetween(
+            dialogs, "const pointerUp = (event)", "const pointerCancel = (event)", "the release handler",
+        )
+        val cancel = sliceBetween(
+            dialogs, "const pointerCancel = (event)", "const click = (event)", "the cancel handler",
+        )
+        val clicked = sliceBetween(dialogs, "const click = (event)", "return html`", "the click handler")
 
-        // Both halves of the press are checked, and against the panel's GEOMETRY rather than the target
-        // alone: a drag that started inside (selecting a path) and a click a native <select> popup lets
-        // through both surface as a click on the <dialog> itself.
-        assertTrue(
-            dialogs.contains("event.target !== el") &&
-                dialogs.contains("el.getBoundingClientRect()") &&
-                dialogs.contains("const outsidePress = useRef(null)") &&
-                dialogs.contains("if (!wasOutside || !lightDismiss || !outside(event)) return"),
-            "a press outside the panel closes it only when its press and its click both land there",
-        )
-        // Only the button that can produce a `click` may arm one, and the press has to RELEASE outside
-        // too: a secondary-button press answers with `contextmenu`, so an arm it left behind would be
-        // spent by some later drag out of the panel — the false close this pairing exists to prevent.
-        assertTrue(
-            dialogs.contains("if (event.button === 0) outsidePress.current = isOutside ? event.pointerId : null;") &&
-                dialogs.contains(
-                    "if (outsidePress.current === event.pointerId && !outside(event)) outsidePress.current = null;",
-                ),
-            "an outside press arms the dismissal only when it can produce a click and ends where it began",
-        )
         for (attribute in listOf(
             "onPointerDown=\${pointerDown}",
             "onPointerMove=\${pointerMove}",
@@ -1714,22 +1709,47 @@ class WebUiServingTest {
             assertTrue(dialogs.contains(attribute), "the wrapper binds $attribute, not just declares it")
         }
 
+        // Outside-ness is the panel's GEOMETRY, not the event's target alone: a drag that started inside
+        // (selecting a path) and a click a native <select> popup lets through both surface as a click on
+        // the <dialog> itself.
+        assertTrue(
+            dialogs.contains("event.target !== el") && dialogs.contains("el.getBoundingClientRect()"),
+            "a press outside is decided by the panel's box, not by which element reported the event",
+        )
+        // A dismiss is a POSITIVELY COMPLETED down → up → click transaction by ONE pointer. Only the
+        // button that can produce a click arms it — a secondary press answers with `contextmenu`, and an
+        // arm it left behind would be spent by a later drag OUT of the panel — and `released` is what
+        // stops a finger merely HOLDING the backdrop from authorizing a different pointer's click.
+        assertTrue(
+            down.contains("if (event.button === 0) {") &&
+                down.contains("{ pointerId: event.pointerId, released: false }"),
+            "only a primary press, and only one that began outside the panel, arms a dismissal",
+        )
+        assertTrue(
+            up.contains("press.pointerId === event.pointerId") &&
+                up.contains("if (outside(event)) press.released = true;") &&
+                up.contains("else outsidePress.current = null;"),
+            "the arming pointer completes its press outside, or withdraws it by releasing inside",
+        )
+        assertTrue(
+            clicked.contains("!press.released") &&
+                clicked.contains("event.pointerId !== press.pointerId"),
+            "an unfinished press authorizes nothing, and a named click pointer has to be the one that pressed",
+        )
+
         // The grabber is the ONLY handle. `dialog:modal` makes an overflowing dialog its own scroller, so
         // reserving the head with `touch-action: none` would make panning the sheet by its title dead.
         assertTrue(
-            dialogs.contains("event.pointerType !== \"touch\"") &&
-                dialogs.contains("from.closest(\".dialog-grabber\")") &&
+            down.contains("event.pointerType !== \"touch\"") &&
+                down.contains("from.closest(\".dialog-grabber\")") &&
                 !dialogs.contains(".dialog-grabber, .dialog-head"),
             "a swipe starts only from a touch pointer on the grabber, never on the scrollable head",
         )
         assertTrue(
-            dialogs.contains("if (dragRef.current) return;"),
+            down.contains("if (dragRef.current) return;"),
             "one finger owns the swipe: a second contact cannot restart it under a new id",
         )
 
-        val move = sliceBetween(
-            dialogs, "const pointerMove = (event)", "const pointerUp = (event)", "the swipe's move handler",
-        )
         val slopAt = move.indexOf("if (travel < SWIPE_SLOP_PX")
         val captureAt = move.indexOf("el.setPointerCapture(event.pointerId)")
         assertTrue(
@@ -1745,24 +1765,26 @@ class WebUiServingTest {
             "a speed sample spanning a dwell is not a measurement of the flick that ended it",
         )
 
-        val up = sliceBetween(
-            dialogs, "const pointerUp = (event)", "const pointerCancel = (event)", "the release handler",
-        )
         val identityAt = up.indexOf("event.pointerId !== drag.pointerId")
         val clearAt = up.indexOf("dragRef.current = null")
         assertTrue(
             identityAt >= 0 && clearAt > identityAt,
             "another finger's release is not this drag's end: identity is checked before the ref is cleared",
         )
+        // The release carries a position of its own, and a browser need not precede it with a
+        // `pointermove` — so it is the final sample, not a bystander. Reading only the last move let a
+        // swipe that reversed and lifted dismiss on the reading from before the reversal.
         assertTrue(
-            up.contains("event.timeStamp - drag.lastAt > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity") &&
-                up.contains("drag.travel > SWIPE_DISMISS_PX || flicked"),
-            "a long drag or a still-moving flick dismisses; a rested finger and anything shorter spring back",
+            up.contains("const travel = Math.max(0, event.clientY - drag.startY);") &&
+                up.contains("event.clientY === drag.lastY") &&
+                up.contains("elapsed > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity"),
+            "the release position decides the dismissal; a rested finger only ages the sample before it",
+        )
+        assertTrue(
+            up.contains("travel > SWIPE_DISMISS_PX || flicked"),
+            "a long drag or a still-moving flick dismisses; anything shorter springs back",
         )
 
-        val cancel = sliceBetween(
-            dialogs, "const pointerCancel = (event)", "const click = (event)", "the cancel handler",
-        )
         assertTrue(
             !cancel.contains("el.close()") && cancel.contains("springBack(el, event.pointerId)"),
             "a gesture the platform took away springs back — a cancel is not a release and never dismisses",
@@ -1784,8 +1806,7 @@ class WebUiServingTest {
             "the upload screen opts out of light dismiss for exactly as long as it is working",
         )
         assertTrue(
-            up.contains("if (!lightDismiss) {") &&
-                dialogs.contains("if (!wasOutside || !lightDismiss || !outside(event)) return;"),
+            up.contains("if (!lightDismiss) {") && clicked.contains("!lightDismiss"),
             "both completion paths — the swipe's release and the outside click — honour the opt-out",
         )
         assertTrue(
@@ -1819,12 +1840,14 @@ class WebUiServingTest {
         assertTrue(coarseAt > 0, "the coarse-pointer block exists")
         // A media query carries no extra specificity, so the compensation below wins on SOURCE ORDER
         // alone: written above the forms' own `padding` shorthands it computes to nothing at all, and
-        // a phone would pay the grabber's height twice over while the rule looked present.
-        assertTrue(
-            coarseAt > css.indexOf("#phone-form { padding: 20px; }") &&
-                coarseAt > css.indexOf("#help-form {"),
-            "the coarse-pointer overrides come after every base `padding` they have to beat",
-        )
+        // a phone would pay the grabber's height twice over while the rule looked present. Each base
+        // declaration is located first, so a renamed or deleted one fails here instead of reading as
+        // correctly ordered on `indexOf`'s -1.
+        for (base in listOf("#phone-form { padding: 20px; }", "#help-form {", ".command-palette-shell {")) {
+            val baseAt = css.indexOf(base)
+            assertTrue(baseAt > 0, "the stylesheet still declares the base padding for `$base`")
+            assertTrue(coarseAt > baseAt, "the coarse-pointer overrides come after `$base`, which they beat")
+        }
         val coarse = sliceBetween(
             css, "@media (any-pointer: coarse) {", "\n}\n", "the coarse-pointer block",
         )
@@ -1833,6 +1856,11 @@ class WebUiServingTest {
                 coarse.contains("touch-action: none;"),
             "a coarse pointer gets the handle and its reservation, whatever the viewport width",
         )
+        // Every panel that draws the handle also gives its height back — one missing id is 20px of a
+        // phone's dialog spent on nothing.
+        for (form in listOf("#new-session-form", "#upload-form", "#prefs-form", "#phone-form", "#help-form")) {
+            assertTrue(coarse.contains(form), "$form compensates for the handle's height")
+        }
         assertTrue(
             coarse.contains("#help-form { padding-top: 10px; }") &&
                 coarse.contains(".command-palette-shell { padding-top: 2px; }"),

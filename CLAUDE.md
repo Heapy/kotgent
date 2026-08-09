@@ -640,12 +640,17 @@ modal was closable only from a keyboard or its own ×, and the command palette, 
 re-implement either per dialog. **A press outside is checked against the panel's GEOMETRY, and both halves
 must land there** — a press on the backdrop reports its target as the `<dialog>` itself, but so does a drag
 that started on the panel and a click a native `<select>` popup lets through, so `pointerdown` and `click`
-are paired and each is tested against `getBoundingClientRect()`. The arming record is **one slot holding the
-most recent PRIMARY press's `pointerId`**, and the pointer must also RELEASE outside. A *set* of votes was
-tried and is worse than a flag: a press that answers with no `click` at all (a secondary button reports
-`contextmenu`/`auxclick`) stays armed, and the next drag out of the panel spends it — closing a dialog from
-a gesture that began inside it, the exact false close the pairing exists to prevent. The accepted cost is
-the opposite error, worth one tap: a second contact landing inside disarms a pending backdrop press.
+are paired and each is tested against `getBoundingClientRect()`. **A dismiss is a positively completed
+down → up → click transaction by ONE pointer**, and every word of that was paid for. The record is one slot
+(`{ pointerId, released }`) armed only by a press of the primary BUTTON — `event.button === 0`, not
+`isPrimary`; every touch and pen contact reports 0 — because a press that answers with no `click` at all (a
+secondary button reports `contextmenu`/`auxclick`) would stay armed until the next drag OUT of the panel
+spent it, closing a dialog from a gesture that began inside it. A *set* of votes was tried and is worse than
+a flag for exactly that reason. `released` is the other half: without it a finger merely HOLDING the backdrop
+authorized a mouse's click, since only the arming pointer's own release may complete (outside) or withdraw
+(inside) the press. `click` additionally matches `event.pointerId` when the platform names one — Pointer
+Events makes `click` a `PointerEvent` — but that is belt to `released`'s braces, not the guarantee. The
+accepted cost is the opposite error, worth one tap: a second contact landing inside disarms a pending press.
 
 **A swipe starts only from a touch pointer on `.dialog-grabber`** — the head is deliberately NOT a handle.
 `dialog:modal`'s UA rule makes an overflowing `<dialog>` its own scroller with the head as its first child, so
@@ -653,7 +658,12 @@ the `touch-action: none` a swipe needs would turn "pan the sheet by its title" i
 fields of a long form out of reach. The grabber scrolls nothing, so reserving it costs nothing. Its box is
 scoped by **`@media (any-pointer: coarse)`, not by viewport width**: the gesture only exists for a touch
 pointer, and the old `max-width: 720px` ink left the palette — the one dialog with no head, i.e. the one with
-no other handle — unswipeable on every tablet, the exact device the reservation was written for. The same
+no other handle — unswipeable on every tablet, the exact device the reservation was written for. The query
+asks about pointer ACCURACY, not touch capability, so the two sides do not coincide exactly: a touch laptop
+matches it even though it also has a mouse (intended — its touchscreen really can swipe), while a device that
+is coarse without being touch would draw a handle the JS then refuses, since `pointerdown` still requires
+`pointerType === "touch"`. Drawing an unused 20 px strip is the safe direction; `pointer: coarse` would take
+the working affordance away from the hybrid laptop instead. The same
 query gives the palette's × a 44 px box: it sits ~16 px above an option row whose tap RUNS a command, so a
 thumb that misses the desktop-sized × hits Interrupt. **That block must stay BELOW every dialog's own
 `padding` shorthand in `style.css`** — a media query adds no specificity, so its `padding-top` compensation
@@ -661,14 +671,18 @@ for the handle's height wins on source order alone; written up beside the base `
 computes to nothing while looking present, and the phone pays the handle's height twice.
 
 **Every rule in the gesture fails toward KEEPING the dialog**, because what a dialog holds is unsaved and
-local. The pointer is captured only after a downward slop (8 px) that also has to beat the horizontal travel
-(a sweep across the sheet is not a dismissal however far it drifts); `pointerup` checks the pointer id
-**before** clearing `dragRef` (clearing first let any second finger's release abandon a live swipe and strand
-the panel under its transform); `pointercancel` has its **own** handler that springs back — a gesture the
-platform took away is not a release, and evaluating distance there closed dialogs on an incoming call; and a
-flick counts only while its speed sample is fresh (`SWIPE_FLICK_HANDOFF_MS`, 90 ms, the same handoff
-`installSwipeScroll` measured), because a stationary contact emits no `pointermove` and the last sample would
-otherwise stand for however long the finger then rested. The spring-back reads `prefers-reduced-motion` **in
+local. The pointer is captured only after a downward slop (8 px) that also has to beat the horizontal travel,
+so a sweep across the sheet cannot claim the gesture by drifting past the slop — that test is a direction
+LOCK at claim time, the way a native sheet behaves, and a claimed gesture is not re-judged afterwards.
+`pointerup` checks the pointer id **before** clearing `dragRef` (clearing first let any second finger's
+release abandon a live swipe and strand the panel under its transform); `pointercancel` has its **own**
+handler that springs back — a gesture the platform took away is not a release, and evaluating distance there
+closed dialogs on an incoming call; the release POSITION is the final sample rather than a bystander, since a
+browser need not precede `pointerup` with a `pointermove` and reading only the last move let a swipe that
+reversed and lifted dismiss on the reading from before the reversal; and a flick counts only while its speed
+sample is fresh (`SWIPE_FLICK_HANDOFF_MS`, 90 ms, the same handoff `installSwipeScroll` measured), because a
+stationary contact emits no `pointermove` and the last sample would otherwise stand for however long the
+finger then rested. The spring-back reads `prefers-reduced-motion` **in
 JS**: it is an inline style, so it outranks the stylesheet and `#sidebar`'s media-query remedy cannot reach it.
 A screen with work in flight opts out of both gestures with **`lightDismiss`** (`UploadFilesDialog` passes
 `!busy`: unmounting aborts the request and the loop returns before it can name which files landed). The flag

@@ -62,13 +62,16 @@ function prefersReducedMotion() {
 
 export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
   const ref = useRef(null);
-  // The pointer whose press began outside the panel, or null. ONE slot, held by the most recent
-  // PRIMARY press: a set of votes is worse than a flag here, because a press that answers with no
-  // `click` at all (a secondary button reports `contextmenu`/`auxclick`) would stay armed until some
-  // later drag OUT of the panel spent it — the very false close this pairing exists to prevent. So
-  // only the button that can produce a click arms it, every later press replaces it, and the pointer
-  // has to release outside too. The cost is a false negative that costs one tap: a second contact
-  // landing inside disarms a pending backdrop press.
+  // The one press that may authorize a light dismiss: `{ pointerId, released }`, or null.
+  //
+  // A dismiss is a POSITIVELY COMPLETED down → up → click transaction by ONE pointer, and each part
+  // of that is load-bearing. A set of votes is worse than a flag: a press that answers with no
+  // `click` at all (a secondary button reports `contextmenu`/`auxclick`) stays armed until a later
+  // drag OUT of the panel spends it — the very false close this pairing exists to prevent. Hence
+  // `event.button === 0` (the primary BUTTON, not `isPrimary`: every touch and pen contact reports
+  // 0), one slot that each later press replaces, and `released`, which is what stops a pointer that
+  // is still down from authorizing a DIFFERENT pointer's click. The cost is a false negative worth
+  // one tap: a second contact landing inside disarms a pending backdrop press.
   const outsidePress = useRef(null);
   const dragRef = useRef(null);
 
@@ -108,7 +111,9 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     // The bookkeeping runs whatever `lightDismiss` says, so a press made while a screen was busy
     // cannot survive as a stale arm and dismiss it later; only the CLOSING is gated.
     const isOutside = outside(event);
-    if (event.button === 0) outsidePress.current = isOutside ? event.pointerId : null;
+    if (event.button === 0) {
+      outsidePress.current = isOutside ? { pointerId: event.pointerId, released: false } : null;
+    }
     if (isOutside || !lightDismiss || event.pointerType !== "touch") return;
     // One finger owns the swipe. A second contact must not restart it under a new id, or the release
     // of the first would find a drag it does not own and leave the panel translated.
@@ -162,8 +167,14 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const pointerUp = (event) => {
-    // A press that began outside but released INSIDE is a drag onto the panel, not a backdrop press.
-    if (outsidePress.current === event.pointerId && !outside(event)) outsidePress.current = null;
+    // Only the pointer that armed the press can complete or withdraw it: a release outside completes
+    // it, a release INSIDE is a drag onto the panel and withdraws it, and another pointer's release
+    // is neither. Without this, a finger merely HOLDING the backdrop authorized a mouse's click.
+    const press = outsidePress.current;
+    if (press && press.pointerId === event.pointerId) {
+      if (outside(event)) press.released = true;
+      else outsidePress.current = null;
+    }
     const drag = dragRef.current;
     const el = ref.current;
     // Identity is checked BEFORE the ref is cleared: another finger's release is not this drag's end,
@@ -177,9 +188,19 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
       springBack(el, event.pointerId);
       return;
     }
-    const velocity = event.timeStamp - drag.lastAt > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity;
-    const flicked = drag.travel > SWIPE_FLICK_PX && velocity > SWIPE_FLICK_VELOCITY;
-    if (drag.travel > SWIPE_DISMISS_PX || flicked) {
+    // The release carries a position of its own and a browser need not precede it with a
+    // `pointermove`, so it is folded in as the final sample: a swipe that reverses and lifts must not
+    // dismiss on the reading from before the reversal. A release that moved nowhere leaves the last
+    // sample standing, aged; anything else is measured from the release itself.
+    const travel = Math.max(0, event.clientY - drag.startY);
+    const elapsed = event.timeStamp - drag.lastAt;
+    const velocity = event.clientY === drag.lastY
+      ? (elapsed > SWIPE_FLICK_HANDOFF_MS ? 0 : drag.velocity)
+      : (elapsed > 0 && elapsed <= SWIPE_FLICK_HANDOFF_MS
+        ? (event.clientY - drag.lastY) / elapsed
+        : 0);
+    const flicked = travel > SWIPE_FLICK_PX && velocity > SWIPE_FLICK_VELOCITY;
+    if (travel > SWIPE_DISMISS_PX || flicked) {
       if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
       el.close();
       return;
@@ -191,7 +212,8 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   // call), never a release. It shares nothing with `pointerUp` but the cleanup: evaluating distance
   // here would close a dialog on an interruption the operator did not perform.
   const pointerCancel = (event) => {
-    if (outsidePress.current === event.pointerId) outsidePress.current = null;
+    const press = outsidePress.current;
+    if (press && press.pointerId === event.pointerId) outsidePress.current = null;
     const drag = dragRef.current;
     const el = ref.current;
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
@@ -201,9 +223,13 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const click = (event) => {
-    const wasOutside = outsidePress.current !== null;
+    const press = outsidePress.current;
     outsidePress.current = null;
-    if (!wasOutside || !lightDismiss || !outside(event)) return;
+    if (!press || !press.released || !lightDismiss || !outside(event)) return;
+    // Pointer Events makes `click` a PointerEvent, so where the platform names the pointer that
+    // produced it, it has to be the one that pressed. Where it does not, `released` above is the
+    // whole guarantee — hence that flag rather than this check being the load-bearing half.
+    if (typeof event.pointerId === "number" && event.pointerId !== press.pointerId) return;
     if (ref.current) ref.current.close();
   };
 
