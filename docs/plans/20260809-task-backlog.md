@@ -1164,16 +1164,16 @@ keep their numbers.*
 ### Task 4: Project file creation
 **Owns:** `src/task/ProjectFileWriter.kt`, `schema/project.v1.json`, `test/task/ProjectFileWriterTest.kt`
 
-- [ ] `mkstemp` sibling → write → `fsync` → `chmod` to `0666 & ~umask` → `link(2)`, unlinking the temp on
+- [x] `mkstemp` sibling → write → `fsync` → `chmod` to `0666 & ~umask` → `link(2)`, unlinking the temp on
       every path including success (mirror `FileUploadRoutes.kt:185-273`); `EEXIST` re-reads and returns the
       existing descriptor; a relative or non-directory target is a typed error
-- [ ] mint the fresh uuid with **`ProjectId.mint(random)`** (`src/core/Ids.kt`) — see the ➕ note below.
+- [x] mint the fresh uuid with **`ProjectId.mint(random)`** (`src/core/Ids.kt`) — see the ➕ note below.
       Inject the source into `PosixProjectFileWriter` as a defaulted constructor parameter
       (`newId: () -> ProjectId = { ProjectId.mint() }`) so your test is deterministic; a default keeps
       the no-argument construction Task 2 declared and `Commands.kt` performs
-- [ ] `schema/project.v1.json`: `{$schema, id, name}`, uuid pattern, `maxLength: 100`,
+- [x] `schema/project.v1.json`: `{$schema, id, name}`, uuid pattern, `maxLength: 100`,
       `additionalProperties: false`
-- [ ] tests: shape and mode; a second call returns the first call's id; a pre-created target keeps its
+- [x] tests: shape and mode; a second call returns the first call's id; a pre-created target keeps its
       content; relative and non-directory targets refused; no temp survives any branch
 
 ➕ **The uuid minter moved to `src/core/Ids.kt` before this task could start, and the decision is
@@ -1202,10 +1202,10 @@ uuid itself, only that its writer persists the one it was handed.
 ### Task 7: Task store core
 **Owns:** `src/store/SqliteTaskStore.kt`, `test/store/TaskStoreTest.kt`
 
-- [ ] fill the tracker CRUD, activity append/read, project upsert/list, and `taskUpdates` emission; `delete`
+- [x] fill the tracker CRUD, activity append/read, project upsert/list, and `taskUpdates` emission; `delete`
       cascades to `backlog_entries`, `backlog_deps` (both directions) and `task_activity` in one transaction
       and emits a null-entry `TaskUpdate`. The `sessions` unlink is **not** here — it is Task 11's
-- [ ] **`startIfTodo` and `transition` are yours as well**, and neither was named by the two bullets
+- [x] **`startIfTodo` and `transition` are yours as well**, and neither was named by the two bullets
       around them until a readiness re-check noticed the gap. `startIfTodo` is the conditional
       `todo → in_progress` (`Backlog.sq:142`) whose **zero-row answer is normal, not an error** — the
       whole selection convention rests on that, so return the row count as a Boolean and let
@@ -1214,7 +1214,7 @@ uuid itself, only that its writer persists the one it was handed.
       ONE `db.transaction { }` (so a review can never commit without its explanation), with
       `lastActivityId` read inside that same transaction per the bullet below, and the re-stamp
       delegating to `dependencies.restampDependentsLocked` — Task 9's code, real by the time you start
-- [ ] **the nine delegating members are yours too.** `SqliteTaskStore.kt` carries nine `TODO()`s whose
+- [x] **the nine delegating members are yours too.** `SqliteTaskStore.kt` carries nine `TODO()`s whose
       messages name Tasks 8 and 9 (`entry`, `listBacklog`, `nextCandidate`, `move`, `dependenciesOf`,
       `dependentsOf`, `dependencyEdges`, `addDependency`, `removeDependency`). Those tasks own
       `BacklogOrdering.kt` / `BacklogDependencies.kt` and may not touch this file, so nobody but you can
@@ -1225,82 +1225,82 @@ uuid itself, only that its writer persists the one it was handed.
       `dependencies`, which is REAL in your worktree (Task 9 shipped in wave 1.5); only `move` delegates
       to `BacklogOrdering`, which Task 8 is filling beside you — so `move` is the one member you wire
       without being able to exercise it, and it is deliberately absent from your test list below
-- [ ] `lastActivityId` (`Tasks.sq`) must be read inside the **same `db.transaction { }`** as the
+- [x] `lastActivityId` (`Tasks.sq`) must be read inside the **same `db.transaction { }`** as the
       `insertActivity` whose id it reports — not merely under the mutex. See that query's comment: outside
       a transaction the native driver answers it from a `query_only` reader connection and returns `0`, and
       an in-memory store cannot reproduce it because there the reader pool *is* the transaction pool
-- [ ] tests: create → get; update bumps `rev` and emits; delete removes everything and emits; activity is
+- [x] tests: create → get; update bumps `rev` and emits; delete removes everything and emits; activity is
       ordered and append-only **with non-zero ids**; project upsert refreshes name and path; re-open resumes
       `revCounter`; opening over a database missing the tables recreates them without logging an error
 
 ### Task 8: Backlog ordering
 **Owns:** `src/store/BacklogOrdering.kt`, `test/store/BacklogOrderingTest.kt`
 
-- [ ] `move` for top/bottom/before/after inside the store mutex; on a collapsed gap, renormalize the
+- [x] `move` for top/bottom/before/after inside the store mutex; on a collapsed gap, renormalize the
       project's column in one transaction and retry once; **every** renormalized row stamps a new `rev` and
       emits
-- [ ] the arithmetic is `src/task/Ordering.kt`'s, implemented in wave 1.5 — call it, do not re-derive it.
+- [x] the arithmetic is `src/task/Ordering.kt`'s, implemented in wave 1.5 — call it, do not re-derive it.
       `SqliteTaskStore.move` is a one-line delegation to your class and is Task 7's line, not yours
-- [ ] the `BacklogDependencies` your constructor already receives is **real** (Task 9, wave 1.5), so the
+- [x] the `BacklogDependencies` your constructor already receives is **real** (Task 9, wave 1.5), so the
       `blocked` on every entry you emit comes from it — do not grow a second copy of that rule here, and
       do not stub the collaborator out in your test: construct the real one over the same queries
-- [ ] tests: each move produces the expected order; 60 consecutive midpoint inserts between one pair still
+- [x] tests: each move produces the expected order; 60 consecutive midpoint inserts between one pair still
       yield a strictly ordered list; a renormalization bumps and emits for every row
 
 ### Task 10: Session link columns
 **Owns:** `src/store/SqliteEventStore.kt`, `test/store/EventStoreTaskLinkTest.kt`
 
-- [ ] implement `setTaskRef` (nullable, so it can clear), `setProjectId`, `sessionsHoldingTask`, and carry
+- [x] implement `setTaskRef` (nullable, so it can clear), `setProjectId`, `sessionsHoldingTask`, and carry
       `taskRef`/`projectId` through `toMeta`, `upsertSession` and the emitted `SessionUpdate`
-- [ ] tests: `setTaskRef` leaves `state`/`last_seq`/`provider_session_id` alone, bumps `rev` and emits with
+- [x] tests: `setTaskRef` leaves `state`/`last_seq`/`provider_session_id` alone, bumps `rev` and emits with
       the new ref; a full-row `upsert` carrying a null `task_ref` does **not** clear an existing link; open
       over a pre-`task_ref` schema and re-open over the migrated one
 
 ### Task 12: Project resolution in the daemon
 **Owns:** `src/daemon/SessionManager.kt`, `src/daemon/Reconciler.kt`, `test/daemon/TaskProjectWiringTest.kt`
 
-- [ ] resolve the project at `start` and `importSession` from the canonicalized cwd, persist `project_id`,
+- [x] resolve the project at `start` and `importSession` from the canonicalized cwd, persist `project_id`,
       upsert the `projects` row; backfill `project_id` during startup reconciliation; clear a
       `sessions.task_ref` naming a task no longer in `backlog_entries`
-- [ ] **nothing else about tasks is reconciled**: an `in_progress` entry with no linked session is
+- [x] **nothing else about tasks is reconciled**: an `in_progress` entry with no linked session is
       legitimate (a human dragged the card), so there is nothing to recover
-- [ ] `resolveProject` / `mainCheckoutRoot` come from `src/task/ProjectFile.kt` (wave 1.5) and are real by
+- [x] `resolveProject` / `mainCheckoutRoot` come from `src/task/ProjectFile.kt` (wave 1.5) and are real by
       the time you start; you own neither that file nor the `ProjectFs` interface
-- [ ] tests with a fake `ProjectFs`: a session in a project gets its id and creates the row; outside one it
+- [x] tests with a fake `ProjectFs`: a session in a project gets its id and creates the row; outside one it
       is null; two worktrees of one repository agree; a dangling `task_ref` is cleared and a valid one is
       not; an `in_progress` entry with no session survives untouched
 
 ### Task 13: Read routes and `/whoami`
 **Owns:** `src/transport/TaskReadRoutes.kt`, `test/transport/TaskReadRoutesTest.kt`
 
-- [ ] `GET /whoami` (pane → session through the registry; unresolvable → `400` naming `--session`),
+- [x] `GET /whoami` (pane → session through the registry; unresolvable → `400` naming `--session`),
       `GET /tasks?project=`, `GET /tasks/{ref}`, `GET /projects`
-- [ ] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
+- [x] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
       `TaskActivityEntry.toDto`, `SessionMeta.toLinkedSessionDto`). Use them; declaring your own in this
       file collides with Tasks 14/15/16 at merge, because an extension function is package-level
-- [ ] tests: the list is ordered by position and carries `blocked`; detail carries deps, linked sessions,
+- [x] tests: the list is ordered by position and carries `blocked`; detail carries deps, linked sessions,
       activity and the project path; unknown ref `404`, malformed ref `400`; all require authentication
 
 ### Task 14: Write routes
 **Owns:** `src/transport/TaskWriteRoutes.kt`, `test/transport/TaskWriteRoutesTest.kt`
 
-- [ ] `POST /tasks` with the project-resolution order **in that order** (explicit `project` → the session's
+- [x] `POST /tasks` with the project-resolution order **in that order** (explicit `project` → the session's
       `project_id` → `resolveProject(session cwd)` → create the file → `400` naming `--project` only when no
       session resolves at all); `PATCH /tasks/{ref}` (title/body/state, with an optional message on a state
       change so `task review -m` is one operation); `DELETE`; `POST /tasks/{ref}/{move,deps,comment}`;
       `POST /projects`
-- [ ] `resolveProject` / `mainCheckoutRoot` (`src/task/ProjectFile.kt`) are real by the time you start —
+- [x] `resolveProject` / `mainCheckoutRoot` (`src/task/ProjectFile.kt`) are real by the time you start —
       wave 1.5 — and you reach the filesystem and the writer through `routing.service.projectFs` /
       `.projectFiles`, which `TaskService` carries for exactly this reason
-- [ ] `TaskRouting.service` is the concrete `TaskService`, not an interface, so your test constructs the
+- [x] `TaskRouting.service` is the concrete `TaskService`, not an interface, so your test constructs the
       **real** one over fake stores. Its bodies are real too (Task 11 moved to wave 1.5 for exactly this
       reason): `PATCH …/{ref}` with a state change is `service.transition` and `DELETE` is
       `service.delete`. `ProjectFileWriter` **is** an interface — fake it; Task 4 is filling
       `PosixProjectFileWriter` beside you and you must not depend on its body
-- [ ] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
+- [x] the DTO mappers are already in `TaskDtos.kt` (`BacklogEntry.toDto`, `ProjectRecord.toDto`,
       `TaskActivityEntry.toDto`, `SessionMeta.toLinkedSessionDto`). Use them; declaring your own in this
       file collides with Tasks 13/15/16 at merge
-- [ ] tests: create with an explicit project and **no pane header** (the board's path); create from a pane
+- [x] tests: create with an explicit project and **no pane header** (the board's path); create from a pane
       whose session has a project; create from a pane in a projectless directory creates the file and the
       `projects` row rather than `400`ing; create with neither is `400`; a state change with a message writes
       exactly one activity row; the four dependency `400`s; a delete unlinks every holder
@@ -1309,19 +1309,19 @@ uuid itself, only that its writer persists the one it was handed.
 **Owns:** `src/transport/TaskLinkRoutes.kt`, `src/transport/ControlRoutes.kt`, `src/cli/Commands.kt`,
 `test/transport/TaskLinkRoutesTest.kt`
 
-- [ ] `POST /tasks/{ref}/link`, `…/unlink`, `POST /tasks/next` (optional `project`, defaulting to the
+- [x] `POST /tasks/{ref}/link`, `…/unlink`, `POST /tasks/next` (optional `project`, defaulting to the
       session's) — all three **require** session identity
-- [ ] honour `StartSessionRequest.taskRef` in `ControlRoutes.kt`'s `POST /sessions`: parse it with
+- [x] honour `StartSessionRequest.taskRef` in `ControlRoutes.kt`'s `POST /sessions`: parse it with
       `TaskRef.parseOrNull` (`400` on a malformed ref), start the session, then link through the
       `taskService` the route now receives — so `start --task` is one call with nothing to roll back. When
       `taskService` is `null` (a daemon with no task layer) a request carrying a `taskRef` is `400`: refuse
       the link rather than starting the session and dropping it silently
-- [ ] answer "nothing eligible" from `next` distinguishably from every error, so the CLI can map exit `3`
-- [ ] `TaskRouting.service` is the concrete `TaskService`, not an interface, so your test constructs the
+- [x] answer "nothing eligible" from `next` distinguishably from every error, so the CLI can map exit `3`
+- [x] `TaskRouting.service` is the concrete `TaskService`, not an interface, so your test constructs the
       **real** one over fake stores; its `link` / `unlink` / `linkNext` bodies are real (Task 11 moved to
       wave 1.5 for exactly this reason). That is also what makes the contention test meaningful: the
       conditional `todo → in_progress` it relies on is the service's, not a stub's
-- [ ] tests: two sessions link one task and both appear in the detail; a link from an unknown pane is
+- [x] tests: two sessions link one task and both appear in the detail; a link from an unknown pane is
       refused rather than silently attributed; `next` under contention hands out two different tasks;
       `next` with nothing eligible is not an error status; `POST /sessions` with a `taskRef` returns a
       session already carrying it; `POST /sessions` with a `taskRef` against a task-less server is `400`
@@ -1337,16 +1337,16 @@ uuid itself, only that its writer persists the one it was handed.
 ### Task 16: Task frames on the events socket
 **Owns:** `src/transport/EventsWs.kt`, `test/transport/TaskEventsTest.kt`
 
-- [ ] collect `taskStore.taskUpdates` in its own `launch` with its **own** `.onSubscription { }`, which
+- [x] collect `taskStore.taskUpdates` in its own `launch` with its **own** `.onSubscription { }`, which
       *reads* the snapshot and queues it to the existing sequential sender as the first item — it must not
       `send` from there, or a burst larger than the 1024-entry buffer (one renormalization of a large
       project) is dropped before collection begins
-- [ ] extend the conflating sender to bank by `TaskRef`, keeping "only a delivered row marks the ref as
+- [x] extend the conflating sender to bank by `TaskRef`, keeping "only a delivered row marks the ref as
       carried"; a null-entry `TaskUpdate` becomes `task_removed` and clears the mark; skip the whole branch
       when the server has no task store
-- [ ] the DTO mappers are already in `TaskDtos.kt`; use them rather than declaring another
+- [x] the DTO mappers are already in `TaskDtos.kt`; use them rather than declaring another
       `BacklogEntry.toDto` in this file, which would collide with Tasks 13/14/15 at merge
-- [ ] **pin the four new discriminators in `TaskEventsTest.kt`** — `tasks_snapshot`, `task_row`,
+- [x] **pin the four new discriminators in `TaskEventsTest.kt`** — `tasks_snapshot`, `task_row`,
       `task_update`, `task_removed` — by encoding each through `EventsFrame.serializer()` and reading
       `type` back off the JSON, the `everyGlobalFrameKindCarriesTheTypeDiscriminator` shape
       (`TransportTest.kt:310`). Copy the assertion into your own file rather than extending that one:
@@ -1354,50 +1354,50 @@ uuid itself, only that its writer persists the one it was handed.
       kinds ship **unasserted**, which is precisely the regression the invariant exists to catch — a send
       site that reaches for a concrete `X.serializer()` emits a type-less frame every client silently
       drops, and no other test in this plan would notice
-- [ ] tests: a link arrives as a patch; a task created after connect arrives as a full row first; a delete
+- [x] tests: a link arrives as a patch; a task created after connect arrives as a full row first; a delete
       arrives as `task_removed`; a renormalization reaches the socket; a burst during the baseline is not lost
 
 ### Task 17: SPA route grammar
 **Owns:** `src/transport/WebUiAssets.kt`, `test/transport/SpaRoutingTest.kt`
 
-- [ ] implement `isSpaRoute(rel)` as an **exact segment grammar** — `tasks`, `tasks/<one>`, `s/<one>` —
+- [x] implement `isSpaRoute(rel)` as an **exact segment grammar** — `tasks`, `tasks/<one>`, `s/<one>` —
       matched against the original `rel`, since `stripRevPrefix` runs first at `Server.kt:362`. Not a prefix
       match: that would serve a `200` shell for `/s/id/extra` and for a mistyped asset path. No arm for the
       empty path, which `staticWebUi` already turns into `index.html` at `:356`
-- [ ] tests (mounting the task routes, so an API/UI collision would actually fail): `/tasks` and
+- [x] tests (mounting the task routes, so an API/UI collision would actually fail): `/tasks` and
       `/tasks/local:42` serve the shell with a substituted revision and `no-cache`;
       **`/api/v1/tasks` does NOT serve the shell** — assert that, not that it serves JSON: in your worktree
       Task 13's route bodies are still empty, so the prefixed path 404s, and 404-not-200 is exactly the
       property that proves the SPA grammar did not swallow the API namespace. The positive
       "`/api/v1/tasks` returns JSON while `/tasks` returns the shell" assertion belongs to Task 30, which
       has real route bodies
-- [ ] `/s/id/extra`, `/tasks/id/missing.js`, `/lib/nope.js`, `/nope` all `404`; `/_v/<rev>/app.js` is
+- [x] `/s/id/extra`, `/tasks/id/missing.js`, `/lib/nope.js`, `/nope` all `404`; `/_v/<rev>/app.js` is
       still `immutable`; `/sw.js` and `/manifest.webmanifest` unaffected; traversal still `403`
 
 ### Task 18: `TmuxSelf`
 **Owns:** `src/cli/TmuxSelf.kt`, `test/cli/TmuxSelfTest.kt`
 
-- [ ] return the pane id **only** when `$TMUX`'s socket path is kotgent's
+- [x] return the pane id **only** when `$TMUX`'s socket path is kotgent's
       (`${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent`; `TMUX_SOCKET` at `Cli.kt:20` is only the `-L` label),
       because pane ids are unique per tmux *server* and `%2` from the operator's own tmux would otherwise
       resolve to an unrelated kotgent pane; inject the environment lookup
-- [ ] tests: kotgent socket accepted; foreign socket rejected; `$TMUX_TMPDIR` honoured; `$TMUX` absent;
+- [x] tests: kotgent socket accepted; foreign socket rejected; `$TMUX_TMPDIR` honoured; `$TMUX` absent;
       `$TMUX_PANE` malformed; both absent
 
 ### Task 19: CLI parsing
 **Owns:** `src/cli/Cli.kt`, `test/cli/CliTaskParseTest.kt`
 
-- [ ] dispatch `task` / `project` beside the existing `token` / `config` sub-parsers into the contract's
+- [x] dispatch `task` / `project` beside the existing `token` / `config` sub-parsers into the contract's
       `CliCommand` variants; `--task` on `start`; `--session` on every task subcommand; `--project` on
       `add`/`list`/`next`; `-m/--message` with a `-` stdin convention; an optional ref on `show`, `comment`,
       `review`, `unlink`, `done`
-- [ ] tests: every subcommand's happy parse, missing-argument errors, the optional-ref forms, the three
+- [x] tests: every subcommand's happy parse, missing-argument errors, the optional-ref forms, the three
       flags, and an unknown subcommand producing `Invalid` with a helpful message
 
 ### Task 20: ApiClient
 **Owns:** `src/cli/ApiClient.kt`, `test/cli/ApiClientTaskTest.kt`
 
-- [ ] fill the bodies of the **fourteen** methods already declared with `TODO("Task 20: …")` on
+- [x] fill the bodies of the **fourteen** methods already declared with `TODO("Task 20: …")` on
       `ApiClient` — thirteen task/project routes from Tasks 13–15 (`listTasks`, `createTask`,
       `taskDetail`, `patchTask`, `deleteTask`, `moveTask`, `editTaskDependency`, `commentOnTask`,
       `linkTask`, `unlinkTask`, `nextTask`, `listProjects`, `createProject`) plus `whoami()`. Counted off
@@ -1406,16 +1406,16 @@ uuid itself, only that its writer persists the one it was handed.
       `paneId` constructor parameter) because Task 21 calls all of them and may not touch this file. The
       `taskRef` argument on `startSession` and the private `paneHeader()` helper are already implemented;
       **do not change a signature** — if one is wrong, stop and report it
-- [ ] send `TASK_PANE_HEADER` via `paneHeader()` when a pane was resolved and `sessionId` in the body when
+- [x] send `TASK_PANE_HEADER` via `paneHeader()` when a pane was resolved and `sessionId` in the body when
       `--session` was given; surface the HTTP status on failures; keep the `HttpTimeout` discipline
-- [ ] tests against a stub server (the `withStub` shape at `test/cli/CliTest.kt:855`, reimplemented in your
+- [x] tests against a stub server (the `withStub` shape at `test/cli/CliTest.kt:855`, reimplemented in your
       own file — do not edit `CliTest.kt`): each method, the pane header only when resolved, `--session`
       sending a body id instead
 
 ### Task 21: CLI execution
 **Owns:** `src/cli/TaskCommands.kt`, `test/cli/TaskCommandsTest.kt`
 
-- [ ] implement every `task` / `project` command, printing **JSON only**; resolve a ref-less subcommand
+- [x] implement every `task` / `project` command, printing **JSON only**; resolve a ref-less subcommand
       through `/whoami` but **skip that call entirely when `--session` was given**; `task next` with nothing
       eligible exits `3`; choose `start --task`'s cwd as caller cwd when it resolves to the task's project,
       else the stored path, else the caller's cwd, and say which in the JSON
@@ -1427,102 +1427,102 @@ uuid itself, only that its writer persists the one it was handed.
       import command with fakes and no daemon at all. Add the same shape **inside your own file** — the
       thin `TaskCommands.x(...)` entry points build the client and delegate to a `runXCommand(...)` your
       tests call directly. That also solves capturing stdout, which Kotlin/Native gives you no way to do
-- [ ] tests: each command prints parseable JSON; `task next` exits `3` on an empty backlog; `--session` works
+- [x] tests: each command prints parseable JSON; `task next` exits `3` on an empty backlog; `--session` works
       outside any pane without calling `/whoami`; a ref-less command outside a pane fails cleanly; a stale
       `projects.path` falls back to the caller's cwd
 
 ### Task 22: Router module
 **Owns:** `resources/webui/lib/router.js`, `test/transport/WebUiRouterTest.kt`
 
-- [ ] parse `location.pathname` into `{screen, id}` for `/`, `/tasks`, `/tasks/{ref}`, `/s/{id}`;
+- [x] parse `location.pathname` into `{screen, id}` for `/`, `/tasks`, `/tasks/{ref}`, `/s/{id}`;
       `navigate(path)` over `history.pushState`; a `popstate` subscription; preserve the existing
       `?session=` deep link, whose live consumer is `sw.js:268`
-- [ ] `node --check`; a serving test asserting the exports and the deep link
+- [x] `node --check`; a serving test asserting the exports and the deep link
 
 ### Task 23: Task state module
 **Owns:** `resources/webui/lib/tasks.js`, `test/transport/WebUiTaskStateTest.kt`
 
-- [ ] the API calls and newest-`rev`-wins merge helpers mirroring `lib/sessions.js` — including stamping the
+- [x] the API calls and newest-`rev`-wins merge helpers mirroring `lib/sessions.js` — including stamping the
       frame's rev onto the stored row, without which the invariant self-destructs after the first patch; the
       removal path drops the row
-- [ ] `node --check`; a serving test asserting the exports and the removal path
+- [x] `node --check`; a serving test asserting the exports and the removal path
 
 ### Task 24: Kanban board
 **Owns:** `resources/webui/components/Board.js`, `resources/webui/components/TaskCard.js`,
 `test/transport/WebUiBoardTest.kt`
 
-- [ ] four columns; a project selector (exactly one project at a time — no "all projects" mode); a "new
+- [x] four columns; a project selector (exactly one project at a time — no "all projects" mode); a "new
       project" action backed by `DirectoryCompletion`; a "new task" action posting the **selected project
       id** (the browser has no session); `done` capped at the last N with a "show all" toggle
-- [ ] the card: title, blocked marker, **every** linked session with its state dot, dependency count, a menu
+- [x] the card: title, blocked marker, **every** linked session with its state dot, dependency count, a menu
       carrying delete, and the phone branch — one column plus a switcher below the breakpoint, with move
       actions in the menu instead of dragging
-- [ ] desktop dragging: pointer events, capture after an 8 px slop, `setPointerCapture`,
+- [x] desktop dragging: pointer events, capture after an 8 px slop, `setPointerCapture`,
       `touch-action: none` on the **card handle only**. A drop **within** a column is one `POST …/move`; a
       drop **into another column** is one `PATCH …/{ref}` carrying the state; a drop that does both is the
       `PATCH` then the `move` — `/move` takes no state and `PATCH` takes no position
-- [ ] surface rejected mutations through the existing announcement channel rather than failing silently
-- [ ] use **only** the class names in "Board CSS vocabulary" above — Task 28 writes `style.css` at the same
+- [x] surface rejected mutations through the existing announcement channel rather than failing silently
+- [x] use **only** the class names in "Board CSS vocabulary" above — Task 28 writes `style.css` at the same
       time as you and has no other way to learn what you emitted
-- [ ] the props `app.js` passes are fixed and documented in `Board.js`'s stub header; note
+- [x] the props `app.js` passes are fixed and documented in `Board.js`'s stub header; note
       **`newTaskRequest`**, a monotonically increasing counter (`0` = never asked) that the palette's
       "new task" command bumps. Open the create form when it CHANGES, not when it is truthy
-- [ ] `node --check`; serving tests for the columns, the `done` cap, the project id on create, more than one
+- [x] `node --check`; serving tests for the columns, the `done` cap, the project id on create, more than one
       linked session on a card, the pointer handlers, the scoped `touch-action`, the mobile switcher
 
 ### Task 25: Task detail view
 **Owns:** `resources/webui/components/TaskDetail.js`, `resources/webui/components/dialogs.js`,
 `test/transport/WebUiTaskDetailTest.kt`
 
-- [ ] editable title and body, dependency editor, the linked-session list, the activity feed (fetched with
+- [x] editable title and body, dependency editor, the linked-session list, the activity feed (fetched with
       the task, not from the socket), delete
-- [ ] "Start session" opens the **ordinary** New-session dialog pre-filled with the project cwd and the task,
+- [x] "Start session" opens the **ordinary** New-session dialog pre-filled with the project cwd and the task,
       submitting the single `POST /api/v1/sessions` with `taskRef` — do not add a second launch path. The
       hook is already wired: `app.js` passes `TaskDetail` an **`onStartSession(cwd, taskRef)`** callback
       that opens that dialog, and passes `NewSessionDialog` a new **`initialTaskRef`** prop. You own
       `dialogs.js`, so making the dialog carry that prop into its submitted body is the other half of the
       same task; `app.js` POSTs the body verbatim and needs no change
-- [ ] use **only** the class names in "Board CSS vocabulary" above (`task-detail*`, `task-deps`,
+- [x] use **only** the class names in "Board CSS vocabulary" above (`task-detail*`, `task-deps`,
       `task-activity*`, plus the shared `task-blocked` / `task-sessions` / `task-session-dot`)
-- [ ] `node --check`; serving tests for the feed, the session list, and the dialog reuse
+- [x] `node --check`; serving tests for the feed, the session list, and the dialog reuse
 
 ### Task 26: Task badges on sessions
 **Owns:** `resources/webui/lib/sessions.js`, `resources/webui/components/Sidebar.js`,
 `resources/webui/components/TerminalPane.js`, `test/transport/WebUiTaskBadgeTest.kt`
 
-- [ ] one badge-text builder in `lib/sessions.js`, rendering a ref whose task is unknown as the bare ref
+- [x] one badge-text builder in `lib/sessions.js`, rendering a ref whose task is unknown as the bare ref
       (a delete can leave one briefly); render it in `SessionRow` and the terminal header, linking to
       `/tasks/{ref}`
-- [ ] both components already receive a **`tasks`** prop from `app.js` (the same flat `BacklogEntryDto[]`
+- [x] both components already receive a **`tasks`** prop from `app.js` (the same flat `BacklogEntryDto[]`
       the board gets) — that is what turns a `session.taskRef` into a title. Without it the builder could
       only ever take its unknown-task branch, which is the post-delete fallback, not the normal case
-- [ ] the classes are `task-badge` / `task-badge-unknown` / `task-session-dot` from "Board CSS vocabulary";
+- [x] the classes are `task-badge` / `task-badge-unknown` / `task-session-dot` from "Board CSS vocabulary";
       Task 28 styles them
-- [ ] `node --check`; serving tests that the builder is exported, both components use it, and an unknown ref
+- [x] `node --check`; serving tests that the builder is exported, both components use it, and an unknown ref
       still renders
 
 ### Task 27: Palette commands
 **Owns:** `resources/webui/lib/commands.js`, `test/transport/WebUiTaskCommandsTest.kt`
 
-- [ ] add the task commands to `buildCommands` (open board, new task, open this session's task) with chords
+- [x] add the task commands to `buildCommands` (open board, new task, open this session's task) with chords
       from the currently free letters — **this file is the only registry**
-- [ ] the three callbacks are already in `app.js`'s one `actions` object: **`actions.openBoard`**,
+- [x] the three callbacks are already in `app.js`'s one `actions` object: **`actions.openBoard`**,
       **`actions.newTask`**, **`actions.openSessionTask`**. Call those; do not reach for `history` or the
       session list from here, which would make this file a second piece of app state as well as the registry.
       `openSessionTask` is a no-op when the active session carries no `taskRef` — disable the command on
       exactly that condition, the `disabledWhenNotAlive` shape
-- [ ] `node --check`; tests that the new ids are present and no chord collides with an existing one
+- [x] `node --check`; tests that the new ids are present and no chord collides with an existing one
 
 ### Task 28: Board styles
 **Owns:** `resources/webui/style.css`, `test/transport/WebUiBoardStyleTest.kt`
 
-- [ ] all board, card and detail styles, inside the existing unconditional dark palette; phone variables stay
+- [x] all board, card and detail styles, inside the existing unconditional dark palette; phone variables stay
       inside the current `@media (max-width: 720px)` block. **This is the only task that may touch
       `style.css`** — the components above ship no CSS of their own
-- [ ] style **every** class in "Board CSS vocabulary" above and nothing invented beside it. Tasks 24, 25 and
+- [x] style **every** class in "Board CSS vocabulary" above and nothing invented beside it. Tasks 24, 25 and
       26 are writing the markup while you write the rules and you cannot read their files, so that list is
       the entire contract between you
-- [ ] serving tests asserting each class from that list is present in the served `style.css` — the only
+- [x] serving tests asserting each class from that list is present in the served `style.css` — the only
       end of the coupling you can check; the components assert the other end
 
 ### Wave 3 — integration, contract, verification
