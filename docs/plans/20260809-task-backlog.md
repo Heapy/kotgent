@@ -1133,12 +1133,12 @@ In particular it does **not** wait on Task 4: `ProjectFileWriter` is the interfa
 `PosixProjectFileWriter` merely one implementation of it, which this class carries as a public property
 for the write routes and never calls itself.
 
-- [ ] `link` as the two independent writes (conditional `todo → in_progress` where zero rows is normal, then
+- [x] `link` as the two independent writes (conditional `todo → in_progress` where zero rows is normal, then
       unconditional `setTaskRef`); `linkNext` looping over `nextCandidate` and terminating on null;
       `unlink` leaving the task's state alone; `transition` (state + activity + reverse-dependent
       re-emission in one task-store transaction, unlinking every holder on `done`); `delete` unlinking every
       holder first, then deleting through the tracker. Never nest the two stores' locks
-- [ ] tests against fake stores: two sessions link the same task and both appear in `sessionsHoldingTask`; a
+- [x] tests against fake stores: two sessions link the same task and both appear in `sessionsHoldingTask`; a
       link to a task already `in_progress` succeeds and leaves the state alone; `linkNext` under contention
       gives two sessions two different tasks; `linkNext` on an empty backlog reports nothing eligible;
       `unlink` does not change state; `transition(done)` and `delete` each unlink every holder

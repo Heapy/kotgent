@@ -5,6 +5,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
 import io.kotgent.store.TaskStore
+import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
@@ -35,7 +36,13 @@ import io.kotgent.task.TaskState
  * own API is not an invariant. A task may be linked from any number of sessions, the board shows all of
  * them, and an explicit `task claim <ref>` on a task already in progress is allowed.
  *
- * Bodies are [TODO] on purpose: Task 11 of the task-backlog plan implements this file.
+ * ## What this class deliberately does NOT validate
+ * Neither the session nor the task is checked for existence. [EventStore.setTaskRef] is a documented
+ * no-op on a missing row and [TaskStore.appendActivity] answers `null` for an unknown ref, so a bad
+ * argument here writes nothing and reports nothing — which is exactly why the ROUTES check first
+ * (`resolveCallerSession`'s KDoc says so: "a route that writes on the caller's behalf checks it, because
+ * a silent no-op on a missing row is exactly what `link` must not do"). Putting the check here as well
+ * would mean a second read of both rows on every call and a second, differently-worded 404.
  *
  * @param projectFs carried here — unused by this class's own methods — so [io.kotgent.transport.KotgentServer]
  *   needs only the two nullable task parameters the plan specifies, and the write routes can still reach
@@ -53,9 +60,15 @@ class TaskService(
      * Link [sessionId] to [ref]: the conditional `todo → in_progress` transition, then the unconditional
      * `sessions.task_ref` write, then a `linked` activity row. Overwrites whatever the session pointed at
      * before — a session works one task at a time and there is no error case.
+     *
+     * The [TaskStore.startIfTodo] answer is deliberately **discarded**: `false` means the task was
+     * already `in_progress`/`review`/`done` and the link is made all the same. Reading it as a failure
+     * is the exclusivity this design does not have.
      */
     suspend fun link(sessionId: SessionId, ref: TaskRef) {
-        TODO("Task 11: two independent writes")
+        tasks.startIfTodo(ref)
+        sessions.setTaskRef(sessionId, ref, now())
+        tasks.appendActivity(ref, ActivityKind.linked, author = sessionId.value)
     }
 
     /**
@@ -66,16 +79,35 @@ class TaskService(
      * [TaskStore.startIfTodo] and the loser re-queries (the row is no longer `todo`, so it is naturally
      * excluded) and takes the next. The loop ends when the query returns nothing. No `skip` set is
      * needed — nothing puts a candidate back to `todo` mid-loop, because nothing compensates.
+     *
+     * The returned entry is **re-read after the transition**, not the candidate row: the candidate was
+     * `todo` by definition and this call is what made it `in_progress`, so handing back the pre-write
+     * snapshot would print a state and a rev that were already wrong when they were read. A ref that
+     * vanished inside that window falls back to the candidate rather than reporting "nothing eligible" —
+     * a null return is the ONE signal the CLI maps to exit `3`, and the link really was made.
      */
-    suspend fun linkNext(sessionId: SessionId, project: ProjectId): BacklogEntry? =
-        TODO("Task 11: contended selection loop")
+    suspend fun linkNext(sessionId: SessionId, project: ProjectId): BacklogEntry? {
+        while (true) {
+            val candidate = tasks.nextCandidate(project) ?: return null
+            if (!tasks.startIfTodo(candidate.ref)) continue
+            sessions.setTaskRef(sessionId, candidate.ref, now())
+            tasks.appendActivity(candidate.ref, ActivityKind.linked, author = sessionId.value)
+            return tasks.entry(candidate.ref) ?: candidate
+        }
+    }
 
     /**
      * Drop [sessionId]'s link and leave the task's state **alone**. Whether the work is finished is not
      * something kotgent can infer from a session detaching, and several sessions may still be linked.
+     *
+     * The row is read first only to learn WHICH ref to attribute the `unlinked` activity row to; a
+     * session that holds no link is a no-op that writes nothing at all, so a double `release` does not
+     * stamp a second `updated_at` or a second feed entry.
      */
     suspend fun unlink(sessionId: SessionId) {
-        TODO("Task 11: unlink one session")
+        val ref = sessions.getSession(sessionId)?.taskRef ?: return
+        sessions.setTaskRef(sessionId, null, now())
+        tasks.appendActivity(ref, ActivityKind.unlinked, author = sessionId.value)
     }
 
     /**
@@ -86,20 +118,54 @@ class TaskService(
      * Closing from the board unlinks the sessions and leaves them **alive**, which is what hands a
      * long-lived worker session back to `task next`. Archiving a session is the session's own "Done", not
      * this.
+     *
+     * An unknown [ref] returns `null` and unlinks nobody: [TaskStore.transition]'s own `null` is the
+     * only place that question is asked.
      */
     suspend fun transition(
         ref: TaskRef,
         to: TaskState,
         author: String,
         message: String? = null,
-    ): BacklogEntry? = TODO("Task 11: transition, unlinking holders on done")
+    ): BacklogEntry? {
+        val entry = tasks.transition(ref, to, author, message) ?: return null
+        if (to == TaskState.done) unlinkEveryHolder(ref, feed = true)
+        return entry
+    }
 
     /**
      * Unlink every session holding [ref] first, then delete the task through the tracker (which cascades
      * to its entry, both directions of its dependencies and its feed). The ordinary case therefore leaves
      * no dangling badge; the racing case is covered by `task_ref` being a reference, not a foreign key.
+     *
+     * The holders are unlinked even when the ref turns out to be unknown — the reads and the clear are
+     * cheap, and a `sessions` row pointing at a task that is already gone is precisely the dangling badge
+     * this method exists to avoid. No `unlinked` activity rows are written: the very next statement
+     * deletes the feed they would land in.
      */
-    suspend fun delete(ref: TaskRef): Boolean = TODO("Task 11: unlink holders, then delete")
+    suspend fun delete(ref: TaskRef): Boolean {
+        unlinkEveryHolder(ref, feed = false)
+        return tasks.delete(ref)
+    }
+
+    /**
+     * Clear `sessions.task_ref` on every session holding [ref], one sequential [EventStore] call each,
+     * optionally appending an `unlinked` activity row per holder.
+     *
+     * Two properties are deliberate. The clear is **unconditional**, because [EventStore.setTaskRef] is
+     * the only setter there is: a holder re-pointed at a different task between the read and the clear
+     * loses that newer link. The window is a few microseconds wide and its cost is one badge, which is
+     * the same trade `sessions.task_ref` already makes by being a reference rather than a foreign key —
+     * recorded, not fixed, because fixing it means a conditional write on the contract Task 2 froze.
+     * And the loop **never nests the two stores' locks**: each [EventStore] call returns before the
+     * [TaskStore] call that follows it is made.
+     */
+    private suspend fun unlinkEveryHolder(ref: TaskRef, feed: Boolean) {
+        for (holder in sessions.sessionsHoldingTask(ref)) {
+            sessions.setTaskRef(holder.id, null, now())
+            if (feed) tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
+        }
+    }
 
     companion object {
         /**
