@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Heapy/kotgent/main/schema/project.v1.json",
+  "title": "kotgent project file",
+  "description": "A `.kotgent.json` committed at a project root. It names the project ONCE, with a uuid, so that a repository and every `git worktree` of it share one backlog instead of one per path. kotgent writes this file on the first `kotgent task add` in a location that has no project, and never commits it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This schema's URL. Ignored by kotgent's reader; present so an editor can validate the file.",
+      "format": "uri"
+    },
+    "id": {
+      "type": "string",
+      "description": "The project's identity: a canonical 8-4-4-4-12 uuid. Compared case-insensitively on read and stored lower-cased, because SQLite compares the column binary.",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "name": {
+      "type": "string",
+      "description": "The project's display name. Trimmed on read, so surrounding whitespace is not significant; control characters are refused because the value reaches a terminal, a notification and the board.",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    }
+  },
+  "examples": [
+    {
+      "$schema": "https://raw.githubusercontent.com/Heapy/kotgent/main/schema/project.v1.json",
+      "id": "0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34",
+      "name": "kotgent"
+    }
+  ]
+}
