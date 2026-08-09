@@ -888,17 +888,23 @@ suspend fun runImportCommand(
 /**
  * Render sessions as a compact human table (the `list` output). Pure so it is unit-testable without a
  * daemon; a `needs_approval`/attention state is flagged so the queue is obvious at a glance.
+ *
+ * The `TASK` column is what a session's link looks like from the terminal — the CLI counterpart of the
+ * sidebar's badge. It shows the bare ref rather than the task's title: `GET /sessions` answers rows and
+ * knows nothing about the backlog, and resolving N titles would mean N requests for a table nobody reads
+ * that closely. A session with no link renders `-`, not an empty gap, so the column is visibly a column.
  */
 fun renderSessions(sessions: List<SessionDto>): String {
     if (sessions.isEmpty()) return "no sessions\n"
     val sb = StringBuilder()
-    sb.append("ID        AGENT      STATE            ATTN  CWD\n")
+    sb.append("ID        AGENT      STATE            ATTN  TASK          CWD\n")
     for (s in sessions.sortedByDescending { it.updatedAt }) {
         val attn = if (s.needsAttention) " *  " else "    "
         sb.append(s.id.padEnd(10).take(10))
         sb.append(s.agent.padEnd(11).take(11))
         sb.append(s.state.padEnd(17).take(17))
         sb.append(attn)
+        sb.append("  ").append((s.taskRef ?: "-").padEnd(12).take(12))
         sb.append("  ").append(s.cwd)
         sb.append('\n')
     }

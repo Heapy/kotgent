@@ -4,6 +4,7 @@ import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.TaskRef
 import io.kotgent.core.unread
 import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.DuplicateImportException
@@ -16,6 +17,7 @@ import io.kotgent.daemon.TranscriptNotFoundException
 import io.kotgent.daemon.UnknownAgentKindException
 import io.kotgent.daemon.UnsupportedAgentException
 import io.kotgent.store.EventStore
+import io.kotgent.task.MalformedTaskRefException
 import io.kotgent.tmux.TmuxCopyModeException
 import io.kotgent.tmux.TmuxException
 import io.ktor.http.ContentType
@@ -76,7 +78,10 @@ typealias TerminalInputSink = suspend (SessionId, ByteArray) -> Boolean
  *  - `GET  /version`                        — the running application's display version.
  *  - `GET  /sessions`                       — list all sessions (from the store cache).
  *  - `GET  /sessions/{id}`                  — one session, or `404`.
- *  - `POST /sessions`                       — start a new session (`{agent, cwd, name?, tags?}`) → `201`.
+ *  - `POST /sessions`                       — start a new session (`{agent, cwd, name?, tags?, taskRef?}`)
+ *    → `201`. A `taskRef` links the fresh session to that task in the same request (`start --task`, and
+ *    the board's "Start session"); it is `400` when the ref is malformed or this daemon has no task
+ *    layer, both settled BEFORE the launch so a refusal never leaves a started session behind.
  *  - `POST /sessions/import`                — register a provider session started OUTSIDE kotgent
  *    (`{agent, providerSessionId, cwd?, name?, tags?}`) as a `resumable` row → `201`; `400` for an unknown
  *    kind / malformed id / cwd failures / a transcript the probe cannot see (distinguishable messages —
@@ -133,6 +138,31 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
+        // The optional task link is settled BEFORE the launch, both halves of it. A malformed ref and a
+        // daemon with no task layer are refusals, and a refusal after `start()` would mean a live agent
+        // whose link was silently dropped — the one outcome `start --task` being ONE request exists to
+        // prevent. Parsing is by hand for the reason StartSessionRequest records: TaskRef's value-class
+        // serializer throws IllegalArgumentException, which the decode catch above is not looking for.
+        val requestedTaskRef = req.taskRef?.takeIf { it.isNotBlank() }
+        var linkTo: TaskRef? = null
+        if (requestedTaskRef != null) {
+            linkTo = TaskRef.parseOrNull(requestedTaskRef)
+            if (linkTo == null) {
+                call.respondText(
+                    "cannot start session: ${MalformedTaskRefException(requestedTaskRef).message}",
+                    status = HttpStatusCode.BadRequest,
+                )
+                return@post
+            }
+            if (taskService == null) {
+                call.respondText(
+                    "cannot start session: this daemon has no task layer, so taskRef " +
+                        "'$requestedTaskRef' cannot be linked",
+                    status = HttpStatusCode.BadRequest,
+                )
+                return@post
+            }
+        }
         val meta = try {
             sessionManager.start(req.agent, req.cwd, req.name, req.tags)
         } catch (e: UnsupportedAgentException) {
@@ -150,8 +180,22 @@ fun Route.controlRoutes(
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
         }
+        // The link is unconditional and cannot fail once the row exists (see EventStore.setTaskRef), so
+        // there is no partial state to roll back. The ref's EXISTENCE is deliberately not checked: this
+        // route holds a TaskService and no TaskStore, and a ref naming nothing is the dangling reference
+        // `sessions.task_ref` already tolerates — `POST /tasks/{ref}/link`, which does hold the store, is
+        // where an unknown ref is a 404.
+        val started = if (linkTo != null && taskService != null) {
+            taskService.link(meta.id, linkTo)
+            // Re-read rather than patching the captured row: the link stamped a new rev and updatedAt,
+            // and an HTTP client merges this DTO newest-rev-wins. The fallback keeps the answer honest
+            // about the link even if the row cannot be read back.
+            store.getSession(meta.id) ?: meta.copy(taskRef = linkTo)
+        } else {
+            meta
+        }
         call.respondText(
-            json.encodeToString(SessionDto.serializer(), meta.toDto()),
+            json.encodeToString(SessionDto.serializer(), started.toDto()),
             ContentType.Application.Json,
             HttpStatusCode.Created,
         )
