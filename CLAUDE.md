@@ -713,6 +713,14 @@ grabber scrolls out of the port and the swipe goes with it (× and backdrop rema
 `#help-form`'s internal scroller changes iOS focus/keyboard behaviour that cannot be verified from here), and
 the palette's `type="search"` input still paints the UA's own clear × a few pixels inside kotgent's.
 
+Three things here can only be settled on real hardware, and the whole design rests on the first: **on a
+current iPhone and iPad, confirm a backdrop `pointerdown`/`pointerup`/`click` carry the SAME `pointerId`,
+including in a two-finger sequence** — the spec requires it, WebKit has regressed click metadata before, and
+`released` is what carries the guarantee if it has not. Then: begin a captured swipe on an iPad and
+separately make the screen busy, press Esc, and background the app — each must spring back or disappear with
+no stranded transform. And open every dialog on a phone, a tablet and a touch-plus-mouse laptop to see the
+handle, the compensated padding, a head that still pans, and a 44 px palette ×.
+
 **Mobile file upload is a session-cwd write, never an arbitrary-path API.** The palette's `f` command opens
 the native multi-file picker and `POST`s one raw file at a time to `/sessions/{id}/files?name=…`; the browser
 shows the selected session's cwd but never submits a directory. The authenticated route re-reads that
