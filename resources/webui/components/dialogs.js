@@ -274,9 +274,21 @@ const DIRECTORY_COMPLETION_DELAY_MS = 150;
  * provider's own transcript — so the cwd field is `required` only in start mode. Import errors
  * (400/409) are shown verbatim in the form's error line: the daemon's text already names the fix
  * (a duplicate names the existing kotgent session, a claude cwd mismatch names the workaround).
+ *
+ * [initialTaskRef] is the task-detail view's "Start session": THIS dialog is the one launch path, so a
+ * task-launched session differs from any other only by the `taskRef` its start body carries — the
+ * session row and its link are then written by the same `POST /sessions`, and a failed launch leaves no
+ * link behind. Three details are deliberate. The field is added to the body only when it is set, so an
+ * ordinary launch sends the same shape it always did (a daemon with no task layer must REFUSE a request
+ * carrying a `taskRef`, not silently drop the link, and it should never see one it did not ask for).
+ * Import mode omits it, because there is no `taskRef` on the import body at all — the ref survives a
+ * round trip through import mode and back, exactly like `initialCwd`. And the link is stated in the
+ * form rather than left implicit: this dialog is also opened from the sidebar and the palette, where a
+ * silent link would be a surprise.
  */
 export function NewSessionDialog({
-  initialCwd, initialMode = "start", initialAgent = "", basePath, onStart, onImport, onClose,
+  initialCwd, initialMode = "start", initialAgent = "", initialTaskRef = null,
+  basePath, onStart, onImport, onClose,
 }) {
   const [mode, setMode] = useState(initialMode);
   const [agent, setAgent] = useState(initialAgent);
@@ -294,6 +306,11 @@ export function NewSessionDialog({
   const cwdRef = useRef(null);
   const agentRef = useRef(null);
   const sessionIdRef = useRef(null);
+  // Read straight off the prop rather than seeded into state: this dialog is mounted fresh for each
+  // open (app.js swaps the `dialog` object), so there is no draft here to keep and nothing to drift.
+  const taskRef = typeof initialTaskRef === "string" && initialTaskRef.trim().length > 0
+    ? initialTaskRef.trim()
+    : null;
 
   // There is deliberately no general default agent, so the picker — not the prefilled path — is the
   // first answer this dialog normally needs. The free-terminal command is the one explicit preselection;
@@ -428,7 +445,11 @@ export function NewSessionDialog({
           tags: tagList,
         }, registerOnly);
       } else {
-        await onStart({ agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList });
+        const body = { agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList };
+        // Present only when there is one: `app.js` POSTs this object verbatim, and a daemon with no
+        // task layer owes a 400 for a request that carries a taskRef at all.
+        if (taskRef) body.taskRef = taskRef;
+        await onStart(body);
       }
     } catch (e) {
       // The import route's own 400/409 text is already user-facing ("cannot import session: …" plus
@@ -560,6 +581,16 @@ export function NewSessionDialog({
           <input id="session-tags" type="text" placeholder="backend, urgent"
                  value=${tags} onInput=${(e) => setTags(e.target.value)} />
         </label>
+
+        ${mode === "start" && taskRef && html`
+          <div class="field">
+            <span>Task</span>
+            <p id="new-session-task-ref" class="field-hint">
+              This session will be linked to ${taskRef} — the link is written by the same request that
+              starts it, so a launch that fails leaves no link behind.
+            </p>
+          </div>
+        `}
 
         ${mode === "import" && html`
           <label class="field checkbox-field">
