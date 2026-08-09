@@ -1,6 +1,31 @@
 package io.kotgent.transport
 
+import io.kotgent.core.ProjectId
+import io.kotgent.core.TaskRef
+import io.kotgent.daemon.TaskService
+import io.kotgent.task.BacklogEntry
+import io.kotgent.task.DependencyRefusedException
+import io.kotgent.task.MalformedTaskRefException
+import io.kotgent.task.MoveTarget
+import io.kotgent.task.NoProjectException
+import io.kotgent.task.NoSessionException
+import io.kotgent.task.PROJECT_NAME_MAX_LENGTH
+import io.kotgent.task.ProjectPathException
+import io.kotgent.task.TaskState
+import io.kotgent.task.UnknownProjectException
+import io.kotgent.task.UnknownTaskException
+import io.kotgent.task.mainCheckoutRoot
+import io.kotgent.task.resolveProject
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.RoutingContext
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.patch
+import io.ktor.server.routing.post
+import kotlinx.serialization.SerializationException
 
 /**
  * The task layer's mutating surface that is not a session link: `POST /tasks`, `PATCH /tasks/{ref}`,
@@ -24,8 +49,469 @@ import io.ktor.server.routing.Route
  *  - `POST /projects` writes `.kotgent.json` at a browser-supplied ABSOLUTE path — the bounded departure
  *    from the upload rule recorded on [CreateProjectRequest].
  *
- * Deliberately empty here: Task 14 implements this file.
+ * ## Where the "the `projects` row is upserted" obligation actually lands
+ * On the two branches that touch a `.kotgent.json`, and only those. `resolveProject` READ a file, so the
+ * project it found is registered (that also refreshes `projects.path` to the checkout the daemon just
+ * saw, which is exactly what that column means); the creating branch obviously registers what it wrote.
+ * The other two branches deliberately do not write: an explicit `project` is required to be a project the
+ * daemon already knows — a uuid it has never seen is a `404` rather than a row invented from a name
+ * nobody supplied — and a session's stored `project_id` was registered when the session started. That
+ * keeps the rule the plan states ("every path that reads or creates a project file upserts the row")
+ * literally true without inventing a display name for a project this request never opened.
+ *
+ * ## Status conventions, shared with the other two task route files
+ * `404` means "no such task `{ref}`" (or `{project}`), so a ref that cannot even be parsed is a `400`;
+ * every typed failure in `TaskErrors.kt` maps as its header records. The exceptions are constructed for
+ * their MESSAGE even where nothing throws, so the three route files word the same failure identically.
  */
 fun Route.taskWriteRoutes(routing: TaskRouting) {
-    // Task 14.
+
+    /*
+     * `POST /tasks` — the one endpoint that may run without any session at all, because creating cards is
+     * the board's headline job and the board has neither a pane nor a session.
+     */
+    post("/tasks") {
+        val req = decodeBody(CreateTaskRequest.serializer(), routing) ?: return@post
+        val title = req.title.trim()
+        if (title.isEmpty()) {
+            call.respondText("a task needs a title", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        val project = resolveProjectForCreate(routing, req) ?: return@post
+        val created = routing.tasks.create(project, title, req.body)
+        val entry = routing.tasks.entry(created.ref)
+        if (entry == null) {
+            // The built-in tracker writes the `tasks` row, its `backlog_entries` row and the `created`
+            // activity row in ONE transaction, so this cannot happen for it. Answering honestly rather
+            // than synthesizing an entry keeps a future tracker that only creates its own half loud.
+            call.respondText(
+                "task '${created.ref.value}' was created but has no backlog entry",
+                status = HttpStatusCode.InternalServerError,
+            )
+            return@post
+        }
+        respondEntry(routing, entry, HttpStatusCode.Created)
+    }
+
+    /*
+     * `PATCH /tasks/{ref}` — tracker fields and/or the workflow state, in that order: the tracker edit is
+     * `TaskTracker.update` (no activity row) and the state change is `TaskService.transition`, which
+     * commits the state, its ONE activity row (carrying `message`) and the reverse-dependent re-stamp
+     * together. That is what makes `kotgent task review -m "…"` a single operation.
+     */
+    patch("/tasks/{ref}") {
+        val ref = taskRefParam() ?: return@patch
+        val req = decodeBody(PatchTaskRequest.serializer(), routing) ?: return@patch
+        val to = if (req.state != null) {
+            taskStateOf(req.state) ?: run {
+                call.respondText(
+                    "unknown task state '${req.state}' — expected one of " +
+                        TaskState.entries.joinToString(", ") { it.name },
+                    status = HttpStatusCode.BadRequest,
+                )
+                return@patch
+            }
+        } else {
+            null
+        }
+        if (req.title == null && req.body == null && to == null) {
+            call.respondText(
+                "nothing to change — a patch carries at least one of title, body or state",
+                status = HttpStatusCode.BadRequest,
+            )
+            return@patch
+        }
+        if (req.message != null && to == null) {
+            // The message is the transition's explanation and rides its activity row; without a state
+            // change there is no row for it to ride, and silently dropping what somebody typed is worse
+            // than saying so. A free-standing note is `POST /tasks/{ref}/comment`.
+            call.respondText(
+                "a message is only meaningful with a state change — use /tasks/${ref.value}/comment " +
+                    "for a standalone note",
+                status = HttpStatusCode.BadRequest,
+            )
+            return@patch
+        }
+        if (req.title != null || req.body != null) {
+            if (req.title != null && req.title.isBlank()) {
+                call.respondText("a task needs a title", status = HttpStatusCode.BadRequest)
+                return@patch
+            }
+            if (routing.tasks.update(ref, req.title?.trim(), req.body) == null) {
+                fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
+                return@patch
+            }
+        }
+        if (to != null) {
+            val author = resolveCallerSession(routing, req.sessionId)?.value ?: TaskService.BOARD_AUTHOR
+            if (routing.service.transition(ref, to, author, req.message) == null) {
+                fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
+                return@patch
+            }
+        }
+        // Re-read rather than answering with whichever half wrote last: a patch that carried both a
+        // tracker edit and a transition has two writers, and the caller merges ONE observation newest-rev-wins.
+        val entry = routing.tasks.entry(ref)
+        if (entry == null) {
+            fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
+            return@patch
+        }
+        respondEntry(routing, entry)
+    }
+
+    /*
+     * `DELETE /tasks/{ref}` — through the service, which unlinks every holder BEFORE removing the task so
+     * no session is left carrying a badge that points at nothing.
+     */
+    delete("/tasks/{ref}") {
+        val ref = taskRefParam() ?: return@delete
+        if (!routing.service.delete(ref)) {
+            fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
+            return@delete
+        }
+        call.respondText("ok")
+    }
+
+    /*
+     * `POST /tasks/{ref}/move` — a re-rank and nothing else. A board drop that changes both column and
+     * rank is the `PATCH` first and then this, so neither endpoint has to define a half-applied combination.
+     */
+    post("/tasks/{ref}/move") {
+        val ref = taskRefParam() ?: return@post
+        val req = decodeBody(MoveTaskRequest.serializer(), routing) ?: return@post
+        val target = moveTargetOf(req)
+        if (target == null) {
+            call.respondText(
+                "move requires exactly one of before, after, top or bottom, and a named neighbour must " +
+                    "be a well-formed task ref",
+                status = HttpStatusCode.BadRequest,
+            )
+            return@post
+        }
+        val moved = routing.tasks.move(ref, target)
+        if (moved == null) {
+            // `move` answers null for an unknown ref AND for a named neighbour that is not there, and the
+            // store cannot tell the caller which without a second read it does not owe.
+            call.respondText(
+                "no such task '${ref.value}', or the named neighbour is not in its project",
+                status = HttpStatusCode.NotFound,
+            )
+            return@post
+        }
+        respondEntry(routing, moved)
+    }
+
+    /*
+     * `POST /tasks/{ref}/deps` — add or remove one edge.
+     *
+     * The path ref is deliberately NOT pre-checked for existence here. All four refusals — self, unknown
+     * ref, cross-project, cycle — are validated inside [io.kotgent.store.TaskStore.addDependency] and all
+     * four answer `400`, so a pre-check would answer `404` for one of them and quietly make the
+     * "unknown ref" refusal unreachable from the path side. A `remove` naming a task that is not there
+     * still reaches the `404` below, through the read-back.
+     */
+    post("/tasks/{ref}/deps") {
+        val ref = taskRefParam() ?: return@post
+        val req = decodeBody(DepsRequest.serializer(), routing) ?: return@post
+        val on = TaskRef.parseOrNull(req.on)
+        if (on == null) {
+            fail(HttpStatusCode.BadRequest, MalformedTaskRefException(req.on))
+            return@post
+        }
+        try {
+            when (req.action) {
+                "add" -> routing.tasks.addDependency(ref, on)
+                "remove" -> routing.tasks.removeDependency(ref, on)
+                else -> {
+                    call.respondText(
+                        "unknown dependency action '${req.action}' — expected 'add' or 'remove'",
+                        status = HttpStatusCode.BadRequest,
+                    )
+                    return@post
+                }
+            }
+        } catch (e: DependencyRefusedException) {
+            fail(HttpStatusCode.BadRequest, e)
+            return@post
+        }
+        val entry = routing.tasks.entry(ref)
+        if (entry == null) {
+            fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
+            return@post
+        }
+        respondEntry(routing, entry)
+    }
+
+    /*
+     * `POST /tasks/{ref}/comment` — requires session identity, because an activity row must be
+     * attributable. The board's own notes arrive with a `sessionId`-less body only from a pane, so a
+     * browser comment goes through the same header/`sessionId` resolution every other attributed write does.
+     */
+    post("/tasks/{ref}/comment") {
+        val ref = taskRefParam() ?: return@post
+        val req = decodeBody(CommentRequest.serializer(), routing) ?: return@post
+        val text = req.text.trim()
+        if (text.isEmpty()) {
+            call.respondText("a comment needs text", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        val author = requireCallerSession(routing, req.sessionId) ?: return@post
+        val row = routing.tasks.comment(ref, author, text)
+        if (row == null) {
+            fail(HttpStatusCode.NotFound, UnknownTaskException(ref))
+            return@post
+        }
+        call.respondText(
+            routing.json.encodeToString(ActivityEntryDto.serializer(), row.toDto()),
+            ContentType.Application.Json,
+            HttpStatusCode.Created,
+        )
+    }
+
+    /*
+     * `POST /projects` — create or ADOPT a project at an absolute path. Idempotent by construction (an
+     * existing `.kotgent.json` always wins the `link(2)` race and is read back), so the answer is `200`
+     * and not `201`: the caller cannot tell whether it wrote the file, and does not need to.
+     */
+    post("/projects") {
+        val req = decodeBody(CreateProjectRequest.serializer(), routing) ?: return@post
+        val requested = req.path.trim()
+        if (!requested.startsWith('/')) {
+            // Checked BEFORE canonicalization: `realpath` would resolve a relative path against the
+            // DAEMON's cwd, silently accepting a path the caller never meant.
+            fail(HttpStatusCode.BadRequest, ProjectPathException(req.path, "project path must be absolute: '${req.path}'"))
+            return@post
+        }
+        val dir = routing.service.projectFs.canonicalize(requested)
+        if (dir == null) {
+            fail(
+                HttpStatusCode.BadRequest,
+                ProjectPathException(requested, "no such directory: '$requested'"),
+            )
+            return@post
+        }
+        val name = if (req.name == null) {
+            defaultProjectName(dir)
+        } else {
+            validProjectName(req.name) ?: run {
+                call.respondText(
+                    "a project name must be 1..$PROJECT_NAME_MAX_LENGTH characters and carry no control " +
+                        "characters — otherwise the .kotgent.json this writes could not be read back",
+                    status = HttpStatusCode.BadRequest,
+                )
+                return@post
+            }
+        }
+        val file = try {
+            routing.service.projectFiles.ensureProjectFile(dir, name)
+        } catch (e: ProjectPathException) {
+            fail(HttpStatusCode.BadRequest, e)
+            return@post
+        }
+        routing.tasks.upsertProject(file.id, file.name, dir)
+        val record = routing.tasks.project(file.id)
+        if (record == null) {
+            call.respondText(
+                "project '${file.id.value}' was written to $dir but is not registered",
+                status = HttpStatusCode.InternalServerError,
+            )
+            return@post
+        }
+        call.respondText(
+            routing.json.encodeToString(ProjectDto.serializer(), record.toDto()),
+            ContentType.Application.Json,
+        )
+    }
+}
+
+// --- helpers ---------------------------------------------------------------------------------------
+//
+// Every one of these is `private`, which makes it FILE-scoped rather than package-scoped: `TaskReadRoutes`,
+// `TaskLinkRoutes` and `EventsWs` are written by other agents in this same package at this same moment, so
+// a non-private top-level declaration here is a redeclaration error nobody sees until the branches merge.
+// The shared mappers live in `TaskDtos.kt` for exactly that reason.
+
+/** Decode a request body, answering `400` (and returning `null`) when it is not the expected JSON. */
+private suspend fun <T> RoutingContext.decodeBody(
+    serializer: kotlinx.serialization.KSerializer<T>,
+    routing: TaskRouting,
+): T? = try {
+    routing.json.decodeFromString(serializer, call.receiveText())
+} catch (_: SerializationException) {
+    call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+    null
+}
+
+/**
+ * The `{ref}` path parameter as a [TaskRef], answering `400` (and returning `null`) when it is not one.
+ *
+ * A malformed ref is a bad REQUEST rather than a missing resource: by this package's convention `404`
+ * means "no such task `{ref}`", which presupposes that `{ref}` names something.
+ */
+private suspend fun RoutingContext.taskRefParam(): TaskRef? {
+    val raw = call.parameters["ref"].orEmpty()
+    val ref = TaskRef.parseOrNull(raw)
+    if (ref == null) fail(HttpStatusCode.BadRequest, MalformedTaskRefException(raw))
+    return ref
+}
+
+/** Answer with a typed failure's own message, so the three task route files word each failure alike. */
+private suspend fun RoutingContext.fail(status: HttpStatusCode, e: RuntimeException) {
+    call.respondText(e.message ?: status.description, status = status)
+}
+
+/**
+ * The calling session's id as an activity `author`, or `null` after answering `400` naming `--session`.
+ *
+ * The row is looked up rather than trusted: `resolveCallerSession` deliberately does not check existence
+ * (its KDoc says so), and an activity row attributed to a session that is not there is exactly the silent
+ * no-op that check exists to prevent. It is a `400` and not a `404` because the id came from the body, not
+ * from the path — `404` in this package means "no such task `{ref}`".
+ */
+private suspend fun RoutingContext.requireCallerSession(routing: TaskRouting, explicitSessionId: String?): String? {
+    val id = resolveCallerSession(routing, explicitSessionId)
+    if (id == null) {
+        fail(
+            HttpStatusCode.BadRequest,
+            NoSessionException(
+                "no calling session: send the $TASK_PANE_HEADER header from inside a kotgent pane, " +
+                    "or name one with --session",
+            ),
+        )
+        return null
+    }
+    if (routing.sessions.getSession(id) == null) {
+        fail(HttpStatusCode.BadRequest, NoSessionException("no such session '${id.value}' — name a live one with --session"))
+        return null
+    }
+    return id.value
+}
+
+/**
+ * `POST /tasks`'s project, in the plan's order, or `null` after answering the failure itself.
+ *
+ * The order is the whole contract, so it is written as four consecutive branches rather than folded:
+ *  1. an explicit `project` — the board's path. It must already be a project the daemon knows; a uuid it
+ *     has never seen is a `404`, because there is no name to register it under and a row invented here
+ *     would show up in the selector as a project nobody named.
+ *  2. the calling session's stored `project_id` — registered when the session started, so nothing to
+ *     re-register here.
+ *  3. `resolveProject(session cwd)` — this READS a `.kotgent.json`, so it upserts.
+ *  4. create the file at `mainCheckoutRoot(session cwd)` — this WRITES one, so it upserts too.
+ *
+ * `400` naming `--project` only when step 2 finds no session at all. That is the board with nothing
+ * selected, or a CLI call from outside any pane: there is no cwd to resolve and nowhere to create.
+ */
+private suspend fun RoutingContext.resolveProjectForCreate(
+    routing: TaskRouting,
+    req: CreateTaskRequest,
+): ProjectId? {
+    val explicit = req.project?.takeIf { it.isNotBlank() }
+    if (explicit != null) {
+        val id = ProjectId.parseOrNull(explicit)
+        if (id == null) {
+            call.respondText(
+                "malformed project id '$explicit' — expected a canonical uuid",
+                status = HttpStatusCode.BadRequest,
+            )
+            return null
+        }
+        if (routing.tasks.project(id) == null) {
+            fail(HttpStatusCode.NotFound, UnknownProjectException(id))
+            return null
+        }
+        return id
+    }
+
+    val sessionId = resolveCallerSession(routing, req.sessionId)
+    val session = sessionId?.let { routing.sessions.getSession(it) }
+    if (session == null) {
+        fail(
+            HttpStatusCode.BadRequest,
+            NoProjectException(
+                "no project: name one with --project, or run this from inside a kotgent session " +
+                    "(the $TASK_PANE_HEADER header, or --session)",
+            ),
+        )
+        return null
+    }
+
+    session.projectId?.let { return it }
+
+    val fs = routing.service.projectFs
+    resolveProject(fs, session.cwd)?.let { resolved ->
+        routing.tasks.upsertProject(resolved.id, resolved.name, resolved.root)
+        return resolved.id
+    }
+
+    // Nothing committed anywhere above the session's cwd: create the file. `mainCheckoutRoot` puts it at
+    // the checkout root so every worktree of that repository shares the uuid; with no repository at all
+    // the session's own directory IS the root, which is the same degradation the resolution rules make
+    // for every unsupported git layout.
+    val canonical = fs.canonicalize(session.cwd) ?: session.cwd
+    val root = mainCheckoutRoot(fs, canonical) ?: canonical
+    val file = try {
+        routing.service.projectFiles.ensureProjectFile(root, defaultProjectName(root))
+    } catch (e: ProjectPathException) {
+        fail(HttpStatusCode.BadRequest, e)
+        return null
+    }
+    routing.tasks.upsertProject(file.id, file.name, root)
+    return file.id
+}
+
+/** Serialize one backlog entry with its tracker fields and its dependency slice. */
+private suspend fun RoutingContext.respondEntry(
+    routing: TaskRouting,
+    entry: BacklogEntry,
+    status: HttpStatusCode = HttpStatusCode.OK,
+) {
+    val dto = entry.toDto(routing.tasks.get(entry.ref), routing.tasks.dependenciesOf(entry.ref))
+    call.respondText(
+        routing.json.encodeToString(BacklogEntryDto.serializer(), dto),
+        ContentType.Application.Json,
+        status,
+    )
+}
+
+/** A state name as a [TaskState], or `null`. Matched exactly — the enum name IS the wire value. */
+private fun taskStateOf(raw: String): TaskState? = TaskState.entries.firstOrNull { it.name == raw }
+
+/**
+ * Exactly one of the four move fields, or `null` when the request named none, named several, or named a
+ * neighbour that is not a well-formed ref. One `null` for all three because they are one client mistake —
+ * "this is not a move" — and the route's message says all of it.
+ */
+private fun moveTargetOf(req: MoveTaskRequest): MoveTarget? {
+    val targets = mutableListOf<MoveTarget>()
+    val before = req.before
+    if (before != null) targets += MoveTarget.Before(TaskRef.parseOrNull(before) ?: return null)
+    val after = req.after
+    if (after != null) targets += MoveTarget.After(TaskRef.parseOrNull(after) ?: return null)
+    if (req.top) targets += MoveTarget.Top
+    if (req.bottom) targets += MoveTarget.Bottom
+    return targets.singleOrNull()
+}
+
+/**
+ * A display name for a project file this daemon is about to write, derived from its directory.
+ *
+ * It is sanitized to what [io.kotgent.task.parseProjectFile] will accept — trimmed, control characters
+ * dropped, capped at [PROJECT_NAME_MAX_LENGTH] — because a name outside those bounds would produce a file
+ * the resolver then refuses to read, i.e. a project that vanishes the moment the daemon restarts.
+ */
+private fun defaultProjectName(dir: String): String {
+    val base = dir.trimEnd('/').substringAfterLast('/')
+        .filter { it.code >= 0x20 && it.code != 0x7f }
+        .trim()
+        .take(PROJECT_NAME_MAX_LENGTH)
+    return base.ifEmpty { "project" }
+}
+
+/** A caller-supplied project name, or `null` when it is not one [io.kotgent.task.parseProjectFile] accepts. */
+private fun validProjectName(raw: String): String? {
+    val name = raw.trim()
+    if (name.isEmpty() || name.length > PROJECT_NAME_MAX_LENGTH) return null
+    if (name.any { it.code < 0x20 || it.code == 0x7f }) return null
+    return name
 }
