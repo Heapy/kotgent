@@ -753,18 +753,45 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is ProjectInit -> TaskCommands.projectInit(command.path, command.name)
 }
 
+/** `start` — the [runCli] dispatch wrapper: [runStartResolving] over the real cwd and the real commands. */
+private fun runStart(command: CliCommand.Start): Int = runStartResolving(
+    command,
+    currentWorkingDir(),
+    startWithTask = TaskCommands::startWithTask,
+    start = Commands::start,
+)
+
 /**
- * `start` — resolve the requested cwd to an ABSOLUTE path against the CLI's own working directory, then
- * hand it to [Commands.start]. If that cannot be done (the CLI cannot determine its own working
- * directory and the caller gave a relative path), it fails LOUDLY with exit code 2 instead of sending the
- * daemon a relative path it would resolve against its own launchd cwd `/` — i.e. the wrong directory.
+ * `start` — resolve the requested cwd to an ABSOLUTE path against [base] (the CLI's own working
+ * directory), then dispatch. If that cannot be done (the CLI cannot determine its own working directory
+ * and the caller gave a relative path), it fails LOUDLY with exit code 2 instead of sending the daemon a
+ * relative path it would resolve against its own launchd cwd `/` — i.e. the wrong directory. The two
+ * commands arrive as parameters, the [runImportResolving] shape, so the rule is unit-testable with no
+ * daemon and no tmux.
+ *
+ * Two things travel to [startWithTask], not one. The resolved cwd is always absolute, so it cannot say
+ * whether the operator TYPED a directory or it was defaulted to the CLI's own — and `--task`'s cwd rule
+ * may override only the default. `command.cwd != null` is that whole distinction; collapsing the two here
+ * is what let a stale `projects.path` win over a positional argument the operator had spelled out.
  */
-private fun runStart(command: CliCommand.Start): Int = try {
-    val cwd = resolveCwdAgainst(currentWorkingDir(), command.cwd)
+fun runStartResolving(
+    command: CliCommand.Start,
+    base: String,
+    startWithTask: (
+        agent: String,
+        cwd: String,
+        cwdExplicit: Boolean,
+        taskRef: String,
+        name: String?,
+        tags: List<String>,
+    ) -> Int,
+    start: (agent: String, cwd: String, name: String?, tags: List<String>) -> Int,
+): Int = try {
+    val cwd = resolveCwdAgainst(base, command.cwd)
     val task = command.task
     // `--task` is one POST carrying the ref, not a start followed by a link — see TaskCommands.
-    if (task != null) TaskCommands.startWithTask(command.agent, cwd, task, command.name, command.tags)
-    else Commands.start(command.agent, cwd, command.name, command.tags)
+    if (task != null) startWithTask(command.agent, cwd, command.cwd != null, task, command.name, command.tags)
+    else start(command.agent, cwd, command.name, command.tags)
 } catch (e: UnresolvableCwdException) {
     eprintln(e.message ?: "cannot resolve the working directory")
     2

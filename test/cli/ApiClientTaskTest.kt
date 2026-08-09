@@ -244,8 +244,10 @@ class ApiClientTaskTest {
     }
 
     @Test
-    fun aDependencyEditSendsItsActionAndTarget() = withStub { stub, api ->
-        api.editTaskDependency(REF, "add", "local:7")
+    fun aDependencyEditSendsItsActionAndTargetAndReturnsTheUpdatedEntry() = withStub { stub, api ->
+        // The route answers the re-read entry, and `blocked` — derived server-side from the very edge
+        // this request adds — is the field that makes the body worth decoding rather than discarding.
+        assertEquals(BLOCKED_ENTRY, api.editTaskDependency(REF, "add", "local:7"))
         val seen = stub.requests.receive()
         assertEquals("$API_PREFIX/tasks/$REF/deps", seen.path)
         assertEquals(DepsRequest("add", "local:7"), TRANSPORT_JSON.decodeFromString(DepsRequest.serializer(), seen.body))
@@ -426,7 +428,11 @@ class ApiClientTaskTest {
                 }
                 post("$API_PREFIX/tasks/{ref}/deps") {
                     record("POST", call.receiveText())
-                    call.respondText("{}", ContentType.Application.Json, depsStatus)
+                    if (depsStatus == HttpStatusCode.OK) {
+                        respondJson(BacklogEntryDto.serializer(), BLOCKED_ENTRY)
+                    } else {
+                        call.respondText("refused", ContentType.Text.Plain, depsStatus)
+                    }
                 }
                 post("$API_PREFIX/tasks/{ref}/comment") {
                     record("POST", call.receiveText())
@@ -512,6 +518,9 @@ class ApiClientTaskTest {
             updatedAt = 2,
             rev = 3,
         )
+
+        /** What `POST /tasks/{ref}/deps` answers: the same row, re-read, now `blocked` by the new edge. */
+        val BLOCKED_ENTRY = ENTRY.copy(blocked = true)
 
         val ACTIVITY = ActivityEntryDto(
             id = 5,

@@ -192,6 +192,49 @@ class CliTest {
     }
 
     @Test
+    fun startTellsTaskCommandsWhetherTheOperatorNamedTheDirectory() {
+        // Both forms hand `startWithTask` the same absolute STRING, so the boolean is the only carrier of
+        // "the operator typed this" — and `--task`'s cwd rule may override the CLI's own cwd but never a
+        // named one. Dropping it here launched the session in the project's stale stored path instead.
+        val seen = mutableListOf<Pair<String, Boolean>>()
+        val startWithTask = { _: String, cwd: String, explicit: Boolean, _: String, _: String?, _: List<String> ->
+            seen += cwd to explicit
+            0
+        }
+        val start = { _: String, _: String, _: String?, _: List<String> -> error("--task never takes this branch") }
+        assertEquals(0, runStartResolving(startCommand(cwd = "/tmp/p", task = "local:42"), "/base", startWithTask, start))
+        assertEquals(0, runStartResolving(startCommand(cwd = "sub", task = "local:42"), "/base", startWithTask, start))
+        assertEquals(0, runStartResolving(startCommand(cwd = null, task = "local:42"), "/base", startWithTask, start))
+        assertEquals(listOf("/tmp/p" to true, "/base/sub" to true, "/base" to false), seen)
+    }
+
+    @Test
+    fun startWithoutATaskTakesThePlainLaunchPathWithTheResolvedCwd() {
+        val seen = mutableListOf<String>()
+        val exit = runStartResolving(
+            startCommand(cwd = "sub", task = null),
+            "/base",
+            startWithTask = { _, _, _, _, _, _ -> error("no --task means no task path") },
+            start = { _, cwd, _, _ -> seen += cwd; 0 },
+        )
+        assertEquals(0, exit)
+        assertEquals(listOf("/base/sub"), seen)
+    }
+
+    @Test
+    fun startWithAnUnresolvableCwdExitsTwoWithoutStartingAnything() {
+        var ran = false
+        val exit = runStartResolving(
+            startCommand(cwd = "sub", task = "local:42"),
+            base = ".",
+            startWithTask = { _, _, _, _, _, _ -> ran = true; 0 },
+            start = { _, _, _, _ -> ran = true; 0 },
+        )
+        assertEquals(2, exit, "UnresolvableCwdException → usage exit code 2")
+        assertFalse(ran, "nothing may launch when the cwd cannot be resolved")
+    }
+
+    @Test
     fun importResolvesAnExplicitCwdLikeStartButAnAbsentOneStaysAbsent() {
         // `--cwd` goes through the same resolution rule as `runStart` (relative → anchored at the CLI's
         // own cwd; absolute → untouched). The ONE deliberate difference: an absent `--cwd` stays null —
@@ -455,6 +498,21 @@ class CliTest {
         assertTrue("needs_approval" in out, "state renders")
         assertTrue("*" in out, "a needs-attention session is flagged")
         assertEquals("no sessions\n", renderSessions(emptyList()))
+    }
+
+    @Test
+    fun theTaskColumnMarksATruncatedRefInsteadOfPrintingADifferentOne() {
+        // A ref cut to the column width is another WELL-FORMED ref: `local:1234567` would render as
+        // `local:123456`, which may name a different task, and a reader copying it into
+        // `kotgent task show` gets a confident wrong answer instead of an error. TaskRef.MAX_LENGTH is
+        // 128, so no width makes this impossible — only the marker does.
+        val long = sampleDto("aaa11111", "running", needsAttention = false).copy(taskRef = "local:1234567")
+        val short = sampleDto("bbb22222", "running", needsAttention = false).copy(taskRef = "local:42")
+        val out = renderSessions(listOf(long, short))
+        assertTrue("local:12345…" in out, "the cut is visible: $out")
+        assertFalse("local:123456" in out, "a truncated ref must never read as a complete one: $out")
+        assertTrue("local:42" in out, "a ref that fits is untouched")
+        assertTrue("-" in renderSessions(listOf(sampleDto("ccc33333", "running", needsAttention = false))))
     }
 
     @Test
@@ -898,6 +956,10 @@ class CliTest {
         createdAt = 1,
         updatedAt = 1,
     )
+
+    /** A [CliCommand.Start] with only the cwd and the task varying — the dispatch rule is what is probed. */
+    private fun startCommand(cwd: String?, task: String?) =
+        CliCommand.Start("claude", cwd, name = null, tags = emptyList(), task = task)
 
     /** An [CliCommand.Import] with only the cwd varying — the resolution rule is what the tests probe. */
     private fun importCommand(cwd: String?) =

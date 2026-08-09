@@ -904,9 +904,27 @@ fun renderSessions(sessions: List<SessionDto>): String {
         sb.append(s.agent.padEnd(11).take(11))
         sb.append(s.state.padEnd(17).take(17))
         sb.append(attn)
-        sb.append("  ").append((s.taskRef ?: "-").padEnd(12).take(12))
+        sb.append("  ").append(taskColumn(s.taskRef))
         sb.append("  ").append(s.cwd)
         sb.append('\n')
     }
     return sb.toString()
 }
+
+/**
+ * One TASK cell: the ref, or `-`, elided with `…` when it does not fit [TASK_COLUMN_WIDTH].
+ *
+ * The marker is the whole point. A plain `take()` of a ref yields another WELL-FORMED ref — `local:1234567`
+ * renders as `local:123456`, which may name a different task — so a reader copying the column into
+ * `kotgent task show <ref>` would get a confident answer about the wrong task instead of an error.
+ * `TaskRef.MAX_LENGTH` is 128, so no column width can make truncation impossible; only "obviously cut"
+ * can be guaranteed.
+ */
+private fun taskColumn(ref: String?): String {
+    val value = ref ?: "-"
+    val cell = if (value.length > TASK_COLUMN_WIDTH) value.take(TASK_COLUMN_WIDTH - 1) + "…" else value
+    return cell.padEnd(TASK_COLUMN_WIDTH)
+}
+
+/** The TASK column's width, matching the header row's `TASK` + padding in [renderSessions]. */
+private const val TASK_COLUMN_WIDTH: Int = 12

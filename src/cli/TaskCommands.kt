@@ -27,13 +27,16 @@ import kotlinx.serialization.json.put
  *     table would be a second format to keep in step with the DTOs for no reader. Failures are JSON too,
  *     on **stderr** ([taskErrorJson]), so everything this family emits is machine-readable and the two
  *     streams stay separable: stdout is the answer, stderr is why there is none.
- *  2. **`--session` short-circuits `/whoami`.** A ref-less subcommand resolves its subject through
- *     `GET /whoami` (pane → session), but when `--session <id>` was given the CLI already knows the id and
- *     **must not** make that call: `/whoami` is pane resolution, and asking it from outside a kotgent pane
- *     would fail for a request that has everything it needs. The named session's own row answers the two
- *     remaining questions instead — its `taskRef` for a ref-less subject ([resolveSubjectRef]) and its
- *     `projectId` for a project-less `task list` — because `GET /tasks` carries no body the daemon could
- *     resolve a session from.
+ *  2. **`--session` short-circuits `/whoami`, and never falls through to the pane.** A ref-less
+ *     subcommand resolves its subject through `GET /whoami` (pane → session), but when `--session <id>`
+ *     was given the CLI already knows the id and **must not** make that call: `/whoami` is pane
+ *     resolution, and asking it from outside a kotgent pane would fail for a request that has everything
+ *     it needs. The named session's own row answers the two remaining questions instead — its `taskRef`
+ *     for a ref-less subject ([resolveSubjectRef]) and its `projectId` for a project-less `task list`
+ *     ([resolveSubjectProject]) — because `GET /tasks` carries no body the daemon could resolve a session
+ *     from. Both resolutions **fail loudly** when the named session is unknown or answers nothing, rather
+ *     than sending the request without the answer: the daemon would then resolve the CALLING PANE, and
+ *     `--session <other>` would silently return this pane's own backlog.
  *
  * ## Exit codes
  *  - `0` success, `1` a daemon/API failure, `2` a usage error ([CliCommand.Invalid], handled in `Cli.kt`,
@@ -44,10 +47,10 @@ import kotlinx.serialization.json.put
  *    (`{"task":null}`), so a caller may read the answer instead of the code.
  *
  * ## `start --task`'s cwd
- * [startWithTask] chooses, in order: the caller's cwd when it resolves to the task's project; else the
- * project's stored `path`; else the caller's cwd again when that stored path no longer exists. Whichever
- * it used is named in the JSON output (`cwdSource`), because "kotgent started this somewhere else" is
- * exactly the kind of surprise a silent fallback creates.
+ * [startWithTask] chooses, in order: a cwd the operator NAMED on the command line; else the caller's cwd
+ * when it resolves to the task's project; else the project's stored `path`; else the caller's cwd again
+ * when that stored path no longer exists. Whichever it used is named in the JSON output (`cwdSource`),
+ * because "kotgent started this somewhere else" is exactly the kind of surprise a silent fallback creates.
  *
  * ## Why every body is a thin wrapper around a `run…Command` free function
  * Kotlin/Native gives a test no way to capture `println`, and these commands' interesting behaviour — ref
@@ -79,6 +82,7 @@ object TaskCommands {
             session = session,
             findSession = api.sessionFinder(),
             listTasks = { p -> api.listTasks(p) },
+            resolveCwdProjectId = ::currentCwdProjectId,
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -100,7 +104,10 @@ object TaskCommands {
     /** `task next` — exits `3` when nothing is eligible. */
     fun next(project: String?, session: String?): Int = withTaskApi { api ->
         runTaskNextCommand(
-            nextTask = { api.nextTask(project, session) },
+            project = project,
+            session = session,
+            nextTask = { p -> api.nextTask(p, session) },
+            resolveCwdProjectId = ::currentCwdProjectId,
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -231,12 +238,15 @@ object TaskCommands {
     /**
      * `start <agent> [cwd] --task <ref>` — one `POST /api/v1/sessions` carrying the `taskRef`, so the
      * session row and its link are written by the same request and a failed launch leaves no link behind.
-     * [cwd] is the caller's already-resolved working directory; see the cwd rule in this object's KDoc for
-     * when it is overridden by the project's stored path.
+     *
+     * [cwd] is always absolute (`runStart` resolved it); [cwdExplicit] says whether it came from the
+     * command line or was defaulted to the caller's own working directory. The two are the same STRING
+     * and only that flag tells them apart — see the cwd rule in this object's KDoc.
      */
     fun startWithTask(
         agent: String,
         cwd: String,
+        cwdExplicit: Boolean,
         taskRef: String,
         name: String?,
         tags: List<String>,
@@ -245,6 +255,7 @@ object TaskCommands {
         runStartWithTaskCommand(
             agent = agent,
             callerCwd = cwd,
+            cwdExplicit = cwdExplicit,
             taskRef = taskRef,
             name = name,
             tags = tags,
@@ -353,6 +364,79 @@ private suspend fun resolveSubjectRef(
     )
 }
 
+/**
+ * Which project a project-scoped subcommand is about, or `null` for "let the daemon answer".
+ *
+ * [resolveSubjectRef]'s counterpart, and it obeys the same `--session` rule: an explicit [project] asks
+ * nobody, an explicit [session] is answered from that session's own row, and only a caller with neither
+ * leaves the question to the daemon (which resolves the calling pane).
+ *
+ * The two throws are the whole point. `GET /tasks` carries no body, so a `--session` the CLI failed to
+ * answer would go out as a request naming no project at all — and the daemon would then answer from the
+ * CALLING PANE, i.e. `kotgent task list --session <other>` would silently print this pane's own backlog
+ * with exit `0`. An unknown session and a session carrying no project therefore both fail here, the way
+ * [resolveSubjectRef] already fails for the same two shapes.
+ */
+private suspend fun resolveSubjectProject(
+    command: String,
+    project: String?,
+    session: String?,
+    findSession: suspend (String) -> SessionDto?,
+): String? {
+    if (project != null) return project
+    if (session == null) return null
+    val row = findSession(session)
+        ?: throw TaskSubjectException("no session '$session' — check `kotgent list`")
+    return row.projectId ?: throw TaskSubjectException(
+        "session '$session' resolves to no project — name one: kotgent $command --project <uuid>",
+    )
+}
+
+/**
+ * Run [call] with no project and, when the daemon answers that it could not resolve one, run it again
+ * naming the project the CLI's OWN working directory resolves to.
+ *
+ * This closes the first-run loop. `kotgent task add` creates `.kotgent.json` when a session has no
+ * project yet, but the file it writes is not the session ROW: the row's `project_id` is written when the
+ * row is inserted, so a `task list` / `task next` in the very session that just created the project asks
+ * a question the daemon's row still cannot answer. The CLI is standing IN the checkout and can — with
+ * exactly the pure walk the daemon runs ([resolveProject]).
+ *
+ * Two properties keep it honest. It is a **fallback, not a precedence change**: a request the daemon
+ * answered is never second-guessed, so a pane whose row does name a project keeps deciding — the same
+ * project `task add` files into. And a failed retry rethrows the **original** refusal, because the
+ * caller never named the fallback project and an error about it (a `404` for a uuid they have not seen)
+ * would be an answer to a request they did not make; the original names `--project`, which is still the
+ * fix. The retry costs one extra round trip only on a path that had already failed.
+ */
+private suspend fun <T> withCwdProjectFallback(
+    resolveCwdProjectId: () -> String?,
+    call: suspend (String?) -> T,
+): T = try {
+    call(null)
+} catch (noProject: ApiException) {
+    if (noProject.status != HTTP_BAD_REQUEST) throw noProject
+    val local = resolveCwdProjectId() ?: throw noProject
+    try {
+        call(local)
+    } catch (retryFailed: ApiException) {
+        throw noProject.also { it.addSuppressed(retryFailed) }
+    }
+}
+
+/**
+ * The project the CLI's own working directory resolves to, by the pure walk in `src/task/ProjectFile.kt`
+ * over the real filesystem — the same rule the daemon applies to a session's cwd.
+ *
+ * A function rather than a value: it reads the environment, so it must stay off every path that does not
+ * need it (see [withCwdProjectFallback], its only caller).
+ */
+private fun currentCwdProjectId(): String? =
+    resolveProject(PosixProjectFs(), currentWorkingDir())?.id?.value
+
+/** The daemon's "I could not resolve a project" — the one status [withCwdProjectFallback] answers. */
+private const val HTTP_BAD_REQUEST: Int = 400
+
 /** `task add` — create and print the new entry. */
 suspend fun runTaskAddCommand(
     title: String,
@@ -371,21 +455,23 @@ suspend fun runTaskAddCommand(
  *
  * With `--session` and no `--project` the project comes from that session's own row: `GET /tasks` carries
  * no body, so the daemon has nothing to resolve a session from, and without this the one documented way
- * to run these commands from outside a pane would not work for `list`. A session with no project is left
- * to the daemon's `400`, which names `--project` — the CLI does not invent a better error for it.
+ * to run these commands from outside a pane would not work for `list`. That resolution never falls
+ * through to the pane — see [resolveSubjectProject]. With neither flag the daemon answers from the
+ * calling pane, and [withCwdProjectFallback] covers the one case it cannot.
  */
 suspend fun runTaskListCommand(
     project: String?,
     session: String?,
     findSession: suspend (String) -> SessionDto?,
     listTasks: suspend (String?) -> List<BacklogEntryDto>,
+    resolveCwdProjectId: () -> String?,
     stdout: (String) -> Unit,
     stderr: (String) -> Unit,
 ): Int = runTaskCommand(stdout, stderr) {
-    val resolved = project ?: session?.let { findSession(it)?.projectId }
-    TaskOutput(
-        TRANSPORT_JSON.encodeToString(ListSerializer(BacklogEntryDto.serializer()), listTasks(resolved)),
-    )
+    val named = resolveSubjectProject("task list", project, session, findSession)
+    val entries =
+        if (named != null) listTasks(named) else withCwdProjectFallback(resolveCwdProjectId, listTasks)
+    TaskOutput(TRANSPORT_JSON.encodeToString(ListSerializer(BacklogEntryDto.serializer()), entries))
 }
 
 /** `task show` — one task in full. */
@@ -408,13 +494,24 @@ suspend fun runTaskShowCommand(
  * A null answer is not a failure: the route says so with a `200` carrying a null task precisely so this
  * can be told apart from an error, and the printed `{"task":null}` keeps the JSON-only contract for a
  * caller that reads the answer rather than the code.
+ *
+ * Unlike `task list`, the session is resolved by the DAEMON here — `POST /tasks/next` carries a body, so
+ * `--session` rides in it — and only the project is the CLI's problem. Hence no [findSession] seam: with
+ * either flag the request goes as written, and with neither it takes [withCwdProjectFallback].
  */
 suspend fun runTaskNextCommand(
-    nextTask: suspend () -> BacklogEntryDto?,
+    project: String?,
+    session: String?,
+    nextTask: suspend (String?) -> BacklogEntryDto?,
+    resolveCwdProjectId: () -> String?,
     stdout: (String) -> Unit,
     stderr: (String) -> Unit,
 ): Int = runTaskCommand(stdout, stderr) {
-    val entry = nextTask()
+    val entry = if (project != null || session != null) {
+        nextTask(project)
+    } else {
+        withCwdProjectFallback(resolveCwdProjectId, nextTask)
+    }
     if (entry == null) {
         TaskOutput(
             TRANSPORT_JSON.encodeToString(
@@ -512,31 +609,25 @@ suspend fun runTaskMoveCommand(
 }
 
 /**
- * `task dep add|rm` — add or remove "ref depends on other".
+ * `task dep add|rm` — add or remove "ref depends on other", printing the edited task.
  *
- * The route answers no body, so the printed object is the request, echoed: which edge, in which
- * direction. The four refusals (unknown ref, cross-project, self, cycle) are `400`s and print as errors.
+ * The route answers the updated entry, and that entry is the answer: what a dependency edit CHANGES is
+ * `blocked`, which is derived (`state == todo` and some dependency is not `done`) and therefore cannot be
+ * worked out from the request. Echoing the request instead — which is what this did — left the one
+ * consumer with no socket having to issue a second `task show` to learn whether the ref it just made
+ * dependent is still workable, after the skill told it to treat `blocked` as "not workable".
+ *
+ * The four refusals (unknown ref, cross-project, self, cycle) are `400`s and print as errors.
  */
 suspend fun runTaskDepCommand(
     ref: String,
     on: String,
     remove: Boolean,
-    editTaskDependency: suspend (ref: String, action: String, on: String) -> Unit,
+    editTaskDependency: suspend (ref: String, action: String, on: String) -> BacklogEntryDto,
     stdout: (String) -> Unit,
     stderr: (String) -> Unit,
 ): Int = runTaskCommand(stdout, stderr) {
-    val action = if (remove) "remove" else "add"
-    editTaskDependency(ref, action, on)
-    TaskOutput(
-        TRANSPORT_JSON.encodeToString(
-            JsonObject.serializer(),
-            buildJsonObject {
-                put("ref", ref)
-                put("on", on)
-                put("action", action)
-            },
-        ),
-    )
+    TaskOutput(entryJson(editTaskDependency(ref, if (remove) "remove" else "add", on)))
 }
 
 /**
@@ -596,19 +687,28 @@ suspend fun runProjectInitCommand(
  * `start --task` — pick the directory, then start the session and its link in ONE request.
  *
  * The rule, in order, with the chosen branch named in the output as `cwdSource`:
- *  1. `caller-cwd` — the caller's own cwd resolves to the task's project. The operator is standing in the
- *     right checkout (and in a worktree that is the checkout they mean, which a stored path cannot know).
+ *  0. `explicit-cwd` — the operator NAMED a directory (`start claude /some/dir --task <ref>`). Nothing
+ *     below may override it: `USAGE` documents that positional as where the session starts, and
+ *     `projects.path` is by definition "the checkout the daemon saw most recently", i.e. not authoritative
+ *     about anything. Starting somewhere the operator did not type, on the strength of a stale row, is the
+ *     one outcome no branch here may produce — and the caller's own cwd is the same STRING as a named one,
+ *     so [cwdExplicit] is the only thing that can tell them apart.
+ *  1. `caller-cwd` — no directory was named and the caller's own cwd resolves to the task's project. The
+ *     operator is standing in the right checkout (and in a worktree that is the checkout they mean, which
+ *     a stored path cannot know).
  *  2. `project-path` — it does not, but the project's last-seen path is still a directory.
  *  3. `caller-cwd-fallback` — that stored path is stale (a checkout that moved or was deleted), so the
  *     caller's cwd is used after all. Starting in a directory that no longer exists would fail the launch
  *     for a reason that has nothing to do with what the operator asked for.
  *
  * The detail fetch is not incidental: it is where the task's project comes from, and it fails a mistyped
- * ref with the daemon's `404` **before** any tmux side effect.
+ * ref with the daemon's `404` **before** any tmux side effect. It happens even for an explicit cwd, which
+ * is why branch 0 does not short-circuit the whole body.
  */
 suspend fun runStartWithTaskCommand(
     agent: String,
     callerCwd: String,
+    cwdExplicit: Boolean,
     taskRef: String,
     name: String?,
     tags: List<String>,
@@ -628,6 +728,7 @@ suspend fun runStartWithTaskCommand(
     val detail = taskDetail(taskRef)
     val storedPath = detail.projectPath
     val chosen = when {
+        cwdExplicit -> callerCwd to "explicit-cwd"
         resolveProjectId(callerCwd) == detail.task.project -> callerCwd to "caller-cwd"
         storedPath != null && isDirectory(storedPath) -> storedPath to "project-path"
         else -> callerCwd to "caller-cwd-fallback"

@@ -303,10 +303,20 @@ class ApiClient(
         )
     }
 
-    /** `POST /api/v1/tasks/{ref}/deps` — [action] is `"add"` or `"remove"`; the four refusals are `400`s. */
-    suspend fun editTaskDependency(ref: String, action: String, on: String) {
+    /**
+     * `POST /api/v1/tasks/{ref}/deps` — [action] is `"add"` or `"remove"`; the four refusals are `400`s.
+     *
+     * The route answers the UPDATED entry (`TaskWriteRoutes` re-reads it after the edit) and this returns
+     * it, because `blocked` — the one field a dependency edit changes — is derived server-side and cannot
+     * be inferred from the request. Discarding the body left the CLI, the one consumer with no events
+     * socket, unable to tell whether the task it just made dependent is still workable.
+     */
+    suspend fun editTaskDependency(ref: String, action: String, on: String): BacklogEntryDto {
         val request = json.encodeToString(DepsRequest.serializer(), DepsRequest(action = action, on = on))
-        taskPost("/tasks/${refSegment(ref)}/deps", request)
+        return json.decodeFromString(
+            BacklogEntryDto.serializer(),
+            taskPost("/tasks/${refSegment(ref)}/deps", request),
+        )
     }
 
     /** `POST /api/v1/tasks/{ref}/comment` — requires session identity, so an activity row is attributable. */
