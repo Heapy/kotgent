@@ -1588,17 +1588,30 @@ uuid itself, only that its writer persists the one it was handed.
 ### Task 31: Agent Skill contract
 **Owns:** `docs/agent-task-skill.md`
 
-- [ ] the contract the Heapy/Kortex skill implements: read your task with `kotgent task show` (no ref
+- [x] the contract the Heapy/Kortex skill implements: read your task with `kotgent task show` (no ref
       needed), comment progress, finish with `kotgent task review -m "summary, commits"`, take the next one
       with `kotgent task next`, stop on exit code `3`
-- [ ] state plainly that kotgent does **not** enforce one worker per task: `task next` will not hand the same
+- [x] state plainly that kotgent does **not** enforce one worker per task: `task next` will not hand the same
       task to two agents in a row, but an explicit link on a task already in progress is allowed and the
       board shows every linked session. An agent must not assume it is alone
-- [ ] the daemon writes `.kotgent.json` but never commits it — the agent should mention it rather than
+- [x] the daemon writes `.kotgent.json` but never commits it — the agent should mention it rather than
       sweeping it into an unrelated commit
-- [ ] the JSON shapes the skill parses and the `/whoami` mechanism behind ref-less commands, pointing at the
+- [x] the JSON shapes the skill parses and the `/whoami` mechanism behind ref-less commands, pointing at the
       DTOs rather than restating them
-- [ ] no code, no tests — this is the interface description the out-of-repo skill is written against
+- [x] no code, no tests — this is the interface description the out-of-repo skill is written against
+- ➕ **`task done` is documented as NOT the agent's command.** The plan's loop stops at `review`, and the
+      CLI's `task done` closes the task and unlinks every holder — so a skill that called it would skip the
+      human review it just requested. The doc says so explicitly and names the two paths that DO close a
+      task (the board, and the session's "Done" from Task 29)
+- ➕ **the pane rule is stated as a constraint on the skill, not just a mechanism.** `/whoami` resolves a
+      PANE, and `TmuxSelf` sends the header only when `$TMUX`'s socket is kotgent's — so a ref-less command
+      run outside the session's own pane (another shell, another machine, a container) silently has no
+      subject. The doc names `--session <id>` as the supported way out and says it skips `/whoami` entirely
+- ➕ the exit-code table, the stdout/stderr split (`{"error":…,"status":…}` on stderr) and the per-command
+      output shapes are written out, because they are built ad hoc in `TaskCommands.kt` rather than by a
+      DTO a skill author could read: `{"task":null}`, the `{ref, <verb>: true}` acknowledgements, the
+      echoed `dep` request, and `start --task`'s `cwdSource`. The three real DTOs are named and pointed at,
+      not restated. `encodeDefaults = true` is stated so a parser may rely on every key existing
 
 ### Task 32: [Final] Acceptance and documentation
 **Owns:** `CLAUDE.md`, `README.md`, this plan file
