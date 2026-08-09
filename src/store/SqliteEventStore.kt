@@ -258,16 +258,28 @@ class SqliteEventStore private constructor(
         applied
     }
 
-    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
-        TODO("Task 10: targeted task_ref write + emit")
-    }
+    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long): Unit =
+        mutex.withLock {
+            // Targeted, and unconditional: the statement touches task_ref / updated_at / rev only, so a
+            // concurrent hook append's state / last_seq / provider_session_id (advanced under this same
+            // lock) survive, and a null CLEARS — which is what makes this the only way a link goes away.
+            sessions.setTaskRef(taskRef?.value, updatedAt, ++revCounter, sessionId.value)
+            // Re-read rather than echoing the argument: the emit is what moves the sidebar's task badge,
+            // and it must report the committed row (a vanished row emits nothing at all).
+            emitFromRow(sessionId)
+        }
 
-    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
-        TODO("Task 10: targeted project_id write + emit")
-    }
+    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
+        mutex.withLock {
+            sessions.setProjectId(projectId?.value, updatedAt, ++revCounter, sessionId.value)
+            emitFromRow(sessionId)
+        }
 
-    override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
-        TODO("Task 10: every session linked to this task")
+    override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = mutex.withLock {
+        // A LIST, not an optional: linking is many-sessions-to-one-task by design. `created_at, id` in the
+        // statement gives the stable oldest-first order `transition(done)` / `delete` iterate to unlink.
+        sessions.sessionsHoldingTask(taskRef.value).executeAsList().map { it.toMeta() }
+    }
 
     override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
         // Monotonicity (MAX) and the clamp to last_seq (MIN) live in the statement itself, so nothing is
