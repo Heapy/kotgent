@@ -627,7 +627,8 @@ class SessionManager(
      * [start] and [importSession] both INSERT their row, so carrying the id in the [SessionMeta] writes it
      * in the same statement instead of following the insert with a second targeted write and a second
      * `SessionUpdate`. The row is therefore never observable without its project, and the targeted setter
-     * keeps its one real caller: [Reconciler]'s backfill, which patches rows that already exist.
+     * is left to the callers that patch rows which already exist: [Reconciler]'s backfill and `POST
+     * /tasks`' bind of the project a create resolved (see [EventStore.setProjectId]).
      *
      * ## Registering the project is REQUIRED, not decorative
      * Every path that reads a `.kotgent.json` upserts the `projects` row (`TaskStore.upsertProject`):

@@ -232,9 +232,28 @@ interface EventStore {
 
     /**
      * Set (or clear) the session's resolved project, with the same targeted-write and emission contract
-     * as [setTaskRef]. Written by the daemon at `start` / `import` and backfilled by startup
-     * reconciliation. A no-op if the row does not exist. Defaulted — and the default throws — for the
+     * as [setTaskRef]. A no-op if the row does not exist. Defaulted — and the default throws — for the
      * reason on [setTaskRef].
+     *
+     * ## Three writers reach `sessions.project_id`, and only two of them come through here
+     *  1. `start` / `import` (`SessionManager.resolveAndRegisterProject`) INSERT the row already carrying
+     *     the id, so the column is written by the insert itself — never observable without its project,
+     *     and no second targeted write or second `SessionUpdate`.
+     *  2. Startup reconciliation (`Reconciler.backfillProjectId`) patches rows that already exist and
+     *     still name no project — the repair path, which is also what makes 1's write-both-or-neither
+     *     failure mode self-healing.
+     *  3. `POST /tasks` (`TaskWriteRoutes`' `bindSessionProject`) binds the project a create had to
+     *     resolve from the filesystem onto the CALLING session's row.
+     *
+     * ## Why the third exists — do not remove it
+     * `sessions.project_id` is what a ref-less `GET /tasks` and `POST /tasks/next` resolve a request
+     * through, so while 2 was this setter's only production caller the session that BOOTSTRAPPED a project
+     * — the one that filed the first card in a repository with no `.kotgent.json` — held a null column
+     * until the daemon next restarted, and could not then run `task list` / `task next` / `task show`
+     * without an explicit `--project` uuid. That is the whole ref-less agent loop, failing in exactly the
+     * session that just created the project; it was the review's highest-severity finding. A create that
+     * names its project explicitly deliberately does NOT bind: that is the board relaying someone else's
+     * backlog, and it must not re-point the session that relayed it.
      */
     suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
         throw UnsupportedOperationException(

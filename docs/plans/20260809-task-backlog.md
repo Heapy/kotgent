@@ -1619,7 +1619,9 @@ uuid itself, only that its writer persists the one it was handed.
 
 Every criterion below was checked **against the code and a named test**, not asserted from this plan. A
 criterion is ticked only when a test would fail if it stopped being true; where the proof is a chain of
-tests rather than one, the chain is named. Two are recorded as **not proved** at the bottom.
+tests rather than one, the chain is named. The one criterion this list originally recorded as **not
+proved** — ref-less `task comment` — was closed by the review round that followed; the two items still
+open at the bottom are **not done here**, not unproved (an external system, and an operator action).
 
 - [x] a backlog with no `.kotgent.json` behaves as today; no file is written until a task is created —
       `TaskProjectWiringTest.aStartOutsideAnyProjectLeavesTheProjectNullAndRegistersNothing` (a start
@@ -1642,8 +1644,10 @@ tests rather than one, the chain is named. Two are recorded as **not proved** at
       four `400` cases) and `TmuxSelfTest`'s socket gate; the CLI half is
       `TaskCommandsTest.showResolvesARefLessSubjectThroughWhoami` and
       `doneResolvesItsSubjectThroughWhoamiAndPatchesTheDoneState` (`review` and `done` are one function,
-      `runTaskTransitionCommand`) and `unlinkAcknowledgesTheDroppedLink`. ⚠️ **Ref-less `comment` is the
-      one verb with no test of its own** — see the note at the end.
+      `runTaskTransitionCommand`), `unlinkAcknowledgesTheDroppedLink` and — closing the gap this list first
+      recorded as unproved — `commentResolvesARefLessSubjectThroughWhoami`. All five verbs on the
+      `resolveSubjectRef` seam are now pinned to it individually, each verified to fail with its own
+      resolution removed.
 - [x] the board creates a task with no session anywhere in the picture —
       `TaskWriteRoutesTest.createWithAnExplicitProjectAndNoPaneNeedsNoSession` and
       `aCreateFromTheBoardIsAttributedToTheBoard`; the browser half is
@@ -1690,7 +1694,7 @@ tests rather than one, the chain is named. Two are recorded as **not proved** at
       the root-absolute link rewrite is pinned in `WebUiServingTest` (`href="/manifest.webmanifest"`,
       `/icons/apple-touch-icon.png`, `/icons/logo.svg`), and `TaskIntegrationTest`'s
       `theApiAnswersUnderTheApiPrefixWhileTheSpaOwnsTheBarePath` proves both spaces with real route bodies.
-- [x] `./kotlin build && ./kotlin test` — **1400 native tests passed / 0 skipped** (build exit 0 first),
+- [x] `./kotlin build && ./kotlin test` — **1401 native tests passed / 0 skipped** (build exit 0 first),
       well above the 983 post-wave-1.5 floor; `node --check` clean over all 15 changed `.js` files; all 14
       new/changed served modules appear in `WebUiServingTest.kt`; `git grep '/Users/' -- '*.yaml'` empty.
 - [x] CLAUDE.md: the two-layer split; `.kotgent.json` as the project key with its supported and unsupported
@@ -1702,7 +1706,7 @@ tests rather than one, the chain is named. Two are recorded as **not proved** at
       half was already there from Task 1 and was left as written.
 - [x] CLAUDE.md "Where things live": `src/task/`, `src/store/{SqliteTaskStore,BacklogOrdering,BacklogDependencies}.kt`,
       `src/cli/{TmuxSelf,TaskCommands}.kt`, `schema/`, the new Web UI modules; update the test baseline
-      (927 → 1400).
+      (927 → 1401).
 - ➕ **`docs/agent-task-skill.md` carried three defects and they are fixed.** It is the one artefact here
       whose consumer — an out-of-repo skill — no test in this repository can catch, so every row was
       re-checked against `TaskCommands.kt`. (1) `task dep` was documented as `{ref, on, action}` because
@@ -1730,11 +1734,14 @@ tests rather than one, the chain is named. Two are recorded as **not proved** at
       working directory), so parallel runs in separate git worktrees share one tmux server and kill each
       other's sessions — all 21 concurrent agents in this plan's fleet hit nondeterministic
       `TmuxTest`/`PtyTest` failures from that alone.
-- [ ] ⚠️ **Not proved: ref-less `kotgent task comment`.** `runTaskCommentCommand` resolves its subject
-      through the same `resolveSubjectRef` seam as `show`/`review`/`done`/`unlink`, and that seam is
-      covered from four of the five verbs, but `commentPrintsTheActivityRowItCreated` passes an explicit
-      ref and asserts `whoami` is never called. The mechanism is proved; this one verb's wiring to it is
-      not. One test (`comment` with `ref = null` and a `whoami` stub) closes it.
+- [x] ~~**Not proved: ref-less `kotgent task comment`.**~~ **Closed after the review round.**
+      `runTaskCommentCommand` resolves its subject through the same `resolveSubjectRef` seam as
+      `show`/`review`/`done`/`unlink`, but that seam was covered from only four of the five verbs:
+      `commentPrintsTheActivityRowItCreated` passes an explicit ref and asserts `whoami` is never called,
+      so the mechanism was proved while this one verb's wiring to it was not.
+      `TaskCommandsTest.commentResolvesARefLessSubjectThroughWhoami` (a null ref through a `/whoami` stub)
+      closes it, and was verified to be the ONLY failing test when `runTaskCommentCommand`'s
+      `resolveSubjectRef` call is replaced by `ref!!`.
 - [ ] update the issue #4 body if any decision moved during implementation — **not done here**: it is an
       external system (GitHub), outside this repository's build and tests, and nothing in this plan's
       decisions moved during implementation in a way the issue body contradicts.

@@ -488,6 +488,38 @@ class TaskCommandsTest {
     }
 
     @Test
+    fun commentResolvesARefLessSubjectThroughWhoami() = runCommandTest {
+        val out = Sinks()
+        var whoamiCalls = 0
+        var seen: List<String?>? = null
+        // `comment` is the fifth verb on the `resolveSubjectRef` seam, and the seam being proved from the
+        // other four does not prove THIS verb is wired to it: a body that read `ref!!` would still pass
+        // every test above. Commenting on its own task without being told its id is half of what an agent
+        // in a pane does, so the wiring gets its own case.
+        val exit = runTaskCommentCommand(
+            ref = null,
+            message = "picked this up",
+            session = null,
+            whoami = {
+                whoamiCalls++
+                WhoamiDto(sessionId = "sess0001", projectId = PROJECT, taskRef = "local:11")
+            },
+            findSession = { error("no session lookup on the pane path") },
+            commentOnTask = { r, t, s ->
+                seen = listOf(r, t, s)
+                ActivityEntryDto(id = 13, ref = r, ts = 6, kind = "comment", author = "sess0001", text = t)
+            },
+            stdout = out.stdout::add,
+            stderr = out.stderr::add,
+        )
+        assertEquals(0, exit)
+        out.assertNoErrors()
+        assertEquals(1, whoamiCalls)
+        assertEquals(listOf("local:11", "picked this up", null), seen, "the pane's own task is the subject")
+        assertEquals("local:11", out.onlyJsonObject()["ref"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun reviewPatchesTheReviewStateCarryingItsMessage() = runCommandTest {
         val out = Sinks()
         var seen: List<String?>? = null

@@ -27,9 +27,8 @@ import kotlinx.coroutines.sync.withLock
  *    **once**. Renormalizing is a LOOP over the project's rows + `setPosition`, deliberately not a bulk
  *    `UPDATE`: **every** rewritten row must stamp its own `rev` and emit its own [TaskUpdate], or a
  *    connected board silently holds stale positions. (The rows come from
- *    [BacklogDependencies.listBacklogLocked], NOT from `Backlog.sq`'s `selectPositionsOrdered` — see
- *    [renormalizeLocked]. That query is currently unused; its own comment still describes it as this
- *    input and is the stale one.)
+ *    [BacklogDependencies.listBacklogLocked]; `Backlog.sq` deliberately carries no ranks-only companion
+ *    to read them from — see [renormalizeLocked].)
  *  - Every emitted entry carries the derived `blocked`, so this class reads through [dependencies]
  *    rather than growing a second implementation of that rule.
  *
@@ -148,11 +147,12 @@ class BacklogOrdering(
      * Rewrite [project]'s whole column to `1.0, 2.0, 3.0, …` in rank order, in ONE transaction, stamping
      * every row a fresh revision.
      *
-     * The input is [BacklogDependencies.listBacklogLocked] rather than `selectPositionsOrdered`, and the
-     * two are the same rows in the same order (`ORDER BY position, task_ref`): every rewritten row has to
-     * be EMITTED, an emission carries a whole [BacklogEntry], and the derived `blocked` on it has exactly
-     * one implementation, which is the collaborator's. Re-reading each row instead would be a query per
-     * card to rebuild what one read already answered.
+     * The input is [BacklogDependencies.listBacklogLocked], which already reads the project in exactly the
+     * order a renormalization needs (`selectEntriesByProject`, `ORDER BY position, task_ref`). `Backlog.sq`
+     * deliberately has no leaner `SELECT task_ref, position` beside it: every rewritten row has to be
+     * EMITTED, an emission carries a whole [BacklogEntry], and the derived `blocked` on it has exactly one
+     * implementation, which is the collaborator's. A ranks-only query would answer less than the one read
+     * already answers, and re-reading each row to make up the difference would be a query per card.
      *
      * The updates are STAGED, never published from in here. `tryEmit` is non-suspending so publishing
      * inside the block would be legal, but a subscriber must never see a position a rollback would take
