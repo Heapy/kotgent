@@ -246,13 +246,18 @@ class WebUiScreenRoutingTest {
             "the board still compares against a per-MOUNT ref that starts at 0",
         )
         val app = ctx.text("/app.js")
+        // Both one-shot counters retire together: "New project" is the same mechanism for the board's
+        // other form, and a counter left standing re-opens its modal on a later visit made to READ.
+        val wiring = sliceBetween(
+            app,
+            "const [newTaskRequest, setNewTaskRequest] = useState(0);",
+            "const openSessionTask",
+            "the new-task request wiring",
+        )
         assertTrue(
-            sliceBetween(
-                app,
-                "const [newTaskRequest, setNewTaskRequest] = useState(0);",
-                "const openSessionTask",
-                "the new-task request wiring",
-            ).contains("if (!onBoard) setNewTaskRequest(0);"),
+            wiring.contains("if (!onBoard) {") &&
+                wiring.contains("setNewTaskRequest(0);") &&
+                wiring.contains("setNewProjectRequest(0);"),
             "so the app puts its side back to 0 when the board goes away — both ends then read " +
                 "\"never asked\", and the next visit opens nothing",
         )

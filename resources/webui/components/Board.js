@@ -21,6 +21,9 @@
  *                   The comparison starts from `0`, not from the mounted value, because the palette
  *                   NAVIGATES and bumps in one event: the board is usually mounting with the counter
  *                   already at 1, and that mount is the request.
+ *   newProjectRequest  the same one-shot counter for the new-project form, from the palette's chordless
+ *                   "New project". It is a SECOND counter rather than a shared one because `form` holds
+ *                   one value and the board has to know which form was asked for.
  *   onTaskRow       (BacklogEntryDto) → merge a row into `app.js`'s one task list, newest-rev-wins. It is
  *                   the SAME merge the socket's frames go through, so it is not a second path into the
  *                   list — just a second source for it.
@@ -192,6 +195,7 @@ export function Board({
   route = null,
   basePath = "",
   newTaskRequest = 0,
+  newProjectRequest = 0,
   onTaskRow,
   onTaskRemoved,
   onAnnounce,
@@ -276,6 +280,14 @@ export function Board({
     servedRequestRef.current = newTaskRequest;
     setForm("task");
   }, [newTaskRequest]);
+  // "New project" is the same one-shot counter for the other form, with its own served ref: `form` holds
+  // one value, so a shared counter could not tell which of the two the palette asked for.
+  const servedProjectRequestRef = useRef(0);
+  useEffect(() => {
+    if (newProjectRequest === servedProjectRequestRef.current) return;
+    servedProjectRequestRef.current = newProjectRequest;
+    setForm("project");
+  }, [newProjectRequest]);
 
   // --- the board's rows ----------------------------------------------------------------------------
 

@@ -757,6 +757,18 @@ the chord-bearing subset. Do not introduce a second list in `app.js` or a compon
 keeps only the daily notification toggle (plus the structural mobile drawer close); Preferences stays
 reachable from the base-path note, and an empty first run keeps its direct "Start a session" action.
 Reserved future chords remain visible but disabled in this one registry until their stages are designed.
+**It is SCREEN-AWARE, because `/tasks` replaces the session view rather than covering it.** `buildCommands`
+takes `onBoard` (the app's answer — the route is app state) and on the board omits the whole `session`
+group and the sidebar-only "show done" toggle: every one of those reads `activeSession`, which on the
+board is a leftover selection behind a backlog — ⌘K a wrote `attachedId` with no `TerminalPane` mounted
+and did visibly nothing, ⌘K e announced a detach from a terminal that was not on screen, and
+Interrupt/Stop/Done reached whatever row was selected before the operator left. They are BUILT away
+rather than disabled: a disabled row is for a command that could apply here and does not right now.
+`general.task-board`'s `o` is ONE mnemonic for "the other screen" (board from the session view, back out
+from the board) — never two descriptors, because `leaderKeyDown` resolves a letter first-match-wins and
+chord uniqueness is asserted over this file's SOURCE TEXT. Session ROWS stay on both screens (selecting
+one navigates to `/s/{id}`, so search is also the way back), and the two board-owned commands are the
+chordless "New project" and "New task", each a one-shot counter `Board` serves with a ref of its own.
 
 **A native `<dialog>` paints a backdrop that dismisses nothing, so `Dialog` owns both pointer gestures.**
 `showModal()` gives Esc, the focus trap and the backdrop's ink — not a light dismiss — so before this every

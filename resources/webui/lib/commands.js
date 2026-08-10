@@ -5,6 +5,18 @@
  * closures keep routes and session-id handling in app.js, while this browser-free module owns which
  * commands exist, when they apply, and how they are found.
  *
+ * **The registry is SCREEN-AWARE, because the app has two screens and only one of them shows a
+ * session.** `/tasks` replaces the session view entirely, so while the board is up the palette used to
+ * offer nine commands aimed at a session nobody could see: ⌘K a set `attachedId` with no `TerminalPane`
+ * mounted (nothing happened at all), ⌘K e announced a detach from a terminal that was not on screen, and
+ * Interrupt/Stop/Done acted on whatever row happened to be selected before the operator went to groom
+ * the backlog. `onBoard` therefore drops the whole `session` group and the sidebar-only "show done"
+ * toggle, and turns the one board mnemonic around: `o` opens the board from the session view and leads
+ * back out of it from the board, where "Open the task board" was a command that did nothing.
+ *
+ * Session ROWS stay on both screens. Selecting one is navigation — app.js's `showSession` navigates to
+ * `/s/{id}` — so on the board the search view is also the way back to a particular session.
+ *
  * That division is why the three task commands call `actions.openBoard` / `actions.newTask` /
  * `actions.openSessionTask` rather than building a route or looking a session up here: navigation and the
  * session list are app state, and reaching for either would make this file a second holder of it as well
@@ -88,25 +100,20 @@ function sessionRows(sessions, actions) {
 }
 
 /**
- * Build every command from app-owned actions. Keep this as the only command/mnemonic registry.
+ * The commands that act on the session the operator is LOOKING at, in the order the leader grid draws
+ * them. They are built only for the session view: every one of them reads `activeSession`, and on the
+ * board that row is a leftover selection behind a screen that shows a backlog (see the module header).
  *
- * `actions` contains closures rather than route names: the app remains responsible for confirmation,
- * status reporting, dialog state, and the active session changing between renders. `pendingAction` is a
- * first-class disabled reason here, and always the FIRST one — an in-flight request outranks every
- * per-session condition — but in two strengths, because two different things are being protected: see
- * the pair of helpers above. Session rows deliberately take neither: selecting a session is navigation,
- * and `showSession` writes the attachment coherently with the selection it just made.
+ * `pendingAction` is a first-class disabled reason here, and always the FIRST one — an in-flight request
+ * outranks every per-session condition — but in two strengths, because two different things are being
+ * protected: see the pair of helpers above.
  */
-export function buildCommands({
-  sessions = [], activeSession = null, attachedId = null, pendingAction = null, actions,
-}) {
+function sessionCommands(activeSession, attachedId, pendingAction, actions) {
   const alive = !!activeSession && isAliveState(activeSession.state);
   const attached = !!activeSession && activeSession.id === attachedId;
   const tmuxAvailable = alive && !!activeSession.tmuxSession;
 
   return [
-    ...sessionRows(sessions, actions),
-
     {
       id: "session.interrupt", group: "session", chord: "i",
       title: "Interrupt current session",
@@ -188,7 +195,25 @@ export function buildCommands({
       disabled: disabledWhenNoSessionTask(activeSession),
       run: () => actions.openSessionTask(),
     },
+  ];
+}
 
+/**
+ * The commands that belong to the shell rather than to either screen — creating work, navigating between
+ * the two screens, and the device-level dialogs.
+ *
+ * Two of them read [onBoard], and for opposite reasons. `general.task-board` is ONE mnemonic for "the
+ * other screen": leaving `o` pointing at the board while the board is on screen spends the letter on a
+ * navigation that is already done, and the board's own "Sessions" link is then the only way out — which
+ * on a phone means finding a text link instead of the palette every other action lives in. Reusing the
+ * letter rather than adding a second one is not only economy: `leaderKeyDown` resolves a letter
+ * first-match-wins over the whole list, so two descriptors claiming `o` would make one of them a visible
+ * grid row its own key can never reach, and the registry's chord uniqueness is asserted from the Kotlin
+ * side as a property of this source text. `general.show-done` is dropped outright on the board because
+ * the sidebar it toggles is precisely what the board screen unmounts.
+ */
+function generalCommands(onBoard, actions) {
+  const commands = [
     {
       id: "general.new", group: "general", chord: "n",
       title: "New session",
@@ -215,11 +240,13 @@ export function buildCommands({
     },
     {
       id: "general.task-board", group: "general", chord: "o",
-      title: "Open the task board",
-      subtitle: "shows the project backlog and what every session is working on",
+      title: onBoard ? "Back to sessions" : "Open the task board",
+      subtitle: onBoard
+        ? "leaves the board for the session view"
+        : "shows the project backlog and what every session is working on",
       hint: "⌘K o",
       disabled: null,
-      run: () => actions.openBoard(),
+      run: () => (onBoard ? actions.openSessions() : actions.openBoard()),
     },
     {
       id: "general.new-task", group: "general", chord: "w",
@@ -228,6 +255,17 @@ export function buildCommands({
       hint: "⌘K w",
       disabled: null,
       run: () => actions.newTask(),
+    },
+    {
+      // Chordless on purpose: the board draws its own "New project" button, so this is the palette's
+      // copy of an action the operator performs once per repository — the search list is where a rare
+      // command belongs, and the leader grid is the small set worth memorising.
+      id: "general.new-project", group: "general", chord: null,
+      title: "New project",
+      subtitle: "goes to the board and opens its new-project form",
+      hint: null,
+      disabled: null,
+      run: () => actions.newProject(),
     },
     {
       id: "general.show-done", group: "general", chord: null,
@@ -269,6 +307,32 @@ export function buildCommands({
       disabled: null,
       run: () => actions.preferences(),
     },
+  ];
+  // Filtered rather than conditionally spread so every descriptor above keeps one shape and one
+  // indentation: the Kotlin-side contracts read this file as TEXT, and a descriptor that moves under an
+  // `onBoard ? [] : [...]` arm changes where its slice ends without changing anything about the command.
+  return onBoard ? commands.filter((command) => command.id !== "general.show-done") : commands;
+}
+
+/**
+ * Build every command from app-owned actions. Keep this as the only command/mnemonic registry.
+ *
+ * `actions` contains closures rather than route names: the app remains responsible for confirmation,
+ * status reporting, dialog state, and the active session changing between renders. [onBoard] is which
+ * screen the router has put on, and it is the app's answer rather than this module's, for the same
+ * reason: the route is app state (see the module header for what it decides here).
+ *
+ * Session rows deliberately take no pending reason: selecting a session is navigation, and `showSession`
+ * writes the attachment coherently with the selection it just made.
+ */
+export function buildCommands({
+  sessions = [], activeSession = null, attachedId = null, pendingAction = null,
+  onBoard = false, actions,
+}) {
+  return [
+    ...sessionRows(sessions, actions),
+    ...(onBoard ? [] : sessionCommands(activeSession, attachedId, pendingAction, actions)),
+    ...generalCommands(onBoard, actions),
   ];
 }
 

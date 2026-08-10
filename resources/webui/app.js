@@ -1192,6 +1192,23 @@ function App() {
 
   const openBoard = useCallback(() => navigate(routePath({ screen: SCREEN_TASKS, id: null })), []);
   /**
+   * The way back out of the board, and the other half of the palette's one `o` mnemonic.
+   *
+   * It names the selected session in the URL when there is one, rather than going to `/` the way the
+   * board's own "Sessions" link does: leaving the board does not change WHICH session is selected, and a
+   * bare `/` would leave the address bar describing a screen that is in fact showing a terminal — so a
+   * reload, a bookmark or a shared link would land somewhere else than the operator left off. With no
+   * selection at all `/` is exactly right, and that is what `routePath` answers for a null id.
+   *
+   * It deliberately does NOT go through `showSession`: the selection is unchanged, so re-running it
+   * would bump the selection generation, cancel a pending reattach and rewrite the attachment for a
+   * navigation that only swapped the screen.
+   */
+  const openSessions = useCallback(() => {
+    const id = activeRef.current;
+    navigate(routePath({ screen: SCREEN_SESSIONS, id: id }));
+  }, []);
+  /**
    * "New task" goes to the board and asks it to open its create form. It is a one-shot COUNTER rather
    * than a boolean: the palette can be used again while the board is already open, and a boolean would
    * need a reset round-trip to fire twice. `0` means "never asked", so `Board` opens nothing on mount.
@@ -1203,6 +1220,18 @@ function App() {
     navigate(routePath({ screen: SCREEN_TASKS, id: null }));
     setNewTaskRequest((n) => n + 1);
   }, []);
+  /**
+   * "New project" is the same one-shot counter for the board's other form, and it exists for the same
+   * reason the create form does: the board owns the project selector, so a project can only be created
+   * where one can be chosen. It is the palette's only board-owned command — switching the selected
+   * project is deliberately NOT one, because that selection lives inside `Board` and lifting it here to
+   * make it addressable would put a second owner of it in the app.
+   */
+  const [newProjectRequest, setNewProjectRequest] = useState(0);
+  const newProject = useCallback(() => {
+    navigate(routePath({ screen: SCREEN_TASKS, id: null }));
+    setNewProjectRequest((n) => n + 1);
+  }, []);
   // Retired the moment the board goes away, and that is the whole reason it can be a counter at all.
   // `Board` compares against a ref it recreates on every MOUNT (starting from 0, because the palette
   // navigates and bumps in one event, so the board is usually mounting with the counter already at 1) —
@@ -1210,7 +1239,10 @@ function App() {
   // a session, then a task badge tapped weeks later pops a New-task modal over the detail, unasked.
   // Resetting on the way out puts both sides back at 0, which is exactly "never asked".
   useEffect(() => {
-    if (!onBoard) setNewTaskRequest(0);
+    if (!onBoard) {
+      setNewTaskRequest(0);
+      setNewProjectRequest(0);
+    }
   }, [onBoard]);
   /** "Open this session's task" — disabled upstream when the active session carries no `taskRef`. */
   const openSessionTask = useCallback(() => {
@@ -1246,6 +1278,9 @@ function App() {
     activeSession: activeSession,
     attachedId: attachedId,
     pendingAction: pendingAction,
+    // Which screen is on, so the registry can drop the session group the board makes unreachable and
+    // point its one board mnemonic the other way. The app answers this because the route is app state.
+    onBoard: onBoard,
     actions: {
       selectSession: selectSession,
       interrupt: interrupt,
@@ -1267,7 +1302,9 @@ function App() {
       // `actions` object, because that file is the ONLY command registry and it owns no state of its
       // own — a command that reached for `history` or the session list itself would be a second one.
       openBoard: openBoard,
+      openSessions: openSessions,
       newTask: newTask,
+      newProject: newProject,
       openSessionTask: openSessionTask,
     },
   });
@@ -1315,6 +1352,7 @@ function App() {
         route=${route}
         basePath=${prefs.basePath}
         newTaskRequest=${newTaskRequest}
+        newProjectRequest=${newProjectRequest}
         onTaskRow=${applyTaskRow}
         onTaskRemoved=${applyTaskRemoved}
         onAnnounce=${say}
