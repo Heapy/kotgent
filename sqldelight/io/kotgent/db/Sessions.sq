@@ -59,7 +59,7 @@ CREATE TABLE sessions (
 -- `task_ref` and `project_id` follow the same defensive shape for a different reason: they are set by
 -- their own targeted setters, and a caller writing a SessionMeta snapshot it read BEFORE a link landed
 -- would otherwise clear the link. COALESCE(excluded.x, sessions.x) keeps the stored value whenever the
--- incoming one is null, so only setTaskRef/setProjectId can ever clear a column.
+-- incoming one is null, so only setTaskRef/clearTaskRefIf/setProjectId can ever clear a column.
 upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
@@ -159,6 +159,21 @@ setTaskRef:
 UPDATE sessions
 SET task_ref = ?, updated_at = ?, rev = ?
 WHERE id = ?;
+
+-- CLEAR the link, but ONLY IF the row still holds the ref the caller read. The check and the write are
+-- ONE statement — setModelForProvider's shape, and for the same reason: every clear path (an explicit
+-- unlink, a board close, a delete, a session's "Done") reads the ref first and clears second, and a link
+-- made to a DIFFERENT task inside that window must survive. Unconditionally clearing there would leave the
+-- newer task in_progress with no terminal and make the feed claim an unlink that erased something else.
+-- Zero rows is the honest answer to "did my clear apply", which is what gates the `unlinked` activity row.
+--
+-- LINKING stays unconditional (setTaskRef above) — this is not exclusivity creeping back in. A conditional
+-- clear refuses to erase a link it did not read; it never refuses to MAKE one, and any number of sessions
+-- may still hold one task.
+clearTaskRefIf:
+UPDATE sessions
+SET task_ref = NULL, updated_at = ?, rev = ?
+WHERE id = ? AND task_ref = ?;
 
 -- Set (or clear) the resolved project. Same targeted shape as setTaskRef.
 setProjectId:

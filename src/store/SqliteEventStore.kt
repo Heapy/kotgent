@@ -206,7 +206,7 @@ class SqliteEventStore private constructor(
             if (meta.archived) 1L else 0L,
             ++revCounter, // the store stamps the revision; whatever `meta.rev` carries is ignored
             // COALESCEd in the statement: a caller writing a snapshot it read BEFORE a link landed must
-            // not clear it. Only setTaskRef / setProjectId can ever null these columns.
+            // not clear it. Only setTaskRef / clearTaskRefIf / setProjectId can ever null these columns.
             meta.taskRef?.value,
             meta.projectId?.value,
         )
@@ -268,6 +268,22 @@ class SqliteEventStore private constructor(
             // and it must report the committed row (a vanished row emits nothing at all).
             emitFromRow(sessionId)
         }
+
+    override suspend fun clearTaskRefIf(
+        sessionId: SessionId,
+        expectedRef: TaskRef,
+        updatedAt: Long,
+    ): Boolean = mutex.withLock {
+        // The WHERE carries the ref check, so check-and-write is ONE statement and a link made to a
+        // different task between the caller's read and this write survives untouched. The statement's own
+        // row count is the answer — a re-read could not tell "I cleared it" from "it was already null".
+        val cleared = sessions.clearTaskRefIf(updatedAt, ++revCounter, sessionId.value, expectedRef.value)
+            .value > 0L
+        // A rejected write is not observable: no row changed, so there is nothing to broadcast (the rev
+        // it consumed is never persisted — the same accounting setModelForProvider's zero-row case makes).
+        if (cleared) emitFromRow(sessionId)
+        cleared
+    }
 
     override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
         mutex.withLock {

@@ -55,6 +55,16 @@ import kotlin.test.assertTrue
  *  3. **The order of the calls is itself the contract**, so both fakes append to one shared [journal]:
  *     `delete` unlinking every holder BEFORE removing the task is the difference between "no dangling
  *     badge" and "a badge pointing at nothing", and no per-store assertion can see it.
+ *  4. **Linking is unconditional; CLEARING is not.** Every clear here reads the ref — from the row, or
+ *     from the holder list — and writes second, so a link made inside that window is newer than
+ *     everything the operation read and must survive it. The three tests that pin it
+ *     ([aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone],
+ *     [closingATaskCannotEraseAHoldersNewerLinkToADifferentTask],
+ *     [deleteCannotEraseAHoldersNewerLinkToADifferentTask]) each drive that interleaving through a
+ *     deterministic gate in [FakeEventStore] rather than a timed race, and each also asserts the FEED,
+ *     because a suppressed write whose `unlinked` row was still appended is the same bug wearing the
+ *     other half of the costume. None of this is exclusivity: no link is ever refused, and
+ *     [twoSessionsLinkTheSameTaskAndBothHoldIt] still holds.
  *
  * Every body is bounded by [withTimeout] as an anti-hang tripwire; [linkNextUnderContentionHandsTwoSessionsTwoDifferentTasks]
  * needs it most, because a lost race there is a hang, not a wrong answer.
@@ -324,6 +334,55 @@ class TaskServiceTest {
         }
     }
 
+    /**
+     * The lost-update rule on the single-session path.
+     *
+     * `unlink` reads the row to learn WHICH ref to attribute its `unlinked` row to, and writes second. A
+     * `claim` or a `task next` landing in that window has pointed this session at a NEWER task, and the
+     * older release must not erase it: doing so would leave `local:2` `in_progress` with no terminal
+     * behind it while the feed claimed a release of `local:1` for a write that destroyed the other link.
+     *
+     * The interleaving is deterministic, not timed: [FakeEventStore.afterGetSession] runs once the read
+     * has answered and the store is released, which is exactly the window the two-call shape opens.
+     * Falsifiable — with the unconditional `setTaskRef(s1, null, …)` the link is gone and `local:2` is
+     * orphaned, which is the defect this test was written for.
+     */
+    @Test
+    fun aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone() = runBlocking {
+        withTimeout(5_000) {
+            val f = Fixture()
+            f.seedTask(t1)
+            f.seedTask(t2, position = 2.0)
+            f.seedSession(s1, createdAt = 1_000L)
+            f.service.link(s1, t1)
+            f.journal.clear()
+
+            f.sessions.afterGetSession = {
+                f.sessions.afterGetSession = null // the interleaving happens once, not on every read
+                f.service.link(s1, t2)
+            }
+
+            f.service.unlink(s1)
+
+            assertEquals(t2, f.linkOf(s1), "the newer link survives a release keyed by the older ref")
+            assertEquals(TaskState.in_progress, f.stateOf(t2), "…and its task keeps its worker")
+            assertEquals(
+                listOf(ActivityKind.linked to s1.value),
+                f.feed(t1),
+                "no `unlinked` row is written for a release that wrote nothing",
+            )
+            assertEquals(
+                listOf("sessions.getSession(s-one)"),
+                f.journal.filter { it.startsWith("sessions.getSession") },
+                "the ref it acted on came from that one read",
+            )
+            assertTrue(
+                f.journal.contains("sessions.clearTaskRefIf(s-one, local:1)"),
+                "and the clear really was attempted, keyed by the ref that read answered: ${f.journal}",
+            )
+        }
+    }
+
     /** A second `release` writes nothing at all — no `updated_at` bump and no duplicate feed row. */
     @Test
     fun unlinkOfASessionHoldingNoTaskWritesNothing() = runBlocking {
@@ -372,6 +431,74 @@ class TaskServiceTest {
                 f.feed(t1).drop(2),
                 "the transition commits first, then one release per holder",
             )
+        }
+    }
+
+    /**
+     * The same lost-update rule on the BULK path, where the stale thing is the holder LIST.
+     *
+     * `sessionsHoldingTask` is a snapshot and the loop clears one holder at a time, so a session
+     * re-pointed anywhere inside that walk is newer than everything the close read. `s-two` takes
+     * `local:2` after the list is taken; closing `local:1` must release `s-one` and leave `s-two` alone,
+     * because the write it would make is not the write it decided to make.
+     *
+     * Two assertions carry it and both are needed: the surviving link (against the unconditional clear)
+     * and the feed, which must record exactly ONE release — an `unlinked` row for `s-two` would be the
+     * feed describing a write that did not happen. Falsifiable: with `setTaskRef(holder.id, null, …)`
+     * both fail, `s-two` is orphaned and `local:2` is left `in_progress` with no terminal.
+     */
+    @Test
+    fun closingATaskCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
+        withTimeout(5_000) {
+            val f = Fixture()
+            f.seedTask(t1)
+            f.seedTask(t2, position = 2.0)
+            f.seedSession(s1, createdAt = 1_000L)
+            f.seedSession(s2, createdAt = 2_000L)
+            f.service.link(s1, t1)
+            f.service.link(s2, t1)
+
+            f.sessions.afterSessionsHoldingTask = {
+                f.sessions.afterSessionsHoldingTask = null
+                f.service.link(s2, t2)
+            }
+
+            f.service.transition(t1, TaskState.done, author = TaskService.BOARD_AUTHOR)
+
+            assertNull(f.linkOf(s1), "the holder that stayed put is released")
+            assertEquals(t2, f.linkOf(s2), "the one that moved on keeps its newer link")
+            assertEquals(TaskState.in_progress, f.stateOf(t2), "…and its task keeps its worker")
+            assertEquals(
+                listOf(ActivityKind.transition to TaskService.BOARD_AUTHOR, ActivityKind.unlinked to s1.value),
+                f.feed(t1).drop(2),
+                "the feed records one release, for the one holder actually released",
+            )
+        }
+    }
+
+    /**
+     * `delete`'s half of the same rule. It writes no feed rows at all (the next statement deletes the
+     * feed), so the surviving link is the whole observable — and the deletion still goes through: a
+     * holder that slipped away is not a reason to keep the task.
+     */
+    @Test
+    fun deleteCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
+        withTimeout(5_000) {
+            val f = Fixture()
+            f.seedTask(t1)
+            f.seedTask(t2, position = 2.0)
+            f.seedSession(s1, createdAt = 1_000L)
+            f.service.link(s1, t1)
+
+            f.sessions.afterSessionsHoldingTask = {
+                f.sessions.afterSessionsHoldingTask = null
+                f.service.link(s1, t2)
+            }
+
+            assertTrue(f.service.delete(t1), "the task is still deleted")
+
+            assertEquals(t2, f.linkOf(s1), "but the link the delete never read is left alone")
+            assertNull(f.stateOf(t1), "…and the task really is gone")
         }
     }
 
@@ -429,8 +556,8 @@ class TaskServiceTest {
             assertEquals(
                 listOf(
                     "sessions.sessionsHoldingTask(local:1)",
-                    "sessions.setTaskRef(s-one -> null)",
-                    "sessions.setTaskRef(s-two -> null)",
+                    "sessions.clearTaskRefIf(s-one, local:1)",
+                    "sessions.clearTaskRefIf(s-two, local:1)",
                     "tasks.delete(local:1)",
                 ),
                 f.journal,
@@ -655,11 +782,29 @@ class TaskServiceTest {
         /** Nothing here ever archives a session; the set exists so a test can assert that. */
         val archived: MutableSet<SessionId> = mutableSetOf()
 
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? =
-            witness.inEventStore("getSession") {
+        override suspend fun getSession(sessionId: SessionId): SessionMeta? {
+            val row = witness.inEventStore("getSession") {
                 journal += "sessions.getSession(${sessionId.value})"
                 rows[sessionId]
             }
+            afterGetSession?.invoke()
+            return row
+        }
+
+        /**
+         * Run after [getSession] has READ its answer and released the store — the deterministic stand-in
+         * for "somebody re-pointed this session between the read and the clear".
+         *
+         * Placed exactly like [FakeTaskStore.afterNextCandidate], and for the same two reasons. **After
+         * the read**, because the window this models opens once the caller is holding a ref it will act
+         * on; a gate before the read would just serialize the two and there would be nothing stale. And
+         * **outside** [LockWitness.inEventStore], because it models a caller suspended BETWEEN store
+         * calls, which the witness must not read as a nested lock.
+         */
+        var afterGetSession: (suspend () -> Unit)? = null
+
+        /** [afterGetSession]'s counterpart for the bulk paths, whose snapshot is the list, not one row. */
+        var afterSessionsHoldingTask: (suspend () -> Unit)? = null
 
         override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
             witness.inEventStore("setTaskRef") {
@@ -668,11 +813,33 @@ class TaskServiceTest {
                 if (row != null) rows[sessionId] = row.copy(taskRef = taskRef, updatedAt = updatedAt)
             }
 
-        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
-            witness.inEventStore("sessionsHoldingTask") {
+        /**
+         * The conditional clear, modelled as the ONE atomic step it is in SQL: the comparison and the
+         * write happen together inside the witness, so no gate can be placed between them here either.
+         */
+        override suspend fun clearTaskRefIf(
+            sessionId: SessionId,
+            expectedRef: TaskRef,
+            updatedAt: Long,
+        ): Boolean = witness.inEventStore("clearTaskRefIf") {
+            journal += "sessions.clearTaskRefIf(${sessionId.value}, ${expectedRef.value})"
+            val row = rows[sessionId]
+            if (row == null || row.taskRef != expectedRef) {
+                false
+            } else {
+                rows[sessionId] = row.copy(taskRef = null, updatedAt = updatedAt)
+                true
+            }
+        }
+
+        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
+            val holders = witness.inEventStore("sessionsHoldingTask") {
                 journal += "sessions.sessionsHoldingTask(${taskRef.value})"
                 rows.values.filter { it.taskRef == taskRef }.sortedBy { it.createdAt }
             }
+            afterSessionsHoldingTask?.invoke()
+            return holders
+        }
 
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {
             if (archived) this.archived += sessionId else this.archived -= sessionId

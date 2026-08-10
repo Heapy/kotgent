@@ -17,11 +17,14 @@ commands are the API surface, and they exist because an agent already has a shel
 ```
 kotgent task show                            # what am I working on?
 kotgent task comment -m "found the cause…"   # progress, as often as useful
-kotgent task review -m "summary, commits"    # hand it back for review
-kotgent task next                            # take the next eligible task; exit 3 = stop
+kotgent task review -m "summary, commits"    # hand it back for review — and stop there
+kotgent task next                            # ONLY once this session holds no task; exit 3 = stop
 ```
 
-That is the whole workflow. Four commands, in that order, repeated until `task next` exits `3`.
+Three commands and a **conditional** fourth. `review` is where the agent's work on a task ends; `next` is
+not the next step of that task, it is the first step of the following one, and it may only be run by a
+session that is free. Read the section below before wiring the loop — running `next` straight after
+`review` is the one composition that quietly breaks, and kotgent will not stop you.
 
 - **`kotgent task show`** — no ref. The agent does not know its task's id and must never be told one by
   the prompt; see "How a ref-less command knows its subject" below.
@@ -31,15 +34,51 @@ That is the whole workflow. Four commands, in that order, repeated until `task n
 - **`kotgent task review -m "…"`** — moves the task to `review` and records the message as the transition's
   explanation, in one operation. The `-m` is optional to the CLI and mandatory to this contract: a review
   with no summary is a card a human has to open a terminal to understand. Say what changed and name the
-  commits.
-- **`kotgent task next`** — links the next eligible task in the project to this session and prints it.
-  **Exit code `3` means "nothing eligible" — stop.** It is a distinct code precisely so a script does not
-  confuse an empty backlog with a network failure.
+  commits. **It deliberately leaves the session linked** — one session, one task, end to end, because the
+  human reviews *that* session's terminal and diff.
+- **`kotgent task next`** — links the next eligible task in the project to this session and prints it,
+  **overwriting whatever link the session already holds**. **Exit code `3` means "nothing eligible" —
+  stop.** It is a distinct code precisely so a script does not confuse an empty backlog with a network
+  failure.
 
 `kotgent task review` is the agent's terminal state. **The agent does not run `kotgent task done`**:
 closing a task is the human's call after reading the review, either from the board or by pressing "Done"
 on the session (which closes the linked task and archives the session). `task done` exists in the CLI for
 the operator; a skill that calls it is skipping the review it just asked for.
+
+## `task next` only from a free session
+
+Three rules, each correct on its own, and one order in which they are jointly wrong:
+
+1. `task review` keeps the link — the task in `review` is still this session's task.
+2. `task next` **overwrites** `sessions.task_ref`. A session works one task at a time and re-pointing it
+   is an ordinary write: no warning, no error, no feed entry on the task that was dropped.
+3. Session "Done" closes whatever the link points at **now**, then archives the session.
+
+So `review A` immediately followed by `next B` leaves task A sitting in `review` with **no session at
+all** — no terminal for the human to open, no diff, and nothing in A's activity feed saying it lost its
+worker — and when that human then presses "Done" on the terminal in front of them, kotgent closes **B**,
+the task the agent had only just started and probably has not finished, and archives the session carrying
+it. Both tasks end up wrong from two operations that each did exactly what they promise.
+
+**So: run `task next` only when this session is linked to nothing.** A session becomes free when the human
+disposes of the reviewed task, and the two ways differ in what happens to the agent:
+
+- **Closed from the board** — every holder is unlinked and the sessions stay **alive**. That is what hands
+  a long-lived worker session back to `task next`, and it is the path the loop is built around.
+- **"Done" on the session** — the task is closed and the session is archived. That agent's run is over;
+  there is no next task for it.
+
+**`kotgent task unlink` is not the way out of this.** It would free the session, but it would also take
+the reviewed task's only session with it — leaving the human the same card with no terminal behind it,
+just with an `unlinked` row in the feed to explain it. `unlink` is for abandoning work, not for finishing
+it.
+
+The check is a ref-less `kotgent task show`: a session holding no task fails with exit `1` and
+`{"error":"this session is not linked to a task — …"}` on stderr, which is exactly the "free" signal. Poll
+that between tasks rather than assuming; there is no notification channel, and (see below) kotgent
+deliberately refuses to enforce anything about who holds what — including refusing to stop this. Keeping
+the reviewed task linked until a human releases it is the skill's job, not the daemon's.
 
 ## kotgent does not enforce one worker per task
 
@@ -62,7 +101,9 @@ What is actually true:
 - The board **shows every linked session** on a task's card. Two dots on a card is a legitimate state, not
   a corruption to be reconciled away.
 - Pointing a session at a different task overwrites that session's link. A session works one task at a
-  time; a task does not work one session at a time.
+  time; a task does not work one session at a time. That includes `task next`, which is why the loop above
+  runs it only from a free session — the daemon will not refuse a `next` from a session that is still
+  holding a task in `review`, so nothing but the skill's own discipline prevents it.
 
 **Therefore: an agent must not assume it is alone on its task.** Before making a large or destructive
 change, look at the working tree and the recent activity feed rather than trusting that the task being

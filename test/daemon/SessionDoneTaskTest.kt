@@ -71,6 +71,16 @@ import kotlin.test.assertTrue
  *     to it, so [theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer] drives both over
  *     identical fixtures and compares everything they say to the task layer. That test is what makes the
  *     second copy safe to keep; the mechanism's rationale lives on `closeLinkedTask`'s KDoc.
+ *  6. **The holder loop clears CONDITIONALLY**, on the ref this close decided to close: the holder list
+ *     is a snapshot and a session re-pointed inside the walk is newer than anything the close read
+ *     ([doneCannotEraseAHoldersNewerLinkToADifferentTask]). That refusal is a lost-update rule and not
+ *     exclusivity — Done makes no link and refuses none.
+ *  7. **The published agent loop composes badly, and that is documented rather than "fixed".**
+ *     [reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne] runs `claim → review →
+ *     next → Done` through the real verbs and pins where three individually-correct behaviours land: the
+ *     reviewed task silently loses its session and Done closes the one just started. The remedy lives in
+ *     `docs/agent-task-skill.md` (take `next` only when the session is free), never in a busy-session
+ *     refusal.
  *
  * Every body is bounded by [withTimeout] as an anti-hang tripwire.
  */
@@ -163,9 +173,9 @@ class SessionDoneTaskTest {
                 // EventStore call returns before the TaskStore call that follows it.
                 listOf(
                     "tasks.transition(local:1 -> done)",
-                    "sessions.setTaskRef(done01 -> null)",
+                    "sessions.clearTaskRefIf(done01, local:1)",
                     "tasks.appendActivity(local:1, unlinked)",
-                    "sessions.setTaskRef(other1 -> null)",
+                    "sessions.clearTaskRefIf(other1, local:1)",
                     "tasks.appendActivity(local:1, unlinked)",
                     "sessions.setArchived(done01 = true)",
                 ),
@@ -269,13 +279,150 @@ class SessionDoneTaskTest {
             assertEquals(
                 listOf(
                     "tasks.transition(local:1 -> done)",
-                    "sessions.setTaskRef(done01 -> null)",
+                    "sessions.clearTaskRefIf(done01, local:1)",
                     "tasks.appendActivity(local:1, unlinked)",
-                    "sessions.setTaskRef(other1 -> null)",
+                    "sessions.clearTaskRefIf(other1, local:1)",
                     "tasks.appendActivity(local:1, unlinked)",
                 ),
                 fromSession.first,
                 "spelled out once, so a change that moves BOTH copies together is still visible here",
+            )
+        }
+    }
+
+    /**
+     * Done's holder loop clears each session **conditionally on the ref it decided to close**.
+     *
+     * `sessionsHoldingTask` is a snapshot and the clears follow it one at a time, so a holder re-pointed
+     * inside that walk is newer than everything this close read: erasing it would leave `local:2`
+     * `in_progress` with no terminal behind it and write an `unlinked` row naming `local:1` for a write
+     * that destroyed a different link. The interleaving is deterministic —
+     * [JournalingEventStore.afterSessionsHoldingTask] runs once the list has been read.
+     *
+     * Falsifiable: with the unconditional `setTaskRef(holder.id, null, …)` the neighbour's link to
+     * `local:2` is gone and the feed carries two releases instead of one.
+     */
+    @Test
+    fun doneCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture()
+            val other = TaskRef("local:2")
+            val tasks = RecordingTaskStore(f.journal).apply {
+                seed(ref, alpha, TaskState.in_progress)
+                seed(other, alpha, TaskState.in_progress)
+            }
+            val mgr = managerOver(f, tasks)
+
+            mgr.start("claude", "/tmp")
+            f.store.setTaskRef(worker, ref, 1L)
+            f.seedNeighbour(neighbour, ref)
+            f.store.afterSessionsHoldingTask = {
+                f.store.afterSessionsHoldingTask = null
+                f.store.setTaskRef(neighbour, other, 700L)
+            }
+
+            mgr.markDone(worker)
+
+            assertEquals(TaskState.done, tasks.entries.getValue(ref).state, "the task still closes")
+            assertNull(f.store.getSession(worker)!!.taskRef, "the holder that stayed put is released")
+            assertEquals(
+                other,
+                f.store.getSession(neighbour)!!.taskRef,
+                "the one that moved on keeps its newer link",
+            )
+            assertEquals(
+                listOf(ActivityKind.transition, ActivityKind.unlinked),
+                tasks.activity.map { it.kind },
+                "and the feed records one release, for the one holder actually released",
+            )
+            assertEquals(
+                worker.value,
+                tasks.activity.last().author,
+                "…namely the session that pressed Done",
+            )
+        }
+    }
+
+    // ---- the published agent loop, composed ---------------------------------------------------------
+
+    /**
+     * `review` then `next` then Done — the composition `docs/agent-task-skill.md` describes, and the one
+     * place two individually-correct behaviours are jointly wrong.
+     *
+     * Each verb alone is right and separately tested. `review` deliberately keeps the link
+     * (`TaskServiceTest.transitionToReviewKeepsEveryLink`: one session, one task, end to end, because the
+     * human reviews *that* terminal). `next` deliberately overwrites it (a session works one task at a
+     * time; there is no error case). Done deliberately acts on whatever the row points at NOW. Run in the
+     * doc's order they compose into this: the reviewed task is silently left with no session, and the
+     * human pressing Done on that terminal closes the task the agent had only just STARTED — possibly
+     * unfinished — and archives the session that was carrying it.
+     *
+     * This is why the doc's loop carries a qualifier rather than four unconditional steps, and it is the
+     * plan's rule read forwards: "a session stays linked through `review`", so `task next` belongs only to
+     * a session that is free. **The fix is the contract, not a refusal** — nothing here asserts that
+     * `next` was rejected, and nothing may grow into a busy-session check: the human closing `local:1`
+     * from the board is what unlinks the session and hands it back to `next`.
+     *
+     * It is a characterization test, so it does not fail against the code as it stands — it fails against
+     * the two "fixes" that look obvious and are wrong: a Done that closed the REVIEWED task instead of
+     * the linked one, and a `next` that refused a session already holding something.
+     */
+    @Test
+    fun reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture()
+            val reviewed = ref
+            val taken = TaskRef("local:2")
+            val tasks = RecordingTaskStore(f.journal).apply {
+                seed(reviewed, alpha, TaskState.todo)
+                seed(taken, alpha, TaskState.todo, position = 2.0)
+            }
+            val mgr = managerOver(f, tasks)
+            val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter, now = { 2L })
+
+            mgr.start("claude", "/tmp")
+
+            // The published loop, verbatim: claim, hand back for review, take the next one, and only then
+            // does the human reach the terminal and press Done.
+            service.link(worker, reviewed)
+            service.transition(reviewed, TaskState.review, author = worker.value, message = "summary")
+            assertEquals(
+                reviewed,
+                f.store.getSession(worker)!!.taskRef,
+                "review keeps the link — that is the rule the loop has to respect",
+            )
+
+            assertEquals(taken, service.linkNext(worker, alpha)?.ref, "…and `next` hands out the other task")
+            assertEquals(
+                taken,
+                f.store.getSession(worker)!!.taskRef,
+                "which OVERWRITES the link, silently: the session now points at the new task",
+            )
+            assertTrue(
+                f.store.sessionsHoldingTask(reviewed).isEmpty(),
+                "so the reviewed task is left with no session at all — nobody's terminal to review",
+            )
+            assertEquals(
+                listOf(ActivityKind.linked, ActivityKind.transition, ActivityKind.linked),
+                tasks.activity.map { it.kind },
+                "and nothing in the feed says the reviewed task lost its worker",
+            )
+
+            mgr.markDone(worker)
+
+            assertEquals(
+                TaskState.done,
+                tasks.entries.getValue(taken).state,
+                "Done closes what the link points at NOW — the task the agent had only just started",
+            )
+            assertEquals(
+                TaskState.review,
+                tasks.entries.getValue(reviewed).state,
+                "the reviewed task is not closed by that Done…",
+            )
+            assertTrue(
+                f.store.getSession(worker)!!.archived,
+                "…and the session that was carrying it is archived off the sidebar",
             )
         }
     }
@@ -374,6 +521,24 @@ class SessionDoneTaskTest {
             delegate.setTaskRef(sessionId, taskRef, updatedAt)
         }
 
+        /** See [doneCannotEraseAHoldersNewerLinkToADifferentTask]; runs after the list, before the clears. */
+        var afterSessionsHoldingTask: (suspend () -> Unit)? = null
+
+        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
+            val holders = delegate.sessionsHoldingTask(taskRef)
+            afterSessionsHoldingTask?.invoke()
+            return holders
+        }
+
+        override suspend fun clearTaskRefIf(
+            sessionId: SessionId,
+            expectedRef: TaskRef,
+            updatedAt: Long,
+        ): Boolean {
+            journal += "sessions.clearTaskRefIf(${sessionId.value}, ${expectedRef.value})"
+            return delegate.clearTaskRefIf(sessionId, expectedRef, updatedAt)
+        }
+
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {
             if (yieldBeforeArchive) yield()
             journal += "sessions.setArchived(${sessionId.value} = $archived)"
@@ -397,11 +562,11 @@ class SessionDoneTaskTest {
         private var rev = 0L
         private var activityId = 0L
 
-        fun seed(ref: TaskRef, project: ProjectId, state: TaskState) {
+        fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double = 1.0) {
             entries[ref] = BacklogEntry(
                 ref = ref,
                 project = project,
-                position = 1.0,
+                position = position,
                 state = state,
                 blocked = false,
                 createdAt = 1_000L,
@@ -452,7 +617,32 @@ class SessionDoneTaskTest {
             return row
         }
 
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = unused("entry")
+        // ---- the three the COMPOSED loop needs, and only it ----
+        // `markDone` never reaches any of them; they are here so
+        // [reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne] can drive the real
+        // `claim → review → next` verbs through TaskService instead of hand-writing rows, which is the
+        // whole point of that test — the defect is in how the real verbs COMPOSE.
+
+        override suspend fun entry(ref: TaskRef): BacklogEntry? {
+            journal += "tasks.entry(${ref.value})"
+            return entries[ref]
+        }
+
+        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
+            journal += "tasks.nextCandidate($project)"
+            return entries.values
+                .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
+                .minByOrNull { it.position }
+        }
+
+        override suspend fun startIfTodo(ref: TaskRef): Boolean {
+            journal += "tasks.startIfTodo(${ref.value})"
+            val existing = entries[ref] ?: return false
+            if (existing.state != TaskState.todo) return false
+            entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
+            return true
+        }
+
         override suspend fun list(project: ProjectId): List<Task> = unused("list")
         override suspend fun get(ref: TaskRef): Task? = unused("get")
         override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
@@ -460,8 +650,6 @@ class SessionDoneTaskTest {
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
         override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused("startIfTodo")
         override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused("move")
         override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = unused("dependenciesOf")
         override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused("dependentsOf")

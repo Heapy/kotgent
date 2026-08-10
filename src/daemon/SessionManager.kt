@@ -757,7 +757,11 @@ class SessionManager(
         val ref = store.getSession(sessionId)?.taskRef ?: return
         tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
         for (holder in store.sessionsHoldingTask(ref)) {
-            store.setTaskRef(holder.id, null, now())
+            // Conditional on `ref`, exactly like TaskService.unlinkEveryHolder: sessionsHoldingTask is a
+            // snapshot, and a holder re-pointed at a NEWER task between the list and its own clear must
+            // keep that link (an unconditional clear left the newer task in_progress with no terminal and
+            // wrote an `unlinked` row naming the old ref). The feed row is gated on the write applying.
+            if (!store.clearTaskRefIf(holder.id, ref, now())) continue
             tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
         }
     }

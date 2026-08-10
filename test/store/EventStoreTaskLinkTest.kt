@@ -21,12 +21,14 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The session→task link columns (Task 10): [EventStore.setTaskRef], [EventStore.setProjectId] and
- * [EventStore.sessionsHoldingTask], driven against [SqliteEventStore] over in-memory SQLite.
+ * The session→task link columns (Task 10): [EventStore.setTaskRef], [EventStore.clearTaskRefIf],
+ * [EventStore.setProjectId] and [EventStore.sessionsHoldingTask], driven against [SqliteEventStore] over
+ * in-memory SQLite.
  *
  * These live in their own file rather than in `EventStoreTest` because the task backlog was built by a
  * fleet of parallel agents over exclusively-owned files; the split has no semantic meaning.
@@ -38,6 +40,9 @@ import kotlin.test.assertTrue
  *    link written by `kotgent task claim` inside a pane has to move it without a reload;
  *  - a full-row `upsert` carrying a null link must NOT clear a stored one (`Sessions.sq` COALESCEs both
  *    columns): the caller may be writing a `SessionMeta` snapshot it read before the link landed;
+ *  - LINKING is unconditional but CLEARING is not — every clear path reads the ref and writes second, so
+ *    `clearTaskRefIf` carries the check in the statement's `WHERE` and a stale clear cannot erase a newer
+ *    link to a different task (that refusal is a lost-update rule, not the exclusivity this design omits);
  *  - the columns are additive, so a database written by a pre-task-layer binary must open and migrate.
  *
  * Every DB/flow interaction is bounded by [withTimeout], like the other store suites.
@@ -118,6 +123,114 @@ class EventStoreTaskLinkTest {
             assertEquals(1, updates.size, "the clear emits: $updates")
             assertNull(updates.single().taskRef, "…and the signal is authoritative for the null")
             collector.cancel()
+        }
+    }
+
+    /**
+     * The conditional clear's happy path: the row still holds the ref the caller read, so the write
+     * applies, answers `true`, stamps a rev and broadcasts the null exactly like the unconditional clear.
+     *
+     * Asserted beside [aStaleClearCannotEraseANewerLinkToADifferentTask], which is the half that is not
+     * satisfiable by `setTaskRef(sid, null, …)`; without this one a `clearTaskRefIf` that always answered
+     * `false` and wrote nothing would pass that test and strand every real unlink.
+     */
+    @Test
+    fun clearingTheRefTheRowStillHoldsAppliesAndIsBroadcast() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("link0c")
+            store.upsertSession(meta(sid))
+            store.setTaskRef(sid, TaskRef("local:7"), updatedAt = 2L)
+            val before = store.getSession(sid)!!
+
+            val updates = mutableListOf<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
+            yield()
+
+            assertTrue(store.clearTaskRefIf(sid, TaskRef("local:7"), updatedAt = 3L), "the write applied")
+            repeat(20) { yield() }
+
+            val after = store.getSession(sid)!!
+            assertNull(after.taskRef, "the link is gone")
+            assertEquals(3L, after.updatedAt, "the caller's timestamp lands")
+            assertTrue(after.rev > before.rev, "and the write stamps a newer revision")
+            assertEquals(1, updates.size, "the clear emits: $updates")
+            assertNull(updates.single().taskRef, "…carrying the null")
+            collector.cancel()
+        }
+    }
+
+    /**
+     * The lost-update rule, and the reason this setter exists at all.
+     *
+     * Every clear path in the design READS the ref (from the row, or from `sessionsHoldingTask`) and
+     * writes second: an explicit `unlink`, a board close, a `delete`, a session's "Done". A `claim` or a
+     * `task next` landing inside that window re-points the session at a NEWER task, and the older
+     * operation must not erase it — the newer task would be left `in_progress` with no terminal behind
+     * it, and the feed would record an `unlinked` from the old ref for a write that destroyed the new one.
+     *
+     * The stale clear here is spelled as a plain second call rather than through a concurrency gate on
+     * purpose: the store is single-writer, so "stale" is decided by the ARGUMENT, not by timing, and the
+     * service-level races are gated in `TaskServiceTest` / `SessionDoneTaskTest`. Falsifiable by
+     * construction — against the old `setTaskRef(sid, null, …)` the newer link is gone and every
+     * assertion below fails.
+     */
+    @Test
+    fun aStaleClearCannotEraseANewerLinkToADifferentTask() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("link0d")
+            store.upsertSession(meta(sid))
+            store.setTaskRef(sid, TaskRef("local:1"), updatedAt = 2L)
+            // The interleaving the window allows: somebody points this session at a different task.
+            store.setTaskRef(sid, TaskRef("local:2"), updatedAt = 3L)
+            val before = store.getSession(sid)!!
+
+            val updates = mutableListOf<SessionUpdate>()
+            val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
+            yield()
+
+            // …and only THEN the older operation, still holding the ref it read, gets to its clear.
+            assertFalse(
+                store.clearTaskRefIf(sid, TaskRef("local:1"), updatedAt = 4L),
+                "a clear keyed by a ref the row no longer holds writes nothing",
+            )
+            repeat(20) { yield() }
+
+            val after = store.getSession(sid)!!
+            assertEquals(TaskRef("local:2"), after.taskRef, "the newer link survives")
+            assertEquals(before.updatedAt, after.updatedAt, "a rejected write does not stamp updated_at")
+            assertEquals(before.rev, after.rev, "…and the rev it consumed is never persisted")
+            assertEquals(emptyList(), updates, "…and nothing is broadcast: $updates")
+            collector.cancel()
+        }
+    }
+
+    /** No row, nothing to clear — `false`, not a throw, and the caller's `unlinked` row is not written. */
+    @Test
+    fun aConditionalClearForASessionThatDoesNotExistIsFalse() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            assertFalse(
+                store.clearTaskRefIf(SessionId("ghost1"), TaskRef("local:1"), updatedAt = 2L),
+                "a vanished session cannot have had its link cleared",
+            )
+        }
+    }
+
+    /** A session holding NO link is the same answer: the caller did not clear anything. */
+    @Test
+    fun aConditionalClearOnASessionHoldingNoLinkIsFalse() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("link0e")
+            store.upsertSession(meta(sid))
+
+            assertFalse(
+                store.clearTaskRefIf(sid, TaskRef("local:1"), updatedAt = 2L),
+                "an unlinked row answers false rather than reporting a clear that did not happen",
+            )
+            assertEquals(100L, store.getSession(sid)!!.updatedAt, "and nothing is written")
         }
     }
 

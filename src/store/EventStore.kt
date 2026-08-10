@@ -215,7 +215,7 @@ interface EventStore {
      * update at all. That is why the task store never touches `sessions` and why
      * [io.kotgent.daemon.TaskService] calls the two stores sequentially rather than nesting them.
      *
-     * ## The three task-link members are defaulted, and the default THROWS
+     * ## Three of the four task-link members are defaulted, and that default THROWS
      * They carry a default body only so the suite's hand-written fake stores — all of which predate the
      * task layer and none of which models a session link — keep compiling untouched; making them
      * abstract would mean editing seven shared test files, which the parallel-execution plan forbids.
@@ -223,12 +223,55 @@ interface EventStore {
      * defaulted WRITES on this interface, and a fake that forgot to override a silent one would let
      * `TaskService.link()` pass its test while persisting nothing — a green test for a feature that does
      * not work. Failing loudly turns that into a one-line fix in the fake that owns the test. Any store
-     * a task-linking path actually runs against must override all three.
+     * a task-linking path actually runs against must override all three. ([clearTaskRefIf] is the fourth
+     * member and the one exception: its default is a working two-step composition rather than a throw —
+     * see the reasoning there.)
      */
     suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long): Unit =
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not model session task links: override setTaskRef",
         )
+
+    /**
+     * CLEAR [sessionId]'s link like `setTaskRef(sessionId, null, …)`, but ONLY IF the row still holds
+     * [expectedRef] — a check-and-write every real implementation owes atomically, [setModelForProvider]'s
+     * shape. Returns whether the row was written; `false` means no such row, or it points at a different
+     * task (or at none) now.
+     *
+     * **Every clear in the design is a read followed by a write, and this is what closes that window.**
+     * An explicit `unlink`, a board close, a `delete` and a session's "Done" all learn WHICH ref they are
+     * clearing (from the row, or from [sessionsHoldingTask]) and only then write. A link made to a
+     * DIFFERENT task inside that window is newer than everything the caller read: erasing it would leave
+     * that task `in_progress` with no terminal behind it, and make the activity feed claim an `unlinked`
+     * from the old ref for a write that actually destroyed the new one. So the check rides in the
+     * statement's `WHERE` ([SqliteEventStore]) and the caller appends its `unlinked` row only on `true`.
+     *
+     * **This is not exclusivity returning.** Linking stays unconditional ([setTaskRef]) and a task may
+     * still be held by any number of sessions; what is refused is erasing a link the caller never read,
+     * which is a lost-update rule, not an occupancy rule. `false` is normal — the ordinary shape of
+     * "somebody re-pointed this session while I was working" — and never an error to report upward.
+     *
+     * Emits a [sessionUpdates] signal only when the write applied.
+     *
+     * ## The defaulted body is a NON-ATOMIC fallback, and only a single-threaded fake may keep it
+     * Unlike its three neighbours, this one's default is not an [UnsupportedOperationException]: it is
+     * [getSession] followed by [setTaskRef], composed from members every store already has. That keeps
+     * the suite's hand-written fakes — which predate the task layer and are shared across files this
+     * change may not touch — working with the semantics they had, because for a fake with one caller the
+     * two steps cannot be interleaved and the answer is exact.
+     *
+     * It is deliberately NOT the hazard the throwing defaults exist to prevent (a write that silently
+     * persists nothing): this one really does check and really does clear. What it lacks is atomicity.
+     * **Any store with concurrent writers MUST override it** and make the check and the write one
+     * indivisible operation — [SqliteEventStore] carries the check in the statement's `WHERE`, under the
+     * single-writer mutex — or the very window this member exists to close is open again inside its own
+     * implementation.
+     */
+    suspend fun clearTaskRefIf(sessionId: SessionId, expectedRef: TaskRef, updatedAt: Long): Boolean {
+        if (getSession(sessionId)?.taskRef != expectedRef) return false
+        setTaskRef(sessionId, null, updatedAt)
+        return true
+    }
 
     /**
      * Set (or clear) the session's resolved project, with the same targeted-write and emission contract

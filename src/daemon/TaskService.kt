@@ -103,10 +103,15 @@ class TaskService(
      * The row is read first only to learn WHICH ref to attribute the `unlinked` activity row to; a
      * session that holds no link is a no-op that writes nothing at all, so a double `release` does not
      * stamp a second `updated_at` or a second feed entry.
+     *
+     * The clear is [EventStore.clearTaskRefIf], **conditional on the ref that read answered**: a `claim`
+     * or a `next` landing between the two calls has pointed this session at a NEWER task, and clearing
+     * unconditionally would erase that link while the feed claimed an unlink from the old one. Zero rows
+     * is then the whole outcome — no `unlinked` row either, because none happened.
      */
     suspend fun unlink(sessionId: SessionId) {
         val ref = sessions.getSession(sessionId)?.taskRef ?: return
-        sessions.setTaskRef(sessionId, null, now())
+        if (!sessions.clearTaskRefIf(sessionId, ref, now())) return
         tasks.appendActivity(ref, ActivityKind.unlinked, author = sessionId.value)
     }
 
@@ -152,17 +157,20 @@ class TaskService(
      * Clear `sessions.task_ref` on every session holding [ref], one sequential [EventStore] call each,
      * optionally appending an `unlinked` activity row per holder.
      *
-     * Two properties are deliberate. The clear is **unconditional**, because [EventStore.setTaskRef] is
-     * the only setter there is: a holder re-pointed at a different task between the read and the clear
-     * loses that newer link. The window is a few microseconds wide and its cost is one badge, which is
-     * the same trade `sessions.task_ref` already makes by being a reference rather than a foreign key —
-     * recorded, not fixed, because fixing it means a conditional write on the contract Task 2 froze.
+     * Two properties are deliberate. The clear is [EventStore.clearTaskRefIf], **conditional on [ref]**:
+     * `sessionsHoldingTask` is a snapshot, and a holder re-pointed at a different task between that list
+     * and its own clear is newer than everything this loop read. An unconditional clear erased that link
+     * — leaving the newer task `in_progress` with no terminal behind it — and then wrote an `unlinked`
+     * row naming the OLD ref, so the feed described a write that had not happened. The check rides in the
+     * statement's `WHERE`, and the `unlinked` row is gated on its answer: a holder that slipped away is
+     * simply not one of this close's holders. That refusal is a lost-update rule, not exclusivity —
+     * nothing here refuses to MAKE a link, and a task may still be held by any number of sessions.
      * And the loop **never nests the two stores' locks**: each [EventStore] call returns before the
      * [TaskStore] call that follows it is made.
      */
     private suspend fun unlinkEveryHolder(ref: TaskRef, feed: Boolean) {
         for (holder in sessions.sessionsHoldingTask(ref)) {
-            sessions.setTaskRef(holder.id, null, now())
+            if (!sessions.clearTaskRefIf(holder.id, ref, now())) continue
             if (feed) tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
         }
     }
