@@ -10,6 +10,10 @@
  *                   the selected project here; the app does not know which one is selected.
  *   sessions        SessionDto[] — the card's session dots come from `session.taskRef`, never a fetch.
  *   route           { screen, id } from `lib/router.js`.
+ *   basePath        the Preferences base path, the same value the New-session dialog is handed. It is
+ *                   the New-project form's starting directory and the base its completion resolves a
+ *                   relative name against — a project lives under the same tree a session does, so
+ *                   there is no second place to configure it.
  *   newTaskRequest  a monotonically increasing counter. It increments when the palette's "new task"
  *                   command fires; `0` means "never asked". The create form opens when it CHANGES (an
  *                   effect keyed on it), not when it is truthy — the same command can fire twice while
@@ -51,6 +55,7 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { apiRequest, errorMessage } from "../lib/api.js";
+import { joinPath, normalizePath } from "../lib/paths.js";
 import { SCREEN_SESSIONS, navigate, routePath, sessionPath, taskPath } from "../lib/router.js";
 import {
   createProject,
@@ -185,6 +190,7 @@ export function Board({
   tasks = [],
   sessions = [],
   route = null,
+  basePath = "",
   newTaskRequest = 0,
   onTaskRow,
   onTaskRemoved,
@@ -555,7 +561,8 @@ export function Board({
         <${NewTaskForm} project=${projects.find((project) => project.id === projectId)}
                         onCreate=${submitTask} onClose=${() => setForm(null)} />`}
       ${form === "project" && html`
-        <${NewProjectForm} onCreate=${submitProject} onClose=${() => setForm(null)} />`}
+        <${NewProjectForm} basePath=${basePath} onCreate=${submitProject}
+                           onClose=${() => setForm(null)} />`}
     </main>
   `;
 }
@@ -629,16 +636,36 @@ function NewTaskForm({ project, onCreate, onClose }) {
 }
 
 /**
+ * The absolute directory a typed value names, given the Preferences base path: an absolute input is
+ * itself, a relative one hangs off the base. This is deliberately the SAME join
+ * `POST /directories/complete` applies on the daemon (`completionTarget`), so a name the suggestion list
+ * offered is the name the create receives — a form whose completion resolved against the base while its
+ * submit did not would list a real directory and then post a path the daemon refuses as relative.
+ * With no base path configured a relative value stays relative and the submit refuses it below.
+ */
+export function resolveProjectPath(typed, basePath) {
+  const input = String(typed || "").trim();
+  if (input.charAt(0) === "/") return normalizePath(input);
+  const base = normalizePath(basePath);
+  if (!input || base.charAt(0) !== "/") return input;
+  return normalizePath(joinPath(base, [input]));
+}
+
+/**
  * Adopt a directory as a project: the daemon writes `.kotgent.json` there and an existing file always
  * wins, so pointing this at a checkout that is already a project simply learns its uuid.
  *
  * The path field completes against the daemon's filesystem — a phone must complete paths on the Mac
- * that will hold the file, not on the phone. This is the same `POST /directories/complete` endpoint the
- * New-session dialog uses; the picker is inlined here rather than shared, because the dialog owns its
- * one caller and this form's requirements differ (no base path, absolute input only).
+ * that will hold the file, not on the phone. This is the same `POST /directories/complete` endpoint and
+ * the same base path the New-session dialog uses: a project is created in the same tree sessions are
+ * started in, so the field opens ON the base path and completes relative input against it rather than
+ * making the operator retype an absolute prefix they already configured once. The picker is inlined
+ * here rather than shared, because the dialog owns its one caller and this form has no import mode.
  */
-function NewProjectForm({ onCreate, onClose }) {
-  const [path, setPath] = useState("");
+function NewProjectForm({ basePath = "", onCreate, onClose }) {
+  const base = normalizePath(basePath);
+  // Seeded once, at mount: the form is mounted fresh for each open, so there is no draft to drift.
+  const [path, setPath] = useState(base.charAt(0) === "/" ? base : "");
   const [name, setName] = useState("");
   const [query, setQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -655,16 +682,16 @@ function NewProjectForm({ onCreate, onClose }) {
     const typed = query.trim();
     setSuggestions([]);
     setActiveSuggestion(-1);
-    // No base path here: a project is named by an absolute directory, and the endpoint refuses a
-    // relative input without one anyway.
-    if (!typed || typed.charAt(0) !== "/") return undefined;
+    // A relative name completes only when there is a base path to hang it off — the endpoint answers
+    // 400 for a relative input with no absolute base, so asking would be a round trip for an error.
+    if (!typed || (typed.charAt(0) !== "/" && base.charAt(0) !== "/")) return undefined;
 
     const controller = new AbortController();
     const timer = setTimeout(() => {
       apiRequest("/directories/complete", {
         method: "POST",
         signal: controller.signal,
-        body: JSON.stringify({ basePath: null, input: typed }),
+        body: JSON.stringify({ basePath: base || null, input: typed }),
       })
         .then((response) => {
           if (controller.signal.aborted) return;
@@ -681,7 +708,7 @@ function NewProjectForm({ onCreate, onClose }) {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, base]);
 
   const choose = (candidate) => {
     setPath(candidate);
@@ -712,8 +739,9 @@ function NewProjectForm({ onCreate, onClose }) {
 
   const submit = async (event) => {
     event.preventDefault();
-    const typed = path.trim();
+    const typed = resolveProjectPath(path, base);
     if (typed.charAt(0) !== "/") {
+      // Only reachable with no base path configured: with one, every non-empty value resolves above.
       setError("Give an absolute path to an existing directory.");
       if (pathRef.current) pathRef.current.focus();
       return;
@@ -750,7 +778,8 @@ function NewProjectForm({ onCreate, onClose }) {
                    aria-activedescendant=${activeSuggestion >= 0
                      ? "new-project-path-option-" + activeSuggestion
                      : null}
-                   placeholder="/path/to/project" ref=${pathRef} value=${path} disabled=${busy}
+                   placeholder=${base.charAt(0) === "/" ? base + "/name" : "/path/to/project"}
+                   ref=${pathRef} value=${path} disabled=${busy}
                    onInput=${(e) => { setPath(e.target.value); setQuery(e.target.value); }}
                    onKeyDown=${pathKeyDown}
                    onFocus=${() => setFocused(true)} onBlur=${() => setFocused(false)} />
@@ -766,6 +795,10 @@ function NewProjectForm({ onCreate, onClose }) {
                       onClick=${() => choose(candidate)}>${candidate}</li>`)}
               </ul>`}
           </div>
+          ${base.charAt(0) === "/" && html`
+            <small id="new-project-base-hint" class="field-hint">
+              Starts at the Preferences base path ${base}; a name without a leading / is resolved under it.
+            </small>`}
         </div>
 
         <label class="field">

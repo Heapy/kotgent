@@ -242,6 +242,48 @@ class WebUiBoardTest {
     }
 
     /**
+     * New project starts where New session does: on the Preferences base path.
+     *
+     * The form used to send `basePath: null` and refuse anything that did not already begin with `/`, so
+     * the one directory the operator had configured once had to be retyped in full for every project —
+     * and the completion list could not help until it was, because the endpoint refuses a relative input
+     * with no absolute base (`DirectoryCompletion.kt`).
+     *
+     * Completion and submit are asserted together on purpose: they must apply the SAME join. A form that
+     * completed relative input against the base while its submit passed the raw value through would list
+     * a real directory and then post a path `POST /projects` rejects as relative.
+     */
+    @Test
+    fun theNewProjectFormStartsOnTheBasePathAndResolvesRelativeInputAgainstIt() = withServer { ctx ->
+        val app = ctx.get("/app.js").bodyAsText()
+        val board = ctx.get("/components/Board.js").bodyAsText()
+        assertTrue(
+            app.contains("basePath=\${prefs.basePath}"),
+            "the board is handed the same preference the New-session dialog gets",
+        )
+        assertTrue(
+            board.contains("<\${NewProjectForm} basePath=\${basePath}"),
+            "and passes it down to the form that names a directory",
+        )
+        assertTrue(
+            board.contains("useState(base.charAt(0) === \"/\" ? base : \"\")"),
+            "the directory field opens ON the base path instead of empty",
+        )
+        assertTrue(
+            board.contains("body: JSON.stringify({ basePath: base || null, input: typed })"),
+            "completion resolves a relative name against the base rather than sending null",
+        )
+        assertFalse(
+            board.contains("basePath: null"),
+            "the old unconditional null is gone — it was what made relative input uncompletable",
+        )
+        assertTrue(
+            board.contains("const typed = resolveProjectPath(path, base);"),
+            "and the submit applies that same base, so the list and the create agree on the path",
+        )
+    }
+
+    /**
      * The project-name field must accept every name `POST /projects` does.
      *
      * An `<input maxlength>` shorter than the API's cap is not a stricter client-side rule — it silently

@@ -1899,7 +1899,9 @@ class WebUiServingTest {
         // compensating rule rather than merely somewhere in the block: narrowing the selector group is
         // the regression, and a name mentioned in a neighbouring comment would hide it.
         val compensation = sliceBetween(coarse, "#new-session-form", "padding-top: 10px;", "the compensation")
-        for (form in listOf("#upload-form", "#prefs-form", "#phone-form", "#help-form")) {
+        for (form in listOf(
+            "#new-task-form", "#new-project-form", "#upload-form", "#prefs-form", "#phone-form", "#help-form",
+        )) {
             assertTrue(compensation.contains(form), "$form compensates for the handle's height")
         }
         assertTrue(

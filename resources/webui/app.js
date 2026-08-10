@@ -1313,6 +1313,7 @@ function App() {
         tasks=${tasks}
         sessions=${sessions}
         route=${route}
+        basePath=${prefs.basePath}
         newTaskRequest=${newTaskRequest}
         onTaskRow=${applyTaskRow}
         onTaskRemoved=${applyTaskRemoved}

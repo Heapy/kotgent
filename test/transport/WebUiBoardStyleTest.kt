@@ -343,6 +343,50 @@ class WebUiBoardStyleTest {
         }
     }
 
+    /**
+     * The board's two dialogs wear the shell's dialog chrome, and both halves of that shipped missing.
+     *
+     * `dialog` itself is `padding: 0` — the inset belongs to each FORM, so that the grabber above it can
+     * span the full width — and `#new-task-form` / `#new-project-form` were simply absent from the group
+     * that declares it. That is not a tighter dialog: the head, every field and the actions row all sit
+     * flush against the border. The coarse-pointer half is checked by `WebUiServingTest`'s handle test,
+     * which reads the same two names out of the compensating rule.
+     *
+     * The textarea is the other half, and it is specific to this screen: New task is the only dialog
+     * with one. `.field input, .field select` never mentioned it, so it fell through to the UA — a
+     * replaced element whose `auto` width is its `cols` attribute rather than its container, in a
+     * monospace face, on a light background inside a dark panel.
+     */
+    @Test
+    fun theBoardsTwoDialogsCarryThePanelInsetAndItsTextareaIsAField() = withServer { ctx ->
+        val css = withoutComments(ctx.get("/style.css").bodyAsText())
+        val inset = Regex("""(#[\w-]+-form,\s*)+#phone-form \{ padding: 20px; \}""")
+            .find(css)
+            ?.value
+        assertTrue(inset != null, "the dialog forms still share one `padding: 20px` group")
+        for (form in listOf("#new-task-form", "#new-project-form")) {
+            assertTrue(
+                inset!!.contains(form),
+                "$form takes the panel inset — `dialog` is `padding: 0`, so a form left out of this " +
+                    "group renders flush against the border",
+            )
+        }
+        assertTrue(
+            Regex("""\.field input,\s*\.field select,\s*\.field textarea \{""").containsMatchIn(css),
+            "a `.field` textarea is dressed as a field, not left to the UA's monospace `cols` box",
+        )
+        // Matched against the rule BODY rather than through `cssRuleOf`, whose `\n<selector> {` anchor
+        // would land on the group above — `.field textarea` is the last line of that selector list too.
+        assertTrue(
+            Regex("""\.field textarea \{[^{}]*resize: vertical""").containsMatchIn(css),
+            "and it may only be resized along the axis that cannot break the dialog's width",
+        )
+        assertTrue(
+            Regex("""\bbutton, input, select, textarea \{ font: inherit; \}""").containsMatchIn(css),
+            "the global font reset covers a textarea too, or it renders in a face of its own",
+        )
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     /**

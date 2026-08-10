@@ -40,7 +40,9 @@
   white-space: nowrap !important;
   border: 0 !important;
 }
-button, input, select { font: inherit; }
+/* `textarea` belongs here with the rest: its UA default is a monospace face of its own, so a form field
+   left out of this reset renders in a different typeface from the inputs beside it. */
+button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 
 html, body {
@@ -735,7 +737,14 @@ dialog::backdrop {
   margin: 10px 2px 0;
   min-height: 16px;
 }
+/* Every dialog FORM declares this, because `dialog` itself is `padding: 0` — the panel's inset belongs to
+   the form so the grabber above it can span the full width. A form left out of this group is not a
+   slightly tighter dialog, it is one whose head, fields and actions all sit flush against the border;
+   that is exactly how the board's two forms shipped. `#phone-form` stays LAST on the line the
+   coarse-pointer test locates this group by. */
 #new-session-form,
+#new-task-form,
+#new-project-form,
 #upload-form,
 #prefs-form,
 #phone-form { padding: 20px; }
@@ -780,7 +789,8 @@ dialog::backdrop {
   overflow-wrap: anywhere;
 }
 .field input,
-.field select {
+.field select,
+.field textarea {
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -788,6 +798,16 @@ dialog::backdrop {
   min-height: 38px;
   padding: 7px 10px;
   width: 100%;
+}
+/* `width` above is what a <textarea> actually needs from this rule: it is a replaced element whose `auto`
+   width is its `cols` attribute, not its container, so an unstyled one is 20 characters wide and spills
+   out of a 460px dialog (`.task-detail-body` carries the same note for the same reason). `resize` is
+   capped to the one axis that cannot break the dialog's width, and the inline-block default would
+   otherwise leave a baseline gap under it. */
+.field textarea {
+  display: block;
+  line-height: 1.5;
+  resize: vertical;
 }
 /* The New session dialog's two modes (start new / import existing): a segmented pair of toggle
    buttons whose state rides `aria-pressed`, styled to match the selected agent card. */
@@ -1930,6 +1950,8 @@ button.task-card-title:hover,
   /* The panels give back HALF the 20px the handle costs — the rest stays as breathing room between the
      grabber's ink and the title, which is the gap a native sheet draws there too. */
   #new-session-form,
+  #new-task-form,
+  #new-project-form,
   #upload-form,
   #prefs-form,
   #phone-form,
