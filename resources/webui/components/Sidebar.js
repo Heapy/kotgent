@@ -84,6 +84,67 @@ function NavSwitch({ screen, sessionsPath }) {
     </nav>`;
 }
 
+/** The diagonal the muted state is struck with, spelled once: the stroke and the gap it is cut from. */
+const NOTIFY_MUTE_SLASH = "M4.8 20.2L19.6 5.4";
+
+/**
+ * The mark itself: a node, and the two arcs it broadcasts. Both arcs are struck on the node's OWN
+ * centre, which is what makes them read as one signal leaving one source rather than as a stack of
+ * unrelated curves — the same relation the app icon draws between its two nodes and the strokes that
+ * reach them (`icons/logo.svg`).
+ *
+ * The node is filled rather than ringed. At 17px a 2.5-radius ring reads as the letter `o`, and once the
+ * muted state adds a diagonal beside it the pair resolves as a glyph — `9`, `g`, `%` depending on the
+ * angle. Filled, it stays a dot at every size this button is ever drawn at.
+ */
+const notifySignal = (mask) => html`
+  <g mask=${mask}>
+    <circle cx="7.5" cy="12" r="2.5" fill="currentColor" stroke="none" />
+    <path d="M11.74 7.76A6 6 0 0 1 11.74 16.24" />
+    <path d="M14.57 4.93A10 10 0 0 1 14.57 19.07" />
+  </g>`;
+
+/**
+ * The notifications toggle's mark, drawn rather than typed.
+ *
+ * A system emoji is the one glyph in this shell that cannot be told to match it: it arrives in the
+ * vendor's palette at the vendor's weight, so the bell read as a yellow sticker beside a purple accent
+ * while the struck-through bell differed from it mostly in hue — the state was carried by a colour
+ * kotgent does not own. (Neither is SPELLED here: the guard that keeps them out of this file is a plain
+ * text search, so it reads comments too — the same rule the phone drawer's blur note follows.) Drawn,
+ * it takes `currentColor`, which is what lets the button's `.active` class do the colouring from the
+ * stylesheet (`--accent` on, `--muted` off) with one component serving both states.
+ *
+ * Off strikes the signal through with a diagonal, and the diagonal is CUT OUT of what it crosses rather
+ * than laid over it: at this size a slash drawn straight over the arcs merges with them into a knot,
+ * because it runs nearly parallel to the curves it is meant to negate. The mask's gap is what keeps the
+ * two readable as separate marks. Its id is a constant because `app.js` renders exactly one `Sidebar`,
+ * so this svg is unique in the document; a second copy would only point at an identical mask anyway.
+ */
+function NotifyIcon({ on }) {
+  return html`
+    <svg
+      viewBox="0 0 24 24"
+      focusable="false"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+    >
+      ${on ? notifySignal(null) : html`
+        ${/* The region is spelled out because the default one is the masked box grown by 10%, which the
+              arcs' own stroke very nearly fills: any later change to their radius would push a cap
+              outside it and silently clip the mark rather than fail. */ ""}
+        <mask id="notify-mute-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+          <rect x="0" y="0" width="24" height="24" fill="#fff" stroke="none" />
+          <path d=${NOTIFY_MUTE_SLASH} stroke="#000" stroke-width="4.4" />
+        </mask>
+        ${notifySignal("url(#notify-mute-cut)")}
+        <path d=${NOTIFY_MUTE_SLASH} />`}
+    </svg>`;
+}
+
 /**
  * One project, in the session row's shape: name, its directory beneath, and a count on the right.
  *
@@ -463,7 +524,7 @@ export function Sidebar({
               title=${notifyOn ? "Notifications on (this device) — click to turn off"
                 : "Notifications off — click to turn on for this device"}
               onClick=${toggleNotifications}
-            >${notifyOn ? "🔔" : "🔕"}</button>
+            ><${NotifyIcon} on=${notifyOn} /></button>
             ${/* Shown only under the mobile media query: the drawer's scrim covers the hamburger that
                   opened it, so without this the only way back is a tap outside. */ ""}
             <button

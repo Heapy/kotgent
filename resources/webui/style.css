@@ -2394,11 +2394,33 @@ button.task-card-title:hover,
 
 .done-list .session-row { opacity: 0.75; }
 
-/* Notifications toggle */
-.notify-toggle.active {
-  background: #dbeafe;
-  border-radius: 6px;
+/* Notifications toggle. Its mark is an inline SVG (`components/Sidebar.js`), so the state is a COLOUR
+   this stylesheet owns rather than a second emoji: off is muted like any other quiet control, on is the
+   accent inside the same `--pill-active` tint every selected pill in the app wears. What it replaced was
+   a hard-coded pale blue left over from the light theme — an off-palette fill in the one place the accent
+   should be; its literal is deliberately not repeated here, because the test that keeps it gone is a
+   plain text search over this file. */
+.notify-toggle {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
 }
+.notify-toggle:hover:not(:disabled) { color: var(--text); }
+/* Size only. The mark's paint lives on the svg element itself (`components/Sidebar.js`) because the muted
+   state is drawn with a mask, and a stylesheet rule reaching inside it would repaint the mask's own
+   black-and-white shapes — a `fill` declared here beats their presentation attributes and the cut-out
+   silently turns into a solid block. */
+.notify-toggle svg {
+  height: 17px;
+  width: 17px;
+}
+.notify-toggle.active {
+  background: var(--pill-active);
+  border-color: var(--pill-active-border);
+  color: var(--accent);
+}
+.notify-toggle.active:hover:not(:disabled) {
   background: var(--pill-active);
   color: var(--accent);
 }

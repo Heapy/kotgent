@@ -956,6 +956,54 @@ class WebUiServingTest {
     }
 
     @Test
+    fun theNotificationsToggleIsDrawnInTheShellsOwnAccentRatherThanAVendorEmoji() = withServer { ctx ->
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertFalse(
+            sidebar.contains("🔔") || sidebar.contains("🔕"),
+            "the toggle no longer types a bell emoji: its colour would be the vendor's, not the accent",
+        )
+        assertTrue(
+            sidebar.contains("function NotifyIcon({ on })") &&
+                sidebar.contains("<\${NotifyIcon} on=\${notifyOn} />"),
+            "the mark is a component the button renders for both states",
+        )
+        val icon = sidebar.substringAfter("function NotifyIcon({ on })").substringBefore("\n}")
+        assertTrue(
+            icon.contains("stroke=\"currentColor\"") && !icon.contains("#8B62FF"),
+            "the mark takes the button's own colour rather than baking the accent into the asset",
+        )
+        // The state is IN the mark, not only in its colour: `on` renders the bare signal and `off`
+        // renders the same signal masked plus the diagonal. A colour swap alone would leave the muted
+        // button reading as "broadcasting, quietly".
+        val mask = icon.substringAfter("<mask id=\"notify-mute-cut\">").substringBefore("</mask>")
+        assertTrue(
+            Regex("""on \?\s*notifySignal\(null\)""").containsMatchIn(icon) &&
+                icon.contains("notifySignal(\"url(#notify-mute-cut)\")") &&
+                mask.contains("fill=\"#fff\"") && mask.contains("stroke=\"#000\""),
+            "off masks the signal with the slash it is then struck with, so the two stay separate marks",
+        )
+
+        val css = ctx.get("/style.css").bodyAsText()
+        val markRule = css.substringAfter(".notify-toggle svg {").substringBefore("}")
+        assertFalse(
+            markRule.contains("fill:") || markRule.contains("stroke:"),
+            "the stylesheet sizes the mark but never paints it — a fill here would fill in the mask's cut",
+        )
+        val quietRule = css.substringAfter("\n.notify-toggle {").substringBefore("}")
+        val activeRule = css.substringAfter("\n.notify-toggle.active {").substringBefore("}")
+        assertTrue(
+            quietRule.contains("color: var(--muted);") &&
+                activeRule.contains("color: var(--accent);") &&
+                activeRule.contains("background: var(--pill-active);"),
+            "off is the shell's muted grey and on is the accent inside the shared pill tint",
+        )
+        assertFalse(
+            css.contains("#dbeafe"),
+            "the light-theme blue the active toggle used to be filled with is gone from the dark shell",
+        )
+    }
+
+    @Test
     fun theDesktopSidebarCollapsesWithoutOverloadingTheMobileDrawer() = withServer { ctx ->
         val app = ctx.get("/app.js").bodyAsText()
         assertTrue(
