@@ -84,24 +84,30 @@ function NavSwitch({ screen, sessionsPath }) {
     </nav>`;
 }
 
-/** The diagonal the muted state is struck with, spelled once: the stroke and the gap it is cut from. */
-const NOTIFY_MUTE_SLASH = "M4.8 20.2L19.6 5.4";
+/**
+ * The diagonal a muted symbol is struck with, spelled once: the stroke and the gap it is cut from must
+ * be the same line. It runs top-left to bottom-right, the direction the platform's own `.slash` symbols
+ * take — measured against `bell.slash.fill` rather than guessed, because the mirrored one reads as a
+ * different mark to anyone who uses the phone this shell is meant to be operated from.
+ */
+const NOTIFY_MUTE_SLASH = "M4.7 4.7L19.7 19.7";
 
 /**
- * The mark itself: a node, and the two arcs it broadcasts. Both arcs are struck on the node's OWN
- * centre, which is what makes them read as one signal leaving one source rather than as a stack of
- * unrelated curves — the same relation the app icon draws between its two nodes and the strokes that
- * reach them (`icons/logo.svg`).
- *
- * The node is filled rather than ringed. At 17px a 2.5-radius ring reads as the letter `o`, and once the
- * muted state adds a diagonal beside it the pair resolves as a glyph — `9`, `g`, `%` depending on the
- * angle. Filled, it stays a dot at every size this button is ever drawn at.
+ * The bell, filled: a small crown, a dome flaring into a skirt that ends on a flat lip, and a clapper
+ * detached beneath it. The proportions are drawn to sit beside the platform's own bell rather than to be
+ * a second interpretation of one — the operator meets this button on a phone, where every other bell
+ * they see is that one.
  */
-const notifySignal = (mask) => html`
+const NOTIFY_BELL_BODY =
+  "M12 2.65a1.35 1.35 0 0 0-1.35 1.35C7.6 4.75 6.15 7 6.15 10.1c0 3.4-.65 5.5-1.9 6.7-.75.7-.25 1.8.75 " +
+  "1.8h14c1 0 1.5-1.1.75-1.8-1.25-1.2-1.9-3.3-1.9-6.7 0-3.1-1.45-5.35-4.5-6.1A1.35 1.35 0 0 0 12 2.65z";
+const NOTIFY_BELL_CLAPPER = "M9.75 19.9a2.25 2.25 0 0 0 4.5 0z";
+
+/** The bell in both states — the same two paths, cut by the slash's mask in the muted one. */
+const notifyBell = (mask) => html`
   <g mask=${mask}>
-    <circle cx="7.5" cy="12" r="2.5" fill="currentColor" stroke="none" />
-    <path d="M11.74 7.76A6 6 0 0 1 11.74 16.24" />
-    <path d="M14.57 4.93A10 10 0 0 1 14.57 19.07" />
+    <path d=${NOTIFY_BELL_BODY} />
+    <path d=${NOTIFY_BELL_CLAPPER} />
   </g>`;
 
 /**
@@ -109,39 +115,37 @@ const notifySignal = (mask) => html`
  *
  * A system emoji is the one glyph in this shell that cannot be told to match it: it arrives in the
  * vendor's palette at the vendor's weight, so the bell read as a yellow sticker beside a purple accent
- * while the struck-through bell differed from it mostly in hue — the state was carried by a colour
- * kotgent does not own. (Neither is SPELLED here: the guard that keeps them out of this file is a plain
- * text search, so it reads comments too — the same rule the phone drawer's blur note follows.) Drawn,
- * it takes `currentColor`, which is what lets the button's `.active` class do the colouring from the
- * stylesheet (`--accent` on, `--muted` off) with one component serving both states.
+ * while the struck-through bell differed from it mostly in hue. (Neither is SPELLED here: the guard that
+ * keeps them out of this file is a plain text search, so it reads comments too — the same rule the phone
+ * drawer's blur note follows.) Drawn, it takes `currentColor`, so the stylesheet says the state instead:
+ * the accent while notifications are on, the attention red while they are off.
  *
- * Off strikes the signal through with a diagonal, and the diagonal is CUT OUT of what it crosses rather
- * than laid over it: at this size a slash drawn straight over the arcs merges with them into a knot,
- * because it runs nearly parallel to the curves it is meant to negate. The mask's gap is what keeps the
- * two readable as separate marks. Its id is a constant because `app.js` renders exactly one `Sidebar`,
- * so this svg is unique in the document; a second copy would only point at an identical mask anyway.
+ * Off strikes the bell through with a diagonal, and the diagonal is CUT OUT of what it crosses rather
+ * than laid over it — the platform draws its own muted symbols that way, and on a solid shape a slash
+ * without the gap reads as a crease in the fill rather than as a line across it.
+ *
+ * The mask's id is a constant because `app.js` renders exactly one `Sidebar`, so this svg is unique in
+ * the document; a second copy would only point at an identical mask anyway.
  */
 function NotifyIcon({ on }) {
   return html`
-    <svg
-      viewBox="0 0 24 24"
-      focusable="false"
-      aria-hidden="true"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.8"
-      stroke-linecap="round"
-    >
-      ${on ? notifySignal(null) : html`
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true" fill="currentColor">
+      ${on ? notifyBell(null) : html`
         ${/* The region is spelled out because the default one is the masked box grown by 10%, which the
-              arcs' own stroke very nearly fills: any later change to their radius would push a cap
-              outside it and silently clip the mark rather than fail. */ ""}
+              bell very nearly fills on its own: a later change to its geometry would push part of the
+              mark outside the region and silently clip it rather than fail. */ ""}
         <mask id="notify-mute-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-          <rect x="0" y="0" width="24" height="24" fill="#fff" stroke="none" />
-          <path d=${NOTIFY_MUTE_SLASH} stroke="#000" stroke-width="4.4" />
+          <rect x="0" y="0" width="24" height="24" fill="#fff" />
+          <path d=${NOTIFY_MUTE_SLASH} fill="none" stroke="#000" stroke-width="4.4" stroke-linecap="round" />
         </mask>
-        ${notifySignal("url(#notify-mute-cut)")}
-        <path d=${NOTIFY_MUTE_SLASH} />`}
+        ${notifyBell("url(#notify-mute-cut)")}
+        <path
+          d=${NOTIFY_MUTE_SLASH}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linecap="round"
+        />`}
     </svg>`;
 }
 

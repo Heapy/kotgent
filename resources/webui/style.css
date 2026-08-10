@@ -2394,33 +2394,38 @@ button.task-card-title:hover,
 
 .done-list .session-row { opacity: 0.75; }
 
-/* Notifications toggle. Its mark is an inline SVG (`components/Sidebar.js`), so the state is a COLOUR
-   this stylesheet owns rather than a second emoji: off is muted like any other quiet control, on is the
-   accent inside the same `--pill-active` tint every selected pill in the app wears. What it replaced was
-   a hard-coded pale blue left over from the light theme — an off-palette fill in the one place the accent
-   should be; its literal is deliberately not repeated here, because the test that keeps it gone is a
+/* Notifications toggle. The mark is an inline SVG (`components/Sidebar.js`) and the state is a COLOUR
+   this stylesheet owns rather than a second glyph: the accent while notifications are on, `--attn` — the
+   red a session waiting for you already wears — while they are off, where it reads as the standing
+   warning it is rather than as a control someone forgot to switch back.
+
+   It keeps the icon-button classes for their box (28px, the thumb target) and drops everything that
+   makes that box look like a chip: no border, no fill, no hover plate. A bell in the brand row is a
+   status light more than a button, and the surround was competing with the one thing it has to say.
+   That also retires a hard-coded pale blue left over from the light theme, which used to fill the
+   active state; its literal is deliberately not repeated here, because the test keeping it gone is a
    plain text search over this file. */
 .notify-toggle {
   align-items: center;
-  color: var(--muted);
+  background: none;
+  border: none;
+  color: var(--attn);
   display: inline-flex;
   justify-content: center;
+  padding: 0;
 }
-.notify-toggle:hover:not(:disabled) { color: var(--text); }
+.notify-toggle.active { color: var(--accent); }
+/* The only hover the mark can afford, now that there is no plate to tint: `background` is restated
+   because `.icon-button`'s own hover rule carries the same specificity and would otherwise paint one. */
+.notify-toggle:hover:not(:disabled) {
+  background: none;
+  opacity: 0.75;
+}
 /* Size only. The mark's paint lives on the svg element itself (`components/Sidebar.js`) because the muted
    state is drawn with a mask, and a stylesheet rule reaching inside it would repaint the mask's own
    black-and-white shapes — a `fill` declared here beats their presentation attributes and the cut-out
    silently turns into a solid block. */
 .notify-toggle svg {
-  height: 17px;
-  width: 17px;
-}
-.notify-toggle.active {
-  background: var(--pill-active);
-  border-color: var(--pill-active-border);
-  color: var(--accent);
-}
-.notify-toggle.active:hover:not(:disabled) {
-  background: var(--pill-active);
-  color: var(--accent);
+  height: 18px;
+  width: 18px;
 }

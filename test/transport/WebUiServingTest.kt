@@ -969,18 +969,24 @@ class WebUiServingTest {
         )
         val icon = sidebar.substringAfter("function NotifyIcon({ on })").substringBefore("\n}")
         assertTrue(
-            icon.contains("stroke=\"currentColor\"") && !icon.contains("#8B62FF"),
-            "the mark takes the button's own colour rather than baking the accent into the asset",
+            icon.contains("fill=\"currentColor\"") && !icon.contains("#8B62FF") && !icon.contains("#ff6b6b"),
+            "the mark takes the button's own colour rather than baking either state's colour into it",
         )
-        // The state is IN the mark, not only in its colour: `on` renders the bare signal and `off`
-        // renders the same signal masked plus the diagonal. A colour swap alone would leave the muted
-        // button reading as "broadcasting, quietly".
-        val mask = icon.substringAfter("<mask id=\"notify-mute-cut\">").substringBefore("</mask>")
+        // The state is IN the mark, not only in its colour: `on` renders the bare bell and `off` renders
+        // the same bell masked plus the diagonal. A colour swap alone would leave the muted button
+        // reading as a bell that merely went red.
+        val mask = icon.substringAfter("<mask id=\"notify-mute-cut\"").substringBefore("</mask>")
         assertTrue(
-            Regex("""on \?\s*notifySignal\(null\)""").containsMatchIn(icon) &&
-                icon.contains("notifySignal(\"url(#notify-mute-cut)\")") &&
+            Regex("""on \?\s*notifyBell\(null\)""").containsMatchIn(icon) &&
+                icon.contains("notifyBell(\"url(#notify-mute-cut)\")") &&
                 mask.contains("fill=\"#fff\"") && mask.contains("stroke=\"#000\""),
-            "off masks the signal with the slash it is then struck with, so the two stay separate marks",
+            "off masks the bell with the slash it is then struck with, so the two stay separate marks",
+        )
+        // The slash runs top-left to bottom-right, matching the platform's own muted symbols; mirroring
+        // it is the kind of change that looks like a rewrite of the same line and is not.
+        assertTrue(
+            sidebar.contains("const NOTIFY_MUTE_SLASH = \"M4.7 4.7L19.7 19.7\""),
+            "the slash keeps the direction the platform draws, and both the stroke and its gap use it",
         )
 
         val css = ctx.get("/style.css").bodyAsText()
@@ -989,13 +995,18 @@ class WebUiServingTest {
             markRule.contains("fill:") || markRule.contains("stroke:"),
             "the stylesheet sizes the mark but never paints it — a fill here would fill in the mask's cut",
         )
-        val quietRule = css.substringAfter("\n.notify-toggle {").substringBefore("}")
+        val baseRule = css.substringAfter("\n.notify-toggle {").substringBefore("}")
         val activeRule = css.substringAfter("\n.notify-toggle.active {").substringBefore("}")
         assertTrue(
-            quietRule.contains("color: var(--muted);") &&
-                activeRule.contains("color: var(--accent);") &&
-                activeRule.contains("background: var(--pill-active);"),
-            "off is the shell's muted grey and on is the accent inside the shared pill tint",
+            baseRule.contains("color: var(--attn);") && activeRule.contains("color: var(--accent);"),
+            "off wears the attention red and on wears the accent",
+        )
+        // No chip around a status light: the box stays (it is the thumb target) but nothing draws it.
+        assertTrue(
+            baseRule.contains("background: none;") && baseRule.contains("border: none;") &&
+                css.substringAfter("\n.notify-toggle:hover:not(:disabled) {").substringBefore("}")
+                    .contains("background: none;"),
+            "the toggle keeps its hit box but paints no button around the bell, hover included",
         )
         assertFalse(
             css.contains("#dbeafe"),
