@@ -1559,7 +1559,10 @@ button.task-card-title:hover,
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  /* Chips are separated by more than the dot-to-name gap inside one of them, or a row of two sessions
+     reads as one name split in half. Wrapped LINES stay tight at 4px. The detail panel overrides both
+     axes with its own 8px, so this pair is the card's alone. */
+  gap: 4px 8px;
   list-style: none;
   margin: 0;
   min-width: 0;
@@ -1593,6 +1596,17 @@ button.task-card-title:hover,
 .task-session-dot[data-state="badge-crashed"] { --dot: #ff8f8f; }
 .task-session-dot[data-state="resumable"],
 .task-session-dot[data-state="badge-resumable"] { --dot: #d9a441; }
+/* The gap to the text the dot labels, in the three places the two are ADJACENT and nothing else can
+   supply one: the sidebar and terminal-header badges, where the label follows the span with no
+   separator at all, and a card's session chip, where htm drops the newline that looks like a space in
+   the source. The detail panel's dot is deliberately absent — there it is a flex SIBLING of the link
+   and the `<li>`'s own `gap` already spaces it, so a margin here would be added on top of that. The
+   2px ring is part of the dot's ink, so the visible gap is 2px narrower than this value. */
+.task-badge .task-session-dot,
+.task-badge-unknown .task-session-dot,
+.task-sessions li a .task-session-dot {
+  margin-right: 6px;
+}
 /* Delete, plus the move actions a phone gets instead of dragging. Kept out of the way until the card is
    in play, the way each folder's "+" is. */
 .task-card-menu {
