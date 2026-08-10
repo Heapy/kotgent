@@ -1,0 +1,35 @@
+# webuitest — the browser tier. Everything here is a TEST; there is no production code in this module.
+#
+# It drives the `webuicheck` harness (a macos/app main binary, built by `./kotlin build`) through
+# `ProcessBuilder` and a real Chromium through Playwright for Java, then asserts against the real DOM that
+# `resources/webui` produces. That is the point of the module: the source-level grep tests it replaces
+# could only ever prove a string was present in a file.
+#
+# ## Why `jvm/lib` with no `src/`
+# Playwright for Java is a JVM library, and the native suite cannot host it. The module carries only a
+# `test/` fragment; there is deliberately no `src/` directory, because there is nothing this module
+# publishes to anybody. Verified by the wave-0 spike: the toolchain builds and tests a `jvm/lib` whose
+# sources are entirely in `test/`.
+#
+# ## ⚠️ EVERY test class name MUST end in `Test`
+# This is measured, not folklore. JUnit Platform's class filter is `.*Tests?`, so a class named anything
+# else — `PwSpike`, `SidebarChecks`, `BoardScenarios` — **compiles and links perfectly**, contributes zero
+# tests, and the run then fails with a bare "0 tests found" and a NON-ZERO exit code. The failure names
+# neither the class nor the rule, so it reads as a broken toolchain rather than a misnamed file. Name the
+# class `…Test` and the problem does not exist.
+#
+# ## No npm, ever
+# The Playwright Node driver is embedded in the Maven artifact, so this module needs no `package.json`, no
+# `node_modules`, and no `npx playwright install` step — a JVM-only runner is already complete. What the
+# driver fetches at runtime is the browser bundle, into `~/Library/Caches/ms-playwright`; CI caches that
+# directory under a key that spells the Playwright version literally (see `gradle/libs.versions.toml`).
+product: jvm/lib
+
+test-dependencies:
+  # The browser automation library — declared like any other catalog entry, which is the whole reason the
+  # browser tier costs this project no second package manager.
+  - $libs.playwright
+
+settings:
+  kotlin:
+    version: 2.4.10

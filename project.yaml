@@ -12,6 +12,13 @@ modules:
   # Driven from the suite by `PtyTest`, which execs it. See ptycheck/module.yaml.
   - ./ptycheck
   - ./sysnative
+  # Browser-test fixture: a MAIN binary that stands the real KotgentServer up over the `fakes` doubles
+  # and drives it from stdin, so the Web UI can be tested in a real browser. A main binary for the same
+  # KT-78062 reason as ptycheck — it serves a real Pty. See webuicheck/module.yaml.
+  - ./webuicheck
+  # The JVM side of that pair: Playwright browser tests that spawn `webuicheck` and drive the pages it
+  # serves. Separate from the native suite because Playwright is a JVM library. See webuitest/module.yaml.
+  - ./webuitest
 
 plugins:
   - ./plugins/build-info

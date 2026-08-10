@@ -580,15 +580,15 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 **Files:**
 - Create: `webuicheck/module.yaml`, `webuicheck/src/Main.kt`, `webuicheck/src/SafeEdges.kt`, `webuicheck/src/SelfCheck.kt`, `test/transport/WebUiCheckTest.kt`
 
-- [ ] создать `webuicheck/module.yaml` по образцу `ptycheck/module.yaml`: `macos/app`, `macosArm64`, зависимости `..`, `../sysnative`, `./fakes`, `entryPoint: io.kotgent.webuicheck.main`
-- [ ] разобрать `--self-check`, `--scenario=<name>`, `--webui-dir=<abs>`, `--exit-after-ms=<n>`; неизвестный сценарий и мусор на stdin — ненулевой выход
-- [ ] `SafeEdges.kt`: фейковый `DirectoryCompleter`, uploader в память, `FakeProjectFs`, `MemoryProjectFileWriter` — три пишущих edge вместо прежних двух
-- [ ] поднять `KotgentServer(port = 0)` на `FakeTmux` + `FakeEventStore` + `FakeTaskStore` + настоящем `TaskService` + безопасных edges; **передать `taskStore` и `taskService`**, иначе `/api/v1/projects` даёт 404 и каждый сценарий стартует с красной строкой
-- [ ] напечатать ровно `PORT=`/`TICKET=`/`READY` в stdout (тикет — `TicketStore.issue`), всё прочее в stderr; EOF → graceful stop, плюс сторожевой таймер
-- [ ] объявить швы: `SelfCheckCase`, `runSelfCheck`, `handleCommand`, `HarnessContext` — их подключат задачи 5 и 6
-- [ ] `--self-check` содержит **только cinterop-зависимые** проверки (настоящий `Pty` под настоящим `TerminalBridge` внутри настоящего сервера); `EXPECTED_CHECKS` — константа, которую больше никто не правит
-- [ ] написать `test/transport/WebUiCheckTest.kt` по образцу `PtyTest`: найти бинарник, выполнить `--self-check` через `ProcessRunner.run`, сверить `SUMMARY` и код `0`, печатать захваченные потоки при падении
-- [ ] отчитаться `DONE:` и `FILES:`; `project.yaml` не трогать
+- [x] создать `webuicheck/module.yaml` по образцу `ptycheck/module.yaml`: `macos/app`, `macosArm64`, зависимости `..`, `../sysnative`, `./fakes`, `entryPoint: io.kotgent.webuicheck.main`
+- [x] разобрать `--self-check`, `--scenario=<name>`, `--webui-dir=<abs>`, `--exit-after-ms=<n>`; неизвестный сценарий и мусор на stdin — ненулевой выход
+- [x] `SafeEdges.kt`: фейковый `DirectoryCompleter`, uploader в память, `FakeProjectFs`, `MemoryProjectFileWriter` — три пишущих edge вместо прежних двух
+- [x] поднять `KotgentServer(port = 0)` на `FakeTmux` + `FakeEventStore` + `FakeTaskStore` + настоящем `TaskService` + безопасных edges; **передать `taskStore` и `taskService`**, иначе `/api/v1/projects` даёт 404 и каждый сценарий стартует с красной строкой
+- [x] напечатать ровно `PORT=`/`TICKET=`/`READY` в stdout (тикет — `TicketStore.issue`), всё прочее в stderr; EOF → graceful stop, плюс сторожевой таймер
+- [x] объявить швы: `SelfCheckCase`, `runSelfCheck`, `handleCommand`, `HarnessContext` — их подключат задачи 5 и 6
+- [x] `--self-check` содержит **только cinterop-зависимые** проверки (настоящий `Pty` под настоящим `TerminalBridge` внутри настоящего сервера); `EXPECTED_CHECKS` — константа, которую больше никто не правит
+- [x] написать `test/transport/WebUiCheckTest.kt` по образцу `PtyTest`: найти бинарник, выполнить `--self-check` через `ProcessRunner.run`, сверить `SUMMARY` и код `0`, печатать захваченные потоки при падении
+- [x] отчитаться `DONE:` и `FILES:`; `project.yaml` не трогать
 
 ### Task 5: Содержимое харнесса — сценарии и команды
 
@@ -597,11 +597,11 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 **Files:**
 - Create: `webuicheck/src/Scenarios.kt`, `webuicheck/src/Commands.kt`, `webuicheck/src/scenarios/{Empty,Sessions,Attention,Restart,Terminal}.kt`
 
-- [ ] `Scenarios.kt`: одна `Map<String, Scenario>` со **всеми** именами, включая board-сценарии задачи 6 (делегирование в её файлы через шов)
-- [ ] реализовать `empty`, `sessions` (cwd `/a/b`, `/a/c`, `/d`), `attention`, `restart` (store продолжает сообщать сессию живой после перезапуска)
-- [ ] `terminal`: `TerminalBridge` напрямую с `realPtyFactory` и детерминированной командой `/bin/sh -c 'printf …; cat'`, воспроизводимой побайтно
-- [ ] `Commands.kt`: `restart` (тот же порт, тот же `TokenHolder`, `TicketStore`, `FakeTaskStore`, `TaskService`; печатать только повторный `READY`; вложенный `runBlocking` не звать из корутины на однопоточном диспетчере) и `emit <id> <state>`
-- [ ] отчитаться `DONE:` и `FILES:`; `Main.kt` и `WebUiCheckTest.kt` **не открывать**
+- [x] `Scenarios.kt`: одна `Map<String, Scenario>` со **всеми** именами, включая board-сценарии задачи 6 (делегирование в её файлы через шов)
+- [x] реализовать `empty`, `sessions` (cwd `/a/b`, `/a/c`, `/d`), `attention`, `restart` (store продолжает сообщать сессию живой после перезапуска)
+- [x] `terminal`: `TerminalBridge` напрямую с `realPtyFactory` и детерминированной командой `/bin/sh -c 'printf …; cat'`, воспроизводимой побайтно
+- [x] `Commands.kt`: `restart` (тот же порт, тот же `TokenHolder`, `TicketStore`, `FakeTaskStore`, `TaskService`; печатать только повторный `READY`; вложенный `runBlocking` не звать из корутины на однопоточном диспетчере) и `emit <id> <state>`
+- [x] отчитаться `DONE:` и `FILES:`; `Main.kt` и `WebUiCheckTest.kt` **не открывать**
 
 ### Task 6: Сценарии доски и команды задач
 
@@ -610,10 +610,10 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 **Files:**
 - Create: `webuicheck/src/scenarios/Board.kt`, `webuicheck/src/scenarios/TaskDetail.kt`, `webuicheck/src/scenarios/DeepLink.kt`, `webuicheck/src/TaskCommands.kt`
 
-- [ ] реализовать сценарии `board`, `board-empty`, `task-detail`, `task-linked-session`, `deep-link` поверх `FakeTaskStore`
-- [ ] реализовать команды `task <ref> <state>` (→ `task_update`), `task-add <ref>` (→ `task_row`), `task-del <ref>` (→ `task_removed`)
-- [ ] добавить сценарий гонки «тот же ref пришёл и ответом REST, и фреймом» — единственный способ проверить newest-rev-wins в живом браузере
-- [ ] отчитаться `DONE:` и `FILES:`; `Scenarios.kt`, `Commands.kt`, `Main.kt` **не открывать**
+- [x] реализовать сценарии `board`, `board-empty`, `task-detail`, `task-linked-session`, `deep-link` поверх `FakeTaskStore`
+- [x] реализовать команды `task <ref> <state>` (→ `task_update`), `task-add <ref>` (→ `task_row`), `task-del <ref>` (→ `task_removed`)
+- [x] добавить сценарий гонки «тот же ref пришёл и ответом REST, и фреймом» — единственный способ проверить newest-rev-wins в живом браузере
+- [x] отчитаться `DONE:` и `FILES:`; `Scenarios.kt`, `Commands.kt`, `Main.kt` **не открывать**
 
 ### Task 7: Модуль `webuitest` — фикстура, логин тикетом, дымовой тест
 
@@ -623,22 +623,22 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 - Create: `webuitest/module.yaml`, `webuitest/test/HarnessFixture.kt`, `webuitest/test/SmokeTest.kt`
 - Modify: `gradle/libs.versions.toml`
 
-- [ ] добавить в каталог **обе** записи: `playwright = "1.62.0"` в `[versions]` и строку в `[libraries]`
-- [ ] `webuitest/module.yaml`: `jvm/lib`, `test-dependencies: - $libs.playwright`; **в комментарии зафиксировать правило суффикса `Test`** и что его нарушение даёт молчаливое «0 tests found»
-- [ ] `HarnessFixture.kt` строго по замороженному API из Technical Details: `Harness`, `loginWithTicket`, `touchChromium`; поиск бинарника по фиксированным путям с громким падением и инструкцией `./kotlin build`; передача абсолютного `--webui-dir`; закрытие stdin и ожидание выхода в `finally`
-- [ ] свежий `BrowserContext` на каждый тест — cookie не привязана к порту, переиспользование ломает логин
-- [ ] `SmokeTest`: сценарий `sessions`, после логина виден сайдбар с ожидаемым числом строк; отрицательный путь — неверный тикет оставляет форму
-- [ ] отчитаться `DONE:` и `FILES:`; `project.yaml` не трогать
+- [x] добавить в каталог **обе** записи: `playwright = "1.62.0"` в `[versions]` и строку в `[libraries]`
+- [x] `webuitest/module.yaml`: `jvm/lib`, `test-dependencies: - $libs.playwright`; **в комментарии зафиксировать правило суффикса `Test`** и что его нарушение даёт молчаливое «0 tests found»
+- [x] `HarnessFixture.kt` строго по замороженному API из Technical Details: `Harness`, `loginWithTicket`, `touchChromium`; поиск бинарника по фиксированным путям с громким падением и инструкцией `./kotlin build`; передача абсолютного `--webui-dir`; закрытие stdin и ожидание выхода в `finally`
+- [x] свежий `BrowserContext` на каждый тест — cookie не привязана к порту, переиспользование ломает логин
+- [x] `SmokeTest`: сценарий `sessions`, после логина виден сайдбар с ожидаемым числом строк; отрицательный путь — неверный тикет оставляет форму
+- [x] отчитаться `DONE:` и `FILES:`; `project.yaml` не трогать
 
 ### Task 8: Закрытие волны 2
 
 **Wave:** 2 · **Depends:** 4, 5, 6, 7
 
-- [ ] сверить `git status --porcelain` с объединением `FILES:` задач 4–7
-- [ ] зарегистрировать `- ./webuicheck` и `- ./webuitest` в `project.yaml`
-- [ ] прогнать `## Validation Commands` — впервые с браузерами; зафиксировать время прогона в прогресс-файле
-- [ ] при падении вернуть «файл участника → ошибка»; оркестратор перезапускает только упавших
-- [ ] пометить `[x]` чекбоксы задач 4–7, один коммит волны вместе с файлом плана
+- [x] сверить `git status --porcelain` с объединением `FILES:` задач 4–7
+- [x] зарегистрировать `- ./webuicheck` и `- ./webuitest` в `project.yaml`
+- [x] прогнать `## Validation Commands` — впервые с браузерами; зафиксировать время прогона в прогресс-файле
+- [x] при падении вернуть «файл участника → ошибка»; оркестратор перезапускает только упавших
+- [x] пометить `[x]` чекбоксы задач 4–7, один коммит волны вместе с файлом плана
 
 ### Task 9: Браузерные тесты сайдбара и маршрута
 
