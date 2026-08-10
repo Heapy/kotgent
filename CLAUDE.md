@@ -1,4 +1,5 @@
-@INTENT.md
+project idea, top-level requirements: @docs/INTENT.md
+guide on how to test: @docs/TESTING.md
 
 ## Facts
 - build system - Kotlin Toolchain, /kortex:kotlin-toolchain skill
