@@ -1,36 +1,9 @@
-# AGENTS.md — working in the kotgent repo
+@INTENT.md
 
-Guidance for future work here. Read this before changing the build, adding native code, or touching the
-event model. It captures the conventions and the hard-won toolchain lessons so they don't get re-derived.
+## Facts
+- build system - Kotlin Toolchain, /kortex:kotlin-toolchain skill
 
-## Build system: JetBrains Kotlin Toolchain (NOT Gradle)
-
-This project builds with the **JetBrains Kotlin Toolchain** (formerly Amper), driven by the committed
-`./kotlin` wrapper. There is **no Gradle** — no `build.gradle(.kts)`, no `settings.gradle`, no Gradle
-plugins.
-
-```shell
-./kotlin build      # compile        (run this BEFORE `test` — PtyTest execs the ptycheck binary)
-./kotlin do kexePath # print the root app's built debug .kexe path (also written to build/kexe-path)
-./kotlin test       # run tests
-./kotlin run -m kotgent   # run the binary  (⚠️ avoid in automation — this starts things; see below)
-```
-
-- **Manifests are declarative YAML.** The root module is `module.yaml`; the multi-module wiring is
-  `project.yaml` (`modules:` + `plugins:`). Configure dependencies, `settings.kotlin`, `settings.ktor`,
-  `settings.native.entryPoint`, etc. there — not in code or a Gradle DSL.
-- **Amper source layout.** Sources go in `src/`, tests in `test/` — **not** `src/nativeMain/kotlin/…`.
-  Package is `io.kotgent.*`; directories are organized by area (`src/core/…` = `package io.kotgent.core`)
-  but the directory does not have to mirror the package.
-- **cinterop `.def` files live under `cinterop/`** (e.g. `sysnative/cinterop/pty.def`) with **no YAML
-  wiring** — the toolchain auto-discovers them and applies them to the module's native platform.
-- **Portability rule for YAML:** never put a machine-specific absolute path in a `*.yaml`
-  (`git grep '/Users/' -- '*.yaml'` must stay empty). Portable system flags are fine
-  (e.g. `freeCompilerArgs: [-linker-option, -lsqlite3]`); an absolute `-library` path is not.
-
-## Module structure
-
-Five modules (see `project.yaml`):
+## Module structure (see `project.yaml`):
 
 - **root — `macos/app`, `macosArm64`** (`module.yaml`): the application. `src/` + `test/`, plus
   `sqldelight/*.sq` (schema) and `resources/webui/` (the SPA). Depends on `./sysnative`; enables the
