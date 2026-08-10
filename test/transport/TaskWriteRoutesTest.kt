@@ -237,15 +237,53 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty(), "nothing is created on disk for a request that answers 400")
     }
 
-    /** A pane the registry does not know fails closed — it must not fall back to some other session. */
+    /**
+     * A pane the registry does not know fails closed — it must not fall back to some other session, and
+     * it must not fall back to the BOARD either.
+     *
+     * The explicit `project` is what makes this test prove what its name claims, and it was missing. With
+     * no project named, the request reached `400` through project RESOLUTION — step 2 finds no session,
+     * so the message names `--project` — while the identity had already collapsed to `board` a line
+     * earlier and was never the reason for anything. Naming a project the daemon already knows removes
+     * that second reason: against the collapse this request answers `201` and files the card as the human
+     * board actor, in the one feed the no-exclusivity design tells operators to read.
+     */
     @Test
     fun createFromAnUnknownPaneIs400() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
         env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
 
-        val resp = env.post("/tasks", """{"title":"x"}""", pane = "%99")
+        val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"x"}""", pane = "%99")
 
         assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("%99"), "the refusal names the pane it could not resolve")
         assertTrue(env.tasks.snapshotEntries().isEmpty())
+        assertTrue(env.tasks.snapshotActivity().isEmpty(), "and nothing was filed on the board's behalf")
+    }
+
+    /**
+     * The other two shapes of "supplied, and it names nobody": a header that is not a pane id at all, and
+     * a `sessionId` that is blank. Both used to resolve to the same `null` the board legitimately produces
+     * and were attributed to `board`; only an ABSENT identity may mean the board.
+     *
+     * A blank `sessionId` deliberately does NOT fall through to the pane header any more. The value was
+     * supplied and [io.kotgent.core.SessionId] refuses it, so it is a malformed request — and reading the
+     * header instead would silently attribute the write to a session the caller did not name.
+     */
+    @Test
+    fun anIdentityThatNamesNobodyIsRefusedRatherThanAttributedToTheBoard() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+
+        val garbagePane = env.post("/tasks", """{"project":"${alpha.value}","title":"x"}""", pane = "not-a-pane")
+        assertEquals(HttpStatusCode.BadRequest, garbagePane.status)
+        assertTrue(garbagePane.bodyAsText().contains("not-a-pane"), garbagePane.bodyAsText())
+
+        val blank = env.post("/tasks", """{"project":"${alpha.value}","title":"x","sessionId":"   "}""")
+        assertEquals(HttpStatusCode.BadRequest, blank.status)
+        assertTrue(blank.bodyAsText().contains("--session"), blank.bodyAsText())
+
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "neither request filed a card")
+        assertTrue(env.tasks.snapshotActivity().isEmpty(), "and neither was recorded as the board's")
     }
 
     /** An explicit `--session` is the escape hatch for a caller outside any kotgent pane. */
@@ -470,26 +508,33 @@ class TaskWriteRoutesTest {
     }
 
     /**
-     * The boundary of that refusal, pinned so it is not widened by accident: only a session that was
-     * NAMED and is missing is refused. An unresolvable pane header stays "no session at all", which is
-     * the board's own legitimate shape — and is why `PATCH` cannot simply reuse `comment`'s
-     * `requireCallerSession`. (Recorded residual: the CLI does send that header from inside a kotgent
-     * pane, so a pane the registry has lost is attributed to `board` rather than refused. Narrowing that
-     * means distinguishing "no header" from "header the registry rejected", which is a separate decision.)
+     * The boundary of that refusal, and the half that used to be pinned the wrong way round: a pane
+     * header the registry cannot resolve is REFUSED too, not treated as "no session at all".
+     *
+     * This test previously asserted the opposite, so the collapse had a green test defending it. The
+     * reasoning it recorded — "an unresolvable pane is the board's own legitimate shape" — is exactly
+     * backwards: the BOARD sends no header, and the only caller that sends one is a CLI inside a kotgent
+     * pane ([io.kotgent.cli.TmuxSelf] withholds it otherwise). So a header the registry rejects means an
+     * agent's write, made under an identity the daemon lost, and recording it as the human board actor
+     * falsifies the one signal the no-exclusivity design gives operators. Absent, resolved and rejected
+     * are three answers, and only the first is the board.
+     *
+     * The two write assertions are the second half: the identity is settled before the transition, so a
+     * refused patch leaves neither a state nor a row behind.
      */
     @Test
-    fun aStateChangeFromAPaneTheRegistryDoesNotKnowIsAttributedToTheBoard() = withTaskServer { env ->
+    fun aStateChangeFromAPaneTheRegistryDoesNotKnowIs400AndWritesNothing() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "drag me")
         env.tasks.clearActivity()
 
-        assertEquals(
-            HttpStatusCode.OK,
-            env.patch("/tasks/${ref.value}", """{"state":"in_progress"}""", pane = "%99").status,
-            "an unresolvable pane is 'no session', which the board path legitimately is",
-        )
-        assertEquals(
-            listOf(TaskService.BOARD_AUTHOR),
-            env.tasks.snapshotActivity().filter { it.ref == ref }.map { it.author },
+        val resp = env.patch("/tasks/${ref.value}", """{"state":"in_progress"}""", pane = "%99")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("%99"), "the refusal names the pane it could not resolve")
+        assertEquals(TaskState.todo, env.tasks.snapshotEntries().getValue(ref).state, "no transition landed")
+        assertTrue(
+            env.tasks.snapshotActivity().isEmpty(),
+            "and nothing was attributed to the board on the caller's behalf",
         )
     }
 
@@ -920,6 +965,49 @@ class TaskWriteRoutesTest {
         assertTrue(relative.bodyAsText().contains("absolute"), "a relative path must never reach realpath")
 
         assertEquals(HttpStatusCode.BadRequest, env.post("/projects", """{"path":"/srv/nope"}""").status)
+        assertTrue(env.writer.calls.isEmpty())
+    }
+
+    /**
+     * A path that EXISTS but is not a directory is refused — the third shape of a bad path, and the one
+     * the two above do not reach.
+     *
+     * `realpath(3)` canonicalizes a regular file perfectly happily, and every branch past that point then
+     * treats it as a directory: `resolveProject` walks UP from it, and with nothing committed anywhere
+     * `mainCheckoutRoot` walks up to the checkout, so `{"path":"/repo/README.md"}` answered `200` and
+     * adopted — or created — `/repo`'s project for a location that is not a project location at all. The
+     * writer's own "not an existing directory" refusal cannot catch this: by the time it is called the
+     * directory it is handed is the checkout root, which really is one.
+     */
+    @Test
+    fun postProjectsRefusesAPathThatIsNotADirectory() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.files["/repo/README.md"] = "# repo\n"
+
+        val resp = env.post("/projects", """{"path":"/repo/README.md"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("/repo/README.md"), resp.bodyAsText())
+        assertTrue(env.writer.calls.isEmpty(), "nothing is written for a path that is not a directory")
+        assertTrue(env.tasks.snapshotProjects().isEmpty(), "and no project is registered")
+        assertNull(env.fs.files["/repo/$PROJECT_FILE_NAME"], "no project file appeared at the checkout root")
+    }
+
+    /**
+     * The same file with a project committed above it, because the gate has to sit ABOVE the adopt branch
+     * and not merely in front of the writer: adoption answers `200` without writing anything, so a gate
+     * placed only on the creating path would still hand the browser a project uuid for a README.
+     */
+    @Test
+    fun postProjectsRefusesAFileEvenWhenAProjectIsCommittedAboveIt() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.files["/repo/README.md"] = "# repo\n"
+
+        val resp = env.post("/projects", """{"path":"/repo/README.md"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(env.tasks.snapshotProjects().isEmpty(), "adoption must not answer for a path that is a file")
         assertTrue(env.writer.calls.isEmpty())
     }
 

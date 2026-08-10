@@ -48,10 +48,12 @@ import kotlinx.serialization.SerializationException
  *  - `DELETE` goes through [io.kotgent.daemon.TaskService.delete], which unlinks every holder first.
  *  - `/deps` answers `400` for each of the four refusals (self, unknown ref, cross-project, cycle) with a
  *    message that says which.
- *  - `POST /projects` writes `.kotgent.json` for a browser-supplied ABSOLUTE path — the bounded departure
- *    from the upload rule recorded on [CreateProjectRequest]. It ADOPTS whatever already owns the path
- *    before it considers writing (see below), and the path says WHICH checkout, not where the file lands:
- *    like every other creating path it anchors at [mainCheckoutRoot] (see below).
+ *  - `POST /projects` writes `.kotgent.json` for a browser-supplied ABSOLUTE path that resolves to an
+ *    existing DIRECTORY — the bounded departure from the upload rule recorded on [CreateProjectRequest],
+ *    and all three of those words are checked here (a relative path before canonicalization, a
+ *    non-existent one by it, a regular file after it). It ADOPTS whatever already owns the path before it
+ *    considers writing (see below), and the path says WHICH checkout, not where the file lands: like every
+ *    other creating path it anchors at [mainCheckoutRoot] (see below).
  *
  * ## Adopt before creating
  * `POST /projects` is documented as "create or ADOPT the project owning an absolute path", and the adopt
@@ -345,6 +347,22 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             )
             return@post
         }
+        // A path that resolved is not yet a path this endpoint may act on: `realpath(3)` canonicalizes a
+        // regular FILE just as happily as a directory, and everything below treats what it is handed as a
+        // directory. Pointed at `/repo/README.md`, `resolveProject` walks UP and adopts whatever owns
+        // `/repo`, and with nothing committed there `mainCheckoutRoot` walks up to the checkout and the
+        // writer creates the file at `/repo` — a `200` and a project uuid for a location that is not a
+        // project location. The writer's own "not an existing directory" refusal cannot catch it: by then
+        // the directory it is handed is the checkout root, which really is one. So the gate is here,
+        // ABOVE the adopt branch (which writes nothing and would otherwise answer first) and above the
+        // name check.
+        if (!fs.isDirectory(canonical)) {
+            fail(
+                HttpStatusCode.BadRequest,
+                ProjectPathException(requested, "not a directory: '$requested'"),
+            )
+            return@post
+        }
         // Validated BEFORE the adopt lookup, even though only the creating branch can use it: a name a
         // `.kotgent.json` could never carry is a malformed REQUEST, and it must be refused for the same
         // input whether or not the directory happens to be adopted. Answering `200` with somebody else's
@@ -434,47 +452,64 @@ private suspend fun RoutingContext.fail(status: HttpStatusCode, e: RuntimeExcept
 /**
  * The calling session's id as an activity `author`, or `null` after answering `400` naming `--session`.
  *
- * The row is looked up rather than trusted: `resolveCallerSession` deliberately does not check existence
+ * The row is looked up rather than trusted: [resolveCallerIdentity] deliberately does not check existence
  * (its KDoc says so), and an activity row attributed to a session that is not there is exactly the silent
  * no-op that check exists to prevent. It is a `400` and not a `404` because the id came from the body, not
  * from the path — `404` in this package means "no such task `{ref}`".
+ *
+ * Both non-resolving shapes are refused here, but with DIFFERENT words: `comment` needs somebody, and a
+ * caller who sent nothing has to be told to send something, while a caller whose pane or `sessionId` was
+ * rejected has to be told which one and why.
  */
-private suspend fun RoutingContext.requireCallerSession(routing: TaskRouting, explicitSessionId: String?): String? {
-    val id = resolveCallerSession(routing, explicitSessionId)
-    if (id == null) {
-        fail(
-            HttpStatusCode.BadRequest,
-            NoSessionException(
-                "no calling session: send the $TASK_PANE_HEADER header from inside a kotgent pane, " +
-                    "or name one with --session",
-            ),
-        )
-        return null
+private suspend fun RoutingContext.requireCallerSession(routing: TaskRouting, explicitSessionId: String?): String? =
+    when (val caller = resolveCallerIdentity(routing, explicitSessionId)) {
+        CallerIdentity.Absent -> {
+            fail(
+                HttpStatusCode.BadRequest,
+                NoSessionException(
+                    "no calling session: send the $TASK_PANE_HEADER header from inside a kotgent pane, " +
+                        "or name one with --session",
+                ),
+            )
+            null
+        }
+
+        is CallerIdentity.Rejected -> {
+            fail(HttpStatusCode.BadRequest, NoSessionException(caller.reason))
+            null
+        }
+
+        is CallerIdentity.Resolved -> existingCallerSession(routing, caller.id)
     }
-    return existingCallerSession(routing, id)
-}
 
 /**
- * The `author` for a write that MAY come from the board: the caller's session id, or
- * [TaskService.BOARD_AUTHOR] when there is no caller session at all — and `null` after answering `400`
- * when a session WAS named and there is no such row.
+ * The `author` for a write that MAY come from the board: the caller's session id,
+ * [TaskService.BOARD_AUTHOR] when NOTHING identified a caller — and `null` after answering `400` when an
+ * identity was supplied and names nobody.
  *
- * The three-way answer is the whole point, and it is what separates this from [requireCallerSession]. A
- * `PATCH` (dragging a card) and a `POST /tasks` (filing one) really can arrive with nobody behind them,
- * so "no session" is legitimate here. But a caller who NAMED one and got it wrong must not have their
- * write quietly re-attributed to `board`: the activity feed is the one place the no-exclusivity design
- * tells operators to look to see who is doing what, and `kotgent task review --session <typo>` recording
- * a human action for an agent's write makes it lie. `comment` refuses the same input for the same reason.
+ * The board branch is what separates this from [requireCallerSession]: a `PATCH` (dragging a card) and a
+ * `POST /tasks` (filing one) really can arrive with nobody behind them. Everything else must fail loudly,
+ * and the reason is one line of the design. The activity feed is the only place the no-exclusivity model
+ * tells operators to look to see who is doing what, so a write that lands under `board` is a claim that a
+ * human did it. `kotgent task review --session <typo>`, and equally an agent whose pane the registry has
+ * lost, must not be able to make that claim on the operator's behalf — which is precisely what mapping
+ * every unresolvable identity to "no caller" did. `comment` refuses the same inputs for the same reason.
  *
  * Both callers pass what they get straight through — `PATCH` to
  * [io.kotgent.daemon.TaskService.transition]'s activity row, `POST /tasks` to the `created` row
  * [io.kotgent.task.TaskTracker.create] writes — and the default on that create signature exists for the
  * board alone, which is exactly the case this function answers [TaskService.BOARD_AUTHOR] for.
  */
-private suspend fun RoutingContext.attributedAuthor(routing: TaskRouting, explicitSessionId: String?): String? {
-    val id = resolveCallerSession(routing, explicitSessionId) ?: return TaskService.BOARD_AUTHOR
-    return existingCallerSession(routing, id)
-}
+private suspend fun RoutingContext.attributedAuthor(routing: TaskRouting, explicitSessionId: String?): String? =
+    when (val caller = resolveCallerIdentity(routing, explicitSessionId)) {
+        CallerIdentity.Absent -> TaskService.BOARD_AUTHOR
+        is CallerIdentity.Rejected -> {
+            fail(HttpStatusCode.BadRequest, NoSessionException(caller.reason))
+            null
+        }
+
+        is CallerIdentity.Resolved -> existingCallerSession(routing, caller.id)
+    }
 
 /** [id]'s value once its row is confirmed to exist, or `null` after answering `400` naming `--session`. */
 private suspend fun RoutingContext.existingCallerSession(routing: TaskRouting, id: SessionId): String? {
@@ -521,6 +556,10 @@ private suspend fun RoutingContext.resolveProjectForCreate(
         return id
     }
 
+    // [resolveCallerSession] joins "absent" and "rejected" back into one null, which is right HERE and
+    // only because of the order in the handler: `attributedAuthor` ran first and already answered `400`
+    // for a rejected identity, so the only null this can see is a caller who supplied nothing — the board
+    // with no project selected, which is exactly the `400` below.
     val sessionId = resolveCallerSession(routing, req.sessionId)
     val session = sessionId?.let { routing.sessions.getSession(it) }
     if (session == null) {
