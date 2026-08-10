@@ -17,14 +17,24 @@
  *                   The comparison starts from `0`, not from the mounted value, because the palette
  *                   NAVIGATES and bumps in one event: the board is usually mounting with the counter
  *                   already at 1, and that mount is the request.
+ *   onTaskRow       (BacklogEntryDto) → merge a row into `app.js`'s one task list, newest-rev-wins. It is
+ *                   the SAME merge the socket's frames go through, so it is not a second path into the
+ *                   list — just a second source for it.
+ *   onTaskRemoved   (ref) → drop a row from that list; the task is gone on the daemon.
  *   onAnnounce      (text, isError) — the existing announcement channel; every rejected mutation goes
  *                   through it rather than failing silently.
  *
  * ## What the board never does
  * It does not fetch tasks. The `/events` socket sends `tasks_snapshot` on connect and a per-row frame
  * for every later change, so a created, moved, deleted or re-blocked card arrives the same way in every
- * connected tab — including this one. A POST's own response is therefore not merged here either; the
- * frame that follows it carries the same row with the authoritative rev.
+ * connected tab — including this one.
+ *
+ * ## What it does with a write's own answer
+ * It merges it. Every task write answers with the committed `BacklogEntryDto` carrying its `rev`, and
+ * handing that to `onTaskRow` is the same newest-rev-wins merge the frame would do — an older answer
+ * simply loses to the frame, and a frame that has not arrived yet loses to nothing. Discarding it was
+ * a real hole rather than a purity: while the events socket is down or reconnecting REST still works,
+ * and a create, a move or a delete then left the whole board unchanged with no error to show for it.
  *
  * ## The one thing it does fetch
  * `GET /projects`, because the selector needs project NAMES and a `BacklogEntryDto` carries only the
@@ -78,6 +88,14 @@ const SESSIONS_PATH = routePath({ screen: SCREEN_SESSIONS, id: null });
 
 /** Debounce before a keystroke in the project-path field asks the daemon to complete it. */
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
+
+/**
+ * The cap `POST /projects` really enforces — `PROJECT_NAME_MAX_LENGTH` in `src/task/ProjectFile.kt`, the
+ * one number both the route and the `.kotgent.json` parser measure a name against. The field used to say
+ * 80, which is not a stricter client-side rule but a shorter one than the daemon's: an `<input>` maxlength
+ * silently REFUSES the 81st keystroke, so a name the API would have accepted could not be typed at all.
+ */
+const PROJECT_NAME_MAX_LENGTH = 100;
 
 function phoneNow() {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" &&
@@ -163,7 +181,15 @@ export function dropPlan(entry, target, columnEntries) {
   return { state: stateChanged ? target.state : null, move: move };
 }
 
-export function Board({ tasks = [], sessions = [], route = null, newTaskRequest = 0, onAnnounce }) {
+export function Board({
+  tasks = [],
+  sessions = [],
+  route = null,
+  newTaskRequest = 0,
+  onTaskRow,
+  onTaskRemoved,
+  onAnnounce,
+}) {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState(null);
   const [form, setForm] = useState(null);          // null | "task" | "project"
@@ -176,6 +202,11 @@ export function Board({ tasks = [], sessions = [], route = null, newTaskRequest 
   const say = useCallback((text, error) => {
     if (onAnnounce) onAnnounce(text, error);
   }, [onAnnounce]);
+
+  /** Merge the committed row a write answered with into the app's list — see the header. */
+  const publishRow = useCallback((row) => {
+    if (row && row.ref && onTaskRow) onTaskRow(row);
+  }, [onTaskRow]);
 
   // --- projects ------------------------------------------------------------------------------------
 
@@ -288,33 +319,35 @@ export function Board({ tasks = [], sessions = [], route = null, newTaskRequest 
     if (!plan) return;
     try {
       // The PATCH first: `/move` takes no state and PATCH takes no position, so the state lands before
-      // the rank is resolved against the column the card is joining.
-      if (plan.state) await patchTask(ref, { state: plan.state });
-      if (plan.move) await moveTask(ref, plan.move);
+      // the rank is resolved against the column the card is joining. Each answer is merged as it comes,
+      // so a failing second request still leaves the first one's committed row on the board.
+      if (plan.state) publishRow(await patchTask(ref, { state: plan.state }));
+      if (plan.move) publishRow(await moveTask(ref, plan.move));
     } catch (e) {
       say("Could not move " + ref + ": " + errorMessage(e), true);
     }
-  }, [say]);
+  }, [publishRow, say]);
 
   const moveToState = useCallback(async (entry, state) => {
     try {
-      await patchTask(entry.ref, { state: state });
+      publishRow(await patchTask(entry.ref, { state: state }));
     } catch (e) {
       say("Could not move " + entry.ref + ": " + errorMessage(e), true);
     }
-  }, [say]);
+  }, [publishRow, say]);
 
   const moveWithinColumn = useCallback(async (entry, offset) => {
     const column = entriesRef.current.filter((row) => row.state === entry.state);
     const index = column.findIndex((row) => row.ref === entry.ref);
     const neighbour = column[index + offset];
     if (index < 0 || !neighbour) return;
+    const target = offset < 0 ? { before: neighbour.ref } : { after: neighbour.ref };
     try {
-      await moveTask(entry.ref, offset < 0 ? { before: neighbour.ref } : { after: neighbour.ref });
+      publishRow(await moveTask(entry.ref, target));
     } catch (e) {
       say("Could not move " + entry.ref + ": " + errorMessage(e), true);
     }
-  }, [say]);
+  }, [publishRow, say]);
 
   const moveUp = useCallback((entry) => moveWithinColumn(entry, -1), [moveWithinColumn]);
   const moveDown = useCallback((entry) => moveWithinColumn(entry, 1), [moveWithinColumn]);
@@ -325,18 +358,20 @@ export function Board({ tasks = [], sessions = [], route = null, newTaskRequest 
       !window.confirm("Delete " + label + "? Its dependencies and activity go with it.")) return;
     try {
       await deleteTask(entry.ref);
+      // A delete answers `ok` and no row, so the removal is the answer: drop it from the list here.
+      if (onTaskRemoved) onTaskRemoved(entry.ref);
       say("Deleted " + entry.ref + ".");
     } catch (e) {
       say("Could not delete " + entry.ref + ": " + errorMessage(e), true);
     }
-  }, [say]);
+  }, [onTaskRemoved, say]);
 
   const submitTask = useCallback(async (title, body) => {
-    // The created row arrives on the events socket like every other change, so nothing is merged here.
     const created = await createTask(projectId, title, body);
+    publishRow(created);
     setForm(null);
     say("Created " + ((created && created.ref) || "the task") + ".");
-  }, [projectId, say]);
+  }, [projectId, publishRow, say]);
 
   const submitProject = useCallback(async (path, name) => {
     const created = await createProject(path, name);
@@ -735,7 +770,8 @@ function NewProjectForm({ onCreate, onClose }) {
 
         <label class="field">
           <span>Name <small>optional, defaults to the directory name</small></span>
-          <input id="new-project-name" type="text" maxlength="80" value=${name} disabled=${busy}
+          <input id="new-project-name" type="text" maxlength=${PROJECT_NAME_MAX_LENGTH}
+                 value=${name} disabled=${busy}
                  onInput=${(e) => setName(e.target.value)} />
         </label>
 

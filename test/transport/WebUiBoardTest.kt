@@ -21,6 +21,7 @@ import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
 import io.kotgent.store.UiPreferences
+import io.kotgent.task.PROJECT_NAME_MAX_LENGTH
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
@@ -189,9 +190,81 @@ class WebUiBoardTest {
                 board.contains("createProject(path, name)"),
             "the new-project action completes a directory on the DAEMON and posts that path",
         )
-        // A created row arrives on the events socket like every other change; merging the POST's own
-        // response here would be a second, rev-blind path into the list.
+        // The board still never READS the list over HTTP — the socket's baseline is where it comes from.
+        // Merging a write's own answer is a different thing and is required; see
+        // [everyWriteMergesTheCommittedRowItsAnswerCarries].
         assertFalse(board.contains("fetchTasks("), "the board never fetches the task list")
+    }
+
+    /**
+     * Every task write answers with the committed `BacklogEntryDto` and its `rev`, and the board merges
+     * it — through `app.js`'s own rev-aware upsert, handed down, so a response and the frame that follows
+     * it take the SAME path into the one list and the older of the two simply loses.
+     *
+     * Discarding the answer was a hole, not a purity: while `/events` is down or reconnecting REST still
+     * works, so a create, a move or a delete changed nothing on screen and reported no error either.
+     *
+     * The test is written as the whole chain on purpose — `app.js` passing the applier, the applier being
+     * the rev-aware one, and each call site publishing. Verified falsifiable: none of these strings was
+     * in the pre-fix source, and the board's five writes all discarded their answers.
+     */
+    @Test
+    fun everyWriteMergesTheCommittedRowItsAnswerCarries() = withServer { ctx ->
+        val board = ctx.get("/components/Board.js").bodyAsText()
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("onTaskRow=\${applyTaskRow}") && app.contains("onTaskRemoved=\${applyTaskRemoved}"),
+            "the board is handed the SAME appliers the events frames go through",
+        )
+        assertTrue(
+            app.contains("setTasks((current) => upsertTaskIfNewer(current, row));") &&
+                app.contains("setTasks((current) => removeTask(current, ref));"),
+            "and those really are the newest-rev-wins upsert and the removal, not a second merge",
+        )
+        assertTrue(
+            board.contains("if (row && row.ref && onTaskRow) onTaskRow(row);"),
+            "one publisher on this side, which ignores an answer that is not a row",
+        )
+        for (write in listOf(
+            "if (plan.state) publishRow(await patchTask(ref, { state: plan.state }));",
+            "if (plan.move) publishRow(await moveTask(ref, plan.move));",
+            "publishRow(await patchTask(entry.ref, { state: state }));",
+            "publishRow(await moveTask(entry.ref, target));",
+            "publishRow(created);",
+        )) {
+            assertTrue(board.contains(write), "this write merges its own answer: '$write'")
+        }
+        // A delete answers `ok` and no row at all, so the removal itself is what gets applied.
+        assertTrue(
+            board.contains("if (onTaskRemoved) onTaskRemoved(entry.ref);"),
+            "a deleted card leaves the list on the response, not only on the frame",
+        )
+    }
+
+    /**
+     * The project-name field must accept every name `POST /projects` does.
+     *
+     * An `<input maxlength>` shorter than the API's cap is not a stricter client-side rule — it silently
+     * refuses the keystroke, so the 81st character of a perfectly legal 100-character name could not be
+     * typed at all, with no message anywhere. The number is imported from the daemon rather than repeated
+     * here, so this fails if either side moves.
+     */
+    @Test
+    fun theProjectNameFieldAcceptsEveryNameTheApiDoes() = withServer { ctx ->
+        val board = ctx.get("/components/Board.js").bodyAsText()
+        assertTrue(
+            board.contains("const PROJECT_NAME_MAX_LENGTH = $PROJECT_NAME_MAX_LENGTH;"),
+            "the board's cap is io.kotgent.task.PROJECT_NAME_MAX_LENGTH ($PROJECT_NAME_MAX_LENGTH), " +
+                "spelled once",
+        )
+        assertTrue(
+            board.contains("maxlength=\${PROJECT_NAME_MAX_LENGTH}"),
+            "and the field is bound to that constant rather than to a second literal beside it",
+        )
+        assertFalse(
+            board.contains("maxlength=\"80\""),
+            "the old hard-coded 80 is gone — it was 20 characters short of what the daemon accepts",
+        )
     }
 
     @Test
@@ -310,7 +383,7 @@ class WebUiBoardTest {
         val apply = sliceBetween(
             board,
             "const applyDrop = useCallback(",
-            "}, [say]);",
+            "}, [publishRow, say]);",
             "the drop handler",
         )
         val patchAt = apply.indexOf("patchTask(ref, { state: plan.state })")

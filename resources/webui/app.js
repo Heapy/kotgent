@@ -297,6 +297,18 @@ function App() {
   const applyTaskRemoved = useCallback((ref) => {
     setTasks((current) => removeTask(current, ref));
   }, []);
+  // The two appliers above are also handed DOWN, to `Board` and `TaskDetail`, as `onTaskRow` /
+  // `onTaskRemoved`. Every task write answers with the committed `BacklogEntryDto` and its `rev`, so the
+  // response merges through exactly the same newest-rev-wins path the socket's frame will take — it is
+  // one more SOURCE for this list, not a second copy of it. That matters twice: while `/events` is down
+  // or reconnecting, REST still works and a create/move/delete would otherwise change nothing on screen;
+  // and it is what keeps an open detail panel and the card behind it looking at the same row.
+  //
+  // The live row for that panel is read here rather than inside it, because this list is the one store:
+  // a component that kept its own copy is exactly the divergence being removed.
+  const openTaskEntry = route.screen === SCREEN_TASK && route.id
+    ? tasks.find((task) => task.ref === route.id) || null
+    : null;
 
   // Latest values for handlers that must not be re-created on every update.
   const sessionsRef = useRef(sessions);
@@ -1302,10 +1314,13 @@ function App() {
         sessions=${sessions}
         route=${route}
         newTaskRequest=${newTaskRequest}
+        onTaskRow=${applyTaskRow}
+        onTaskRemoved=${applyTaskRemoved}
         onAnnounce=${say}
       />
       ${route.screen === SCREEN_TASK && html`
-        <${TaskDetail} taskRef=${route.id} sessions=${sessions}
+        <${TaskDetail} taskRef=${route.id} entry=${openTaskEntry} sessions=${sessions}
+                       onTaskRow=${applyTaskRow} onTaskRemoved=${applyTaskRemoved}
                        onStartSession=${startSessionForTask} onAnnounce=${say} />`}
       <p id="board-status" class=${"status-line board-status" + (status.error ? " error" : "")}
          role="status" aria-live="polite">${status.text}</p>

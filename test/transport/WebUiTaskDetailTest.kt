@@ -11,6 +11,7 @@ import platform.posix.access
 import platform.posix.getcwd
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -47,6 +48,14 @@ class WebUiTaskDetailTest {
 
     private val detail: String by lazy { taskDetailSource("components/TaskDetail.js") }
     private val dialogs: String by lazy { taskDetailSource("components/dialogs.js") }
+
+    /**
+     * `app.js` is read here too, for the four tests below that check a WIRING rather than a component.
+     * A prop the component reads and the app never passes is exactly the failure this suite exists to
+     * catch, and only the two files together can show it — the component's own source would look
+     * perfectly correct with the call site missing.
+     */
+    private val app: String by lazy { taskDetailSource("app.js") }
 
     @Test
     fun theActivityFeedIsFetchedWithTheTaskAndNeverArrivesOnTheSocket() {
@@ -263,6 +272,179 @@ class WebUiTaskDetailTest {
         assertTrue(
             detail.contains("}, [taskRef, load]);"),
             "the fetch effect re-runs for a new ref rather than showing the previous task's detail",
+        )
+    }
+
+    /**
+     * The panel and the card behind it must be ONE row.
+     *
+     * Before this, `app.js` passed the detail nothing but a ref and the component fetched on a ref change
+     * or its own write — so another tab's edit reached `tasks` (the board card moved) and never reached
+     * the open panel. On a phone that panel is the whole screen, so the stale copy was all there was.
+     *
+     * Each assertion below is one link of the chain, and the chain is what makes the test falsifiable:
+     * delete the `entry=` prop and the third fails, keep the prop but read only the fetched copy and the
+     * fourth and fifth fail. Verified against the pre-fix source — none of these strings was in it.
+     */
+    @Test
+    fun theOpenDetailRendersTheRowTheAppHoldsAndNotAPrivateCopy() {
+        assertTrue(
+            app.contains("const openTaskEntry = route.screen === SCREEN_TASK && route.id"),
+            "app.js resolves the open task's live row itself, from the one list it already merges",
+        )
+        assertTrue(
+            app.contains("? tasks.find((task) => task.ref === route.id) || null"),
+            "…by ref, out of `tasks` — the same list the board renders and the socket keeps current",
+        )
+        assertTrue(
+            app.contains("<\${TaskDetail} taskRef=\${route.id} entry=\${openTaskEntry}"),
+            "and hands it to the panel: without this prop the panel can only show its own fetched copy, " +
+                "which is exactly the stale screen this fixes",
+        )
+        assertTrue(
+            detail.contains("entry: liveEntry = null,"),
+            "the component accepts that row (and defaults it, so a caller without one still renders)",
+        )
+        assertTrue(
+            detail.contains("const entry = newerEntry(liveEntry, detail && detail.task);"),
+            "and renders the newer of its TWO observations rather than either one alone",
+        )
+        assertTrue(
+            detail.contains("export function newerEntry(live, fetched)") &&
+                detail.contains("return fetched.rev > live.rev ? fetched : live;"),
+            "the choice is the same rev comparison lib/tasks.js makes on the list — the GET and the " +
+                "frame race, so neither may be assumed authoritative",
+        )
+        // An absent live row is ambiguous — a baseline that has not landed, or a deletion — so the pure
+        // helper refuses to resolve it and the component, which knows whether it ever held one, decides.
+        assertTrue(
+            detail.contains("if (!live) return fetched || null;"),
+            "an absent live row falls back to the fetched copy rather than blanking the screen",
+        )
+    }
+
+    /**
+     * The other direction of the same wiring: every row this screen OBSERVES goes into that one list.
+     *
+     * Both halves matter. The GET's copy, because a deep link can open before the socket's baseline and
+     * the card behind the panel would otherwise be missing; and each write's committed entry, because
+     * while `/events` is reconnecting REST still works and a save that changed nothing on screen is
+     * indistinguishable from one that failed.
+     */
+    @Test
+    fun everyRowThisScreenObservesGoesBackIntoTheAppsOneList() {
+        assertTrue(
+            app.contains("onTaskRow=\${applyTaskRow} onTaskRemoved=\${applyTaskRemoved}"),
+            "the sinks handed down are the SAME appliers the events frames use — a response and a frame " +
+                "must not take two different paths into the list",
+        )
+        assertTrue(
+            app.contains("setTasks((current) => upsertTaskIfNewer(current, row));"),
+            "and that applier is the newest-rev-wins upsert, so merging a response is never rev-blind",
+        )
+        assertTrue(
+            detail.contains("if (row && row.ref && onTaskRowRef.current) onTaskRowRef.current(row);"),
+            "one publisher, which ignores an answer that is not a row",
+        )
+        assertTrue(
+            detail.contains("publishRow(next && next.task);"),
+            "the fetched entry is published, so the card appears without a second request",
+        )
+        for (write in listOf(
+            "const saved = await patchTask(taskRef, patch);\n      publishRow(saved);",
+            "const moved = await patchTask(taskRef, { state: next });\n      publishRow(moved);",
+            "const edited = await editTaskDependency(taskRef, \"add\", on);\n      publishRow(edited);",
+            "const edited = await editTaskDependency(taskRef, \"remove\", on);\n      publishRow(edited);",
+        )) {
+            assertTrue(
+                detail.contains(write),
+                "a write merges the committed entry its own answer carries:\n$write",
+            )
+        }
+        assertTrue(
+            detail.contains("if (onTaskRemovedRef.current) onTaskRemovedRef.current(taskRef);"),
+            "a delete answers no row at all, so the removal itself is what is applied — before this " +
+                "screen leaves for a board rendered from that same list",
+        )
+        // The sinks are reached through refs deliberately: `load` is a DEPENDENCY of the fetch effect.
+        assertTrue(
+            detail.contains("onTaskRowRef.current = onTaskRow;") &&
+                detail.contains("const publishRow = useCallback((row) => {") &&
+                detail.contains("}, [taskRef, publishRow]);"),
+            "the publisher is identity-stable, so a parent callback that is not memoized cannot make " +
+                "the fetch effect rebuild and re-read forever",
+        )
+    }
+
+    /**
+     * An external update may move everything around the form and must not touch the form.
+     *
+     * The trick is which copy "untouched" is measured against. Against the CURRENT entry, every external
+     * edit reads as unsaved work and the fields freeze for the rest of the visit; against what the entry
+     * said LAST, only the operator's own typing counts — and a save, which leaves the drafts holding the
+     * new value, re-synchronises on the next change instead of latching.
+     */
+    @Test
+    fun anExternalUpdateNeverTakesAHalfTypedEditAway() {
+        assertTrue(
+            detail.contains("const seededRef = useRef({ ref: null, title: \"\", body: \"\" });"),
+            "the screen remembers what the entry last said",
+        )
+        assertTrue(
+            detail.contains(
+                "draftRef.current.title === seeded.title && draftRef.current.body === seeded.body;",
+            ),
+            "and \"untouched\" is measured against THAT, not against the entry as it now reads",
+        )
+        assertTrue(
+            detail.contains("if (seeded.ref !== taskRef || untouched) {"),
+            "a new ref always re-seeds; an external change re-seeds only a form nobody has typed in",
+        )
+        assertTrue(
+            detail.contains("}, [taskRef, entryTitle, entryBody]);"),
+            "and it runs for a title/body that changed ANYWHERE — the socket's row included, which is " +
+                "the case that has no fetch behind it",
+        )
+        // The old seeding site: `load` overwrote both drafts on every read. With the live row driving the
+        // entry there is no read behind an external change at all, so this had to move out of the fetch.
+        val loadBody = detail.substringAfter("const load = useCallback").substringBefore("}, [taskRef,")
+        assertTrue(loadBody.isNotEmpty(), "the fetch callback is still there to check")
+        assertFalse(
+            loadBody.contains("setTitleDraft") || loadBody.contains("setBodyDraft"),
+            "the fetch no longer seeds the drafts, so a refresh cannot clobber an edit in progress",
+        )
+    }
+
+    /**
+     * A task deleted somewhere else leaves a panel whose every control can now only answer 404.
+     *
+     * The list is the evidence: a row this screen HELD and then lost is a deletion (a removal frame and a
+     * fresh baseline are the only two things that take one out of it, and both mean gone), while a row it
+     * never held is a baseline that has not landed yet. Storing the ref rather than a flag is what stops
+     * a second task, opened before its own row arrives, from inheriting the first one's answer.
+     */
+    @Test
+    fun aTaskDeletedInAnotherTabStopsOfferingEditorsHere() {
+        assertTrue(
+            detail.contains("if (liveEntry) seenLiveRef.current = taskRef;"),
+            "the screen records WHICH ref it has held, not merely that it held one",
+        )
+        assertTrue(
+            detail.contains("const vanished = !busy && seenLiveRef.current === taskRef && !liveEntry;"),
+            "…and reads a row it held and then lost as a deletion; `busy` keeps this screen's OWN " +
+                "delete, whose removal lands just before it navigates, from flashing it",
+        )
+        assertTrue(
+            detail.contains("id=\"task-detail-gone\""),
+            "and it says so, rather than leaving live editors over a task that no longer exists",
+        )
+        val goneAt = detail.indexOf("if (vanished) {")
+        val errorAt = detail.indexOf("if (loadError) {")
+        assertTrue(goneAt > 0, "the deleted branch exists")
+        assertTrue(
+            goneAt < errorAt,
+            "and it is checked BEFORE the load error, because the deletion is what causes that 404 and " +
+                "\"it was deleted\" is the honest sentence for it",
         )
     }
 

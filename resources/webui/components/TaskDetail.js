@@ -8,7 +8,13 @@
  *
  * Props `app.js` passes, which Task 25 may rely on and may not change:
  *   taskRef         the ref from the route; fetch the detail (entry + deps + sessions + activity) here.
+ *   entry           the LIVE backlog row for [taskRef] out of `app.js`'s one task list — the same store
+ *                   the board renders from and the events socket keeps current — or null when the app
+ *                   holds no row for it. See "The entry has two observations" below.
  *   sessions        SessionDto[] — the linked list is `session.taskRef === taskRef`, not a fetch.
+ *   onTaskRow       (BacklogEntryDto) → merge a row into that store, newest-rev-wins. Every task write
+ *                   answers with the committed entry, and this screen's own GET carries one too.
+ *   onTaskRemoved   (ref) → drop a row from that store; the task is gone on the daemon.
  *   onStartSession  (cwd, taskRef) → opens the ordinary New-session dialog with both pre-filled. This
  *                   IS the no-second-launch-path rule: the dialog puts `taskRef` in its submitted body
  *                   and `app.js` POSTs that body verbatim to `/api/v1/sessions`. Task 25 also owns
@@ -37,6 +43,25 @@
  * only *unions in* a fetched row for a session the browser does not hold at all. A fetched row the
  * browser DOES hold but which no longer names this ref is genuinely unlinked and is dropped — trusting
  * the stale copy there would show a session working on a task it was released from.
+ *
+ * **The entry has TWO observations, and they merge newest-rev-wins.** This screen's own GET answers one
+ * copy of the row; `app.js`'s task list holds another, kept current by the events socket and shared with
+ * the board rendering behind this panel. Rendering only the fetched copy is what used to leave an open
+ * detail frozen while the card behind it moved: another tab's edit, another tab's delete, and this
+ * session's own state change all reach the list and nothing else. So the row is `newerEntry(live,
+ * fetched)` — the same `rev` comparison `lib/tasks.js` applies to the list — and every row this screen
+ * OBSERVES (its GET's, and the committed entry each write answers with) is handed back through
+ * `onTaskRow`, so the two never drift and a write lands on the board with no socket round trip. That
+ * second half is what keeps a create/move/delete visible while the socket is reconnecting and REST is
+ * still up. A row this screen has seen in that list and then LOST is a deletion — the only two things
+ * that take one out are a removal and a fresh baseline, and both mean gone — so it says so instead of
+ * offering editors that can only 404. A ref that has never been in the list is simply not loaded yet.
+ *
+ * **A draft outranks an external update.** The title/description fields follow the daemon's copy only
+ * while they still hold what it last said; the moment the operator types, an incoming edit updates
+ * everything around the form and leaves their text alone. Comparing against what the entry said LAST is
+ * the whole trick — comparing against what it says NOW would read every external change as "the operator
+ * has unsaved work" and freeze the fields forever.
  *
  * **There is no comment box.** `POST /tasks/{ref}/comment` requires session identity (the pane header or
  * an explicit id) because an activity row must be attributable, and the browser has neither — it would
@@ -106,6 +131,21 @@ export function activityText(row) {
 }
 
 /**
+ * The row to render, out of the two observations this screen holds: [live] is `app.js`'s copy (the one
+ * the events socket keeps current and the board renders from) and [fetched] is the one this screen's own
+ * GET answered. Newest-`rev`-wins, exactly as `lib/tasks.js` merges the list — the GET and the frame race
+ * and either can be the fresher, so neither may be assumed authoritative.
+ *
+ * A missing [live] is deliberately NOT read as a deletion here: it also means "the socket's baseline has
+ * not landed yet". Only the component, which knows whether it ever held one, can tell those apart.
+ */
+export function newerEntry(live, fetched) {
+  if (!live) return fetched || null;
+  if (!fetched) return live;
+  return fetched.rev > live.rev ? fetched : live;
+}
+
+/**
  * Every session this task is linked from: the live list first, then any fetched row for a session this
  * browser does not hold. See the header — a fetched row whose live copy points elsewhere is dropped.
  */
@@ -127,7 +167,15 @@ function routeClick(path) {
   };
 }
 
-export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
+export function TaskDetail({
+  taskRef,
+  entry: liveEntry = null,
+  sessions,
+  onTaskRow,
+  onTaskRemoved,
+  onStartSession,
+  onAnnounce,
+}) {
   const [detail, setDetail] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -138,23 +186,34 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
   // work too, but the thing that actually matters is not the socket — it is that a stale answer (an
   // older ref's, or the read that a write's own refresh superseded) cannot overwrite a newer one.
   const generationRef = useRef(0);
+  // The app's two sinks are reached through refs, never closed over: `load` is a DEPENDENCY of the fetch
+  // effect, so a callback whose identity changed would rebuild it and re-fetch on every parent render.
+  const onTaskRowRef = useRef(onTaskRow);
+  onTaskRowRef.current = onTaskRow;
+  const onTaskRemovedRef = useRef(onTaskRemoved);
+  onTaskRemovedRef.current = onTaskRemoved;
+
+  /** Hand a row this screen observed back to `app.js`'s list, where it merges newest-rev-wins. */
+  const publishRow = useCallback((row) => {
+    if (row && row.ref && onTaskRowRef.current) onTaskRowRef.current(row);
+  }, []);
 
   const load = useCallback(async () => {
     const generation = ++generationRef.current;
     try {
       const next = await fetchTaskDetail(taskRef);
       if (generationRef.current !== generation) return;
-      const entry = (next && next.task) || {};
       setDetail(next);
       setLoadError(null);
-      setTitleDraft(entry.title || "");
-      setBodyDraft(entry.body || "");
+      // The shared list learns the row too: a deep link can open before the socket's baseline lands, and
+      // this is what puts the card behind this panel in step without a second request.
+      publishRow(next && next.task);
     } catch (e) {
       if (generationRef.current !== generation) return;
       setDetail(null);
       setLoadError(errorMessage(e));
     }
-  }, [taskRef]);
+  }, [taskRef, publishRow]);
 
   useEffect(() => {
     setDetail(null);
@@ -185,12 +244,40 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     }
   }, [load, onAnnounce]);
 
-  const entry = (detail && detail.task) || null;
+  const entry = newerEntry(liveEntry, detail && detail.task);
   const dependsOn = (entry && entry.dependsOn) || (detail && detail.dependsOn) || [];
   const dependents = (detail && detail.dependents) || [];
   const activity = (detail && detail.activity) || [];
   const linked = linkedSessions(taskRef, sessions, detail);
   const dirty = !!entry && (titleDraft !== (entry.title || "") || bodyDraft !== (entry.body || ""));
+
+  // A row this screen HAS held in the shared list and then lost is a deletion; one that has never been
+  // there is a baseline that has not landed. The ref is stored rather than a flag, so opening a second
+  // task the list does not carry yet cannot inherit the first one's answer. `busy` suppresses it for the
+  // one delete this screen performs itself, whose own removal lands before the route change does.
+  const seenLiveRef = useRef(null);
+  if (liveEntry) seenLiveRef.current = taskRef;
+  const vanished = !busy && seenLiveRef.current === taskRef && !liveEntry;
+
+  // The drafts follow the daemon's copy only while they still hold what it LAST said. Comparing against
+  // the previous entry rather than the current one is what separates "the operator has typed" from "the
+  // entry changed underneath them": the second comparison would read every external edit as unsaved work
+  // and freeze the fields for the rest of the visit.
+  const draftRef = useRef({ title: "", body: "" });
+  draftRef.current = { title: titleDraft, body: bodyDraft };
+  const entryTitle = (entry && entry.title) || "";
+  const entryBody = (entry && entry.body) || "";
+  const seededRef = useRef({ ref: null, title: "", body: "" });
+  useEffect(() => {
+    const seeded = seededRef.current;
+    seededRef.current = { ref: taskRef, title: entryTitle, body: entryBody };
+    const untouched =
+      draftRef.current.title === seeded.title && draftRef.current.body === seeded.body;
+    if (seeded.ref !== taskRef || untouched) {
+      setTitleDraft(entryTitle);
+      setBodyDraft(entryBody);
+    }
+  }, [taskRef, entryTitle, entryBody]);
 
   const backToBoard = useCallback(() => {
     navigate(routePath({ screen: SCREEN_TASKS, id: null }));
@@ -212,7 +299,8 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     if (bodyDraft !== (entry.body || "")) patch.body = bodyDraft;
     if (!("title" in patch) && !("body" in patch)) return;
     run("Could not save " + taskRef, async () => {
-      await patchTask(taskRef, patch);
+      const saved = await patchTask(taskRef, patch);
+      publishRow(saved);
       onAnnounce("Saved " + taskRef + ".");
     });
   };
@@ -227,7 +315,8 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     const next = event.target.value;
     if (!entry || next === entry.state) return;
     run("Could not move " + taskRef, async () => {
-      await patchTask(taskRef, { state: next });
+      const moved = await patchTask(taskRef, { state: next });
+      publishRow(moved);
       onAnnounce(taskRef + " → " + stateLabel(next) + ".");
     });
   };
@@ -237,7 +326,8 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     const on = depDraft.trim();
     if (!on) return;
     run("Could not add the dependency", async () => {
-      await editTaskDependency(taskRef, "add", on);
+      const edited = await editTaskDependency(taskRef, "add", on);
+      publishRow(edited);
       setDepDraft("");
       onAnnounce(taskRef + " now depends on " + on + ".");
     });
@@ -245,7 +335,8 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
 
   const removeDependency = (on) => {
     run("Could not remove the dependency", async () => {
-      await editTaskDependency(taskRef, "remove", on);
+      const edited = await editTaskDependency(taskRef, "remove", on);
+      publishRow(edited);
       onAnnounce(taskRef + " no longer depends on " + on + ".");
     });
   };
@@ -259,6 +350,9 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     run("Could not delete " + taskRef, async () => {
       await deleteTask(taskRef);
       onAnnounce("Deleted " + taskRef + ".");
+      // The shared list drops the row here rather than waiting for the socket to say so, because the
+      // board this leaves for is rendered from that list and must not still be showing the card.
+      if (onTaskRemovedRef.current) onTaskRemovedRef.current(taskRef);
       backToBoard();
     }, false);
   };
@@ -275,6 +369,19 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     </div>
   `;
 
+  // Checked BEFORE the load error, because a delete elsewhere makes this screen's next read a 404 and
+  // "it was deleted" is the honest sentence for that, not "could not load".
+  if (vanished) {
+    return html`
+      <section class="task-detail" aria-label=${"Task " + taskRef}>
+        ${head(html`<h2 id="task-detail-title">${taskRef}</h2>`)}
+        <p id="task-detail-gone" class="field-hint" role="status">
+          ${taskRef} has been deleted. Nothing here can be edited any more.
+        </p>
+      </section>
+    `;
+  }
+
   if (loadError) {
     return html`
       <section class="task-detail" aria-label=${"Task " + taskRef}>
@@ -286,7 +393,10 @@ export function TaskDetail({ taskRef, sessions, onStartSession, onAnnounce }) {
     `;
   }
 
-  if (!entry) {
+  // The live row alone is not enough to draw this screen: the deps, the feed and the project path only
+  // ever arrive on the GET, and rendering the head over three empty sections would state as fact that a
+  // task nobody has read yet has no dependencies and no history.
+  if (!detail || !entry) {
     return html`
       <section class="task-detail" aria-label=${"Task " + taskRef}>
         ${head(html`<h2 id="task-detail-title">${taskRef}</h2>`)}
