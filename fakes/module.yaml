@@ -1,0 +1,33 @@
+# fakes — the shared test doubles, promoted out of the test source set into a real module because they
+# now have TWO consumers: the root module's test fragment (`test-dependencies: - ./fakes`) and the
+# `webuicheck` MAIN binary, which drives a real `KotgentServer` over these same doubles from a browser.
+# A double written as a `private class` inside one test file is unreachable from a second module, and
+# copying it would fork the behaviour the two consumers exist to agree on.
+#
+# ## The dependency direction LOOKS circular and is not
+# It runs root(test) -> fakes -> root(main). The toolchain resolves FRAGMENTS, not modules, so those
+# line up as a proper task-level DAG:
+#   :kotgent:compileMacosArm64TestDebug -> :fakes:compileMacosArm64Debug -> :kotgent:compileMacosArm64Debug
+# Verified by a spike before this module was written: the model loads with no cycle error, the root
+# test fragment compiles, links and its tests pass. Do not "fix" it by copying interfaces down here.
+#
+# ## Everything in `src/` is public
+# Toolchain 0.11 has no friend-module relationship between a module and any other module's test
+# fragment, so `internal` here would be invisible to both consumers.
+product:
+  type: kmp/lib
+  platforms: [macosArm64]
+
+dependencies:
+  # The interfaces being doubled (EventStore, PreferencesStore, TaskStore, TaskTracker, ProjectFs,
+  # ProjectFileWriter, TmuxControl) and the host-free domain they speak all live in the root module.
+  - ..
+  # Declared explicitly rather than inherited: the root module depends on coroutines WITHOUT
+  # `exported: true`, so a consumer of `..` does not see Mutex / SharedFlow / Channel — which every
+  # double here is built from. This is the same reason `ptycheck` names `../sysnative` directly for
+  # the exported coroutines behind `Pty.output`'s Channel.
+  - $libs.kotlinx.coroutines.core
+
+settings:
+  kotlin:
+    version: 2.4.10

@@ -1,4 +1,9 @@
 modules:
+  # Shared test doubles (FakeTmux, FakeEventStore, FakeTaskStore, FakeProjectFs,
+  # MemoryProjectFileWriter). A real module because it has two consumers: the root module's TEST
+  # fragment and the `webuicheck` MAIN binary. See fakes/module.yaml for why root(test) -> fakes ->
+  # root(main) is a DAG and not a cycle.
+  - ./fakes
   # Build-time VERSION/Git metadata generator for the native application.
   - ./plugins/build-info
   # The codegen plugin is also a normal (jvm/amper-plugin) module and must be listed here.

@@ -19,6 +19,14 @@ jobs:
       - name: Install tmux (real-PTY integration checks)
         run: brew install tmux
 
+      # Easily missed when a module is added: this key hashes exactly three files, and
+      # `project.yaml` is one of them — so registering a new module in its `modules:` list DOES
+      # invalidate the toolchain cache. What the glob does not catch is the per-module manifests
+      # themselves: `module.yaml` names the ROOT manifest only, so `fakes/module.yaml`,
+      # `webuicheck/module.yaml` and `webuitest/module.yaml` can change (a new dependency, a new
+      # entry point) without moving this key. That is tolerable because those changes arrive with a
+      # `project.yaml` edit or a catalog edit in practice — but do not read this key as "any manifest
+      # change busts the cache", and widen it to `*/module.yaml` if a stale restore ever bites.
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6
         with:
@@ -28,8 +36,47 @@ jobs:
           key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'project.yaml', 'module.yaml') }}
           restore-keys: kotlin-toolchain-${{ runner.os }}-
 
+      # The `webuitest` module drives real browsers through Playwright for Java. There is deliberately
+      # NO npm in this project — no `package.json`, no `node_modules`, no `npx playwright install` — and
+      # **no setup-node step is needed**: the Node driver ships embedded inside the Maven artifact, so a
+      # JVM-only runner is already complete. What the driver does fetch at runtime is the browser bundle,
+      # into `~/Library/Caches/ms-playwright` (~1.2 GB with WebKit; the suite defaults to Chromium alone),
+      # which is why this cache exists — otherwise every run re-downloads it before a single test starts.
+      #
+      # The key carries the Playwright version literally because that version is what pins the browser
+      # build the driver demands. Bump `playwright` in `gradle/libs.versions.toml` and this literal must
+      # follow in the same commit, or CI silently restores a bundle the new driver ignores and downloads
+      # over. There are deliberately no `restore-keys`: a partial match would seed the new cache entry
+      # with the previous version's browsers too, growing a multi-gigabyte entry release after release.
+      - name: Cache the Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/ms-playwright
+          key: playwright-${{ runner.os }}-1.62.0
+
+      # `./kotlin build` must stay BEFORE `./kotlin test`: `./kotlin test` never links a main binary, and
+      # the suite execs two of them — `PtyTest` runs `ptycheck`, and `WebUiCheckTest`/`webuitest` run the
+      # `webuicheck` harness. Swapping these two steps makes the fixtures unfindable, not slow.
       - name: Build
         run: ./kotlin build
 
       - name: Test
         run: ./kotlin test
+
+      # A browser test that failed on a runner nobody can attach to is only diagnosable from what it
+      # wrote down, so `webuitest` leaves a screenshot and a `context.tracing()` archive per failure under
+      # `test-results/` (a trace opens at trace.playwright.dev). Two conditions matter here. `failure()`
+      # is what makes the step run at all after a red test step — the default `success()` would skip it,
+      # which is exactly backwards for a diagnostics upload. And `if-no-files-found: ignore` keeps a
+      # failure that produced no traces (a compile error, a native link failure, a red native test) from
+      # adding a second red step on top of the real one.
+      - name: Upload Playwright failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-failures
+          path: |
+            test-results/
+            webuitest/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

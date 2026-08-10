@@ -15,6 +15,10 @@ import io.kotgent.tmux.TmuxPane
  *
  * The [Reconciler] tests seed the live-pane set directly via [seedPanes]; sessions with no seeded pane
  * are "gone" (dead/torn-down).
+ *
+ * It lives in the `fakes` module — with its package deliberately UNCHANGED, so none of its consumers
+ * needed an edit when it moved — because the `webuicheck` harness stands a real `KotgentServer` on it
+ * too: the browser tier must never reach a real tmux server. See `fakes/module.yaml`.
  */
 class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
 

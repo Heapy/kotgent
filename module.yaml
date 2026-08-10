@@ -42,6 +42,11 @@ dependencies:
   - $libs.sqldelight.native.driver
 
 test-dependencies:
+  # The shared test doubles. They live in their own module rather than in this test source set
+  # because the `webuicheck` MAIN binary drives a real KotgentServer over the SAME doubles the suite
+  # uses; a `private class` in a test file has no second consumer. The direction is
+  # root(test) -> fakes -> root(main), which the toolchain resolves per FRAGMENT, so it is a DAG.
+  - ./fakes
   # No-network verification of DarwinPushTransport's exact request method, headers, body, and status.
   - $libs.ktor.client.mock
 

@@ -1,6 +1,9 @@
 .kotlin/
 build/
 *.klib
+# Playwright failure output from `webuitest` (screenshots + context traces). Written at the repo root
+# and under the module; the trailing slash with no leading one matches the directory at any depth.
+test-results/
 .claude/worktrees/
 .idea
 .DS_Store

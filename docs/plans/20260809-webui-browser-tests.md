@@ -509,13 +509,13 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 - Modify: `test/transport/TransportTest.kt`
 - Delete: `test/daemon/FakeTmux.kt`
 
-- [ ] создать `fakes/module.yaml`: `kmp/lib`, `platforms: [macosArm64]`, `dependencies: - ..`, Kotlin 2.4.10; в комментарии — зачем модуль нужен и что граф `рут(test) → fakes → рут(main)` тулчейном проверен
-- [ ] перенести `FakeTmux` без изменения пакета `io.kotgent.daemon`
-- [ ] извлечь `FakeEventStore` из `TransportTest.kt:1907` в top-level `public`, сохранив его собственный небуферизованный `reliableSessionUpdates`
-- [ ] **переопределить в нём `setTaskRef`, `setProjectId`, `sessionsHoldingTask`** поверх той же `LinkedHashMap` с `++revCounter` и `emitFromMeta` — дефолты интерфейса бросают, и без этого любой link/unlink даёт 500
-- [ ] написать `FakeTaskStore` по прототипу `TaskEventsTest.kt:445` (`TaskStore` + `TaskTracker`), `FakeProjectFs` и `MemoryProjectFileWriter` (оба интерфейса, всё в памяти)
-- [ ] `TransportTest.kt` получает импорт; при требовании импорта в других потребителях — добавить импорт, не откатывать переезд
-- [ ] отчитаться блоками `DONE:` и `FILES:`; регистры (`project.yaml`, корневой `module.yaml`) **не трогать** — их правит закрытие волны
+- [x] создать `fakes/module.yaml`: `kmp/lib`, `platforms: [macosArm64]`, `dependencies: - ..`, Kotlin 2.4.10; в комментарии — зачем модуль нужен и что граф `рут(test) → fakes → рут(main)` тулчейном проверен
+- [x] перенести `FakeTmux` без изменения пакета `io.kotgent.daemon`
+- [x] извлечь `FakeEventStore` из `TransportTest.kt:1907` в top-level `public`, сохранив его собственный небуферизованный `reliableSessionUpdates`
+- [x] **переопределить в нём `setTaskRef`, `setProjectId`, `sessionsHoldingTask`** поверх той же `LinkedHashMap` с `++revCounter` и `emitFromMeta` — дефолты интерфейса бросают, и без этого любой link/unlink даёт 500
+- [x] написать `FakeTaskStore` по прототипу `TaskEventsTest.kt:445` (`TaskStore` + `TaskTracker`), `FakeProjectFs` и `MemoryProjectFileWriter` (оба интерфейса, всё в памяти)
+- [x] `TransportTest.kt` получает импорт; при требовании импорта в других потребителях — добавить импорт, не откатывать переезд
+- [x] отчитаться блоками `DONE:` и `FILES:`; регистры (`project.yaml`, корневой `module.yaml`) **не трогать** — их правит закрытие волны
 
 ### Task 2: CI — кэш браузеров, артефакты падений, `.gitignore`
 
@@ -524,21 +524,21 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 **Files:**
 - Modify: `.github/workflows/ci.yml`, `.gitignore`
 
-- [ ] добавить шаг `actions/cache` на `~/Library/Caches/ms-playwright` с ключом от версии Playwright `1.62.0`; в комментарии записать, что Node ставить не нужно — драйвер вшит в артефакт
-- [ ] добавить загрузку артефактов при падении: скриншоты и трейсы
-- [ ] добавить в `.gitignore` каталог вывода Playwright
-- [ ] в комментарии отметить: `project.yaml` **входит** в ключ кэша тулчейна (`ci.yml:28`), поэтому регистрация модулей его инвалидирует; неинвалидирующими остаются три **новых** `*/module.yaml`, которых glob не ловит
-- [ ] отчитаться `DONE:` и `FILES:`
+- [x] добавить шаг `actions/cache` на `~/Library/Caches/ms-playwright` с ключом от версии Playwright `1.62.0`; в комментарии записать, что Node ставить не нужно — драйвер вшит в артефакт
+- [x] добавить загрузку артефактов при падении: скриншоты и трейсы
+- [x] добавить в `.gitignore` каталог вывода Playwright
+- [x] в комментарии отметить: `project.yaml` **входит** в ключ кэша тулчейна (`ci.yml:28`), поэтому регистрация модулей его инвалидирует; неинвалидирующими остаются три **новых** `*/module.yaml`, которых glob не ловит
+- [x] отчитаться `DONE:` и `FILES:`
 
 ### Task 3: Закрытие волны 1
 
 **Wave:** 1 · **Depends:** 1, 2
 
-- [ ] сверить `git status --porcelain` с объединением `FILES:` задач 1–2; лишний файл — стоп с отчётом
-- [ ] зарегистрировать `- ./fakes` в `project.yaml` (список алфавитный) и в `test-dependencies:` корневого `module.yaml`
-- [ ] прогнать `## Validation Commands`: baseline **1432 нативных теста / 0 skipped** обязан сохраниться — это и есть тест переезда
-- [ ] при падении вернуть «файл участника → ошибка» без широкого чинения
-- [ ] пометить `[x]` чекбоксы задач 1–2, один коммит волны вместе с файлом плана, многострочная запись в прогресс
+- [x] сверить `git status --porcelain` с объединением `FILES:` задач 1–2; лишний файл — стоп с отчётом
+- [x] зарегистрировать `- ./fakes` в `project.yaml` (список алфавитный) и в `test-dependencies:` корневого `module.yaml`
+- [x] прогнать `## Validation Commands`: baseline **1432 нативных теста / 0 skipped** обязан сохраниться — это и есть тест переезда
+- [x] при падении вернуть «файл участника → ошибка» без широкого чинения
+- [x] пометить `[x]` чекбоксы задач 1–2, один коммит волны вместе с файлом плана, многострочная запись в прогресс
 
 ### Task 4: Каркас `webuicheck` — аргументы, безопасные edges, `--self-check`
 
