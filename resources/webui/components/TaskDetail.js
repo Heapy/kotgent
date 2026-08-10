@@ -361,6 +361,10 @@ export function TaskDetail({
     onStartSession((detail && detail.projectPath) || null, taskRef);
   };
 
+  // The × stays the LAST child in every one of the four head shapes below, and the stylesheet places it
+  // in the grid's top-right cell explicitly rather than letting it flow there. Flowed, it was the tail
+  // of a wrapping row, so a project path long enough to wrap — which on a 320px panel is any of them —
+  // put the one control every shape here promises somewhere under the launch button.
   const head = (children) => html`
     <div class="task-detail-head">
       ${children}
@@ -407,25 +411,30 @@ export function TaskDetail({
 
   return html`
     <section class="task-detail" aria-labelledby="task-detail-title">
+      ${/* Two blocks, not five loose children: the identity takes the head grid's elastic track (so a
+            long project path ellipses instead of pushing the × out of the corner) and the toolbar spans
+            the whole width on a row of its own. */ ""}
       ${head(html`
-        <div>
+        <div id="task-detail-ident">
           <h2 id="task-detail-title">${taskRef}</h2>
-          <p class="field-hint">
+          <p id="task-detail-project" class="field-hint">
             ${detail.projectName || entry.project}${detail.projectPath ? " · " + detail.projectPath : ""}
           </p>
         </div>
-        <select id="task-detail-state" aria-label="State" disabled=${busy}
-                value=${entry.state} onChange=${changeState}>
-          ${TASK_STATES.map((state) => html`
-            <option key=${state} value=${state} selected=${state === entry.state}>
-              ${stateLabel(state)}
-            </option>
-          `)}
-        </select>
-        ${entry.blocked && html`
-          <span class="task-blocked" title="A dependency is not done yet">Blocked</span>`}
-        <button id="task-detail-start" class="button button-primary" type="button" disabled=${busy}
-                onClick=${startSession}>Start session</button>
+        <div id="task-detail-tools">
+          <select id="task-detail-state" aria-label="State" disabled=${busy}
+                  value=${entry.state} onChange=${changeState}>
+            ${TASK_STATES.map((state) => html`
+              <option key=${state} value=${state} selected=${state === entry.state}>
+                ${stateLabel(state)}
+              </option>
+            `)}
+          </select>
+          ${entry.blocked && html`
+            <span class="task-blocked" title="A dependency is not done yet">Blocked</span>`}
+          <button id="task-detail-start" class="button button-primary" type="button" disabled=${busy}
+                  onClick=${startSession}>Start session</button>
+        </div>
       `)}
 
       <form id="task-detail-form" onSubmit=${saveEdits}>
@@ -476,7 +485,7 @@ export function TaskDetail({
                   disabled=${busy || depDraft.trim().length === 0}>Add</button>
         </form>
         ${dependents.length > 0 && html`
-          <p class="field-hint">
+          <p id="task-detail-dependents" class="field-hint">
             Blocks:
             ${dependents.map((ref) => html`
               <a key=${ref} href=${taskPath(ref)} onClick=${routeClick(taskPath(ref))}>${ref}</a>
