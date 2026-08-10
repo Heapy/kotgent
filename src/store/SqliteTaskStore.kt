@@ -54,7 +54,7 @@ import kotlin.time.ExperimentalTime
  *    dependencies yet), so this file holds no second copy of that rule.
  *
  * ## Migration for pre-existing databases
- * The `sqldelight-gen` plugin drops `.sqm` files and leaves `Schema.migrate()` empty, so the five
+ * The `sqldelight-gen` plugin drops `.sqm` files and leaves `Schema.migrate()` empty, so the six
  * `CREATE`s in `Tasks.sq` / `Backlog.sq` / `Projects.sq` only run on a FRESH database. An existing
  * `kotgent.db` gets them here, in [init], via `CREATE TABLE IF NOT EXISTS` — the [SqlitePushStore]
  * precedent. A whole-table create needs no `PRAGMA table_info` guard (unlike an additive column, whose
@@ -83,9 +83,19 @@ class SqliteTaskStore private constructor(
     private var revCounter: Long = 0
 
     /**
-     * The highest `local:<n>` key minted so far, seeded from `maxLocalTaskKey` and advanced under
-     * [mutex]. In memory rather than `MAX(...)+1` per insert so two concurrent creates cannot collide on
-     * a key while the second one's SELECT still sees the pre-insert maximum.
+     * The highest `local:<n>` key minted so far, seeded from the persisted `task_local_keys` high-water
+     * mark in [init] and advanced under [mutex]. In memory rather than `MAX(...)+1` per insert so two
+     * concurrent creates cannot collide on a key while the second one's SELECT still sees the pre-insert
+     * maximum.
+     *
+     * **Never seeded from `maxLocalTaskKey` alone**, which is what it used to be. That query answers over
+     * the SURVIVING rows and `deleteTask` removes the row carrying the maximum, so `local:1`, `local:2`,
+     * delete `local:2`, restart used to mint `local:2` a second time — and a ref is not a private handle
+     * (a URL, a notification, a bookmark, a script, `sessions.task_ref`, an agent's own earlier output),
+     * so the re-issued one silently re-points all of them at unrelated work. The high-water mark is
+     * persisted in its own singleton row that only ever rises, and an allocation writes it in the SAME
+     * transaction as the `tasks` insert it belongs to. `maxLocalTaskKey` survives only as that row's
+     * migration seed for a database written before it existed.
      */
     private var localKeyCounter: Long = 0
 
@@ -125,7 +135,15 @@ class SqliteTaskStore private constructor(
     init {
         for (statement in CREATE_TABLES_IF_NOT_EXISTS) driver.execute(null, statement, 0)
         revCounter = backlog.maxRev().executeAsOne()
-        localKeyCounter = tasks.maxLocalTaskKey().executeAsOne()
+        // Migrate-then-read, in one transaction: the seed raises the persisted high-water mark to the
+        // highest key this database's own rows still show (a no-op for every database that already holds
+        // a larger mark, because the statement takes a `max`), and the read is inside the transaction
+        // because a transaction-less SELECT is answered by the driver's reader pool — the `lastActivityId`
+        // trap. `max` is also why the seed cannot undo a delete: a freed key is below the mark, never above.
+        db.transaction {
+            tasks.raiseLocalKeyHighWater(tasks.maxLocalTaskKey().executeAsOne())
+            localKeyCounter = tasks.localKeyHighWater().executeAsOne()
+        }
     }
 
     // --- TaskTracker (the built-in "local" tracker) ------------------------------------------------
@@ -141,9 +159,14 @@ class SqliteTaskStore private constructor(
     override suspend fun get(ref: TaskRef): Task? = mutex.withLock { taskLocked(ref) }
 
     /**
-     * Mint the next `local:<n>`, and in ONE transaction insert the `tasks` row, its `backlog_entries` row
-     * at [io.kotgent.task.positionForEnd] with state `todo`, and its `created` activity row. Emits the
-     * new entry on [taskUpdates].
+     * Mint the next `local:<n>`, and in ONE transaction raise the persisted key high-water mark and
+     * insert the `tasks` row, its `backlog_entries` row at [io.kotgent.task.positionForEnd] with state
+     * `todo`, and its `created` activity row. Emits the new entry on [taskUpdates].
+     *
+     * The allocation is INSIDE that transaction and the in-memory [localKeyCounter] advances only once it
+     * has committed, so a rolled-back create leaves the mark and the counter where they were and the key
+     * is handed to the next create instead of being burned. A committed create can never hand its key out
+     * again, restart or no restart — see [localKeyCounter].
      *
      * The emitted entry is BUILT rather than re-read, and its `blocked` is `false` by construction: an
      * entry inserted a statement ago can have no dependency edge, so a `selectEntry` round trip could
@@ -160,10 +183,14 @@ class SqliteTaskStore private constructor(
         author: String,
     ): Task = mutex.withLock {
         outbox.publishing {
-            val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++localKeyCounter}")
+            val key = localKeyCounter + 1
+            val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:$key")
             val ts = now()
             val rev = nextRev()
             db.transaction {
+                // The allocation, so a committed key can never be minted twice — including across the
+                // restart that a `MAX(...)` over the surviving rows used to lose it at.
+                tasks.raiseLocalKeyHighWater(key)
                 // Appending consumes no gap, so this is the one placement that can never need a
                 // renormalization — see `Ordering.kt`. A project with no rows yet answers `null` and takes 1.0.
                 val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
@@ -190,6 +217,9 @@ class SqliteTaskStore private constructor(
                     ),
                 )
             }
+            // Only a COMMITTED key is spent: a throw above leaves the counter where it was, and the next
+            // create takes this key rather than skipping it.
+            localKeyCounter = key
             Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
         }
     }
@@ -260,19 +290,42 @@ class SqliteTaskStore private constructor(
     /**
      * The conditional `todo → in_progress`, answered by the statement's own row count — **zero rows is
      * normal, not an error**: it means the task was already `in_progress`/`review`/`done` (or is unknown),
-     * and [io.kotgent.daemon.TaskService.link] still makes the session link unconditionally.
+     * and [io.kotgent.daemon.TaskService.link] still makes the session link unconditionally. A write that
+     * moved no row emits nothing, so an idempotent retry is not a board update storm.
      *
-     * No reverse-dependent re-stamp: a dependent's `blocked` asks whether this task is `done`, and
-     * `todo → in_progress` moves it no closer to that. The entry itself DOES emit — the card changes
-     * column, and its own `blocked` drops to false with the state that carried it.
+     * A start that DID move the row is a state transition and owes exactly what [transition] owes: the
+     * moved entry, then a fresh `rev` and an emission for every reverse dependent, all in ONE transaction
+     * so a partial re-stamp cannot commit. The re-stamp is conservative and known to be — a dependent's
+     * `blocked` asks whether this task is `done`, and `todo → in_progress` moves it no closer to that, so
+     * today no dependent's blocked bit actually changes. It is written anyway because the alternative is
+     * an ASYMMETRY: [transition] deliberately re-stamps for every transition rather than reasoning about
+     * which ones can matter, and the same state change reached through this door would emit a different
+     * set — so the one door's safety would rest on exactly the per-transition reasoning the other door
+     * declined to trust, and any future widening of the derived `blocked` rule would turn that into a
+     * stale marker on a ready card. A redundant emission is invisible under the client's newest-rev-wins
+     * rule; a missing one survives until a reload.
      */
     override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
-        outbox.publishing {
-            val rev = nextRev()
-            val changed = backlog.startIfTodo(now(), rev, ref.value).value > 0L
-            if (changed) dependencies.entryLocked(ref)?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
-            changed
+        outbox.publishing { startIfTodoLocked(ref) }
+    }
+
+    /**
+     * [startIfTodo]'s body, extracted so the "moved no row" exit can leave the transaction with a plain
+     * labelled return rather than a non-local one out of [TaskUpdateOutbox.publishing].
+     */
+    private fun startIfTodoLocked(ref: TaskRef): Boolean {
+        val ts = now()
+        val rev = nextRev()
+        var changed = false
+        db.transaction {
+            changed = backlog.startIfTodo(ts, rev, ref.value).value > 0L
+            // A revision consumed by a write that touched zero rows is never persisted or emitted, so
+            // its post-restart reuse is unobservable — the rule the whole store allocates under.
+            if (!changed) return@transaction
+            dependencies.entryLocked(ref)?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
+            dependencies.restampDependentsLocked(ref)
         }
+        return changed
     }
 
     /**
@@ -499,6 +552,9 @@ class SqliteTaskStore private constructor(
                 "from_state TEXT, " +
                 "to_state TEXT)",
             "CREATE INDEX IF NOT EXISTS task_activity_by_task ON task_activity(task_ref, id)",
+            "CREATE TABLE IF NOT EXISTS task_local_keys (" +
+                "id INTEGER NOT NULL PRIMARY KEY, " +
+                "minted INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS backlog_entries (" +
                 "task_ref TEXT NOT NULL PRIMARY KEY, " +
                 "project TEXT NOT NULL, " +
@@ -554,11 +610,15 @@ fun taskStoreEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
  * publisher, in order, only once that body returned normally. A throw publishes nothing, and either way
  * the buffer is empty afterwards, so a failed mutator cannot leak its updates into the next one.
  *
- * One consequence is deliberate and conservative. A locked body may contain more than one commit —
- * `move` can renormalize a whole column in its own transaction and then write the moved row — and a
- * throw after the first of them publishes NOTHING, even for what committed. That leaves a connected
- * board stale (healed by the next write to those rows, or by a reload) rather than showing positions the
- * database never took, which is the direction this rule exists to choose.
+ * ## The obligation this puts on a mutator: ONE commit per locked body
+ * "A throw publishes nothing" is only half a rule — it is safe exactly while nothing the throw skipped
+ * has already committed. A locked body holding TWO commits breaks it in the opposite direction from the
+ * phantom above: the database moves and every frame for the part that landed is discarded, so connected
+ * boards hold values the database no longer has and no later single-row frame can repair the difference.
+ * [BacklogOrdering.move] is where that was reachable — it renormalized a whole column in its own
+ * transaction and then wrote the moved row outside it — and the fix was to make its whole locked body one
+ * transaction, not to publish earlier. A new mutator owes the same shape: everything it writes inside one
+ * transaction, [publishing] outside it.
  *
  * Not thread-safe, and does not need to be: every [stage] and every [publishing] runs under the task
  * store's single writer `Mutex`, and [publishing] is never nested — each mutator wraps its locked body

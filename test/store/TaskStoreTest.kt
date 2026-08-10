@@ -414,6 +414,36 @@ class TaskStoreTest {
     }
 
     @Test
+    fun startIfTodoReStampsItsReverseDependentsTheWayEveryOtherTransitionDoes() = test { f ->
+        // `todo → in_progress` reaches the same state `transition(ref, in_progress)` does, and used to
+        // emit a different set: the moved row alone. Nothing about a dependent's `blocked` moves today
+        // (it asks whether the dependency is `done`), so this is conservative — but the asymmetry is the
+        // hazard. `transition` re-stamps for EVERY transition rather than reasoning about which ones can
+        // matter, so leaving this one door out makes its safety rest on exactly the per-transition
+        // reasoning the other door declined to trust.
+        f.store.create(alpha, "dependency", "")
+        f.store.create(alpha, "dependent", "")
+        f.store.addDependency(second, first)
+        val before = assertNotNull(f.store.entry(second))
+
+        // Two frames, then a known-loud third action: a store that skips the re-stamp collects the
+        // rename as its second frame and fails here rather than waiting out the timeout.
+        val seen = recording(f.store, 2) {
+            assertTrue(f.store.startIfTodo(first))
+            f.store.update(first, title = "the loud one", body = null)
+        }
+
+        assertEquals(listOf(first, second), seen.map { it.ref }, "the started row, then what depends on it")
+        assertEquals(TaskState.in_progress, assertNotNull(seen[0].entry).state)
+        val freed = assertNotNull(seen[1].entry)
+        assertTrue(freed.rev > assertNotNull(seen[0].entry).rev, "each row stamps its own revision")
+        assertEquals(freed.rev, seen[1].rev)
+        assertEquals(freed.rev, assertNotNull(f.store.entry(second)).rev, "and the row really carries it")
+        assertTrue(freed.blocked, "an in_progress dependency is still not done, so the marker stays")
+        assertEquals(before.updatedAt, freed.updatedAt, "a re-stamp is not an edit — `updated_at` is activity")
+    }
+
+    @Test
     fun startIfTodoEmitsOnlyWhenItActuallyMovedTheRow() = test { f ->
         f.store.create(alpha, "one", "")
         f.store.create(alpha, "two", "")
@@ -603,6 +633,56 @@ class TaskStoreTest {
             "the revision counter is seeded from maxRev and continues past the persisted maximum",
         )
         assertEquals(3.0, assertNotNull(reopened.entry(third.ref)).position, "and the column keeps its ranks")
+    }
+
+    @Test
+    fun aRefFreedByADeleteIsNeverMintedAgainAfterARestart() = test { _ ->
+        // The high-water mark is PERSISTED, because `MAX(...)` over the surviving rows is not one: a
+        // delete removes the row that carries the maximum, so a store reopened after it used to hand out
+        // `local:2` a second time. A ref reaches URLs, a notification, a bookmark, a script,
+        // `sessions.task_ref` and an agent's own earlier output, so the reissued one does not read as a
+        // fresh card anywhere — it re-points all of those at unrelated work.
+        //
+        // `aReOpenedStoreResumesTheRevisionAndTheLocalKeyCounter` is why this survived: it reopens
+        // without ever deleting the highest row, which is the only case the old seed got right.
+        val driver = inMemoryDriver(KotgentDatabase.Schema)
+        val store = SqliteTaskStore.using(driver) { 1L }
+        store.create(alpha, "one", "")
+        store.create(alpha, "two", "")
+        assertTrue(store.delete(second), "the row carrying the high-water mark goes away")
+
+        val reopened = SqliteTaskStore.using(driver) { 2L }
+        val next = reopened.create(alpha, "three", "")
+
+        assertEquals(TaskRef("local:3"), next.ref, "a freed key is spent, not recycled")
+        assertEquals("three", assertNotNull(reopened.get(next.ref)).title)
+        // And it keeps rising across further deletes and reopens, which is what "never decreasing" means.
+        assertTrue(reopened.delete(next.ref))
+        assertEquals(
+            TaskRef("local:4"),
+            SqliteTaskStore.using(driver) { 3L }.create(alpha, "four", "").ref,
+            "deletion may never lower the mark, however many times it is repeated",
+        )
+    }
+
+    @Test
+    fun aDatabaseWhoseKeysPredateTheAllocatorIsSeededFromThem() = test { _ ->
+        // The migration half. A database written before `task_local_keys` existed holds `tasks` rows and
+        // no mark, so `init` raises the mark to the highest key those rows still show — the answer
+        // `maxLocalTaskKey` used to give directly, now used once instead of on every open. Without the
+        // seed the allocator would start at 0 and collide on its very first create; the rows are inserted
+        // through the generated query because a store that could write them is the thing under test.
+        val driver = inMemoryDriver(KotgentDatabase.Schema)
+        val tasks = KotgentDatabase(driver).tasksQueries
+        tasks.insertTask("local:1", "one", "", 1L, 1L)
+        tasks.insertTask("local:7", "seven", "", 1L, 1L)
+        tasks.insertTask("gh:1234", "an adopted ref", "", 1L, 1L)
+
+        assertEquals(
+            TaskRef("local:8"),
+            SqliteTaskStore.using(driver) { 1L }.create(alpha, "next", "").ref,
+            "the seed is the tracker's own maximum, and another tracker's key is not a number here",
+        )
     }
 
     @Test

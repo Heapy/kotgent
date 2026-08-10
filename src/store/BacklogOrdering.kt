@@ -23,12 +23,14 @@ import kotlinx.coroutines.sync.withLock
  *  - Neighbour resolution and the single `UPDATE` both run inside [mutex]; reading the neighbours and
  *    then writing under a different lock would let two concurrent moves compute the same midpoint.
  *  - When the gap the move would land in falls below [io.kotgent.task.POSITION_EPSILON], the project's
- *    whole column is renormalized to `1.0, 2.0, 3.0, …` in ONE transaction and the move is retried
- *    **once**. Renormalizing is a LOOP over the project's rows + `setPosition`, deliberately not a bulk
- *    `UPDATE`: **every** rewritten row must stamp its own `rev` and emit its own [TaskUpdate], or a
- *    connected board silently holds stale positions. (The rows come from
- *    [BacklogDependencies.listBacklogLocked]; `Backlog.sq` deliberately carries no ranks-only companion
- *    to read them from — see [renormalizeLocked].)
+ *    whole column is renormalized to `1.0, 2.0, 3.0, …` and the move is retried **once**. Renormalizing
+ *    is a LOOP over the project's rows + `setPosition`, deliberately not a bulk `UPDATE`: **every**
+ *    rewritten row must stamp its own `rev` and emit its own [TaskUpdate], or a connected board silently
+ *    holds stale positions. (The rows come from [BacklogDependencies.listBacklogLocked]; `Backlog.sq`
+ *    deliberately carries no ranks-only companion to read them from — see [renormalizeLocked].)
+ *  - **The rewrite and the moved row's own write are ONE transaction** — see [move]. Two commits under
+ *    one [TaskUpdateOutbox.publishing] is the failure mode the outbox cannot cover: a throw between them
+ *    discards the frames for a rewrite that already landed.
  *  - Every emitted entry carries the derived `blocked`, so this class reads through [dependencies]
  *    rather than growing a second implementation of that rule.
  *
@@ -67,13 +69,22 @@ class BacklogOrdering(
      * belongs to a different project.
      */
     suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = mutex.withLock {
-        outbox.publishing { moveLocked(ref, target) }
+        // ONE transaction around the whole body, and [TaskUpdateOutbox.publishing] strictly outside it.
+        // A move can write twice — the renormalization rewrites the column and then the moved row takes
+        // its rank — and those two used to be separate commits with the second outside any transaction.
+        // Anything that threw in between (the injected clock, a `TaskState` / `ProjectId` decode on the
+        // row being read back, a database error) then left the column RENUMBERED while `publishing`
+        // discarded every frame for it: connected boards hold ranks the database no longer has, and no
+        // later single-row frame can repair a whole column. Rolling back is the honest direction —
+        // the caller sees the throw, and nobody was told anything that did not happen.
+        outbox.publishing { queries.transactionWithResult { moveLocked(ref, target) } }
     }
 
     /**
-     * [move]'s body. Extracted so its four "nothing to rank" exits are plain returns: a non-local return
-     * out of [TaskUpdateOutbox.publishing] would skip the publish, which on the post-renormalization path
-     * would silently drop a whole column's worth of rewritten positions.
+     * [move]'s body, inside its transaction. Extracted so its four "nothing to rank" exits are plain
+     * returns: SQLDelight's transaction lambda is not inline, so a `return` out of it is not available,
+     * and a non-local return out of [TaskUpdateOutbox.publishing] would skip the publish — which on the
+     * post-renormalization path would silently drop a whole column's worth of rewritten positions.
      */
     private fun moveLocked(ref: TaskRef, target: MoveTarget): BacklogEntry? {
         val row = queries.selectEntry(ref.value).executeAsOneOrNull() ?: return null
@@ -144,8 +155,14 @@ class BacklogOrdering(
         queries.selectEntry(ref.value).executeAsOneOrNull()?.takeIf { it.project == project }?.position
 
     /**
-     * Rewrite [project]'s whole column to `1.0, 2.0, 3.0, …` in rank order, in ONE transaction, stamping
-     * every row a fresh revision.
+     * Rewrite [project]'s whole column to `1.0, 2.0, 3.0, …` in rank order, stamping every row a fresh
+     * revision.
+     *
+     * **Opens no transaction of its own: [move]'s is the unit**, and that is the correctness rule rather
+     * than a tidy-up. A rewrite that committed by itself would be visible to the next reader whatever
+     * happened to the move that forced it, while the frames announcing it are published only if the whole
+     * body succeeded — so a throw on the tail left the database renumbered and every board holding the
+     * ranks it had before. Do not give this function a transaction back without taking [move]'s away.
      *
      * The input is [BacklogDependencies.listBacklogLocked], which already reads the project in exactly the
      * order a renormalization needs (`selectEntriesByProject`, `ORDER BY position, task_ref`). `Backlog.sq`
@@ -162,14 +179,12 @@ class BacklogOrdering(
         val entries = dependencies.listBacklogLocked(project)
         if (entries.isEmpty()) return
         val stamped = now()
-        queries.transaction {
-            entries.forEachIndexed { index, entry ->
-                val position = (index + 1).toDouble()
-                val rev = nextRev()
-                queries.setPosition(position, stamped, rev, entry.ref.value)
-                val renumbered = entry.copy(position = position, updatedAt = stamped, rev = rev)
-                outbox.stage(TaskUpdate(entry.ref, renumbered, rev))
-            }
+        entries.forEachIndexed { index, entry ->
+            val position = (index + 1).toDouble()
+            val rev = nextRev()
+            queries.setPosition(position, stamped, rev, entry.ref.value)
+            val renumbered = entry.copy(position = position, updatedAt = stamped, rev = rev)
+            outbox.stage(TaskUpdate(entry.ref, renumbered, rev))
         }
     }
 

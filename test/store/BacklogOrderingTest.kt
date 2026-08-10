@@ -19,6 +19,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -76,6 +77,17 @@ class BacklogOrderingTest {
         val emitted: MutableList<TaskUpdate> = mutableListOf()
 
         /**
+         * How many times the ordering's clock has been read, and which reading refuses to answer.
+         *
+         * The clock is the one collaborator a test can make throw without corrupting the database first,
+         * and a move reads it exactly twice on the renormalizing path — once for the rewrite's shared
+         * timestamp, once for the moved row's own write. That makes `failClockAtRead = 2` a throw at a
+         * precise point: after the rewrite, before anything else committed.
+         */
+        var clockReads: Int = 0
+        var failClockAtRead: Int = 0
+
+        /**
          * The store's staging buffer, with the test's list as its publisher: a mutator STAGES while its
          * transaction is open and the batch is published only after the locked body succeeded.
          */
@@ -100,7 +112,11 @@ class BacklogOrderingTest {
             dependencies = deps,
             nextRev = { ++revCounter },
             outbox = outbox,
-            now = { ++clock },
+            now = {
+                clockReads++
+                if (clockReads == failClockAtRead) error("the clock refused to answer")
+                ++clock
+            },
         )
 
         /**
@@ -338,6 +354,41 @@ class BacklogOrderingTest {
         // POSITION_EPSILON at 2^-30 — the 31st move — and the column is rewritten exactly once. Sixty
         // moves plus one rewrite of all 62 rows is what the board must have been told.
         assertEquals(60 + 62, f.emitted.size, "one renormalization, and every row of it emitted")
+    }
+
+    @Test
+    fun aThrowAfterTheRewriteRollsItBackRatherThanLeavingTheBoardBehindIt() = test(
+        Fixture().apply {
+            seed(a, alpha, 1.0)
+            seed(b, alpha, 1.0 + POSITION_EPSILON / 2)
+            seed(c, alpha, 3.0)
+        },
+    ) { f ->
+        // A move on the renormalizing path writes twice, and those two writes used to be a committed
+        // transaction followed by a bare `setPosition`. `TaskUpdateOutbox` discards every staged frame
+        // when the body throws — which is right for a rollback and WRONG for a commit: the column stayed
+        // renumbered while no board was ever told, so connected clients held ranks the database no longer
+        // had, and a later single-row frame sorts against them differently. Nothing repairs that but a
+        // reload, because no row changes again.
+        //
+        // The seam is the injected clock, read once by the rewrite and once by the moved row's own write.
+        val before = f.positions(alpha)
+        f.failClockAtRead = 2
+
+        assertFailsWith<IllegalStateException> { f.ordering.move(c, MoveTarget.Before(b)) }
+
+        assertEquals(before, f.positions(alpha), "the rewrite rolled back with the write that failed")
+        assertEquals(
+            listOf(0L, 0L, 0L),
+            listOf(f.row(a).rev, f.row(b).rev, f.row(c).rev),
+            "…revisions included: nothing about these rows was committed",
+        )
+        assertEquals(emptyList(), f.emitted, "and nothing was published, which is what the database agrees with")
+
+        // The store is not wedged by the rollback: the same move, on a clock that answers, still works.
+        assertNotNull(f.ordering.move(c, MoveTarget.Before(b)))
+        assertEquals(listOf(a, c, b), f.order(alpha))
+        assertStrictlyOrdered(f, alpha)
     }
 
     @Test
