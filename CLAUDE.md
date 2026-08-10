@@ -892,10 +892,27 @@ be released before the second key arrives. The listener must continue to yield w
 the keyboard. `⌘1` is reliable in the installed PWA but reserved for tab switching in ordinary browser
 tabs, so `#sidebar-toggle` remains the guaranteed path.
 
-**The Web UI is dark-only.** `style.css` carries one unconditional dark palette with the Kotlin-purple
-accent; do not reintroduce `prefers-color-scheme` branches. The OLED-black phone variables belong inside
-the existing `@media (max-width: 720px)` block so the FitAddon test's mobile slice remains stable, and the
-translucent sidebar's composite blur stays desktop-only.
+**The Web UI is dark-only, and the canvas is a second copy of `--bg` that must be kept equal to it.**
+`style.css` carries one unconditional dark palette with the Kotlin-purple accent; do not reintroduce
+`prefers-color-scheme` branches. The OLED-black phone variables belong inside the existing
+`@media (max-width: 720px)` block so the FitAddon test's mobile slice remains stable, and the translucent
+sidebar's composite blur stays desktop-only. **`html, body`'s `background-color` is not decoration** —
+`#app` covers the viewport, so nothing on any page ever paints it: it is read by the *system*. Safari
+derives an installed app's window surface from the page canvas (the strip carrying the traffic lights),
+and on the iPhone the safe-area bands around the notch paint it directly. So a canvas that differs from
+`--bg` draws a seam in exactly the place a native app has none, and the two move together: the base rule
+is the PHONE's `#000` (matching the phone `:root`), and the desktop block overrides canvas and `--bg` to
+`#14171c` as a pair. Both halves are pinned by
+`theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost`. The values stay literal rather than
+`var(--bg)` because a failed colour inference on a custom property falls back to white. A phone in
+landscape is wider than the breakpoint and therefore already on the desktop palette — which is why one
+width query, not a chrome or pointer query, governs both. The `<meta name="theme-color">` in `index.html`
+and the manifest's `theme_color` name the same desktop shade; a manifest change may need the app removed
+and re-added to the Dock before macOS re-reads it, so verify a titlebar change against the live meta and
+the canvas first. The daemon-served `/auth` page (`AUTH_PAGE_HTML`, which shares no stylesheet with the
+SPA) spells `color-scheme: dark` and that same `#14171c` out by hand instead of adapting to the system: an
+installed PWA launches straight there on its first run with an empty cookie jar, so a light — or merely
+UA-grey — first screen is a flash of a different application. It deliberately carries no breakpoint.
 
 **The mobile terminal lifecycle has five coupled invariants.** Initial xterm geometry is computed from
 `window.visualViewport` before fitting and opening the terminal WebSocket, so the upstream starts at the

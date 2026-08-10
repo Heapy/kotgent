@@ -510,15 +510,22 @@ const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
 <meta name="theme-color" content="#14171c">
 <title>Kotgent — sign in</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* Dark in the app's own shade rather than adaptive: an installed PWA launches straight here on its
+     first run (its own cookie jar is empty), so a light — or merely UA-grey — first screen is a flash of
+     a different application. The colours are the app's `--bg` / `--text` / `--attn` spelled literally:
+     this page is served from Kotlin and shares no stylesheet with the SPA. It deliberately carries no
+     breakpoint — a phone gets the desktop shade for the seconds a sign-in lasts, rather than this page
+     growing a second palette to maintain. */
+  :root { color-scheme: dark; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         background: #14171c; color: #e6e9ef;
          font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   main { max-width: 30rem; padding: 2rem; text-align: center; }
   h1 { margin: 0 0 1rem; font-size: .85rem; letter-spacing: .18em; text-transform: uppercase; opacity: .6; }
   p { margin: .4rem 0; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em;
          padding: .1em .4em; border-radius: 4px; background: rgba(127, 127, 127, .18); }
-  .error { color: #c0392b; }
+  .error { color: #ff6b6b; }
   .hint { opacity: .7; font-size: .9em; }
   form { margin: 1.4rem 0 .6rem; }
   input { font: 1.6rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .18em;

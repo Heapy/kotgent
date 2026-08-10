@@ -1051,6 +1051,16 @@ class WebUiServingTest {
                 mobile.contains("margin: 0;"),
             "the terminal card returns to the safe-area-sized phone shell",
         )
+        // The canvas and `--bg` are two hand-maintained halves of one value: Safari derives an installed
+        // app's window strip from the canvas, and the iPhone paints its safe-area bands with it, so a
+        // canvas that differs from the shell draws a seam. Pinned on BOTH sides — the base rule's black
+        // above is the phone's answer, which only holds while the phone `:root` still says `--bg: #000`.
+        assertTrue(
+            desktop.contains("html, body { background-color: #14171c; }") &&
+                cssRuleOf(css, ":root").contains("--bg: #14171c"),
+            "the desktop canvas matches the desktop shell, so the window strip carries no seam",
+        )
+        assertTrue(mobile.contains("--bg: #000"), "the phone shell matches the black canvas the base rule sets")
     }
 
     @Test

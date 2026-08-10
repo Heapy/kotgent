@@ -49,8 +49,13 @@ html, body {
   margin: 0;
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  /* Literal black is intentional. Safari 26 derives its surrounding system surface from the page canvas;
-     keeping this out of a custom property also avoids a failed colour inference falling back to white. */
+  /* The canvas must equal `--bg`, and the pair is maintained by hand on both sides of the breakpoint
+     (below, in the desktop block). Safari 26 derives its surrounding system surface from the page canvas
+     — an installed app's window strip, the one carrying the traffic lights — and on the iPhone the
+     safe-area bands around the notch paint it directly, so a canvas that differs from the shell draws a
+     seam in exactly the place a native app has none. Black is therefore the PHONE's value, where `--bg`
+     is `#000` too; the desktop overrides both together. Keeping these literal rather than `var(--bg)` is
+     deliberate: a failed colour inference on a custom property falls back to white. */
   background-color: #000;
   color: var(--text);
   /* Pull-to-refresh would reload the page mid-session on a phone — losing the terminal attach for a
@@ -1768,8 +1773,15 @@ button.task-card-title:hover,
   flex: 0 0 auto;
 }
 
-/* Keep the blur off phones: their terminal repaints continuously behind the drawer. */
+/* Keep the blur off phones: their terminal repaints continuously behind the drawer. The canvas rides
+   along because it is the same question of device, not of chrome: `--bg` is `#14171c` here, so the canvas
+   Safari derives the window strip from has to be `#14171c` too, or the installed app wears a black band
+   above a lighter shell. `#app` covers the viewport, so this changes nothing a page ever paints — only
+   what the system reads off it. A phone in landscape is wider than the breakpoint and therefore already
+   on the desktop palette, which is exactly why both values move under the same query. */
 @media (min-width: 721px) {
+  html, body { background-color: #14171c; }
+
   #sidebar {
     background: color-mix(in srgb, var(--panel) 84%, transparent);
     -webkit-backdrop-filter: blur(20px);
