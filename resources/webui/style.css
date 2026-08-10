@@ -81,6 +81,9 @@ html, body {
      a notch on one side. */
   padding: var(--device-safe-area-top) env(safe-area-inset-right)
            var(--active-safe-area-bottom) env(safe-area-inset-left);
+  /* The desktop task detail is positioned against this box rather than the viewport (see `.task-detail`),
+     which is what makes it respect the safe-area padding above instead of reaching under a notch. */
+  position: relative;
 }
 
 /* WebKit bug 217754 leaves the Home-indicator inset set while the software keyboard already replaces that
@@ -1663,15 +1666,34 @@ button.task-card-title:hover,
 }
 /* At `/tasks/{ref}` the board and the detail are SIBLINGS in `#app`'s flex row — `app.js` renders both,
    because the board goes on highlighting the open card (`aria-current` on `.task-card`) and keeps its
-   project selector live while one task is read. Two `flex: 1 1 auto` claimants split the viewport in
-   half, though, which crushed the four tracks into half a window; so on a desktop the detail becomes a
-   bounded right-hand panel and the board keeps the rest, and the two cards share ONE 12px gutter rather
-   than butting their margins together. The phone answer is the opposite and lives in the width
-   breakpoint below: there is no room for a master AND a detail, so the detail takes the screen. */
+   project selector live while one task is read. Any detail that stays IN that row is paid for by the
+   board: two `flex: 1 1 auto` claimants split the viewport in half, and bounding the detail to
+   `flex: 0 1 clamp(320px, 34%, 520px)` only bounded the damage — the four tracks still divided what was
+   left, about 150px each on a 1440px window, which is narrower than the title of the card inside them.
+   So the panel leaves the flow and floats over the board at that same width, and the board keeps every
+   pixel it has when no task is open.
+
+   That trades compression for occlusion: the panel covers the right of the track, so `done` — and half
+   of `review` — are behind it, unreadable and undroppable until it closes. It is the better half of the
+   trade, because the columns a reader works FROM stay at full width and the panel is one × away, while
+   150px tracks degraded the whole board at once. The phone answer is the opposite again and lives in
+   the width breakpoint below: there is no room to overlay either, so the detail replaces the board. */
 @media (min-width: 721px) {
   #app:has(.task-detail) .task-detail {
-    flex: 0 1 clamp(320px, 34%, 520px);
-    margin-left: 0;
+    bottom: 12px;
+    /* Deeper than `--card-shadow`, which is tuned for a card lying on the shell. This one reads against
+       another card directly beneath its edge, so the same shadow would leave the panel looking inlaid. */
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+    margin: 0;
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    /* Literally the old flex basis: a percentage basis resolved against `#app`'s content box and so does
+       this width, so leaving the flow changed the panel's size by nothing. */
+    width: clamp(320px, 34%, 520px);
+    /* Over the columns' sticky heads (1), under the `.board-status` toast (30) — a board announcement
+       has to stay readable while a task is open. */
+    z-index: 5;
   }
 }
 /* The head is a GRID, not a wrapping flex row, and the reason is the ×. Flowed, it is the last item of

@@ -154,6 +154,12 @@ class WebUiScreenRoutingTest {
      * card keeps its `aria-current` highlight while its detail is read. `#app` is a flex row and both
      * roots claimed `flex: 1 1 auto`, so the viewport split in half: four crushed columns on a desktop
      * and two unusable ~195px screens on a phone.
+     *
+     * Bounding the detail's flex basis fixed only the half of that a number could fix — the four tracks
+     * still divided what was left, ~150px each on a 1440px window. A detail that shares the ROW always
+     * bills the board, so on a desktop it now leaves the flow and floats over it at the same bounded
+     * width; the board's tracks are then exactly as wide as they are with no task open, and the cost
+     * moves to occlusion (the panel covers `done`) which closing the panel undoes.
      */
     @Test
     fun theBoardAndItsDetailShareTheScreenOnADesktopAndNotOnAPhone() = withStaticWebUi { ctx ->
@@ -174,11 +180,17 @@ class WebUiScreenRoutingTest {
         val mobileAt = css.indexOf("@media (max-width: 720px)")
         assertTrue(desktopAt in 1 until mobileAt, "the desktop rule is declared before the phone one")
         val desktop = css.substring(desktopAt, mobileAt)
+        val desktopDetail = Regex("""(?s)#app:has\(\.task-detail\)\s+\.task-detail\s*\{([^}]*)}""")
+            .find(desktop)?.groupValues?.get(1).orEmpty()
         assertTrue(
-            Regex("""(?s)#app:has\(\.task-detail\)\s+\.task-detail\s*\{[^}]*flex: 0 1 clamp\(""")
-                .containsMatchIn(desktop),
-            "on a desktop the detail is a BOUNDED right-hand panel, so the board keeps the width its " +
-                "four tracks need",
+            desktopDetail.contains("position: absolute") && desktopDetail.contains("width: clamp("),
+            "on a desktop the detail leaves the flow and floats over the board at a bounded width, so " +
+                "the board keeps every track at the width it has with no task open",
+        )
+        assertTrue(
+            cssRuleOf(css, "#app").contains("position: relative"),
+            "and it floats against the SHELL, whose safe-area padding it therefore respects — without " +
+                "this containing block the panel would position against the viewport and reach under a notch",
         )
         assertTrue(
             Regex("""(?s)#app:has\(\.task-detail\)\s+\.board\s*\{[^}]*display: none""")
