@@ -474,6 +474,107 @@ authenticate requests; otherwise a newly rotated daemon and its installed callba
 daemon start. Hooks report `$TMUX_PANE`. **Never trust an inherited env var** (`KOTGENT_SESSION_ID` is a
 debug label only) — env is poisoned across nested shells/agents.
 
+**The backlog is a SECOND layer over a tracker, not a fatter tracker.** `TaskTracker` (`src/task/`) owns
+only what a tracker can know — title, body, url, existence. The workflow (`todo → in_progress → review →
+done`), the ordering, the dependency graph, the session link and the activity feed are kotgent's own and
+live in a local layer keyed by `TaskRef`. GitHub has no "review" state and no "position 3 in my backlog",
+so a fat tracker with capability flags would force the board to degrade to a backlog with neither ordering
+nor a session link — which is the entire feature. `TaskRef` is `<tracker>:<key>`: exactly one `:`,
+`[A-Za-z0-9_-]` per half, an alphanumeric first character, ≤128 chars. `.` is deliberately **excluded** (a
+ref reaches URLs and argv, and `ProviderSessionId`'s rule only rejects a value that *equals* `..`, not `..`
+as a substring). The mandatory `:` is load-bearing beyond hygiene: it is what keeps the literal
+`POST /api/v1/tasks/next` from ever being shadowed by `/api/v1/tasks/{ref}/…`, because a bare word can
+never parse as a ref (the segment counts differ too, but the `:` is the rule that does not depend on the
+route table's shape). Seen from the read side, that is why `GET /api/v1/tasks/next` is a **400** and not a
+404 — it addresses no resource at all (`TaskReadRoutesTest.aMalformedRefIs400AndNoBareWordCanEverParseAsOne`).
+
+**A project is a committed file, not a path.** `.kotgent.json` (a uuid + a name; `schema/project.v1.json`)
+is walked up to from the canonical cwd, nearest wins in a monorepo. On a miss inside a repository the
+resolver looks at the main checkout root, found by **reading** `.git` — never by running `git` (the
+daemon's PATH is a snapshot and `git` may not be on it, and a pure rule is testable against a fake
+filesystem, which is what `ProjectFs` is for). `.git` a **directory** → that directory is the root; `.git`
+a **file** whose `gitdir:` target holds a `/worktrees/<name>` segment → strip it, the root is the common
+dir's parent, with a *relative* target resolved against the `.git` file's own directory and `realpath`ed
+**before** any segment is examined. **Everything else degrades to "the current directory is the root"**
+rather than misbehaving, and each is a test case in `test/task/ProjectFileTest.kt`: `git init
+--separate-git-dir` (its common dir's parent is the metadata directory, not the checkout), submodules
+(`…/.git/modules/<name>`, which has no `worktrees` segment), bare repositories, and `$GIT_DIR` /
+`$GIT_WORK_TREE`. The uuid is what makes `/repo` and `/repo-wt/feature` **one** backlog
+(`twoWorktreesOfOneRepositoryLandOnOneProject`); a path key would fork one body of work into several. The
+file is untrusted input — the read is capped at 8 KiB, `id` must pass `isCanonicalUuid`, `name` is
+trimmed/capped/control-char-checked, and malformed JSON logs a warning and reads as "no project", never as
+an exception out of the resolver. **Every path that reads or creates one upserts the `projects` row**, or a
+backlog exists that the board's selector can never reach. `projects.path` is explicitly **"the checkout the
+daemon saw most recently"**, not "the project's location": worktrees share one uuid and deliberately
+overwrite one row, which is why `start --task` prefers the caller's cwd when it resolves to the same
+project, falls back to `projects.path`, falls back again when that path is stale, and names the branch it
+took in its JSON (`cwdSource`).
+
+**No file is written until a task is created.** Resolution is read-only. `ProjectFileWriter` is reached
+only from `POST /api/v1/tasks`'s create path and `POST /api/v1/projects`, and `SessionManager` deliberately
+does not hold one — the reason is written at `closeLinkedTask`'s KDoc: injecting `TaskService` to save
+three lines would hand the session lifecycle a thing that creates files in the operator's repositories.
+
+**There is no exclusivity, and that absence IS the design.** kotgent cannot enforce "one worker per task":
+the operator opens a second terminal in the same repository and the daemon never hears about it, so an
+invariant that holds only against your own API is not an invariant. A task may therefore be linked from
+**any number of sessions**, linking is an unconditional write, and the board shows every linked session.
+What that deletes is the whole cost of the alternative: the conditional `setTaskRefIfNull`, the
+busy-session `409`, the compensating write, the "daemon died between two writes" residual, the
+reconciliation pass that recovered it (which could not tell its target from a card a human had dragged into
+`in_progress`), and the `skip` set its retry loop needed. The **one** conditional that survives is
+`UPDATE backlog_entries SET state='in_progress' … WHERE state='todo'`, and its only job is to stop
+`kotgent task next` handing the same task to two agents in a row: zero rows is **normal**, the link is
+still made, and an explicit `task claim` on a task already in progress is allowed and simply adds a link.
+**It is a selection convention, not a protected invariant** — do not grow an error case out of it.
+Linking is two independent writes in two stores, neither conditional on the other and neither compensated:
+a crash between them leaves either a task `in_progress` with no session (indistinguishable from, and as
+legitimate as, a card a human dragged there) or a session linked to a task still `todo` (which the next
+link or a board drag fixes). `TaskService` calls the two stores sequentially and **never nests their
+locks**.
+
+**Every `sessions` write stays inside `SqliteEventStore` — the task store never touches that table.**
+`sessions.rev` is stamped from an in-memory counter owned by that one class and `sessionUpdates` is emitted
+there; a second store writing the table would fork the counter, producing duplicate and regressing revs
+that the client's `if (!(msg.rev > prev.rev)) return list;` then silently drops, and would emit no update at
+all, so the sidebar badge would never move. So the two additive columns `task_ref` / `project_id` get
+targeted setters in `SqliteEventStore` (the `setArchived`/`setModel` shape), both emit a `SessionUpdate`
+carrying `taskRef`, and `upsert`'s `ON CONFLICT` `COALESCE`s them (the `MAX(read_cursor, …)` precedent) so a
+caller writing a `SessionMeta` snapshot read before a link cannot silently clear it. Clearing is the
+targeted setter's job alone.
+
+**`sessions.task_ref` is a reference, not a foreign key.** A task deleted while a link write is in flight
+leaves a dangling ref: the UI renders the bare ref rather than a title, and startup reconciliation clears it
+(`Reconciler`'s task pass, which also backfills a missing `project_id` and carries the row's own sort key
+rather than the restart time). Making that atomic would mean one statement spanning both tables — the exact
+thing this split exists to avoid — for a window measured in microseconds and a consequence measured in one
+stale badge. The ordinary case is not left to it: `delete` unlinks every holder **before** removing the
+task, and a session's "Done" closes its task the same way.
+
+**`blocked` is derived, so an accepted edit owes an emission.** `BacklogEntry.blocked` is `state == todo`
+and some dependency is not `done`, computed in the read path — which makes it stale by construction, since
+closing or deleting A moves the blocked-ness of everything depending on A without touching those rows. So
+every dependency edit and every state transition re-reads the reverse dependents of the affected ref,
+stamps each a new `rev` and emits each on `taskUpdates`; without that a connected board shows a blocked
+marker on a task that is ready until a reload. Dependencies are validated on insert — both refs must exist,
+must belong to the **same project**, must not be equal, and must not close a cycle — because a dangling or
+cross-project edge would otherwise be read as "already satisfied" by the candidate query and silently
+unblock a task.
+
+**The `task` CLI family is JSON-only, on both streams.** These commands exist for an agent inside a pane to
+parse: stdout is one JSON value, stderr is one `{"error":…,"status":…}` object (the `status` present only
+when the failure reached the daemon), and no stack trace ever reaches either. Exit `3` is reserved for
+`task next` finding nothing eligible — it still prints `{"task":null}` — so a script cannot confuse an empty
+backlog with a network failure. The one hole is a **parse-level** usage error, which never reaches that
+renderer: `runCli`'s `CliCommand.Invalid` prints prose plus the whole `USAGE` block and exits `2`. A
+ref-less `show` / `comment` / `review` / `done` / `unlink` resolves its subject through
+`GET /api/v1/whoami`, and `TmuxSelf` sends the `X-Kotgent-Tmux-Pane` header **only** when `$TMUX`'s socket
+path is kotgent's own (`${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent`) — pane ids are unique per tmux *server*,
+so a `%2` from the operator's own tmux would otherwise resolve to an unrelated kotgent session. It fails
+closed, and `--session <id>` skips `/whoami` entirely. **`docs/agent-task-skill.md` is the contract an
+out-of-repo Agent Skill (Heapy/Kortex) is written against** — the one artefact here whose consumer no test
+in this repository can catch, so it changes whenever these shapes do.
+
 **Two URL spaces: the client-facing API is `/api/v1`, the bare paths belong to the SPA.** Ktor scores a
 literal path segment above the `get("/{path...}")` tailcard that serves the Web UI (`staticWebUi`), which
 is why `GET /sessions` always answered JSON and never the shell — and equally why a UI route named after
@@ -500,6 +601,20 @@ sign-out recovery — which keys on `401` — never fires and a reload is the on
 installed service worker outlives its pages**, so with every tab closed it can still wake on a push while
 holding the old paths, fetch a `404`, and show the generic banner instead of a per-session one. That last
 one is **silent** — nothing anywhere says why — and heals only when a navigation replaces the worker.
+
+**The SPA's History-API routes are an EXACT-SEGMENT grammar, never a prefix.** `isSpaRoute`
+(`src/transport/WebUiAssets.kt`) matches `tasks`, `tasks/<one segment>` and `s/<one segment>`, and nothing
+else. It is tested against the **original** `rel`, before `stripRevPrefix`, so a revisioned path
+(`_v/<rev>/tasks`) has three segments and can never reach the shell branch. A prefix match would make
+`s/id/extra` and `tasks/id/missing.js` serve the shell, which turns every mistyped asset path into a page
+that loads and then does nothing — both stay `404`, and the grammar is consulted only when no file was
+read, so a real asset always wins. When it matches, the shell is served **through the existing
+`path == "index.html"` branch** so `__REV__` is substituted; short-circuiting would ship a shell whose every
+asset URL read `/_v/__REV__/…`. Deep routes forced one change in the shell itself: at `/tasks/local:42` a
+document-relative `manifest.webmanifest` resolves to `/tasks/manifest.webmanifest`, so `index.html`'s
+manifest and its two icon links are **root-absolute** — which keeps CLAUDE.md's "stable URLs" rule and keeps
+the iOS install path, and therefore push, working from a deep link. `resources/webui/lib/router.js` parses
+the same grammar in the browser and is the only place the app touches `history`.
 
 **Two keys, one authorization rule.** Access is guarded by **two** distinct secrets with different roles,
 and `authorize(...)` (`src/transport/Authorization.kt`) is the single pure function that decides every
@@ -919,7 +1034,22 @@ then re-opens over the migrated one to prove both paths.
 gets the table from its `.sq`, while the owning store's `init` repeats matching DDL for old databases.
 `SqlitePushStore` does this for `push_subscriptions`. `IF NOT EXISTS` is already idempotent and does not
 log an error for an already-present table, so it needs **no** `PRAGMA table_info` guard; keep the runtime
-DDL in sync with the `.sq`.
+DDL in sync with the `.sq`. `SqliteTaskStore` follows it for all four task tables.
+
+**`SELECT last_insert_rowid()` must run inside the SAME `db.transaction { }` as its insert — and an
+in-memory database cannot prove it.** The native driver routes a transaction-less `SELECT` to its **reader
+pool**, whose connections are opened `PRAGMA query_only` and have therefore never inserted anything, so the
+value comes back `0`. Holding the store's writer mutex is **not** enough; only the transaction is. That is
+the contract `Tasks.sq`'s `lastActivityId` carries, and `appendActivityLocked` is its one caller. The trap
+is the test harness: for an **ephemeral** database the driver makes `readerPool = transactionPool`, so every
+test over `inMemoryDriver` passes with the rule broken — a future call site placed outside a transaction
+would ship `id = 0` on every activity row in production with the whole suite green.
+`TaskStoreTest.onAFileBackedDatabaseTheActivityIdStillComesFromTheInsertsOwnConnection` is the one test in
+the suite deliberately on a **file-backed** database, and it asserts both halves: the id the insert answers
+is non-zero, and the same query run outside a transaction on that same database answers `0` (so a future
+driver that stops doing this fails that line rather than leaving the contract un-checked). Any new
+`last_insert_rowid()` — or any read that depends on the writer connection's own state — owes the same
+placement and the same file-backed test.
 
 **Three orthogonal session fields set outside the reducer:** `archived` (the "Done" flag — kill then hide;
 `setArchived`), `model` (best-effort provider model; `setModel`) and `read_cursor` (the unread badge;
@@ -1089,7 +1219,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **927 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1400 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -1101,6 +1231,14 @@ These are real and cost time to rediscover. Respect them.
 - Bound every Flow/WS/PTY test with `withTimeout(...)` (anti-hang) — the suite does this consistently.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
+- **That `-L kotgent-test` label is MACHINE-global, so `./kotlin test` does not parallelize across
+  checkouts.** A tmux socket label resolves to `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent-test` — the path has
+  nothing to do with the working directory, so two suites running from two git worktrees share one tmux
+  server and each teardown's `kill-server` yanks the other's sessions out from under it. Measured the hard
+  way during this repository's parallel-fleet execution: **all 21 concurrent agents, each in its own
+  worktree, hit nondeterministic `TmuxTest` / `PtyTest` failures**, and every one of them was this and not
+  their own change. Run the suite serially per machine, or give each run its own `TMUX_TMPDIR` before
+  claiming a tmux failure is real — and re-run a lone `TmuxTest` failure once before investigating it.
 - **In automation, do not run the daemon or anything that spawns a real agent.** Avoid `kotgent daemon`,
   `./kotlin run -m kotgent`, a real `claude` / `codex` / `junie`, and `launchctl` — they start long-lived /
   interactive processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck`
@@ -1118,7 +1256,14 @@ version.txt                    single source of the application release version
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
 src/crypto/                    Sha256, Hmac, Hex, Base64Url — canonical pure-Kotlin encoders/digests
                                (KT-78062: no CommonCrypto in the test binary)
-src/store/                     EventStore interface + SqliteEventStore (SQLDelight)
+src/store/                     EventStore interface + SqliteEventStore (SQLDelight); TaskStore interface +
+                               SqliteTaskStore, split into BacklogOrdering (position REAL, midpoints,
+                               renormalization) and BacklogDependencies (the graph, derived `blocked`,
+                               the candidate query) — the split was made FOR parallel execution
+src/task/                      the host-free task layer: Task/TaskTracker (the tracker seam), Ordering,
+                               Dependencies, ProjectFile (.kotgent.json + the git-layout resolution rules),
+                               ProjectFs (iface, so the rules test against a fake tree), ProjectFileWriter
+                               (mkstemp → fsync → link, 0666 & ~umask), TaskErrors
 src/pty/                       TerminalBridge (repaint hold), Broadcaster, CursorVisibility (DECTCEM
                                tracking), PtyHandle (iface), RealPtyHandle
 src/sys/                       Cloexec (FD_CLOEXEC sweep run before every spawn), Locale (UTF-8 LANG rule),
@@ -1131,24 +1276,36 @@ src/adapter/                   AgentAdapter, LaunchSpec, ModelScan; claude/ + co
                                (Cli, HookConfig, HookNormalizer, Adapter); shell/ShellAdapter.kt
 src/daemon/                    SessionManager, Reconciler, ProviderIdCapture, VendorSessionLocator,
                                VendorStoreFs (listDir/readHead/readTail/JSON field scans),
-                               Claude/Codex/Junie vendor-store probes + scans, ShellVendorStoreProbe.kt
+                               Claude/Codex/Junie vendor-store probes + scans, ShellVendorStoreProbe.kt,
+                               TaskService (the two stores, sequentially, locks never nested)
 src/push/                      AttentionTracker, subscription store, VAPID key/JWT/signer, Darwin sender, PushNotifier
 src/transport/                 Server (API_PREFIX = /api/v1), Auth/Authorization, session cookies,
-                               tickets/rate limit, WebUiAssets (content revision + the one caching rule),
-                               auth/push/control/event/terminal/hook routes
+                               tickets/rate limit, WebUiAssets (content revision + the one caching rule
+                               + isSpaRoute, the exact-segment SPA grammar),
+                               auth/push/control/event/terminal/hook routes;
+                               TaskDtos (the wire shapes + the domain→wire mappers, once) and
+                               TaskRoutes → Task{Read,Write,Link}Routes
 src/cli/                       Cli (parseArgs), ApiClient (daemonPath = the /api/v1 + /auth-exemption rule),
-                               AttachClient, Commands, Config (~/.kotgent/config.json)
+                               AttachClient, Commands, Config (~/.kotgent/config.json);
+                               TmuxSelf (the kotgent-socket gate on the X-Kotgent-Tmux-Pane header),
+                               TaskCommands + TaskCliCommands (the JSON-only task/project family)
 src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)
 sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers)
 ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062); driven by PtyTest
-sqldelight/io/kotgent/db/      Events.sq, Sessions.sq, PushSubscriptions.sq (schema + typed queries)
+schema/project.v1.json         the published JSON Schema `.kotgent.json`'s `$schema` points at; it only
+                               resolves once the file is on `main`
+sqldelight/io/kotgent/db/      Events.sq, Sessions.sq, PushSubscriptions.sq, UiPreferences.sq, Tasks.sq,
+                               Backlog.sq, Projects.sq (schema + typed queries)
 plugins/sqldelight-gen/        the jvm/amper-plugin that runs SQLDelight codegen at build time
 plugins/build-info/            generates VERSION + an embedded Git revision at build time
 resources/webui/               no-build Preact PWA, network-only root service worker, manifest/icons,
                                mobile terminal controls/lifecycle, vendored ESM; lib/unicode.js is the
                                one registry for the opt-in xterm unicode addons; lib/api.js's apiPath is
                                the one place the browser learns /api/v1; /auth is a string constant in
-                               AuthRoutes.kt
+                               AuthRoutes.kt. The board: lib/router.js (the only toucher of `history`),
+                               lib/tasks.js (the newest-rev-wins task store + every task API call),
+                               components/Board.js + TaskCard.js + TaskDetail.js; the frozen `board-*` /
+                               `task-*` class vocabulary lives in style.css and is asserted from both ends
 docs/plans/                    implementation plans
 ```

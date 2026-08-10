@@ -109,13 +109,20 @@ contract:
   daemon's HTTP status when there was one and absent when the failure never reached it (no daemon, no
   token, an unresolvable subject). No stack traces, ever.
 
+**The one exception, and it is exit `2`:** an argument the CLI cannot *parse* is rejected before any
+command body runs, so it never reaches the JSON error renderer. `runCli` prints the complaint, a blank
+line and the whole `USAGE` block as **plain text** on stderr. A parser must therefore treat exit `2` as
+"stderr is prose, not JSON" — the one `2` that does answer in JSON is `project init` with a path it cannot
+anchor, which fails inside the command. In practice a skill should never see either: exit `2` means the
+skill built a command line wrong.
+
 Exit codes:
 
 | Code | Meaning |
 |---|---|
 | `0` | success |
-| `1` | a daemon or API failure — unreachable daemon, missing token, an HTTP error, an unresolvable subject |
-| `2` | a usage error — bad arguments, a malformed ref, an unanchorable `project init` path |
+| `1` | a daemon or API failure — unreachable daemon, missing token, an HTTP error, an unresolvable subject. stderr is JSON. |
+| `2` | a usage error — bad arguments, a malformed ref, an unanchorable `project init` path. stderr is **prose** except for `project init`. |
 | `3` | **`task next` only**: nothing eligible. Not a failure. |
 
 `task next` with nothing eligible still prints parseable JSON — `{"task":null}` — so a caller may read the
@@ -137,20 +144,31 @@ present in the JSON, nulls included — a parser may rely on the key existing.
 | `task comment [<ref>] -m TEXT` | `ActivityEntryDto` |
 | `task review [<ref>] [-m TEXT]` | `BacklogEntryDto` |
 | `task done [<ref>] [-m TEXT]` | `BacklogEntryDto` |
-| `task unlink [<ref>]` | `{"ref":"local:42","unlinked":true}` |
+| `task unlink [<ref>]` | `{"ref":"local:42","unlinked":true}` (plus `"sessionId"` when `--session` was given) |
 | `task move <ref> --top\|--bottom\|--before R\|--after R` | `BacklogEntryDto` |
-| `task dep add\|rm <ref> --on R` | `{"ref":"…","on":"…","action":"add"}` — the route answers no body, so the request is echoed |
+| `task dep add\|rm <ref> --on R` | `BacklogEntryDto` — the **edited** entry, so `blocked` is readable |
 | `task delete <ref>` | `{"ref":"local:42","deleted":true}` |
 | `project list` | array of `ProjectDto` |
 | `project init [<path>] [--name N]` | `ProjectDto` |
 | `start <agent> [cwd] --task <ref>` | `{"taskRef","cwd","cwdSource","session":SessionDto}` |
 
+Two behaviours the table cannot show. **`task unlink` with an explicit ref the session does not hold is a
+`409`**, not a silent no-op: the daemon refuses to clear a link nobody asked about, and names the ref that
+is actually held. Unlinking a session that holds nothing is `ok` (the caller asked for "not linked to
+this", which is true). And **`task delete` on a ref that names no task exits `1`**, not `0` — a script that
+deletes what it just created and is told "nothing there" has hit a real problem, so it is an error rather
+than `{"deleted":false}` on the success stream.
+
 The three shapes a skill actually reads:
 
-- **`BacklogEntryDto`** — one board row. `ref`, `project`, `title`, `body`, `position`, `state`
+- **`BacklogEntryDto`** — one board row. `ref`, `project`, `title`, `body`, `url`, `position`, `state`
   (`todo` / `in_progress` / `review` / `done`), `blocked`, `dependsOn`, `rev` and timestamps. `blocked` is
   derived server-side (`state == todo` and some dependency is not `done`); an agent should treat a blocked
-  task as not workable — `task next` already refuses to hand one out.
+  task as not workable — `task next` already refuses to hand one out. `url` belongs to the tracker seam
+  and the built-in tracker never fills it: the key is always present and always `null` today.
+  **`task dep` answers this shape too, and that is why it is worth reading**: `blocked` is the one thing a
+  dependency edit changes, it cannot be worked out from the request, and the CLI has no events socket to
+  learn it from later.
 - **`TaskDetailDto`** — what `task show` prints: the entry, the project's name and last-seen path, both
   directions of its dependencies, **every session linked to it** (`sessions`, which is where the
   no-exclusivity rule becomes visible), and the whole activity feed.

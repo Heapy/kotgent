@@ -34,7 +34,8 @@ immortal:
 - [Quick start](#quick-start)
 - [Requirements](#requirements)
 - [Build & test](#build--test)
-- [The CLI](#the-cli) — [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web),
+- [The CLI](#the-cli) — [the task backlog](#the-task-backlog),
+  [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web),
   [sign in from your phone](#sign-in-from-your-phone)
 - [Troubleshooting](#troubleshooting)
 - [The first vertical slice](#the-first-vertical-slice)
@@ -161,7 +162,7 @@ kotgent <command> [args]
   daemon [--port N]              run the control-plane server (default port 27508; the launchd entry point)
   install | uninstall           (un)install the launchd LaunchAgent (io.kotgent.daemon)
   start <agent> [cwd]           start a session (agent: 'claude' | 'codex' | 'junie' | 'shell'; cwd defaults to the current dir)
-             [--name N] [--tag T]
+             [--name N] [--tag T] [--task R]
   import <agent> <session-id>   register a session started outside kotgent, then resume it
              [--cwd D] [--name N] [--tag T] [--no-start]
   list | ls                     list sessions and their states
@@ -169,6 +170,25 @@ kotgent <command> [args]
   resume <id>                   resume a stopped/crashed/resumable session
   interrupt <id>                send Ctrl-C to un-stick a session
   attach <id>                   attach a raw terminal to a session
+
+  The task backlog (JSON on stdout — written for an agent to parse). Every subcommand takes
+  [--session S] to name its session explicitly instead of resolving the calling tmux pane.
+
+  task add <title>              create a task            [--body B] [--project P]
+  task list                     the project's backlog, in rank order        [--project P]
+  task show [<ref>]             one task in full
+  task next                     take the next eligible task   [--project P] (exit 3: none)
+  task claim <ref>              link this session to a task
+  task comment [<ref>] -m TEXT  add a comment ('-m -' reads the text from stdin)
+  task review [<ref>] [-m TEXT] move the task to review
+  task done [<ref>] [-m TEXT]   close the task and unlink every session holding it
+  task unlink [<ref>]           drop this session's link; the task's state is untouched
+  task move <ref>               --top | --bottom | --before <ref> | --after <ref>
+  task dep add|rm <ref> --on R  add or remove "<ref> depends on R"
+  task delete <ref>             remove the task, its dependencies and its feed
+  project list                  every project the daemon knows
+  project init [<path>]         write .kotgent.json for a project           [--name N]
+
   web [--print]                 open the Web UI in a browser (or print the login URL)
   token rotate                  re-mint the master token (old key stops authenticating)
   config get | set public-url <url>   read / set the public URL published behind the tunnel
@@ -214,6 +234,30 @@ kotgent <command> [args]
 - **`attach`** is **not** a direct `tmux attach`. It is a raw-terminal passthrough over the daemon's
   terminal WebSocket (tty put in raw mode via `termios`, stdin → WS, WS → stdout, `SIGWINCH` → resize,
   terminal restored on exit). Detaching an attach only drops a client; the agent stays alive.
+
+### The task backlog
+
+kotgent tracks *sessions*; the backlog tracks *work*. Each project gets an ordered, dependency-aware list
+of tasks that you groom on the Web UI's `/tasks` board and an agent inside a session reads from and writes
+to. A session's purpose stops being something you remember and becomes something the daemon records — the
+sidebar shows which task each session is on, and a task's card shows every session linked to it.
+
+- **A project is a committed file, not a path.** `.kotgent.json` at the checkout root holds a uuid and a
+  name, so one backlog survives a `git worktree`, a move, a rename and a clone. It appears the first time a
+  task is created somewhere that has no project (or when you run `kotgent project init`), it is written to
+  be committed, and **the daemon never commits it for you**. Nothing is written until then.
+- **The states are `todo → in_progress → review → done`**, plus a position you drag on the board and
+  dependencies that mark a task `blocked` until what it waits on is closed. `kotgent task next` hands out
+  the first unblocked `todo` in rank order and exits `3` when there is nothing eligible.
+- **The whole `task`/`project` family prints JSON and only JSON** — stdout is the answer, stderr is one
+  `{"error":…,"status":…}` object. Inside a kotgent pane the commands need no task id: `kotgent task show`,
+  `task comment -m "…"` and `task review -m "…"` resolve the calling pane's own session. Outside one, pass
+  `--session <id>`.
+- **kotgent does not enforce one worker per task.** You can open a second terminal it never hears about, so
+  an exclusive claim would be a guarantee it cannot keep; instead a task may be linked from any number of
+  sessions and the board shows all of them. `task next` will not hand the same task to two agents in a row,
+  which is the part that actually matters.
+- The interface an out-of-repo Agent Skill is written against is [`docs/agent-task-skill.md`](docs/agent-task-skill.md).
 
 ### Access & auth — two keys, one shape
 
@@ -264,6 +308,15 @@ without a reload: on returning to the app, and on the events socket reconnecting
 that a restarted daemon is back. Each attempt checks daemon liveness under a deadline first; a daemon that
 is merely unreachable leaves the attempt available for the next one, while a daemon that answers that this
 session is gone ends it rather than retrying forever.
+
+The UI is a small router over four paths: `/` and `/s/{id}` for the session view, and `/tasks` and
+`/tasks/{ref}` for the [task backlog](#the-task-backlog)'s kanban board — four columns you drag cards
+between on a desktop, one column and a switcher on a phone. Each card shows its blocked marker, its
+dependency count and every session linked to it, and every change (a drag, a state move, a link, a
+deletion) reaches a second tab over the same events WebSocket without a reload. Sessions carry a badge
+linking to their task; the command palette opens the board with `⌘K o` and its create form with `⌘K w`.
+Those bare paths are deep-linkable and installable, which is why the client-facing API lives under
+`/api/v1`.
 
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
 embedded short Git hash (for example `0.6.0+81c37fe`), while published Homebrew builds show the release
@@ -401,14 +454,15 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | Layer | What it does |
 |-------|--------------|
 | `core/` | Host-free domain: `AgentEvent`, `SessionState`, `SessionMeta`, `Reducer`, `Projection`. No I/O. |
-| `store/` | `EventStore` interface + SQLDelight-backed `SqliteEventStore` (single-writer, WAL, append+cache in one transaction). |
+| `store/` | `EventStore` interface + SQLDelight-backed `SqliteEventStore` (single-writer, WAL, append+cache in one transaction); `TaskStore` + `SqliteTaskStore` beside it, which never writes the `sessions` table. |
+| `task/` | Host-free backlog domain: the tracker seam, ordering, the dependency graph, and `.kotgent.json` project resolution (pure filesystem — no `git` subprocess). No I/O beyond an injected filesystem. |
 | `pty/` | `TerminalBridge` + `Broadcaster` — the lazy single-upstream `tmux attach` fan-out. |
 | `tmux/` | Thin wrapper over `tmux -f /dev/null -L kotgent` via a `popen`-based `ProcessRunner`: one argv builder that isolates the server from `~/.tmux.conf`, plus the small option set kotgent forces in its place. |
 | `adapter/` | `AgentAdapter` contract + the Claude, Codex and Junie adapters (launch/resume spec, hook config, event normalization). |
-| `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes. |
+| `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes, and `TaskService` — the two stores called sequentially, never nested. |
 | `push/` | Attention-edge tracking, SQLite subscription store, VAPID key/JWT signing, Darwin/NSURLSession delivery, and notifier lifecycle. |
 | `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. Every client-facing route lives under `/api/v1`; the hook ingresses and the whole `/auth` bootstrap surface deliberately do not. |
-| `cli/` | Subcommands + the raw `attach` passthrough. |
+| `cli/` | Subcommands + the raw `attach` passthrough, and the JSON-only `task`/`project` family (which resolves its own tmux pane through `/whoami`). |
 | `launchd/` | `plist` generation + install/uninstall. |
 | `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |
 | `plugins/sqldelight-gen/` (build plugin) | Runs SQLDelight codegen from `sqldelight/*.sq` at build time. |

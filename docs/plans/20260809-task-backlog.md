@@ -1617,35 +1617,129 @@ uuid itself, only that its writer persists the one it was handed.
 **Owns:** `CLAUDE.md`, `README.md`, this plan file
 
 
-- [ ] a backlog with no `.kotgent.json` behaves as today; no file is written until a task is created
-- [ ] sessions in `/repo` and an ordinary linked worktree resolve to the same project; the recorded
-      unsupported git layouts degrade to the current directory
-- [ ] an agent in a pane reads its own task, comments and moves it to `review` without being told its id
-- [ ] the board creates a task with no session anywhere in the picture
-- [ ] two sessions link one task and both appear on its card; `task next` under contention hands out two
-      different tasks
-- [ ] reordering, state changes, links and deletions reach a second tab without a reload; closing a
-      dependency clears the blocked marker on its dependents
-- [ ] a blocked task is never returned by `task next`; cycle, self-edge, dangling ref and cross-project edge
-      are all refused
-- [ ] closing a task from the board unlinks its sessions and leaves them alive; "Done" closes and archives;
-      deleting unlinks
-- [ ] `/tasks` serves the shell, `/api/v1/tasks` serves JSON, `/s/id/extra` is `404`, and a deep-linked
-      `/tasks/{ref}` serves a shell whose manifest and icon links resolve
-- [ ] `./kotlin build && ./kotlin test` — 0 skips, at or above the 983 post-wave-1.5 baseline plus the
-      new tests;
-      `node --check` over every changed `.js`; every new module registered in `WebUiServingTest.kt`;
-      `git grep '/Users/' -- '*.yaml'` still empty
-- [ ] CLAUDE.md: the two-layer split; `.kotgent.json` as the project key with its supported and unsupported
+Every criterion below was checked **against the code and a named test**, not asserted from this plan. A
+criterion is ticked only when a test would fail if it stopped being true; where the proof is a chain of
+tests rather than one, the chain is named. Two are recorded as **not proved** at the bottom.
+
+- [x] a backlog with no `.kotgent.json` behaves as today; no file is written until a task is created —
+      `TaskProjectWiringTest.aStartOutsideAnyProjectLeavesTheProjectNullAndRegistersNothing` (a start
+      resolves to null and registers nothing) and, for the no-write half, the three write-route tests that
+      assert `env.writer.calls` : empty for a stored project
+      (`createFromAPaneWhoseSessionHasAProjectUsesItWithoutTouchingTheFilesystem`, which also asserts
+      `env.fs.reads` is empty) and for an adopted committed file
+      (`createFromAPaneResolvesTheCommittedFileAboveTheCwdAndRegistersIt`), non-empty only on the create
+      path (`createFromAPaneInAProjectlessDirectoryWritesTheFileAndRegistersTheProject`). Structurally,
+      `ProjectFileWriter` has exactly two call sites, both in `TaskWriteRoutes.kt`.
+- [x] sessions in `/repo` and an ordinary linked worktree resolve to the same project; the recorded
+      unsupported git layouts degrade to the current directory —
+      `TaskProjectWiringTest.twoWorktreesOfOneRepositoryLandOnOneProject` at the session level, over
+      `ProjectFileTest.anOrdinaryLinkedWorktreeReachesTheMainCheckoutRoot`; each recorded degradation has
+      its own case (`separateGitDirDegradesToTheCheckoutInsteadOfTheMetadataDirectorysParent`,
+      `aSubmoduleDegradesToTheSubmoduleCheckout`, `aWorktreeOfABareRepositoryDegradesToTheWorktree`,
+      `aBareRepositoryItselfLooksLikeNoRepositoryAtAll`, `aBrokenGitFileDegradesToItsHolder`).
+- [x] an agent in a pane reads its own task, comments and moves it to `review` without being told its id —
+      the pane half is `TaskReadRoutesTest.whoamiAnswersTheCallingPanesSessionProjectAndTask` (plus the
+      four `400` cases) and `TmuxSelfTest`'s socket gate; the CLI half is
+      `TaskCommandsTest.showResolvesARefLessSubjectThroughWhoami` and
+      `doneResolvesItsSubjectThroughWhoamiAndPatchesTheDoneState` (`review` and `done` are one function,
+      `runTaskTransitionCommand`) and `unlinkAcknowledgesTheDroppedLink`. ⚠️ **Ref-less `comment` is the
+      one verb with no test of its own** — see the note at the end.
+- [x] the board creates a task with no session anywhere in the picture —
+      `TaskWriteRoutesTest.createWithAnExplicitProjectAndNoPaneNeedsNoSession` and
+      `aCreateFromTheBoardIsAttributedToTheBoard`; the browser half is
+      `WebUiBoardTest.creatingATaskCarriesTheSelectedProjectId`.
+- [x] two sessions link one task and both appear on its card; `task next` under contention hands out two
+      different tasks — `TaskServiceTest.twoSessionsLinkTheSameTaskAndBothHoldIt` and
+      `linkNextUnderContentionHandsTwoSessionsTwoDifferentTasks`; end to end over both real stores in
+      `TaskIntegrationTest.aStartCarryingATaskRefProducesALinkedSessionThroughTheRealSessionManager`; on
+      the card, `WebUiBoardTest.aCardShowsEveryLinkedSessionWithItsStateDot` and
+      `TaskReadRoutesTest.theDetailCarriesDepsBothWaysSessionsActivityAndTheProjectPath`.
+- [x] reordering, state changes, links and deletions reach a second tab without a reload; closing a
+      dependency clears the blocked marker on its dependents — emission per mutator:
+      `BacklogOrderingTest.aMoveEmitsOneUpdateCarryingTheStoredRankRevisionAndDerivedBlocked` and
+      `aCollapsedGapRenormalizesTheWholeColumnAndEmitsEveryRow`;
+      `TaskStoreTest.transitionEmitsTheMovedEntryAndReStampsEveryReverseDependent`,
+      `startIfTodoEmitsOnlyWhenItActuallyMovedTheRow`, `updateEmitsSoARenameReachesAConnectedBoard`,
+      `deleteEmitsANullEntryAndReStampsWhatItUnblocked`;
+      `BacklogDependenciesTest.closingADependencyReStampsAndReEmitsEveryReverseDependent` and
+      `removingAnEdgeUnblocksTheRefAndReEmitsIt`. On the socket:
+      `TaskEventsTest.aLinkArrivesAsAPatchForARefTheSnapshotAlreadyCarried`,
+      `aRenormalizationReachesTheSocketRowByRow`, `aDeleteArrivesAsTaskRemovedAndClearsTheCarriedMark`.
+      In the browser: `WebUiTaskStateTest.bothAppliersCompareRevsAndTheStampLandsOnTheStoredRow` and the
+      snapshot/removal appliers beside it.
+- [x] a blocked task is never returned by `task next`; cycle, self-edge, dangling ref and cross-project edge
+      are all refused — `BacklogDependenciesTest.aTodoTaskWithAnUnfinishedDependencyIsBlockedInEveryReadPath`
+      (the candidate query is one of the three read paths it checks),
+      `aBlockedTaskBecomesTheCandidateOnceItsDependencyIsDone`, `aBacklogWithNothingEligibleAnswersNull`;
+      the four refusals are `aTaskCannotDependOnItself`, `anEdgeNamingARefWithNoBacklogRowIsRefusedFromEitherSide`,
+      `anEdgeBetweenTwoProjectsIsRefused`, `anEdgeThatWouldCloseACycleIsRefused`, and over HTTP
+      `TaskWriteRoutesTest.theFourDependencyRefusalsAreEach400NamingWhich`.
+- [x] closing a task from the board unlinks its sessions and leaves them alive; "Done" closes and archives;
+      deleting unlinks — `SessionDoneTaskTest.closingFromTheBoardUnlinksTheSessionAndLeavesItAlive`,
+      `doneOnALinkedSessionClosesTheTaskUnlinksEveryHolderAndArchivesIt`, and
+      `theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer` (which is what keeps the two
+      implementations from diverging silently); deletion is
+      `TaskServiceTest.deleteUnlinksEveryHolderBeforeRemovingTheTask` and
+      `TaskWriteRoutesTest.aDeleteUnlinksEveryHolderAndRemovesTheTask`.
+- [x] `/tasks` serves the shell, `/api/v1/tasks` serves JSON, `/s/id/extra` is `404`, and a deep-linked
+      `/tasks/{ref}` serves a shell whose manifest and icon links resolve —
+      `SpaRoutingTest.aDeepLinkServesTheShellWithASubstitutedRevision`,
+      `theSpaGrammarDoesNotSwallowTheApiNamespace`, `everythingOutsideTheGrammarStillGetsACleanNotFound`,
+      `theGrammarIsExactSegmentsAndNotAPrefixMatch`, `anExistingFileStillWinsOverTheGrammar`, and
+      `theRoutesChangeNothingAboutRevisionedCachingOrTheStableUrls` (which fetches `/manifest.webmanifest`);
+      the root-absolute link rewrite is pinned in `WebUiServingTest` (`href="/manifest.webmanifest"`,
+      `/icons/apple-touch-icon.png`, `/icons/logo.svg`), and `TaskIntegrationTest`'s
+      `theApiAnswersUnderTheApiPrefixWhileTheSpaOwnsTheBarePath` proves both spaces with real route bodies.
+- [x] `./kotlin build && ./kotlin test` — **1400 native tests passed / 0 skipped** (build exit 0 first),
+      well above the 983 post-wave-1.5 floor; `node --check` clean over all 15 changed `.js` files; all 14
+      new/changed served modules appear in `WebUiServingTest.kt`; `git grep '/Users/' -- '*.yaml'` empty.
+- [x] CLAUDE.md: the two-layer split; `.kotgent.json` as the project key with its supported and unsupported
       git layouts and `projects.path` being "last seen"; **why there is no exclusivity** and what that bought;
       the conditional `todo → in_progress` being a selection convention, not an invariant; every `sessions`
       write staying in `SqliteEventStore` and why; `task_ref` being a reference, not a foreign key; the
       `/api/v1` rule and what deliberately did not move; the exact-segment SPA grammar; the `task` CLI family
-      being JSON-only
-- [ ] CLAUDE.md "Where things live": `src/task/`, `src/store/{SqliteTaskStore,BacklogOrdering,BacklogDependencies}.kt`,
+      being JSON-only — eight new invariant blocks, plus the derived-`blocked` emission rule. The `/api/v1`
+      half was already there from Task 1 and was left as written.
+- [x] CLAUDE.md "Where things live": `src/task/`, `src/store/{SqliteTaskStore,BacklogOrdering,BacklogDependencies}.kt`,
       `src/cli/{TmuxSelf,TaskCommands}.kt`, `schema/`, the new Web UI modules; update the test baseline
-- [ ] update the issue #4 body if any decision moved during implementation
-- [ ] move this plan to `docs/plans/completed/`
+      (927 → 1400).
+- ➕ **`docs/agent-task-skill.md` carried three defects and they are fixed.** It is the one artefact here
+      whose consumer — an out-of-repo skill — no test in this repository can catch, so every row was
+      re-checked against `TaskCommands.kt`. (1) `task dep` was documented as `{ref, on, action}` because
+      "the route answers no body, so the request is echoed"; the route always answered a body and the CLI
+      now prints the updated `BacklogEntryDto`, which is the only way a caller with no events socket can
+      see the `blocked` the edit just changed (`TaskCommandsTest.aDependencyEditPrintsTheUpdatedEntryNotTheRequest`).
+      (2) `task unlink` shares `acknowledgement(...)` with `task claim`, so it also carries `sessionId`
+      under `--session` — the doc claimed only `claim` did. (3) The stderr contract said every failure is
+      one JSON object; a **parse-level** usage error never reaches that renderer — `runCli`'s
+      `CliCommand.Invalid` prints prose plus `USAGE` and exits `2`. `url` was also added to the
+      `BacklogEntryDto` field list with the note that the built-in tracker always leaves it null.
+- ➕ **README.md was stale about the whole feature** and is updated: the CLI usage block now mirrors
+      `Cli.USAGE` (the `task`/`project` families and `start --task` were missing entirely), a new "The task
+      backlog" section explains the committed project file, the states, the JSON-only contract and the
+      no-exclusivity rule, the Web UI section describes the board and the four routes, and the architecture
+      table gains `task/` and mentions `SqliteTaskStore` / `TaskService`.
+- ➕ **Two build-measured facts were recorded in CLAUDE.md beyond this list**, because both cost real time
+      and neither is discoverable from the code: `SELECT last_insert_rowid()` is answered by SQLDelight's
+      native **reader pool** (opened `PRAGMA query_only`, so it returns `0`) unless it runs inside the same
+      `db.transaction { }` as its insert — and an **in-memory** database cannot reproduce it, because there
+      `readerPool == transactionPool`, which is why
+      `TaskStoreTest.onAFileBackedDatabaseTheActivityIdStillComesFromTheInsertsOwnConnection` is the one
+      test in the suite deliberately on a file-backed database; and the `-L kotgent-test` tmux socket label
+      is **machine-global** (`${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent-test` has nothing to do with the
+      working directory), so parallel runs in separate git worktrees share one tmux server and kill each
+      other's sessions — all 21 concurrent agents in this plan's fleet hit nondeterministic
+      `TmuxTest`/`PtyTest` failures from that alone.
+- [ ] ⚠️ **Not proved: ref-less `kotgent task comment`.** `runTaskCommentCommand` resolves its subject
+      through the same `resolveSubjectRef` seam as `show`/`review`/`done`/`unlink`, and that seam is
+      covered from four of the five verbs, but `commentPrintsTheActivityRowItCreated` passes an explicit
+      ref and asserts `whoami` is never called. The mechanism is proved; this one verb's wiring to it is
+      not. One test (`comment` with `ref = null` and a `whoami` stub) closes it.
+- [ ] update the issue #4 body if any decision moved during implementation — **not done here**: it is an
+      external system (GitHub), outside this repository's build and tests, and nothing in this plan's
+      decisions moved during implementation in a way the issue body contradicts.
+- [ ] move this plan to `docs/plans/completed/` — **deliberately left undone**: a review round is still
+      outstanding and the operator will move it.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
