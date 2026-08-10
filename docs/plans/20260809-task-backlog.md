@@ -1694,9 +1694,11 @@ open at the bottom are **not done here**, not unproved (an external system, and 
       the root-absolute link rewrite is pinned in `WebUiServingTest` (`href="/manifest.webmanifest"`,
       `/icons/apple-touch-icon.png`, `/icons/logo.svg`), and `TaskIntegrationTest`'s
       `theApiAnswersUnderTheApiPrefixWhileTheSpaOwnsTheBarePath` proves both spaces with real route bodies.
-- [x] `./kotlin build && ./kotlin test` — **1401 native tests passed / 0 skipped** (build exit 0 first),
+- [x] `./kotlin build && ./kotlin test` — **1423 native tests passed / 0 skipped** (build exit 0 first),
       well above the 983 post-wave-1.5 floor; `node --check` clean over all 15 changed `.js` files; all 14
       new/changed served modules appear in `WebUiServingTest.kt`; `git grep '/Users/' -- '*.yaml'` empty.
+      Was 1401 when this task was first accepted; the review round that followed added 22 (9 lifecycle,
+      4 store, 3 transport, 6 Web UI).
 - [x] CLAUDE.md: the two-layer split; `.kotgent.json` as the project key with its supported and unsupported
       git layouts and `projects.path` being "last seen"; **why there is no exclusivity** and what that bought;
       the conditional `todo → in_progress` being a selection convention, not an invariant; every `sessions`
@@ -1706,7 +1708,7 @@ open at the bottom are **not done here**, not unproved (an external system, and 
       half was already there from Task 1 and was left as written.
 - [x] CLAUDE.md "Where things live": `src/task/`, `src/store/{SqliteTaskStore,BacklogOrdering,BacklogDependencies}.kt`,
       `src/cli/{TmuxSelf,TaskCommands}.kt`, `schema/`, the new Web UI modules; update the test baseline
-      (927 → 1401).
+      (927 → 1401, then → 1423 after the review round).
 - ➕ **`docs/agent-task-skill.md` carried three defects and they are fixed.** It is the one artefact here
       whose consumer — an out-of-repo skill — no test in this repository can catch, so every row was
       re-checked against `TaskCommands.kt`. (1) `task dep` was documented as `{ref, on, action}` because
