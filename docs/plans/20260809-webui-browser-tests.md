@@ -294,6 +294,7 @@ READY
 | `task <ref> <state>` | `TaskUpdate` с новым rev → фрейм `task_update` | задачи доски и состояний |
 | `task-add <ref>` | ref, которого сокет ещё не нёс → `task_row` | задача доски |
 | `task-del <ref>` | `TaskUpdate` с `entry = null` → `task_removed` | задача доски |
+| `task-race <ref>` | шаг состояния на уровне стора, без сессионных side-effect'ов → `task_update` | старшая половина гонки newest-rev-wins |
 
 `restart` на том же порту возможен потому, что `src/transport/Server.kt:295` уже ставит
 `reuseAddress = true`. **Тот же `TokenHolder` обязателен** — cookie есть `HMAC-SHA256(master-token,
@@ -398,6 +399,80 @@ DEL без замены: `sessionAndPaletteRowsSharePillInteractionStates` — �
 — computed color в двух состояниях; утверждения о внутренностях SVG-маски и об отсутствии литералов замены
 не имеют и удаляются); 15 диалоги сессии (девять тестов New session / Import / Preferences / Help / Phone
 access / второе действие жизненного цикла); 16 mobile features (key bar, upload, unicode-преференс).
+
+### Контракт для волны 3 — что построили волны 1–2 (`b10b548`)
+
+Инфраструктура существует и зелена. Четырнадцать участников волны 3 кодируют **против этого раздела** и
+файлы `webuicheck/`/`webuitest/` не открывают. Всё ниже — измеренный факт, а не задание.
+
+**Фикстура шире, чем замороженный список.** Пакет `io.kotgent.webuitest`, всё в
+`webuitest/test/HarnessFixture.kt`:
+
+```kotlin
+class Harness(scenario: String) : AutoCloseable      // port, ticket, baseUrl ("http://127.0.0.1:<port>")
+    fun send(line: String)
+fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String)
+fun touchChromium(pw: Playwright): Browser
+fun Browser.touchContext(width = 390, height = 844, deviceScaleFactor = 3.0, mobile = true): BrowserContext
+fun testResultsDir(): Path                            // webuitest/test-results, путь заморожен CI
+fun BrowserContext.traced(name: String, block: () -> Unit)   // трейс + скриншот ТОЛЬКО при падении
+```
+
+Три вещи, которые иначе не найти:
+
+- **`hasTouch` — свойство КОНТЕКСТА, а не браузера.** `touchChromium` сам по себе тап не доставит,
+  `touchscreen().tap()` бросит. Любой жестовый тест идёт через `touchContext`.
+- **`send("restart")` блокируется** до второго `READY`; остальные команды возвращаются сразу.
+- **`Harness.close()` утверждает код выхода 0.** Коды: 0 ok, 1 self-check, 2 usage, 3 плохой stdin,
+  4 watchdog. Тест, пославший кривую команду, поэтому падает в `close()`, а не на `send()`.
+
+Константы: `SESSIONS_SCENARIO`, `AUTH_PAGE_PATH`, `HEADED_ENV` (`KOTGENT_WEBUITEST_HEADED=1` — смотреть
+браузер глазами). Свежий `BrowserContext` на тест обязателен: cookie не привязана к порту.
+
+**Часы.** Сессии проштампованы `1_700_000_000_000 + n`, карточки доски — `1_000`. Ни одно место Web UI
+сегодня не рисует возраст сессии, поэтому **не утверждать про отрисованную дату** ни в каком виде.
+
+**stdout харнесса закрыт структурно:** `main` дублирует настоящий stdout в приватный дескриптор и
+направляет fd 1 в stderr, так что никакой `println` — свой, чужой или ктровский — не может испортить
+хендшейк.
+
+**Терминальная нагрузка** (`terminal`, `restart`, `attention`, `sessions`; у `empty` её нет):
+`["/bin/sh", "-c", "printf '<payload>'; exec cat"]`, где payload — `ESC[?1006h ESC[?1000h`, затем
+`LINE 01`…`LINE 08`, затем баннер. Баннеры: `KOTGENT-SESSIONS-READY`, `KOTGENT-ATTENTION-READY`,
+`KOTGENT-TERMINAL-READY`, `KOTGENT-RESTART-READY`. Баннер **последний**, поэтому дождаться его = дождаться
+всего. Восемь строк — заведомо меньше любого вьюпорта, чтобы картинка не зависела от размера окна. Мышиные
+режимы включены не для красоты: `installSwipeScroll` отдаёт жест обратно при
+`mouseTrackingMode === "none"`, а xterm 6.0 убрал собственные touch-обработчики — без активного трекинга
+свайп по терминалу не делает **ничего**. SGR (`?1006h`) стоит перед трекером, чтобы отчёты шли через
+`term.onData`, а не `term.onBinary`; `cat` возвращает их эхом, что и делает их наблюдаемыми.
+Для задачи 13: `stop()` убивает pty-ребёнка, реаттач поднимает **новый** `/bin/sh`, который печатает
+баннер заново — однозначный дискриминатор даёт маркер, записанный через
+`POST /api/v1/sessions/{id}/input` до рестарта (`cat` его эхнет, пережить нового ребёнка он не может).
+
+**Посевные данные.** Порядок строк сайдбара = порядок посева; `basePath` по умолчанию пуст, поэтому дерево
+плоское, пока тест сам не выставит базовый путь.
+
+| Сценарий | Содержимое |
+|---|---|
+| `empty` | пусто; терминального апстрима нет |
+| `sessions` | `s-alpha` claude `/a/b` running · `s-beta` codex `/a/b` ready · `s-gamma` junie `/a/c` needs_approval · `s-delta` shell `/d` resumable. При `basePath="/"` и уровне 2: `/a` (агрегат 3) → `/a/b` (2), `/a/c` (1), плюс `/d` (1) |
+| `attention` | `s-quiet` ready, unread 0 — уходит в attention командой `emit s-quiet needs_approval` (фронт `false → true`); `s-unread` running, unread 3 |
+| `restart` | `s-restart-a` running, `s-restart-b` ready — обе живы после рестарта; вторая нужна, чтобы было куда переключиться |
+| `terminal` | одна строка `s-term` claude `/w/terminal` running |
+| `board` | проект «Board Fixture» `/repo/board`; `local:1..10`: todo `1,2,3,4,10` · in_progress `5,6` · review `7` · done `8,9`; `local:10` блокирована зависимостью от `local:5`; **`local:3` — мишень `task-race`**, единственная без рёбер |
+| `board-empty` | проект «Empty Fixture» `/repo/empty`, задач нет |
+| `task-detail` | «Detail Fixture» `/repo/detail`; фокус `local:3`, зависит от `local:1` и `local:2` (blocked), от него зависит `local:4`; на `local:3` два комментария, один от автора `s-detail-1`, которому намеренно не соответствует ни одна строка сессии |
+| `task-linked-session` | «Linked Fixture» `/repo/linked`; `s-linked-1` → `local:1` (бейдж разрешается), `s-linked-2` без ссылки (от неё линкуют), `s-linked-3` → `local:404` (намеренно висячая, рисует `task-badge-unknown`) |
+| `deep-link` | «Deep Link Fixture» `/repo/deep`; сессия `deep-session` ↔ задача `local:7`, так что `/s/deep-session` и `/tasks/local:7` ссылаются друг на друга |
+
+У каждого проекта в `FakeProjectFs` лежит настоящий `.kotgent.json`, поэтому `POST /projects` по тому же
+пути принимает существующий uuid, а не минтит второй. Каталоги, видимые автодополнению:
+`/a/b`, `/a/c`, `/a/.hidden`, `/d`, `/projects/kotgent`, `/projects/kotgent-web`.
+
+**Гонка newest-rev-wins** — это команда `task-race <ref>`, а не сценарий: посев отрабатывает до того, как
+сервер начал слушать, и порядка не порождает. Рецепт: придержать `GET` детали через `route.fetch()` без
+`fulfill`, послать `task-race local:3`, убедиться, что карточка переехала, затем отдать придержанное тело и
+убедиться, что она **не** вернулась назад.
 
 ## Параллельное исполнение волнами
 
