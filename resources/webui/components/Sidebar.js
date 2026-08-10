@@ -1,9 +1,27 @@
 /*
- * The session list: needs-attention triage on top, then every session — flat, or arranged as a nested
- * working-directory tree once a base path is configured.
+ * The app's one sidebar, on every screen.
+ *
+ * Its head is fixed — the brand row, then the two links that ARE the app's navigation — and its body is
+ * whichever list belongs to the screen the router has put on:
+ *
+ *   sessions   needs-attention triage on top, then every session — flat, or arranged as a nested
+ *              working-directory tree once a base path is configured.
+ *   tasks      the projects the board can be pointed at, one of which is always selected.
  *
  * Rows are keyed by session id, so a live update from /events patches the existing row instead of
  * rebuilding the list. That is what keeps focus and scroll position while sessions change state.
+ *
+ * ## Why the sidebar is shell furniture rather than the session view's own panel
+ * It used to be rendered inside the session branch, which cost three things. The board had to grow a
+ * link of its own to get back (an installed PWA draws no Back button); it had no way to reach the
+ * project list except a `<select>` in its header, i.e. a second navigation idiom on the one screen that
+ * needed it least; and the mobile drawer could be left open over a screen that no longer contained it.
+ * One sidebar answers all three: the two links are reachable from anywhere, the project list is a list
+ * of rows exactly like the session list, and the drawer can never be orphaned because it never unmounts.
+ *
+ * The body is BRANCHED, not merely filtered: every session-only control below reads the session list or
+ * the selection, and the board's selection is a leftover the operator cannot see — the same reason
+ * `lib/commands.js` builds the whole `session` command group away on the board rather than disabling it.
  */
 
 import { html } from "htm/preact";
@@ -19,9 +37,90 @@ import {
   unsubscribe as pushUnsubscribe,
 } from "../lib/push.js";
 import { displayName, isNeedsAttention, sessionSubline, stateBadge, taskBadge } from "../lib/sessions.js";
-import { navigate, taskPath } from "../lib/router.js";
+import {
+  SCREEN_SESSIONS,
+  SCREEN_TASKS,
+  navigate,
+  routePath,
+  taskPath,
+} from "../lib/router.js";
 
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
+
+/** The board, spelled by the router rather than as a literal — the same rule every in-app path follows. */
+const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
+
+/**
+ * The app's navigation: two links, always in the head, so neither screen is reachable only from the
+ * other. They are real `<a href>` elements, which is what makes ⌘-click, middle-click and "copy link"
+ * behave; only the plain left click is stolen and handed to the router.
+ *
+ * The Sessions link names the selected session when there is one, rather than always going to `/`. The
+ * two are the same screen, but the URL is what a reload, a bookmark and a shared link resolve, so the
+ * address bar should describe the terminal that is actually on it. With no selection `/` is exactly
+ * right, and that is what `routePath` answers for a null id.
+ */
+function NavSwitch({ screen, sessionsPath }) {
+  const links = [
+    { screen: SCREEN_SESSIONS, path: sessionsPath, label: "Sessions" },
+    { screen: SCREEN_TASKS, path: TASKS_PATH, label: "Tasks" },
+  ];
+  const go = (path) => (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    navigate(path);
+  };
+  return html`
+    <nav class="nav-switch" aria-label="Screen">
+      ${links.map((link) => html`
+        <a
+          key=${link.screen}
+          class=${"nav-link" + (screen === link.screen ? " active" : "")}
+          href=${link.path}
+          aria-current=${screen === link.screen ? "page" : null}
+          onClick=${go(link.path)}
+        >${link.label}</a>`)}
+    </nav>`;
+}
+
+/**
+ * One project, in the session row's shape: name, its directory beneath, and a count on the right.
+ *
+ * The count is OPEN tasks, not every task — `done` grows forever and would quickly say nothing. It is
+ * computed from the live task list rather than fetched, which is why a stale project row (the list is
+ * re-read on entry to the board, never polled) still carries a fresh number.
+ */
+function ProjectRow({ project, open, active, onSelect }) {
+  const select = () => onSelect(project.id);
+  const onKeyDown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      select();
+    }
+  };
+  const name = project.name || project.id;
+  return html`
+    <li
+      class=${"project-row" + (active ? " active" : "")}
+      data-id=${project.id}
+      tabIndex="0"
+      role="button"
+      aria-label=${"Show the backlog of " + name}
+      aria-current=${active ? "true" : null}
+      title=${project.path || ""}
+      onClick=${select}
+      onKeyDown=${onKeyDown}
+    >
+      <div class="project-main">
+        <div class="project-name">${name}</div>
+        <div class="project-sub">${project.path || ""}</div>
+      </div>
+      ${open > 0 &&
+        html`<span class="project-count" title=${open + " open task(s)"}>${open}</span>`}
+    </li>
+  `;
+}
 
 /**
  * Bound how long one push transition occupies the serialized queue. A deadline releases the next choice,
@@ -195,8 +294,11 @@ function SessionGroup({
 }
 
 export function Sidebar({
-  sessions, tasks, activeId, prefs, status, currentVersion, drawerOpen, collapsed, showDone, sessionsReady,
-  onSelect, onNewSession, onOpenPrefs, onRestore, onCloseDrawer, onToggleShowDone,
+  screen = SCREEN_SESSIONS,
+  sessions, tasks, projects = [], projectId = null, activeId, prefs, status, currentVersion,
+  drawerOpen, collapsed, showDone, sessionsReady,
+  onSelect, onSelectProject, onNewSession, onNewProject, onOpenPrefs, onRestore, onCloseDrawer,
+  onToggleShowDone,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
@@ -330,6 +432,18 @@ export function Sidebar({
   const doneSessions = sessions.filter((s) => s.archived);
   const attention = visible.filter((s) => isNeedsAttention(s.state));
   const grouped = groupingEnabled(prefs);
+  const onTasks = screen === SCREEN_TASKS;
+  // The attention count is the one head element that is NOT fixed: on the board it would report on a
+  // list this sidebar is not showing, next to a link that already carries the same news nowhere.
+  const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
+  // One walk of the task list for every project row, rather than a filter per row.
+  const openPerProject = new Map();
+  if (onTasks) {
+    for (const task of tasks) {
+      if (!task || !task.project || task.state === "done") continue;
+      openPerProject.set(task.project, (openPerProject.get(task.project) || 0) + 1);
+    }
+  }
 
   // `open` only means anything under the mobile media query, where this aside is a fixed overlay drawer;
   // above the breakpoint it is the same flex column it has always been.
@@ -356,22 +470,56 @@ export function Sidebar({
               id="drawer-close"
               class="icon-button icon-button-small drawer-close"
               type="button"
-              aria-label="Close the session list"
-              title="Close the session list"
+              aria-label="Close the sidebar"
+              title="Close the sidebar"
               onClick=${onCloseDrawer}
             >✕</button>
           </div>
         </div>
-        <div
-          id="attention-count"
-          class=${"attn-count" + (attention.length > 0 ? " active" : "")}
-          title="Sessions needing attention"
-        >
-          <span id="attention-num">${attention.length}</span> need attention
-        </div>
+        <${NavSwitch} screen=${screen} sessionsPath=${sessionsPath} />
+        ${!onTasks && html`
+          <div
+            id="attention-count"
+            class=${"attn-count" + (attention.length > 0 ? " active" : "")}
+            title="Sessions needing attention"
+          >
+            <span id="attention-num">${attention.length}</span> need attention
+          </div>`}
       </header>
 
-      ${attention.length > 0 && html`
+      ${onTasks && html`
+        <section id="projects-section">
+          <h2 class="section-title">
+            <span>Projects</span>
+            <button
+              id="sidebar-new-project"
+              class="button button-quiet button-small"
+              type="button"
+              title="Adopt a directory as a project"
+              onClick=${() => onNewProject()}
+            >+ New</button>
+          </h2>
+          <ul id="project-list" class="project-list">
+            ${projects.map((project) => html`
+              <${ProjectRow}
+                key=${project.id}
+                project=${project}
+                open=${openPerProject.get(project.id) || 0}
+                active=${project.id === projectId}
+                onSelect=${onSelectProject}
+              />`)}
+          </ul>
+          ${projects.length === 0 && html`
+            <div id="empty-projects" class="empty-sessions">
+              <p>No projects yet. Adopt a directory to start a backlog in it.</p>
+              <button id="empty-new-project-button" class="button button-primary" type="button"
+                      onClick=${() => onNewProject()}>New project</button>
+            </div>
+          `}
+        </section>
+      `}
+
+      ${!onTasks && attention.length > 0 && html`
         <section id="attention-section">
           <h2 class="section-title attn">Needs attention</h2>
           <ul id="attention-list" class="session-list">
@@ -383,6 +531,7 @@ export function Sidebar({
         </section>
       `}
 
+      ${!onTasks && html`
       <section id="all-section">
         <h2 class="section-title">
           <span>Sessions</span>
@@ -431,8 +580,9 @@ export function Sidebar({
           </div>
         `}
       </section>
+      `}
 
-      ${doneSessions.length > 0 && html`
+      ${!onTasks && doneSessions.length > 0 && html`
         <section id="done-section">
           <button
             id="show-done-toggle"
@@ -459,8 +609,13 @@ export function Sidebar({
       `}
 
       <footer id="sidebar-footer">
-        <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
-           role="status" aria-live="polite">${status.text}</p>
+        ${/* The session view's renderer for `status`. The board has its own — the `.board-status` toast
+              in `app.js` — and keeps it now that both are mounted at once: on a phone this footer is
+              inside a CLOSED drawer, so a refused drag announced only here would be announced nowhere.
+              Rendering it on one screen each is what stops the two from doubling up. */ ""}
+        ${!onTasks && html`
+          <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
+             role="status" aria-live="polite">${status.text}</p>`}
         ${currentVersion && html`
           <span id="current-version" title="Kotgent version">${currentVersion}</span>
         `}

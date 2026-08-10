@@ -90,9 +90,10 @@ class WebUiBoardStyleTest {
     private val vocabulary = listOf(
         "board",
         "board-head",
+        "board-identity",
         "board-project",
+        "board-project-path",
         "board-new-task",
-        "board-new-project",
         "board-columns",
         "board-column",
         "board-column-head",

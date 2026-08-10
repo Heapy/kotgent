@@ -79,7 +79,8 @@ class WebUiBoardTest {
 
     /** Every class name in the plan's "Board CSS vocabulary" — the frozen contract with Task 28. */
     private val boardVocabulary = setOf(
-        "board", "board-head", "board-project", "board-new-task", "board-new-project",
+        "board", "board-head", "board-identity", "board-project", "board-project-path",
+        "board-new-task",
         "board-columns", "board-column", "board-column-head", "board-column-switch",
         "board-show-all-done", "board-drop-target",
         "task-card", "task-card-handle", "task-card-title", "task-card-meta",
@@ -127,24 +128,78 @@ class WebUiBoardTest {
         // "all projects" option — `position` is a project-wide rank, so a combined view could not be
         // reordered by any move the API can express.
         assertTrue(
-            board.contains("<select class=\"board-project\"") &&
-                board.contains(".filter((task) => task.project === projectId)"),
-            "the selector picks one project and the board renders only that project's entries",
+            board.contains(".filter((task) => task.project === projectId)"),
+            "the board renders only the selected project's entries",
         )
-        val selector = sliceBetween(
-            board,
-            "<select class=\"board-project\"",
-            "</select>",
-            "the project selector",
-        )
+        // The selection itself is no longer the board's. The `<select>` in its header became rows in the
+        // sidebar, so the list, the pick and the healing of a pick naming a project that is gone all
+        // live in `app.js` — the one ancestor of both. What is left here is a title.
         assertFalse(
-            selector.contains("All") || selector.contains("Every"),
-            "the selector offers projects and nothing else — there is no all-projects option",
+            board.contains("<select class=\"board-project\"") || board.contains("setProjectId("),
+            "the board consumes the selection and cannot write it — one owner, in the shell",
         )
-        // A selection naming a project that is gone falls back rather than showing an empty board.
         assertTrue(
-            board.contains("projects.some((project) => project.id === current) ? current : projects[0].id"),
-            "the selection heals when the selected project is no longer listed",
+            board.contains("const project = projects.find((row) => row.id === projectId) || null;") &&
+                board.contains("<span class=\"board-project\">"),
+            "and it names the selected project in its head, the way the terminal head names a session",
+        )
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("projects.some((project) => project.id === current) ? current : projects[0].id"),
+            "the selection heals in the shell when the selected project is no longer listed",
+        )
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertFalse(
+            sidebar.contains("All projects") || sidebar.contains("Every project"),
+            "the sidebar lists projects and nothing else — there is still no all-projects option",
+        )
+    }
+
+    /**
+     * The board's head is the terminal head's twin, because they are the same slot of one shell.
+     *
+     * Both sidebar controls have to be here: without the collapse toggle the board would be the one
+     * screen that cannot bring a ⌘1-collapsed sidebar back, and without ☰ a phone could not open the
+     * drawer at all — the opener it used to rely on lives in `TerminalPane.js`, which this screen
+     * unmounts.
+     *
+     * They reuse the terminal header's own ids rather than minting `board-` ones. That is legal because
+     * the two heads are the two arms of one branch and can never be in the document together, and it is
+     * what makes every existing rule — including the breakpoint's neutralization of the collapse toggle —
+     * reach this row with nothing restated. A `board-`-prefixed id would also have been scanned as part
+     * of the class vocabulary by [theTwoComponentsEmitOnlyTheSharedBoardVocabulary].
+     */
+    @Test
+    fun theBoardHeadCarriesTheSameShellControlsTheTerminalHeadDoes() = withServer { ctx ->
+        val board = ctx.get("/components/Board.js").bodyAsText()
+        val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
+        for (control in listOf(
+            "id=\"drawer-toggle\"" to "the phone's drawer opener",
+            "id=\"sidebar-toggle\"" to "the desktop collapse toggle",
+            "id=\"palette-button\"" to "the palette opener",
+        )) {
+            assertTrue(
+                board.contains(control.first) && pane.contains(control.first),
+                "${control.second} is on BOTH heads, under the one id every rule is keyed on",
+            )
+        }
+        assertTrue(
+            board.contains("onClick=\${onToggleDrawer}") && board.contains("onClick=\${onToggleSidebar}") &&
+                board.contains("onOpenPalette(\"leader\")"),
+            "and each is wired to the shell handler its twin uses",
+        )
+        // The branch is what keeps those ids unique: exactly one of the two heads is ever rendered.
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("\${onBoard ? html`") && app.contains("<\${TerminalPane}"),
+            "the two heads are the two arms of one branch, so the shared ids can never collide",
+        )
+        val css = ctx.get("/style.css").bodyAsText()
+        val mobile = css.substringAfter("@media (max-width: 720px)").substringBefore("@media (any-pointer")
+        assertTrue(
+            mobile.contains("#sidebar-toggle { display: none; }") &&
+                css.contains(".drawer-toggle,\n.drawer-close,\n.drawer-scrim { display: none; }"),
+            "so one collapse rule and one shared ☰ rule govern both screens, with no second copy",
         )
     }
 
@@ -184,11 +239,27 @@ class WebUiBoardTest {
             board.contains("class=\"button board-new-task\" disabled=\${!projectId}"),
             "the new-task action is unavailable while no project is selected",
         )
-        assertTrue(board.contains("board-new-project"), "the header also offers a new project")
+        // "New project" is asked for elsewhere now — the sidebar's `+ New` and the palette both bump the
+        // one-shot counter — but the FORM stays here, beside the create-task one it shares a
+        // directory-completion field with. A second copy in the sidebar would be a second implementation.
+        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
+        assertTrue(
+            sidebar.contains("id=\"sidebar-new-project\"") &&
+                sidebar.contains("onClick=\${() => onNewProject()}"),
+            "the sidebar, which owns the project list, is what offers a new project",
+        )
+        assertTrue(
+            board.contains("newProjectRequest") && board.contains("setForm(\"project\")"),
+            "and the board still opens the form, on the counter that asks it to",
+        )
         assertTrue(
             board.contains("apiRequest(\"/directories/complete\"") &&
                 board.contains("createProject(path, name)"),
             "the new-project action completes a directory on the DAEMON and posts that path",
+        )
+        assertTrue(
+            board.contains("if (onProjectCreated) await onProjectCreated(created);"),
+            "the created row goes back to the app, which owns the list and the selection",
         )
         // The board still never READS the list over HTTP — the socket's baseline is where it comes from.
         // Merging a write's own answer is a different thing and is required; see
@@ -521,7 +592,6 @@ class WebUiBoardTest {
         val board = ctx.get("/components/Board.js").bodyAsText()
         assertTrue(board.contains("if (onAnnounce) onAnnounce(text, error);"), "announcements go to the app")
         for (message in listOf(
-            "Could not load projects: ",
             "Could not move ",
             "Could not delete ",
         )) {
@@ -530,6 +600,13 @@ class WebUiBoardTest {
                 "a failed mutation says so: '$message'",
             )
         }
+        // The project READ moved out with the project list: it is the shell's now, and so is its failure.
+        // Same channel either way — `say` here is the app's own `status` writer, handed down.
+        val app = ctx.get("/app.js").bodyAsText()
+        assertTrue(
+            app.contains("say(\"Could not load projects: \" + errorMessage(e), true);"),
+            "and the one read that left this file still announces its failure where it now lives",
+        )
         assertTrue(
             board.contains("errorMessage(e), true)"),
             "the daemon's own text is surfaced, flagged as an error",
@@ -561,7 +638,8 @@ class WebUiBoardTest {
         // The other end of the same contract: the classes these two files OWN are all really emitted.
         val combined = sources.values.joinToString("\n")
         for (owned in listOf(
-            "board", "board-head", "board-project", "board-new-task", "board-new-project",
+            "board", "board-head", "board-identity", "board-project", "board-project-path",
+            "board-new-task",
             "board-columns", "board-column", "board-column-head", "board-column-switch",
             "board-show-all-done", "board-drop-target",
             "task-card", "task-card-handle", "task-card-title", "task-card-meta",

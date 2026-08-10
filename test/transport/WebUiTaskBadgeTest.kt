@@ -186,8 +186,13 @@ class WebUiTaskBadgeTest {
         val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
         val pane = ctx.get("/components/TerminalPane.js").bodyAsText()
         listOf("Sidebar.js" to sidebar, "TerminalPane.js" to pane).forEach { (name, source) ->
+            // Matched as an import LIST rather than one literal line: the sidebar also imports the screen
+            // constants and `routePath` for its two navigation links, so the statement wraps there. What
+            // must hold is that both names come from the router, not that they arrive on one line.
+            val routerImport = Regex("""import \{([\s\S]*?)\} from "\.\./lib/router\.js";""")
+                .find(source)?.groupValues?.get(1).orEmpty()
             assertTrue(
-                source.contains("import { navigate, taskPath } from \"../lib/router.js\";"),
+                routerImport.contains("navigate") && routerImport.contains("taskPath"),
                 "$name reaches /tasks/{ref} through the router rather than building the path by hand",
             )
             assertTrue(
@@ -216,8 +221,8 @@ class WebUiTaskBadgeTest {
     fun theSidebarThreadsTheTasksPropToEveryRow() = withServer { ctx ->
         val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
         assertTrue(
-            sidebar.contains("export function Sidebar({\n  sessions, tasks,"),
-            "the sidebar takes the tasks prop app.js already passes it",
+            sidebar.contains("export function Sidebar({\n  screen = SCREEN_SESSIONS,\n  sessions, tasks,"),
+            "the sidebar takes the tasks prop app.js already passes it, beside the screen it draws for",
         )
         assertTrue(
             sidebar.contains("function SessionRow({ session, tasks,"),

@@ -121,32 +121,133 @@ class WebUiScreenRoutingTest {
     }
 
     /**
-     * The board is otherwise a one-way door in the surface this app is built for. An installed PWA draws
-     * no browser chrome, and both shell controls that could navigate — the drawer opener and the palette
-     * opener — live in `TerminalPane.js`, which the board's branch unmounts.
+     * Navigation is the sidebar's two links, and the sidebar is on every screen.
+     *
+     * The board used to be a one-way door in the surface this app is built for — an installed PWA draws
+     * no browser chrome, and both shell controls that could navigate lived in `TerminalPane.js`, which
+     * the board's branch unmounted — so it carried a "Sessions" link of its own. The sidebar is shell
+     * furniture now: the link pair sits in its head, points BOTH ways, and no screen owns an exit.
      */
     @Test
-    fun theBoardCarriesOneControlBackToTheSessionView() = withStaticWebUi { ctx ->
+    fun theSidebarCarriesTheAppsNavigationOnBothScreens() = withStaticWebUi { ctx ->
+        val app = ctx.text("/app.js")
+        val sidebar = ctx.text("/components/Sidebar.js")
         val board = ctx.text("/components/Board.js")
         assertTrue(
-            board.contains("""const SESSIONS_PATH = routePath({ screen: SCREEN_SESSIONS, id: null });"""),
-            "the target is the router's own spelling of the session view, not a hand-written \"/\"",
+            app.contains("screen=\${onBoard ? SCREEN_TASKS : SCREEN_SESSIONS}"),
+            "the shell renders ONE sidebar and tells it which screen is on",
+        )
+        assertEquals(
+            1,
+            app.split("<\${Sidebar}").size - 1,
+            "there is exactly one Sidebar in the tree — a per-screen copy would fork its state",
         )
         assertTrue(
-            board.contains("""<a id="go-to-sessions" class="button button-quiet" href=${'$'}{SESSIONS_PATH}"""),
-            "and it is a real link, so a modified click still opens a tab",
+            sidebar.contains("""const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });""") &&
+                sidebar.contains("""routePath({ screen: SCREEN_SESSIONS, id: activeId || null })"""),
+            "both targets are the router's own spelling, and the session one names the selection so the " +
+                "address bar describes the terminal that is actually on screen",
         )
         assertTrue(
-            board.contains("if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;") &&
-                board.contains("navigate(SESSIONS_PATH);"),
-            "the plain click alone is handed to the router",
+            sidebar.contains("""<nav class="nav-switch" aria-label="Screen">""") &&
+                sidebar.contains("""href=${'$'}{link.path}""") &&
+                sidebar.contains("""aria-current=${'$'}{screen === link.screen ? "page" : null}"""),
+            "they are real links carrying the current screen, not two buttons",
+        )
+        assertTrue(
+            sidebar.contains("if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;") &&
+                sidebar.contains("navigate(path);"),
+            "the plain click alone is handed to the router, so ⌘-click still opens a tab",
+        )
+        assertFalse(
+            board.contains("go-to-sessions"),
+            "and the board no longer carries an exit of its own — that link WAS the workaround",
         )
         val css = ctx.text("/style.css")
         assertTrue(
-            cssRuleOf(css, "#go-to-sessions").contains("text-decoration: none"),
-            "an anchor wearing `.button` still has to lose the UA's underline — `.button` never had to " +
-                "say so for a <button>",
+            cssRuleOf(css, ".nav-link").contains("text-decoration: none"),
+            "an anchor styled as a control still has to lose the UA's underline — a <button> never had to",
         )
+    }
+
+    /**
+     * The sidebar's head is fixed and its BODY is the screen's — the session list on one, the project
+     * list on the other.
+     *
+     * Branched, not filtered: every session-only control reads the session list or the selection, and on
+     * the board that selection is a leftover the operator cannot see. It is the same reason
+     * `lib/commands.js` builds the whole `session` command group away there rather than disabling it.
+     * The `status` renderer is branched for the opposite reason — the board keeps its own toast, because
+     * on a phone this footer sits inside a CLOSED drawer, and rendering both would double every message.
+     */
+    @Test
+    fun theSidebarSwapsItsBodyForTheScreenItIsOn() = withStaticWebUi { ctx ->
+        val sidebar = ctx.text("/components/Sidebar.js")
+        assertTrue(
+            sidebar.contains("const onTasks = screen === SCREEN_TASKS;"),
+            "one answer to which body to draw",
+        )
+        for (sessionOnly in listOf(
+            "\${!onTasks && attention.length > 0 && html`",
+            "\${!onTasks && doneSessions.length > 0 && html`",
+            "\${!onTasks && html`\n      <section id=\"all-section\">",
+        )) {
+            assertTrue(
+                sidebar.contains(sessionOnly),
+                "the session view's own section `$sessionOnly` is built away on the board",
+            )
+        }
+        assertTrue(
+            sidebar.contains("\${onTasks && html`\n        <section id=\"projects-section\">") &&
+                sidebar.contains("<ul id=\"project-list\" class=\"project-list\">") &&
+                sidebar.contains("<\${ProjectRow}"),
+            "and the project list is what takes its place",
+        )
+        assertTrue(
+            sidebar.contains("\${!onTasks && html`\n          <p id=\"status-line\""),
+            "the footer's live region is the SESSION view's renderer — the board keeps its own toast, " +
+                "so neither screen announces twice",
+        )
+        // The count is open tasks, from the live list, so a project row that is stale (the list is
+        // re-read on entry to the board, never polled) still carries a fresh number.
+        assertTrue(
+            sidebar.contains("if (!task || !task.project || task.state === \"done\") continue;"),
+            "the per-project count is OPEN tasks, walked once for the whole list",
+        )
+        val app = ctx.text("/app.js")
+        assertTrue(
+            app.contains("if (onBoard) reloadProjects();"),
+            "the one fetched list is re-read on arrival at the board, which is where it is shown",
+        )
+        assertTrue(
+            app.contains("const appliedTaskProjectRef = useRef(null);") &&
+                app.contains("setProjectId(entry.project);"),
+            "opening /tasks/{ref} selects that task's project, once per ref, in the shell that owns it",
+        )
+        val css = ctx.text("/style.css")
+        // The project row must be the session row's shape: the two lists are the same furniture, and a
+        // sidebar whose rows changed size between screens would read as two different panels.
+        val project = cssRuleOf(css, ".project-row")
+        val session = cssRuleOf(css, ".session-row")
+        for (declaration in listOf(
+            "padding: 9px 10px",
+            "border-radius: 12px",
+            "margin: 2px var(--list-inset)",
+        )) {
+            assertTrue(
+                project.contains(declaration) && session.contains(declaration),
+                "`.project-row` and `.session-row` agree on `$declaration`",
+            )
+        }
+        assertTrue(
+            cssRuleOf(css, ".project-row.active").contains("var(--pill-active)") &&
+                cssRuleOf(css, ".session-row.active").contains("var(--pill-active)"),
+            "and on what a selected row looks like",
+        )
+        for (selector in listOf(".nav-switch", ".nav-link.active", ".project-main", ".project-name",
+            ".project-sub", ".project-count", ".project-list")) {
+            cssRuleOf(css, selector)   // asserts the rule exists; an unstyled row renders as a bare <li>
+        }
     }
 
     /**
@@ -191,6 +292,21 @@ class WebUiScreenRoutingTest {
             cssRuleOf(css, "#app").contains("position: relative"),
             "and it floats against the SHELL, whose safe-area padding it therefore respects — without " +
                 "this containing block the panel would position against the viewport and reach under a notch",
+        )
+        // A repaint fix, not a layout one, and the reason it is easy to delete by eye: nothing about the
+        // panel's geometry depends on it. Measured on the installed app once the sidebar (which carries
+        // `backdrop-filter` above this breakpoint) joined this screen — a band of the board's previous
+        // frame stayed painted over the panel at its sticky head's layer seam.
+        assertTrue(
+            desktopDetail.contains("will-change: transform"),
+            "the floating panel keeps its own compositing layer, or a stale tile of the board survives " +
+                "on the seam between the sticky head and the scrolled content beneath it",
+        )
+        assertTrue(
+            Regex("""(?s)@media \(min-width: 721px\)[^@]*#sidebar\s*\{[^}]*backdrop-filter""")
+                .containsMatchIn(css),
+            "and the blur that provoked it is still desktop-only — if the band ever returns, THAT is the " +
+                "next thing to take away, which is only checkable while this pairing is written down",
         )
         assertTrue(
             Regex("""(?s)#app:has\(\.task-detail\)\s+\.board\s*\{[^}]*display: none""")
@@ -276,28 +392,45 @@ class WebUiScreenRoutingTest {
     }
 
     /**
-     * The scrim is rendered OUTSIDE the screen branch while the drawer itself is inside it, so leaving
-     * the session view with the drawer open (`Sidebar`'s task badge navigates and closes nothing) left a
-     * phone looking at a full-screen 58%-opacity overlay with no drawer in front of it.
+     * The scrim is rendered OUTSIDE the screen branch. While the drawer itself was INSIDE it, leaving the
+     * session view with the drawer open (`Sidebar`'s task badge navigates and closes nothing) left a
+     * phone looking at a full-screen 58%-opacity overlay with no drawer in front of it, and the shell
+     * needed an effect that closed the drawer on the way to the board.
+     *
+     * Both are now on the same side of the branch: the sidebar is rendered by the shell too, so the pair
+     * cannot come apart and the effect is GONE rather than kept as a belt. That is what this asserts —
+     * a re-introduced effect would silently take the project list away from every phone that opened the
+     * drawer, tapped Tasks and expected to pick a project.
      */
     @Test
-    fun leavingTheSessionViewCannotStrandItsDrawerScrim() = withStaticWebUi { ctx ->
+    fun theDrawerScrimCannotBeStrandedBecauseTheSidebarNeverUnmounts() = withStaticWebUi { ctx ->
         val app = ctx.text("/app.js")
         val sidebar = ctx.text("/components/Sidebar.js")
         assertTrue(
             sidebar.contains("navigate(taskPath(task.ref));"),
-            "the badge that triggers it still navigates without touching the drawer",
+            "the badge that used to trigger it still navigates without touching the drawer",
         )
         assertTrue(
             app.contains("class=\"drawer-scrim\""),
-            "the scrim is still rendered by the shell, outside the branch that owns the drawer",
+            "the scrim is still rendered by the shell",
+        )
+        val branch = app.substringAfter("\${onBoard ? html`")
+        assertFalse(
+            branch.contains("<\${Sidebar}"),
+            "and the sidebar is no longer inside the screen branch, which is what could strand it",
+        )
+        assertFalse(
+            app.contains("if (onBoard) setDrawerOpen(false);"),
+            "so the compensating effect is gone: closing the drawer on the way to the board would now " +
+                "hide the project list the operator opened it for",
         )
         assertTrue(
-            app.contains(
-                "useEffect(() => {\n    if (onBoard) setDrawerOpen(false);\n  }, [onBoard]);",
-            ),
-            "so the shell closes the drawer whenever the board takes the screen — every navigation off " +
-                "the session view, not just the one the badge makes",
+            app.contains("const selectProject = useCallback((id) => {") &&
+                app.substringAfter("const selectProject = useCallback((id) => {")
+                    .substringBefore("}, []);")
+                    .contains("setDrawerOpen(false);"),
+            "picking a project closes the drawer, exactly as picking a session does — that is the rule " +
+                "that replaced it",
         )
     }
 

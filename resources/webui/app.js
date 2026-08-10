@@ -70,6 +70,7 @@ import {
 } from "./lib/router.js";
 import {
   applyTasksSnapshot,
+  fetchProjects,
   patchTaskIfNewer,
   removeTask,
   upsertTaskIfNewer,
@@ -248,6 +249,12 @@ function App() {
   // the History-API screen, and it is the app's single owner of BOTH "which screen" and "which session":
   // `/s/{id}` selects, and every selection navigates back into it (see showSession).
   const [tasks, setTasks] = useState([]);
+  // The project list and the ONE selected project. Both used to live inside `Board`, which was right
+  // while the board owned the selector; the sidebar is shell furniture and now draws that list on every
+  // screen, so the state moved up to its one common ancestor rather than being mirrored in two places.
+  // There is still exactly one owner of the selection — this — and `Board` is a consumer of it.
+  const [projects, setProjects] = useState([]);
+  const [projectId, setProjectId] = useState(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
   const [activeId, setActiveId] = useState(null);
@@ -469,6 +476,58 @@ function App() {
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
 
+  // --- projects ------------------------------------------------------------------------------------
+  //
+  // The one thing on the task side that is FETCHED rather than pushed. Tasks arrive over `/events` (a
+  // snapshot on connect, a frame per change), but there is no projects frame: a `BacklogEntryDto` carries
+  // only the project uuid, and the names come from `GET /projects`. So the list is read on mount and
+  // again on every entry to the board — a project created from the CLI, or in another tab, appears on the
+  // next visit to `/tasks` rather than never. It is deliberately not polled: the sidebar's per-project
+  // counts are computed from `tasks`, which IS live, so a stale row shows a fresh number.
+
+  /** Re-read `GET /projects`; answers the rows, or null when the read failed (announced, not thrown). */
+  const reloadProjects = useCallback(async () => {
+    try {
+      const response = await fetchProjects();
+      const rows = Array.isArray(response)
+        ? response
+        : (response && Array.isArray(response.projects) ? response.projects : []);
+      setProjects(rows);
+      return rows;
+    } catch (e) {
+      say("Could not load projects: " + errorMessage(e), true);
+      return null;
+    }
+  }, [say]);
+
+  useEffect(() => { reloadProjects(); }, [reloadProjects]);
+
+  // Exactly one project is selected at all times once any exists; a selection naming a project that is
+  // no longer listed falls back to the first rather than leaving the board empty under a live sidebar.
+  useEffect(() => {
+    if (projects.length === 0) return;
+    setProjectId((current) =>
+      current && projects.some((project) => project.id === current) ? current : projects[0].id);
+  }, [projects]);
+
+  const selectProject = useCallback((id) => {
+    setProjectId(id);
+    // Picking a project is the drawer's whole purpose on a phone, exactly as picking a session is: the
+    // board is behind it. Same rule, same place — beside the selection rather than in a click handler.
+    setDrawerOpen(false);
+  }, []);
+
+  /**
+   * A project the board's form just created: re-read the list and select it. The board owns the FORM
+   * (it is a dialog beside the create-task one) but not the list, so the write reports back here.
+   */
+  const projectCreated = useCallback(async (created) => {
+    const rows = await reloadProjects();
+    if (created && created.id && rows && rows.some((project) => project.id === created.id)) {
+      setProjectId(created.id);
+    }
+  }, [reloadProjects]);
+
   /** Apply a validated daemon preference payload unless a newer committed revision already arrived. */
   const applyServerPreferences = useCallback((raw) => {
     const next = sanitizeServerPreferences(raw);
@@ -545,13 +604,28 @@ function App() {
     showSession(target);
   }, [routeSessionId, sessions, activeId, showSession]);
 
-  // Leaving the session view must not strand its overlay drawer. On a phone the sidebar IS the drawer,
-  // the branch at the bottom of this render unmounts it, and the scrim is rendered OUTSIDE that branch —
-  // so a task badge tapped inside the drawer (Sidebar's badge navigates and closes nothing) left a
-  // full-screen scrim over a board with no drawer in front of it, dismissable only by tapping the ink.
+  // The board is the screen whose sidebar body is the project list, and that list is the one fetched
+  // thing here — so entering it is when it is re-read. Keyed on `onBoard` rather than on the whole route,
+  // because moving between `/tasks` and `/tasks/{ref}` is not an arrival.
   useEffect(() => {
-    if (onBoard) setDrawerOpen(false);
-  }, [onBoard]);
+    if (onBoard) reloadProjects();
+  }, [onBoard, reloadProjects]);
+
+  // Opening `/tasks/{ref}` selects that task's project — once per ref, so a later manual pick in the
+  // sidebar sticks even while the socket keeps patching rows. A ref that is not in the list yet retries
+  // on the next frame, which is what makes a deep link work when the snapshot has not landed at mount.
+  // It lives here, beside the selection it writes, rather than in `Board`: the sidebar is what shows the
+  // answer, and on a phone the board may not even be the thing on screen when the detail is open.
+  const appliedTaskProjectRef = useRef(null);
+  const openTaskRef = route.screen === SCREEN_TASK ? route.id : null;
+  useEffect(() => {
+    if (!openTaskRef) { appliedTaskProjectRef.current = null; return; }
+    if (appliedTaskProjectRef.current === openTaskRef) return;
+    const entry = tasks.find((task) => task.ref === openTaskRef);
+    if (!entry) return;
+    appliedTaskProjectRef.current = openTaskRef;
+    setProjectId(entry.project);
+  }, [openTaskRef, tasks]);
 
   // Coming back to the session view is the fourth mark-read trigger, and the only one that can fire
   // here: the tab never stopped being visible, and the active session may have emitted nothing while the
@@ -1221,11 +1295,14 @@ function App() {
     setNewTaskRequest((n) => n + 1);
   }, []);
   /**
-   * "New project" is the same one-shot counter for the board's other form, and it exists for the same
-   * reason the create form does: the board owns the project selector, so a project can only be created
-   * where one can be chosen. It is the palette's only board-owned command — switching the selected
-   * project is deliberately NOT one, because that selection lives inside `Board` and lifting it here to
-   * make it addressable would put a second owner of it in the app.
+   * "New project" is the same one-shot counter for the board's other form. It has TWO callers now — the
+   * palette's chordless command and the sidebar's "+ New project" — and that is exactly why it stayed a
+   * counter routed through the board instead of becoming a dialog the sidebar owns: the form is a
+   * sibling of the create-task one, both are `Board`'s, and a second copy in the sidebar would be a
+   * second implementation of the same directory-completion field.
+   *
+   * From the session view it navigates first, which is the honest thing: a project is created to hold
+   * tasks, and the board is where the created one is then selected.
    */
   const [newProjectRequest, setNewProjectRequest] = useState(0);
   const newProject = useCallback(() => {
@@ -1323,10 +1400,42 @@ function App() {
         onClose=${closePalette}
       />`}
     ${/* The drawer's tap-outside dismissal — a real button so it is reachable by keyboard and by a screen
-          reader too, and rendered only while the drawer is open so desktop never has it in the tree. */ ""}
+          reader too, and rendered only while the drawer is open so desktop never has it in the tree.
+
+          It used to need a companion effect closing the drawer on the way to the board, because the
+          board's branch unmounted the sidebar and left this scrim over a screen with no drawer behind
+          it. The sidebar is shell furniture now — it is rendered on both screens — so the pair can never
+          come apart, and the effect is gone rather than kept as a belt. */ ""}
     ${drawerOpen && html`
-      <button type="button" class="drawer-scrim" aria-label="Close the session list"
+      <button type="button" class="drawer-scrim" aria-label="Close the sidebar"
               onClick=${closeDrawer}></button>`}
+    ${/* One sidebar for the whole app, outside the screen branch below. Its body is what changes: the
+          session list on the session view, the project list on the board. That is what makes the two
+          links in its head reachable from anywhere, and it is why ⌘1, the mobile drawer and the status
+          footer are written once instead of once per screen. */ ""}
+    <${Sidebar}
+      screen=${onBoard ? SCREEN_TASKS : SCREEN_SESSIONS}
+      sessions=${sessions}
+      tasks=${tasks}
+      projects=${projects}
+      projectId=${projectId}
+      activeId=${activeId}
+      prefs=${prefs}
+      status=${status}
+      currentVersion=${currentVersion}
+      drawerOpen=${drawerOpen}
+      collapsed=${sidebarCollapsed}
+      showDone=${showDone}
+      sessionsReady=${sessionsReady}
+      onSelect=${selectSession}
+      onSelectProject=${selectProject}
+      onNewSession=${openNewSession}
+      onNewProject=${newProject}
+      onOpenPrefs=${openPrefs}
+      onRestore=${restore}
+      onCloseDrawer=${closeDrawer}
+      onToggleShowDone=${toggleShowDone}
+    />
     ${/* The one place the router decides what the page IS.
 
           `tasks` reaches BOTH sides of this branch on purpose. The board obviously needs it; the
@@ -1350,11 +1459,19 @@ function App() {
         tasks=${tasks}
         sessions=${sessions}
         route=${route}
+        projects=${projects}
+        projectId=${projectId}
         basePath=${prefs.basePath}
         newTaskRequest=${newTaskRequest}
         newProjectRequest=${newProjectRequest}
+        drawerOpen=${drawerOpen}
+        sidebarCollapsed=${sidebarCollapsed}
         onTaskRow=${applyTaskRow}
         onTaskRemoved=${applyTaskRemoved}
+        onProjectCreated=${projectCreated}
+        onToggleDrawer=${toggleDrawer}
+        onToggleSidebar=${toggleSidebar}
+        onOpenPalette=${openPalette}
         onAnnounce=${say}
       />
       ${route.screen === SCREEN_TASK && html`
@@ -1364,24 +1481,6 @@ function App() {
       <p id="board-status" class=${"status-line board-status" + (status.error ? " error" : "")}
          role="status" aria-live="polite">${status.text}</p>
     ` : html`
-      <${Sidebar}
-        sessions=${sessions}
-        tasks=${tasks}
-        activeId=${activeId}
-        prefs=${prefs}
-        status=${status}
-        currentVersion=${currentVersion}
-        drawerOpen=${drawerOpen}
-        collapsed=${sidebarCollapsed}
-        showDone=${showDone}
-        sessionsReady=${sessionsReady}
-        onSelect=${selectSession}
-        onNewSession=${openNewSession}
-        onOpenPrefs=${openPrefs}
-        onRestore=${restore}
-        onCloseDrawer=${closeDrawer}
-        onToggleShowDone=${toggleShowDone}
-      />
       <${TerminalPane}
         session=${activeSession}
         tasks=${tasks}

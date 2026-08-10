@@ -769,6 +769,33 @@ from the board) — never two descriptors, because `leaderKeyDown` resolves a le
 chord uniqueness is asserted over this file's SOURCE TEXT. Session ROWS stay on both screens (selecting
 one navigates to `/s/{id}`, so search is also the way back), and the two board-owned commands are the
 chordless "New project" and "New task", each a one-shot counter `Board` serves with a ref of its own.
+"New project" now has a SECOND caller — the sidebar's `+ New` — and that is exactly why it stayed a
+counter routed through the board rather than becoming a dialog the sidebar owns: the form is a sibling of
+the create-task one and shares its directory-completion field, so a copy in the sidebar would be a second
+implementation of the same screen.
+
+**The sidebar is shell furniture, and its BODY is the screen's.** `app.js` renders exactly one `Sidebar`,
+outside the route branch; its head is fixed (the brand row, then the two links that ARE the app's
+navigation) and its body is the session list on the session view and the PROJECT list on the board. That
+one move deleted three workarounds: the board's own `#go-to-sessions` link (an installed PWA draws no Back
+button, and both shell controls that could navigate lived in `TerminalPane.js`, which the board unmounted),
+the `<select class="board-project">` — a second navigation idiom on the one screen that needed it least —
+and the effect that closed the mobile drawer on the way to the board, which existed only because the scrim
+is rendered by the shell while the drawer used to be rendered inside the branch. The pair can no longer
+come apart, so **do not reintroduce that effect**: closing the drawer on arrival would hide the project
+list the operator opened it for. What replaced it is the same rule selecting a session already followed —
+picking a project closes the drawer. The body is BRANCHED, not filtered, for the reason the palette builds
+its `session` group away on the board: every session-only control reads a selection the operator cannot
+see there. `status` is branched the other way — the sidebar footer renders it on the session view, the
+`.board-status` toast on the board — because on a phone that footer is inside a CLOSED drawer, and
+rendering both would double every message. The project list is the one FETCHED thing on the task side
+(there is no projects frame; a `BacklogEntryDto` carries only the uuid), so it is re-read on every entry
+to `/tasks` and never polled — while the per-project counts come from the live task list, so a stale row
+still carries a fresh number. The board's head is now the terminal head's twin and **reuses its three ids**
+(`#drawer-toggle`, `#sidebar-toggle`, `#palette-button`): the two heads are the two arms of one branch and
+can never be in the document together, which is what lets every existing rule reach both with nothing
+restated — and a `board-`-prefixed id would have collided with the frozen class vocabulary its serving
+tests scan for.
 
 **A native `<dialog>` paints a backdrop that dismisses nothing, so `Dialog` owns both pointer gestures.**
 `showModal()` gives Esc, the focus trap and the backdrop's ink — not a light dismiss — so before this every
@@ -1232,7 +1259,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1427 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1431 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -1335,6 +1362,9 @@ resources/webui/               no-build Preact PWA, network-only root service wo
                                AuthRoutes.kt. The board: lib/router.js (the only toucher of `history`),
                                lib/tasks.js (the newest-rev-wins task store + every task API call),
                                components/Board.js + TaskCard.js + TaskDetail.js; the frozen `board-*` /
-                               `task-*` class vocabulary lives in style.css and is asserted from both ends
+                               `task-*` class vocabulary lives in style.css and is asserted from both ends.
+                               components/Sidebar.js is the ONE sidebar of both screens: its head carries
+                               the app's two navigation links, its body is the session list or the
+                               project list
 docs/plans/                    implementation plans
 ```

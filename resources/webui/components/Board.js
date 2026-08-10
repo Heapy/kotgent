@@ -10,6 +10,13 @@
  *                   the selected project here; the app does not know which one is selected.
  *   sessions        SessionDto[] — the card's session dots come from `session.taskRef`, never a fetch.
  *   route           { screen, id } from `lib/router.js`.
+ *   projects        every project, from `app.js`'s one `GET /projects` read. The board draws the selected
+ *                   one's name and path in its head; the LIST is the sidebar's.
+ *   projectId       the selected project. The board filters `tasks` by it and can never change it —
+ *                   selecting is the sidebar's job, and the selection has exactly one owner, in `app.js`.
+ *   onProjectCreated  (createdProjectDto) → the app re-reads the project list and selects the new one.
+ *                   The FORM is here because it is a sibling of the create-task one and shares its
+ *                   directory-completion field; the list it lands in is not.
  *   basePath        the Preferences base path, the same value the New-session dialog is handed. It is
  *                   the New-project form's starting directory and the base its completion resolves a
  *                   relative name against — a project lives under the same tree a session does, so
@@ -43,9 +50,12 @@
  * a real hole rather than a purity: while the events socket is down or reconnecting REST still works,
  * and a create, a move or a delete then left the whole board unchanged with no error to show for it.
  *
- * ## The one thing it does fetch
- * `GET /projects`, because the selector needs project NAMES and a `BacklogEntryDto` carries only the
- * uuid. It is re-read after a project is created, and never polled.
+ * ## What it does not fetch either, any more
+ * `GET /projects` used to be the board's one read, because its `<select>` needed project NAMES that a
+ * `BacklogEntryDto` (which carries only the uuid) cannot supply. That selector is gone: the projects are
+ * a list of rows in the sidebar now, so the read, the selection and the healing of a selection naming a
+ * project that is no longer listed all moved to `app.js`, which is the sidebar's and the board's one
+ * common ancestor.
  *
  * ## Class names
  * Every class here comes from the plan's "Board CSS vocabulary" — Task 28 writes `style.css` at the same
@@ -59,12 +69,11 @@ import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { joinPath, normalizePath } from "../lib/paths.js";
-import { SCREEN_SESSIONS, navigate, routePath, sessionPath, taskPath } from "../lib/router.js";
+import { navigate, sessionPath, taskPath } from "../lib/router.js";
 import {
   createProject,
   createTask,
   deleteTask,
-  fetchProjects,
   moveTask,
   patchTask,
 } from "../lib/tasks.js";
@@ -91,9 +100,6 @@ const DRAG_SLOP_PX = 8;
 /** The phone breakpoint, the same one `style.css` uses for its single-column layout. */
 const PHONE_QUERY = "(max-width: 720px)";
 
-/** Where the "Sessions" link goes — the router's own spelling of the session view, not a literal. */
-const SESSIONS_PATH = routePath({ screen: SCREEN_SESSIONS, id: null });
-
 /** Debounce before a keystroke in the project-path field asks the daemon to complete it. */
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
@@ -108,17 +114,6 @@ const PROJECT_NAME_MAX_LENGTH = 100;
 function phoneNow() {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" &&
     window.matchMedia(PHONE_QUERY).matches;
-}
-
-/**
- * The rows of a list response, whichever shape the route answers with. `GET /projects` is a bare JSON
- * array today; accepting `{ projects: [...] }` too costs one line and keeps a board that meets an older
- * or newer daemon showing an empty selector rather than throwing inside a render.
- */
-function rowsOf(response, key) {
-  if (Array.isArray(response)) return response;
-  if (response && Array.isArray(response[key])) return response[key];
-  return [];
 }
 
 /**
@@ -193,15 +188,21 @@ export function Board({
   tasks = [],
   sessions = [],
   route = null,
+  projects = [],
+  projectId = null,
   basePath = "",
   newTaskRequest = 0,
   newProjectRequest = 0,
+  drawerOpen = false,
+  sidebarCollapsed = false,
   onTaskRow,
   onTaskRemoved,
+  onProjectCreated,
+  onToggleDrawer,
+  onToggleSidebar,
+  onOpenPalette,
   onAnnounce,
 }) {
-  const [projects, setProjects] = useState([]);
-  const [projectId, setProjectId] = useState(null);
   const [form, setForm] = useState(null);          // null | "task" | "project"
   const [showAllDone, setShowAllDone] = useState(false);
   const [phone, setPhone] = useState(phoneNow);
@@ -218,42 +219,8 @@ export function Board({
     if (row && row.ref && onTaskRow) onTaskRow(row);
   }, [onTaskRow]);
 
-  // --- projects ------------------------------------------------------------------------------------
-
-  const reloadProjects = useCallback(async () => {
-    try {
-      const rows = rowsOf(await fetchProjects(), "projects");
-      setProjects(rows);
-      return rows;
-    } catch (e) {
-      say("Could not load projects: " + errorMessage(e), true);
-      return null;
-    }
-  }, [say]);
-
-  useEffect(() => { reloadProjects(); }, [reloadProjects]);
-
-  // Exactly one project is selected at all times once any exists; a selection naming a project that is
-  // no longer listed falls back to the first rather than showing an empty board with a live selector.
-  useEffect(() => {
-    if (projects.length === 0) return;
-    setProjectId((current) =>
-      current && projects.some((project) => project.id === current) ? current : projects[0].id);
-  }, [projects]);
-
-  // Opening /tasks/{ref} selects that task's project — once per ref, so a later manual choice sticks
-  // even while the socket keeps patching rows. A ref that is not in the list yet retries on the next
-  // frame, which is what makes a deep link work when the snapshot has not landed at mount.
-  const appliedRouteRef = useRef(null);
   const routeId = route && route.id;
-  useEffect(() => {
-    if (!routeId) { appliedRouteRef.current = null; return; }
-    if (appliedRouteRef.current === routeId) return;
-    const entry = tasks.find((task) => task.ref === routeId);
-    if (!entry) return;
-    appliedRouteRef.current = routeId;
-    setProjectId(entry.project);
-  }, [routeId, tasks]);
+  const project = projects.find((row) => row.id === projectId) || null;
 
   // --- layout --------------------------------------------------------------------------------------
 
@@ -322,13 +289,6 @@ export function Board({
   const openTask = useCallback((ref) => navigate(taskPath(ref)), []);
   const openSession = useCallback((id) => navigate(sessionPath(id)), []);
   /** The way out of this screen without picking a session — see the header row's own comment. */
-  const leaveForSessions = useCallback((event) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (event.button !== undefined && event.button !== 0) return;
-    event.preventDefault();
-    navigate(SESSIONS_PATH);
-  }, []);
-
   const applyDrop = useCallback(async (ref, target) => {
     const entry = entriesRef.current.find((row) => row.ref === ref);
     if (!entry || !target) return;
@@ -394,12 +354,10 @@ export function Board({
   const submitProject = useCallback(async (path, name) => {
     const created = await createProject(path, name);
     setForm(null);
-    const rows = await reloadProjects();
-    if (created && created.id && rows && rows.some((project) => project.id === created.id)) {
-      setProjectId(created.id);
-    }
+    // The list and the selection are the app's; this reports the row and lets it re-read and select.
+    if (onProjectCreated) await onProjectCreated(created);
     say("Project " + ((created && created.name) || path) + " is ready.");
-  }, [reloadProjects, say]);
+  }, [onProjectCreated, say]);
 
   // --- dragging (desktop; the phone has the menu's move actions instead) ---------------------------
 
@@ -527,30 +485,62 @@ export function Board({
 
   return html`
     <main class="board" aria-label="Task board">
+      ${/* The same three-part head the terminal pane draws, in the same order, because the two are the
+            same slot of the same shell: the two sidebar controls, the identity of what is on screen, and
+            the palette opener. Before the sidebar became shell furniture this row held a "Sessions" link
+            (the only in-app way off a screen an installed PWA draws no Back button for) and a project
+            `<select>`; both are now rows in the sidebar, reachable from either screen.
+
+            The drawer opener and the collapse toggle are rendered on EVERY screen and hidden by the
+            breakpoint — the phone gets ☰, the desktop gets ‹ / › — exactly as `#terminal-head` does.
+            Without them the board would be the one screen whose sidebar cannot be reopened after ⌘1, or
+            opened at all on a phone.
+
+            All three carry the SAME ids as the terminal header's, which is legal because the two heads
+            are the two arms of one branch and can never be in the document together. That is the point:
+            every rule keyed on `#drawer-toggle` / `#sidebar-toggle` / `#palette-button` — including the
+            breakpoint's neutralization of the collapse toggle — reaches this row with nothing restated.
+            A `board-`-prefixed id would also have collided with the class vocabulary the board's two
+            serving tests scan for. */ ""}
       <header class="board-head">
-        ${/* The only in-app way off this screen that does not require picking a session. On a desktop
-              the browser's Back button covers it, but an installed PWA draws no browser chrome at all,
-              and the two shell controls that could — the drawer opener and the palette opener — both
-              live in the terminal header, which this screen unmounts. A real link, so a modified click
-              still opens a tab; the ordinary one goes to the router. */ ""}
-        <a id="go-to-sessions" class="button button-quiet" href=${SESSIONS_PATH}
-           title="Back to the sessions" onClick=${leaveForSessions}>Sessions</a>
-        <select class="board-project" aria-label="Project" value=${projectId || ""}
-                disabled=${projects.length === 0}
-                onChange=${(event) => setProjectId(event.target.value)}>
-          ${projects.length === 0
-            ? html`<option value="">No projects yet</option>`
-            : projects.map((project) => html`
-              <option key=${project.id} value=${project.id} title=${project.path || ""}>
-                ${project.name || project.id}
-              </option>`)}
-        </select>
+        <button
+          id="drawer-toggle"
+          class="icon-button icon-button-small drawer-toggle"
+          type="button"
+          aria-label="Show the project list"
+          aria-expanded=${drawerOpen ? "true" : "false"}
+          aria-controls="sidebar"
+          title="Projects"
+          onClick=${onToggleDrawer}
+        >☰</button>
+        <button
+          id="sidebar-toggle"
+          class="icon-button icon-button-small sidebar-toggle"
+          type="button"
+          aria-label=${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded=${sidebarCollapsed ? "false" : "true"}
+          aria-controls="sidebar"
+          title=${sidebarCollapsed ? "Expand sidebar (⌘1)" : "Collapse sidebar (⌘1)"}
+          onClick=${onToggleSidebar}
+        >${sidebarCollapsed ? "›" : "‹"}</button>
+        <div class="board-identity">
+          <span class="board-project">${project ? (project.name || project.id) : "No project"}</span>
+          <span class="board-project-path" title=${(project && project.path) || ""}>
+            ${(project && project.path) || "Adopt a directory to start a backlog"}
+          </span>
+        </div>
         ${/* The vocabulary class carries Task 28's rules; the generic `button` beneath it is a sane
               default that those rules override, because they are written later in the same file. */ ""}
         <button type="button" class="button board-new-task" disabled=${!projectId}
                 onClick=${() => setForm("task")}>New task</button>
-        <button type="button" class="button board-new-project"
-                onClick=${() => setForm("project")}>New project</button>
+        <button
+          id="palette-button"
+          class="icon-button icon-button-small palette-button"
+          type="button"
+          aria-label="Open command palette"
+          title="Commands"
+          onClick=${() => onOpenPalette("leader")}
+        >⋯</button>
       </header>
 
       ${/* The phone shows ONE column, so the switcher is how the other three are reachable at all.

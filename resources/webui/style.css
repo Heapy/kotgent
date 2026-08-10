@@ -200,6 +200,40 @@ textarea:focus-visible {
   width: 28px;
 }
 
+/* The app's navigation, and the reason neither screen is reachable only from the other. A segmented
+   control rather than two buttons: the pair is one choice, and the shared trough is what says so. The
+   links are real anchors, so they carry the underline and inline layout a <button> never had to lose. */
+.nav-switch {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  gap: 2px;
+  margin: 0 var(--list-inset) 4px;
+  padding: 2px;
+}
+.nav-link {
+  border-radius: 7px;
+  color: var(--muted);
+  flex: 1 1 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 26px;
+  text-align: center;
+  text-decoration: none;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+.nav-link:hover { color: var(--text); }
+.nav-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* The selected half carries the panel fill, so it reads as the raised one out of the shared trough. */
+.nav-link.active {
+  background: var(--pill-active);
+  color: var(--text);
+}
+
 .attn-count {
   font-size: 12px;
   color: var(--muted);
@@ -379,6 +413,76 @@ textarea:focus-visible {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* --- Projects (the sidebar's body on the board) ---
+   The same row the session list draws, restated rather than shared: the two lists carry different
+   contents and the declarations that make a row a row are five lines. What they must NOT differ in is
+   the shape, so the padding, the radius and both selected colours are literally the session row's. */
+.project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  margin: 2px var(--list-inset);
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+.project-row:hover { background: var(--row-hover); }
+.project-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.project-row.active {
+  background: var(--pill-active);
+  border-color: var(--pill-active-border);
+}
+.project-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.project-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-sub {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The section head is a `.section-title`, which is uppercase 10px — a button inheriting that would read
+   as "+ NEW" in the heading's own type. It states both, and takes the right edge. */
+#sidebar-new-project {
+  letter-spacing: 0;
+  margin-left: auto;
+  text-transform: none;
+}
+
+/* Open tasks, not every task: `done` grows forever. Quieter than the unread pill deliberately — an
+   unread count is news, a backlog size is context. */
+.project-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 9px;
+  margin-inline: 2px;
+  padding: 0 6px;
+  line-height: 16px;
 }
 
 .attn-dot {
@@ -1302,9 +1406,14 @@ dialog::backdrop {
   overflow: hidden;
 }
 
-/* The project selector takes the `margin-right: auto`, not the actions: which of the two buttons comes
-   first in the markup is not knowable from here, and pushing off the SELECT puts both of them right
-   whichever order they arrive in. */
+/* The same row `#terminal-head` draws, in the same order and for the same reason — the two are the same
+   slot of one shell: the two sidebar controls, the identity of what is on screen, then the actions. The
+   identity is what grows, which puts every action right whatever order the markup brings them in.
+
+   Its three controls reuse the terminal header's own ids, so `#sidebar-toggle`, `.drawer-toggle` and
+   `.palette-button` reach this row with nothing restated — including the breakpoint's rule that
+   neutralizes the collapse toggle where the sidebar is an overlay drawer. The two heads are the two arms
+   of one branch and are never in the document together, which is what makes that legal. */
 .board-head {
   display: flex;
   align-items: center;
@@ -1314,23 +1423,38 @@ dialog::backdrop {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.board-project {
-  background: var(--input-bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--text);
-  flex: 0 1 260px;
-  margin-right: auto;
-  min-height: 30px;
+.board-identity {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
   min-width: 0;
-  padding: 0 8px;
 }
-.board-new-task,
-.board-new-project { flex: 0 0 auto; }
+/* The name of the project the four columns belong to. This was the `<select>` until the project list
+   became sidebar rows; what is left of it is a title, so it is dressed as one. */
+.board-project {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Truncated from the right like every other path in the app, with the whole value in a `title`. An
+   RTL-direction trick would keep the identifying tail visible, but it moves a LEADING `/` — a neutral
+   character at a paragraph edge takes the paragraph's direction — to the far end of the line, so
+   `/Users/yoda/dev` renders as `Users/yoda/dev/`. Not worth it for a subline that has a tooltip. */
+.board-project-path {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-new-task { flex: 0 0 auto; }
 /* The chrome is `:not(.button)`-scoped so it dresses a bare header button but never outranks
    `.button-primary`, which is declared far above and would otherwise lose on source order. */
-.board-new-task:not(.button),
-.board-new-project:not(.button) {
+.board-new-task:not(.button) {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -1341,22 +1465,10 @@ dialog::backdrop {
   min-height: 30px;
   padding: 0 11px;
 }
-.board-new-task:not(.button):hover:not(:disabled),
-.board-new-project:not(.button):hover:not(:disabled) { background: var(--row-hover); }
-.board-new-task:focus-visible,
-.board-new-project:focus-visible {
+.board-new-task:not(.button):hover:not(:disabled) { background: var(--row-hover); }
+.board-new-task:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-/* The way back to the session view. It is an `<a>` so a modified click still opens a tab, which is why
-   it needs the two declarations `.button` never had to make for a `<button>`: an anchor is inline and
-   underlined, and neither survives contact with a 30px pill. */
-#go-to-sessions {
-  align-items: center;
-  color: var(--text);
-  display: inline-flex;
-  flex: 0 0 auto;
-  text-decoration: none;
 }
 
 /* Every announcement the board and the detail make used to render NOWHERE. `status` has exactly one
@@ -1694,6 +1806,18 @@ button.task-card-title:hover,
     /* Over the columns' sticky heads (1), under the `.board-status` toast (30) — a board announcement
        has to stay readable while a task is open. */
     z-index: 5;
+    /* Its own compositing layer, and this is a REPAINT fix, not a layout one. Measured on the installed
+       app: a ~17px band of the board's previous frame — the `review` and `done` columns at their real
+       widths, with the grid's own gutter between them — stayed painted over this panel, in exactly the
+       strip between the sticky head's border and the form's first label. No box model can cut a hole
+       there (the panel's background is opaque everywhere else, including below the last section), and
+       the two candidates that could paint over it cannot: a column head is `z-index: 1` against this 5,
+       in the same stacking context, and nothing between them creates another one. What is new in that
+       frame is the SIDEBAR, which is now on this screen too and carries `backdrop-filter` above the
+       breakpoint — enough to move the page onto a different compositing path, where a sticky element's
+       layer seam is where a stale tile survives. Promoting the panel gives the seam nothing to survive
+       on. If the band ever comes back, the blur is the next thing to take away, not this. */
+    will-change: transform;
   }
 }
 /* The head is a GRID, not a wrapping flex row, and the reason is the ×. Flowed, it is the last item of
@@ -2154,8 +2278,12 @@ button.task-card-title:hover,
   #app:has(.task-detail) .board { display: none; }
   .board-head {
     flex-wrap: wrap;
+    gap: 8px;
     padding: 6px 10px;
   }
+  /* The identity is the row's only flexible item, so it is what gives way to ☰ and the two actions. */
+  .board-identity { flex: 1 1 auto; }
+  .board-project { font-size: 12px; }
   .board-columns {
     gap: 8px;
     grid-template-columns: minmax(0, 1fr);
@@ -2270,4 +2398,7 @@ button.task-card-title:hover,
 .notify-toggle.active {
   background: #dbeafe;
   border-radius: 6px;
+}
+  background: var(--pill-active);
+  color: var(--accent);
 }
