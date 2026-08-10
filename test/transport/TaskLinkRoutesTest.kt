@@ -255,6 +255,40 @@ class TaskLinkRoutesTest {
         assertNull(env.sessions.linkOf(s1))
     }
 
+    /**
+     * The route reports what the conditional clear actually did, not what the caller asked for.
+     *
+     * `TaskService.unlink` reads the ref and clears second, and the clear is conditional on that ref — so
+     * a `claim` or a `task next` landing in the window leaves the newer link alone and writes nothing.
+     * Answering `ok` there is arguably true of the world ("you no longer hold `local:1`") and false of
+     * the request: an agent is told it released a task while its session is working on another one, and
+     * the whole reason the clear is conditional is so the caller can tell. Falsifiable — with
+     * `service.unlink`'s Boolean ignored and a bare `respondText("ok")`, this is the only failing test.
+     */
+    @Test
+    fun aReleaseThatRacedANewerClaimIsRefusedRatherThanReportedAsAnUnlink() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+        env.seedTask(t2, alpha)
+        env.seedSession(s1, pane1, alpha)
+        env.link(t1, pane = pane1)
+
+        env.sessions.beforeConditionalClear = { env.sessions.setTaskRef(s1, t2, fixedNow) }
+
+        val resp = env.unlink(t1, pane = pane1)
+        assertEquals(
+            HttpStatusCode.Conflict,
+            resp.status,
+            "a clear that wrote nothing must not be reported as an unlink",
+        )
+        assertTrue("local:1" in resp.bodyAsText(), "the refusal names the ref that was not cleared")
+        assertEquals(t2, env.sessions.linkOf(s1), "the newer link survives the release keyed by the older ref")
+        assertEquals(
+            listOf(ActivityKind.linked),
+            env.tasks.activityKinds(t1),
+            "and no `unlinked` row is written for a release that wrote nothing",
+        )
+    }
+
     @Test
     fun unlinkStillClearsALinkWhoseTaskIsGone() = withLinkServer { env ->
         env.seedTask(t1, alpha)
@@ -795,11 +829,40 @@ class TaskLinkRoutesTest {
             )
         }
 
+        /**
+         * Runs ONCE immediately before [clearTaskRefIf] performs its check — the lost-update window
+         * `TaskService.unlink` opens by reading the ref and writing second. A hook is the only way to
+         * drive that interleaving deterministically; a timed race would be a flake.
+         */
+        var beforeConditionalClear: (suspend () -> Unit)? = null
+
         override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
             mutex.withLock {
                 val row = rows[sessionId] ?: return@withLock
                 rows[sessionId] = row.copy(taskRef = taskRef, updatedAt = updatedAt, rev = ++rev)
             }
+
+        /**
+         * Overridden rather than left on [EventStore]'s two-step default: this fake serves a real CIO
+         * server whose handlers run concurrently, and the interface says such a store owes an atomic
+         * check-and-write. The semantics are the default's; only the indivisibility is added.
+         */
+        override suspend fun clearTaskRefIf(
+            sessionId: SessionId,
+            expectedRef: TaskRef,
+            updatedAt: Long,
+        ): Boolean {
+            beforeConditionalClear?.let { hook ->
+                beforeConditionalClear = null
+                hook()
+            }
+            return mutex.withLock {
+                val row = rows[sessionId]
+                if (row == null || row.taskRef != expectedRef) return@withLock false
+                rows[sessionId] = row.copy(taskRef = null, updatedAt = updatedAt, rev = ++rev)
+                true
+            }
+        }
 
         override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = mutex.withLock {
             rows.values.filter { it.taskRef == taskRef }.sortedBy { it.createdAt }

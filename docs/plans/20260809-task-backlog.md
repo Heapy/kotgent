@@ -353,13 +353,19 @@ New `src/store/SqliteTaskStore.kt` — its own `Mutex`, its own `rev` counter se
 at `SqliteEventStore.kt:106-111`), `.sq` files for a fresh DB plus `CREATE TABLE IF NOT EXISTS` in `init`
 for pre-existing ones. It never writes the `sessions` table.
 
-| table | columns |
-|---|---|
-| `tasks` | `id TEXT PK`, `title TEXT NOT NULL`, `body TEXT NOT NULL DEFAULT ''`, `created_at`, `updated_at` |
-| `backlog_entries` | `task_ref TEXT PK`, `project TEXT NOT NULL`, `position REAL NOT NULL`, `state TEXT NOT NULL`, `created_at`, `updated_at`, `rev INTEGER NOT NULL DEFAULT 0` |
-| `backlog_deps` | `task_ref TEXT NOT NULL`, `depends_on TEXT NOT NULL`, PK(`task_ref`, `depends_on`) |
-| `task_activity` | `id INTEGER PK AUTOINCREMENT`, `task_ref TEXT NOT NULL`, `ts INTEGER NOT NULL`, `kind TEXT NOT NULL`, `author TEXT NOT NULL`, `text TEXT`, `from_state TEXT`, `to_state TEXT` |
-| `projects` | `id TEXT PK`, `name TEXT NOT NULL`, `path TEXT`, `updated_at INTEGER NOT NULL` |
+**Six tables across the three files** — `Tasks.sq` carries three (`tasks`, `task_activity`,
+`task_local_keys`), `Backlog.sq` two, `Projects.sq` one. The count moved during implementation: the local
+key allocator below was added when it turned out that allocating from `MAX()` over the surviving `tasks`
+rows re-issues a `local:<n>` after the newest task is deleted.
+
+| table | file | columns |
+|---|---|---|
+| `tasks` | `Tasks.sq` | `id TEXT PK`, `title TEXT NOT NULL`, `body TEXT NOT NULL DEFAULT ''`, `created_at`, `updated_at` |
+| `backlog_entries` | `Backlog.sq` | `task_ref TEXT PK`, `project TEXT NOT NULL`, `position REAL NOT NULL`, `state TEXT NOT NULL`, `created_at`, `updated_at`, `rev INTEGER NOT NULL DEFAULT 0` |
+| `backlog_deps` | `Backlog.sq` | `task_ref TEXT NOT NULL`, `depends_on TEXT NOT NULL`, PK(`task_ref`, `depends_on`) |
+| `task_activity` | `Tasks.sq` | `id INTEGER PK AUTOINCREMENT`, `task_ref TEXT NOT NULL`, `ts INTEGER NOT NULL`, `kind TEXT NOT NULL`, `author TEXT NOT NULL`, `text TEXT`, `from_state TEXT`, `to_state TEXT` |
+| `task_local_keys` | `Tasks.sq` | `id INTEGER PK` (fixed at 0), `minted INTEGER NOT NULL` — the built-in tracker's key allocator: one row holding the highest `local:<n>` this database has EVER minted, written through a `max(…)` so it only rises. A delete does not touch it, so a deleted ref is retired for good. |
+| `projects` | `Projects.sq` | `id TEXT PK`, `name TEXT NOT NULL`, `path TEXT`, `updated_at INTEGER NOT NULL` |
 
 **`SqliteTaskStore` is split into a core plus two collaborators** — `BacklogOrdering` and
 `BacklogDependencies`, each taking the generated queries object and the store's mutex. The split is made
@@ -421,9 +427,19 @@ dangling badge; the racing case is covered by the reference rule above.
 
 `position REAL`. Insert at the end = `max + 1.0`; between neighbours = their midpoint; at the top =
 `positionBetween(0.0, min)`. When a gap falls below `1e-9`, renormalize the project's whole column to
-`1.0, 2.0, 3.0, …` in one transaction and retry the move once. Every renormalized row stamps a new `rev`
-and emits on `taskUpdates`, or a connected board silently holds stale positions. Neighbour resolution and
-the single `UPDATE` both run inside the store mutex.
+`1.0, 2.0, 3.0, …` and retry the move once. Every renormalized row stamps a new `rev` and emits on
+`taskUpdates`, or a connected board silently holds stale positions. Neighbour resolution and the single
+`UPDATE` both run inside the store mutex.
+
+**The whole `move` is ONE transaction — the renormalization is not a transaction of its own.** This is a
+correction to what the plan first said ("renormalize … in one transaction and retry the move once"), and
+the separately-committed rewrite was the defect: a move can write twice, and with two commits anything
+that threw in between (the clock, a `TaskState` / `ProjectId` decode on the row read back, a database
+error) left the column RENUMBERED while `TaskUpdateOutbox.publishing` discarded every frame for it —
+connected boards then hold ranks the database no longer has, and no later single-row frame can repair a
+whole column. So `BacklogOrdering.move` wraps neighbour resolution, the renormalization, the retry and the
+moved row's own write in one `transactionWithResult`, with the publish strictly outside it: a throw rolls
+the whole thing back and nobody was told anything that did not happen.
 
 ### Derived `blocked`, and why it must be emitted
 
@@ -456,7 +472,7 @@ POST   /api/v1/tasks/{ref}/link    link the calling session to this task
 POST   /api/v1/tasks/{ref}/unlink  drop this session's link; the task's state is untouched
 POST   /api/v1/tasks/next          { project? } → link the next eligible task to the calling session
 GET    /api/v1/projects            known projects (board selector)
-POST   /api/v1/projects            create/init a project at a path
+POST   /api/v1/projects            create/init a project at an absolute path that is an existing directory
 POST   /api/v1/sessions            (existing route) gains an optional `taskRef`
 ```
 
@@ -469,6 +485,20 @@ through the existing pane registry, or from an explicit `sessionId` in the reque
 `comment` and `next` **require** it: all four write `sessions.task_ref` or attribute an activity row, and
 none of them means anything without a session. `POST /tasks` does **not**: it takes an optional `project`,
 because the board has neither a pane nor a session and creating tasks is its headline job.
+
+**A caller the daemon cannot identify is now refused, not filed as the board — an operator-visible change.**
+The plan first recorded it as a residual: `POST /tasks` and `PATCH /tasks/{ref}` may legitimately run with
+nobody behind them, so "no caller" mapped to the `board` author, and an unresolvable pane header or a
+malformed `sessionId` fell into the same branch. It is decided and closed the other way. `resolveCallerIdentity`
+(`src/transport/TaskRoutes.kt`) answers three cases, not two: **`Absent`** (nothing supplied — the browser,
+and the only shape that gets `TaskService.BOARD_AUTHOR`), **`Resolved`**, and **`Rejected`** (a header that
+is not a pane id, a pane the registry does not know, or a `sessionId` `SessionId` refuses), which is a
+`400` naming which of the three it was. So **a `kotgent task add` or `kotgent task review` from a pane the
+daemon has lost now fails loudly instead of silently filing as the board.** That is the point rather than
+a side effect: the activity feed is the only place the no-exclusivity model tells operators to look to see
+who is doing what, so a write landing under `board` is a claim that a human did it, and neither
+`--session <typo>` nor an agent whose pane the `Reconciler` has narrowed away may make that claim on the
+operator's behalf. The registry is the authoritative live-pane set, so a stale pane fails closed.
 
 `GET /whoami` exists for one purpose: an agent knows only its pane, so a ref-less `task show` / `comment` /
 `review` / `unlink` resolves its subject through it. **When `--session <id>` is given the CLI skips
@@ -927,7 +957,8 @@ plausibility.
       **`onStartSession(cwd, taskRef)` on `TaskDetail`** plus `initialTaskRef` on `NewSessionDialog`, which
       is what lets Task 25 reuse the ordinary New-session dialog instead of adding the second launch path
       the plan forbids; and **`openBoard` / `newTask` / `openSessionTask` in `buildCommands`' `actions`**
-      for Task 27
+      for Task 27. (The review round added three more: `onTaskRow` / `onTaskRemoved` on **both** `Board`
+      and `TaskDetail`, and `entry` on `TaskDetail` — see the ➕ notes on Tasks 24 and 25.)
 - [x] `index.html` — make the three document-relative links root-absolute (`/manifest.webmanifest`,
       `/icons/logo.svg`, `/icons/apple-touch-icon.png`); a deep-linked `/tasks/{ref}` would otherwise serve a
       shell whose manifest 404s, taking the iOS install path and push with it
@@ -1232,13 +1263,27 @@ uuid itself, only that its writer persists the one it was handed.
 - [x] tests: create → get; update bumps `rev` and emits; delete removes everything and emits; activity is
       ordered and append-only **with non-zero ids**; project upsert refreshes name and path; re-open resumes
       `revCounter`; opening over a database missing the tables recreates them without logging an error
+- ➕ **a sixth table, `task_local_keys`, was added here**: the plan assumed `local:<n>` could be allocated
+      from `MAX(CAST(substr(id, 7) AS INTEGER))` over `tasks`, and that query answers over the SURVIVING
+      rows — so deleting the newest task takes the maximum with it and the next store open re-issues the
+      freed key. A ref reaches URLs, bookmarks, notifications, `sessions.task_ref` and an agent's own
+      earlier output, so the reused id silently re-points all of them at unrelated work. The allocator is
+      now a persisted single-row high-water mark written through `max(…)`, never lowered, and never touched
+      by `deleteTask`; `maxLocalTaskKey` survives only as its migration seed for a database that predates
+      the table. Numbering has gaps after a delete, deliberately
 
 ### Task 8: Backlog ordering
 **Owns:** `src/store/BacklogOrdering.kt`, `test/store/BacklogOrderingTest.kt`
 
 - [x] `move` for top/bottom/before/after inside the store mutex; on a collapsed gap, renormalize the
-      project's column in one transaction and retry once; **every** renormalized row stamps a new `rev` and
-      emits
+      project's column and retry once; **every** renormalized row stamps a new `rev` and emits
+- ➕ **the transaction is the whole `move`, not the renormalization.** As first written this bullet said
+      "renormalize … in one transaction", and that reading — a rewrite that commits by itself, then the
+      moved row's write outside it — is the defect that was fixed: a throw in between committed a
+      renumbered column while `TaskUpdateOutbox.publishing` dropped every frame announcing it, leaving
+      connected boards on ranks the database no longer holds and no single-row frame able to repair them.
+      One `transactionWithResult` wraps resolution + renormalization + retry + the moved row's `UPDATE`,
+      and the publish stays strictly outside it
 - [x] the arithmetic is `src/task/Ordering.kt`'s, implemented in wave 1.5 — call it, do not re-derive it.
       `SqliteTaskStore.move` is a one-line delegation to your class and is Task 7's line, not yours
 - [x] the `BacklogDependencies` your constructor already receives is **real** (Task 9, wave 1.5), so the
@@ -1304,6 +1349,17 @@ uuid itself, only that its writer persists the one it was handed.
       whose session has a project; create from a pane in a projectless directory creates the file and the
       `projects` row rather than `400`ing; create with neither is `400`; a state change with a message writes
       exactly one activity row; the four dependency `400`s; a delete unlinks every holder
+- ➕ **two gates this file's first implementation did not have, both now in place.** (1) An identity that
+      names nobody is a `400` rather than the `board` author — see "Session identity" above; it changes
+      what an operator sees, so it is written up there rather than here. (2) **`POST /projects` checks
+      `isDirectory` after canonicalizing, not just "absolute".** The Technical Details always required "an
+      absolute path that is an existing directory"; only the absolute half was enforced. `realpath(3)`
+      canonicalizes a regular FILE just as happily as a directory, so `/repo/README.md` walked UP through
+      `resolveProject` / `mainCheckoutRoot` and answered `200` with a project uuid for a location that is
+      not a project location — and `ProjectFileWriter`'s own "not an existing directory" refusal cannot
+      catch it, because by then the directory it is handed is the checkout root, which really is one. The
+      gate therefore sits in the route, ABOVE the adopt branch (which writes nothing and would otherwise
+      answer first) and above the name check
 
 ### Task 15: Link routes
 **Owns:** `src/transport/TaskLinkRoutes.kt`, `src/transport/ControlRoutes.kt`, `src/cli/Commands.kt`,
@@ -1329,6 +1385,13 @@ uuid itself, only that its writer persists the one it was handed.
       contracts repair added them, because the events socket's snapshot and full-row frames carry
       `SessionDto` and Task 26's badge would otherwise appear only after a session's next patch. Nothing
       to do here beyond not removing them
+- ➕ **`unlink` reports what the conditional clear actually did.** `TaskService.unlink` returns a `Boolean`
+      and the route answers it exactly: `false` means the clear wrote nothing because a `claim` or a `next`
+      re-pointed the session mid-request, which is decision 3's conflict discovered one step later, so it
+      gets decision 3's `409` instead of an `ok`. Reporting both as success told an agent it had released
+      a task while its session was working on another one — and the clear is conditional precisely so the
+      caller can tell (`TaskLinkRoutesTest.aReleaseThatRacedANewerClaimIsRefusedRatherThanReportedAsAnUnlink`,
+      driven by a deterministic hook in the fake store, not a timed race)
 - ➕ add the task column to `renderSessions` in `src/cli/Commands.kt`, now listed in your `Owns:` block
       (Task 2 is the only other owner and it is a wave behind). Keep the existing header/format assertions
       in `CliTest.kt` passing — they match substrings, so a new column does not need a test edit, which is
@@ -1464,11 +1527,22 @@ uuid itself, only that its writer persists the one it was handed.
 - [x] surface rejected mutations through the existing announcement channel rather than failing silently
 - [x] use **only** the class names in "Board CSS vocabulary" above — Task 28 writes `style.css` at the same
       time as you and has no other way to learn what you emitted
-- [x] the props `app.js` passes are fixed and documented in `Board.js`'s stub header; note
+- [x] the props `app.js` passes are fixed and documented in `Board.js`'s stub header. There are **six** —
+      `tasks`, `sessions`, `route`, `newTaskRequest`, `onTaskRow`, `onTaskRemoved` (plus the app-wide
+      `onAnnounce`); the last two were added by the review round, see the ➕ below. Note
       **`newTaskRequest`**, a monotonically increasing counter (`0` = never asked) that the palette's
       "new task" command bumps. Open the create form when it CHANGES, not when it is truthy
 - [x] `node --check`; serving tests for the columns, the `done` cap, the project id on create, more than one
       linked session on a card, the pointer handlers, the scoped `touch-action`, the mobile switcher
+- ➕ **the board MERGES a write's own answer, which is the opposite of what this task first said.** The
+      original rule was that the socket is the only path into the list and a `POST`'s response body is
+      discarded as a purity measure. That was a hole, not a purity: while `/events` is down or
+      reconnecting REST still works, so a create, a move or a delete left the whole board unchanged with
+      no error to show for it. Every task write answers with the committed `BacklogEntryDto` carrying its
+      `rev`, and handing that to **`onTaskRow`** is the SAME newest-rev-wins merge a frame goes through —
+      an older answer simply loses to the frame, and a frame that has not arrived yet loses to nothing.
+      So it is a second SOURCE for the one list, not a second path into it; `onTaskRemoved` is the same
+      thing for a delete
 
 ### Task 25: Task detail view
 **Owns:** `resources/webui/components/TaskDetail.js`, `resources/webui/components/dialogs.js`,
@@ -1485,6 +1559,17 @@ uuid itself, only that its writer persists the one it was handed.
 - [x] use **only** the class names in "Board CSS vocabulary" above (`task-detail*`, `task-deps`,
       `task-activity*`, plus the shared `task-blocked` / `task-sessions` / `task-session-dot`)
 - [x] `node --check`; serving tests for the feed, the session list, and the dialog reuse
+- ➕ **three more props than this task was given, all from the review round** — `entry`, `onTaskRow` and
+      `onTaskRemoved`, so the full documented set in `TaskDetail.js`'s header is `taskRef`, `entry`,
+      `sessions`, `onTaskRow`, `onTaskRemoved`, `onStartSession`, `onAnnounce`. **`entry`** is the LIVE
+      backlog row for `taskRef` out of `app.js`'s one task list, and the screen renders
+      `newerEntry(live, fetched)` — rendering only its own GET's copy is what used to leave an open detail
+      frozen while the card behind it moved (another tab's edit, another tab's delete, and the session's
+      own state change all reach the list and nothing else). A row this screen has SEEN in that list and
+      then lost is a deletion, so it says so rather than offering editors that can only 404. **`onTaskRow`
+      / `onTaskRemoved`** are the same merge the board got: every row this screen observes — its GET's, and
+      the committed entry each write answers with — goes back into the shared list, so a write lands on
+      the board behind the panel with no socket round trip
 
 ### Task 26: Task badges on sessions
 **Owns:** `resources/webui/lib/sessions.js`, `resources/webui/components/Sidebar.js`,
@@ -1694,11 +1779,11 @@ open at the bottom are **not done here**, not unproved (an external system, and 
       the root-absolute link rewrite is pinned in `WebUiServingTest` (`href="/manifest.webmanifest"`,
       `/icons/apple-touch-icon.png`, `/icons/logo.svg`), and `TaskIntegrationTest`'s
       `theApiAnswersUnderTheApiPrefixWhileTheSpaOwnsTheBarePath` proves both spaces with real route bodies.
-- [x] `./kotlin build && ./kotlin test` — **1423 native tests passed / 0 skipped** (build exit 0 first),
+- [x] `./kotlin build && ./kotlin test` — **1424 native tests passed / 0 skipped** (build exit 0 first),
       well above the 983 post-wave-1.5 floor; `node --check` clean over all 15 changed `.js` files; all 14
       new/changed served modules appear in `WebUiServingTest.kt`; `git grep '/Users/' -- '*.yaml'` empty.
       Was 1401 when this task was first accepted; the review round that followed added 22 (9 lifecycle,
-      4 store, 3 transport, 6 Web UI).
+      4 store, 3 transport, 6 Web UI), and the documentation round after it added the `unlink` race case.
 - [x] CLAUDE.md: the two-layer split; `.kotgent.json` as the project key with its supported and unsupported
       git layouts and `projects.path` being "last seen"; **why there is no exclusivity** and what that bought;
       the conditional `todo → in_progress` being a selection convention, not an invariant; every `sessions`
@@ -1708,7 +1793,7 @@ open at the bottom are **not done here**, not unproved (an external system, and 
       half was already there from Task 1 and was left as written.
 - [x] CLAUDE.md "Where things live": `src/task/`, `src/store/{SqliteTaskStore,BacklogOrdering,BacklogDependencies}.kt`,
       `src/cli/{TmuxSelf,TaskCommands}.kt`, `schema/`, the new Web UI modules; update the test baseline
-      (927 → 1401, then → 1423 after the review round).
+      (927 → 1401, then → 1423 after the review round, then → 1424).
 - ➕ **`docs/agent-task-skill.md` carried three defects and they are fixed.** It is the one artefact here
       whose consumer — an out-of-repo skill — no test in this repository can catch, so every row was
       re-checked against `TaskCommands.kt`. (1) `task dep` was documented as `{ref, on, action}` because
@@ -1735,7 +1820,12 @@ open at the bottom are **not done here**, not unproved (an external system, and 
       is **machine-global** (`${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent-test` has nothing to do with the
       working directory), so parallel runs in separate git worktrees share one tmux server and kill each
       other's sessions — all 21 concurrent agents in this plan's fleet hit nondeterministic
-      `TmuxTest`/`PtyTest` failures from that alone.
+      `TmuxTest`/`PtyTest` failures from that alone. A later measurement closed the obvious escape hatch:
+      **giving each run its own `TMUX_TMPDIR` does not work**, because the `tmux attach` client is spawned
+      through `Pty` with a curated `envp` (`terminalAttachEnv` = `TERM`/`HOME`/`PATH`/`LANG`) that does not
+      carry it, so client and server look in different directories and `ptycheck` drops to 9/11 — and a
+      scratchpad-length socket path overflows the 104-byte `sun_path`. Recorded in CLAUDE.md beside the
+      label rule; run the suite serially per machine.
 - [x] ~~**Not proved: ref-less `kotgent task comment`.**~~ **Closed after the review round.**
       `runTaskCommentCommand` resolves its subject through the same `resolveSubjectRef` seam as
       `show`/`review`/`done`/`unlink`, but that seam was covered from only four of the five verbs:

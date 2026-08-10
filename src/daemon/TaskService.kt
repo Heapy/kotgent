@@ -108,11 +108,19 @@ class TaskService(
      * or a `next` landing between the two calls has pointed this session at a NEWER task, and clearing
      * unconditionally would erase that link while the feed claimed an unlink from the old one. Zero rows
      * is then the whole outcome — no `unlinked` row either, because none happened.
+     *
+     * Returns whether this call actually cleared a link. That answer is the only thing that separates
+     * "the link is gone because of you" from "the link is gone because somebody re-pointed the session
+     * while you were reading it", and the conditional clear exists precisely so a caller can tell: a
+     * route that reports both as success tells an agent it released `local:1` when what it really did was
+     * nothing, to a session now working on `local:2`. `false` is a normal outcome, not an error — the
+     * caller decides what to make of it (`POST /tasks/{ref}/unlink` answers `409`).
      */
-    suspend fun unlink(sessionId: SessionId) {
-        val ref = sessions.getSession(sessionId)?.taskRef ?: return
-        if (!sessions.clearTaskRefIf(sessionId, ref, now())) return
+    suspend fun unlink(sessionId: SessionId): Boolean {
+        val ref = sessions.getSession(sessionId)?.taskRef ?: return false
+        if (!sessions.clearTaskRefIf(sessionId, ref, now())) return false
         tasks.appendActivity(ref, ActivityKind.unlinked, author = sessionId.value)
+        return true
     }
 
     /**

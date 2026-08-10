@@ -57,6 +57,10 @@ import kotlinx.serialization.SerializationException
  *     link to `local:7`. A session that holds nothing is already in the requested state, so that is an
  *     idempotent `ok`; a session that holds a DIFFERENT task is a conflicting action, answered the way
  *     the control plane answers those, with a `409` that names what it actually holds and writes nothing.
+ *     The same `409` answers the RACE of that case: [io.kotgent.daemon.TaskService.unlink]'s clear is
+ *     conditional on the ref its own read answered, so a `claim` or a `next` landing mid-request makes it
+ *     return `false`, and reporting that as `ok` would tell an agent it released a task while the session
+ *     is in fact working on another one. The Boolean exists so this route can tell the two apart.
  *  4. **`next` DOES verify that the project exists, and a uuid the daemon has never seen is a `404`.**
  *     This was decided the other way once — "an unknown project has nothing eligible in it" — and that is
  *     the one answer this endpoint must never give for it. `null` is not a neutral report here: it is the
@@ -100,9 +104,20 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
             // Already in the requested state: idempotent, and deliberately not a 404 — the caller asked
             // for "not linked to this", which is true.
             held == null -> call.respondText("ok")
-            held == ref -> {
-                routing.service.unlink(session.id)
+            // The ref matched when it was read, so the clear is attempted — but the clear is conditional
+            // on that same ref, and a `claim` / `next` landing in between has re-pointed this session at
+            // a newer task. `false` therefore means "nothing was cleared and the session holds something
+            // else now", which is decision 3's conflict discovered one step later, so it gets decision
+            // 3's answer rather than an `ok` that would tell an agent it released a task it did not.
+            held == ref -> if (routing.service.unlink(session.id)) {
                 call.respondText("ok")
+            } else {
+                call.respondText(
+                    "session '${session.id.value}' no longer holds '${ref.value}' — its link changed " +
+                        "while this request ran and nothing was cleared; re-read it and unlink what it " +
+                        "holds now",
+                    status = HttpStatusCode.Conflict,
+                )
             }
             // A conflicting action, refused out loud rather than clearing a link nobody asked about.
             else -> call.respondText(

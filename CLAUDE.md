@@ -488,6 +488,17 @@ never parse as a ref (the segment counts differ too, but the `:` is the rule tha
 route table's shape). Seen from the read side, that is why `GET /api/v1/tasks/next` is a **400** and not a
 404 — it addresses no resource at all (`TaskReadRoutesTest.aMalformedRefIs400AndNoBareWordCanEverParseAsOne`).
 
+**A `local:<n>` ref is retired permanently by a delete — the allocator is a persisted high-water row, not
+`MAX()` over what survives.** `task_local_keys` (`Tasks.sq`) is a single row that only ever RISES:
+`raiseLocalKeyHighWater` writes through a `max(…)`, `deleteTask` does not touch it, and
+`SqliteTaskStore.localKeyCounter` is seeded from it once per open. `maxLocalTaskKey` — the `MAX(CAST(...))`
+over `tasks` — survives **only** as that row's migration seed for a database written before the table
+existed; allocating from it is the bug the table exists for, because deleting the newest task takes the
+maximum with it and the next store open re-issues the freed key. A ref is not a private handle: it reaches
+`/tasks/local:2` in a URL, a bookmark, a notification, a script, `sessions.task_ref` and an agent's own
+earlier output, so a second `local:2` silently re-points every one of those at unrelated work. Numbering
+therefore has gaps after a delete, and that is the correct behaviour, not drift to be tidied up.
+
 **A project is a committed file, not a path.** `.kotgent.json` (a uuid + a name; `schema/project.v1.json`)
 is walked up to from the canonical cwd, nearest wins in a monorepo. On a miss inside a repository the
 resolver looks at the main checkout root, found by **reading** `.git` — never by running `git` (the
@@ -1219,7 +1230,7 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1423 native tests passed /
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1424 native tests passed /
   0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
   `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
 - **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
@@ -1232,13 +1243,29 @@ These are real and cost time to rediscover. Respect them.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
 - **That `-L kotgent-test` label is MACHINE-global, so `./kotlin test` does not parallelize across
-  checkouts.** A tmux socket label resolves to `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent-test` — the path has
-  nothing to do with the working directory, so two suites running from two git worktrees share one tmux
-  server and each teardown's `kill-server` yanks the other's sessions out from under it. Measured the hard
-  way during this repository's parallel-fleet execution: **all 21 concurrent agents, each in its own
-  worktree, hit nondeterministic `TmuxTest` / `PtyTest` failures**, and every one of them was this and not
-  their own change. Run the suite serially per machine, or give each run its own `TMUX_TMPDIR` before
-  claiming a tmux failure is real — and re-run a lone `TmuxTest` failure once before investigating it.
+  checkouts — run it serially per machine.** A tmux socket label resolves to
+  `${TMUX_TMPDIR:-/tmp}/tmux-<uid>/kotgent-test` — the path has nothing to do with the working directory,
+  so two suites running from two git worktrees share one tmux server and each teardown's `kill-server`
+  yanks the other's sessions out from under it. Measured the hard way during this repository's
+  parallel-fleet execution: **all 21 concurrent agents, each in its own worktree, hit nondeterministic
+  `TmuxTest` / `PtyTest` failures**, and every one of them was this and not their own change. Re-run a lone
+  `TmuxTest` failure once before investigating it.
+- **`TMUX_TMPDIR` is NOT the escape hatch, and this was measured — do not spend a run rediscovering it.**
+  Exporting one before `./kotlin test` moves the *server* but not every *client*, for two independent
+  reasons. (1) **The attach client's environment is curated, and `TMUX_TMPDIR` is not in it.** `Pty.open`
+  passes `posix_spawn` an explicit `envp` built from the map it is handed, so the child inherits nothing;
+  for the upstream that map is `terminalAttachEnv()` (`src/pty/PtyHandle.kt`), which is exactly `TERM`,
+  `HOME`, `PATH`, `LANG`. So the `tmux attach` spawned through the pty looks under `/tmp/tmux-<uid>/` while
+  the server the harness started lives under the exported directory, and `ptycheck` drops from 11/11 to
+  9/11 — the two checks that need a real attach. (2) **A scratchpad-length path overflows `sun_path`.** A
+  unix socket address holds 104 bytes on macOS (`sys/un.h`), and an agent scratchpad path plus
+  `/tmux-<uid>/kotgent-test` is comfortably past it: tmux answers `error connecting to <path> (File name
+  too long)` and exits 0, so the failure does not even look like one. There is **no shell-level workaround
+  today**. The one mechanism that would work is a distinct socket **label** per run, because a label rides
+  the argv (`-L`, `tmuxCommand()` / `attachUpstreamCommand`) which no curated environment can filter and
+  which keeps the path in `/tmp` — but the label is a hard-coded constant in three places
+  (`test/tmux/TmuxTest.kt`, `test/daemon/SessionManagerTest.kt`, `ptycheck/src/Main.kt`), so that is a code
+  change, not something a caller can arrange from outside.
 - **In automation, do not run the daemon or anything that spawns a real agent.** Avoid `kotgent daemon`,
   `./kotlin run -m kotgent`, a real `claude` / `codex` / `junie`, and `launchctl` — they start long-lived /
   interactive processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck`

@@ -322,7 +322,7 @@ class TaskServiceTest {
             f.service.link(s1, t1)
             f.service.link(s2, t1)
 
-            f.service.unlink(s1)
+            assertTrue(f.service.unlink(s1), "a clear that landed reports that it did")
 
             assertNull(f.linkOf(s1))
             assertEquals(t1, f.linkOf(s2), "the other holder is untouched")
@@ -362,7 +362,7 @@ class TaskServiceTest {
                 f.service.link(s1, t2)
             }
 
-            f.service.unlink(s1)
+            assertFalse(f.service.unlink(s1), "a release that wrote nothing says so — the route answers 409 on it")
 
             assertEquals(t2, f.linkOf(s1), "the newer link survives a release keyed by the older ref")
             assertEquals(TaskState.in_progress, f.stateOf(t2), "…and its task keeps its worker")
@@ -391,7 +391,7 @@ class TaskServiceTest {
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
 
-            f.service.unlink(s1)
+            assertFalse(f.service.unlink(s1), "a session holding nothing cleared nothing")
 
             assertEquals(listOf("sessions.getSession(s-one)"), f.journal)
             assertTrue(f.tasks.activity.isEmpty())

@@ -195,10 +195,14 @@ present in the JSON, nulls included — a parser may rely on the key existing.
 
 Two behaviours the table cannot show. **`task unlink` with an explicit ref the session does not hold is a
 `409`**, not a silent no-op: the daemon refuses to clear a link nobody asked about, and names the ref that
-is actually held. Unlinking a session that holds nothing is `ok` (the caller asked for "not linked to
-this", which is true). And **`task delete` on a ref that names no task exits `1`**, not `0` — a script that
-deletes what it just created and is told "nothing there" has hit a real problem, so it is an error rather
-than `{"deleted":false}` on the success stream.
+is actually held. The same `409` answers the RACE of that case — if a `task claim` or a `task next` from
+somewhere else re-points the session between the daemon reading its link and clearing it, the clear is
+conditional and writes nothing, and that is reported rather than acknowledged: an `{"unlinked":true}` there
+would tell you that you released a task while your session is in fact working on another one. Re-read with
+a ref-less `task show` and unlink what it holds now. Unlinking a session that holds nothing is `ok` (the
+caller asked for "not linked to this", which is true). And **`task delete` on a ref that names no task
+exits `1`**, not `0` — a script that deletes what it just created and is told "nothing there" has hit a
+real problem, so it is an error rather than `{"deleted":false}` on the success stream.
 
 The three shapes a skill actually reads:
 
