@@ -642,6 +642,10 @@ function NewTaskForm({ project, onCreate, onClose }) {
  * offered is the name the create receives — a form whose completion resolved against the base while its
  * submit did not would list a real directory and then post a path the daemon refuses as relative.
  * With no base path configured a relative value stays relative and the submit refuses it below.
+ *
+ * It resolves AGAINST the base, which is not the same as under it: `..` is passed through for the
+ * daemon's `realpath` to settle, exactly as `resolveCwdAgainst` does on the CLI side, so `../sibling`
+ * legitimately names a directory outside the base. This is a spelling helper, not a containment gate.
  */
 export function resolveProjectPath(typed, basePath) {
   const input = String(typed || "").trim();
@@ -663,8 +667,14 @@ export function resolveProjectPath(typed, basePath) {
  * here rather than shared, because the dialog owns its one caller and this form has no import mode.
  */
 function NewProjectForm({ basePath = "", onCreate, onClose }) {
-  const base = normalizePath(basePath);
-  // Seeded once, at mount: the form is mounted fresh for each open, so there is no draft to drift.
+  // The base is SNAPSHOT at mount, not read live off the prop. Preferences are shared by every browser
+  // on this daemon, so another tab can commit a new base while this form is open — and the form is not
+  // remounted for that (nothing keys it, and keying it would throw away a typed draft to apply a change
+  // the operator did not make here). A live read would then split the form against itself: the field
+  // still holds a directory under the OLD base, the hint names the new one, and completion resolves
+  // against a third answer. One frozen value keeps the field, the hint, the completion and the submit
+  // talking about the same tree; the next open picks up the new base.
+  const [base] = useState(() => normalizePath(basePath));
   const [path, setPath] = useState(base.charAt(0) === "/" ? base : "");
   const [name, setName] = useState("");
   const [query, setQuery] = useState(null);
@@ -741,7 +751,9 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     event.preventDefault();
     const typed = resolveProjectPath(path, base);
     if (typed.charAt(0) !== "/") {
-      // Only reachable with no base path configured: with one, every non-empty value resolves above.
+      // Two ways in. No base path configured and a relative value; or a value that is ALL whitespace,
+      // which native `required` passes (a text input is missing only when its value is empty) and the
+      // resolver trims to nothing — so this branch survives a configured base and cannot be dropped.
       setError("Give an absolute path to an existing directory.");
       if (pathRef.current) pathRef.current.focus();
       return;
@@ -755,6 +767,9 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
       setBusy(false);
     }
   };
+
+  // Built with `joinPath`, not `base + "/name"`: a base of exactly "/" spells the latter `//name`.
+  const placeholder = base.charAt(0) === "/" ? joinPath(base, ["name"]) : "/path/to/project";
 
   return html`
     <${Dialog} id="new-project-dialog" labelledBy="new-project-title" lightDismiss=${!busy}
@@ -778,7 +793,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
                    aria-activedescendant=${activeSuggestion >= 0
                      ? "new-project-path-option-" + activeSuggestion
                      : null}
-                   placeholder=${base.charAt(0) === "/" ? base + "/name" : "/path/to/project"}
+                   placeholder=${placeholder}
                    ref=${pathRef} value=${path} disabled=${busy}
                    onInput=${(e) => { setPath(e.target.value); setQuery(e.target.value); }}
                    onKeyDown=${pathKeyDown}
@@ -796,8 +811,11 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
               </ul>`}
           </div>
           ${base.charAt(0) === "/" && html`
+            ${/* "against", not "under": the join is not a containment check, and `../sibling` really
+                  does resolve outside the base. Enforcing containment would have to happen after the
+                  daemon's own `realpath`, where symlinks are known — not in a lexical helper here. */ ""}
             <small id="new-project-base-hint" class="field-hint">
-              Starts at the Preferences base path ${base}; a name without a leading / is resolved under it.
+              Starts at the Preferences base path ${base}; a name without a leading / resolves against it.
             </small>`}
         </div>
 

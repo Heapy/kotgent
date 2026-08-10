@@ -352,18 +352,27 @@ class WebUiBoardStyleTest {
      * flush against the border. The coarse-pointer half is checked by `WebUiServingTest`'s handle test,
      * which reads the same two names out of the compensating rule.
      *
-     * The textarea is the other half, and it is specific to this screen: New task is the only dialog
+     * The textarea is the other half, and it is specific to this screen: New task is the only DIALOG
      * with one. `.field input, .field select` never mentioned it, so it fell through to the UA — a
      * replaced element whose `auto` width is its `cols` attribute rather than its container, in a
-     * monospace face, on a light background inside a dark panel.
+     * monospace face of its own.
+     *
+     * The `:where()` on both textarea selectors is the part with teeth, and it is a fix for the fix.
+     * `.task-detail-body` is a second textarea that dresses itself, and it lives inside a `.field`
+     * label too, so a plainly written `.field textarea` is (0,1,1) against its (0,1,0) and takes its
+     * width, padding, radius and line-height away — being declared later saves a class rule from
+     * nothing. `:where()` contributes zero, which puts the two at the same specificity and hands the
+     * tie back to source order, where the specialised rule really does come last.
      */
     @Test
     fun theBoardsTwoDialogsCarryThePanelInsetAndItsTextareaIsAField() = withServer { ctx ->
         val css = withoutComments(ctx.get("/style.css").bodyAsText())
-        val inset = Regex("""(#[\w-]+-form,\s*)+#phone-form \{ padding: 20px; \}""")
+        // Anchored at a line start: unanchored, `(#[\w-]+-form,\s*)+` can begin MID-selector and report
+        // a match inside something like `.dead-scope #new-task-form, …`, which styles nothing.
+        val inset = Regex("""(?m)^(#[\w-]+-form,\n)+#phone-form \{ padding: 20px; \}""")
             .find(css)
             ?.value
-        assertTrue(inset != null, "the dialog forms still share one `padding: 20px` group")
+        assertTrue(inset != null, "the dialog forms still share one top-level `padding: 20px` group")
         for (form in listOf("#new-task-form", "#new-project-form")) {
             assertTrue(
                 inset!!.contains(form),
@@ -372,20 +381,54 @@ class WebUiBoardStyleTest {
             )
         }
         assertTrue(
-            Regex("""\.field input,\s*\.field select,\s*\.field textarea \{""").containsMatchIn(css),
+            Regex("""\.field input,\s*\.field select,\s*\.field :where\(textarea\) \{""")
+                .containsMatchIn(css),
             "a `.field` textarea is dressed as a field, not left to the UA's monospace `cols` box",
         )
         // Matched against the rule BODY rather than through `cssRuleOf`, whose `\n<selector> {` anchor
-        // would land on the group above — `.field textarea` is the last line of that selector list too.
+        // would land on the group above — the same selector is the last line of that list too.
         assertTrue(
-            Regex("""\.field textarea \{[^{}]*resize: vertical""").containsMatchIn(css),
+            Regex("""\.field :where\(textarea\) \{[^{}]*resize: vertical""").containsMatchIn(css),
             "and it may only be resized along the axis that cannot break the dialog's width",
+        )
+        assertFalse(
+            Regex("""(?<![:\w-])\.field textarea\b""").containsMatchIn(css),
+            "neither textarea selector may be written bare: (0,1,1) silently outranks " +
+                "`.task-detail-body`, whose own width, padding, radius and line-height then lose to a " +
+                "rule that is declared EARLIER in the file",
+        )
+        assertTrue(
+            css.indexOf(".task-detail-body {") > css.indexOf(".field :where(textarea) {"),
+            "…and the tie `:where()` creates is only won by the specialised rule coming last",
         )
         assertTrue(
             Regex("""\bbutton, input, select, textarea \{ font: inherit; \}""").containsMatchIn(css),
             "the global font reset covers a textarea too, or it renders in a face of its own",
         )
+        assertTrue(
+            Regex("""select:focus-visible,\s*textarea:focus-visible \{""").containsMatchIn(css),
+            "a field-dressed textarea takes the app's accent focus ring like every other field",
+        )
     }
+
+    /**
+     * A dialog head is a flex row: the copy on the left, the × on the right. A flex item will not shrink
+     * below its content unless it is told to, and New task interpolates the PROJECT NAME straight into
+     * that copy — up to 100 characters (`PROJECT_NAME_MAX_LENGTH`) with no guaranteed break opportunity,
+     * since `validProjectName` bars control characters and nothing else. Without both declarations the
+     * head grows past the panel and takes the close button with it.
+     */
+    @Test
+    fun theDialogHeadCopyCanShrinkAndBreakSoALongProjectNameCannotEvictTheCloseButton() =
+        withServer { ctx ->
+            val css = withoutComments(ctx.get("/style.css").bodyAsText())
+            val head = cssRuleOf(css, ".dialog-head > div")
+            assertTrue(head.contains("min-width: 0"), "the copy may shrink below its content")
+            assertTrue(
+                head.contains("overflow-wrap: anywhere"),
+                "and an unbroken 100-character name wraps instead of widening the row",
+            )
+        }
 
     // --- helpers ---------------------------------------------------------------------------------
 

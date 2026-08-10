@@ -252,14 +252,19 @@ class WebUiBoardTest {
      * Completion and submit are asserted together on purpose: they must apply the SAME join. A form that
      * completed relative input against the base while its submit passed the raw value through would list
      * a real directory and then post a path `POST /projects` rejects as relative.
+     *
+     * The `app.js` half is read out of the `<${'$'}{Board}` element rather than out of the whole file: the
+     * New-session dialog has passed `basePath=${'$'}{prefs.basePath}` since long before this, so a bare
+     * `contains` over the source passed on the parent commit and proved nothing at all.
      */
     @Test
     fun theNewProjectFormStartsOnTheBasePathAndResolvesRelativeInputAgainstIt() = withServer { ctx ->
         val app = ctx.get("/app.js").bodyAsText()
         val board = ctx.get("/components/Board.js").bodyAsText()
+        val boardElement = sliceBetween(app, "<\${Board}", "/>", "the board element")
         assertTrue(
-            app.contains("basePath=\${prefs.basePath}"),
-            "the board is handed the same preference the New-session dialog gets",
+            boardElement.contains("basePath=\${prefs.basePath}"),
+            "the BOARD is handed the same preference the New-session dialog gets",
         )
         assertTrue(
             board.contains("<\${NewProjectForm} basePath=\${basePath}"),
@@ -269,17 +274,20 @@ class WebUiBoardTest {
             board.contains("useState(base.charAt(0) === \"/\" ? base : \"\")"),
             "the directory field opens ON the base path instead of empty",
         )
+        // Snapshot, not a live read: preferences are shared, so another tab committing a new base under
+        // an OPEN form would otherwise split it against itself — an old path in the field, a new one in
+        // the hint, a third answer from completion. `useState`'s initializer form is the snapshot.
+        assertTrue(
+            board.contains("const [base] = useState(() => normalizePath(basePath));"),
+            "the form freezes one base for its whole life, so all four uses name the same tree",
+        )
         assertTrue(
             board.contains("body: JSON.stringify({ basePath: base || null, input: typed })"),
-            "completion resolves a relative name against the base rather than sending null",
-        )
-        assertFalse(
-            board.contains("basePath: null"),
-            "the old unconditional null is gone — it was what made relative input uncompletable",
+            "completion resolves a relative name against that base rather than sending null",
         )
         assertTrue(
             board.contains("const typed = resolveProjectPath(path, base);"),
-            "and the submit applies that same base, so the list and the create agree on the path",
+            "and the submit applies the same one, so the list and the create agree on the path",
         )
     }
 
