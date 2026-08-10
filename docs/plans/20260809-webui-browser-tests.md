@@ -137,9 +137,10 @@ constructor-injected so the whole server is testable end-to-end against fakes»)
    `eventsWs(store, prefs, taskStore, json)` (`:250`) без него молча теряет task-ветку сокета. При этом
    `app.js` читает `GET /api/v1/projects` безусловно на каждом монтировании, поэтому 404 кладёт красную
    строку в статус сайдбара во всех сценариях.
-7. **`FakeEventStore` «как есть» БРОСАЕТ на task-связях.** `setTaskRef`, `setProjectId`,
-   `sessionsHoldingTask` имеют дефолты интерфейса, кидающие исключение, и прототип их не переопределяет.
-   Без переопределения любой link/unlink/`transition(done)` из браузера даёт 500 вместо бейджа.
+7. **`FakeEventStore` «как есть» БРОСАЛ на task-связях.** `setTaskRef`, `setProjectId`,
+   `sessionsHoldingTask` и — обнаружено волной 1 — `clearTaskRefIf` имеют дефолты интерфейса, кидающие
+   исключение; без переопределения любой link/unlink/`transition(done)` из браузера даёт 500 вместо
+   бейджа. **Закрыто волной 1**: все четыре переопределены, см. «Модуль `fakes`».
 8. **Пишущих на диск edges теперь ТРИ.** К `posixDirectoryCompleter`/`posixFileUploader`
    (`src/transport/Server.kt:156-157`) добавился `ProjectFileWriter`, достижимый из браузера двумя формами
    доски. `directoryCompleter` тоже получил второго потребителя — поле пути в New project.
@@ -218,23 +219,49 @@ source-guard'а, которые именно исходником и обяза�
 
 ## Technical Details
 
-### Модуль `fakes` (kmp/lib, macosArm64)
+### Модуль `fakes` (kmp/lib, macosArm64) — ГОТОВ (волна 1, `da8bfb1`)
 
 Двойники, видимые **и** рутовому тестовому сорс-сету (`test-dependencies: - ./fakes`), **и** `webuicheck`
-(обычные `dependencies`).
+(обычные `dependencies`). Модуль существует; ниже — его **фактические** сигнатуры, а не задание. Волна 2
+кодирует против этого текста и файлы модуля не открывает.
 
-| Класс | Пакет | Источник | Замечание |
-|---|---|---|---|
-| `FakeTmux` | `io.kotgent.daemon` | переезд `test/daemon/FakeTmux.kt` | пакет не меняется → 18 файлов-потребителей не правятся |
-| `FakeEventStore` | `io.kotgent.store` | извлечение из `TransportTest.kt:1907` | становится top-level `public`; **обязаны быть переопределены** `setTaskRef`, `setProjectId`, `sessionsHoldingTask` поверх той же `LinkedHashMap` с `++revCounter` и `emitFromMeta`; собственный `reliableSessionUpdates` сохранить |
-| `FakeTaskStore` | `io.kotgent.store` | прототип `TaskEventsTest.kt:445` | ~24 члена: `TaskStore` + `TaskTracker` |
-| `FakeProjectFs` | `io.kotgent.task` | `ProjectFs` — интерфейс | три метода, всё в памяти |
-| `MemoryProjectFileWriter` | `io.kotgent.task` | `ProjectFileWriter` — интерфейс | ничего не пишет на диск |
+```
+io.kotgent.daemon.FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl
+io.kotgent.store.FakeEventStore(now: () -> Long = { 1L }) : EventStore, PreferencesStore
+io.kotgent.store.FakeTaskStore(updatesBuffer: Int = 1024, now: () -> Long = { 1_000L }) : TaskStore
+io.kotgent.task.FakeProjectFs(dirs: List<String> = emptyList(),
+                              files: Map<String, String> = emptyMap(),
+                              symlinks: Map<String, String> = emptyMap()) : ProjectFs
+io.kotgent.task.MemoryProjectFileWriter(fs: FakeProjectFs,
+                                        newId: () -> ProjectId = { ProjectId.mint() }) : ProjectFileWriter
+```
 
-Пять существующих `private class FakeEventStore` — **вложенные** (`TaskLinkRoutesTest.kt:810`,
-`TaskWriteRoutesTest.kt:1345`, `TaskReadRoutesTest.kt:644`, `TransportTest.kt:1907`, `TaskServiceTest.kt:776`),
-коллизии имён нет; правится только `TransportTest.kt` (получает импорт). Если потребитель потребует
-импорта — **добавить импорт, а не откатывать переезд**.
+Что важно знать потребителю:
+
+- **`fakes/module.yaml` называет `$libs.kotlinx.coroutines.core` явно**, вопреки исходному заданию
+  «`dependencies: - ..`». Рутовый модуль тянет корутины **без** `exported: true`, поэтому потребителю `..`
+  не видны `Mutex`/`SharedFlow`/`Channel`, из которых собран каждый двойник. Не откатывать.
+  `webuicheck` получает корутины транзитивно через `../sysnative` (тот их экспортирует); если там всё же
+  не разрешится `Mutex`/`SharedFlow` — причина эта, и лечится прямой записью в `webuicheck/module.yaml`,
+  а не правкой `fakes`.
+- **Бросающих дефолтов `EventStore` оказалось четыре, не три.** К `setTaskRef`, `setProjectId`,
+  `sessionsHoldingTask` добавился `clearTaskRefIf`, чей дефолт вдобавок неатомарен (get-then-set), а фейк
+  достижим с движковых потоков сервера — проверка и запись сведены в один шаг под его `Mutex`. Его
+  `emitFromMeta` теперь несёт `taskRef`/`projectId`: именно из `taskRef` рисуется бейдж.
+- **`FakeTaskStore` шире прототипа**: все 24 члена, без заглушек. Он выводит `blocked`, а не принимает его
+  seed-ручкой, перештампывает и переизлучает обратные зависимости при смене состояния, использует
+  настоящую арифметику зазоров и проверяет все четыре отказа по зависимостям через `wouldCycle`.
+  Прототипных `baselineEntered`/`baselineGate` в нём **нет** — сценарий не может гейтиться на входе в
+  baseline. `updatesBuffer = 0` превращает `taskUpdates` в рандеву.
+- **`MemoryProjectFileWriter` публикует в тот же `FakeProjectFs`**, поэтому `SafeEdges.kt` обязан
+  конструировать их вместе, а не порознь — иначе второе создание в том же каталоге не подхватит первый
+  uuid. Он выставляет `calls` и набор `failOn` для пути «место недоступно для записи».
+- `FakeProjectFs` держит CAS-подменяемый неизменяемый снимок: методы `ProjectFs` не `suspend`, корутинный
+  `Mutex` им недоступен.
+
+Пять существовавших `private class FakeEventStore` были **вложенными** (`TaskLinkRoutesTest.kt`,
+`TaskWriteRoutesTest.kt`, `TaskReadRoutesTest.kt`, `TransportTest.kt`, `TaskServiceTest.kt`), коллизии имён
+не возникло; правился только `TransportTest.kt`.
 
 ### Модуль `webuicheck` (macos/app, macosArm64)
 
@@ -304,6 +331,12 @@ session и поле пути New project), записывающий-в-памя�
 
 `test-dependencies: - $libs.playwright`; в `gradle/libs.versions.toml` нужны **обе** записи —
 `playwright = "1.62.0"` в `[versions]` и строка в `[libraries]`. `src/` может остаться пустым.
+
+**Каталог артефактов заморожен волной 1: `test-results/`.** CI выгружает скриншоты и трейсы падений
+только из `test-results/` и `webuitest/test-results/` (оба в `.gitignore`), поэтому браузерные тесты
+волны 3 обязаны писать `page.screenshot` и архивы `context.tracing()` именно туда — иначе красный прогон
+выгрузит пустоту. Кэш браузеров в CI ключуется литералом `1.62.0` **без** `restore-keys`, так что версию
+Playwright надо бампать в `ci.yml` и `gradle/libs.versions.toml` одним коммитом.
 
 **API фикстуры замораживается на волне 2** и после этого не меняется; участнику волны 3, которому нужен
 хелпер, кладёт его в свой файл:
