@@ -2,9 +2,22 @@
 
 ## Overview
 
-`test/transport/WebUiServingTest.kt` вырос до 3935 строк и **47** тестов, в которых **729** вызовов
-`contains(` и **169** `indexOf(` навешены поверх **118** `bodyAsText()`. HTTP там используется как способ
-прочитать файл, а утверждения — это `grep` по исходному тексту JS и CSS.
+grep-ярус Web UI — это **десять** файлов, **8136+ строк**, **136** тестов и **1181** вызов `contains(`
+поверх served-исходников JS и CSS. HTTP там используется как способ прочитать файл, а утверждения — это
+`grep` по тексту.
+
+| Файл | строк | `@Test` | `contains(` |
+|---|---|---|---|
+| `WebUiServingTest.kt` | 4050 | 49 | 775 |
+| `WebUiBoardTest.kt` | 796 | 17 | 117 |
+| `WebUiBoardStyleTest.kt` | 585 | 10 | 33 |
+| `WebUiScreenRoutingTest.kt` | 551 | 9 | 63 |
+| `WebUiTaskDetailTest.kt` | 502 | 13 | 73 |
+| `SpaRoutingTest.kt` | 450 | 10 | 6 |
+| `WebUiTaskBadgeTest.kt` | 391 | 8 | 24 |
+| `WebUiTaskCommandsTest.kt` | 323 | 6 | 31 |
+| `WebUiTaskStateTest.kt` | 292 | 8 | 34 |
+| `WebUiRouterTest.kt` | 255 | 6 | 25 |
 
 Отсюда две болезни:
 
@@ -12,21 +25,27 @@
    ломает тест; при этом семантически ломающая правка, сохранившая текст, проходит. Это не проверка
    поведения, а блокировка рефакторинга.
 2. **Ложное покрытие.** Инварианты, физически непроверяемые текстом — отдаёт ли `touch-action: none` жест
-   терминалу, вычитает ли FitAddon padding, совпадает ли `pointerId` у `pointerdown`/`click`, не съедает ли
-   safe-area нижний inset — оформлены как проверенные, хотя рядом в CLAUDE.md записано «это решается только
-   на живом устройстве».
+   терминалу, вычитает ли FitAddon padding, переживает ли drag доски перерисовку под capture, совпадает ли
+   `pointerId` у `pointerdown`/`click` — оформлены как проверенные, хотя рядом в CLAUDE.md записано «это
+   решается только на живом устройстве».
 
 **Что решаем.** Расслаиваем на три яруса: контракты отдачи остаются в Kotlin, поведение UI начинает
-**исполняться** в настоящем браузере, вёрстка проверяется настоящим движком. Целевой результат —
-`WebUiServingTest.kt` ужимается с 3935 строк примерно до 400 и снова становится тем, чем называется, а
-поведение покрывают ~25–30 сценарных браузерных тестов (бюджет выведен из таблицы диспозиции ниже, а не
-назначен сверху).
+**исполняться** в настоящем браузере, вёрстка проверяется настоящим движком. Классификация всех 136 тестов
+выполнена (см. «Диспозиция»): **30 остаются** в Kotlin, **105 переезжают** в браузер, **1 удаляется** без
+замены. Бюджет браузерного яруса — **55–70** сценарных тестов (несколько grep-утверждений схлопываются в
+один поведенческий).
 
 **Как интегрируется.** Три новых модуля (`fakes`, `webuicheck`, `webuitest`) плюс правки в `ci.yml`.
 Ничего в `src/`, в редьюсере, в словаре `AgentEvent`, в tmux/pty-слое и в `resources/webui` не меняется:
-`KotgentServer` уже полностью constructor-injected (`src/transport/Server.kt:50` — «everything is
+`KotgentServer` полностью constructor-injected (`src/transport/Server.kt:91` — «everything is
 constructor-injected so the whole server is testable end-to-end against fakes»), поэтому браузеру
 отдаётся **настоящий** сервер, а подменяются только edges.
+
+**Как исполняется.** План размечен на **шесть волн** (см. «Параллельное исполнение волнами»): внутри волны
+задачи имеют попарно непересекающиеся множества файлов и запускаются одновременно, волну закрывает
+отдельный проход, который единственный трогает регистры, гоняет валидацию и коммитит. Критическая цепь —
+6 звеньев вместо 26, тяжёлых прогонов `build && test` — 6 вместо 26. Полнота проверок `/planning:exec` при
+этом не страдает, а при обычном последовательном запуске план исполняется корректно, просто медленно.
 
 ## Context (from discovery)
 
@@ -34,206 +53,196 @@ constructor-injected so the whole server is testable end-to-end against fakes»)
 
 | Область | Файлы |
 |---|---|
-| Новый модуль двойников | `fakes/` (целиком): переезд `test/daemon/FakeTmux.kt` + извлечение `FakeEventStore` из `test/transport/TransportTest.kt:1802` |
-| Новый сценарный харнесс | `webuicheck/` (целиком) |
-| Новый браузерный ярус | `webuitest/` (целиком) |
+| Новый модуль двойников | `fakes/` — `FakeTmux`, `FakeEventStore`, `FakeTaskStore`, `FakeProjectFs`, `MemoryProjectFileWriter` |
+| Новый сценарный харнесс | `webuicheck/` |
+| Новый браузерный ярус | `webuitest/` |
 | Манифесты | `project.yaml`, `module.yaml`, `gradle/libs.versions.toml` |
-| Сокращаемый тест | `test/transport/WebUiServingTest.kt` |
+| Сокращаемые/удаляемые тесты | десять файлов из таблицы Overview |
 | Новый нативный тест харнесса | `test/transport/WebUiCheckTest.kt` |
 | CI | `.github/workflows/ci.yml`, `.gitignore` |
 | Документация | `CLAUDE.md` |
 
-**Образцы, которые копируем (не изобретаем заново)**
+**Образцы, которые копируем (якоря проверены против HEAD)**
 
-- Манифест и заголовочный комментарий main-бинарника-фикстуры: `ptycheck/module.yaml`.
+- Манифест main-бинарника-фикстуры: `ptycheck/module.yaml`.
 - **Драйв фикстуры из сюиты:** `test/pty/PtyTest.kt:34-48` — `ProcessRunner.run` экзекает бинарник и
-  сверяет `SUMMARY total=$EXPECTED_CHECKS failed=0` в stdout; поиск бинарника с громким падением —
-  `:55` (`ptycheckBinary()`), счётчик — `:73`.
-- Сборка сервера на фейках: `test/transport/WebUiServingTest.kt:3728` (`withServer`).
-- Конструктор сервера: `src/transport/Server.kt:98`; `terminalBridgeFactory` на `:103`;
-  `directoryCompleter`/`fileUploader` на `:147-148`; `stop()` на `:299`; `reuseAddress = true` на `:256`;
-  `resolveWebUiDir` — `internal` на `:368`.
+  сверяет `SUMMARY total=$EXPECTED_CHECKS failed=0`; поиск бинарника — `:55`, счётчик — `:73`.
+- Конструктор сервера: `src/transport/Server.kt:150`; `terminalBridgeFactory` — `:155` (KDoc `:121`);
+  `directoryCompleter`/`fileUploader` — `:156-157`; `taskStore`/`taskService` — `:165-166`; монтирование
+  роутов под префиксом — `:234-251`; task-роуты — `:256-268`; push-роуты — `:273-275`;
+  `reuseAddress = true` — `:295`; `stop()` — `:338`; `resolveWebUiDir` (`internal`) — см. companion.
 - Тикеты: `src/transport/Tickets.kt:154` (`class TicketStore`), `:184` (`issue(boundToken)`).
-- Терминальный мост: `src/pty/TerminalBridge.kt:50` — конструктор берёт `upstreamCommand: List<String>`,
-  `seedProvider`, `ptyFactory`, `scope`, `env`. Значит харнесс собирает его напрямую с `realPtyFactory`
-  (`src/pty/RealPtyHandle.kt:38`); `terminalBridgeForSession` (`src/pty/RealPtyHandle.kt:73`) не подходит —
-  он требует конкретный `Tmux` ради `tmuxPath`/`socket`/`capturePane`.
-- JVM-модуль с тестами: `plugins/build-info/` (7 JVM-тестов в baseline).
+- Терминальный мост: `src/pty/TerminalBridge.kt:50` — `upstreamCommand`, `seedProvider`, `ptyFactory`,
+  `scope`, `env`. Харнесс собирает его напрямую с `realPtyFactory` (`src/pty/RealPtyHandle.kt:38`);
+  `terminalBridgeForSession` (`src/pty/RealPtyHandle.kt:73`) не подходит — требует конкретный `Tmux`.
+- Двойники-прототипы: `FakeEventStore` — `test/transport/TransportTest.kt:1907`; `FakeTaskStore` —
+  `test/transport/TaskEventsTest.kt:445`; интерфейсы `ProjectFs` (`src/task/ProjectFs.kt:16`) и
+  `ProjectFileWriter` (`src/task/ProjectFileWriter.kt:51`). `TaskService` — **класс**, не интерфейс
+  (`src/daemon/TaskService.kt:51-57`), собирается настоящий поверх фейков.
+- **`withServer` (`test/transport/WebUiServingTest.kt:3728`) — уже НЕ годный образец**: его вызов
+  `KotgentServer` (`:3853-3862`) не передаёт `taskStore`/`taskService`, поэтому копирование рецепта
+  воспроизведёт именно ту поломку, которую харнесс обязан избежать.
+- JVM-модуль с тестами: `plugins/build-info/`.
 
 **Зависимости**
 
 - `com.microsoft.playwright:playwright:1.62.0` — единственная новая внешняя зависимость.
 - Никакого npm: `package.json`, `node_modules` и `npx playwright install` не появляются.
-- **Dependabot её не подхватит.** `.github/dependabot.yml` прямо фиксирует, что
-  `gradle/libs.versions.toml` намеренно не отслеживается: gradle-экосистема Dependabot требует
-  `build.gradle(.kts)` до того, как что-либо прочитает, а его здесь нет by design. Отслеживается только
-  `github-actions`. Версию Playwright бампаем руками, как и все прочие записи каталога.
+- **Dependabot её не подхватит.** `.github/dependabot.yml` прямо фиксирует, что `gradle/libs.versions.toml`
+  намеренно не отслеживается (gradle-экосистема Dependabot требует `build.gradle(.kts)`, которого здесь нет
+  by design). Версию бампаем руками.
 
-## Факты, добытые спайками (проверено в этой сессии — НЕ перепроверять)
-
-Спайки выполнены на живом проекте и откачены; дерево чистое. Эти факты — основание дизайна.
+## Факты, добытые спайками (проверено — НЕ перепроверять)
 
 1. **Граф `рут(test) → fakes → рут(main)` тулчейн принимает.** Модель грузится без ошибки цикла, задачи
-   выстраиваются в честный DAG:
-   `:kotgent:compileMacosArm64TestDebug -> :fakes:compileMacosArm64Debug -> :kotgent:compileMacosArm64Debug`.
-   Тестовый фрагмент компилируется, линкуется и тест **проходит** против класса из такого модуля.
-   То есть общий модуль двойников возможен и не требует извлечения отдельного `contracts`-слоя.
+   выстраиваются в DAG (`:kotgent:compileMacosArm64TestDebug -> :fakes:compileMacosArm64Debug ->
+   :kotgent:compileMacosArm64Debug`), тестовый фрагмент компилируется, линкуется и тест **проходит**.
 2. **Playwright for Java 1.62.0 работает этим тулчейном из Kotlin JVM-модуля.** Зависимость резолвится,
-   реальный Chromium запускается и управляется, `PlaywrightAssertions.assertThat(locator).hasText()` с
-   авто-ожиданием доступен. WebKit скачался автоматически в `~/Library/Caches/ms-playwright`.
-   Модуль был `jvm/lib` с пустым `src/` — этого хватило.
-3. **Ловушка: имя тестового класса обязано кончаться на `Test`.** JUnit Platform фильтрует классы по
-   `.*Tests?`. Класс `PwSpike` компилировался, линковался и молча давал «0 tests found» с **ненулевым**
-   кодом возврата. У нативного раннера такого фильтра нет, поэтому правило неочевидно и должно быть
-   записано комментарием в `webuitest/module.yaml`.
+   реальный Chromium запускается и управляется, `PlaywrightAssertions.assertThat(locator)` с
+   авто-ожиданием доступен. WebKit скачался автоматически. Модуль был `jvm/lib` с пустым `src/`.
+3. **Ловушка: имя тестового класса обязано кончаться на `Test`.** JUnit Platform фильтрует по `.*Tests?`;
+   класс `PwSpike` компилировался, линковался и молча давал «0 tests found» с **ненулевым** кодом.
 4. **Ловушка (измерено): тач в WebKit непригоден.** Chromium с `hasTouch: true` на `touchscreen().tap()`
-   даёт полную настоящую цепочку
-   `pointerdown:touch#2 | touchstart | pointerup:touch#2 | touchend | click:touch#2` — то есть **один и тот
-   же `pointerId` на down, up и click**, ровно инвариант, на котором держится light dismiss. WebKit на тот
-   же вызов не доставил элементу **ничего** (в варианте без `touch-action: none` пришёл только `click` с
-   `pointerType: "mouse"`).
-   **Следствие:** Chromium — движок жестов (pointer, свайпы, key bar), WebKit — движок вёрстки (safe-area,
-   `dvh`, UA-стили `<dialog>`). Синтетический `dispatchEvent(new PointerEvent(...))` работает одинаково в
-   обоих, но проверяет только наши слушатели против выдуманных событий — не `touch-action`, не
+   даёт полную цепочку `pointerdown:touch#2 | touchstart | pointerup:touch#2 | touchend | click:touch#2` —
+   **один и тот же `pointerId` на down, up и click**, ровно инвариант light dismiss. WebKit на тот же вызов
+   не доставил элементу **ничего**. Синтетический `dispatchEvent(new PointerEvent(...))` работает одинаково
+   в обоих, но проверяет только наши слушатели против выдуманных событий — не `touch-action`, не
    compatibility-burst, не capture. Пометка CLAUDE.md «решается только на живом iPhone» **остаётся в силе**.
-5. `plugins/build-info` и `plugins/sqldelight-gen` — существующий прецедент JVM-модулей с тестами;
-   `./kotlin task :build-info:testJvm` работает и находит 7 тестов. Это же даёт быструю петлю: модульные
-   задачи вида `./kotlin task :<module>:test…` запускаются отдельно от агрегата.
-6. Chromium и WebKit уже лежат в `~/Library/Caches/ms-playwright` (~1.2 ГБ).
-7. Тулчейн подсказывает держать список `modules:` в `project.yaml` отсортированным по алфавиту.
+5. `plugins/build-info` — прецедент JVM-модуля с тестами; `./kotlin task :build-info:testJvm` работает.
+   Это же даёт быструю петлю: модульные задачи запускаются отдельно от агрегата.
+6. Chromium и WebKit уже в `~/Library/Caches/ms-playwright` (~1.2 ГБ).
+7. Тулчейн просит держать `modules:` в `project.yaml` отсортированным по алфавиту.
 
-## Ограничения, найденные ревью плана (тоже проверены по коду)
+## Ограничения (проверены по коду — НЕ переоткрывать)
 
-Эти четыре факта переопределили дизайн по сравнению с первой редакцией. Не «переоткрывать» их заново.
-
-1. **`ProcessRunner` не умеет писать в stdin ребёнка.** `src/tmux/ProcessRunner.kt:106` — это
-   `popen(commandLine, "r")`, читающая труба и только она; `src/push/VapidSigner.kt:30-31` фиксирует это
-   как осознанное свойство. `posix_spawn` в тестовый бинарник не линкуется (KT-78062), ручной
-   `fork`+`exec` небезопасен под рантаймом K/N. **Следствие:** нативная сюита не может драйвить stdin-протокол
-   харнесса. Она драйвит его режимом `--self-check` по образцу `ptycheck`; stdin-протокол принадлежит
-   исключительно JVM-фикстуре, где `ProcessBuilder` даёт настоящие трубы.
-2. **Сеанса «уронить сокеты, не трогая порт» не существует.** `eventsWs`/`terminalWs` — лямбды роутов,
-   реестра живых сокетов сервер не держит, наружу выставлен только `stop()` (`src/transport/Server.kt:299`),
-   который вдобавок гасит слушателя и через `terminalRegistry.shutdownAll()` — pty. Команда `drop-ws`
-   потребовала бы правок в `src/transport`, что противоречит и Overview, и смыслу затеи. **Команда
-   вычеркнута;** её единственный потребитель (реаттач по возврату сокета событий) закрывается закрытием
-   сокета со стороны браузера через `page.evaluate` — что честнее, потому что проверяет собственную защёлку
-   клиента, а не серверный люк.
-3. **`NoopEventStore` не может обслужить сценарий с сессиями.** `/sessions`, `/events`, `/preferences` и
-   `/sessions/{id}/read` читают `EventStore`+`PreferencesStore` (`src/transport/Server.kt:178-183`), а
-   рецепт из `withServer` подставляет `NoopEventStore` (`test/transport/WebUiServingTest.kt:3871`),
-   возвращающий пустоту. Нужный двойник уже написан — `private class FakeEventStore`
-   (`test/transport/TransportTest.kt:1802`, ~140 строк, `LinkedHashMap<SessionId, SessionMeta>`), — но он
-   приватный и вложенный. Его извлечение входит в Task 1.
-4. **`stop()` гасит терминальные мосты первым.** Значит `restart` убивает pty-ребёнка, и утверждение
-   «терминал вернулся с прежним содержимым» ложно by construction. Ассерт формулируется как «сокет
-   переоткрылся и новые байты идут».
+1. **`ProcessRunner` не умеет писать в stdin ребёнка.** `src/tmux/ProcessRunner.kt:106` — `popen(cmd, "r")`;
+   `src/push/VapidSigner.kt:30-31` фиксирует это как осознанное свойство. `posix_spawn` в тестовый бинарник
+   не линкуется (KT-78062), ручной `fork`+`exec` небезопасен под рантаймом K/N. **Следствие:** нативная
+   сюита не драйвит stdin-протокол; stdin принадлежит исключительно JVM-фикстуре.
+2. **Сеанса «уронить сокеты, не трогая порт» не существует.** Наружу выставлен только `stop()`
+   (`src/transport/Server.kt:338`), который гасит и слушателя, и pty. Команда `drop-ws` не вводится; её
+   потребитель закрывается закрытием сокета из `page.evaluate`.
+3. **`NoopEventStore` не обслужит сценарий с сессиями** (`test/transport/WebUiServingTest.kt:3871`).
+   Нужен `FakeEventStore` (`test/transport/TransportTest.kt:1907`). Он **намеренно держит собственный
+   небуферизованный `reliableSessionUpdates`** — сохранить при извлечении, а не заменять дефолтом
+   интерфейса.
+4. **`stop()` гасит терминальные мосты первым.** `restart` убивает pty-ребёнка, поэтому «терминал вернулся
+   с прежним содержимым» ложно by construction; ассерт — «сокет переоткрылся и новые байты идут».
+5. **Весь token-gated API живёт под `/api/v1`.** `src/transport/Server.kt:84`
+   (`const val API_PREFIX = "/api/v1"`), роуты — `:234-251`. Голый `/version` теперь 404. **Вне префикса
+   намеренно остаются `/auth`, `/auth/exchange`, `/auth/ticket` и `/hooks/*`** — логин тикетом не меняется,
+   и «чинить» его не надо. Браузер знает префикс в одном месте: `resources/webui/lib/api.js`.
+6. **Без `taskStore`/`taskService` ломается ЛЮБОЙ сценарий, а не только доска.** Параметры —
+   `src/transport/Server.kt:165-166`, роуты монтируются только когда оба не-null (`:256-268`), а
+   `eventsWs(store, prefs, taskStore, json)` (`:250`) без него молча теряет task-ветку сокета. При этом
+   `app.js` читает `GET /api/v1/projects` безусловно на каждом монтировании, поэтому 404 кладёт красную
+   строку в статус сайдбара во всех сценариях.
+7. **`FakeEventStore` «как есть» БРОСАЕТ на task-связях.** `setTaskRef`, `setProjectId`,
+   `sessionsHoldingTask` имеют дефолты интерфейса, кидающие исключение, и прототип их не переопределяет.
+   Без переопределения любой link/unlink/`transition(done)` из браузера даёт 500 вместо бейджа.
+8. **Пишущих на диск edges теперь ТРИ.** К `posixDirectoryCompleter`/`posixFileUploader`
+   (`src/transport/Server.kt:156-157`) добавился `ProjectFileWriter`, достижимый из браузера двумя формами
+   доски. `directoryCompleter` тоже получил второго потребителя — поле пути в New project.
+9. **У SPA появился клиентский роутер и deep-link.** Выбор сессии **меняет `location.pathname`**; есть
+   маршруты `/s/{id}` и `/tasks/{ref}`, серверный SPA-fallback и `popstate`. Это меняет ассерты задач
+   сайдбара и реаттача.
 
 ## Development Approach
 
-- **testing approach**: Regular (код, затем тесты) — с оговоркой: начиная с Task 8 «тест» и есть продукт
-  задачи, поэтому там порядок обратный по существу.
-- каждая задача доводится до конца перед переходом к следующей;
-- изменения мелкие и сфокусированные;
-- **КРИТИЧНО: каждая задача включает новые/обновлённые тесты**;
-- **КРИТИЧНО: все тесты зелёные перед началом следующей задачи**;
-- **КРИТИЧНО: план обновляется, если объём меняется по ходу**;
+- **testing approach**: Regular — с оговоркой: начиная с волны 3 «тест» и есть продукт задачи.
+- **Исполнение волнами.** Внутри волны задачи запускаются одновременно; см. отдельный раздел ниже. При
+  обычном последовательном `/planning:exec` план тоже корректен — секции идут по порядку.
+- **КРИТИЧНО: участник волны не запускает `./kotlin` и не трогает git** — валидацию и коммит делает
+  закрывающий проход волны.
+- **КРИТИЧНО: план обновляется, если объём меняется по ходу.**
 - `./kotlin build` **обязателен перед** `./kotlin test` — теперь по двум причинам: `PtyTest` экзекает
-  `ptycheck`, а `WebUiCheckTest` и `webuitest` — `webuicheck`;
-- **цена агрегата растёт осознанно.** После Task 6 `./kotlin test` требует браузеров (~1.2 ГБ) и сети на
-  холодной машине. Быстрая петля для нативной работы — `./kotlin task :kotgent:testMacosArm64Debug`, по
-  образцу `./kotlin task :build-info:testJvm` (факт 5). Это фиксируется в CLAUDE.md в Task 18;
-- обратная совместимость: `resources/webui` и `src/` не трогаем вообще.
+  `ptycheck`, а `WebUiCheckTest` и `webuitest` — `webuicheck`.
+- **Цена агрегата растёт осознанно.** После волны 2 `./kotlin test` требует браузеров и сети на холодной
+  машине. Быстрые петли: `./kotlin task :kotgent:testMacosArm64Debug`, `./kotlin task :webuitest:testJvm`.
+- Обратная совместимость: `resources/webui` и `src/` не трогаем вообще.
 
 ## Testing Strategy
 
-- **нативная сюита**: остаётся зелёной на всех шагах. Baseline на старте — **921 нативный тест / 0
-  skipped**, 7 JVM-тестов `build-info`, 11 проверок `ptycheck`.
-- **самопроверка харнесса**: `webuicheck --self-check` прогоняет собственные утверждения в процессе и
-  печатает `SUMMARY total=N failed=0`; `test/transport/WebUiCheckTest.kt` экзекает его через
-  `ProcessRunner.run` и сверяет счётчик — точная калька `PtyTest`. Это дешёвый барьер без браузера: если
-  сломан харнесс, браузерные тесты не должны быть местом, где это выясняется.
-- **e2e/браузерные тесты**: модуль `webuitest`, Playwright for Java, ~25–30 тестов. Chromium для жестов и
-  поведения, WebKit для вёрстки.
-- **правило геометрии**: утверждения о вёрстке читают **геометрию** (`getBoundingClientRect`, `cols`/`rows`,
-  видимость), а не строковое равенство `getComputedStyle`. Иначе новый ярус импортирует ровно ту болезнь,
-  ради которой построен.
-- **правило замещения**: каждый браузерный тест удаляет свой grep-аналог **в том же коммите**.
-- диагностика падений: скриншот и `page.content()` в лог; `context.tracing()` пишется в артефакт CI (для
-  просмотра трейса нужен разовый внешний `npx playwright show-trace`, вне проекта).
+- **нативная сюита**: остаётся зелёной. Baseline на старте — **1432 нативных теста / 0 skipped**, 7
+  JVM-тестов `build-info`, 11 проверок `ptycheck`. По мере переезда число нативных **уменьшается**, поэтому
+  приёмка сверяет не абсолют, а «0 skipped + дельта равна числу удалённых тестов».
+- **самопроверка харнесса — только то, чего нативный тест не может.** `webuicheck --self-check` держит
+  1–2 проверки, зависящие от cinterop (настоящий `Pty` под настоящим `TerminalBridge` внутри настоящего
+  сервера), печатает `SUMMARY total=N failed=0`, и `EXPECTED_CHECKS` становится **константой, которую не
+  правит ни одна другая задача**. Всё остальное про харнесс проверяет браузерный ярус, который эти же
+  факты трогает первым. Причина ограничения — прецедент `ptycheck` действует только там, где действует
+  KT-78062; тащить под него обычные проверки значит менять внятные ассерты на самодельный счётчик.
+- **e2e/браузерные тесты**: `webuitest`, Playwright for Java, ~55–70 тестов.
+- **Движок по умолчанию — Chromium** (`hasTouch: true`). WebKit **не вводится авансом**: ни одно
+  запланированное утверждение его не требует, а всё, ради чего он был бы нужен (safe-area, `dvh`,
+  `navigator.standalone`), план сам отправляет в ручную проверку. WebKit добавляется точечно и только под
+  тест, который на нём **измеримо** расходится с Chromium, и расхождение фиксируется как факт — так же, как
+  факт 4 зафиксировал непригодность тача.
+- **правило геометрии**: утверждения о вёрстке читают геометрию (`getBoundingClientRect`, `cols`/`rows`,
+  видимость, computed color в двух состояниях), а не строковое равенство `getComputedStyle`.
+- **правило замещения**: у восьми новых grep-файлов единственный владелец, поэтому там правило сильное —
+  **браузерный тест удаляет свой grep-файл в том же коммите волны**. Для `WebUiServingTest.kt` владельцев
+  девять, поэтому удаления из него физически выполняет одна финальная задача, а связь пинуется строкой
+  `[replaces] task N: WebUiServingTest.<имя>` в прогресс-файле и сверяется там же.
+- диагностика падений: скриншот и `page.content()` в лог; `context.tracing()` в артефакт CI.
 
 ## Progress Tracking
 
-- выполненные пункты помечать `[x]` сразу;
+- выполненные пункты помечать `[x]` — это делает **закрывающий проход волны**, не участник;
 - новые задачи добавлять с префиксом ➕;
 - блокеры фиксировать с префиксом ⚠️;
-- при отклонении от объёма — править план.
+- участники пишут только однострочные записи `task N: …` и `[replaces] task N: …`.
 
 ## Solution Overview
 
-Три яруса и три новых модуля.
+**Ярус 1 — контракты отдачи (Kotlin).** ~30 тестов в `WebUiServingTest.kt` + `SpaRoutingTest.kt` целиком
+(последний — настоящий HTTP-тест грамматики SPA-fallback, а не grep). Плюс три-четыре маленьких
+source-guard'а, которые именно исходником и обязаны быть: замок «словаря классов» доски, сверка
+`DEEP_LINK_PARAM` с `sw.js`, запрет `pushState` в обход роутера, импорт `PROJECT_NAME_MAX_LENGTH`
+(константа нативного рут-модуля, JVM-модуль `webuitest` её не видит).
 
-**Ярус 1 — контракты отдачи (остаётся в Kotlin).** ~20 тестов, ~400 строк: коды ответов, `Content-Type`,
-`immutable` против `no-cache`, подстановка ревизии, traversal-гард, приоритет API над static-catch-all,
-404, реестр обслуживаемых модулей.
-
-**Ярус 2 — сценарный харнесс `webuicheck` (macos/app).** Калька с `ptycheck`: test fixture, не продукт.
-Поднимает **настоящий** `KotgentServer` с фейковыми edges, печатает порт и одноразовый тикет, принимает
-команды на stdin, умирает по EOF или по сторожевому таймеру. Сценарии пишутся на Kotlin рядом с доменными
-типами, поэтому состояния вроде `needs_approval` или «демон перезапустился» задаются как состояние, а не как
-мок в браузере. Main-бинарник линкует cinterop (KT-78062 бьёт только по тестовым бинарникам), поэтому
-терминал сажается на **настоящий** `Pty` под настоящим `TerminalBridge`.
+**Ярус 2 — сценарный харнесс `webuicheck` (macos/app).** Калька с `ptycheck`. Поднимает **настоящий**
+`KotgentServer` на фейковых edges, печатает порт и одноразовый тикет, принимает команды на stdin, умирает
+по EOF или сторожевому таймеру. Main-бинарник линкует cinterop (KT-78062 бьёт только по тестовым
+бинарникам), поэтому терминал сажается на **настоящий** `Pty`.
 
 **Ярус 3 — браузерный `webuitest` (jvm/lib).** Playwright for Java спавнит харнесс `ProcessBuilder`-ом,
-логинится тикетом через настоящую форму `/auth`, гоняет реальный DOM, реальные жесты и реальную вёрстку.
+логинится тикетом через настоящую форму `/auth`, гоняет реальный DOM, жесты и вёрстку.
 
-**Почему харнесс, а не «Kotlin-тест поднимает сервер».** Один сервер на весь прогон означал бы фиксированный
+**Почему харнесс, а не «Kotlin-тест поднимает сервер».** Один сервер на прогон означал бы фиксированный
 сценарий, текущее между тестами состояние и необходимость либо тестовых роутов в проде, либо моков в
-браузере — то есть возврат к проверке фикции. Отдельный процесс на сценарий даёт изоляцию, ноль тестового
-кода в `Server.kt` и доступ к настоящему pty.
+браузере — то есть возврат к проверке фикции.
 
 **Почему Java-биндинг Playwright, а не npm.** Зависимость объявляется как обычная библиотека каталога;
-тесты остаются на Kotlin с `kotlin.test`; вход остаётся один — `./kotlin test`. Проект принципиально
-`no-build` для `resources/webui`, и этот выбор сохраняет свойство: npm-острова не появляется. (Про
-Dependabot см. раздел «Зависимости» — он этот каталог не читает, бампаем руками.)
+тесты остаются на Kotlin; вход остаётся один. `resources/webui` сохраняет свойство `no-build`.
 
 ## Technical Details
 
 ### Модуль `fakes` (kmp/lib, macosArm64)
 
-Общие тестовые двойники, видимые **и** рутовому тестовому сорс-сету, **и** `webuicheck`. Рут подключает
-через `test-dependencies: - ./fakes`; `webuicheck` — через обычные `dependencies`.
+Двойники, видимые **и** рутовому тестовому сорс-сету (`test-dependencies: - ./fakes`), **и** `webuicheck`
+(обычные `dependencies`).
 
-Состав намеренно узкий — только то, что нужно двум потребителям:
+| Класс | Пакет | Источник | Замечание |
+|---|---|---|---|
+| `FakeTmux` | `io.kotgent.daemon` | переезд `test/daemon/FakeTmux.kt` | пакет не меняется → 18 файлов-потребителей не правятся |
+| `FakeEventStore` | `io.kotgent.store` | извлечение из `TransportTest.kt:1907` | становится top-level `public`; **обязаны быть переопределены** `setTaskRef`, `setProjectId`, `sessionsHoldingTask` поверх той же `LinkedHashMap` с `++revCounter` и `emitFromMeta`; собственный `reliableSessionUpdates` сохранить |
+| `FakeTaskStore` | `io.kotgent.store` | прототип `TaskEventsTest.kt:445` | ~24 члена: `TaskStore` + `TaskTracker` |
+| `FakeProjectFs` | `io.kotgent.task` | `ProjectFs` — интерфейс | три метода, всё в памяти |
+| `MemoryProjectFileWriter` | `io.kotgent.task` | `ProjectFileWriter` — интерфейс | ничего не пишет на диск |
 
-- `FakeTmux` (`io.kotgent.daemon`, 87 строк) — переезжает файлом;
-- `FakeEventStore` (`EventStore` + `PreferencesStore`, ~140 строк) — **извлекается** из
-  `test/transport/TransportTest.kt:1802`, где он `private` и вложенный: становится top-level и `public`,
-  `TransportTest` продолжает компилироваться против него.
-
-**Не переезжают** (YAGNI): `FakeAdapter` — в рецепте `withServer` он уже заменён пятистрочным анонимным
-объектом (`test/transport/WebUiServingTest.kt:3735-3742`), второго потребителя нет; `FakePtyHandle` — вместе
-с отменённым режимом `--pty=fake` (см. ниже) у него тоже нет второго потребителя.
-
-**Пакеты не меняются.** Тогда девять файлов, использующих `FakeTmux`, не правятся: тесты в `test/daemon/`
-лежат в том же пакете (импорта нет), `test/transport/` сохраняет существующий импорт. Если какой-то файл
-всё же потребует импорта — **добавить импорт и идти дальше**, это не повод откатывать переезд.
-
-Заметка: `EventStore.reliableSessionUpdates` (`src/store/EventStore.kt:249`) — дефолт интерфейса,
-делегирующий в `sessionUpdates`; для фейка этого достаточно.
+Пять существующих `private class FakeEventStore` — **вложенные** (`TaskLinkRoutesTest.kt:810`,
+`TaskWriteRoutesTest.kt:1345`, `TaskReadRoutesTest.kt:644`, `TransportTest.kt:1907`, `TaskServiceTest.kt:776`),
+коллизии имён нет; правится только `TransportTest.kt` (получает импорт). Если потребитель потребует
+импорта — **добавить импорт, а не откатывать переезд**.
 
 ### Модуль `webuicheck` (macos/app, macosArm64)
 
-Зависимости: `..` (`KotgentServer`, домен, `TerminalBridge`), `../sysnative` (настоящий `Pty`), `./fakes`.
-`entryPoint: io.kotgent.webuicheck.main`.
+Зависимости: `..`, `../sysnative`, `./fakes`. `entryPoint: io.kotgent.webuicheck.main`.
 
-**Два режима запуска.**
-
-`webuicheck --self-check` — прогоняет собственные утверждения в процессе, печатает
-`SUMMARY total=N failed=0` и выходит. **Stdin не читает вообще**, поэтому его можно гнать через `popen`.
-Это единственный способ проверить харнесс из нативной сюиты (ограничение 1).
-
-`webuicheck --scenario=<name> --webui-dir=<abs>` — рабочий режим для браузера. Порт всегда `0`.
+**Режимы.** `--self-check` — прогоняет cinterop-зависимые проверки в процессе, печатает
+`SUMMARY total=N failed=0`, выходит; **stdin не читает**, поэтому идёт через `popen`.
+`--scenario=<name> --webui-dir=<abs> [--exit-after-ms=<n>]` — рабочий режим.
 
 **Хендшейк — ровно три строки в stdout, всё остальное в stderr:**
 
@@ -243,371 +252,590 @@ TICKET=<code>
 READY
 ```
 
-Тикет минтится настоящим `TicketStore.issue(token)`, поэтому браузер логинится ровно тем путём, которым
-логинится телефон. Любой посторонний вывод в stdout сломает парсер — отсюда жёсткое разделение потоков.
-После `restart` печатается **только** повторный `READY`: порт тот же и мастер-токен тот же, значит новый
-`PORT`/`TICKET` не нужны и контракт «ровно три строки при старте» не нарушается.
+Тикет — настоящий `TicketStore.issue(token)`. После `restart` печатается **только** повторный `READY`.
 
-**Жизненный цикл.** Процесс живёт, пока stdin открыт; EOF → graceful stop (`server.stop()`, отмена скоупов,
-выход `0`). Если драйвер упадёт, ядро закроет пайп и харнесс умрёт сам — висящих процессов, держащих порт,
-не остаётся. Дополнительно `--exit-after-ms=<n>` (сторожевой таймер, по умолчанию несколько минут), чтобы
-время жизни не зависело от stdin в одиночку.
+**Жизненный цикл.** EOF на stdin → graceful stop, выход `0`. Плюс `--exit-after-ms` как страховка от
+подвисшего драйвера. Мусор во входе — строка в stderr и **ненулевой выход**: фикстура обязана падать
+громко.
 
-**Протокол команд на stdin (две команды, до EOF):**
+**Команды stdin — у каждой назван потребитель:**
 
-| Команда | Что делает | Зачем |
+| Команда | Что делает | Потребитель |
 |---|---|---|
-| `emit <id> <state>` | толкает `SessionUpdate` | notify-edge, конфляция на сокете |
-| `restart` | останавливает и поднимает сервер на **том же** порту, **с тем же `TokenHolder`** | единственный честный источник сигнала «демон вернулся» |
+| `restart` | стоп и подъём на **том же** порту, с **тем же** `TokenHolder`, `TicketStore`, `FakeTaskStore` и `TaskService` | задача реаттача |
+| `emit <id> <state>` | `SessionUpdate` в поток `/api/v1/events` | задача бейджей и notify-edge |
+| `task <ref> <state>` | `TaskUpdate` с новым rev → фрейм `task_update` | задачи доски и состояний |
+| `task-add <ref>` | ref, которого сокет ещё не нёс → `task_row` | задача доски |
+| `task-del <ref>` | `TaskUpdate` с `entry = null` → `task_removed` | задача доски |
 
-`restart` на том же порту работоспособен потому, что `src/transport/Server.kt:256` уже ставит
-`reuseAddress = true` — там же комментарий ровно про EADDRINUSE после разрыва. **Тот же `TokenHolder`
-обязателен:** cookie — это `HMAC-SHA256(master-token, "v1|"+issuedAt)`, и новый токен разлогинил бы все
-открытые страницы, из-за чего тест реаттача падал бы по причине, к реаттачу отношения не имеющей.
+`restart` на том же порту возможен потому, что `src/transport/Server.kt:295` уже ставит
+`reuseAddress = true`. **Тот же `TokenHolder` обязателен** — cookie есть `HMAC-SHA256(master-token,
+"v1|"+issuedAt)`, новый токен разлогинил бы все страницы. **Тот же `FakeTaskStore`/`TaskService`
+обязательны** — иначе после restart браузер получает 404 на `/api/v1/projects` и пустую доску там, где до
+restart всё работало. Вложенный `runBlocking` в `stop()` нельзя звать из корутины на однопоточном
+диспетчере.
 
-`drop-ws` **вычеркнута** (ограничение 2).
+**Безопасность edges.** `SafeEdges.kt` подставляет фейковый `DirectoryCompleter` (два потребителя: New
+session и поле пути New project), записывающий-в-память `FileUploader`, `FakeProjectFs` и
+`MemoryProjectFileWriter`. `webUiDir` приходит абсолютным аргументом (`resolveWebUiDir` — `internal`).
 
-**Безопасность edges — обязательна, дефолты конструктора этого не дают.** `directoryCompleter` и
-`fileUploader` по умолчанию `posixDirectoryCompleter`/`posixFileUploader` (`src/transport/Server.kt:147-148`),
-то есть автодополнение cwd читало бы, а загрузка файлов **писала бы** в реальную ФС разработчика. Харнесс
-обязан подставить фейковый completer и записывающий-в-память uploader. Отдельно: `webUiDir` по умолчанию
-cwd-относительный, а `resolveWebUiDir` — `internal` (`src/transport/Server.kt:368`) и из `webuicheck` не
-виден, поэтому абсолютный путь приходит аргументом `--webui-dir` от JVM-фикстуры.
+**Сценарии** — одна `Map<String, Scenario>`; второго списка имён нет.
 
-**Сценарий** — именованная функция, собирающая состояние (список `SessionMeta`; `SessionDto` сервер строит
-сам) и отдающая сконфигурированный сервер. Реестр — одна `Map<String, Scenario>` в одном файле; второго
-списка нет (тот же принцип, что у `lib/commands.js` для палитры).
-
-Стартовый набор: `empty`, `sessions` (разные состояния и cwd — материал для дерева сайдбара), `attention`,
-`terminal`, `restart` (store продолжает сообщать сессию живой **после** перезапуска — иначе тест покажет
-уничтожение кандидата, то есть обратное проверяемому инварианту).
+| Сценарий | Содержимое | Потребитель |
+|---|---|---|
+| `empty` | сессий нет, задач нет | первый запуск, пустые состояния |
+| `sessions` | сессии в разных состояниях, cwd `/a/b`, `/a/c`, `/d` | сайдбар, дерево, маршруты |
+| `attention` | сессия готова уйти в `needs_approval` | бейджи, notify-edge |
+| `terminal` | настоящий pty | терминал, свайп, геометрия, реаттач |
+| `restart` | store продолжает сообщать сессию живой после перезапуска | реаттач |
+| `board` | проект с задачами во всех колонках | доска, drag-and-drop |
+| `board-empty` | проект без задач | пустая доска |
+| `task-detail` | задача с комментариями и зависимостями | детали задачи |
+| `task-linked-session` | задача, связанная с сессией | бейджи, link/unlink |
+| `deep-link` | старт браузера прямо на `/s/{id}` и `/tasks/{ref}` | роутер, deep-link |
 
 **Терминал.** `TerminalBridge` собирается напрямую с `realPtyFactory` и детерминированной командой
-(`/bin/sh -c 'printf …; cat'`) — xterm в браузере получает живые байты, тест печатает и читает `term.buffer`.
-Режим `--pty=fake` **не вводится**: сломать upstream было бы нечем (команды такой нет), а мёртвый режим —
-это YAGNI.
+(`/bin/sh -c 'printf …; cat'`) — воспроизводимо побайтно.
 
 **Чего харнесс не делает:** не пишет в `~/.kotgent`, не поднимает tmux-сервер, не спавнит агентов, не
-трогает SQLite, не пишет в ФС через uploader. Терминирующий и безопасный в автоматизации.
+трогает SQLite, не пишет через uploader, **не создаёт `.kotgent.json` нигде на диске**.
 
 ### Модуль `webuitest` (jvm/lib)
 
 `test-dependencies: - $libs.playwright`; в `gradle/libs.versions.toml` нужны **обе** записи —
-`playwright = "1.62.0"` в `[versions]` и строка в `[libraries]`. `platforms: [jvm]` для `jvm/*` избыточен;
-`src/` может остаться пустым (в спайке так и было).
+`playwright = "1.62.0"` в `[versions]` и строка в `[libraries]`. `src/` может остаться пустым.
 
-Фикстура спавнит `webuicheck` через `ProcessBuilder`, читает `PORT=`/`TICKET=` из stdout с таймаутом,
-пишет команды в stdin, закрывает stdin в `finally`. Бинарник ищется по фиксированным путям
-`build/tasks/_webuicheck_linkMacosArm64{Debug,Release}/webuicheck.kexe`, как `PtyTest` ищет `ptycheck`;
-при отсутствии — **громкое падение** с точной командой, не скип.
+**API фикстуры замораживается на волне 2** и после этого не меняется; участнику волны 3, которому нужен
+хелпер, кладёт его в свой файл:
 
-**Cookie не привязана к порту.** Все харнессы слушают `127.0.0.1` на эфемерных портах, поэтому cookie,
-выданная харнессом A, уедет к харнессу B, не пройдёт HMAC и даст `401` → `location.replace("/auth")`.
-Поэтому **переиспользования состояния контекста нет**: каждый тест получает свежий `BrowserContext` и
-логинится своим тикетом.
+```
+class Harness(scenario: String) : AutoCloseable   // спавн, парсинг хендшейка с таймаутом
+    val port: Int; val ticket: String; val baseUrl: String
+    fun send(line: String)                        // команда в stdin
+fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String)
+fun touchChromium(pw: Playwright): Browser        // hasTouch = true
+```
 
-**Правило имён:** каждый класс обязан кончаться на `Test` (факт 3), иначе «0 tests found» с ненулевым
-кодом. Записать комментарием в `webuitest/module.yaml`.
+**Cookie не привязана к порту**, поэтому переиспользования состояния между харнессами нет: каждый тест
+получает свежий `BrowserContext` и логинится своим тикетом.
 
-**Деление движков:** Chromium (`hasTouch: true`) — жесты и поведение; WebKit — вёрстка.
+**Правило имён:** каждый класс обязан кончаться на `Test` (факт 3).
 
-### Диспозиция всех 47 тестов `WebUiServingTest.kt`
+### Диспозиция
 
-Решено сейчас, а не в конце. `KEEP` = остаётся контрактом отдачи; `T<n>` = закрывается браузерным тестом
-задачи n и удаляется в её же коммите; `DEL` = удаляется без замены.
+Итог классификации всех 136 тестов: **30 keep-in-kotlin**, **90 move-to-browser**, **15
+split-keep-and-move**, **1 delete-no-replacement**.
 
-| Тест | Диспозиция |
-|---|---|
-| `daemonServesIndexHtmlAtRoot` | KEEP |
-| `daemonServesTheAppEntryModule` | KEEP |
-| `theImportMapResolvesToVendoredModulesThatAreActuallyServed` | KEEP |
-| `daemonServesTheComponentAndLibModules` | KEEP (реестр модулей) |
-| `daemonServesTheWebManifestWithItsOwnMediaType` | KEEP |
-| `daemonServesTheAppleTouchIconAndTheSourceArtwork` | KEEP |
-| `indexHtmlDeclaresThePwaInstallSurface` | KEEP |
-| `revisionedAssetsAreImmutableAndEverythingElseRevalidates` | KEEP |
-| `theServedShellCarriesARealRevisionAndNoHandBumpedToken` | KEEP |
-| `theRevisionPrefixOnlyChangesTheAddress` | KEEP |
-| `strippingTheRevisionPrefixLeavesTraversalVisibleToTheGuard` | KEEP |
-| `anyChangedByteChangesTheRevision` | KEEP |
-| `daemonServesTheServiceWorkerAtTheRootScope` | KEEP (путь + заголовки); grep-половина про тело воркера → DEL |
-| `daemonServesTheVendoredXtermFromANestedPath` | KEEP |
-| `daemonServesTheStylesheets` | KEEP |
-| `aMissingStaticFileIs404` | KEEP |
-| `theStaticCatchAllDoesNotShadowTheTokenGatedApi` | KEEP |
-| `versionApiIsAuthenticatedAndOutranksTheStaticCatchAll` | KEEP |
-| `theWebUiWiresTheBrowserPushSubscriptionFlow` | сжать до KEEP-контракта роутов `/push/*` (смонтированы и аутентифицированы); браузерная половина → Post-Completion, см. ниже |
-| `theUnicodeAddonsAreVendoredAndLoadedOnlyWhenThePreferenceSelectsThem` | KEEP (аддоны завендорены и отдаются) + **T15** (грузятся только по преференсу) |
-| `webUiRendersTheCurrentVersionInTheSidebarFooter` | **T8** |
-| `webUiGroupsSessionsIntoARecursiveDirectoryTree` | **T8** |
-| `theCommandRegistryIsTheServedSourceOfSearchAndLeaderCommands` | **T9** |
-| `theCommandPaletteShipsAnAccessibleSearchListbox` | **T9** |
-| `theAppOwnsThePaletteBindingAndCommandContext` | **T9** |
-| `thePaletteReplacesRedundantDesktopChromeWithoutRemovingEntryPoints` | **T9** |
-| `everyDialogIsDismissableWithoutAKeyboard` | **T10** |
-| `theWebUiBridgesPhoneSwipesIntoXtermWheelEvents` | **T11** |
-| `theWebUiReattachesAClosedAliveTerminalAfterBackgroundingOrDaemonRestart` | **T12** |
-| `xtermFitSubtractsThePaddingThatFramesTerminalContent` | **T13** |
-| `theWebUiShipsTheMobileDrawerAndViewportRules` | **T13** |
-| `theDesktopSidebarCollapsesWithoutOverloadingTheMobileDrawer` | **T13** |
-| `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` | **T13** |
-| `theWebUiShipsKeyboardAwareTerminalSizingAndFontPreferences` | **T13** (геометрия) + Post-Completion (safe-area) |
-| `webUiExposesSessionCreationAndLifecycleControls` | **T14** |
-| `webUiUsesOneClickAgentPickerWithoutADefaultSelection` | **T14** |
-| `theAgentRadiosAreHiddenWithoutLeavingTheKeyboardOrTheDarkTheme` | **T14** |
-| `plannedAgentsAreShownWithoutBecomingChoosable` | **T14** |
-| `webUiReportsAMissingAgentInsteadOfSilentlyRefusingToStart` | **T14** |
-| `webUiOffersImportingASessionStartedOutsideKotgent` | **T14** |
-| `webUiExposesThePreferencesScreen` | **T14** |
-| `webUiExposesTheHelpScreen` | **T14** |
-| `webUiExposesThePhoneAccessScreen` | **T14** |
-| `aSecondLifecycleActionIsRefusedOutLoudRatherThanDroppedSilently` | **T14** |
-| `mobilePaletteUploadsPickedFilesToTheSelectedSessionsCurrentFolder` | **T15** |
-| `theWebUiShipsTheMobileSpecialKeysBar` | **T15** |
-| `sessionAndPaletteRowsSharePillInteractionStates` | **DEL** — сравнение CSS-строк для `:hover`/`:active`; поведения за этим нет, а правило геометрии такие утверждения запрещает |
+**Пофайлово, с владельцем переезда:**
 
-**Про push отдельно.** Харнесс намеренно не поднимает `pushStore`/`vapidPublicKey`, поэтому `/push/*` даже
-не смонтированы (`src/transport/Server.kt:188-190`). Полный браузерный флоу всё равно невоспроизводим:
-`pushManager.subscribe` требует настоящего push-сервиса, которого у headless-браузера нет. Поэтому от теста
-остаётся честный серверный контракт, а разрешение и подписка уходят в ручную проверку.
+| Файл | всего | keep | переезд | Задача-владелец |
+|---|---|---|---|---|
+| `SpaRoutingTest.kt` | 10 | 10 | 0 | — (не трогаем) |
+| `WebUiServingTest.kt` | 49 | 17 | 31 (+1 DEL) | задачи 9–18, удаление — задача 24 |
+| `WebUiBoardTest.kt` | 17 | 1 | 16 | задача 19 |
+| `WebUiBoardStyleTest.kt` | 10 | 0 | 10 | задача 20 |
+| `WebUiTaskDetailTest.kt` | 13 | 0 | 13 | задача 21 |
+| `WebUiScreenRoutingTest.kt` | 9 | 0 | 9 | задача 22 |
+| `WebUiRouterTest.kt` | 6 | 1 | 5 | задача 22 |
+| `WebUiTaskBadgeTest.kt` | 8 | 0 | 8 | задача 17 |
+| `WebUiTaskStateTest.kt` | 8 | 1 | 7 | задача 17 |
+| `WebUiTaskCommandsTest.kt` | 6 | 0 | 6 | задача 18 |
+
+**`WebUiServingTest.kt` — поимённо.** KEEP (17): `daemonServesIndexHtmlAtRoot`,
+`daemonServesTheAppEntryModule`, `theImportMapResolvesToVendoredModulesThatAreActuallyServed`,
+`daemonServesTheComponentAndLibModules`, `daemonServesTheWebManifestWithItsOwnMediaType`,
+`daemonServesTheAppleTouchIconAndTheSourceArtwork`, `indexHtmlDeclaresThePwaInstallSurface`,
+`revisionedAssetsAreImmutableAndEverythingElseRevalidates`,
+`theServedShellCarriesARealRevisionAndNoHandBumpedToken`, `theRevisionPrefixOnlyChangesTheAddress`,
+`strippingTheRevisionPrefixLeavesTraversalVisibleToTheGuard`, `anyChangedByteChangesTheRevision`,
+`daemonServesTheServiceWorkerAtTheRootScope` (grep-половина про тело воркера → DEL),
+`daemonServesTheVendoredXtermFromANestedPath`, `daemonServesTheStylesheets`, `aMissingStaticFileIs404`,
+`theStaticCatchAllDoesNotShadowTheTokenGatedApi`, `versionApiIsAuthenticatedAndOutranksTheStaticCatchAll`,
+`theBrowserLearnsTheApiPrefixInExactlyOnePlaceAndExemptsTheAuthBootstrap` (KEEP-с-усилением: в браузере
+перехватить все запросы страницы и проверить, что каждый несёт `/api/v1`, кроме `/auth*`),
+`theWebUiWiresTheBrowserPushSubscriptionFlow` (сжать до контракта роутов `/api/v1/push/*`),
+`theUnicodeAddonsAreVendoredAndLoadedOnlyWhenThePreferenceSelectsThem` (половина «завендорены и отдаются»).
+
+DEL без замены: `sessionAndPaletteRowsSharePillInteractionStates` — сравнение CSS-строк для `:hover`/`:active`.
+
+Переезд — по задачам: 9 сайдбар и маршрут (`webUiGroupsSessionsIntoARecursiveDirectoryTree`,
+`webUiRendersTheCurrentVersionInTheSidebarFooter`); 10 палитра (четыре теста реестра, listbox, биндинга и
+десктопного хрома); 11 light dismiss; 12 свайп; 13 реаттач; 14 геометрия и вёрстка (FitAddon, drawer,
+сворачивание сайдбара, карточки, клавиатурный сайзинг, `theNotificationsToggleIsDrawnInTheShellsOwnAccent`
+— computed color в двух состояниях; утверждения о внутренностях SVG-маски и об отсутствии литералов замены
+не имеют и удаляются); 15 диалоги сессии (девять тестов New session / Import / Preferences / Help / Phone
+access / второе действие жизненного цикла); 16 mobile features (key bar, upload, unicode-преференс).
+
+## Параллельное исполнение волнами
+
+### Разметка
+
+У каждой задачи есть `**Wave:** K` и `**Depends:** <номера|—>`. Закрывающие проходы — настоящие секции
+`### Task N: Закрытие волны K` со своими чекбоксами, поэтому при обычном последовательном `/planning:exec`
+план исполняется корректно: секции идут по порядку, закрывающая догоняет валидацию и коммит.
+Реструктуризация — строгое надмножество, а не форк. Волновой режим требует **явного** указания при
+запуске («исполнять волнами по разделу "Параллельное исполнение"»), потому что `SKILL.md` в цепочку
+оверрайдов не входит и его запрет batch-spawn сам собой не снимается.
+
+### Правила участника волны
+
+Переопределение `prompts/task.md` кладётся в `.claude/exec-plan/prompts/task.md`:
+
+- задача адресуется **по имени** («Task 10: Браузерные тесты командной палитры»), а не «первая секция с
+  `[ ]`» — иначе два участника выберут одну секцию;
+- **не править файл плана**: вместо простановки галочек участник возвращает блок `DONE:` с дословными
+  строками выполненных чекбоксов и блок `FILES:` со всеми созданными/изменёнными/удалёнными путями;
+- **не запускать `git`** — ни `add`, ни `commit`, ни `stash`, ни `checkout`;
+- **не запускать `./kotlin`** и вообще ничего из `## Validation Commands`;
+- прогресс — только однострочный режим `task N: …`; браузерные задачи дополнительно логируют по строке
+  `[replaces] task N: WebUiServingTest.<имя>` на каждый замещаемый тест этого файла.
+
+### Контракт закрывающего прохода
+
+Один сабагент, строго после возврата всех участников волны:
+
+1. `git status --porcelain` — множество изменённых файлов обязано совпадать с объединением `FILES:`
+   участников; лишний файл — стоп с отчётом;
+2. применить регистровые правки волны (`project.yaml`, корневой `module.yaml`);
+3. прогнать `## Validation Commands` целиком — **один раз на волну**;
+4. при падении — не чинить широко, а вернуть перечень «файл участника → ошибка»; оркестратор перезапускает
+   **только** упавших участников с текстом ошибки (волновой аналог `task_retries`);
+5. при успехе — пометить `[x]` все чекбоксы всех задач волны;
+6. один коммит на волну, включающий файл плана;
+7. многострочный блок прогресса.
+
+**Фанаут эмитит оркестратор** — участники это N блоков `tool_use` в одном ответе главной сессии, без
+`run_in_background`. Делегировать волну «бригадиру»-сабагенту нельзя: у сабагентов нет доступа к Agent tool.
+
+### Волны
+
+| Волна | Задачи | Ширина |
+|---|---|---|
+| 1 — фундамент | 1 `fakes`, 2 CI → 3 закрытие | 2 |
+| 2 — харнесс и фикстура | 4 каркас, 5 сценарии+команды, 6 сценарии доски, 7 `webuitest` → 8 закрытие | 4 |
+| 3 — браузерные тесты | 9–22 → 23 закрытие | **14** |
+| 4 — дочистка | 24 | 1 |
+| 5 — приёмка | 25 | 1 |
+| 6 — документация | 26 | 1 |
+
+**Непересечение файлов.** Волна 1: `fakes/**` ∪ `{TransportTest.kt, test/daemon/FakeTmux.kt}` против
+`{ci.yml, .gitignore}` = ∅; регистры — только у закрытия. Волна 2: `{Main,SafeEdges,SelfCheck}.kt +
+WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sessions,Attention,Restart,Terminal}.kt`
+против `scenarios/Board*.kt` против `webuitest/** + gradle/libs.versions.toml` = ∅. Волна 3: четырнадцать
+разных файлов в `webuitest/test/`, плюс восемь grep-файлов, у каждого ровно один владелец; **никто не
+открывает `test/transport/WebUiServingTest.kt`**.
+
+**Почему T4 не в волне 1**, хотя файлы позволяют: извлечение `FakeEventStore` затрагивает 1432 нативных
+теста, и дешевле узнать о поломке до того, как на неё сядут четыре автора волны 2.
+
+**Замороженные швы волны 2** (участники пишут вслепую друг относительно друга, поэтому контракт лежит
+здесь, а не выясняется из чужого кода): `SelfCheck.kt` (владелец — задача 4) объявляет
+`class SelfCheckCase(val name: String, val run: suspend () -> Unit)` и
+`fun runSelfCheck(cases: List<SelfCheckCase>): Int`; `Scenarios.kt` (задача 5) объявляет `SCENARIO_NAMES`,
+`fun scenarioByName(name: String): Scenario?` и заранее называет board-сценарии, делегируя в файлы задачи 6;
+`Commands.kt` (задача 5) — `fun handleCommand(line: String, ctx: HarnessContext): Boolean`.
+**`EXPECTED_CHECKS` пишет только задача 4** и больше никто — он константа.
+
+### Коллизии и развязки
+
+| Файл | Кто хотел бы править | Развязка |
+|---|---|---|
+| `test/transport/WebUiServingTest.kt` | 9–18 и 24 | Все удаления → только задача 24 (волна 4). Задачи 9–18 файл не открывают; связь — `[replaces]` + сверка |
+| `webuicheck/src/Main.kt` | 4, 5, 6 | Владелец — задача 4; остальные подключаются через замороженные швы |
+| `test/transport/WebUiCheckTest.kt` | 4, 5, 6 | Владелец — задача 4; `EXPECTED_CHECKS` — константа |
+| `project.yaml`, корневой `module.yaml` | 1, 4, 7 | Только закрывающий проход волны |
+| `gradle/libs.versions.toml` | 7 | Владелец один, оставить |
+| `CLAUDE.md` | 26 + ревью-фиксеры | Задача 26 — одиночная волна, ревью идёт после всех волн |
+| Файл плана, индекс git, `build/`, порты, кэш браузеров | все | Только закрывающий проход |
+
+**Отвергнутые развязки.** Предварительно разрезать `WebUiServingTest.kt` по областям — цель ровно
+обратная, и файл параллельно растёт. Отдельный worktree на участника — не снимает слепоту, добавляет мердж
+и вторую копию плана. `flock` на `.git/index` — оставляет N коммитов вместо одного и не решает драку за
+`build/`.
+
+### Полнота проверок `/planning:exec` не страдает
+
+- **Ревью-фазы (шаги 7–10) читают `git diff DEFAULT_BRANCH...HEAD`**, то есть ветку целиком, и о задачах
+  не знают. Единственное условие — каждая волна закоммичена до шага 7; это и обеспечивает закрывающий
+  проход. Худший случай фанаута не меняется: 5 + 4×2 = 13 ревьюеров, до 5 фиксеров в фазе 1, плюс smells,
+  до 10 внешних итераций и финальный проход из двух агентов.
+- **Условие останова** — «в плане не осталось `[ ]`» — работает как прежде.
+- **Предел 50 итераций** не достигается: 6 эмиссий и 6 закрытий.
+- **Финализатор** сжимает историю при 5+ коммитах; волновых коммитов ровно 6.
+- Что теряется честно: **гранулярность истории** (6 коммитов вместо 26) и **валидация на задачу** (ошибка
+  компиляции всплывает на закрытии волны). Первое компенсируется телом коммита волны, второе — узкой
+  шириной кодовых волн и замороженными швами.
+
+### Выигрыш
+
+| Метрика | Последовательно | Волнами |
+|---|---|---|
+| Слотов исполнения | 26 | **6** |
+| Тяжёлых прогонов `build && test` | 26 | **6** |
+| Критическая цепь | 26 звеньев | **6**: задача 1 → 4 → самая долгая из 9–22 → 24 → 25 → 26 |
+| Самая широкая волна | 1 | **14** |
+
+**Если волна упала:** закрывающий возвращает «файл участника → ошибка», оркестратор перезапускает только
+упавших. Если падений в волне 3 больше трёх — разделить её на 7+7 (файлы попарно непересекающиеся,
+разделение бесплатно) и закрыть двумя проходами; цепь удлиняется на одно звено.
+
+## Validation Commands
+
+Запускает **только** закрывающий проход волны (и одиночные задачи 24/25/26).
+Участники волны не запускают отсюда ничего.
+
+```
+./kotlin build     # обязателен перед test: PtyTest экзекает ptycheck,
+                   # WebUiCheckTest и webuitest — webuicheck
+./kotlin test
+# быстрые петли, не заменяющие агрегат:
+#   ./kotlin task :kotgent:testMacosArm64Debug
+#   ./kotlin task :webuitest:testJvm
+```
 
 ## What Goes Where
 
 - **Implementation Steps** (`[ ]`): всё, что делается в этом репозитории.
-- **Post-Completion** (без чекбоксов): проверки на живом железе, которые Playwright принципиально не
-  закрывает.
+- **Post-Completion** (без чекбоксов): проверки на живом железе, которые Playwright не закрывает.
 
 ## Implementation Steps
 
-### Task 1: Модуль `fakes` — `FakeTmux` и извлечённый `FakeEventStore`
+### Task 1: Модуль `fakes` — пять двойников
+
+**Wave:** 1 · **Depends:** —
 
 **Files:**
-- Create: `fakes/module.yaml`
-- Create: `fakes/src/daemon/FakeTmux.kt` (переезд из `test/daemon/FakeTmux.kt`)
-- Create: `fakes/src/store/FakeEventStore.kt` (извлечение из `test/transport/TransportTest.kt:1802`)
-- Modify: `project.yaml`, `module.yaml`, `test/transport/TransportTest.kt`
+- Create: `fakes/module.yaml`, `fakes/src/daemon/FakeTmux.kt`, `fakes/src/store/FakeEventStore.kt`, `fakes/src/store/FakeTaskStore.kt`, `fakes/src/task/FakeProjectFs.kt`, `fakes/src/task/MemoryProjectFileWriter.kt`
+- Modify: `test/transport/TransportTest.kt`
+- Delete: `test/daemon/FakeTmux.kt`
 
-- [ ] создать `fakes/module.yaml`: `kmp/lib`, `platforms: [macosArm64]`, `dependencies: - ..`, Kotlin 2.4.10; в заголовочном комментарии — зачем модуль нужен (два потребителя) и что граф `рут(test) → fakes → рут(main)` тулчейном проверен
-- [ ] перенести `FakeTmux` **без изменения пакета** (`io.kotgent.daemon`), удалив оригинал
-- [ ] извлечь `FakeEventStore` из `TransportTest`: сделать top-level и `public`, оставить реализацию `EventStore` + `PreferencesStore` как есть; убедиться, что `TransportTest` компилируется против него
-- [ ] зарегистрировать `- ./fakes` в `project.yaml` (список держать отсортированным) и в `test-dependencies:` рутового `module.yaml`
-- [ ] проверить, что `fakes` компилируется как **main**-код `kmp/lib` (другой набор предупреждений и API-поверхность, чем у тестового фрагмента); при требовании импорта в потребителях — добавить импорт, а не откатывать переезд
-- [ ] запустить `./kotlin build && ./kotlin test` — **921 / 0 skipped**, это и есть тест переезда
-- [ ] тесты должны пройти до перехода к Task 2
+- [ ] создать `fakes/module.yaml`: `kmp/lib`, `platforms: [macosArm64]`, `dependencies: - ..`, Kotlin 2.4.10; в комментарии — зачем модуль нужен и что граф `рут(test) → fakes → рут(main)` тулчейном проверен
+- [ ] перенести `FakeTmux` без изменения пакета `io.kotgent.daemon`
+- [ ] извлечь `FakeEventStore` из `TransportTest.kt:1907` в top-level `public`, сохранив его собственный небуферизованный `reliableSessionUpdates`
+- [ ] **переопределить в нём `setTaskRef`, `setProjectId`, `sessionsHoldingTask`** поверх той же `LinkedHashMap` с `++revCounter` и `emitFromMeta` — дефолты интерфейса бросают, и без этого любой link/unlink даёт 500
+- [ ] написать `FakeTaskStore` по прототипу `TaskEventsTest.kt:445` (`TaskStore` + `TaskTracker`), `FakeProjectFs` и `MemoryProjectFileWriter` (оба интерфейса, всё в памяти)
+- [ ] `TransportTest.kt` получает импорт; при требовании импорта в других потребителях — добавить импорт, не откатывать переезд
+- [ ] отчитаться блоками `DONE:` и `FILES:`; регистры (`project.yaml`, корневой `module.yaml`) **не трогать** — их правит закрытие волны
 
-### Task 2: Каркас `webuicheck` — `--self-check`, хендшейк, безопасные edges
+### Task 2: CI — кэш браузеров, артефакты падений, `.gitignore`
 
-**Files:**
-- Create: `webuicheck/module.yaml`
-- Create: `webuicheck/src/Main.kt`
-- Create: `webuicheck/src/SafeEdges.kt`
-- Create: `test/transport/WebUiCheckTest.kt`
-- Modify: `project.yaml`
-
-- [ ] создать `webuicheck/module.yaml` по образцу `ptycheck/module.yaml`: `macos/app`, `macosArm64`, зависимости `..`, `../sysnative`, `./fakes`, `entryPoint: io.kotgent.webuicheck.main`; в комментарии — зачем это main-бинарник и что он не трогает `~/.kotgent`/tmux/SQLite/ФС
-- [ ] реализовать разбор аргументов `--self-check`, `--scenario=<name>`, `--webui-dir=<abs>`, `--exit-after-ms=<n>`; неизвестный сценарий — падение с перечислением известных имён
-- [ ] реализовать `SafeEdges.kt`: фейковый `DirectoryCompleter` и записывающий-в-память `FileUploader`, чтобы автодополнение и загрузка не касались реальной ФС
-- [ ] поднять `KotgentServer(port = 0)` на `FakeTmux` + `FakeEventStore` + безопасных edges + переданном `webUiDir`, сминтить тикет через `TicketStore.issue(token)`, напечатать ровно `PORT=`/`TICKET=`/`READY` в stdout, всё прочее — в stderr
-- [ ] реализовать цикл чтения stdin (EOF → graceful stop, выход `0`) и сторожевой таймер `--exit-after-ms`
-- [ ] реализовать режим `--self-check`: проверить старт, хендшейк, ответ `/`, редемпцию тикета, отказ неизвестного сценария; напечатать `SUMMARY total=N failed=0`; stdin не читать
-- [ ] написать `test/transport/WebUiCheckTest.kt` по образцу `PtyTest`: найти бинарник (громкое падение с инструкцией `./kotlin build`), выполнить `--self-check` через `ProcessRunner.run`, сверить `SUMMARY total=$EXPECTED_CHECKS failed=0` и код `0`; при падении печатать захваченные stdout/stderr
-- [ ] зарегистрировать `- ./webuicheck` в `project.yaml`
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 3
-
-### Task 3: Реестр сценариев и состояния сессий
-
-**Files:**
-- Create: `webuicheck/src/Scenarios.kt`
-- Modify: `webuicheck/src/Main.kt`
-
-- [ ] ввести тип `Scenario` и **одну** `Map<String, Scenario>` — второго списка имён быть не должно
-- [ ] реализовать `empty`, `sessions` (несколько `SessionMeta` в разных состояниях и с cwd `/a/b`, `/a/c`, `/d`), `attention`
-- [ ] прокинуть выбор сценария из `--scenario` в сборку состояния
-- [ ] добавить в `--self-check` проверки: для каждого сценария `/sessions` отдаёт ожидаемое число строк и ожидаемые состояния; сценарий `sessions` отдаёт именно те cwd, на которых строится дерево
-- [ ] обновить `EXPECTED_CHECKS` в `WebUiCheckTest.kt`
-- [ ] `./kotlin test` — зелено перед Task 4
-
-### Task 4: Команды stdin `emit` и `restart`
-
-**Files:**
-- Create: `webuicheck/src/Commands.kt`
-- Modify: `webuicheck/src/Main.kt`, `webuicheck/src/Scenarios.kt`
-
-- [ ] реализовать построчный разбор команд; неизвестная команда — строка в stderr, процесс живёт
-- [ ] `emit <id> <state>` — толкнуть `SessionUpdate` в поток, который читает `/events`
-- [ ] `restart` — `server.stop()` и повторный старт на **том же** порту с **тем же** `TokenHolder`; печатать повторный `READY` и только его
-- [ ] добавить сценарий `restart`, чей store продолжает сообщать сессию живой после перезапуска
-- [ ] добавить в `--self-check` проверки обеих команд, вызываемые внутри процесса (не через stdin): `emit` порождает `session_update`, `restart` оставляет порт обслуживающим и cookie валидной
-- [ ] обновить `EXPECTED_CHECKS`; `./kotlin test` — зелено перед Task 5
-
-### Task 5: Сценарий `terminal` на настоящем pty
-
-**Files:**
-- Modify: `webuicheck/src/Scenarios.kt`
-
-- [ ] собрать `TerminalBridge` напрямую (`upstreamCommand` + `seedProvider` + `realPtyFactory` + `scope`) и передать в `terminalBridgeFactory` сервера
-- [ ] использовать детерминированную команду `/bin/sh -c 'printf …; cat'`; убедиться, что вывод воспроизводим побайтно (никаких меток времени и зависящего от окружения текста)
-- [ ] добавить в `--self-check` проверку: подключение к терминальному WS отдаёт ожидаемый префикс, записанные байты возвращаются эхом
-- [ ] обновить `EXPECTED_CHECKS`
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 6
-
-### Task 6: Модуль `webuitest` — фикстура, логин тикетом, дымовой тест
-
-**Files:**
-- Create: `webuitest/module.yaml`, `webuitest/test/HarnessFixture.kt`, `webuitest/test/SmokeTest.kt`
-- Modify: `project.yaml`, `gradle/libs.versions.toml`
-
-- [ ] добавить в каталог **обе** записи: `playwright = "1.62.0"` в `[versions]` и `playwright = { module = "com.microsoft.playwright:playwright", version.ref = "playwright" }` в `[libraries]`; зарегистрировать модуль в `project.yaml`
-- [ ] создать `webuitest/module.yaml`: `jvm/lib`, `test-dependencies: - $libs.playwright`; **в комментарии зафиксировать правило суффикса `Test`** и что его нарушение даёт молчаливое «0 tests found»
-- [ ] написать `HarnessFixture.kt`: `ProcessBuilder` на `webuicheck` (поиск бинарника, громкое падение с инструкцией), передача абсолютного `--webui-dir`, парсинг хендшейка с таймаутом, отправка команд, закрытие stdin и ожидание выхода в `finally`
-- [ ] добавить логин: свежий `BrowserContext` на каждый тест, открыть `/auth`, ввести тикет, дождаться перехода на `/`; переиспользования состояния между харнессами **не делать** (cookie не привязана к порту)
-- [ ] написать `SmokeTest`: сценарий `sessions`, Chromium, после логина виден сайдбар с ожидаемым числом строк
-- [ ] написать тест отрицательного пути: неверный тикет не пускает и оставляет форму
-- [ ] `./kotlin build && ./kotlin test` — зелено перед Task 7
-
-### Task 7: CI — кэш браузеров, артефакты падений, `.gitignore`
+**Wave:** 1 · **Depends:** —
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`, `.gitignore`
 
-- [ ] добавить шаг `actions/cache` на `~/Library/Caches/ms-playwright` с ключом от версии Playwright; в комментарии записать, что Node ставить не нужно (драйвер вшит в артефакт)
+- [ ] добавить шаг `actions/cache` на `~/Library/Caches/ms-playwright` с ключом от версии Playwright `1.62.0`; в комментарии записать, что Node ставить не нужно — драйвер вшит в артефакт
 - [ ] добавить загрузку артефактов при падении: скриншоты и трейсы
 - [ ] добавить в `.gitignore` каталог вывода Playwright
-- [ ] отметить в комментарии, что ключ кэша тулчейна `hashFiles('kotlin', 'project.yaml', 'module.yaml')` не инвалидируется тремя новыми манифестами модулей
-- [ ] убедиться, что порядок шагов сохраняет инвариант «`./kotlin build` перед `./kotlin test`» и что прогон проходит при пустом кэше
-- [ ] `./kotlin build && ./kotlin test` локально — зелено перед Task 8
+- [ ] в комментарии отметить: `project.yaml` **входит** в ключ кэша тулчейна (`ci.yml:28`), поэтому регистрация модулей его инвалидирует; неинвалидирующими остаются три **новых** `*/module.yaml`, которых glob не ловит
+- [ ] отчитаться `DONE:` и `FILES:`
 
-### Task 8: Браузерные тесты сайдбара
+### Task 3: Закрытие волны 1
+
+**Wave:** 1 · **Depends:** 1, 2
+
+- [ ] сверить `git status --porcelain` с объединением `FILES:` задач 1–2; лишний файл — стоп с отчётом
+- [ ] зарегистрировать `- ./fakes` в `project.yaml` (список алфавитный) и в `test-dependencies:` корневого `module.yaml`
+- [ ] прогнать `## Validation Commands`: baseline **1432 нативных теста / 0 skipped** обязан сохраниться — это и есть тест переезда
+- [ ] при падении вернуть «файл участника → ошибка» без широкого чинения
+- [ ] пометить `[x]` чекбоксы задач 1–2, один коммит волны вместе с файлом плана, многострочная запись в прогресс
+
+### Task 4: Каркас `webuicheck` — аргументы, безопасные edges, `--self-check`
+
+**Wave:** 2 · **Depends:** 1
+
+**Files:**
+- Create: `webuicheck/module.yaml`, `webuicheck/src/Main.kt`, `webuicheck/src/SafeEdges.kt`, `webuicheck/src/SelfCheck.kt`, `test/transport/WebUiCheckTest.kt`
+
+- [ ] создать `webuicheck/module.yaml` по образцу `ptycheck/module.yaml`: `macos/app`, `macosArm64`, зависимости `..`, `../sysnative`, `./fakes`, `entryPoint: io.kotgent.webuicheck.main`
+- [ ] разобрать `--self-check`, `--scenario=<name>`, `--webui-dir=<abs>`, `--exit-after-ms=<n>`; неизвестный сценарий и мусор на stdin — ненулевой выход
+- [ ] `SafeEdges.kt`: фейковый `DirectoryCompleter`, uploader в память, `FakeProjectFs`, `MemoryProjectFileWriter` — три пишущих edge вместо прежних двух
+- [ ] поднять `KotgentServer(port = 0)` на `FakeTmux` + `FakeEventStore` + `FakeTaskStore` + настоящем `TaskService` + безопасных edges; **передать `taskStore` и `taskService`**, иначе `/api/v1/projects` даёт 404 и каждый сценарий стартует с красной строкой
+- [ ] напечатать ровно `PORT=`/`TICKET=`/`READY` в stdout (тикет — `TicketStore.issue`), всё прочее в stderr; EOF → graceful stop, плюс сторожевой таймер
+- [ ] объявить швы: `SelfCheckCase`, `runSelfCheck`, `handleCommand`, `HarnessContext` — их подключат задачи 5 и 6
+- [ ] `--self-check` содержит **только cinterop-зависимые** проверки (настоящий `Pty` под настоящим `TerminalBridge` внутри настоящего сервера); `EXPECTED_CHECKS` — константа, которую больше никто не правит
+- [ ] написать `test/transport/WebUiCheckTest.kt` по образцу `PtyTest`: найти бинарник, выполнить `--self-check` через `ProcessRunner.run`, сверить `SUMMARY` и код `0`, печатать захваченные потоки при падении
+- [ ] отчитаться `DONE:` и `FILES:`; `project.yaml` не трогать
+
+### Task 5: Содержимое харнесса — сценарии и команды
+
+**Wave:** 2 · **Depends:** 1, 4 (швы)
+
+**Files:**
+- Create: `webuicheck/src/Scenarios.kt`, `webuicheck/src/Commands.kt`, `webuicheck/src/scenarios/{Empty,Sessions,Attention,Restart,Terminal}.kt`
+
+- [ ] `Scenarios.kt`: одна `Map<String, Scenario>` со **всеми** именами, включая board-сценарии задачи 6 (делегирование в её файлы через шов)
+- [ ] реализовать `empty`, `sessions` (cwd `/a/b`, `/a/c`, `/d`), `attention`, `restart` (store продолжает сообщать сессию живой после перезапуска)
+- [ ] `terminal`: `TerminalBridge` напрямую с `realPtyFactory` и детерминированной командой `/bin/sh -c 'printf …; cat'`, воспроизводимой побайтно
+- [ ] `Commands.kt`: `restart` (тот же порт, тот же `TokenHolder`, `TicketStore`, `FakeTaskStore`, `TaskService`; печатать только повторный `READY`; вложенный `runBlocking` не звать из корутины на однопоточном диспетчере) и `emit <id> <state>`
+- [ ] отчитаться `DONE:` и `FILES:`; `Main.kt` и `WebUiCheckTest.kt` **не открывать**
+
+### Task 6: Сценарии доски и команды задач
+
+**Wave:** 2 · **Depends:** 1, 4 (швы)
+
+**Files:**
+- Create: `webuicheck/src/scenarios/Board.kt`, `webuicheck/src/scenarios/TaskDetail.kt`, `webuicheck/src/scenarios/DeepLink.kt`, `webuicheck/src/TaskCommands.kt`
+
+- [ ] реализовать сценарии `board`, `board-empty`, `task-detail`, `task-linked-session`, `deep-link` поверх `FakeTaskStore`
+- [ ] реализовать команды `task <ref> <state>` (→ `task_update`), `task-add <ref>` (→ `task_row`), `task-del <ref>` (→ `task_removed`)
+- [ ] добавить сценарий гонки «тот же ref пришёл и ответом REST, и фреймом» — единственный способ проверить newest-rev-wins в живом браузере
+- [ ] отчитаться `DONE:` и `FILES:`; `Scenarios.kt`, `Commands.kt`, `Main.kt` **не открывать**
+
+### Task 7: Модуль `webuitest` — фикстура, логин тикетом, дымовой тест
+
+**Wave:** 2 · **Depends:** 4 (хендшейк и путь к бинарнику)
+
+**Files:**
+- Create: `webuitest/module.yaml`, `webuitest/test/HarnessFixture.kt`, `webuitest/test/SmokeTest.kt`
+- Modify: `gradle/libs.versions.toml`
+
+- [ ] добавить в каталог **обе** записи: `playwright = "1.62.0"` в `[versions]` и строку в `[libraries]`
+- [ ] `webuitest/module.yaml`: `jvm/lib`, `test-dependencies: - $libs.playwright`; **в комментарии зафиксировать правило суффикса `Test`** и что его нарушение даёт молчаливое «0 tests found»
+- [ ] `HarnessFixture.kt` строго по замороженному API из Technical Details: `Harness`, `loginWithTicket`, `touchChromium`; поиск бинарника по фиксированным путям с громким падением и инструкцией `./kotlin build`; передача абсолютного `--webui-dir`; закрытие stdin и ожидание выхода в `finally`
+- [ ] свежий `BrowserContext` на каждый тест — cookie не привязана к порту, переиспользование ломает логин
+- [ ] `SmokeTest`: сценарий `sessions`, после логина виден сайдбар с ожидаемым числом строк; отрицательный путь — неверный тикет оставляет форму
+- [ ] отчитаться `DONE:` и `FILES:`; `project.yaml` не трогать
+
+### Task 8: Закрытие волны 2
+
+**Wave:** 2 · **Depends:** 4, 5, 6, 7
+
+- [ ] сверить `git status --porcelain` с объединением `FILES:` задач 4–7
+- [ ] зарегистрировать `- ./webuicheck` и `- ./webuitest` в `project.yaml`
+- [ ] прогнать `## Validation Commands` — впервые с браузерами; зафиксировать время прогона в прогресс-файле
+- [ ] при падении вернуть «файл участника → ошибка»; оркестратор перезапускает только упавших
+- [ ] пометить `[x]` чекбоксы задач 4–7, один коммит волны вместе с файлом плана
+
+### Task 9: Браузерные тесты сайдбара и маршрута
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/SidebarTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест: сценарий `sessions`, из реального DOM восстанавливается ожидаемая иерархия каталогов
-- [ ] тест: смена уровня группировки в Preferences меняет дерево
-- [ ] тест: в футере видна текущая версия
-- [ ] перенести объясняющие комментарии и удалить `webUiGroupsSessionsIntoARecursiveDirectoryTree`, `webUiRendersTheCurrentVersionInTheSidebarFooter`
-- [ ] `./kotlin test` — зелено перед Task 9
+- [ ] сценарий `sessions`: из реального DOM восстанавливается ожидаемая иерархия каталогов
+- [ ] смена уровня группировки в Preferences меняет дерево; в футере видна текущая версия
+- [ ] **выбор строки сайдбара двигает `location.pathname`** на `/s/{id}`, Back возвращает
+- [ ] сценарий `empty`: первый запуск показывает прямое действие «Start a session»
+- [ ] залогировать `[replaces] task 9: …` для замещаемых тестов `WebUiServingTest`
 
-### Task 9: Браузерные тесты командной палитры
+### Task 10: Браузерные тесты командной палитры
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/CommandPaletteTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест поиска: `⌘K`, ввод подстроки, фильтрация, `aria-activedescendant` следует за стрелками, Enter выполняет команду
-- [ ] тест лидер-режима: аккорд открывается, мнемоника срабатывает, зарезервированные чорды видимы, но неактивны
-- [ ] тест: палитра уступает клавиатуру, когда открыт другой диалог; точки входа, убранные из десктопного хрома, остаются достижимыми
-- [ ] перенести комментарии и удалить `theCommandRegistryIsTheServedSourceOfSearchAndLeaderCommands`, `theCommandPaletteShipsAnAccessibleSearchListbox`, `theAppOwnsThePaletteBindingAndCommandContext`, `thePaletteReplacesRedundantDesktopChromeWithoutRemovingEntryPoints`
-- [ ] `./kotlin test` — зелено перед Task 10
+- [ ] поиск: `⌘K`, ввод подстроки, фильтрация, `aria-activedescendant` следует за стрелками, Enter выполняет команду
+- [ ] лидер-режим: аккорд открывается, мнемоника срабатывает, зарезервированные чорды видимы, но неактивны
+- [ ] палитра уступает клавиатуру другому диалогу; точки входа, убранные из десктопного хрома, достижимы
+- [ ] палитра отвечает за тот экран, на котором открыта
+- [ ] залогировать `[replaces] task 10: …`
 
-### Task 10: Браузерные тесты light dismiss диалогов
+### Task 11: Браузерные тесты light dismiss диалогов
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/DialogDismissTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест: в Chromium с `hasTouch` tap по backdrop закрывает диалог, tap по панели — нет
-- [ ] тест: press внутри панели с отпусканием снаружи **не** закрывает (решает геометрия, не target)
-- [ ] тест: второй контакт не закрывает диалог, начатый первым — инвариант одного `pointerId` на down/up/click
-- [ ] тест: экран в состоянии busy не закрывается ни жестом, ни backdrop-ом, но Esc и × работают всегда
-- [ ] перенести весь объясняющий комментарий (ключевая часть проектного журнала) и удалить `everyDialogIsDismissableWithoutAKeyboard`
-- [ ] `./kotlin test` — зелено перед Task 11
+- [ ] tap по backdrop закрывает, tap по панели — нет
+- [ ] press внутри панели с отпусканием снаружи **не** закрывает (решает геометрия, не target)
+- [ ] второй контакт не закрывает диалог, начатый первым — инвариант одного `pointerId` на down/up/click
+- [ ] экран в состоянии busy не закрывается ни жестом, ни backdrop-ом, но Esc и × работают всегда
+- [ ] перенести объясняющий комментарий (ключевая часть проектного журнала); залогировать `[replaces] task 11: …`
 
-### Task 11: Браузерные тесты свайпа в терминале
+### Task 12: Браузерные тесты свайпа в терминале
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/TerminalSwipeTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест: сценарий `terminal`, вертикальный свайп приводит к wheel-событиям и видимому скроллу
-- [ ] тест: горизонтальный свайп жест не захватывает
-- [ ] тест: свайп не вызывает появления клавиатуры (фокус не уходит в helper-textarea)
-- [ ] перенести комментарии и удалить `theWebUiBridgesPhoneSwipesIntoXtermWheelEvents`
-- [ ] `./kotlin test` — зелено перед Task 12
+- [ ] сценарий `terminal`: вертикальный свайп даёт wheel-события и видимый скролл
+- [ ] горизонтальный свайп жест не захватывает
+- [ ] свайп не вызывает клавиатуру (фокус не уходит в helper-textarea)
+- [ ] залогировать `[replaces] task 12: …`
 
-### Task 12: Браузерные тесты реаттача терминала
+### Task 13: Браузерные тесты реаттача терминала
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/TerminalReattachTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест: команда `restart` → сокет переоткрылся и новые байты идут (**не** «прежнее содержимое вернулось»: `stop()` гасит мосты и убивает pty-ребёнка)
-- [ ] тест: закрытие сокета событий из `page.evaluate` → переподключение по его возврату
-- [ ] тест: переключение на другую сессию уничтожает кандидата на реаттач
-- [ ] перенести комментарии и удалить `theWebUiReattachesAClosedAliveTerminalAfterBackgroundingOrDaemonRestart`
-- [ ] `./kotlin test` — зелено перед Task 13
+- [ ] `restart` → сокет переоткрылся и новые байты идут (**не** «прежнее содержимое вернулось»: `stop()` убивает pty-ребёнка)
+- [ ] закрытие сокета событий из `page.evaluate` → переподключение по его возврату
+- [ ] ветки «кандидат уничтожен на 4xx» и «кандидат сохранён при недостижимом демоне» — перехватом запросов в браузере, без участия харнесса
+- [ ] переключение на другую сессию уничтожает кандидата; учесть, что оно теперь ещё и меняет маршрут
+- [ ] залогировать `[replaces] task 13: …`
 
-### Task 13: Браузерные тесты вёрстки в WebKit
+### Task 14: Браузерные тесты геометрии и вёрстки
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/LayoutTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест: FitAddon получает размер за вычетом padding — сверяются `getBoundingClientRect` и `cols`/`rows`, последняя строка не обрезана
-- [ ] тест: mobile drawer открывается и закрывается; десктопный сайдбар сворачивается, не перегружая мобильный ящик
-- [ ] тест: карточки не переносят padding на хост терминала (проверяется геометрией)
-- [ ] тест: размер шрифта терминала из преференсов меняет `cols`/`rows`
-- [ ] все утверждения читают геометрию, а не строки `getComputedStyle`; safe-area **не** проверяется — она нулевая в headless и уходит в Post-Completion
-- [ ] перенести комментарии и удалить `xtermFitSubtractsThePaddingThatFramesTerminalContent`, `theWebUiShipsTheMobileDrawerAndViewportRules`, `theDesktopSidebarCollapsesWithoutOverloadingTheMobileDrawer`, `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost`, `theWebUiShipsKeyboardAwareTerminalSizingAndFontPreferences`
-- [ ] `./kotlin test` — зелено перед Task 14
+- [ ] FitAddon получает размер за вычетом padding — сверяются `getBoundingClientRect` и `cols`/`rows`, последняя строка не обрезана
+- [ ] mobile drawer открывается и закрывается; десктопный сайдбар сворачивается, не перегружая мобильный ящик
+- [ ] карточки не переносят padding на хост терминала; размер шрифта из преференсов меняет `cols`/`rows`
+- [ ] переключатель уведомлений рисуется акцентом оболочки — computed color в двух состояниях
+- [ ] все утверждения читают геометрию, не строки `getComputedStyle`; safe-area **не** проверяется
+- [ ] залогировать `[replaces] task 14: …`
 
-### Task 14: Браузерные тесты диалогов и действий над сессией
+### Task 15: Браузерные тесты диалогов и действий над сессией
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/SessionDialogsTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест New session: выбор агента в один клик без предвыбранного значения, радио доступны с клавиатуры, запланированные агенты видимы, но не выбираемы
-- [ ] тест: отсутствующий бинарник агента даёт внятное сообщение, а не молчаливый отказ
-- [ ] тест Import: режим адоптирует сессию и не предлагает Shell
-- [ ] тест: второе действие жизненного цикла отклоняется вслух, а не теряется
-- [ ] тест: экраны Preferences, Help и Phone access открываются и несут ожидаемое содержимое
-- [ ] перенести комментарии и удалить девять соответствующих тестов из таблицы диспозиции
-- [ ] `./kotlin test` — зелено перед Task 15
+- [ ] New session: выбор агента в один клик без предвыбранного значения, радио доступны с клавиатуры, запланированные агенты видимы, но не выбираемы
+- [ ] отсутствующий бинарник агента даёт внятное сообщение, а не молчаливый отказ
+- [ ] Import адоптирует сессию и не предлагает Shell
+- [ ] второе действие жизненного цикла отклоняется вслух
+- [ ] Preferences, Help и Phone access открываются и несут ожидаемое содержимое
+- [ ] залогировать `[replaces] task 15: …`
 
-### Task 15: Браузерные тесты key bar, загрузки файлов и unicode-аддонов
+### Task 16: Браузерные тесты key bar, загрузки файлов и unicode
+
+**Wave:** 3 · **Depends:** 7
 
 **Files:**
 - Create: `webuitest/test/MobileFeaturesTest.kt`
-- Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] тест key bar: специальные клавиши уходят бинарными кадрами и не крадут фокус у xterm
-- [ ] тест загрузки: `setInputFiles` на пикере палитры, записывающий-в-память `FileUploader` харнесса получает ожидаемое имя и содержимое; частичный батч сообщает про каждое упавшее имя
-- [ ] тест unicode: аддон **не** запрашивается по умолчанию, а после переключения преференса запрос происходит и `term.unicode.activeVersion` меняется
-- [ ] перенести комментарии и удалить `theWebUiShipsTheMobileSpecialKeysBar`, `mobilePaletteUploadsPickedFilesToTheSelectedSessionsCurrentFolder`, а из `theUnicodeAddonsAreVendoredAndLoadedOnlyWhenThePreferenceSelectsThem` — только поведенческую половину
-- [ ] `./kotlin test` — зелено перед Task 16
+- [ ] key bar: специальные клавиши уходят бинарными кадрами и не крадут фокус у xterm
+- [ ] загрузка: `setInputFiles` на пикере палитры, uploader харнесса получает ожидаемое имя и содержимое; частичный батч сообщает про каждое упавшее имя
+- [ ] unicode: аддон **не** запрашивается по умолчанию, после переключения преференса запрос происходит и `term.unicode.activeVersion` меняется
+- [ ] залогировать `[replaces] task 16: …`
 
-### Task 16: Дочистка `WebUiServingTest.kt` до контрактов отдачи
+### Task 17: Браузерные тесты бейджей и состояний задач
+
+**Wave:** 3 · **Depends:** 7
+
+**Files:**
+- Create: `webuitest/test/TaskBadgeTest.kt`
+- Delete: `test/transport/WebUiTaskBadgeTest.kt`, `test/transport/WebUiTaskStateTest.kt`
+
+- [ ] сценарий `task-linked-session`: бейдж рисуется, link/unlink меняет его без перезагрузки
+- [ ] `emit` и `task <ref> <state>` двигают состояние живьём; notify-edge срабатывает один раз
+- [ ] перенести объясняющие комментарии; удалить оба grep-файла **в этом же коммите волны**, сохранив KEEP-тест `WebUiTaskStateTest`, перенеся его в `WebUiServingTest.kt`
+
+### Task 18: Браузерные тесты команд задач в палитре
+
+**Wave:** 3 · **Depends:** 7
+
+**Files:**
+- Create: `webuitest/test/TaskCommandsTest.kt`
+- Delete: `test/transport/WebUiTaskCommandsTest.kt`
+
+- [ ] доска и её задачи достижимы из палитры; команды исполняются и меняют состояние
+- [ ] слои реестра команд не конфликтуют между экранами
+- [ ] перенести комментарии; удалить grep-файл в этом же коммите волны
+- [ ] залогировать `[replaces] task 18: …` для теста реестра команд в `WebUiServingTest`, если он затронут
+
+### Task 19: Браузерные тесты доски и drag-and-drop
+
+**Wave:** 3 · **Depends:** 7
+
+**Files:**
+- Create: `webuitest/test/BoardTest.kt`
+- Delete: `test/transport/WebUiBoardTest.kt`
+
+- [ ] сценарий `board`: колонки и карточки отрисованы; `board-empty` даёт пустое состояние
+- [ ] **drag карточки** — слоп, переживание перерисовки под capture, `pointercancel` без сетевых запросов, порядок PATCH→POST `/move`, модифицированный клик. Chromium-only по той же причине, что light dismiss (факт 4)
+- [ ] один-колоночный вид на ширине 390 px
+- [ ] гонка «тот же ref пришёл REST-ответом и фреймом» разрешается newest-rev-wins
+- [ ] перенести комментарии; удалить grep-файл в этом же коммите волны, оставив KEEP-тесты (замок словаря классов, `PROJECT_NAME_MAX_LENGTH`) перенесёнными в `WebUiServingTest.kt`
+
+### Task 20: Браузерные тесты стилей доски
+
+**Wave:** 3 · **Depends:** 7
+
+**Files:**
+- Create: `webuitest/test/BoardStyleTest.kt`
+- Delete: `test/transport/WebUiBoardStyleTest.kt`
+
+- [ ] каждая колонка и карточка проверяется геометрией и computed color, а не сравнением CSS-строк
+- [ ] деталь задачи всплывает над доской, а не сжимает её
+- [ ] удалить grep-файл в этом же коммите волны; замок «словаря классов» остаётся в Kotlin и переносится в `WebUiServingTest.kt`
+
+### Task 21: Браузерные тесты деталей задачи
+
+**Wave:** 3 · **Depends:** 7
+
+**Files:**
+- Create: `webuitest/test/TaskDetailTest.kt`
+- Delete: `test/transport/WebUiTaskDetailTest.kt`
+
+- [ ] сценарий `task-detail`: лента активности подгружается, комментарий добавляется, зависимости отображаются
+- [ ] × стоит в углу и закрывает панель; layout панели проверяется геометрией
+- [ ] удалить grep-файл в этом же коммите волны
+
+### Task 22: Браузерные тесты роутера и маршрутов экранов
+
+**Wave:** 3 · **Depends:** 7
+
+**Files:**
+- Create: `webuitest/test/RouterTest.kt`
+- Delete: `test/transport/WebUiRouterTest.kt`, `test/transport/WebUiScreenRoutingTest.kt`
+
+- [ ] сценарий `deep-link`: старт браузера прямо на `/s/{id}` и `/tasks/{ref}` открывает нужный экран
+- [ ] Back/Forward через `popstate` работают в обе стороны
+- [ ] каждый экран имеет свой маршрут и восстанавливается по перезагрузке
+- [ ] удалить оба grep-файла в этом же коммите волны; KEEP-тесты (сверка `DEEP_LINK_PARAM` с `sw.js`, запрет `pushState` в обход роутера) перенести в `WebUiServingTest.kt`
+
+### Task 23: Закрытие волны 3
+
+**Wave:** 3 · **Depends:** 9–22
+
+- [ ] сверить `git status --porcelain` с объединением `FILES:` задач 9–22; лишний файл — стоп
+- [ ] убедиться, что **ни один** участник не открыл `test/transport/WebUiServingTest.kt`
+- [ ] прогнать `## Validation Commands`
+- [ ] при падении вернуть «файл участника → ошибка»; при более чем трёх падениях разделить волну на 7+7 и закрыть двумя проходами
+- [ ] пометить `[x]` чекбоксы задач 9–22, один коммит волны вместе с файлом плана
+
+### Task 24: Дочистка `WebUiServingTest.kt` до контрактов отдачи
+
+**Wave:** 4 · **Depends:** 23
 
 **Files:**
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] сверить файл с таблицей диспозиции: каждый из 47 тестов либо KEEP, либо уже удалён вместе со своим браузерным преемником
-- [ ] сжать `theWebUiWiresTheBrowserPushSubscriptionFlow` до серверного контракта `/push/*`; удалить `sessionAndPaletteRowsSharePillInteractionStates` и grep-половину `daemonServesTheServiceWorkerAtTheRootScope`
-- [ ] удалить осиротевшие хелперы (`sliceBetween`, `descriptorOf`, `agentPickerOf`, `cssRuleOf` и прочие), если после чистки они не используются
-- [ ] обновить KDoc класса: чем этот файл теперь является и чем перестал быть
-- [ ] убедиться, что файл ужался примерно до 400 строк и что реестр обслуживаемых модулей на месте
-- [ ] `./kotlin test` — зелено перед Task 17
+- [ ] собрать все строки `[replaces]` из прогресс-файла и сверить с таблицей диспозиции: каждый переезжающий тест заявлен **ровно один раз**; ни один KEEP не заявлен
+- [ ] удалить заявленные тесты; сжать `theWebUiWiresTheBrowserPushSubscriptionFlow` до контракта роутов `/api/v1/push/*`; удалить `sessionAndPaletteRowsSharePillInteractionStates` и grep-половину `daemonServesTheServiceWorkerAtTheRootScope`
+- [ ] принять перенесённые из удалённых файлов KEEP-тесты и свернуть дубли serving-контракта в один реестр модулей
+- [ ] удалить осиротевшие хелперы (`sliceBetween`, `descriptorOf`, `agentPickerOf`, `cssRuleOf` и прочие)
+- [ ] обновить KDoc класса: чем файл теперь является и чем перестал быть
+- [ ] прогнать `## Validation Commands`, пометить `[x]`, закоммитить
 
-### Task 17: Verify acceptance criteria
+### Task 25: Приёмка
 
-- [ ] проверить, что все требования из Overview выполнены и что ни одного нового grep-утверждения не добавлено
-- [ ] пересчитать браузерные тесты и сверить с бюджетом ~25–30; зафиксировать фактическое время прогона
-- [ ] проверить крайние случаи: отсутствующий `webuicheck.kexe` даёт внятное падение с инструкцией; убитый драйвер не оставляет висящих процессов; сторожевой таймер срабатывает; повторный прогон не конфликтует по портам
-- [ ] проверить, что харнесс не создал ничего в `~/.kotgent`, в ФС проекта и на tmux-сокетах
-- [ ] прогнать полную сюиту: `./kotlin build && ./kotlin test`
-- [ ] сверить итоговые числа: нативные тесты, 7 JVM `build-info`, 11 проверок `ptycheck`, `EXPECTED_CHECKS` у `webuicheck`, тесты `webuitest`; скипов по-прежнему **ноль**
+**Wave:** 5 · **Depends:** 24
 
-### Task 18: [Final] Обновить документацию
+- [ ] проверить, что требования Overview выполнены и ни одного нового grep-утверждения не добавлено
+- [ ] пересчитать браузерные тесты и сверить с бюджетом 55–70; зафиксировать фактическое время прогона и объём кэша браузеров
+- [ ] нативная сюита: **0 skipped**, а дельта к 1432 равна числу удалённых тестов
+- [ ] крайние случаи: отсутствующий `webuicheck.kexe` даёт внятное падение с инструкцией; убитый драйвер не оставляет висящих процессов; сторожевой таймер срабатывает; повторный прогон не конфликтует по портам
+- [ ] харнесс не создал ничего в `~/.kotgent`, в ФС проекта, на tmux-сокетах и не написал `.kotgent.json`
+- [ ] прогнать `## Validation Commands`, пометить `[x]`, закоммитить
 
-- [ ] добавить в CLAUDE.md раздел про этот ярус: где живут UI-тесты, правило «класс обязан кончаться на `Test`», правило геометрии вместо `getComputedStyle`, деление «Chromium — жесты, WebKit — вёрстка» с обосновывающим замером из факта 4
-- [ ] записать, почему нативная сюита драйвит харнесс через `--self-check`, а не через stdin (`popen` без пишущей трубы, KT-78062)
-- [ ] добавить `fakes`, `webuicheck`, `webuitest` в разделы «Module structure» и «Where things live»
-- [ ] обновить baseline числа тестов и записать, что `./kotlin build` обязателен перед `./kotlin test` теперь по двум причинам
-- [ ] записать цену агрегата (браузеры ~1.2 ГБ, сеть на холодной машине) и быструю петлю `./kotlin task :kotgent:testMacosArm64Debug`
-- [ ] переписать утверждение «There is deliberately no JavaScript test harness» — JS-сборки по-прежнему нет, но поведение проверяется браузером; правку вносить в `CLAUDE.md` (корневой `AGENTS.md` — 11-байтный указатель на него)
-- [ ] переместить этот план в `docs/plans/completed/`
+### Task 26: [Final] Обновить документацию
+
+**Wave:** 6 · **Depends:** 25
+
+**Files:**
+- Modify: `CLAUDE.md`
+
+- [ ] раздел про ярус: где живут UI-тесты, правило суффикса `Test`, правило геометрии вместо `getComputedStyle`, Chromium по умолчанию и условие добавления WebKit (измеренное расхождение), факт 4 как обоснование Chromium-only для жестов
+- [ ] записать, почему нативная сюита драйвит харнесс через `--self-check` и почему в нём только cinterop-зависимые проверки
+- [ ] добавить `fakes`, `webuicheck`, `webuitest` в «Module structure» и «Where things live»
+- [ ] обновить baseline и записать, что `./kotlin build` обязателен перед `./kotlin test` по двум причинам; записать цену агрегата и быстрые петли
+- [ ] переписать «There is deliberately no JavaScript test harness» — JS-сборки нет, но поведение проверяется браузером; правку вносить в `CLAUDE.md` (корневой `AGENTS.md` — указатель на него)
+- [ ] чекбокс «переместить план в `completed/`» пометить `[x]` **без фактического перемещения** — план двигает сам харнесс на своём шаге; перемещение изнутри задачи ломает последующие фазы, читающие путь к плану
+- [ ] прогнать `## Validation Commands`, закоммитить
 
 ## Post-Completion
 
@@ -617,20 +845,23 @@ cwd-относительный, а `resolveWebUiDir` — `internal` (`src/transp
 
 - На актуальном iPhone и iPad подтвердить, что backdrop-овые `pointerdown`/`pointerup`/`click` несут
   **один и тот же** `pointerId`, в том числе в двухпальцевой последовательности. Chromium это подтверждает,
-  но WebKit-ветка остаётся непроверенной: Playwright WebKit не доставляет touch-указатели вовсе (факт 4).
+  WebKit-ветка остаётся непроверенной: Playwright WebKit не доставляет touch-указатели вовсе (факт 4).
 - Safe-area и inset: `env(safe-area-inset-*)` в headless равен нулю, `navigator.standalone` и признак
   установленного приложения не воспроизводятся. Проверить вручную, что нижний inset отдаётся только при
   наличии key bar, а подсказки не наезжают на Home-индикатор.
-- Начать захваченный свайп на iPad и отдельно сделать экран busy, нажать Esc, свернуть приложение —
-  каждый случай должен пружинить назад или исчезать без застрявшего `transform`.
+- Начать захваченный свайп на iPad и отдельно сделать экран busy, нажать Esc, свернуть приложение — каждый
+  случай должен пружинить назад или исчезать без застрявшего `transform`.
 - Открыть каждый диалог на телефоне, планшете и ноутбуке с тачем: ручка, скомпенсированный padding,
   панорамирование за заголовок, 44-пиксельный × у палитры.
+- Drag карточек доски пальцем на реальном телефоне и планшете.
 - Web Push целиком: `pushManager.subscribe` требует настоящего push-сервиса, которого у headless-браузера
-  нет. Проверить вручную запрос разрешения из жеста, подписку, доставку и отписку на реальном устройстве.
+  нет. Проверить вручную запрос разрешения из жеста, подписку, доставку и отписку.
 
 **Возможное продолжение (сейчас намеренно вне объёма):**
 
 - Ярус тестов против **настоящего** `kotgent daemon` с временным `$HOME`, throwaway tmux-сокетом и
-  сессиями типа `shell` — он покрыл бы реконсиляцию, миграции схемы и хуки, но медленный, требует tmux и
-  не умеет производить состояния вроде `needs_approval`. Заводить только если появится конкретный класс
+  сессиями типа `shell` — покрыл бы реконсиляцию, миграции схемы и хуки, но медленный, требует tmux и не
+  умеет производить состояния вроде `needs_approval`. Заводить только если появится конкретный класс
   регрессий, который нынешние ярусы пропускают.
+- Общий модуль двойников по **реальной** дупликации в дереве (пять приватных копий `FakeEventStore`, шесть
+  прототипов `FakeTaskStore`, три копии рецепта `withServer`) — отдельная работа, не часть этой.
