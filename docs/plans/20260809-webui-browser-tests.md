@@ -531,7 +531,8 @@ fun BrowserContext.traced(name: String, block: () -> Unit)   // трейс + с�
 WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sessions,Attention,Restart,Terminal}.kt`
 против `scenarios/Board*.kt` против `webuitest/** + gradle/libs.versions.toml` = ∅. Волна 3: четырнадцать
 разных файлов в `webuitest/test/`, плюс восемь grep-файлов, у каждого ровно один владелец; **никто не
-открывает `test/transport/WebUiServingTest.kt`**.
+открывает `test/transport/WebUiServingTest.kt`**. Файл, у которого есть KEEP-тесты, участник не удаляет, а
+ужимает до них — свод в реестр и удаление остатка делает задача 24 по строкам `[keep]`.
 
 **Почему T4 не в волне 1**, хотя файлы позволяют: извлечение `FakeEventStore` затрагивает 1432 нативных
 теста, и дешевле узнать о поломке до того, как на неё сядут четыре автора волны 2.
@@ -829,7 +830,7 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 
 - [ ] сценарий `task-linked-session`: бейдж рисуется, link/unlink меняет его без перезагрузки
 - [ ] `emit` и `task <ref> <state>` двигают состояние живьём; notify-edge срабатывает один раз
-- [ ] перенести объясняющие комментарии; удалить оба grep-файла **в этом же коммите волны**, сохранив KEEP-тест `WebUiTaskStateTest`, перенеся его в `WebUiServingTest.kt`
+- [ ] перенести объясняющие комментарии; удалить `WebUiTaskBadgeTest.kt` целиком и ужать `WebUiTaskStateTest.kt` до его единственного KEEP-теста — **`WebUiServingTest.kt` не открывать**, свод в реестр делает задача 24; залогировать `[keep] task 17: …` на оставленный тест
 
 ### Task 18: Браузерные тесты команд задач в палитре
 
@@ -856,7 +857,7 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 - [ ] **drag карточки** — слоп, переживание перерисовки под capture, `pointercancel` без сетевых запросов, порядок PATCH→POST `/move`, модифицированный клик. Chromium-only по той же причине, что light dismiss (факт 4)
 - [ ] один-колоночный вид на ширине 390 px
 - [ ] гонка «тот же ref пришёл REST-ответом и фреймом» разрешается newest-rev-wins
-- [ ] перенести комментарии; удалить grep-файл в этом же коммите волны, оставив KEEP-тесты (замок словаря классов, `PROJECT_NAME_MAX_LENGTH`) перенесёнными в `WebUiServingTest.kt`
+- [ ] перенести комментарии; ужать `WebUiBoardTest.kt` до его KEEP-тестов (замок словаря классов, `PROJECT_NAME_MAX_LENGTH`) — **`WebUiServingTest.kt` не открывать**; залогировать `[keep] task 19: …` на каждый оставленный тест
 
 ### Task 20: Браузерные тесты стилей доски
 
@@ -868,7 +869,7 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 
 - [ ] каждая колонка и карточка проверяется геометрией и computed color, а не сравнением CSS-строк
 - [ ] деталь задачи всплывает над доской, а не сжимает её
-- [ ] удалить grep-файл в этом же коммите волны; замок «словаря классов» остаётся в Kotlin и переносится в `WebUiServingTest.kt`
+- [ ] удалить `WebUiBoardStyleTest.kt` целиком: его половина замка «словаря классов» живёт в `WebUiBoardTest.kt`, который сохраняет задача 19
 
 ### Task 21: Браузерные тесты деталей задачи
 
@@ -893,7 +894,7 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 - [ ] сценарий `deep-link`: старт браузера прямо на `/s/{id}` и `/tasks/{ref}` открывает нужный экран
 - [ ] Back/Forward через `popstate` работают в обе стороны
 - [ ] каждый экран имеет свой маршрут и восстанавливается по перезагрузке
-- [ ] удалить оба grep-файла в этом же коммите волны; KEEP-тесты (сверка `DEEP_LINK_PARAM` с `sw.js`, запрет `pushState` в обход роутера) перенести в `WebUiServingTest.kt`
+- [ ] удалить `WebUiScreenRoutingTest.kt` целиком и ужать `WebUiRouterTest.kt` до его KEEP-тестов (сверка `DEEP_LINK_PARAM` с `sw.js`, запрет `pushState` в обход роутера) — **`WebUiServingTest.kt` не открывать**; залогировать `[keep] task 22: …`
 
 ### Task 23: Закрытие волны 3
 
@@ -914,7 +915,9 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 
 - [ ] собрать все строки `[replaces]` из прогресс-файла и сверить с таблицей диспозиции: каждый переезжающий тест заявлен **ровно один раз**; ни один KEEP не заявлен
 - [ ] удалить заявленные тесты; сжать `theWebUiWiresTheBrowserPushSubscriptionFlow` до контракта роутов `/api/v1/push/*`; удалить `sessionAndPaletteRowsSharePillInteractionStates` и grep-половину `daemonServesTheServiceWorkerAtTheRootScope`
-- [ ] принять перенесённые из удалённых файлов KEEP-тесты и свернуть дубли serving-контракта в один реестр модулей
+- [ ] собрать строки `[keep]` из прогресс-файла: перенести уцелевшие KEEP-тесты из ужатых `WebUiBoardTest.kt`,
+      `WebUiRouterTest.kt` и `WebUiTaskStateTest.kt` в `WebUiServingTest.kt`, после чего удалить эти три файла;
+      свернуть дубли serving-контракта в один реестр модулей
 - [ ] удалить осиротевшие хелперы (`sliceBetween`, `descriptorOf`, `agentPickerOf`, `cssRuleOf` и прочие)
 - [ ] обновить KDoc класса: чем файл теперь является и чем перестал быть
 - [ ] прогнать `## Validation Commands`, пометить `[x]`, закоммитить
