@@ -247,8 +247,15 @@ class SessionDialogsTest {
                         // glob that matched nothing would answer zero for a form that posted happily —
                         // so the same form is now submitted with the question answered and the counter
                         // has to move. (The interceptor refuses it with a 500, so nothing is started.)
+                        //
+                        // The barrier for "EXACTLY once" is the interceptor's own 500 coming back and
+                        // being rendered, not the counter reaching one: a double-submit issues its second
+                        // POST in the same dispatch, so a `>= 1` wait can return between the two and the
+                        // count read a moment later would still be 1. The form's error line only appears
+                        // once the rejected request has resolved and the dialog has re-rendered, which is
+                        // strictly after every request that click was ever going to make.
                         page.locator("#new-session-submit").click()
-                        page.waitForCondition { starts.get() >= 1 }
+                        assertThat(page.locator("#new-session-error")).containsText("Could not start session")
                         assertEquals(
                             1,
                             starts.get(),
@@ -502,8 +509,15 @@ class SessionDialogsTest {
                         // OWN resume is now run against the adopted row (it is selected, and `resumable`
                         // is exactly the state Resume applies to) and the counter has to move. The route
                         // answers 500, so nothing is launched.
+                        //
+                        // The barrier is the 500 arriving and being SAID, not the counter reaching one: a
+                        // register-only flow that resumed anyway would have posted its extra request in
+                        // the same turn as the first, and a `>= 1` wait can return between the two. The
+                        // status line's "Resume failed" is written from `controlSession`'s catch, i.e.
+                        // strictly after this POST resolved — by which point every request the flow was
+                        // going to make has been counted.
                         runFromPalette(page, "Resume this session")
-                        page.waitForCondition { resumes.get() >= 1 }
+                        assertThat(page.locator("#status-line")).containsText("Resume failed")
                         assertEquals(
                             1,
                             resumes.get(),

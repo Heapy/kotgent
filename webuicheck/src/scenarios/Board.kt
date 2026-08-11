@@ -170,7 +170,8 @@ internal suspend fun fixtureSession(
     taskRef: TaskRef? = null,
     state: SessionState = SessionState.resumable,
 ) {
-    fakes.events.upsertSession(
+    seedSessionRow(
+        fakes,
         harnessSession(
             id = id,
             name = name,

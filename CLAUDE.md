@@ -1351,8 +1351,8 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1332 native tests passed /
-  0 skipped** and **110 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1333 native tests passed /
+  0 skipped** and **116 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
   7 JVM tests, `ptycheck`'s 11 real-PTY checks (driven by `PtyTest`) and `webuicheck`'s 2 self-checks
   (driven by `WebUiCheckTest`) — keep a fixture's `EXPECTED_CHECKS` in sync when adding a check to it. The
   native count **fell** from 1432 when the Web UI grep tier was replaced: 101 tests removed, 1 added, delta
@@ -1378,8 +1378,12 @@ These are real and cost time to rediscover. Respect them.
   plus a short, **closed** list of source-guards for the two claims a browser structurally cannot make —
   an agreement between two files that never read each other (`DEEP_LINK_PARAM` against `sw.js`, the frozen
   `board-*`/`task-*` class vocabulary against `style.css`, the project-name `maxlength` against the native
-  `PROJECT_NAME_MAX_LENGTH` a JVM module cannot import) and a negative claim about the shape of the source
-  (nothing outside `lib/router.js` touches `history`). `webuitest/` is behaviour, executed in a real
+  `PROJECT_NAME_MAX_LENGTH` a JVM module cannot import, `tmuxAttachCommand`'s `-u -L kotgent` against the
+  native `TMUX_SOCKET`) and a negative claim about the shape of the source (nothing outside
+  `lib/router.js` touches `history`; **`sw.js` contains no `import` line at all** — it is registered as a
+  CLASSIC script, so a bare specifier is a SyntaxError at worker parse time that kills the whole push path
+  while every tab keeps working, and no browser test can see it because a headless Chromium has no push
+  service to wake the worker). `webuitest/` is behaviour, executed in a real
   Chromium against the real server; `webuicheck/` is the harness it drives and `fakes/` the doubles under
   that. **If a Chromium could answer it, it belongs in `webuitest/`** — and there a layout claim reads
   GEOMETRY and resolved values (`getBoundingClientRect`, `cols`/`rows`, visibility, a computed colour
@@ -1460,6 +1464,19 @@ These are real and cost time to rediscover. Respect them.
   contains the literal `if (sameForm) closeDialogFrom(submittedDialog)` — the exact line that **was** bug
   (1). That tier had not merely failed to catch the defect; it had pinned it as a contract, and it broke
   when the bug was fixed. A test that spells out an implementation line cannot tell a fix from a regression.
+- **What the browser tier does NOT cover of Web Push, and why the line falls where it does.** The
+  handshake's ORDER and its two decisive arguments are covered — `webuitest/test/PushSubscriptionTest.kt`
+  fakes `navigator.serviceWorker` / `PushManager` / `Notification` before the page loads, fulfils the two
+  daemon routes at their real addresses, and records browser calls and `fetch` calls into ONE trace, so
+  "permission before the first await" (the iOS user-gesture invariant), `userVisibleOnly: true`, the
+  key-then-subscribe-then-POST order and the OFF path's daemon-delete-before-browser-lookup are all
+  assertions about a running page. Three things are deliberately left uncovered and are debt, not design:
+  the ten-second transition deadline and its generation invalidation, the cross-tab `storage` repair (both
+  need contrived timing or a second context against a one-ticket harness), and
+  `applicationServerKeyDiffers`' byte comparison (reachable only by making `subscribe()` reject, which
+  the fake platform can do — nobody has). DELIVERY is not debt: a push service is a third party no
+  headless browser has, so the worker's `push` handler, its payload-less `/sessions` fetch and its abort
+  deadline stay on the manual checklist and `PushRoutesTest` owns the daemon's side.
 - **Two things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` reads a large number of
   **non-colour `getComputedStyle` strings** against the geometry rule above — count it in the file rather
   than trusting a figure here, because it moves with every test added. Defensible — the browser *resolved*

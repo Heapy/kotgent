@@ -1,6 +1,7 @@
 package io.kotgent.webuicheck
 
 import io.kotgent.cli.eprintln
+import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionState
@@ -62,6 +63,8 @@ fun handleCommand(line: String, ctx: HarnessContext): Boolean {
     return when (words.firstOrNull()) {
         "restart" -> handleRestart(words, ctx)
         "emit" -> handleEmit(words, ctx)
+        "model" -> handleModel(words, ctx)
+        "append" -> handleAppend(words, ctx)
         else -> handleTaskCommand(words, ctx)
     }
 }
@@ -80,6 +83,61 @@ private fun handleRestart(words: List<String>, ctx: HarnessContext): Boolean {
     }
     runBlocking { ctx.restart() }
     return true
+}
+
+/**
+ * `append <session-id> [tool-name]` — append one real [AgentEvent.ToolCall] to the session's log.
+ *
+ * The one verb that advances `last_seq`, which is what makes a row UNREAD: the badge is
+ * `last_seq - read_cursor`, and `emit` deliberately cannot move it (`updateSessionState` writes state and
+ * pane only, so a scenario can change a state without disturbing a count). It goes through
+ * `EventStore.append` rather than fabricating a `SessionUpdate`, so the frame the socket ships and the
+ * row a later snapshot answers with are the same truth — the same reason `emit` writes through the store.
+ *
+ * A `ToolCall` and not a turn boundary because it is the least eventful thing an agent does: the reducer
+ * takes it to `running` and resets `pendingApprovals`, so a session already `running` is moved in no way
+ * the sidebar draws differently, and the only observable is the count.
+ */
+private fun handleAppend(words: List<String>, ctx: HarnessContext): Boolean {
+    if (words.size !in 2..3) return reject("usage: append <session-id> [tool-name]")
+    val id = SessionId(words[1])
+    val tool = words.getOrElse(2) { "Read" }
+    return runBlocking {
+        if (ctx.fakes.events.getSession(id) == null) {
+            reject("append: no session '${id.value}' in this scenario")
+        } else {
+            ctx.fakes.events.append(id, AgentEvent.ToolCall(tool), EventSource.hook)
+            true
+        }
+    }
+}
+
+/**
+ * `model <session-id> <name|->` — set, or CLEAR (`-`), a session's best-effort provider model.
+ *
+ * It exists for the clear. `model` is one of the three orthogonal fields written outside the reducer,
+ * every emitted `SessionUpdate` re-reads it from the committed row, and the daemon really does send
+ * `model: null` — the provider-id rebind correction (`SessionManager.onProviderIdRebound`) calls
+ * `setModel(null)` when a hook displaces a scanned id, precisely so a neighbour rollout's model does not
+ * stick. A browser that filtered a null out of an incoming patch would leave the wrong model on screen
+ * forever, and until this verb existed no fixture could produce the frame that shows it: `emit` moves
+ * the STATE, and nothing else in the harness clears a field.
+ *
+ * `-` and not an empty word, because the splitter collapses whitespace: a trailing `model s-alpha ` is
+ * two words and would read as a usage error, which is the honest answer for a mistyped line.
+ */
+private fun handleModel(words: List<String>, ctx: HarnessContext): Boolean {
+    if (words.size != 3) return reject("usage: model <session-id> <name|-> ('-' clears it)")
+    val id = SessionId(words[1])
+    val model = words[2].takeUnless { it == "-" }
+    return runBlocking {
+        if (ctx.fakes.events.getSession(id) == null) {
+            reject("model: no session '${id.value}' in this scenario")
+        } else {
+            ctx.fakes.events.setModel(id, model, daemonEpochMillis())
+            true
+        }
+    }
 }
 
 /**

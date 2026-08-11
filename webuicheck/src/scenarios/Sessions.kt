@@ -5,6 +5,7 @@ import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.webuicheck.HarnessFakes
 import io.kotgent.webuicheck.Scenario
 
 /**
@@ -23,10 +24,11 @@ internal const val SEED_EPOCH_MS: Long = 1_700_000_000_000L
 
 /**
  * Build one seeded `sessions` row. Every scenario file in this package goes through it, so the shape a
- * browser test reads is written once: [id] is the value that lands in the `/s/{id}` route, the tmux
- * name follows the production `kt-<id>` spelling, and `paneId`/`stateSource` stay null because the
- * harness never runs a tmux server — nothing the browser can see depends on either
- * (`SessionDto.alive` is derived from [state] alone, and `stateSource` is not on the wire at all).
+ * browser test reads is written once: [id] is the value that lands in the `/s/{id}` route and the tmux
+ * name follows the production `kt-<id>` spelling. `paneId`/`stateSource` stay null on the ROW — nothing
+ * the browser can see depends on either (`SessionDto.alive` is derived from [state] alone, and
+ * `stateSource` is not on the wire at all) — while the live pane an alive row implies is registered
+ * with the fake tmux by [seedSessionRow], which is the door every scenario actually goes through.
  *
  * [createdAt] is mandatory and distinct per row on purpose: both `EventStore.listSessions` and
  * `EventStore.sessionsHoldingTask` order by `(created_at, id)`, so two rows sharing a timestamp would
@@ -62,6 +64,23 @@ internal fun harnessSession(
     createdAt = createdAt,
     updatedAt = updatedAt,
 )
+
+/**
+ * Seed one session row — and, when it is ALIVE, the tmux pane that must exist behind it.
+ *
+ * Every scenario goes through this rather than calling `upsertSession` itself, because the pane is not
+ * decoration. `FakeTmux.sendKeys` consults its pane set exactly as the real `Tmux.sendKeys` reads its
+ * chain's answer (`src/tmux/Tmux.kt:327-332` throws on "no live server/session/pane"), so a `running` /
+ * `ready` row with no pane behind it is a session whose Interrupt the DAEMON would refuse — and every
+ * control action in the harness would then be succeeding for a reason production does not have.
+ *
+ * A dead row (`resumable`, `crashed`, …) deliberately gets none: that IS the state, and `resume` proves
+ * it by finding no pane and launching.
+ */
+internal suspend fun seedSessionRow(fakes: HarnessFakes, meta: SessionMeta) {
+    fakes.events.upsertSession(meta)
+    if (meta.state.isAlive) fakes.tmux.seedPane(meta.id.value)
+}
 
 /**
  * The four rows of the `sessions` scenario, in the order the sidebar will list them.
@@ -152,7 +171,7 @@ fun sessionsScenario(): Scenario = Scenario(
         // filesystem rather than four dangling strings. No `.kotgent.json` is written anywhere, so
         // every row resolves to NO project — the board scenarios own that half.
         listOf("/a", "/a/b", "/a/c", "/d").forEach(fakes.projectFs::addDirectory)
-        SESSION_ROWS.forEach { fakes.events.upsertSession(it) }
+        SESSION_ROWS.forEach { seedSessionRow(fakes, it) }
     },
     terminalUpstream = deterministicUpstream(SESSIONS_BANNER),
 )

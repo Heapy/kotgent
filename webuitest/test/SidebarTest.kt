@@ -494,6 +494,90 @@ class SidebarTest {
     }
 
     /**
+     * The board on screen SUSPENDS the read cursor: a frame for the selected session may not clear a badge
+     * the operator is not looking at.
+     *
+     * `activeId` outlives the screen that shows it — the board replaces the session view entirely, and the
+     * sidebar keeps drawing the same list beside it — so without a second question every `/events` frame
+     * for the leftover selection would still be answered with a `POST …/read`. The symptom is silent and
+     * unrecoverable: the badge of a session hidden behind the board is cleared on the server, for every
+     * client, by a tab whose operator never saw the output. `app.js` therefore keeps `sessionViewOnScreen`
+     * as a render-time flag and `markReadIfViewing` asks it alongside `document.visibilityState`.
+     *
+     * The shape here is control → negative → control, because "no request was made" has no moment at which
+     * it can be observed. The selection on the session view is the first control (the recorder must be able
+     * to count a mark at all); two `append`s then raise the count while the board is up; and coming back is
+     * the second control, exercising the trigger that exists BECAUSE of the guard — the badge the board
+     * refused to clear would otherwise sit there until the session's next frame, so leaving the board is
+     * itself a mark-read trigger (`app.js`'s effect on `onBoard`).
+     *
+     * ## Why the barrier is the SECOND frame, and why there is no pill to look at
+     * The board replaces the sidebar's body with the project list, so while it is up there is no session
+     * row on screen at all — the very reason the guard is needed is the reason its effect is invisible.
+     * The barrier is therefore frame ORDER. `FRAME_RECORDER`'s listener is registered before the app's on
+     * the same socket, so the recorder sees message N+1 only after every listener of message N has run:
+     * banking the second `append`'s frame is proof the app finished handling the first, and
+     * `markReadIfViewing` runs inside that very handler. A wait on the first frame alone could return a
+     * tick before the decision it is supposed to be observing.
+     */
+    @Test
+    fun theBoardOnScreenStopsAFrameFromClearingTheHiddenRowsBadge() {
+        signedIn(
+            SESSIONS_SCENARIO,
+            "sidebar-read-on-board",
+            initScripts = listOf(FRAME_RECORDER),
+        ) { harness, _, page ->
+            val attempts = AtomicInteger()
+            val bodies = CopyOnWriteArrayList<String>()
+            val answer = AtomicReference(READ_ACCEPTED)
+            interceptMarkRead(page, BOARD_GUARD_SESSION, answer, attempts, bodies)
+
+            // This scenario's rows are seeded with an EMPTY event log, so every seq here is produced by
+            // an `append` rather than asserted against a fixture number — which is what keeps the two
+            // halves comparable (`attention`'s row carries a seeded `lastSeq` its log knows nothing
+            // about, so an append there would move the count DOWN).
+            val row = page.locator("#session-list .session-row[data-id='$BOARD_GUARD_SESSION']")
+            val pill = row.locator(".unread-pill")
+            harness.send("append $BOARD_GUARD_SESSION")
+            assertThat(pill).hasText("1")
+
+            // CONTROL ONE: on the session view, selecting the row marks it read and the daemon's own
+            // recomputed count clears the pill.
+            row.click()
+            assertThat(pill).hasCount(0)
+            assertEquals(1, attempts.get(), "the selection posted exactly one mark-read")
+
+            // THE BOARD. `activeId` is untouched by the navigation — that is precisely the leftover the
+            // guard exists for.
+            page.locator(".nav-switch a[href='/tasks']").click()
+            assertThat(page.locator(".board-columns")).isVisible()
+            assertThat(page.locator("#session-list")).hasCount(0)
+
+            // Two more real events, so `last_seq` really advances and each frame really warrants a mark.
+            harness.send("append $BOARD_GUARD_SESSION")
+            harness.send("append $BOARD_GUARD_SESSION")
+            page.waitForFunction(sawUnreadFrame(3))
+            assertEquals(
+                1,
+                attempts.get(),
+                "a frame for the selected session must NOT advance its cursor while the board is the " +
+                    "screen this tab is showing — the badge belongs to output nobody has looked at",
+            )
+
+            // CONTROL TWO: back on the session view, the same session and the same recorder, and the mark
+            // now goes out — which is what makes the zero above a decision rather than a dead route.
+            page.locator(".nav-switch a[href='/s/$BOARD_GUARD_SESSION']").click()
+            page.waitForCondition { attempts.get() >= 2 }
+            assertThat(pill).hasCount(0)
+            assertEquals(
+                listOf("""{"seq":1}""", """{"seq":3}"""),
+                bodies.toList(),
+                "the second mark carries the seq the two appended events produced",
+            )
+        }
+    }
+
+    /**
      * Before the first snapshot the sidebar says it is LOADING, because an empty list and an unanswered
      * daemon are different facts and only one of them is knowable yet.
      *
@@ -622,10 +706,110 @@ class SidebarTest {
             assertThat(status).hasText(DISCONNECT_LINE)
         }
     }
+
+    /**
+     * What Copy tmux command actually puts on the clipboard, character for character.
+     *
+     * The action is otherwise used here only as a DOM-mutation interposer (a message that must survive a
+     * reconnect), which asserts nothing about the string — and the string is the whole feature: it is
+     * pasted into a terminal that has never spoken to the daemon, so every token of it has to be right
+     * with no feedback loop to correct it. Two tokens are cross-file agreements the browser cannot check
+     * on its own, and `WebUiServingTest.theCopyableTmuxCommandNamesTheDaemonsOwnSocketInUtf8` holds that
+     * half against the Kotlin constants: `-L kotgent` must be the socket the daemon's own `Tmux` uses (a
+     * different label starts an EMPTY second tmux server that reports "no sessions", which reads as a dead
+     * agent) and `-u` is what keeps the client from being read as non-UTF-8, which makes tmux rewrite
+     * every non-ASCII cell as `_`. What only a browser can add is that the button reaches the clipboard
+     * with THAT string and this session's own `kt-<id>` target.
+     *
+     * The clipboard is interposed rather than read back through `clipboard-read`: the claim is the text
+     * the app hands the platform, and a permission prompt is a second thing to go wrong. The interposer
+     * resolves instead of delegating, because a rejected native write sends `writeClipboard` down its
+     * `execCommand` fallback and the outcome would then depend on what headless Chromium allows.
+     */
+    @Test
+    fun theCopiedTmuxCommandJoinsTheDaemonsOwnServerInUtf8() {
+        signedIn(
+            SESSIONS_SCENARIO,
+            "sidebar-copy-tmux",
+            initScripts = listOf(CLIPBOARD_RECORDER),
+        ) { _, _, page ->
+            page.locator("#session-list .session-row[data-id='s-alpha']").click()
+            runLeaderCommand(page, "Copy tmux command")
+            assertThat(page.locator("#status-line")).hasText("Tmux command copied to clipboard.")
+            assertEquals(
+                listOf("tmux -u -L kotgent attach -t kt-s-alpha"),
+                page.evaluate("() => window.__kotgentClipboard") as List<*>,
+                "the copied command joins kotgent's own tmux socket, in UTF-8, at this session's pane",
+            )
+        }
+    }
+
+    /**
+     * A model the daemon CLEARED clears on screen — the one `session_update` field whose null is a value.
+     *
+     * `model` is written outside the reducer by its own setter, and every `SessionUpdate` re-reads it from
+     * the committed row, so `model: null` is a real frame the daemon really sends: the provider-id rebind
+     * correction calls `setModel(null)` when a hook displaces a scanned id, precisely so a neighbour
+     * rollout's model does not stick to this session forever. A browser that treated the null as "field
+     * absent" — the reflex a patch applier invites — would leave the wrong model in the sidebar until a
+     * reload, and there is no snapshot/live discriminator left to heal it.
+     *
+     * The first half is the control and it is not decoration: it proves the harness's `model` verb reaches
+     * this row through the socket at all, so the disappearance below is the null being APPLIED rather than
+     * the fixture having done nothing. (This is what `WebUiServingTest.daemonServesTheAppEntryModule` used
+     * to record as a claim dropped for want of a fixture; the fixture is the verb.)
+     */
+    @Test
+    fun aClearedModelDisappearsFromTheRowThePatchNames() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-model-clear") { harness, _, page ->
+            val subline = page.locator("#session-list .session-row[data-id='s-alpha'] .session-sub")
+            assertThat(subline).hasText("claude · claude-sonnet-4-5 · 2.1.218")
+
+            harness.send("model s-alpha gpt-5-codex")
+            assertThat(subline).hasText("claude · gpt-5-codex · 2.1.218")
+
+            harness.send("model s-alpha -")
+            assertThat(subline).hasText("claude · 2.1.218")
+        }
+    }
 }
+
+/**
+ * Record every string the page hands `navigator.clipboard.writeText`, into `window.__kotgentClipboard`.
+ *
+ * An own property on the `Clipboard` instance shadows the prototype method, and it RESOLVES rather than
+ * delegating — see [SidebarTest.theCopiedTmuxCommandJoinsTheDaemonsOwnServerInUtf8] for why the real
+ * write is deliberately not attempted.
+ */
+private val CLIPBOARD_RECORDER: String = """
+    (() => {
+      window.__kotgentClipboard = [];
+      const clipboard = navigator.clipboard;
+      if (clipboard) {
+        clipboard.writeText = (text) => {
+          window.__kotgentClipboard.push(String(text));
+          return Promise.resolve();
+        };
+      }
+    })();
+""".trimIndent()
 
 /** The `attention` row that carries an unread count. Its sibling `s-quiet` has none, and is untouched. */
 private const val UNREAD_SESSION: String = "s-unread"
+
+/**
+ * The `sessions` row the board-guard test drives: `running`, and — unlike `attention`'s `s-unread` — with
+ * an event log that starts genuinely empty, so an `append` moves its unread count UP.
+ */
+private const val BOARD_GUARD_SESSION: String = "s-alpha"
+
+/** `FRAME_RECORDER` has banked a `session_update` for [BOARD_GUARD_SESSION] carrying `lastSeq` [seq]. */
+private fun sawUnreadFrame(seq: Int): String = """
+    () => (window.__kotgentFrames || []).some((f) =>
+      f.indexOf("\"type\":\"session_update\"") >= 0 &&
+      f.indexOf("\"sessionId\":\"$BOARD_GUARD_SESSION\"") >= 0 &&
+      f.indexOf("\"lastSeq\":$seq") >= 0)
+""".trimIndent()
 
 /** The `sessions` scenario's `resumable` shell: selecting it attaches no pty, so Done has none to kill. */
 private const val DONE_SESSION: String = "s-delta"

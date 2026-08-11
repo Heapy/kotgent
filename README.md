@@ -131,12 +131,13 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-`./kotlin test` runs every tier and the suite has no skips: **1332 native tests** and **108 browser tests**
-(`webuitest`, a real Chromium driven through Playwright), plus 7 JVM tests for the build-info plugin, the
-11 real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs. The two module
-tasks — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops; neither
-replaces the aggregate. Both counts move with every change, so treat them as a snapshot and re-measure
-rather than quote them.
+`./kotlin test` runs every tier and the suite has no skips: the native suite (`test/`), the browser tier
+(`webuitest/`, a real Chromium driven through Playwright), 7 JVM tests for the build-info plugin, the 11
+real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs. The two module tasks
+— `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops; neither replaces the
+aggregate. **The counts are deliberately not written here**: they move with every change, and the run
+itself is the only source of truth that cannot go stale (`AGENTS.md` carries the current baseline for the
+one purpose a number serves — noticing that a change moved it by more than it meant to).
 
 Run `build` before `test`, now for **two** fixture binaries rather than one. `./kotlin test` never links a
 main binary, and the suite execs two: `PtyTest` runs `ptycheck`, while `WebUiCheckTest` **and every browser

@@ -25,6 +25,9 @@ internal const val TERMINAL_BANNER: String = "KOTGENT-TERMINAL-READY"
 /** Banner printed by the `restart` scenario's upstream. */
 internal const val RESTART_BANNER: String = "KOTGENT-RESTART-READY"
 
+/** Banner printed by the `terminal-x10` scenario's upstream. */
+internal const val TERMINAL_X10_BANNER: String = "KOTGENT-X10-READY"
+
 /**
  * `\033[?1006h\033[?1000h` — SGR encoding first, then vt200 mouse tracking.
  *
@@ -43,6 +46,24 @@ internal const val RESTART_BANNER: String = "KOTGENT-RESTART-READY"
  * events"). Ordering it this way keeps the fixture on the encoding the product actually uses.
  */
 private const val MOUSE_TRACKING_ENABLE: String = "\\033[?1006h\\033[?1000h"
+
+/**
+ * `\033[?1000h` alone — vt200 tracking with **no** SGR encoding, i.e. the degraded state.
+ *
+ * This is the whole reason `terminal-x10` is a second scenario rather than a mode this one switches into
+ * mid-test. An encoding is a property of the STREAM: xterm's `CoreMouseService` picks `DEFAULT` because
+ * nothing ever asked for `?1006`, and that decision is made when the payload is parsed. A test could
+ * write `\033[?1006l` into the pty and let `cat` hand it back, but then the moment the encoding flips is
+ * a race against an echo with no observable of its own — whereas here the terminal is in the legacy
+ * encoding from its first painted frame.
+ *
+ * The encoding matters because it changes which xterm EVENT the report leaves on: `DEFAULT` coordinates
+ * are raw bytes `32 + n`, which are not valid UTF-8 text, so xterm routes them to `triggerBinaryEvent`
+ * and they arrive on `term.onBinary` instead of `term.onData` (`CLAUDE.md`, "xterm reports input on TWO
+ * events"). A page subscribed only to `onData` drops them silently — no error, the mouse simply stops
+ * working — and no scenario could produce one until this one existed.
+ */
+private const val MOUSE_TRACKING_ENABLE_LEGACY: String = "\\033[?1000h"
 
 /**
  * Eight short, numbered lines — deliberately FEWER than any plausible viewport is tall.
@@ -86,6 +107,13 @@ internal fun deterministicUpstream(banner: String): List<String> = listOf(
     "printf '" + MOUSE_TRACKING_ENABLE + SCREEN_LINES + banner + "\\n'; exec cat",
 )
 
+/** [deterministicUpstream] with tracking but no SGR — see [MOUSE_TRACKING_ENABLE_LEGACY]. */
+internal fun legacyMouseUpstream(banner: String): List<String> = listOf(
+    "/bin/sh",
+    "-c",
+    "printf '" + MOUSE_TRACKING_ENABLE_LEGACY + SCREEN_LINES + banner + "\\n'; exec cat",
+)
+
 /**
  * `terminal` — one running session over a real pty. Consumers: the terminal itself, the swipe bridge,
  * the FitAddon geometry rules, and reattach.
@@ -98,7 +126,8 @@ fun terminalScenario(): Scenario = Scenario(
     name = "terminal",
     seed = { fakes ->
         fakes.projectFs.addDirectory("/w/terminal")
-        fakes.events.upsertSession(
+        seedSessionRow(
+            fakes,
             harnessSession(
                 id = "s-term",
                 name = "terminal",
@@ -112,4 +141,37 @@ fun terminalScenario(): Scenario = Scenario(
         )
     },
     terminalUpstream = deterministicUpstream(TERMINAL_BANNER),
+)
+
+/**
+ * `terminal-x10` — the same one running session, over a pty whose payload asks for mouse tracking
+ * WITHOUT the SGR encoding.
+ *
+ * A second scenario rather than a knob, because the encoding is decided when the payload is parsed (see
+ * [MOUSE_TRACKING_ENABLE_LEGACY]). Its consumer is the `term.onBinary` half of the terminal's input:
+ * under this encoding a mouse report's coordinates are raw bytes above 127, xterm emits them as a binary
+ * event, and a page that subscribed only to `onData` would drop every one of them in silence.
+ *
+ * The session id differs from `terminal`'s so a failing trace can never be mistaken for the other
+ * fixture's.
+ */
+fun terminalX10Scenario(): Scenario = Scenario(
+    name = "terminal-x10",
+    seed = { fakes ->
+        fakes.projectFs.addDirectory("/w/x10")
+        seedSessionRow(
+            fakes,
+            harnessSession(
+                id = "s-x10",
+                name = "legacy mouse",
+                agent = "claude",
+                cwd = "/w/x10",
+                state = SessionState.running,
+                createdAt = SEED_EPOCH_MS + 1,
+                providerSessionId = "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                model = "claude-sonnet-4-5",
+            ),
+        )
+    },
+    terminalUpstream = legacyMouseUpstream(TERMINAL_X10_BANNER),
 )

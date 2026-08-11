@@ -31,6 +31,16 @@
 # log or a call spy that only a test could ever assert on is a nested prototype's tool, and leaving one
 # here makes the paragraph above false while costing every consumer the allocation.
 #
+# ## FIDELITY is the contract, and every member must cite what it mirrors
+# Both tiers assert against these classes, so a rule that differs from production is not a simplification —
+# it is a second product, and the browser assertions written against it are measurements of the wrong
+# thing. The divergences are latent by nature (no green test trips one; the next test written does), which
+# is why each member here carries a `file:line` citation of the statement it mirrors: `Sessions.sq`'s
+# `upsert` coalesce, `Backlog.sq`'s `restamp` (rev WITHOUT `updated_at`) and its `ORDER BY`s,
+# `BacklogDependencies.restampDependentsLocked`'s unconditional re-stamp and `addLocked`'s
+# return-before-the-write, `TaskUpdateOutbox.publishing`'s emit-inside-the-lock, `Tmux.sendKeys`' throw on
+# an absent pane. When production changes, the citation is the thing that makes the fake findable.
+#
 # ## The dependency direction LOOKS circular and is not
 # It runs root(test) -> fakes -> root(main). The toolchain resolves FRAGMENTS, not modules, so those
 # line up as a proper task-level DAG:

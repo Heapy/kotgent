@@ -413,6 +413,21 @@ class LayoutTest {
                 settleTerminal(page)
                 val after = measureTerminal(page)
 
+                // The one element inside the terminal the font step must NOT reach. xterm's helper
+                // textarea is the real focus target — the invisible input every keystroke actually lands
+                // in — and iOS Safari auto-zooms the page whenever a focused field measures under 16px.
+                // That zoom rewrites `visualViewport`, which is what the whole mobile terminal lifecycle
+                // is computed from, so the grid this test just measured would be recomputed against a
+                // viewport the operator never chose. `style.css` pins it with `!important` for exactly
+                // that reason, and the assertion is made AFTER the largest step because the default step
+                // is close enough to 16 that a broken pin would still read plausibly.
+                assertEquals(
+                    "16px",
+                    helperTextareaFontSize(page),
+                    "xterm's helper textarea stays at 16px however large the terminal font is, or iOS " +
+                        "Safari zooms on focus and corrupts the viewport geometry above",
+                )
+
                 assertEquals(
                     1,
                     after.int("terminals"),
@@ -838,6 +853,17 @@ private fun attachTerminal(page: Page) {
     assertThat(page.locator("#terminal-host")).containsText(TERMINAL_BANNER)
     settleTerminal(page)
 }
+
+/** The resolved `font-size` of xterm's hidden focus target — the field iOS would zoom on. */
+private fun helperTextareaFontSize(page: Page): String = page.evaluate(
+    """
+    () => {
+      const el = document.querySelector("#terminal-host .xterm-helper-textarea");
+      if (!el) throw new Error("xterm rendered no helper textarea");
+      return getComputedStyle(el).fontSize;
+    }
+    """.trimIndent(),
+) as String
 
 private fun settleTerminal(page: Page) {
     page.evaluate(SETTLE_RESET)

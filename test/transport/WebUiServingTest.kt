@@ -8,6 +8,7 @@ import io.kotgent.core.EventSource
 import io.kotgent.core.Projection
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
+import io.kotgent.cli.TMUX_SOCKET
 import io.kotgent.core.SessionMeta
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
@@ -145,12 +146,14 @@ class WebUiServingTest {
      * - the notify edge — `TaskBadgeTest`; the deep link — `RouterTest`; the footer's version —
      *   `SidebarTest`; starting and controlling sessions — `SessionDialogsTest` and `CommandPaletteTest`.
      *
-     * One claim was dropped without a replacement and is recorded rather than smuggled into the
-     * source-guard section below: that no null-guard filters `msg.model` out of an incoming patch (a
-     * model the daemon CLEARED must clear on screen). A browser could answer it — the daemon really sends
-     * `model: null` — but the `webuicheck` harness has no command that clears a model, so the fixture, not
-     * the browser, is what is missing. The daemon's half is `TransportTest`'s, and `lib/sessions.js`
-     * taking the field verbatim is asserted in [daemonServesTheComponentAndLibModules].
+     * The last claim to move was the one this KDoc used to record as dropped: that no null-guard filters
+     * `msg.model` out of an incoming patch, so a model the daemon CLEARED clears on screen. The reason
+     * given for dropping it — "the `webuicheck` harness has no command that clears a model" — was a
+     * missing FIXTURE, not a missing observable, and the compensation named here was wrong besides
+     * ([daemonServesTheComponentAndLibModules] asserts two export NAMES and says nothing about which
+     * fields the appliers copy). The harness grew a `model <id> <name|->` verb and the claim is now
+     * `SidebarTest.aClearedModelDisappearsFromTheRowThePatchNames`, over a real socket frame. The
+     * daemon's own half — that the patch carries the null at all — stays `TransportTest`'s.
      */
     @Test
     fun daemonServesTheAppEntryModule() = withServer { ctx ->
@@ -528,9 +531,18 @@ class WebUiServingTest {
      * fetch, the abort deadline, the rotation ordering and the preference queue used to be asserted as
      * source text; a delivered push is the only thing that can actually exercise them, and that needs a
      * real push service no headless browser has — so they belong to the plan's manual checklist, not to a
-     * grep that passes whether or not the handler works. The one exception is the deep-link parameter,
-     * whose two spellings live in two files that cannot import each other; see
-     * [theDeepLinkParameterIsTheOneTheServiceWorkerBuilds].
+     * grep that passes whether or not the handler works. Two exceptions stay, both of them the kinds of
+     * claim this file keeps: the deep-link parameter, whose two spellings live in two files that cannot
+     * import each other ([theDeepLinkParameterIsTheOneTheServiceWorkerBuilds]), and the negative below.
+     *
+     * ## The import guard is a NEGATIVE about the source, and nothing else can make it
+     * `/sw.js` is registered as a CLASSIC script (`register("/sw.js")` with no `{ type: "module" }`), so a
+     * bare-specifier `import` — the reflex every other file in `resources/webui` teaches — is a
+     * SyntaxError at worker parse time. The registration then rejects, the worker never installs, and the
+     * whole server-sent push path is dead while every tab keeps working perfectly. No browser test can
+     * observe it either: a headless Chromium has no push service, so nothing here would ever wake the
+     * worker to notice it is missing. The guard therefore lives where it can be made — over the bytes the
+     * daemon serves — and it is the one thing this test reads out of the body.
      */
     @Test
     fun daemonServesTheServiceWorkerAtTheRootScope() = withServer { ctx ->
@@ -541,6 +553,12 @@ class WebUiServingTest {
             "no-cache",
             resp.headers[HttpHeaders.CacheControl],
             "the worker script revalidates so a deploy is not pinned behind a cached push handler",
+        )
+        val body = resp.bodyAsText()
+        assertTrue(
+            body.lineSequence().none { it.trimStart().startsWith("import ") },
+            "the classic worker imports nothing — a bare specifier throws at parse time and takes the " +
+                "whole push path down with it",
         )
     }
 
@@ -679,13 +697,39 @@ class WebUiServingTest {
 
     // --- deliberate source-guards --------------------------------------------------------------------
     //
-    // Five statements that a running page cannot make about itself, each for one of three reasons: it is
+    // Six statements that a running page cannot make about itself, each for one of three reasons: it is
     // an agreement between two FILES that never read each other (the API prefix, the deep-link parameter,
     // the board's CSS vocabulary), it is a comparison against a Kotlin constant a JVM browser-test module
-    // cannot import (the project-name cap), or it is a NEGATIVE claim about the shape of the source —
-    // "no second owner of history exists" has no moment at which a browser could observe it. Everything
-    // that is not one of those three now lives in `webuitest/`; do not grow this section with anything a
-    // Chromium could answer.
+    // cannot import (the project-name cap, the tmux socket label), or it is a NEGATIVE claim about the
+    // shape of the source — "no second owner of history exists" has no moment at which a browser could
+    // observe it. Everything that is not one of those three now lives in `webuitest/`; do not grow this
+    // section with anything a Chromium could answer.
+
+    /**
+     * A comparison against a Kotlin constant: the command the sidebar offers to copy joins the daemon's
+     * OWN tmux server, in UTF-8.
+     *
+     * `tmuxAttachCommand` (`lib/sessions.js`) hand-writes `tmux -u -L kotgent attach -t <name>`, and both
+     * halves of that are cross-file agreements the browser cannot check. The socket label is
+     * [TMUX_SOCKET], the value `Commands.daemon` builds its one `Tmux` with — spell it differently and
+     * the operator's terminal starts an EMPTY second tmux server and reports "no sessions", which reads
+     * as a dead agent. And `-u` is what stops the client from being read as non-UTF-8: tmux then rewrites
+     * every non-ASCII cell as `_` (`tty_check_codeset`), turning an agent's box-drawing TUI into a wall of
+     * underscores — the same reason `attachUpstreamCommand` passes the flag for the daemon's own upstream.
+     *
+     * A Chromium can (and does) assert what the button puts on the clipboard —
+     * `webuitest/test/SidebarTest.kt` reads the exact string — but it has no access to the Kotlin
+     * constant, which is the half that rots silently.
+     */
+    @Test
+    fun theCopyableTmuxCommandNamesTheDaemonsOwnSocketInUtf8() = withServer { ctx ->
+        val sessions = ctx.get("/lib/sessions.js").bodyAsText()
+        assertTrue(
+            sessions.contains("\"tmux -u -L $TMUX_SOCKET attach -t \""),
+            "lib/sessions.js builds `tmux -u -L $TMUX_SOCKET attach -t <name>`; the socket label is the " +
+                "daemon's own and `-u` is what keeps the pane's non-ASCII cells from becoming underscores",
+        )
+    }
 
     /**
      * An agreement between two FILES about one prefix (was the whole of the old prefix test).

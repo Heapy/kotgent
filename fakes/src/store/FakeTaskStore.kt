@@ -49,17 +49,13 @@ import kotlinx.coroutines.sync.withLock
  *    not that a hand-thrown exception maps to a status.
  *
  * ## Concurrency
- * One [Mutex], the real store's single-writer contract. Emissions happen OUTSIDE the lock: with
- * [updatesBuffer] `0` the flow is a rendezvous and emitting under the lock would deadlock the writer
- * against its own collector.
+ * One [Mutex], the real store's single-writer contract — and, like the real store, every emission
+ * happens INSIDE it (see [publishing]). Emitting after the lock was released let two writers stamp their
+ * revisions in one order and publish them in another, so a subscriber could see a newer row before an
+ * older one; the client's newest-rev-wins rule survives that, but the events socket's conflating sender
+ * banks by ARRIVAL and would then ship the stale row last.
  */
 class FakeTaskStore(
-    /**
-     * `taskUpdates`' spare capacity. The default mirrors the real store; `0` turns the flow into a
-     * RENDEZVOUS, which is the deterministic way to probe "is anybody actually collecting" — a buffered
-     * flow answers that question with a race instead of a deadlock.
-     */
-    updatesBuffer: Int = 1024,
     /** Injected clock, so a seeded board renders the same timestamps on every run. */
     private val now: () -> Long = { 1_000L },
 ) : TaskStore {
@@ -77,17 +73,42 @@ class FakeTaskStore(
     override val id: String = TaskRef.LOCAL_TRACKER
 
     /**
-     * The `_sessionUpdates` shape the contract names: buffered and `DROP_OLDEST`, so a burst never
-     * suspends the writer. Deliberately NOT paired with a reliable companion — that exists for the push
-     * notifier, and nothing in the task layer must not-miss an intermediate transition.
+     * `_taskUpdates`' shape, copied from the real store (`src/store/SqliteTaskStore.kt:107-112`):
+     * non-replaying, buffered and `DROP_OLDEST` at 1024, so a burst — one renormalization of a large
+     * project is one update per row — never suspends the writer holding [mutex]. Deliberately NOT paired
+     * with a reliable companion: that exists for the push notifier, and nothing in the task layer must
+     * not-miss an intermediate transition.
      */
     private val updates = MutableSharedFlow<TaskUpdate>(
-        extraBufferCapacity = updatesBuffer,
-        // A zero-capacity SharedFlow may only SUSPEND, which is exactly what makes the rendezvous
-        // variant a deterministic probe of whether anybody is collecting.
-        onBufferOverflow = if (updatesBuffer == 0) BufferOverflow.SUSPEND else BufferOverflow.DROP_OLDEST,
+        replay = 0,
+        extraBufferCapacity = 1024,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val taskUpdates: SharedFlow<TaskUpdate> = updates
+
+    /** [TaskUpdateOutbox]'s staging buffer (`src/store/SqliteTaskStore.kt:628-649`). Guarded by [mutex]. */
+    private val staged = mutableListOf<TaskUpdate>()
+
+    /** Record one change, published only if — and only when — the surrounding [publishing] block succeeds. */
+    private fun stage(update: TaskUpdate) {
+        staged += update
+    }
+
+    /**
+     * [TaskUpdateOutbox.publishing]: run [block], then publish everything it staged, oldest first; a
+     * throw discards them instead. Called with [mutex] held, and `tryEmit` never suspends, so the
+     * publication is part of the write — the rev order and the emission order are the same order, which
+     * is the property a subscriber cannot re-derive.
+     */
+    private fun <T> publishing(block: () -> T): T {
+        try {
+            val result = block()
+            for (index in staged.indices) updates.tryEmit(staged[index])
+            return result
+        } finally {
+            staged.clear()
+        }
+    }
 
     // --- seeding ------------------------------------------------------------------------------------
     //
@@ -154,8 +175,8 @@ class FakeTaskStore(
         project: ProjectId,
         title: String,
         position: Double? = null,
-    ): BacklogEntry {
-        val created = mutex.withLock {
+    ): BacklogEntry = mutex.withLock {
+        publishing {
             tasks[ref] = Task(ref, title, "body of $title", url = null, updatedAt = now())
             val row = BacklogEntry(
                 ref, project, position ?: endPosition(project), TaskState.todo, blocked = false,
@@ -163,83 +184,84 @@ class FakeTaskStore(
             )
             entries[ref] = row
             ref.key.toIntOrNull()?.let { if (it > nextKey) nextKey = it }
+            stage(TaskUpdate(ref, row, row.rev))
             row
         }
-        updates.emit(TaskUpdate(ref, created, created.rev))
-        return created
     }
 
     /**
      * The collapsed-gap branch on demand: the project's whole column rewritten to `1.0, 2.0, 3.0, …`,
      * every row stamping its OWN rev and emitting its own update.
      */
-    suspend fun renormalize(project: ProjectId) {
-        val rewritten = mutex.withLock { renormalizeLocked(project) }
-        rewritten.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
+    suspend fun renormalize(project: ProjectId): Unit = mutex.withLock {
+        publishing { renormalizeLocked(project) }
     }
 
     // --- tracker ------------------------------------------------------------------------------------
 
     override suspend fun list(project: ProjectId): List<Task> = mutex.withLock {
-        entries.values.filter { it.project == project }.mapNotNull { tasks[it.ref] }
+        // `ORDER BY t.id` — `Tasks.sq`'s `selectTasksByProject`, not the order the rows were inserted in.
+        entries.values.filter { it.project == project }
+            .mapNotNull { tasks[it.ref] }
+            .sortedBy { it.ref.value }
     }
 
     override suspend fun get(ref: TaskRef): Task? = mutex.withLock { tasks[ref] }
 
-    override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task {
-        val (task, row) = mutex.withLock {
-            val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
-            val created = Task(ref, title, body, url = null, updatedAt = now())
-            tasks[ref] = created
-            val entry = BacklogEntry(
-                ref, project, endPosition(project), TaskState.todo, blocked = false,
-                createdAt = now(), updatedAt = now(), rev = ++revCounter,
-            )
-            entries[ref] = entry
-            // The author the caller passed, exactly as the real store records it — hardcoding "board"
-            // here would answer the same whether or not the route ever attributes the create.
-            activityRows += TaskActivityEntry(
-                ++activityId, ref, now(), ActivityKind.created, author, null, null, null,
-            )
-            created to entry
+    override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
+        mutex.withLock {
+            publishing {
+                val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
+                val created = Task(ref, title, body, url = null, updatedAt = now())
+                tasks[ref] = created
+                val entry = BacklogEntry(
+                    ref, project, endPosition(project), TaskState.todo, blocked = false,
+                    createdAt = now(), updatedAt = now(), rev = ++revCounter,
+                )
+                entries[ref] = entry
+                // The author the caller passed, exactly as the real store records it — hardcoding "board"
+                // here would answer the same whether or not the route ever attributes the create.
+                activityRows += TaskActivityEntry(
+                    ++activityId, ref, now(), ActivityKind.created, author, null, null, null,
+                )
+                stage(TaskUpdate(ref, entry, entry.rev))
+                created
+            }
         }
-        updates.emit(TaskUpdate(row.ref, row, row.rev))
-        return task
-    }
 
-    override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? {
-        val result = mutex.withLock {
+    override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = mutex.withLock {
+        publishing {
             // A null argument means "leave unchanged", never "clear": both columns are NOT NULL and a
             // PATCH omitting one must not blank it.
-            val existing = tasks[ref] ?: return@withLock null
+            val existing = tasks[ref] ?: return@publishing null
             val updated = existing.copy(
                 title = title ?: existing.title, body = body ?: existing.body, updatedAt = now(),
             )
             tasks[ref] = updated
-            val row = entries[ref]?.copy(updatedAt = now(), rev = ++revCounter)?.also { entries[ref] = it }
-            updated to row
-        } ?: return null
-        result.second?.let { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
-        return result.first
+            // The row that MOVED is `tasks`; the ENTRY only owes a fresh rev and an emission, and its
+            // `updated_at` deliberately stays put — `SqliteTaskStore.update` (:526-531, through
+            // `restampAndStageLocked`) says so in as many words.
+            restampLocked(ref)
+            updated
+        }
     }
 
-    override suspend fun delete(ref: TaskRef): Boolean {
-        val unblocked = mutableListOf<BacklogEntry>()
-        val removedRev = mutex.withLock {
-            if (tasks.remove(ref) == null) return@withLock null
-            // Read the reverse edges BEFORE the cascade drops them, then re-derive: a task deleted out
-            // from under its dependents unblocks them exactly as closing it would have.
+    override suspend fun delete(ref: TaskRef): Boolean = mutex.withLock {
+        publishing {
+            if (tasks.remove(ref) == null) return@publishing false
+            // Read the reverse edges BEFORE the cascade drops them, then re-stamp them AFTER: a task
+            // deleted out from under its dependents unblocks them exactly as closing it would have.
             val dependents = dependentsLocked(ref)
             entries.remove(ref)
             deps.remove(ref)
             deps.values.forEach { it.remove(ref) }
             activityRows.removeAll { it.ref == ref }
-            unblocked += refreshBlockedLocked(dependents)
-            ++revCounter
-        } ?: return false
-        unblocked.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
-        updates.emit(TaskUpdate(ref, null, removedRev))
-        return true
+            // The removal is staged FIRST and takes the lower revision — `SqliteTaskStore.delete`
+            // (:268-271) stages `TaskUpdate(ref, null, nextRev())` and only then re-stamps.
+            stage(TaskUpdate(ref, null, ++revCounter))
+            restampAllLocked(dependents)
+            true
+        }
     }
 
     // --- backlog reads ------------------------------------------------------------------------------
@@ -247,7 +269,7 @@ class FakeTaskStore(
     override suspend fun entry(ref: TaskRef): BacklogEntry? = mutex.withLock { entries[ref] }
 
     override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = mutex.withLock {
-        entries.values.filter { it.project == project }.sortedBy { it.position }
+        entries.values.filter { it.project == project }.sortedWith(RANK_ORDER)
     }
 
     override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = mutex.withLock {
@@ -255,20 +277,18 @@ class FakeTaskStore(
         // first non-blocked todo in rank order — and `null` is the only "nothing eligible" answer.
         entries.values
             .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
-            .minByOrNull { it.position }
+            .minWithOrNull(RANK_ORDER)
     }
 
     // --- backlog writes -----------------------------------------------------------------------------
 
-    override suspend fun startIfTodo(ref: TaskRef): Boolean {
-        val emitted = mutex.withLock {
-            val existing = entries[ref] ?: return@withLock emptyList<BacklogEntry>()
-            if (existing.state != TaskState.todo) return@withLock emptyList<BacklogEntry>()
+    override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
+        publishing {
+            val existing = entries[ref] ?: return@publishing false
+            if (existing.state != TaskState.todo) return@publishing false
             writeStateLocked(existing, TaskState.in_progress)
+            true
         }
-        if (emitted.isEmpty()) return false
-        emitted.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
-        return true
     }
 
     override suspend fun transition(
@@ -276,9 +296,9 @@ class FakeTaskStore(
         to: TaskState,
         author: String,
         message: String?,
-    ): BacklogEntry? {
-        val emitted = mutex.withLock {
-            val existing = entries[ref] ?: return@withLock emptyList<BacklogEntry>()
+    ): BacklogEntry? = mutex.withLock {
+        publishing {
+            val existing = entries[ref] ?: return@publishing null
             // The state change and its activity row are one step, so a `review -m "…"` cannot leave a
             // review with no explanation or a comment on an unreviewed task.
             activityRows += TaskActivityEntry(
@@ -286,15 +306,11 @@ class FakeTaskStore(
             )
             writeStateLocked(existing, to)
         }
-        if (emitted.isEmpty()) return null
-        emitted.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
-        return emitted.first()
     }
 
-    override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? {
-        val emitted = mutableListOf<BacklogEntry>()
-        val moved = mutex.withLock {
-            val existing = entries[ref] ?: return@withLock null
+    override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = mutex.withLock {
+        publishing {
+            val existing = entries[ref] ?: return@publishing null
             val neighbour = when (target) {
                 is MoveTarget.Before -> target.ref
                 is MoveTarget.After -> target.ref
@@ -302,37 +318,46 @@ class FakeTaskStore(
             }
             // A named neighbour the store does not hold — or one in another project — is an unknown ref,
             // not a position: there is nothing to move relative to.
-            if (neighbour != null && entries[neighbour]?.project != existing.project) return@withLock null
+            if (neighbour != null && entries[neighbour]?.project != existing.project) return@publishing null
 
             // A collapsed gap rewrites the column and the move is retried ONCE; after a renormalization
             // every gap is 1.0, so a second refusal would mean the arithmetic itself is wrong.
             val rank = rankForLocked(existing, target) ?: run {
-                emitted += renormalizeLocked(existing.project)
+                renormalizeLocked(existing.project)
                 rankForLocked(entries.getValue(ref), target)
                     ?: error("a renormalized column must always subdivide")
             }
             val row = entries.getValue(ref).copy(position = rank, updatedAt = now(), rev = ++revCounter)
             entries[ref] = row
-            emitted += row
+            stage(TaskUpdate(ref, row, row.rev))
             row
         }
-        emitted.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
-        return moved
     }
 
     // --- dependencies -------------------------------------------------------------------------------
+    //
+    // All three reads are ORDERED, because `Backlog.sq` orders them and both lists reach the browser
+    // verbatim as `TaskDetailDto.dependsOn` / `dependents` (`src/transport/TaskReadRoutes.kt:135-136`).
+    // A `LinkedHashMap`'s insertion order agrees only until a fixture seeds two edges the other way
+    // round, and then the disagreement shows up as a browser assertion about the wrong row.
 
+    /** `ORDER BY depends_on` — `Backlog.sq`'s `selectDependencies`. */
     override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
-        mutex.withLock { deps[ref]?.toList().orEmpty() }
+        mutex.withLock { deps[ref].orEmpty().sortedBy { it.value } }
 
     override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = mutex.withLock { dependentsLocked(ref) }
 
+    /** `ORDER BY d.task_ref, d.depends_on` — `Backlog.sq`'s `selectDependencyEdges`. */
     override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> = mutex.withLock {
-        deps.filterKeys { entries[it]?.project == project }.mapValues { it.value.toList() }
+        // A LinkedHashMap filled in sorted order, because `toSortedMap` is a JVM-only extension.
+        deps.entries
+            .filter { entries[it.key]?.project == project }
+            .sortedBy { it.key.value }
+            .associateTo(LinkedHashMap()) { entry -> entry.key to entry.value.sortedBy { it.value } }
     }
 
-    override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) {
-        val emitted = mutex.withLock {
+    override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
+        publishing {
             fun refuse(refusal: DependencyRefusal, why: String): Nothing = throw DependencyRefusedException(
                 refusal, ref, dependsOn,
                 "cannot add '${ref.value}' depends on '${dependsOn.value}': $why (${refusal.name})",
@@ -346,23 +371,27 @@ class FakeTaskStore(
             if (from.project != to.project) {
                 refuse(DependencyRefusal.crossProject, "they belong to different projects")
             }
+            val edges = deps.getOrPut(ref) { mutableListOf() }
+            // Re-adding an existing edge returns BEFORE the write, and before the cycle check, exactly
+            // where `BacklogDependencies.addLocked` (src/store/BacklogDependencies.kt:209) returns:
+            // `INSERT OR IGNORE` would make the statement a no-op anyway, but the emissions after it
+            // would not be, and "no-op" has to mean the board hears nothing.
+            if (dependsOn in edges) return@publishing
             if (wouldCycle(edgeSnapshotLocked(), ref, dependsOn)) {
                 refuse(DependencyRefusal.cycle, "it would close a ring")
             }
-            val edges = deps.getOrPut(ref) { mutableListOf() }
-            // Re-adding an existing edge is a no-op, not an error — an idempotent retry must not fail.
-            if (dependsOn !in edges) edges += dependsOn
-            restampLocked(ref)
+            edges += dependsOn
+            restampAfterEditLocked(ref)
         }
-        emitted.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
     }
 
-    override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) {
-        val emitted = mutex.withLock {
-            deps[ref]?.remove(dependsOn)
-            restampLocked(ref)
+    override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
+        publishing {
+            // Removing an edge that is not there is the same no-op, and leaves the same silence —
+            // `BacklogDependencies.removeLocked` (src/store/BacklogDependencies.kt:230).
+            if (deps[ref]?.remove(dependsOn) != true) return@publishing
+            restampAfterEditLocked(ref)
         }
-        emitted.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
     }
 
     // --- activity -----------------------------------------------------------------------------------
@@ -409,41 +438,67 @@ class FakeTaskStore(
     // --- internals (all callers hold [mutex]) --------------------------------------------------------
 
     /**
-     * Write [to] onto [existing], re-derive its own `blocked`, and re-derive every reverse dependent's.
-     * Returns the moved row first, then the dependents that actually changed — the emission order the
-     * real store's one transaction produces.
+     * Write [to] onto [existing], re-derive its own `blocked`, stage it, then re-stamp and stage every
+     * reverse dependent — the emission order the real store's one transaction produces
+     * (`SqliteTaskStore.transitionLocked`, :365-372, and `startIfTodoLocked`, :316-329).
      */
-    private fun writeStateLocked(existing: BacklogEntry, to: TaskState): List<BacklogEntry> {
+    private fun writeStateLocked(existing: BacklogEntry, to: TaskState): BacklogEntry {
         val stamped = existing.copy(state = to, updatedAt = now(), rev = ++revCounter)
         val row = stamped.copy(blocked = derivedBlocked(stamped))
         entries[existing.ref] = row
-        return listOf(row) + refreshBlockedLocked(dependentsLocked(existing.ref))
-    }
-
-    /** Re-stamp [ref] and re-derive its `blocked` — what a dependency edit owes its own row. */
-    private fun restampLocked(ref: TaskRef): List<BacklogEntry> {
-        val existing = entries[ref] ?: return emptyList()
-        val stamped = existing.copy(updatedAt = now(), rev = ++revCounter)
-        val row = stamped.copy(blocked = derivedBlocked(stamped))
-        entries[ref] = row
-        return listOf(row)
+        stage(TaskUpdate(row.ref, row, row.rev))
+        restampDependentsLocked(existing.ref)
+        return row
     }
 
     /**
-     * Re-derive `blocked` for [refs], re-stamping only the rows whose value actually MOVED. Stamping the
-     * unmoved ones too would put a rev bump on the wire for a row nothing changed about, and the client's
-     * newest-rev-wins rule would then hide a genuinely newer observation that arrived first.
+     * Stamp one row a fresh rev, re-derive its `blocked`, and stage it —
+     * `SqliteTaskStore.restampAndStageLocked` (:526-531) over `Backlog.sq`'s `restamp` (:148-154).
+     *
+     * **`updated_at` is deliberately untouched.** That statement is `SET rev = ?` and says why in its own
+     * comment: the row's derived `blocked` may have moved, but nothing about it was EDITED, and
+     * `updated_at` is activity (the same reason `setReadCursor` leaves it alone in `Sessions.sq`).
+     * Writing the clock here is invisible under a frozen fixture clock and wrong the moment a scenario
+     * uses a real one — which the harness does.
      */
-    private fun refreshBlockedLocked(refs: Collection<TaskRef>): List<BacklogEntry> = refs.mapNotNull { ref ->
-        val existing = entries[ref] ?: return@mapNotNull null
-        val blocked = derivedBlocked(existing)
-        if (blocked == existing.blocked) return@mapNotNull null
-        existing.copy(blocked = blocked, rev = ++revCounter).also { entries[ref] = it }
+    private fun restampLocked(ref: TaskRef) {
+        val existing = entries[ref] ?: return
+        val stamped = existing.copy(rev = ++revCounter)
+        val row = stamped.copy(blocked = derivedBlocked(stamped))
+        entries[ref] = row
+        stage(TaskUpdate(row.ref, row, row.rev))
+    }
+
+    /**
+     * Re-stamp every reverse dependent of [ref] — UNCONDITIONALLY, exactly as
+     * `BacklogDependencies.restampDependentsLocked` (src/store/BacklogDependencies.kt:167-169) does.
+     *
+     * Filtering to the rows whose `blocked` actually moved was the tempting optimisation and it is the
+     * wrong one: the real store cannot see that (its `blocked` is derived in the read path, never
+     * stored), so it emits for all of them, and a redundant emission is invisible under the client's
+     * newest-rev-wins rule while a missing one is a stale marker until a reload. A fake that emits
+     * strictly fewer frames than the daemon is a fake a "the board heard about it" assertion passes
+     * against for the wrong reason.
+     */
+    private fun restampDependentsLocked(ref: TaskRef) = restampAllLocked(dependentsLocked(ref))
+
+    /** [restampLocked] over a pre-read set — `delete` reads its dependents before the cascade drops them. */
+    private fun restampAllLocked(refs: Collection<TaskRef>) = refs.forEach { restampLocked(it) }
+
+    /**
+     * What an accepted edit to [ref]'s own edge set owes the board — `[ref]` itself, then its reverse
+     * dependents (`BacklogDependencies.restampAfterEditLocked`, :249-252). The second half is
+     * conservative and known to be: an edge edit changes no STATE, so no dependent's `blocked` can
+     * actually have moved. It is emitted because `TaskStore.addDependency` declares it.
+     */
+    private fun restampAfterEditLocked(ref: TaskRef) {
+        restampLocked(ref)
+        restampDependentsLocked(ref)
     }
 
     /**
      * Re-derive `blocked` across the whole tree, with no rev bump and no emission — the seeding-time
-     * counterpart of [refreshBlockedLocked]. It is what makes seeds ORDER-INSENSITIVE: a scenario may
+     * counterpart of [restampLocked]. It is what makes seeds ORDER-INSENSITIVE: a scenario may
      * list a dependency before the task it points at, or mark a dependency `done` afterwards, and every
      * card still renders the marker its data supports.
      */
@@ -475,8 +530,9 @@ class FakeTaskStore(
                 row != null && row.project == entry.project && row.state != TaskState.done
             }
 
+    /** `ORDER BY task_ref` — `Backlog.sq`'s `selectDependents`, the reverse lookup. */
     private fun dependentsLocked(ref: TaskRef): List<TaskRef> =
-        deps.filterValues { ref in it }.keys.toList()
+        deps.filterValues { ref in it }.keys.sortedBy { it.value }
 
     private fun edgeSnapshotLocked(): Map<TaskRef, List<TaskRef>> = deps.mapValues { it.value.toList() }
 
@@ -516,10 +572,24 @@ class FakeTaskStore(
         }
     }
 
-    private fun renormalizeLocked(project: ProjectId): List<BacklogEntry> = entries.values
-        .filter { it.project == project }
-        .sortedBy { it.position }
-        .mapIndexed { index, entry ->
-            entry.copy(position = index + 1.0, rev = ++revCounter).also { entries[entry.ref] = it }
-        }
+    private fun renormalizeLocked(project: ProjectId) {
+        entries.values
+            .filter { it.project == project }
+            .sortedWith(RANK_ORDER)
+            .forEachIndexed { index, entry ->
+                val row = entry.copy(position = index + 1.0, rev = ++revCounter)
+                entries[entry.ref] = row
+                stage(TaskUpdate(row.ref, row, row.rev))
+            }
+    }
+
+    private companion object {
+        /**
+         * `ORDER BY position, task_ref` — the one entry order `Backlog.sq` declares, shared by
+         * `selectEntriesByProject` (:49-54) and `nextCandidate` (:67-79). The tie-break is not padding:
+         * a renormalization observed mid-flight, or a fixture that seeds two cards at one rank, would
+         * otherwise let two reads swap them.
+         */
+        val RANK_ORDER: Comparator<BacklogEntry> = compareBy({ it.position }, { it.ref.value })
+    }
 }

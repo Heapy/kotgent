@@ -31,7 +31,8 @@ fun attentionScenario(): Scenario = Scenario(
     name = "attention",
     seed = { fakes ->
         listOf("/w/quiet", "/w/unread").forEach(fakes.projectFs::addDirectory)
-        fakes.events.upsertSession(
+        seedSessionRow(
+            fakes,
             harnessSession(
                 id = "s-quiet",
                 name = "quiet",
@@ -43,7 +44,8 @@ fun attentionScenario(): Scenario = Scenario(
                 model = "claude-sonnet-4-5",
             ),
         )
-        fakes.events.upsertSession(
+        seedSessionRow(
+            fakes,
             harnessSession(
                 id = "s-unread",
                 name = "unread",

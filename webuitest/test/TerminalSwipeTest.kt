@@ -58,6 +58,10 @@ import kotlin.test.fail
  * the code under test. The scenario's payload enables SGR (`?1006h`) BEFORE the tracker (`?1000h`) so the
  * reports ride `term.onData` as ASCII rather than `term.onBinary` as raw bytes above 127.
  *
+ * **The other event is not left uncovered by that choice.** `term.onBinary` — the path a report takes
+ * whenever tracking arrived without SGR — is the last test in this file, over the `terminal-x10`
+ * scenario, because the encoding is a property of the payload and not something a gesture can switch.
+ *
  * Replaces `WebUiServingTest.theWebUiBridgesPhoneSwipesIntoXtermWheelEvents`.
  */
 class TerminalSwipeTest {
@@ -315,7 +319,105 @@ class TerminalSwipeTest {
                     "document.activeElement.classList.contains('xterm-helper-textarea')",
             )
         }
+
+    /**
+     * The OTHER event xterm reports input on, and the byte-wise narrowing that keeps it intact.
+     *
+     * Everything above rides `term.onData`, because the `terminal` scenario's payload asks for the SGR
+     * encoding and an SGR report is plain ASCII. Whenever tracking arrives WITHOUT `?1006h` — the
+     * degradation `TERMINAL_MODE_RESET`'s ordering rule exists to avoid, and the state a surviving tracker
+     * leaves behind — xterm's `CoreMouseService` falls back to the `DEFAULT` encoding, whose coordinates
+     * are raw bytes `32 + n`, and routes the report to `triggerBinaryEvent`. It then leaves on
+     * `term.onBinary`, an event `TerminalPane` has to subscribe to separately: without that subscription
+     * the reports are generated and dropped on the floor — no error anywhere, the mouse simply stops
+     * working — which is why this needed a scenario of its own rather than a comment.
+     *
+     * ## The frame is asserted BYTE for byte, and its length is the sharp part
+     * The payload is a JavaScript string of char codes 0-255, so `TerminalPane` narrows it with
+     * `charCodeAt(i) & 0xff` rather than through a `TextEncoder`. The difference is invisible until a
+     * coordinate exceeds 127, which is exactly what the click below arranges: the press lands past column
+     * 96, so its x byte is ≥ 128. Narrowed correctly the frame is SIX bytes (`ESC [ M` + button + x + y);
+     * UTF-8-encoded, that one byte becomes two and the frame is seven or more — a difference `tmux` reads
+     * as a mouse report at a completely different column. Both the length and the byte are asserted, so
+     * either mistake fails on its own terms.
+     */
+    @Test
+    fun aLegacyEncodedMouseReportLeavesOnTermOnBinaryWithItsHighBytesIntact() {
+        Harness(TERMINAL_X10_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.fineContext(LEGACY_MOUSE_WIDTH, LEGACY_MOUSE_HEIGHT).use { context ->
+                    context.loginWithTicket(harness.ticket, harness.baseUrl)
+                    context.traced("terminal-legacy-mouse") {
+                        val page = context.newPage()
+                        val sent = CopyOnWriteArrayList<ByteArray>()
+                        page.onWebSocket { socket ->
+                            if (socket.url().contains("/terminal")) {
+                                socket.onFrameSent { frame -> frame.binary()?.let { sent.add(it) } }
+                            }
+                        }
+                        page.navigate(harness.baseUrl + "/s/" + LEGACY_MOUSE_SESSION)
+                        page.waitForFunction(LEGACY_MOUSE_TERMINAL_READY)
+
+                        val box = screenBox(page)
+                        // The last full cell on the row: as far right as a report can name, which is what
+                        // puts its x byte well past 127.
+                        page.mouse().click(box.x + box.width - LEGACY_MOUSE_EDGE_INSET, box.y + box.height / 2)
+                        page.waitForCondition { sent.isNotEmpty() }
+
+                        val report = sent.first()
+                        assertEquals(
+                            listOf(0x1b, '['.code, 'M'.code),
+                            report.take(3).map { it.toInt() and 0xff },
+                            "a DEFAULT-encoded report is `ESC [ M` and then three coordinate bytes; got " +
+                                report.joinToString(" ") { (it.toInt() and 0xff).toString(16) },
+                        )
+                        assertEquals(
+                            6,
+                            report.size,
+                            "six bytes, or the payload went through a TextEncoder and the high coordinate " +
+                                "became two: " + report.joinToString(" ") { (it.toInt() and 0xff).toString(16) },
+                        )
+                        val x = report[4].toInt() and 0xff
+                        assertTrue(
+                            x > 0x7f,
+                            "the click has to land past column $LEGACY_MOUSE_MIN_COLUMNS for the narrowing " +
+                                "to be under test at all: the x byte was $x, i.e. column ${x - 32} of a " +
+                                "grid ${LEGACY_MOUSE_WIDTH}px wide",
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
+
+/** The `terminal-x10` scenario's session and banner, and the geometry the high coordinate needs. */
+private const val LEGACY_MOUSE_SESSION = "s-x10"
+private const val LEGACY_MOUSE_WIDTH = 1400
+private const val LEGACY_MOUSE_HEIGHT = 900
+
+/** `32 + column` exceeds 127 from column 96 on; the assertion says so rather than trusting the width. */
+private const val LEGACY_MOUSE_MIN_COLUMNS = 96
+
+/** Far enough inside `.xterm-screen`'s right edge to be a cell rather than its boundary. */
+private const val LEGACY_MOUSE_EDGE_INSET = 4.0
+
+/**
+ * The `terminal-x10` payload has painted AND xterm has taken the tracking mode.
+ *
+ * `enable-mouse-events` is the class xterm puts on `.xterm` while a mouse protocol is active, so it is
+ * what says the `?1000h` was parsed — without it the click below would be an ordinary selection drag and
+ * no report would exist to assert about.
+ */
+private val LEGACY_MOUSE_TERMINAL_READY = """
+    () => {
+      const rows = document.querySelector("#terminal-host .xterm-rows");
+      const screen = document.querySelector("#terminal-host .xterm");
+      return !!rows && !!screen &&
+        rows.textContent.includes("KOTGENT-X10-READY") &&
+        screen.classList.contains("enable-mouse-events");
+    }
+""".trimIndent()
 
 /** The `terminal` scenario's single session: `s-term`, claude, `/w/terminal`, running. */
 private const val TERMINAL_SESSION = "s-term"

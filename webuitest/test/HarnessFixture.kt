@@ -63,6 +63,7 @@ const val SESSIONS_SCENARIO: String = "sessions"
 const val ATTENTION_SCENARIO: String = "attention"
 const val RESTART_SCENARIO: String = "restart"
 const val TERMINAL_SCENARIO: String = "terminal"
+const val TERMINAL_X10_SCENARIO: String = "terminal-x10"
 const val BOARD_SCENARIO: String = "board"
 const val BOARD_EMPTY_SCENARIO: String = "board-empty"
 const val TASK_DETAIL_SCENARIO: String = "task-detail"
@@ -457,6 +458,43 @@ fun regexLiteral(text: String): String = buildString {
 }
 
 private const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"
+
+/**
+ * Bank every text message the `/api/v1/events` socket delivers into `window.__kotgentFrames`.
+ *
+ * Install it with `addInitScript` BEFORE the page loads. The wrapper returns a genuine `WebSocket` (a
+ * constructor returning an object yields that object), shares its prototype so `instanceof` and every
+ * property the app sets still behave, and copies the readyState constants. Its `message` listener is
+ * registered before the application gets the socket back, so a frame the app has already applied is
+ * necessarily banked — which is what makes "the page has seen frame X" a usable barrier rather than a
+ * race.
+ *
+ * Shared because two files now need it for two different reasons: [TaskBadgeTest] reads the frames it
+ * banked to tell a patch from a full row, and [BoardTest] waits on the arrival of one — the connect
+ * baseline — because an EMPTY fixture has no rendered count that could rise.
+ */
+val FRAME_RECORDER: String = """
+    (() => {
+      const frames = [];
+      window.__kotgentFrames = frames;
+      const Native = window.WebSocket;
+      const Recording = function (url, protocols) {
+        const socket = protocols === undefined ? new Native(url) : new Native(url, protocols);
+        if (String(url).indexOf("/api/v1/events") >= 0) {
+          socket.addEventListener("message", (event) => {
+            if (typeof event.data === "string") frames.push(event.data);
+          });
+        }
+        return socket;
+      };
+      Recording.prototype = Native.prototype;
+      Recording.CONNECTING = Native.CONNECTING;
+      Recording.OPEN = Native.OPEN;
+      Recording.CLOSING = Native.CLOSING;
+      Recording.CLOSED = Native.CLOSED;
+      window.WebSocket = Recording;
+    })();
+""".trimIndent()
 
 /**
  * Deliver one CDP touch event — the primitive under every touch DRAG in this module.

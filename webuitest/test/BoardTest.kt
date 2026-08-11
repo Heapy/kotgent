@@ -130,10 +130,31 @@ class BoardTest {
      * An adopted directory with no backlog yet is still a board: four empty columns, its name and path in
      * the head, and a "New task" button that is enabled because a project IS selected (the button is
      * disabled only while `projectId` is null, which is what a daemon with no projects at all produces).
+     *
+     * ## Why this one navigates itself
+     * Every OTHER scenario's readiness gate is its seeded card count, and a count that must RISE from
+     * zero is a real barrier. Here the count is zero to begin with, so [onTheBoard]'s gates — the columns
+     * being visible, the project name (which arrives over HTTP, from `GET /projects`, and says nothing
+     * about the task channel) and `.task-card` at zero — are all satisfied by the board's very first
+     * render off its empty local list, before any `tasks_snapshot` could have been applied. Every
+     * assertion below would then hold against a page whose task socket never delivered anything at all.
+     *
+     * So the barrier is the frame itself: the socket is wrapped before the page loads and the test waits
+     * for the `tasks_snapshot` the daemon sends on connect. Only after that baseline has been applied is
+     * "there are no cards" a statement about the PROJECT rather than about the clock.
      */
     @Test
     fun aProjectWithNoTasksStillRendersItsFourEmptyColumns() =
-        onTheBoard("aProjectWithNoTasksStillRendersItsFourEmptyColumns", scenario = BOARD_EMPTY_SCENARIO) { _, page ->
+        onTheBoard(
+            "aProjectWithNoTasksStillRendersItsFourEmptyColumns",
+            scenario = BOARD_EMPTY_SCENARIO,
+            open = false,
+        ) { harness, page ->
+            page.addInitScript(FRAME_RECORDER)
+            page.navigate(harness.baseUrl + "/tasks")
+            assertThat(page.locator(".board-columns")).isVisible()
+            page.waitForFunction(SAW_TASKS_SNAPSHOT_JS)
+
             assertThat(page.locator(".board-project")).hasText(EMPTY_PROJECT)
             assertThat(page.locator(".board-project-path")).hasText("/repo/empty")
             assertThat(page.locator(".board-column")).hasCount(4)
@@ -381,27 +402,45 @@ class BoardTest {
      * Dragging between columns cannot exist when only one is on screen, so the card menu carries the
      * moves there — and only there. It is the phone's whole answer to the drag, so it is asserted the
      * same way: the request the daemon receives, and the card arriving in the column that was named.
+     *
+     * ## The barrier, and why the obvious wait is not one
+     * The interesting half of the claim is a NEGATIVE — that a menu move sends the `PATCH` and **no**
+     * `/move`. Waiting for the log to be non-empty cannot establish that: the recorder banks a request
+     * when it is ISSUED, and `Board.js` only reaches its `/move` after the `PATCH`'s response resolves, so
+     * a regression that added one would post it strictly after the snapshot this test had already read.
+     * The wait would return on the `PATCH` and the exact-list assertion would pass against the very code
+     * it exists to catch.
+     *
+     * So the barrier is a SECOND write that can only be issued after the first one's answer came back and
+     * was applied — the card has to be rendered in `in_progress` before its menu can be opened there — and
+     * it is deliberately a `/move` (the menu's own "Move down"), which doubles as the positive control:
+     * the log's second entry proves this recorder can see a `/move` at all, and a `/move` the first
+     * gesture had sent would sit between the two, in the same list, in order.
      */
     @Test
     fun thePhoneMovesACardThroughTheCardMenuInsteadOfADrag() =
         onTheBoard("thePhoneMovesACardThroughTheCardMenuInsteadOfADrag", phone = true) { _, page ->
             val writes = page.recordTaskWrites()
 
-            page.card("local:1").locator(".task-card-menu summary").click()
-            page.card("local:1").locator(".task-card-menu button")
-                .filter(Locator.FilterOptions().setHasText("Move to In progress"))
-                .click()
-
-            page.waitForCondition { writes.snapshot().isNotEmpty() }
-            assertEquals(
-                listOf("PATCH /tasks/local%3A1"),
-                writes.snapshot(),
-                "a menu move is the state alone — there is no rank to resolve against a column off screen",
-            )
+            page.moveFromCardMenu("local:1", "Move to In progress")
             assertThat(page.card("local:1")).hasCount(0)
 
             page.locator(".board-column-switch button[data-state=\"in_progress\"]").click()
             assertThat(page.column("in_progress").locator(".task-card[data-ref=\"local:1\"]")).hasCount(1)
+            // Its rank is untouched by the PATCH, so it sorts ahead of the two cards already here — which
+            // is what makes "Move down" the enabled one.
+            assertEquals(listOf("local:1", "local:5", "local:6"), page.refsIn("in_progress"))
+
+            page.moveFromCardMenu("local:1", "Move down")
+            // The committed rank, not merely the request: the move's frame is what re-orders the column,
+            // and `refsIn` is a synchronous read with no retry of its own.
+            page.waitForCondition { page.refsIn("in_progress") == listOf("local:5", "local:1", "local:6") }
+            assertEquals(
+                listOf("PATCH /tasks/local%3A1", "POST /tasks/local%3A1/move"),
+                writes.snapshot(),
+                "a menu state-move is the state ALONE — there is no rank to resolve against a column off " +
+                    "screen — and the whole log is that PATCH plus the deliberate Move down after it",
+            )
         }
 
     /**
@@ -570,6 +609,14 @@ class BoardTest {
         )
     }
 
+    /** Open [ref]'s `<details>` menu and click the button whose label is [action]. */
+    private fun Page.moveFromCardMenu(ref: String, action: String) {
+        card(ref).locator(".task-card-menu summary").click()
+        card(ref).locator(".task-card-menu button")
+            .filter(Locator.FilterOptions().setHasText(action))
+            .click()
+    }
+
     private fun Page.watchDragClaims() = evaluate(DRAG_CLAIM_WATCHER_JS)
 
     private fun Page.dragClaims(): Int = (evaluate("() => window.__kotgentDragClaims") as Number).toInt()
@@ -661,6 +708,15 @@ class BoardTest {
         private const val INSERTED_POSITION = "2.5"
 
         private val COLUMN_STATES = listOf("todo", "in_progress", "review", "done")
+
+        /**
+         * The connect baseline has arrived and been handed to the app — the barrier an EMPTY board has
+         * no rendered count to give it. `tasks_snapshot` is the frame `EventsWs` sends once per socket
+         * with the whole task list in it, and `FRAME_RECORDER`'s listener runs before the app's own.
+         */
+        private const val SAW_TASKS_SNAPSHOT_JS = """
+          () => (window.__kotgentFrames || []).some((f) => f.indexOf("\"type\":\"tasks_snapshot\"") >= 0)
+        """
 
         /** The class attribute of a column, with and without the drag highlight — exact, because it is built as
          *  `"board-column" + (over ? " board-drop-target" : "")` and nothing else contributes to it. */

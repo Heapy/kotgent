@@ -85,12 +85,22 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
         val prior = metas[meta.id]
-        // Honors the contract: full-row EXCEPT createdAt (preserved) and readCursor (max-merged, so a
-        // caller holding a stale cursor cannot regress the badge — Sessions.sq's `upsert`).
+        // Honors the contract: full-row EXCEPT createdAt (preserved), readCursor (max-merged, so a
+        // caller holding a stale cursor cannot regress the badge) and the two task-link columns, which
+        // are COALESCED — `Sessions.sq`'s `upsert`, lines 87 and 92-93.
+        //
+        // The coalesce is the half this store gained last and kept missing: `task_ref` / `project_id`
+        // are written by their OWN targeted setters, so only `setTaskRef` / `clearTaskRefIf` /
+        // `setProjectId` may ever clear one. A daemon path that writes a whole `SessionMeta` it read
+        // before a link landed (`Reconciler.reconcile`, src/daemon/Reconciler.kt:178-181, which
+        // re-upserts every row at startup) must keep the stored link, and taking the incoming null
+        // verbatim silently unlinks every session on the next daemon start.
         val merged = if (prior != null) {
             meta.copy(
                 createdAt = prior.createdAt,
                 readCursor = Seq(maxOf(prior.readCursor.value, meta.readCursor.value)),
+                taskRef = meta.taskRef ?: prior.taskRef,
+                projectId = meta.projectId ?: prior.projectId,
             )
         } else {
             meta

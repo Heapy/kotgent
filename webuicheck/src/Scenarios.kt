@@ -6,6 +6,7 @@ import io.kotgent.webuicheck.scenarios.emptyScenario
 import io.kotgent.webuicheck.scenarios.restartScenario
 import io.kotgent.webuicheck.scenarios.sessionsScenario
 import io.kotgent.webuicheck.scenarios.terminalScenario
+import io.kotgent.webuicheck.scenarios.terminalX10Scenario
 
 /*
  * The scenario registry — ONE map, and the only list of scenario names that exists.
@@ -55,6 +56,7 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         attentionScenario(),
         restartScenario(),
         terminalScenario(),
+        terminalX10Scenario(),
     ) + boardScenarios()
     val registry = LinkedHashMap<String, Scenario>(all.size)
     for (scenario in all) {

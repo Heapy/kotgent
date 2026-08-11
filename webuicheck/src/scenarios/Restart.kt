@@ -41,7 +41,8 @@ fun restartScenario(): Scenario = Scenario(
     name = "restart",
     seed = { fakes ->
         listOf("/w/restart-a", "/w/restart-b").forEach(fakes.projectFs::addDirectory)
-        fakes.events.upsertSession(
+        seedSessionRow(
+            fakes,
             harnessSession(
                 id = "s-restart-a",
                 name = "restart-a",
@@ -53,7 +54,8 @@ fun restartScenario(): Scenario = Scenario(
                 model = "claude-sonnet-4-5",
             ),
         )
-        fakes.events.upsertSession(
+        seedSessionRow(
+            fakes,
             harnessSession(
                 id = "s-restart-b",
                 name = "restart-b",

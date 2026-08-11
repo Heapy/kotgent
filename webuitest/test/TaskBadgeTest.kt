@@ -350,37 +350,6 @@ class TaskBadgeTest {
         const val TASK_UPDATE = "\"type\":\"task_update\""
 
         /**
-         * Bank every text message the `/events` socket delivers.
-         *
-         * The wrapper returns a genuine `WebSocket` (a constructor returning an object yields that
-         * object), shares its prototype so `instanceof` and every property the app sets still behave, and
-         * copies the readyState constants. Its `message` listener is registered before the application
-         * gets the socket back, so a frame the app has already applied is necessarily banked.
-         */
-        val FRAME_RECORDER = """
-            (() => {
-              const frames = [];
-              window.__kotgentFrames = frames;
-              const Native = window.WebSocket;
-              const Recording = function (url, protocols) {
-                const socket = protocols === undefined ? new Native(url) : new Native(url, protocols);
-                if (String(url).indexOf("/api/v1/events") >= 0) {
-                  socket.addEventListener("message", (event) => {
-                    if (typeof event.data === "string") frames.push(event.data);
-                  });
-                }
-                return socket;
-              };
-              Recording.prototype = Native.prototype;
-              Recording.CONNECTING = Native.CONNECTING;
-              Recording.OPEN = Native.OPEN;
-              Recording.CLOSING = Native.CLOSING;
-              Recording.CLOSED = Native.CLOSED;
-              window.WebSocket = Recording;
-            })();
-        """.trimIndent()
-
-        /**
          * Make the in-tab notification path observable and deterministic.
          *
          * `notifyAttention` no-ops unless the per-device toggle is on, the API exists and permission is
