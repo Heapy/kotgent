@@ -8,8 +8,14 @@ on:
 
 # The project targets macosArm64 only and builds with the committed ./kotlin
 # wrapper (JetBrains Kotlin Toolchain, not Gradle), so CI runs on Apple-silicon
-# macOS runners. PtyTest execs the ptycheck binary, which drives real tmux over a
-# throwaway `-L kotgent-test` socket, so tmux must be present.
+# macOS runners. One job runs every tier, and each tier adds a runner requirement.
+# PtyTest execs the ptycheck binary, which drives real tmux over a throwaway
+# `-L kotgent-test` socket, so tmux must be present. The browser tier (`webuitest`)
+# execs the webuicheck binary and drives a real Chromium through Playwright for
+# Java, so the runner additionally needs a JDK (the macOS image ships one) and, on
+# a cold cache, the network for Playwright's browser bundle — the two caches below
+# are what keep both off the critical path. There is deliberately no npm anywhere
+# in this repository, hence no setup-node step: see the Playwright cache comment.
 jobs:
   build-test:
     runs-on: macos-14
@@ -60,6 +66,14 @@ jobs:
       # follow in the same commit, or CI silently restores a bundle the new driver ignores and downloads
       # over. There are deliberately no `restore-keys`: a partial match would seed the new cache entry
       # with the previous version's browsers too, growing a multi-gigabyte entry release after release.
+      #
+      # `hashFiles('gradle/libs.versions.toml')` would remove that manual step, and it is deliberately not
+      # used: the hash covers the WHOLE catalog, so bumping ktor, coroutines or sqldelight would evict a
+      # bundle that has not changed and — with no `restore-keys` to soften it — pay a full cold download
+      # for an unrelated edit. The coupling is instead written at both ends (here and in the catalog's own
+      # comment beside `playwright`), so the two literals stay a stated pair rather than a coincidence.
+      # If the manual bump is ever missed in practice rather than in theory, revisit this trade, not the
+      # `restore-keys` rule.
       - name: Cache the Playwright browsers
         uses: actions/cache@v6
         with:
@@ -82,6 +96,12 @@ jobs:
       # which is exactly backwards for a diagnostics upload. And `if-no-files-found: ignore` keeps a
       # failure that produced no traces (a compile error, a native link failure, a red native test) from
       # adding a second red step on top of the real one.
+      #
+      # Only `webuitest/test-results/` is written today — `HarnessFixture` builds that path from the repo
+      # root and nothing writes a root-level one. The root entry is kept as a no-op belt: `if-no-files-found:
+      # ignore` makes an absent path free, and Playwright's own default output directory is root-relative,
+      # so a future writer that does not go through the fixture is still collected. Do not read its
+      # presence as evidence that something writes there.
       - name: Upload Playwright failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

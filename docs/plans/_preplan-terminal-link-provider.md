@@ -76,7 +76,8 @@ localStorage), `:30` (`sanitizePrefs`), `:87` (`persistTerminalUnicode` как �
 | `resources/webui/lib/` | новый `links.js`: регулярки, резолв пути от cwd, построение URL схемы — один реестр, как `unicode.js` для мод |
 | `resources/webui/lib/prefs.js:16`, `:30`, `:87` | ключ, валидация, запись |
 | `resources/webui/components/dialogs.js` | Preferences — пункт выбора схемы |
-| `test/transport/WebUiServingTest.kt` | новый обслуживаемый модуль регистрируется здесь |
+| `test/transport/WebUiServingTest.kt` | новый обслуживаемый модуль регистрируется здесь — и это всё, что от этого файла нужно |
+| `webuitest/test/` | поведение — здесь, в живом Chromium против `webuicheck`: наведение, подчёркивание, клик, отказ по умолчанию. Правило яруса: если на вопрос может ответить Chromium, он живёт тут, а не в grep-тесте |
 
 Аддон `addon-web-links` **вендорить не обязательно**: он на 58 + 200 строк, и его основная ценность —
 консервативная regex (`WebLinksAddon.ts:21`) и корректный `handleLink`. Провайдер для `path:line` всё

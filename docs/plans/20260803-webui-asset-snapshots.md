@@ -49,7 +49,9 @@ the machine. The cost stays; CLAUDE.md gains the Access fact so the next reader 
 - **Patterns to follow**: `TokenHolder` (`src/transport/TokenHolder.kt`) is the house pattern for
   request-path state — `kotlin.concurrent.atomics.AtomicReference`, never a `Mutex`, because readers run
   on every request including the non-suspend WS handshake. `Broadcaster` uses the same primitive.
-- **Test harness**: `WebUiServingTest.withServer { ctx -> ... }` (line 2970) is the existing entry point;
+- **Test harness**: `WebUiServingTest.withServer { ctx -> ... }` is the existing entry point (grep for it —
+  that file was cut from ~4500 lines to ~1050 when the grep tier was replaced, so any line number
+  predating that is wrong);
   `FileUploadTest.withTempDir`/`makeTempDir` (line ~120-140) is the reference fixture helper with the
   documented `mkdtemp` fallback and verified cleanup; `DirectoryCompletionTest.kt:108` has the symbolic
   `MODE_0700`.
@@ -75,21 +77,30 @@ the machine. The cost stays; CLAUDE.md gains the Access fact so the next reader 
   - tests cover both success and error scenarios
 - **CRITICAL: all tests must pass before starting next task** - no exceptions
 - **CRITICAL: update this plan file when scope changes during implementation**
-- run `./kotlin build` before `./kotlin test` — `PtyTest` execs the `ptycheck` binary and `./kotlin test`
-  never links a main binary
+- run `./kotlin build` before `./kotlin test` — `./kotlin test` never links a main binary and the suite
+  execs two of them: `PtyTest` runs `ptycheck`, and `WebUiCheckTest` plus every browser test run
+  `webuicheck`
 - maintain backward compatibility of the served URL shape (`/_v/<rev>/<path>` stays)
 
 ## Testing Strategy
 
 - **unit tests**: required for every task (see Development Approach above)
-- **e2e tests**: this project has no browser e2e harness. The substitute contract lives in
-  `test/transport/WebUiServingTest.kt` — every newly served module must be registered there — and browser
-  behaviour stays on the manual checklist. Changed JavaScript modules must pass `node --check <file>`.
+- **e2e tests**: ⚠️ this plan was written before the browser tier existed and its test strategy is
+  superseded — do NOT execute the paragraph this replaces, which routed UI claims into grep assertions.
+  The Web UI now has three tiers (see CLAUDE.md's testing section and `docs/TESTING.md`).
+  `test/transport/WebUiServingTest.kt` is the right home for **this** plan's subject and almost all of it:
+  addresses, media types, caching headers, content revisions, path safety, precedence over the API, and
+  the registry every newly served module must be entered in. Anything a running page could answer — and
+  for this plan that is little more than "an old shell's subresources still load" — belongs in
+  `webuitest/` as executed behaviour. Changed JavaScript modules must pass `node --check <file>`.
 - **the oracle rule for this plan**: a test may not derive its expectation from the response it is
   asserting on. Where a served value must equal a computed one, compute it independently
   (`webUiRevision(locateWebUiDir())`) and compare.
-- **baseline**: 896 native tests passed / 0 skipped, plus 7 build-info JVM tests and 11 `ptycheck`
-  checks. Every task states the new count it expects.
+- **baseline**: ⚠️ the recorded baseline (896 native / 0 skipped, 7 build-info JVM tests, 11 `ptycheck`
+  checks) is stale — the browser tier landed after this plan was written, and the native count both grew
+  and then fell when the grep tier was replaced. Re-measure `./kotlin test` before task 1 and use that as
+  the baseline; the tiers to account for are native, browser (`webuitest`), build-info JVM, `ptycheck` and
+  `webuicheck --self-check`. Every task states the new count it expects.
 
 ## Progress Tracking
 

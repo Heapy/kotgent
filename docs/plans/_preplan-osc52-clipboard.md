@@ -70,7 +70,8 @@ selection-параметра придётся написать самим — р
 | `resources/webui/vendor/` | новый `addon-clipboard.module.js` (ESM, как unicode-аддоны, а не classic script как `xterm.js`/`addon-fit.js`) |
 | `resources/webui/components/TerminalPane.js:349` | конструктор `Terminal` рядом; `:394-396` — `loadAddon(fit)` / `open(host)`, сюда же `loadAddon(clipboard)` |
 | `resources/webui/lib/clipboard.js` | `writeClipboard` — уже есть, с фолбэком на `execCommand`; переиспользовать как провайдер |
-| `test/transport/WebUiServingTest.kt` | каждый новый обслуживаемый модуль регистрируется здесь (`:104` — пример проверки вендоренного файла, `:235` — тест importmap) |
+| `test/transport/WebUiServingTest.kt` | каждый новый обслуживаемый модуль регистрируется здесь — это всё, что от этого файла нужно (номера строк не даю: файл ужался с ~4500 до ~1050 строк, когда grep-ярус заменили браузерным; искать по имени теста) |
+| `webuitest/test/` | поведение проверяется здесь, в живом Chromium против `webuicheck`: копирование по OSC 52 — это ровно то, что «работает или нет» может ответить только страница. Правило яруса: если на вопрос может ответить Chromium, вопрос живёт тут, а не в grep-тесте |
 | `src/tmux/TmuxOptions.kt:152` | `TMUX_SERVER_OPTIONS` — **только если** field-check покажет, что нужен `set-clipboard on` |
 
 **Про specifier.** Импорт должен остаться ОТНОСИТЕЛЬНЫМ (`"../vendor/addon-clipboard.module.js"`), как в

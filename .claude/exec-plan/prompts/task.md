@@ -62,11 +62,12 @@ Additional entries you may write:
 
 - `[decision] task N: <choice and why>` — one line, when you made a judgement call.
 - `[deviation] task N: <what differed from the plan and why>` — one line.
-- `[replaces] task N: WebUiServingTest.<testName>` — **required** for browser-test tasks: one line per
-  grep test in `test/transport/WebUiServingTest.kt` that your new browser test replaces. You must NOT
-  delete those tests yourself — that file has nine would-be owners, so its deletions are batched into a
-  single later task which reconciles exactly these lines. Emit one line per replaced test, no more and
-  no fewer.
+- `[replaces] task N: <File>.<testName>` — **required whenever your task's section says so**, one line
+  per existing test that your new work supersedes. It exists for the case where the tests being replaced
+  live in a file several participants would otherwise all edit: you must NOT delete them yourself, so
+  their removal is batched into a single later task that reconciles exactly these lines. Emit one line
+  per replaced test, no more and no fewer, and only if your section asks for it — a task that supersedes
+  nothing writes none of these.
 
 ## Your final message
 

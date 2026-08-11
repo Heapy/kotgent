@@ -81,7 +81,9 @@ To build from source instead, see [Build & test](#build--test).
   libraries; there is no other supported target.
 - **JetBrains Kotlin Toolchain** — invoked through the bundled `./kotlin` wrapper committed in the repo.
   You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.11.1) on
-  first run. A JDK is required for the toolchain and the build-time SQLDelight codegen plugin.
+  first run. A JDK is required for the toolchain, for the build-time SQLDelight codegen plugin, and for
+  the JVM-side browser tier (`webuitest`), whose first run additionally downloads Playwright's browser
+  bundle — see [Build & test](#build--test).
 - **`tmux`** — sessions live on a dedicated server socket (`tmux -L kotgent`), isolated from your normal
   `tmux` **and from your `~/.tmux.conf`**: kotgent passes `-f /dev/null` on every invocation, so none of
   your config is loaded into an agent's pane — not your prefix key, bindings, plugins, `status-format` or
@@ -129,13 +131,28 @@ To build from source instead, see [Build & test](#build--test).
 ./kotlin test       # run the test suite
 ```
 
-The suite currently reports **765 native tests passed / 0 skipped**, plus 7 JVM tests for the build-info
-plugin and the 11 real-PTY checks `ptycheck` runs (see below).
+`./kotlin test` runs every tier and the suite has no skips: **1332 native tests** and **108 browser tests**
+(`webuitest`, a real Chromium driven through Playwright), plus 7 JVM tests for the build-info plugin, the
+11 real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs. The two module
+tasks — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops; neither
+replaces the aggregate. Both counts move with every change, so treat them as a snapshot and re-measure
+rather than quote them.
 
-Run `build` before `test`: one test (`PtyTest`) drives the real-PTY checks by executing the `ptycheck`
-binary, and `./kotlin test` on its own never links a main binary. If the binary is missing the test says
-so rather than passing quietly. See [Status & limitations](#status--limitations) for why those checks
-live in a separate binary.
+Run `build` before `test`, now for **two** fixture binaries rather than one. `./kotlin test` never links a
+main binary, and the suite execs two: `PtyTest` runs `ptycheck`, while `WebUiCheckTest` **and every browser
+test** run `webuicheck`. A missing `ptycheck` reddens one test; a missing `webuicheck` reddens the whole
+browser tier. Both say so explicitly rather than passing quietly. See
+[Status & limitations](#status--limitations) for why they are separate binaries at all.
+
+**The first `test` run downloads browsers, and needs the network for it.** Playwright provisions its
+browser bundle into `~/Library/Caches/ms-playwright` — measured at about **1.1 GB**, because
+`Playwright.create()` installs Chromium, the headless shell, ffmpeg, Firefox and WebKit as one set even
+though every test here asks for Chromium and nothing else. There is deliberately no npm anywhere in this
+repository: the Node driver ships inside the Maven artifact, so there is no `package.json`, no
+`node_modules` and no `npx playwright install` step to run. CI caches that directory under a key that
+spells the Playwright version out literally, so bumping `playwright` in `gradle/libs.versions.toml` means
+bumping the key in `.github/workflows/ci.yml` in the same commit — otherwise every CI run re-downloads a
+bundle it can never save.
 
 The produced binary lands under `build/` (the `macos/app` output). Its directory and filename include
 the checkout/worktree name, so use `./kotlin do kexePath` after `build` instead of hard-coding either
@@ -465,6 +482,10 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `cli/` | Subcommands + the raw `attach` passthrough, and the JSON-only `task`/`project` family (which resolves its own tmux pane through `/whoami`). |
 | `launchd/` | `plist` generation + install/uninstall. |
 | `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |
+| `ptycheck/` (module) | Test fixture, not a product: a **main** binary running the real-PTY checks a test binary cannot link (KT-78062), driven from the suite by `PtyTest`. |
+| `fakes/` (module) | The shared test doubles (`FakeTmux`, `FakeEventStore`, `FakeTaskStore`, `FakeProjectFs`, `MemoryProjectFileWriter`) — a module because the root test fragment and the `webuicheck` main binary both consume them. |
+| `webuicheck/` (module) | The browser tier's fixture: a **main** binary (KT-78062 again — it serves a real PTY) that assembles the real server over those doubles, replaces the writing edges with in-memory ones, and takes scenario commands on stdin. |
+| `webuitest/` (module) | The browser tier itself: JVM tests only, driving a real Chromium through Playwright against the pages `webuicheck` serves. |
 | `plugins/sqldelight-gen/` (build plugin) | Runs SQLDelight codegen from `sqldelight/*.sq` at build time. |
 
 The authenticated push HTTP surface is `GET /api/v1/push/vapid-key`, `POST /api/v1/push/subscribe`, and
@@ -506,6 +527,11 @@ is and isn't here:
 - **Import of externally started sessions.** `kotgent import` (and the Web UI's Import mode) registers a
   conversation begun in a plain terminal and continues it under kotgent — fan-out, push, and mobile access
   included, with the provider's own on-disk record as the history (see [The CLI](#the-cli)).
+- **A browser end-to-end tier.** Web UI behaviour is executed rather than described: `webuitest` drives a
+  real Chromium through Playwright against `webuicheck`, a fixture binary that assembles the real daemon
+  over the shared doubles in `fakes` and serves a terminal from a real PTY running a deterministic script
+  instead of a provider. Each test spawns its own harness on an ephemeral port, signs in through the real
+  login form, and leaves nothing behind outside the checkout.
 
 **Backlog (not built yet):**
 
@@ -522,13 +548,15 @@ is and isn't here:
 - A **diff viewer** and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
-- A browser e2e harness (Playwright).
+- A **browser-independent JavaScript** test layer. The pure modules (routing, data merges, command
+  matching, retry classification) are proven one level up in the browser tier or not at all; adding a
+  runner for them must not add a build step.
 
-**Why the real-PTY checks live in their own binary.** A Kotlin Toolchain issue
+**Why some checks live in their own binary.** A Kotlin Toolchain issue
 ([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)) means **our own** raw-cinterop path cannot be
 called from a test binary at all — partial linkage turns every such call into a stub that throws
 `IrLinkageError`, and nothing in the YAML works around it. Main binaries *do* link the cinterop, so the
-affected assertions live in the **`ptycheck`** module, whose `main()` runs all 8 for real:
+affected assertions live in the **`ptycheck`** module, whose `main()` runs all 11 for real:
 
 1. a `cat` round-trip through the pty,
 2. `resize` (`TIOCSWINSZ`) succeeds,
@@ -536,13 +564,24 @@ affected assertions live in the **`ptycheck`** module, whose `main()` runs all 8
 4. spawning a nonexistent command throws,
 5. the spawned child inherits **only** its tty (the `POSIX_SPAWN_CLOEXEC_DEFAULT` guarantee — an
    inherited listening socket would keep the port bound after the daemon dies),
-6. `tmux attach` runs on the spawned pts,
-7. a resize **reaches a running `tmux attach`** (the child gets no controlling terminal, so `Pty.resize`
-   must deliver `SIGWINCH` itself — see [CLAUDE.md](CLAUDE.md)),
-8. `TerminalBridge` fans out over that real attach.
+6. `prepareClose` unblocks a full master write,
+7. `close` stops the reader **before** releasing the master descriptor (a freed fd number can be reused
+   by another session while a stale reader still runs),
+8. concurrent `close` runs teardown exactly once,
+9. `tmux attach` runs on the spawned pts,
+10. a resize **reaches a running `tmux attach`** (the child gets no controlling terminal, so `Pty.resize`
+    must deliver `SIGWINCH` itself — see [CLAUDE.md](CLAUDE.md)),
+11. `TerminalBridge` fans out over that real attach.
 
 The suite runs them through `PtyTest`, which executes that binary and asserts it exits 0 — so these are
-real, non-skipped tests. Everything around the cinterop is still tested directly via interface fakes
+real, non-skipped tests. **`webuicheck` is the second fixture binary, for the same reason**: it serves the
+browser tier a terminal from a real PTY, which no test binary can open, so it too is a `main()` — and it
+carries its own `--self-check` mode with the 2 checks that need that cinterop directly, driven from the
+suite by `WebUiCheckTest` exactly as `PtyTest` drives `ptycheck`. That precedent reaches as far as
+KT-78062 does and no further: everything a browser can observe is a named assertion in `webuitest`, not
+another entry in a `SUMMARY total=N`.
+
+Everything around the cinterop is still tested directly via interface fakes
 (`FakePtyHandle`, `FakeTty`). Third-party klibs that happen to contain cinterop (Ktor, the SQLite
 `native-driver`) and the stock `platform.posix` bindings are **not** affected — they link into test
 binaries normally — so the transport, store, and `tmux` layers are fully tested in CI. The full root-cause
@@ -557,9 +596,15 @@ Issues and pull requests are welcome. A few things worth knowing before you open
 - **Keep `./kotlin build` and `./kotlin test` green**, and run `build` before `test` (see
   [Build & test](#build--test)). New tests are expected to come with the change; the suite has no skips and
   should stay that way.
-- **Syntax-check changed Web UI modules with `node --check`.** This is a no-build Preact app with no
-  JavaScript test harness; add newly served modules to `WebUiServingTest` and manually verify browser
-  behavior.
+- **Web UI changes go through three tiers, and which tier a claim belongs to is decided by whether a
+  running page could answer it.** `test/transport/WebUiServingTest.kt` keeps what only an address can
+  prove — URLs, media types, caching headers, content revisions, path safety — plus the registry every
+  newly served ES module must be added to. Anything a Chromium can answer belongs in `webuitest/`, as
+  executed behaviour against the real server; it is no longer true that browser behaviour is verified by
+  hand. Changed modules must still pass `node --check <file>` — this stays a no-build Preact app — and
+  what remains manual is only what desktop automation cannot faithfully reproduce: installed-PWA
+  lifecycle, safe areas, software-keyboard geometry, touch physics and notification prompts. The full
+  strategy is [docs/TESTING.md](docs/TESTING.md).
 - **Read [CLAUDE.md](CLAUDE.md) first** if you are touching the build, native code, or the event model. It
   documents the invariants (host-free core, single-upstream `tmux` fan-out, the event-sourcing rules) and
   the toolchain gotchas that are expensive to rediscover.

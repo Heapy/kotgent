@@ -803,7 +803,12 @@ Interrupt/Stop/Done reached whatever row was selected before the operator left. 
 rather than disabled: a disabled row is for a command that could apply here and does not right now.
 `general.task-board`'s `o` is ONE mnemonic for "the other screen" (board from the session view, back out
 from the board) — never two descriptors, because `leaderKeyDown` resolves a letter first-match-wins and
-chord uniqueness is asserted over this file's SOURCE TEXT. Session ROWS stay on both screens (selecting
+chord uniqueness is asserted over the letters the leader grid actually DRAWS
+(`webuitest/test/TaskCommandsTest.kt`'s `everyMnemonicTheGridDrawsIsUniqueAndKIsLeftToTheWayBackToSearch`).
+The old source-text assertion over this file is gone: a second descriptor for a taken letter is not a
+spelling in `commands.js` but a row the operator can never reach, and only a rendered grid can tell those
+apart — a screen-aware registry builds a different list per screen, so the letters in the source are not
+the letters on screen. Session ROWS stay on both screens (selecting
 one navigates to `/s/{id}`, so search is also the way back), and the two board-owned commands are the
 chordless "New project" and "New task", each a one-shot counter `Board` serves with a ref of its own.
 "New project" now has a SECOND caller — the sidebar's `+ New` — and that is exactly why it stayed a
@@ -876,21 +881,43 @@ is coarse without being touch would draw a handle the JS then refuses, since `po
 `pointerType === "touch"`. Drawing an unused 20 px strip is the safe direction; `pointer: coarse` would take
 the working affordance away from the hybrid laptop instead. The same
 query gives the palette's × a 44 px box: it sits ~16 px above an option row whose tap RUNS a command, so a
-thumb that misses the desktop-sized × hits Interrupt. **That block's position in the file is load-bearing
-twice.** It must sit BELOW every dialog's own `padding` shorthand — a media query adds no specificity, so its
-compensation for the handle's height wins on source order alone; written up beside the base `.dialog-grabber`
-rule it computes to nothing while looking present, and the phone pays the handle twice. And it must sit
-BELOW `@media (max-width: 720px)`, because `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost`
-slices the sheet into a desktop half `[min-width: 721px, max-width: 720px)` and a mobile half: a block
-written between them reads as desktop-only while applying to every phone, which would carry a future
-composite blur straight past the guard that keeps one off the phone drawer. That guard is a plain text
-search, so it reads comments too — describe such a property in prose there, never spell it. (The
-compensation returns 10 px of the handle's 20; the rest is deliberate breathing room above the title.)
+thumb that misses the desktop-sized × hits Interrupt. The pointer scoping itself is measured —
+`DialogDismissTest.theSwipeHandleIsDrawnWhereverACoarsePointerIsAndNowhereElse` demands the handle on a
+phone AND on a 1024 px touch tablet, refuses it under a fine pointer, and reads the palette's × back at
+44 px in the same pass — so re-scoping the block by width fails there rather than in review.
+
+**That block's position in the file used to be load-bearing twice; only one half still is.** It must sit
+BELOW every dialog's own `padding` shorthand — a media query adds no specificity, so its compensation for
+the handle's height wins on source order alone; written up beside the base `.dialog-grabber` rule it
+computes to nothing while looking present, and the phone pays the handle twice. That half is plain cascade
+and still binding, but be aware **nothing asserts it**: no test in either tier reads a dialog's
+`padding-top` under a coarse pointer, so moving the block above the shorthand is a silent 10 px regression
+that only an eye would catch. The other half — "and it must sit BELOW `@media (max-width: 720px)`" — is
+**obsolete, and deliberately so**. It existed only because
+`theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` sliced this stylesheet into a desktop half and
+a mobile half by TEXT and forbade a composite blur in the mobile slice, so a rule written between the two
+queries would have been read as desktop-only while applying to every phone. That test went with the grep
+tier, and `LayoutTest.theCardsInsetTheShellWithoutPaddingTheMeasuredTerminalParent` now guards the same
+invariant far better: it reads the computed `backdrop-filter` off the sidebar at a desktop viewport and
+again at a phone one, demanding a blur in the first and exactly `none` in the second. A computed value does
+not care where in the file the rule was written, so the ordering constraint the slice imposed is gone with
+it — and so is the instruction that rode on it ("the guard is a plain text search, so it reads comments
+too: describe such a property in prose, never spell it"). There is no text search left; naming
+`backdrop-filter` in a comment is now free. The comment above that rule in `style.css` still repeats the
+old instruction and has not caught up. (The compensation returns 10 px of the handle's 20; the rest is
+deliberate breathing room above the title.)
 
 **Every rule in the gesture fails toward KEEPING the dialog**, because what a dialog holds is unsaved and
 local. The pointer is captured only after a downward slop (8 px) that also has to beat the horizontal travel,
 so a sweep across the sheet cannot claim the gesture by drifting past the slop — that test is a direction
 LOCK at claim time, the way a native sheet behaves, and a claimed gesture is not re-judged afterwards.
+**The board's card drag deliberately inverts the capture half of that, and a `Board.js` editor must not
+"restore" the house rule there.** It captures on the PRESS, not on the claim, because its drag handle is
+about 12×16 px: a pointer that has travelled the 8 px slop has already left the element, so the claim never
+arrived and the drag was effectively unclaimable — found by the browser tier on its first real run (see the
+testing section). Only the capture moves; the slop keeps its own job there, which is telling a click from a
+drag. A dialog can afford to capture at the claim because its panel is the size of the screen, and a 12 px
+handle cannot.
 `pointerup` checks the pointer id **before** clearing `dragRef` (clearing first let any second finger's
 release abandon a live swipe and strand the panel under its transform); `pointercancel` has its **own**
 handler that springs back — a gesture the platform took away is not a release, and evaluating distance there
@@ -948,16 +975,25 @@ tabs, so `#sidebar-toggle` remains the guaranteed path.
 
 **The Web UI is dark-only, and the canvas is a second copy of `--bg` that must be kept equal to it.**
 `style.css` carries one unconditional dark palette with the Kotlin-purple accent; do not reintroduce
-`prefers-color-scheme` branches. The OLED-black phone variables belong inside the existing
-`@media (max-width: 720px)` block so the FitAddon test's mobile slice remains stable, and the translucent
-sidebar's composite blur stays desktop-only. **`html, body`'s `background-color` is not decoration** —
+`prefers-color-scheme` branches. The OLED-black phone variables belong inside the **existing**
+`@media (max-width: 720px)` block — one query owns the phone palette, and a second query at the same width
+is how the two spellings start to drift; the old reason ("so the FitAddon test's mobile slice remains
+stable") died with that text search and is not why the rule stands. The translucent sidebar's composite
+blur stays desktop-only, and that one **is** measured — `LayoutTest` reads the computed `backdrop-filter`
+at a desktop viewport and again at a phone one (see the `.dialog-grabber` rule above).
+**`html, body`'s `background-color` is not decoration** —
 `#app` covers the viewport, so nothing on any page ever paints it: it is read by the *system*. Safari
 derives an installed app's window surface from the page canvas (the strip carrying the traffic lights),
 and on the iPhone the safe-area bands around the notch paint it directly. So a canvas that differs from
 `--bg` draws a seam in exactly the place a native app has none, and the two move together: the base rule
 is the PHONE's `#000` (matching the phone `:root`), and the desktop block overrides canvas and `--bg` to
-`#14171c` as a pair. Both halves are pinned by
-`theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost`. The values stay literal rather than
+`#14171c` as a pair. **Neither half is pinned by anything any more, and that is a real loss to carry
+knowingly**: `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` asserted both literals out of the
+stylesheet's text and was deleted with the grep tier, and neither `#000` nor `#14171c` is asserted anywhere
+in the native or the browser tier today. The browser tier is not the wrong home for it — a computed
+`background-color` read off `body` at each breakpoint, compared against the `--bg` it must equal, is
+exactly the shape this tier uses elsewhere — it simply has not been written, so a canvas that drifts from
+`--bg` will now ship and be reported as a seam around the notch. The values stay literal rather than
 `var(--bg)` because a failed colour inference on a custom property falls back to white. A phone in
 landscape is wider than the breakpoint and therefore already on the desktop palette — which is why one
 width query, not a chrome or pointer query, governs both. The `<meta name="theme-color">` in `index.html`
@@ -1316,7 +1352,7 @@ These are real and cost time to rediscover. Respect them.
 ## Testing & running
 
 - Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1332 native tests passed /
-  0 skipped** and **105 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
+  0 skipped** and **108 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
   7 JVM tests, `ptycheck`'s 11 real-PTY checks (driven by `PtyTest`) and `webuicheck`'s 2 self-checks
   (driven by `WebUiCheckTest`) — keep a fixture's `EXPECTED_CHECKS` in sync when adding a check to it. The
   native count **fell** from 1432 when the Web UI grep tier was replaced: 101 tests removed, 1 added, delta
@@ -1424,12 +1460,14 @@ These are real and cost time to rediscover. Respect them.
   contains the literal `if (sameForm) closeDialogFrom(submittedDialog)` — the exact line that **was** bug
   (1). That tier had not merely failed to catch the defect; it had pinned it as a contract, and it broke
   when the bug was fixed. A test that spells out an implementation line cannot tell a fix from a regression.
-- **Four things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` makes **39 non-colour
-  `getComputedStyle` string reads** against the geometry rule above. Defensible — the browser *resolved*
+- **Four things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` reads a large number of
+  **non-colour `getComputedStyle` strings** against the geometry rule above — count it in the file rather
+  than trusting a figure here, because it moves with every test added. Defensible — the browser *resolved*
   the cascade, which no grep can do — but it is an exception the rule as written does not admit, so either
   widen the rule with that reason or mark the file; do not quietly copy the pattern into a new one.
-  (b) `CommandPaletteTest.thePaletteAnswersForTheScreenItIsOn` and
-  `TaskCommandsTest.theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession` assert
+  (b) `CommandPaletteTest.thePaletteAnswersForTheScreenItIsOn` and `webuitest`'s
+  `TaskCommandsTest.theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession` (the
+  browser one — `test/cli/TaskCommandsTest.kt` is an unrelated class of the same name) assert
   the same invariant twice, in two harness spawns. (c) `daemonServesTheComponentAndLibModules` still greps
   `Sidebar.js` for `!sessionsReady` / `Loading sessions…`, now redundant with
   `SidebarTest.theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecidesTheListIsEmpty`, which produces the
@@ -1468,6 +1506,14 @@ These are real and cost time to rediscover. Respect them.
   `./kotlin run -m kotgent`, a real `claude` / `codex` / `junie`, and `launchctl` — they start long-lived /
   interactive processes. Prefer the terminating `./kotlin build` / `./kotlin test`. Running the `ptycheck`
   binary directly is fine — it terminates, and only touches the throwaway `-L kotgent-test` socket.
+  **`webuicheck` is only half as safe to run by hand, and the halves are its two modes.**
+  `webuicheck --self-check` is the `ptycheck` shape — it runs alone, reads no stdin, serves no scenario,
+  prints its `SUMMARY` and exits. `webuicheck --scenario=<name> --webui-dir=<abs>` is a **server**: it
+  binds an ephemeral port and then blocks reading stdin, so it does **not** terminate on its own. EOF is
+  its graceful exit and `--exit-after-ms=<n>` is the belt (exit 4) for a driver that dies without closing
+  the pipe. Run the scenario mode from automation only with `--exit-after-ms`, or not at all — it is
+  otherwise a hang, not a check. It is harmless while it runs (`port = 0`, `FakeTmux`, in-memory writing
+  edges, no token on disk), which is what makes the belt sufficient rather than a second hazard.
 - Inspecting a provider's CLI is fine and often necessary (`codex --help`, `codex app-server
   generate-json-schema --out <dir>`, `hooks/list` over an `app-server --stdio` pipe) — those terminate and
   touch no model. Do NOT start a turn (`codex exec`, `turn/start`), and do not write into `~/.codex` or
@@ -1547,5 +1593,10 @@ resources/webui/               no-build Preact PWA, network-only root service wo
                                components/Sidebar.js is the ONE sidebar of both screens: its head carries
                                the app's two navigation links, its body is the session list or the
                                project list
+docs/INTENT.md                 the product intent and top-level requirements; imported at the head of this
+                               file (moved here from the repository root)
+docs/TESTING.md                the testing strategy — the tier each kind of claim belongs to, the desired
+                               portfolio per layer, the quality gates; also imported at the head of this
+                               file, and the place a new test's LEVEL is argued
 docs/plans/                    implementation plans; docs/plans/completed/ once one has shipped
 ```
