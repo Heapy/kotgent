@@ -890,9 +890,8 @@ phone AND on a 1024 px touch tablet, refuses it under a fine pointer, and reads 
 BELOW every dialog's own `padding` shorthand — a media query adds no specificity, so its compensation for
 the handle's height wins on source order alone; written up beside the base `.dialog-grabber` rule it
 computes to nothing while looking present, and the phone pays the handle twice. That half is plain cascade
-and still binding, but be aware **nothing asserts it**: no test in either tier reads a dialog's
-`padding-top` under a coarse pointer, so moving the block above the shorthand is a silent 10 px regression
-that only an eye would catch. The other half — "and it must sit BELOW `@media (max-width: 720px)`" — is
+and still binding, but be aware **nothing asserts it** (`local:25`): moving the block above the shorthand
+is a silent 10 px regression that only an eye would catch. The other half — "and it must sit BELOW `@media (max-width: 720px)`" — is
 **obsolete, and deliberately so**. It existed only because
 `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` sliced this stylesheet into a desktop half and
 a mobile half by TEXT and forbade a composite blur in the mobile slice, so a rule written between the two
@@ -987,13 +986,9 @@ derives an installed app's window surface from the page canvas (the strip carryi
 and on the iPhone the safe-area bands around the notch paint it directly. So a canvas that differs from
 `--bg` draws a seam in exactly the place a native app has none, and the two move together: the base rule
 is the PHONE's `#000` (matching the phone `:root`), and the desktop block overrides canvas and `--bg` to
-`#14171c` as a pair. **Neither half is pinned by anything any more, and that is a real loss to carry
-knowingly**: `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` asserted both literals out of the
-stylesheet's text and was deleted with the grep tier, and neither `#000` nor `#14171c` is asserted anywhere
-in the native or the browser tier today. The browser tier is not the wrong home for it — a computed
-`background-color` read off `body` at each breakpoint, compared against the `--bg` it must equal, is
-exactly the shape this tier uses elsewhere — it simply has not been written, so a canvas that drifts from
-`--bg` will now ship and be reported as a seam around the notch. The values stay literal rather than
+`#14171c` as a pair. **Nothing pins either half today** — the guard went with the grep tier and its
+replacement is `local:24` in the backlog, so until that lands a canvas that drifts from `--bg` ships and
+is reported as a seam around the notch. The values stay literal rather than
 `var(--bg)` because a failed colour inference on a custom property falls back to white. A phone in
 landscape is wider than the breakpoint and therefore already on the desktop palette — which is why one
 width query, not a chrome or pointer query, governs both. The `<meta name="theme-color">` in `index.html`
@@ -1470,23 +1465,15 @@ These are real and cost time to rediscover. Respect them.
   daemon routes at their real addresses, and records browser calls and `fetch` calls into ONE trace, so
   "permission before the first await" (the iOS user-gesture invariant), `userVisibleOnly: true`, the
   key-then-subscribe-then-POST order and the OFF path's daemon-delete-before-browser-lookup are all
-  assertions about a running page. Three things are deliberately left uncovered and are debt, not design:
-  the ten-second transition deadline and its generation invalidation, the cross-tab `storage` repair (both
-  need contrived timing or a second context against a one-ticket harness), and
-  `applicationServerKeyDiffers`' byte comparison (reachable only by making `subscribe()` reject, which
-  the fake platform can do — nobody has). DELIVERY is not debt: a push service is a third party no
+  assertions about a running page. Three further things are uncovered and tracked as `local:26`, not
+  recorded here. DELIVERY is not one of them and never will be: a push service is a third party no
   headless browser has, so the worker's `push` handler, its payload-less `/sessions` fetch and its abort
   deadline stay on the manual checklist and `PushRoutesTest` owns the daemon's side.
-- **Two things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` reads a large number of
-  **non-colour `getComputedStyle` strings** against the geometry rule above — count it in the file rather
-  than trusting a figure here, because it moves with every test added. Defensible — the browser *resolved*
-  the cascade, which no grep can do — but it is an exception the rule as written does not admit, so either
-  widen the rule with that reason or mark the file; do not quietly copy the pattern into a new one.
-  (b) `webuitest/test-results/` is never pruned: it
-  accumulates a screenshot and a trace per past failure (gitignored, uploaded by CI only `if: failure()`),
-  so a local diagnosis can pick up a stale image of a test that now passes — check the timestamp before
-  believing a picture.
-  Two items that used to be on this list are gone rather than still recorded. The screen-awareness
+- **`BoardStyleTest` reads non-colour `getComputedStyle` strings against the geometry rule above.** It is
+  defensible — the browser *resolved* the cascade, which no grep can do — but the rule as written admits no
+  such exception, and whether to widen the rule or mark the file is `local:27`. Until that is settled, do
+  not copy the pattern into a new file. (`webuitest/test-results/` never being pruned is `local:28`.)
+  Two items that used to be on this list are gone rather than tracked. The screen-awareness
   invariant was asserted twice, in two ~30 s harness spawns; `CommandPaletteTest.thePaletteAnswers`
   `ForTheScreenItIsOn` was **deleted** as the weaker of the pair (it read only the leader grid, so a
   group that became disabled-but-present in SEARCH would have passed it) and
