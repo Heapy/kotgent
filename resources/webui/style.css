@@ -341,9 +341,11 @@ textarea:focus-visible {
   margin-left: 0;
 }
 
+/* Align trailing indicators with the session-name line; a task badge occupies a later line. */
 .session-row {
+  --row-lead: 16px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 9px 10px;
   border-radius: 12px;
@@ -369,6 +371,7 @@ textarea:focus-visible {
 .session-name {
   font-size: 13px;
   font-weight: 600;
+  line-height: var(--row-lead);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -452,6 +455,7 @@ textarea:focus-visible {
   box-shadow: 0 0 0 3px var(--attn-bg);
   margin-inline: 2px;
 }
+.session-row > .attn-dot { margin-top: calc((var(--row-lead) - 9px) / 2); }
 
 .unread-pill {
   flex: 0 0 auto;
@@ -468,7 +472,8 @@ textarea:focus-visible {
   flex: 0 0 auto;
   font-size: 10px;
   font-weight: 600;
-  padding: 2px 7px;
+  line-height: 16px;
+  padding: 0 7px;
   border-radius: 10px;
   text-transform: lowercase;
   white-space: nowrap;
@@ -1795,16 +1800,18 @@ button.task-card-title:hover,
   margin-top: 3px;
 }
 
+/* Non-replaced inline anchors ignore max-width/overflow; inline-block enables truncation. */
 .task-badge {
   background: var(--pill-active);
   border: 1px solid var(--pill-active-border);
-  border-radius: 8px;
+  border-radius: 10px;
   color: var(--text);
+  display: inline-block;
   flex: 0 0 auto;
   font-size: 10px;
   font-weight: 600;
-  line-height: 15px;
-  max-width: 120px;
+  line-height: 14px;
+  max-width: min(120px, 100%);
   overflow: hidden;
   padding: 0 6px;
   text-decoration: none;
@@ -1822,13 +1829,14 @@ button.task-card-title:hover,
 .task-badge-unknown {
   background: none;
   border: 1px dashed var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   color: var(--muted);
+  display: inline-block;
   flex: 0 0 auto;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 10px;
-  line-height: 15px;
-  max-width: 120px;
+  line-height: 14px;
+  max-width: min(120px, 100%);
   overflow: hidden;
   padding: 0 6px;
   text-decoration: none;
@@ -1838,6 +1846,14 @@ button.task-card-title:hover,
 .task-badge-unknown:hover {
   border-color: var(--muted);
   color: var(--text);
+}
+/* Give the stacked sidebar badge its own block line and cap it to the session column; the base 120px
+   cap remains for the terminal header. */
+.session-main > .task-badge {
+  display: block;
+  margin-top: 4px;
+  max-width: 100%;
+  width: max-content;
 }
 
 .drawer-toggle,
@@ -2059,6 +2075,7 @@ button.task-card-title:hover,
 }
 
 .session-restore {
+  align-self: center;
   margin-left: auto;
   flex: 0 0 auto;
 }
