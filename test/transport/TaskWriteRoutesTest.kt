@@ -803,6 +803,57 @@ class TaskWriteRoutesTest {
     }
 
     @Test
+    fun postProjectsAdoptingADeletedProjectsDirectoryBringsItBack() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "the name it carried when it was deleted", "/old/checkout")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+
+        val resp = env.post("/projects", """{"path":"/repo"}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+        assertEquals(alpha.value, dto.id, "adoption answers the project that owns the path, deleted or not")
+        assertEquals(
+            ProjectRecord(alpha, "kotgent", "/repo", 0L, archived = false),
+            env.tasks.snapshotProjects()[alpha],
+            "the mark is cleared BEFORE registration, so the row also takes the file's name and this checkout",
+        )
+        assertEquals("kotgent", dto.name, "and the answer is read back after both writes, never between them")
+        assertEquals("/repo", dto.path)
+        assertEquals(
+            listOf(alpha),
+            env.tasks.listProjects().map { it.id },
+            "a project the operator asked for again must be one the board lists",
+        )
+        assertTrue(env.tasks.listProjects(archived = true).isEmpty(), "and the tombstone is gone, not duplicated")
+        assertTrue(env.writer.calls.isEmpty(), "an owned path is adopted, never written to — the file is still there")
+    }
+
+    @Test
+    fun postProjectsAdoptingALiveProjectIsUnchangedAndStaysIdempotent() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+
+        val first = env.post("/projects", """{"path":"/repo"}""")
+        val second = env.post("/projects", """{"path":"/repo"}""")
+
+        assertEquals(HttpStatusCode.OK, first.status)
+        assertEquals(HttpStatusCode.OK, second.status)
+        assertEquals(
+            first.bodyAsText(),
+            second.bodyAsText(),
+            "the clear is a no-op on a live project, so adopt is the idempotent operation it always was",
+        )
+        assertEquals(
+            ProjectRecord(alpha, "kotgent", "/repo", 0L, archived = false),
+            env.tasks.snapshotProjects()[alpha],
+        )
+        assertTrue(env.tasks.listProjects(archived = true).isEmpty())
+        assertTrue(env.writer.calls.isEmpty())
+    }
+
+    @Test
     fun postProjectsHonoursAGivenNameAndRefusesOneAFileCouldNotCarry() = withTaskServer { env ->
         env.fs.dirs += "/srv/new-repo"
 

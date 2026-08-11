@@ -231,12 +231,15 @@ would land in a deleted project.
 - Modify: `src/transport/TaskWriteRoutes.kt`
 - Modify: `test/transport/TaskWriteRoutesTest.kt`
 
-- [ ] make `POST /projects`' adopt branch clear the mark and answer the project as live
-- [ ] leave the create branch untouched — it only runs when nothing owns the path
-- [ ] write a test that adopting the directory of an archived project restores it and returns
-      `archived: false`
-- [ ] write a test that adopting a live project is unchanged
-- [ ] run tests — must pass before task 5
+- [x] make `POST /projects`' adopt branch clear the mark and answer the project as live
+- [x] leave the create branch untouched — it only runs when nothing owns the path
+- [x] write a test that adopting the directory of an archived project restores it and returns
+      `archived: false` — asserted as "the answer is the restored row": `ProjectDto` gains its `archived`
+      field in task 5 (this task's file list excludes `TaskDtos.kt`), so the test pins the two things that
+      make that field correct when it lands — the row is live, and the response carries the name and path
+      the adoption just registered, which only a clear-before-register can produce
+- [x] write a test that adopting a live project is unchanged
+- [x] run tests — must pass before task 5
 
 ### Task 5: `DELETE` and `restore` routes
 

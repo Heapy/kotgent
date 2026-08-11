@@ -238,6 +238,15 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
         val owner = resolveProject(fs, canonical)
         // Adopt the nearest existing project before considering a new root-level project file.
         if (owner != null) {
+            // Adoption is the operator asking for a project in this directory, so it is the one path that
+            // CLEARS the delete tombstone — answering with a project the board will not list is the defect
+            // SessionManager.resume avoids by clearing a session's `archived`. The clear goes FIRST and is
+            // its own write: upsertProject deliberately cannot lift the mark, and while the mark stands it
+            // refuses, which would leave the row live but carrying the name and path of the moment it was
+            // deleted. Unconditional, so no read-then-write window opens, and a no-op for an unarchived or
+            // never-registered project. respondProject re-reads afterwards, so the answer a client merges
+            // into its own list is the restored row and never a stale archived one.
+            routing.tasks.setProjectArchived(owner.id, false)
             routing.tasks.upsertProject(owner.id, owner.name, owner.root)
             respondProject(routing, owner.id, owner.root)
             return@post
