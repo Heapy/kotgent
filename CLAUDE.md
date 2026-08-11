@@ -16,6 +16,8 @@ testing strategy. Implementation plans belong in `docs/plans/`; move completed p
   socket label `kotgent-test`.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
   automation. They start long-lived processes. `ptycheck` and `webuicheck --self-check` terminate safely.
+- Delete comments that merely narrate the code; keep only concise explanations of non-obvious intent,
+  external constraints, or why an apparently reasonable change would be unsafe.
 
 ## Architecture boundaries
 
