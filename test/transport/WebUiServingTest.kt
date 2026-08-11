@@ -91,7 +91,9 @@ import kotlin.test.assertTrue
  * now (`webuitest/`, Playwright against a real Chromium driving the `webuicheck` harness), so the palette,
  * the dialogs, the drawer, the swipe bridge, the reattach, the key bar, the uploads, the unicode gate and
  * the layout are exercised as BEHAVIOUR and their greps are gone rather than kept as a second, weaker
- * statement of the same thing.
+ * statement of the same thing. The last to go was the session-list protocol itself — the unread badge and
+ * its retry loop, the "Loading sessions…" first paint and the two latched announcements, which had held
+ * out in [daemonServesTheAppEntryModule] because nothing else could see them.
  *
  * The clearest artefact of why they had to go is `webUiExposesThePreferencesScreen`, deleted with the
  * rest: it asserted that `app.js` contains the literal `if (sameForm) closeDialogFrom(submittedDialog)` —
@@ -124,112 +126,48 @@ class WebUiServingTest {
         assertContentTypeContains(resp, "html")
     }
 
+    /**
+     * The entry module's serving contract, and deliberately nothing else.
+     *
+     * `app.js` is the one module `index.html` names directly (through its revisioned URL — see
+     * [daemonServesIndexHtmlAtRoot]), so it is not in [daemonServesTheComponentAndLibModules]' registry
+     * and owns its address here. It is also the biggest file in the SPA, which is how this test grew to
+     * 114 lines and 35 greps: identifier names (`sessionsFrameRef.current(msg)`, `pruneReadPosters`,
+     * `READ_RETRY_DELAY_MS`), the relative order of four substrings inside one callback body, and two
+     * regex occurrence counts. Its own comment explained why — "there is no JS harness, so these greps are
+     * what stops the whole feature from being deleted". There is a harness now, and every one of those
+     * claims is made by a Chromium that RUNS the file:
+     *
+     * - the unread badge, its mark-read POST and the retry loop's three answers, the "Loading sessions…"
+     *   first paint, the two latched announcements and the absence of any wholesale `GET /sessions` —
+     *   `webuitest/test/SidebarTest.kt`;
+     * - the events socket's reconnect and who may spend a reattach candidate — `TerminalReattachTest`;
+     * - the notify edge — `TaskBadgeTest`; the deep link — `RouterTest`; the footer's version —
+     *   `SidebarTest`; starting and controlling sessions — `SessionDialogsTest` and `CommandPaletteTest`.
+     *
+     * One claim was dropped without a replacement and is recorded rather than smuggled into the
+     * source-guard section below: that no null-guard filters `msg.model` out of an incoming patch (a
+     * model the daemon CLEARED must clear on screen). A browser could answer it — the daemon really sends
+     * `model: null` — but the `webuicheck` harness has no command that clears a model, so the fixture, not
+     * the browser, is what is missing. The daemon's half is `TransportTest`'s, and `lib/sessions.js`
+     * taking the field verbatim is asserted in [daemonServesTheComponentAndLibModules].
+     */
     @Test
     fun daemonServesTheAppEntryModule() = withServer { ctx ->
         val resp = ctx.get("/app.js")
         assertEquals(HttpStatusCode.OK, resp.status, "GET /app.js is served")
-        val body = resp.bodyAsText()
-        assertTrue(body.contains("from \"preact\""), "the entry module imports the vendored Preact")
-        assertTrue(body.contains("from \"htm/preact\""), "the entry module imports htm's Preact binding")
-        assertTrue(body.contains("session_update"), "app.js handles the live session_update messages")
-        // The list is built from the /events socket alone: the frame dispatcher routes the three session
-        // frame kinds through the ref indirection, and NOTHING in app.js may fetch the whole list — the
-        // negative pin below is the regression guard this entire protocol rewrite exists for (206 ×
-        // GET /sessions on one reload). The targeted form ("/sessions/" + encodeURIComponent(...)) and
-        // the POST forms (`apiRequest("/sessions", {`) do not match the closed literal.
-        assertTrue(
-            !body.contains("apiRequest(\"/sessions\")"),
-            "the session list must never be fetched wholesale over HTTP — the snapshot frame is the list",
-        )
-        assertTrue(!body.contains("loadSessions"), "the wholesale session loader stays deleted")
-        assertTrue(
-            body.contains("sessionsFrameRef.current(msg)"),
-            "session frames reach the applicators through the ref, not through the socket effect's deps",
-        )
-        assertTrue(
-            body.contains("applySessionsSnapshot(msg.sessions)") &&
-                body.contains("applySessionRow(msg.session)") &&
-                body.contains("applySessionPatch(msg)"),
-            "the dispatcher routes all three session frame kinds",
-        )
-        // The snapshot applicator's order: per-row notify-edge against the PREVIOUS list first (a session
-        // that entered needs-attention while the socket was down must ring), then the wholesale install,
-        // then the deep link, and markReadIfViewing for the active row (the reconnect badge heal).
-        val snapStart = body.indexOf("const applySessionsSnapshot = useCallback((rows) => {")
-        val snapEnd = body.indexOf("\n  }, [cancelReattach", startIndex = snapStart.coerceAtLeast(0))
-        assertTrue(snapStart >= 0 && snapEnd > snapStart, "the snapshot applicator is present and bounded")
-        val applySnapshot = body.substring(snapStart, snapEnd)
-        val notifyAt = applySnapshot.indexOf("notifyAttention(prevRow)")
-        val installAt = applySnapshot.indexOf("setSessions(rows)")
-        val wantedAt = applySnapshot.indexOf("const wanted = deepLinkRef.current;")
-        val readAt = applySnapshot.indexOf("markReadIfViewing(active.id, active.unread, active.lastSeq)")
-        assertTrue(
-            notifyAt in 0 until installAt && installAt < wantedAt && wantedAt < readAt,
-            "the snapshot diffs per row for notify-edge, installs, honours the deep link, then heals the badge",
-        )
-        // Reconnect announcements are latched: the routine list line only on the FIRST snapshot, the
-        // disconnect line once per outage (onclose refires every 2 s while the daemon is down).
-        assertTrue(
-            applySnapshot.contains("disconnectAnnouncedRef.current = false") &&
-                applySnapshot.contains("if (!sessionsReadyRef.current)"),
-            "a reconnect snapshot re-arms the outage announcement and stays quiet about the list",
-        )
-        assertTrue(
-            body.contains("if (!disconnectAnnouncedRef.current)") &&
-                body.contains("Daemon connection lost"),
-            "a lost daemon announces once per outage, not once per 2 s retry",
-        )
-        // Model correctness moved into the patch itself: patchIfNewer (lib/sessions.js) takes msg.model
-        // verbatim. app.js must not reintroduce a null-guard that would keep a cleared model on screen.
-        assertTrue(
-            !body.contains("msg.model != null"),
-            "no null-guard may filter the authoritative patch model (a cleared model must clear)",
-        )
-        assertTrue(body.contains("startSession"), "app.js can create sessions")
-        assertTrue(body.contains("controlSession"), "app.js can run lifecycle controls")
-        // The unread-badge wiring. There is no JS harness, so these greps are what stops the whole feature
-        // from being deleted with a green suite: the guard, its POST target, and the visibility trigger.
-        assertTrue(body.contains("markReadIfViewing"), "app.js marks the viewed session read")
-        assertTrue(body.contains("/read"), "…by POSTing the displayed seq to the mark-read route")
-        assertTrue(body.contains("visibilitychange"), "…and re-checks when the tab becomes visible again")
-        // The per-session poster Map is module-level and long-lived; this page stays open for days.
-        assertTrue(body.contains("pruneReadPosters"), "…and drops the poster of a session that vanished")
-        // The mark-read retry replaced the 15 s resync heartbeat: it must retry a transient failure and
-        // STOP on a definitive one — a 401 after rotation or a 404 for a vanished session never heals,
-        // and a page that lives for days must not hammer the daemon with unwinnable POSTs.
-        assertTrue(
-            body.contains("if (isDefiniteAnswer(e)) return;") &&
-                body.contains("READ_RETRY_DELAY_MS"),
-            "postRead retries transient failures and stops on a definitive 4xx",
-        )
-        // The events socket is the list's only source, so BOTH failure paths must reconnect: the
-        // constructor throw (which used to give up for the page's life) and the ordinary onclose.
-        assertTrue(
-            Regex("""setTimeout\(connect, 2000\)""").findAll(body).count() == 2,
-            "both the constructor failure and onclose reschedule the events socket",
-        )
-        // First-paint honesty: before the first snapshot the sidebar says "Loading sessions…", because
-        // an empty list is not yet a fact — and the routine announcement fires exactly once.
-        assertTrue(
-            body.contains("sessionsReady=\${sessionsReady}"),
-            "app.js tells the sidebar whether the first snapshot has landed",
-        )
-        // The one first-load 401 gate lives in the mount-only /preferences effect now (no GET /sessions
-        // exists to carry it); a later 401 must not navigate a live page away.
-        val prefsStart = body.indexOf("apiRequest(\"/preferences\")")
-        val prefsEnd = body.indexOf("}, [applyServerPreferences, say]);", startIndex = prefsStart.coerceAtLeast(0))
-        assertTrue(prefsStart >= 0 && prefsEnd > prefsStart, "the preferences effect is present and bounded")
-        val prefsEffect = body.substring(prefsStart, prefsEnd)
-        assertTrue(
-            prefsEffect.contains("if (isUnauthenticated(e))") &&
-                prefsEffect.contains("window.location.replace(AUTH_PATH)"),
-            "an unsigned installed PWA is routed to /auth from the mount-only preferences load",
-        )
-        val redirects = Regex("""window\.location\.replace\(AUTH_PATH\)""").findAll(body).count()
-        assertTrue(redirects == 1, "exactly one /auth redirect exists (found $redirects)")
-        assertTrue(body.contains("apiRequest(\"/version\")"), "app.js fetches the daemon version")
-        assertTrue(body.contains("currentVersion=\${currentVersion}"), "app.js passes the version to the sidebar")
         assertContentTypeContains(resp, "javascript")
+        // An empty file is served with a perfectly good 200 and a perfectly good content type.
+        assertTrue(resp.bodyAsText().isNotEmpty(), "GET /app.js is not an empty file")
+        // Stated here as well as in [revisionedAssetsAreImmutableAndEverythingElseRevalidates] for the
+        // same reason [daemonServesTheServiceWorkerAtTheRootScope] states its own: this address is the
+        // one an old shell's cached URL would use, and pinning the entry module is how a deploy stops
+        // arriving at all.
+        assertEquals(
+            "no-cache",
+            resp.headers[HttpHeaders.CacheControl],
+            "unprefixed, the entry module revalidates rather than being pinned in a browser cache",
+        )
     }
 
     /**
