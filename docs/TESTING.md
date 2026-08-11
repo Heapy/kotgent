@@ -8,6 +8,9 @@ The goal is not to maximize the number of tests or eliminate all risk. The goal 
 produce a fast, precise failure; let behavior-preserving refactors stay green; and rehearse upgrades in the
 same shape in which users receive them.
 
+Where a target is already met, this guide names the module that meets it, because the shape those parts
+settled on is itself part of the target. Everything left unnamed is still a direction.
+
 ## What makes a test valuable
 
 A good test protects observable behavior or a stable external contract.
@@ -200,6 +203,11 @@ classification, preference transitions, notification decisions, and reconnect sc
 Timers, visibility, network results, and storage events should enter through controlled inputs. Tests should
 advance virtual time and inspect declared effects instead of sleeping or depending on wall time.
 
+This layer does not exist yet. There is no JavaScript build step and no package manager in the repository,
+and no runner has been introduced for these modules, so their rules are proven one level up in the browser
+tier or not at all. Adding a runner should not add a build: these are plain ES modules, served exactly as
+they are written, and that property is worth more than any convenience a bundler would buy.
+
 ### Components and DOM behavior
 
 Component tests should render the real component tree and interact through user-visible roles, labels,
@@ -234,9 +242,25 @@ The browser suite should cover a small set of high-value journeys:
 9. Open session and task deep links from a cold page and after reconnect.
 10. Exercise service-worker and cached-shell update behavior.
 
-Run standards-based behavior in more than one browser engine. Reserve a real-device release checklist for
-platform behavior that desktop automation cannot faithfully reproduce, such as installed-PWA lifecycle,
-safe areas, software-keyboard geometry, touch physics, and notification permission prompts.
+This layer exists. `webuitest` is a JVM module of tests only: it drives a real Chromium through Playwright
+for Java against `webuicheck`, a fixture binary that assembles the real server over the shared doubles in
+`fakes`, serves a terminal from a real PTY running a deterministic shell snippet instead of a provider, and
+takes scenario commands on standard input. Each test spawns its own harness on an ephemeral port, signs in
+through the real login form with a single-use ticket, and leaves nothing behind outside the checkout.
+Journeys 1, 3, 4, 5, 8, and 9 are covered; 2, 6, and 7 are covered in part, as the dialogs and refusals that
+begin them rather than as the whole round trip; 10 is not covered at all, and neither is anything that needs
+a real push service. The Playwright driver ships its Node runtime inside the Maven artifact, so this layer
+still adds no package manager and no build step.
+
+Standards-based behavior should be run in more than one browser engine, but only where the difference is
+measured rather than assumed. Playwright's WebKit does not deliver touch pointers to the page at all, so
+every gesture test is Chromium-only today, and a second engine is worth adding for a given test on the day
+that test measurably diverges. Synthesizing an event rather than dispatching a real one is not a substitute
+for either engine: it proves that a listener runs, not that the platform routes the gesture to it.
+
+Reserve a real-device release checklist for platform behavior that desktop automation cannot faithfully
+reproduce, such as installed-PWA lifecycle, safe areas, software-keyboard geometry, touch physics, and
+notification permission prompts.
 
 ### Static assets and source-shape checks
 
@@ -251,6 +275,15 @@ keep that exception narrow.
 When the requirement is architectural rather than behavioral, prefer a parser, linter, module-graph check,
 or compiler-enforced boundary. When the requirement is visual, prefer browser assertions or focused visual
 regression images. When it is interactive, execute the interaction.
+
+This is now the whole of `test/transport/WebUiServingTest.kt`: addresses, media types, cache headers,
+content revisions, path safety, precedence over the API, a registry that names every served module exactly
+once, and a short closed list of source-shape guards for the two claims a running page cannot make — an
+agreement between two files that never read each other, and the absence of a second implementation of
+something that must have one owner. The tier it replaced made 1181 substring assertions over served
+JavaScript and CSS. One of them spelled out the exact line of a defect that the browser tier later found,
+so that suite had pinned the bug as a contract and broke when the bug was fixed. Keep the exception closed;
+a source scan cannot tell a fix from a regression.
 
 ## CLI
 
@@ -326,8 +359,16 @@ Use the least powerful double that preserves the semantics required by the test:
 Avoid deep mocks of implementation structure. They make refactoring expensive and tend to verify that the
 code calls itself in the expected way rather than that the application produces the expected result.
 
+A double with more than one consumer should live in one place instead of being copied. `fakes` is a real
+module for exactly that reason: the native test fragment and the browser fixture depend on the same
+in-memory event store, task store, `tmux` control, and project filesystem, and two copies would be free to
+drift apart while both stayed green.
+
 Fixtures should be minimal, sanitized, versioned when they represent an external format, and readable enough
-to explain the scenario. Generated fixtures must have a documented generator and a reproducible source.
+to explain the scenario. Generated fixtures must have a documented generator and a reproducible source. A
+fixture that stands in for a whole subsystem should also be safe by construction: the browser harness binds
+an ephemeral port, mints its credentials in memory, and replaces every writing edge, so a stray run cannot
+touch the operator's home, `tmux` server, or database.
 
 ## Determinism and failure quality
 
@@ -337,6 +378,10 @@ home directory, global environment, network availability, provider services, or 
 Prefer injected clocks, virtual time, deterministic random sources, temporary directories, port `0`, unique
 resource names, and explicit readiness signals. Use eventual assertions around genuine concurrency; do not
 use arbitrary sleeps as synchronization.
+
+In a browser, the readiness signal is observable state — a rendered node, an attribute, a request that was
+made — never the assumption that an earlier input has already been processed. Effects that run after paint
+are overtaken by the next keystroke, and a test that types blind is testing its own timing.
 
 Every potentially blocking test must have a finite timeout. Failure output should include the relevant state,
 events, process output, protocol frames, and seed while avoiding secrets. A flaky test is a defect in the
@@ -388,6 +433,13 @@ Use layered gates so feedback is both fast and representative.
 
 Machine-global integration resources must be serialized or namespaced. Independent pure and component tests
 should remain parallelizable.
+
+Two mechanics of the current gate are worth stating, because both are easy to get backwards. The fixtures
+are separate executables — `ptycheck` for the real-PTY checks, `webuicheck` for the browser tier — so a
+build must run before a test run; a missing binary is designed to fail loudly rather than skip, and no test
+task links one. And the tiers already run concurrently, so the browser tier's cost to the gate is the
+difference between it and the native suite rather than its own duration. Per-module test tasks remain the
+fast local loop, and neither replaces the aggregate.
 
 ## Definition of done for a behavior change
 

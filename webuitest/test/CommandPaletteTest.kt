@@ -93,18 +93,28 @@ class CommandPaletteTest {
             // …and nothing that could not run. With no session selected, Interrupt is exactly that.
             assertThat(options.withText(INTERRUPT_COMMAND)).hasCount(0)
 
+            // Subtitles are searched too, not only titles: "grouping" appears nowhere but in the
+            // Preferences descriptor's subtitle, so this is a one-hit query by construction.
+            input.fill("grouping")
+            assertThat(options).hasCount(1)
+            assertThat(options.first()).containsText("Preferences")
+
             // Typed, it comes back — carrying the reason, which is the point of showing it at all.
             input.fill("interrupt")
             assertThat(options).hasCount(1)
             assertThat(options.first()).hasAttribute("aria-disabled", "true")
             assertThat(options.first().locator(".command-palette-disabled-reason"))
                 .containsText("no session is selected")
-
-            // Subtitles are searched too, not only titles: "grouping" appears nowhere but in the
-            // Preferences descriptor's subtitle, so this is a one-hit query by construction.
-            input.fill("grouping")
-            assertThat(options).hasCount(1)
-            assertThat(options.first()).containsText("Preferences")
+            // A query whose every row is unavailable points the combobox at NOTHING, so the attribute is
+            // removed entirely. That absence is load-bearing twice over: it is the accessible truth (there
+            // is no row Enter could run), and it is this test's BARRIER. The palette resets `activeIndex`
+            // in a `useEffect([query])`, i.e. after paint, and an option's id is its INDEX — so "the
+            // highlight is on row 0" is indistinguishable between the query before and the query after,
+            // and waiting for it proves nothing. Waiting for the attribute to VANISH here and REAPPEAR
+            // below is a real transition, which is what makes the pending reset provably spent before the
+            // first ArrowDown. Without it that reset lands after the key and silently walks the highlight
+            // back to row 0 — observed, as a one-in-several-runs failure of the assertion below.
+            assertThat(input).not().hasAttribute(ACTIVE_DESCENDANT, Pattern.compile("."))
 
             // A query that spans both halves of the list. Wait for a row only this query produces before
             // reading the DOM in bulk: `all()` does not retry, so it must not race the re-render.
@@ -131,6 +141,8 @@ class CommandPaletteTest {
             val lastAvailable = unavailable.indexOfLast { !it }
             assertTrue(lastAvailable >= 1, "the query must offer at least two available rows to walk")
 
+            // The reappearance the barrier above set up: the reset for THIS query has run, so nothing is
+            // left pending that could overtake the arrows.
             assertThat(input).hasAttribute(ACTIVE_DESCENDANT, ids[0])
             assertThat(options.nth(0)).hasAttribute("aria-selected", "true")
 

@@ -40,8 +40,20 @@ jobs:
       # NO npm in this project — no `package.json`, no `node_modules`, no `npx playwright install` — and
       # **no setup-node step is needed**: the Node driver ships embedded inside the Maven artifact, so a
       # JVM-only runner is already complete. What the driver does fetch at runtime is the browser bundle,
-      # into `~/Library/Caches/ms-playwright` (~1.2 GB with WebKit; the suite defaults to Chromium alone),
-      # which is why this cache exists — otherwise every run re-downloads it before a single test starts.
+      # into `~/Library/Caches/ms-playwright`, which is why this cache exists — otherwise every run
+      # re-downloads it before a single test starts.
+      #
+      # Measured, that directory is ~1.1 GB and holds ALL of it: chromium 356 MB, the headless shell
+      # 196 MB, ffmpeg 2.5 MB, firefox 282 MB and webkit 294 MB. Every test in `webuitest` asks for
+      # Chromium and nothing else, but `Playwright.create()` provisions the whole set on first use and
+      # nothing here restricts it — so do not read this cache as "Chromium alone". Narrowing it is
+      # deliberately NOT done: the automatic install has no subset form, so restricting means switching it
+      # off (`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`) and provisioning Chromium from Playwright's own CLI in a
+      # separate step — a manual browser-install step is exactly the npm-shaped thing this project does
+      # not have — and kotgent reserves adding WebKit point-wise the day a test measurably diverges on it
+      # (see CLAUDE.md's testing section), which a restriction would have to be lifted for anyway. The cost
+      # of carrying the extra ~580 MB is one cold download per Playwright version bump, and absorbing that
+      # is what this step is for.
       #
       # The key carries the Playwright version literally because that version is what pins the browser
       # build the driver demands. Bump `playwright` in `gradle/libs.versions.toml` and this literal must

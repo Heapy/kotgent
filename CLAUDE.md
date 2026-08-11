@@ -22,6 +22,34 @@ guide on how to test: @docs/TESTING.md
   on the root app module (allowed, one-way — that is where `TerminalBridge`/`Tmux` live). The suite's
   `PtyTest` execs the binary and asserts it exits 0. Because there is now more than one runnable
   module, `./kotlin run` needs `-m kotgent` (it errors and lists the modules otherwise).
+- **`fakes/` — `kmp/lib`, `macosArm64`**: the five shared doubles — `FakeTmux`, `FakeEventStore`,
+  `FakeTaskStore`, `FakeProjectFs`, `MemoryProjectFileWriter`. A module rather than a `private class` in
+  one test file because they now have **two** consumers — the root module's test fragment
+  (`test-dependencies: - ./fakes`) and the `webuicheck` **main** binary — and a copy would fork the very
+  behaviour those two exist to agree on. The graph `root(test) → fakes → root(main)` *looks* circular and
+  is not: the toolchain resolves **fragments**, so it lines up as a DAG
+  (`:kotgent:compileMacosArm64TestDebug → :fakes:compileMacosArm64Debug → :kotgent:compileMacosArm64Debug`),
+  verified by a spike before the module was written — do not "fix" it by copying interfaces down here.
+  Everything is `public` (0.11 has no friend-module relationship to anyone's test fragment), and the module
+  names `$libs.kotlinx.coroutines.core` **itself** because the root module depends on coroutines without
+  `exported: true`, so `- ..` alone leaves the `Mutex`/`SharedFlow`/`Channel` every double is built from
+  invisible.
+- **`webuicheck/` — `macos/app`, `macosArm64`**: `ptycheck`'s sibling and, like it, a **fixture, not a
+  product**. Its `main()` stands the **real** `KotgentServer` up over those doubles on an ephemeral port,
+  prints exactly `PORT=` / `TICKET=` / `READY` on stdout, and then takes scenario commands on stdin
+  (`restart`, `emit`, `task`, `task-add`, `task-del`, `task-race`), stopping gracefully on EOF. It is a
+  main binary for the same KT-78062 reason `ptycheck` is: the terminal scenarios sit on a real `Pty`, which
+  no test binary can link. `--self-check` runs the two cinterop-dependent checks in process and prints
+  `SUMMARY total=N failed=0` for `WebUiCheckTest` to verify. stdout is *claimed* at startup (fd 1 is
+  redirected to stderr and the real one kept privately), so no stray `println` — ours, a scenario's or
+  Ktor's — can corrupt the handshake.
+- **`webuitest/` — `jvm/lib`, `test/` only**: the browser tier. 105 Playwright-for-Java tests spawn
+  `webuicheck`, sign in through the real `/auth` form with its one ticket, and drive a real Chromium
+  against the pages the harness serves. There is no `src/`: the module publishes nothing to anybody. There
+  is no npm either — Playwright's Node driver ships inside the Maven artifact — so the whole tier costs one
+  catalog entry and no second package manager. **Every class name must end in `Test`** (see the gotcha
+  below); `webuitest/test/HarnessFixture.kt` is the one fixture and `webuitest/test-results/` the frozen
+  path CI uploads failure diagnostics from.
 - **`plugins/sqldelight-gen/` — `jvm/amper-plugin`**: a build-time JVM plugin that runs SQLDelight codegen
   (SQLDelight ships only a Gradle plugin, so we drive its compiler programmatically via a vendored,
   Gradle-free `SqlDelightEnvironment` and contribute the output via `generated.sources`). It runs on the
@@ -739,7 +767,15 @@ to off is not timidity: a width the browser computes differently from the width 
 pane out shifts every following cell on that line, and the two tables disagree in both directions
 depending on the character, so the choice is the operator's and its scope is one device — the same scope
 as the terminal font size, since it changes only how THIS browser draws bytes every other viewer receives
-unchanged. Three details are load-bearing. **`Unicode11Addon.activate()` only REGISTERS its provider** (the
+unchanged. Four details are load-bearing, and the first is the gate the whole feature hangs on.
+**`term.unicode` is xterm's PROPOSED API**: its getter runs `_checkProposedApi()` and THROWS unless the
+`Terminal` was constructed with `allowProposedApi: true`, and `lib/unicode.js` is nothing but reads and
+writes of that getter. Without the flag every selected width table fetched its 65 KB and then changed
+absolutely nothing — with no symptom whatsoever, because the throw lands in the install's own `.catch`
+(which exists to survive an addon that will not load) and a terminal measuring with the built-in table is
+indistinguishable from one that was never asked to change. It took a Chromium reading `activeVersion` back
+to find it; a grep asserting the addon is vendored and imported passes forever. Then:
+**`Unicode11Addon.activate()` only REGISTERS its provider** (the
 graphemes addon is the one that sets `activeVersion` itself), so `installTerminalUnicode` sets
 `term.unicode.activeVersion` explicitly — without that line the fetch happens and nothing whatsoever
 changes. **Its `dispose()` is empty** and a provider can never be unregistered, only shadowed, so the
@@ -789,7 +825,12 @@ picking a project closes the drawer. The body is BRANCHED, not filtered, for the
 its `session` group away on the board: every session-only control reads a selection the operator cannot
 see there. `status` is branched the other way — the sidebar footer renders it on the session view, the
 `.board-status` toast on the board — because on a phone that footer is inside a CLOSED drawer, and
-rendering both would double every message. The project list is the one FETCHED thing on the task side
+rendering both would double every message. That toast is a FIXED box that parks over the bottom centre of
+the board for the rest of the page's life and has nothing in it to click, so it must carry
+`pointer-events: none`: without it `dropTargetAt`'s `elementFromPoint` answered the toast for a drop over
+the lower half of a middle column, whose `closest(".board-column")` is null, and the card silently went
+nowhere. Any future overlay on that screen owes the same declaration. The project list is the one FETCHED
+thing on the task side
 (there is no projects frame; a `BacklogEntryDto` carries only the uuid), so it is re-read on every entry
 to `/tasks` and never polled — while the per-project counts come from the live task list, so a stale row
 still carries a fresh number. The board's head is now the terminal head's twin and **reuses its three ids**
@@ -1158,6 +1199,14 @@ for the active row) and latches announcements ("N session(s)." only on the first
 "Daemon connection lost" once per outage). Old still-open tabs keep working degraded: they drop the
 unknown frame kinds and fall back to their own HTTP reload on the first unknown-id patch —
 `GET /api/v1/sessions` itself stays (CLI, service worker, targeted fetches).
+**A writer's own echo arrives before its own response, so no client may decide "somebody else changed
+this" by timing.** Measured over loopback on the Preferences PUT: the `preferences_update` frame for the
+write beats the response to that same write, every single time. So the test is the REVISION the response
+carried — still the newest this browser knows of (equal included, and equal is the ordinary case) means
+the newest thing we know is our own commit; only a strictly newer one is a foreign write. A guard phrased
+as "did the mounted form's revision change since submit" is always true and always wrong, and it cost this
+project a Save button that never closed its dialog. Any future form that writes a row and also watches its
+frames owes the same rule.
 
 **PTY via `openpty` + `posix_spawn` (NOT `forkpty`).** `Pty` opens the master with `openpty` and spawns the
 child with `posix_spawn(POSIX_SPAWN_SETSID)`, marshalling all C strings **before** the spawn. `forkpty`
@@ -1232,6 +1281,12 @@ These are real and cost time to rediscover. Respect them.
   relationship between a module and its `test`, so `internal` is not visible to tests, and generated
   sources must be `public` (SQLDelight already generates public API, so it's moot there — but keep it in
   mind for anything the tests need to see).
+- **A JVM test class whose name does not end in `Test` contributes zero tests, silently.** JUnit Platform
+  filters candidate classes by `.*Tests?`, so `PwSpike`, `SidebarChecks` or `BoardScenarios` **compile and
+  link perfectly**, run nothing, and the task then fails with a bare "0 tests found" and a non-zero exit
+  that names neither the class nor the rule — it reads as a broken toolchain rather than a misnamed file.
+  Measured on the spike that preceded `webuitest`, whose `module.yaml` repeats the warning where an author
+  will meet it. Name the class `…Test` and the problem does not exist.
 - **`kotlin.system.getTimeMillis()` is ERROR-level deprecated** on Kotlin 2.4.10 (a hard compile error).
   Use `kotlin.time.Clock` (e.g. `Clock.System.now().toEpochMilliseconds()`), and prefer injecting a
   `now: () -> Long` so tests stay deterministic.
@@ -1260,15 +1315,128 @@ These are real and cost time to rediscover. Respect them.
 
 ## Testing & running
 
-- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1432 native tests passed /
-  0 skipped**, plus the build-info plugin's 7 JVM tests (and `ptycheck`'s 11 real-PTY checks, driven by
-  `PtyTest` — keep its `EXPECTED_CHECKS` in sync when adding one).
-- **Run `./kotlin build` before `./kotlin test`.** `PtyTest` execs the `ptycheck` binary, and
-  `./kotlin test` never links a main binary (not even its own module's) — the test says so explicitly
-  instead of silently passing when the binary is missing.
-- Changed JavaScript ES modules must pass `node --check <file>`. There is deliberately no JavaScript test
-  harness: source/serving contracts live in `test/transport/WebUiServingTest.kt`, every newly served
-  module must be registered there, and browser behavior remains part of the manual verification checklist.
+- Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1332 native tests passed /
+  0 skipped** and **105 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
+  7 JVM tests, `ptycheck`'s 11 real-PTY checks (driven by `PtyTest`) and `webuicheck`'s 2 self-checks
+  (driven by `WebUiCheckTest`) — keep a fixture's `EXPECTED_CHECKS` in sync when adding a check to it. The
+  native count **fell** from 1432 when the Web UI grep tier was replaced: 101 tests removed, 1 added, delta
+  100. A future migration measures itself the same way — "0 skipped, and the delta equals what was deleted".
+- **Run `./kotlin build` before `./kotlin test`** — now for two fixtures, not one. `PtyTest` execs
+  `ptycheck`; `WebUiCheckTest` **and every browser test** exec `webuicheck`. `./kotlin test` never links a
+  main binary (not even its own module's), and `:webuitest:testJvm` does not relink one either — verified.
+  A missing `webuicheck.kexe` therefore fails the **entire browser tier in under six seconds** (measured),
+  every failure naming `./kotlin build`, and never a skip; the fixtures say so explicitly rather than
+  passing quietly.
+- **What the gate costs, and the two loops that do not.** Warm, on an M-class laptop: `./kotlin build`
+  ≈ **53 s** — it relinks unconditionally because `build-info` deliberately disables execution avoidance,
+  so that is the floor, not a cache miss — and `./kotlin test` ≈ **2:40**. The tiers run **concurrently**:
+  `:webuitest:testJvm` alone is ≈ 2:38 and `:kotgent:testMacosArm64Debug` alone ≈ 1:39, so the browser tier
+  is the critical path and the native suite hides underneath it. Adding the browser tier therefore cost the
+  gate about **60 s**, not 158. Those two module tasks are the fast loops; neither replaces the aggregate,
+  and a cold machine additionally needs the network for the browser bundle.
+- **The Web UI has three tiers, and which tier a claim belongs to is decided by whether a running page
+  could answer it.** `test/transport/WebUiServingTest.kt` keeps only what an address can prove — what is
+  served, at which URL, with which content type and which caching header — plus the **registry** of served
+  modules (every ES module entered exactly once, the moment the file exists: a browser proves a module is
+  served only transitively and silently, and a module nothing imports yet has nothing to prove it at all),
+  plus a short, **closed** list of source-guards for the two claims a browser structurally cannot make —
+  an agreement between two files that never read each other (`DEEP_LINK_PARAM` against `sw.js`, the frozen
+  `board-*`/`task-*` class vocabulary against `style.css`, the project-name `maxlength` against the native
+  `PROJECT_NAME_MAX_LENGTH` a JVM module cannot import) and a negative claim about the shape of the source
+  (nothing outside `lib/router.js` touches `history`). `webuitest/` is behaviour, executed in a real
+  Chromium against the real server; `webuicheck/` is the harness it drives and `fakes/` the doubles under
+  that. **If a Chromium could answer it, it belongs in `webuitest/`** — and there a layout claim reads
+  GEOMETRY and resolved values (`getBoundingClientRect`, `cols`/`rows`, visibility, a computed colour
+  compared against the token it must equal, in two states), never a stylesheet's text.
+- Changed JavaScript ES modules must pass `node --check <file>`. There is still no JavaScript **build** and
+  no npm anywhere in this repository — no `package.json`, no `node_modules`, no `npx playwright install`,
+  because Playwright's Node driver ships inside the Maven artifact — but "there is deliberately no
+  JavaScript test harness" stopped being true: browser behaviour is **executed** now, not grepped. What
+  survives of the old rule is narrow and still binding — **every newly served module must be registered in
+  `WebUiServingTest`'s module list** — and what stays manual is only what automation cannot faithfully
+  observe (the real-device checklist in the mobile invariants above: safe areas, installed-PWA lifecycle,
+  keyboard geometry, touch physics, push permission).
+- **Chromium only, and WebKit only against a measured divergence.** Playwright's WebKit delivers
+  `touchscreen().tap()` to **nothing at all** — the element sees no event — while Chromium with a `hasTouch`
+  context delivers the full `pointerdown → touchstart → pointerup → touchend → click` carrying **one
+  `pointerId`** across down, up and click, which is exactly the invariant light dismiss rests on. So
+  Chromium is the default engine, WebKit is added **point-wise** and only under a test that measurably
+  diverges on it, and that divergence is recorded as a fact when it happens. Note what this does not
+  license: a synthesised `element.dispatchEvent(new PointerEvent(…))` behaves identically in both engines
+  and proves nothing — not `touch-action`, not the compatibility mouse burst, not capture — because a
+  made-up `pointerId` is not an *active* pointer and `setPointerCapture` throws `NotFoundError` on it. A
+  real touch drag therefore goes through CDP (`context.newCDPSession` → `Input.dispatchTouchEvent`; `gson`
+  resolves transitively from Playwright's POM), since `Touchscreen` offers `tap` and nothing else. `hasTouch`
+  is a property of the **context**, not the browser. And Chromium confirming the pointer-id invariant says
+  nothing about WebKit, so the mobile invariants' "settle this on a real iPhone" stands unchanged.
+- **Four things about driving this page that no documentation states, each of which cost a run to find.**
+  (1) **`Pattern.quote` does not work with Playwright.** A Java `Pattern` is never evaluated in Java: the
+  driver ships its SOURCE text to Node and matches it as a JS `RegExp`, where `\Q…\E` means nothing (`\Q`
+  is merely an escaped `Q`) — so a quoted pattern demands a literal leading `Q` and matches nothing, while
+  the failure prints the Java spelling beside a URL that plainly satisfies it. Escape the metacharacters by
+  hand. (2) **A harness mints ONE ticket and `TicketStore` burns it on redemption**, so a test that needs N
+  browser contexts needs N harnesses. (3) **Chromium spends the first Esc of a non-empty
+  `<input type="search">` on its own clear** — the palette's query field is exactly such an input, and
+  `CommandPalette.js` does not read Escape at all, so this is the platform, not the app: empty the field
+  before Esc if one press is to mean one thing. (4) **Wait for observable state; never press blind** — and
+  the state has to be a TRANSITION. Leader focus, `activeIndex` and `dialog.close()`'s queued event all land
+  in a `useEffect` *after* paint, and the next keystroke overtakes them: in that window a stale `⌘K` toggles
+  a dialog nobody can see. The subtle half is that a wait on a value which is the same before and after is
+  no wait at all — the palette's option ids are the row INDEX, so "the highlight is on row 0" reads
+  identically across a query change, and an ArrowDown pressed on that reading is walked back by the reset
+  still in flight. This is what a flaky palette test turned out to be; the fix was to make the barrier an
+  attribute that measurably disappears and comes back, not to lengthen a timeout.
+- **`WebUiCheckTest` drives `webuicheck --self-check` out of process, and it holds exactly two checks.**
+  Out of process is the `ptycheck` precedent, invoked for the one reason that precedent exists: KT-78062,
+  and a harness that serves a real `Pty`. The budget is fixed at the cinterop-dependent **minimum** — a
+  real `Pty` under a real `TerminalBridge` inside the assembled server, plus that upstream's lazy
+  close/respawn — because everything else about the harness is touched first by the browser tier, which
+  states it as a named assertion instead of a hand-rolled counter. Pulling ordinary checks under the
+  precedent trades readable failures for `SUMMARY total=N`. `EXPECTED_CHECKS = 2` is a constant no other
+  task edits, and the precedent reaches exactly as far as KT-78062 does.
+- **The harness is harmless by construction, and that was verified rather than assumed.** `port = 0`; the
+  master token is minted in memory and **never** written to `~/.kotgent/token`; `FakeTmux` means no tmux
+  server and no agent process; `MemoryProjectFileWriter` means no `.kotgent.json` is created anywhere on
+  disk; the upload sink and the directory completer are in-memory too. EOF on stdin is the graceful path
+  and `--exit-after-ms` (exit 4) is only the belt for a driver killed without closing it. Measured on a
+  live harness: **zero open files under `$HOME` outside the checkout**, `~/.kotgent` identical before and
+  after, the real `-L kotgent` socket untouched, and two concurrent harnesses simply taking two ephemeral
+  ports. Keep any new scenario inside that envelope — a fixture that writes into a developer's home is one
+  bad path away from being a bug report.
+- **What the browser tier caught on its first real run is the argument for having it: four product bugs,
+  none of them visible to text.** (1) **Preferences never closed its dialog on Save** — the guard compared
+  the mounted form's revision against submit time, and over loopback the daemon's `/events` echo of our
+  OWN write beats the PUT response every time — so the guard for "somebody else edited this" fired on our
+  own echo, and Save never closed the dialog at all. The fix moved the discriminator onto the daemon's own
+  answer: the revision the PUT responded with still being the newest this browser knows of — equal counts,
+  and equal IS the ordinary case — means the newest thing we know is our own commit, so close it; only a
+  strictly newer revision means somebody else wrote, and then the form stays open and says so.
+  (2) **The board's card drag was effectively unclaimable** — capture was taken
+  at claim, after the 8 px slop, but the handle is about 12×16 px, so the claiming move had already left
+  the element. Capture now happens on the press; the slop keeps its own job, which is telling a click from
+  a drag. (3) **The opt-in unicode addon fetched 65 KB and changed nothing** — `term.unicode` is xterm's
+  *proposed* API, its getter throws without `allowProposedApi: true`, and the throw landed in the install's
+  own `.catch`. A terminal measuring with the built-in table is indistinguishable from one never asked to
+  change, so only a browser reading `activeVersion` back could see it; a grep asserting the addon is
+  vendored and imported passes forever. (4) **`.board-status` had no `pointer-events: none`**, so the toast
+  ate clicks across the bottom of the board and `elementFromPoint` answered *it* instead of the column
+  being dropped on. Sharpest of all: the deleted `webUiExposesThePreferencesScreen` asserted that `app.js`
+  contains the literal `if (sameForm) closeDialogFrom(submittedDialog)` — the exact line that **was** bug
+  (1). That tier had not merely failed to catch the defect; it had pinned it as a contract, and it broke
+  when the bug was fixed. A test that spells out an implementation line cannot tell a fix from a regression.
+- **Four things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` makes **39 non-colour
+  `getComputedStyle` string reads** against the geometry rule above. Defensible — the browser *resolved*
+  the cascade, which no grep can do — but it is an exception the rule as written does not admit, so either
+  widen the rule with that reason or mark the file; do not quietly copy the pattern into a new one.
+  (b) `CommandPaletteTest.thePaletteAnswersForTheScreenItIsOn` and
+  `TaskCommandsTest.theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession` assert
+  the same invariant twice, in two harness spawns. (c) `daemonServesTheComponentAndLibModules` still greps
+  `Sidebar.js` for `!sessionsReady` / `Loading sessions…`, now redundant with
+  `SidebarTest.theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecidesTheListIsEmpty`, which produces the
+  distinction on an empty scenario instead of reading it. (d) `webuitest/test-results/` is never pruned: it
+  accumulates a screenshot and a trace per past failure (gitignored, uploaded by CI only `if: failure()`),
+  so a local diagnosis can pick up a stale image of a test that now passes — check the timestamp before
+  believing a picture.
 - Bound every Flow/WS/PTY test with `withTimeout(...)` (anti-hang) — the suite does this consistently.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.
@@ -1308,7 +1476,8 @@ These are real and cost time to rediscover. Respect them.
 ## Where things live
 
 ```
-module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + build plugins)
+module.yaml / project.yaml     build manifests (root app + sysnative + ptycheck + fakes + webuicheck
+                               + webuitest + build plugins)
 version.txt                    single source of the application release version
 src/core/                      host-free domain: AgentEvent, SessionState, SessionMeta, Ids, Reducer, Projection
 src/crypto/                    Sha256, Hmac, Hex, Base64Url — canonical pure-Kotlin encoders/digests
@@ -1350,6 +1519,17 @@ src/launchd/                   Plist, Install
 sysnative/cinterop/pty.def     ALL raw cinterop (PTY, tty-raw, executable-path C helpers)
 sysnative/src/                 Pty, NativeTty, NativeExe (thin cinterop wrappers)
 ptycheck/src/Main.kt           real-PTY checks run from a MAIN binary (KT-78062); driven by PtyTest
+fakes/src/                     the five shared doubles — FakeTmux, FakeEventStore, FakeTaskStore,
+                               FakeProjectFs, MemoryProjectFileWriter — a module because the root TEST
+                               fragment and the webuicheck MAIN binary both consume them
+webuicheck/src/                the browser tier's fixture (MAIN binary, KT-78062 again): Harness.kt
+                               assembles the real KotgentServer over those doubles, SafeEdges.kt replaces
+                               the three writing edges with in-memory ones, Scenarios.kt is the ONE
+                               scenario registry (scenarios/ holds their seeds), Commands.kt +
+                               TaskCommands.kt are the stdin protocol, SelfCheck.kt the 2 cinterop checks
+webuitest/test/                the browser tier itself: Playwright for Java against Chromium, one class
+                               per subject (…Test — the name is load-bearing), HarnessFixture.kt the only
+                               fixture, test-results/ the frozen path CI uploads failures from
 schema/project.v1.json         the published JSON Schema `.kotgent.json`'s `$schema` points at; it only
                                resolves once the file is on `main`
 sqldelight/io/kotgent/db/      Events.sq, Sessions.sq, PushSubscriptions.sq, UiPreferences.sq, Tasks.sq,
@@ -1367,5 +1547,5 @@ resources/webui/               no-build Preact PWA, network-only root service wo
                                components/Sidebar.js is the ONE sidebar of both screens: its head carries
                                the app's two navigation links, its body is the session list or the
                                project list
-docs/plans/                    implementation plans
+docs/plans/                    implementation plans; docs/plans/completed/ once one has shipped
 ```
