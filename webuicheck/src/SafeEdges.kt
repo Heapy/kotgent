@@ -25,6 +25,10 @@ import kotlinx.coroutines.sync.withLock
  * palette's `f` command), and the project-file writer (`POST /projects`, which creates a real
  * `.kotgent.json` inside somebody's repository). Nothing here touches a disk, which is what makes
  * "the harness never creates a `.kotgent.json` anywhere" true by construction rather than by care.
+ *
+ * [newHarnessFakes] lives here rather than beside `HarnessFakes` for the same reason: two of the five
+ * doubles it builds are two of those edges, and they have to share ONE tree (see its own note). The
+ * remaining three come along because a fixture is assembled once, not edge by edge.
  */
 
 /**
@@ -112,16 +116,19 @@ private fun childDirectoryNames(tree: Set<String>, parent: String): List<String>
  * kept because they are the two ways a well-formed request is still refused; the deadline is not, since
  * nothing here can stall.
  *
- * ## The map is state, not a spy
- * There is deliberately no accessor for what it holds. The browser tier is a DIFFERENT PROCESS, so a
- * `stored()` it could never call would be an inspection API for nobody; the bytes are retained only
- * because the second upload of one name has to see the first one. What a browser test reads is the
- * response the route returns — a size, or the `409` this map's `AlreadyExists` produces.
+ * ## It keeps NAMES, not bytes, and that is deliberate rather than lazy
+ * The browser tier is a DIFFERENT PROCESS, so a `stored()` accessor it could never call would be an
+ * inspection API for nobody: what a browser test reads is the response the route returns — a size, or
+ * the `409` this set's `AlreadyExists` produces. The only thing the second upload of one name needs from
+ * the first is that the KEY is there, so retaining up to [MAX_UPLOAD_FILE_BYTES] of body per file bought
+ * nothing and made a fixture's memory a function of what a test happened to pick. The body is still READ
+ * to the end and counted — the size the route reports is evidence about the content, and a channel left
+ * undrained is not the same request.
  */
 class MemoryFileUploader : FileUploader {
 
     private val mutex = Mutex()
-    private val files = LinkedHashMap<String, ByteArray>()
+    private val stored = LinkedHashSet<String>()
 
     override suspend fun upload(
         directory: String,
@@ -133,7 +140,6 @@ class MemoryFileUploader : FileUploader {
         if (expectedBytes != null && expectedBytes < 0L) return FileUploadResult.LengthMismatch
 
         val buffer = ByteArray(UPLOAD_CHUNK_BYTES)
-        val chunks = ArrayList<ByteArray>()
         var received = 0L
         while (true) {
             val count = try {
@@ -146,31 +152,14 @@ class MemoryFileUploader : FileUploader {
             if (count < 0) break
             if (count == 0) continue
             if (received > MAX_UPLOAD_FILE_BYTES - count.toLong()) return FileUploadResult.TooLarge
-            chunks += buffer.copyOf(count)
             received += count
         }
         if (expectedBytes != null && received != expectedBytes) return FileUploadResult.LengthMismatch
 
         val key = "${directory.trimEnd('/')}/$fileName"
         return mutex.withLock {
-            if (key in files) {
-                FileUploadResult.AlreadyExists
-            } else {
-                files[key] = joinChunks(chunks, received.toInt())
-                FileUploadResult.Stored(received)
-            }
+            if (!stored.add(key)) FileUploadResult.AlreadyExists else FileUploadResult.Stored(received)
         }
-    }
-
-    private fun joinChunks(chunks: List<ByteArray>, total: Int): ByteArray {
-        if (chunks.size == 1) return chunks[0]
-        val joined = ByteArray(total)
-        var at = 0
-        for (chunk in chunks) {
-            chunk.copyInto(joined, at)
-            at += chunk.size
-        }
-        return joined
     }
 
     private companion object {

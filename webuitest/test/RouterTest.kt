@@ -325,9 +325,6 @@ class RouterTest {
     }
 }
 
-/** The scenario whose session and task reference each other, so either one deep-links to the other. */
-private const val DEEP_LINK_SCENARIO = "deep-link"
-
 private const val DEEP_SESSION = "deep-session"
 private const val DEEP_TASK = "local:7"
 
@@ -350,22 +347,3 @@ private val SNAPSHOT_ANNOUNCEMENT: Pattern = Pattern.compile("""\d+ session\(s\)
  */
 private fun taskUrl(base: String): Pattern =
     Pattern.compile("^" + regexLiteral("$base/tasks/local") + "(%3A|:)7$")
-
-/**
- * [text] as one literal inside a regular expression — and deliberately NOT `Pattern.quote`.
- *
- * A `java.util.regex.Pattern` handed to a Playwright assertion is not evaluated in Java at all: the
- * driver ships its SOURCE TEXT to Node and matches it there with a JavaScript `RegExp`, which has no
- * `\Q…\E` quoting. `\Q` is simply an escaped `Q`, so `Pattern.quote("http://…")` compiles, on the far
- * side, to a pattern that must begin with a literal `Q` and can therefore never match anything. The
- * failure it produces is unusually cruel — it prints the Java spelling of the pattern next to a URL that
- * plainly satisfies it — so escape by hand and keep the pattern portable to both engines.
- */
-private fun regexLiteral(text: String): String = buildString {
-    for (ch in text) {
-        if (ch in REGEX_METACHARACTERS) append('\\')
-        append(ch)
-    }
-}
-
-private const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"

@@ -4,8 +4,20 @@ import io.kotgent.cli.eprintln
 import io.kotgent.core.EventSource
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionState
+import io.kotgent.daemon.daemonEpochMillis
 import kotlinx.coroutines.runBlocking
-import kotlin.time.Clock
+
+/**
+ * Report why a recognised command could not run, and answer `false` so the harness exits non-zero.
+ *
+ * Not `private`: [handleTaskCommand] is the other half of this one stdin protocol and owes the same
+ * contract, and a second copy of "print a reason, answer false" is a second chance to print none. It
+ * lives HERE because this file owns the dispatch that turns the `false` into an exit code.
+ */
+fun reject(message: String): Boolean {
+    eprintln("webuicheck: $message")
+    return false
+}
 
 /**
  * Split on any run of whitespace, so a line pasted with a tab or a double space still parses.
@@ -109,15 +121,12 @@ private fun handleEmit(words: List<String>, ctx: HarnessContext): Boolean {
                 state = state,
                 stateSource = EventSource.hook,
                 paneId = meta.paneId,
-                updatedAt = Clock.System.now().toEpochMilliseconds(),
+                // The harness's ONE clock spelling, shared with the fakes it writes through
+                // (`newHarnessFakes`): a second inline `Clock.System.now()` here is the same "two clocks
+                // for one fixture" hazard `TaskCommands.taskService` records, one layer down.
+                updatedAt = daemonEpochMillis(),
             )
             true
         }
     }
-}
-
-/** Report why a recognised command could not run, and answer `false` so the harness exits non-zero. */
-private fun reject(message: String): Boolean {
-    eprintln("webuicheck: $message")
-    return false
 }

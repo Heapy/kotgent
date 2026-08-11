@@ -1,12 +1,9 @@
 package io.kotgent.webuitest
 
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.CDPSession
 import com.microsoft.playwright.Mouse
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.atomic.AtomicInteger
@@ -252,25 +249,13 @@ class DialogDismissTest {
      */
     @Test
     fun aDownwardSwipeOffTheGrabberDismissesWhileAShorterPullSpringsBack() {
-        Harness(SESSIONS_SCENARIO).use { harness ->
-            Playwright.create().use { pw ->
-                touchChromium(pw).use { browser ->
-                    browser.touchContext().use { context ->
-                        context.traced("dialog-swipe") {
-                            context.loginWithTicket(harness.ticket, harness.baseUrl)
-                            val page = context.newPage()
-                            page.navigate("${harness.baseUrl}/")
-                            assertThat(page.locator("#sidebar")).hasCount(1)
-                            openPalette(page)
-                            val cdp = context.newCDPSession(page)
-                            try {
-                                swipeCases(page, cdp)
-                            } finally {
-                                cdp.detach()
-                            }
-                        }
-                    }
-                }
+        withApp("dialog-swipe", touch = true) { _, context, page ->
+            openPalette(page)
+            val cdp = context.newCDPSession(page)
+            try {
+                swipeCases(page, cdp)
+            } finally {
+                cdp.detach()
             }
         }
     }
@@ -391,17 +376,11 @@ class DialogDismissTest {
         ) { harness, context, page ->
             openBusyPreferences(page)
             // The interception is what makes "busy" last; the button's own state can be read a beat before
-            // the handler runs, so give it that beat rather than racing it.
-            var waited = 0
-            while (heldWrites.get() < 1 && waited < HOLD_WAIT_STEPS) {
-                page.waitForTimeout(HOLD_WAIT_STEP_MILLIS)
-                waited++
-            }
-            assertTrue(
-                heldWrites.get() >= 1,
-                "the preferences write was never intercepted, so the dialog is not busy for the reason " +
-                    "this test believes it is",
-            )
+            // the handler runs, so wait for the handler rather than racing it. `waitForCondition` polls on
+            // Playwright's own clock and fails with its own timeout, which is the module's idiom for
+            // "wait until a counter the driver owns has moved" — a hand-rolled sleep loop had to pick a
+            // bound of its own and could only report the count it happened to read last.
+            page.waitForCondition { heldWrites.get() >= 1 }
 
             val backdrop = backdropPoint(page, PREFS_DIALOG)
             page.touchscreen().tap(backdrop.x, backdrop.y)
@@ -436,40 +415,38 @@ class DialogDismissTest {
      */
     @Test
     fun theSwipeHandleIsDrawnWhereverACoarsePointerIsAndNowhereElse() {
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser ->
-                val phone = paletteInk("dialog-ink-phone") { browser.touchContext() }
-                assertTrue(phone.grabberVisible, "a phone draws no swipe handle")
-                assertTrue(
-                    phone.grabberHeight >= MIN_GRABBER_PX,
-                    "the phone's swipe handle is ${phone.grabberHeight}px tall, which is no handle",
-                )
-                assertTrue(
-                    phone.closeWidth >= THUMB_PX && phone.closeHeight >= THUMB_PX,
-                    "the palette's × is ${phone.closeWidth}x${phone.closeHeight} on a phone, smaller " +
-                        "than the ${THUMB_PX}px box a thumb needs above a row that runs a command",
-                )
+        onChromium { browser ->
+            val phone = paletteInk("dialog-ink-phone") { browser.touchContext() }
+            assertTrue(phone.grabberVisible, "a phone draws no swipe handle")
+            assertTrue(
+                phone.grabberHeight >= MIN_GRABBER_PX,
+                "the phone's swipe handle is ${phone.grabberHeight}px tall, which is no handle",
+            )
+            assertTrue(
+                phone.closeWidth >= THUMB_PX && phone.closeHeight >= THUMB_PX,
+                "the palette's × is ${phone.closeWidth}x${phone.closeHeight} on a phone, smaller " +
+                    "than the ${THUMB_PX}px box a thumb needs above a row that runs a command",
+            )
 
-                val tablet = paletteInk("dialog-ink-tablet") {
-                    browser.touchContext(
-                        width = TABLET_WIDTH,
-                        height = TABLET_HEIGHT,
-                        deviceScaleFactor = TABLET_SCALE,
-                    )
-                }
-                assertTrue(
-                    tablet.grabberVisible && tablet.grabberHeight >= MIN_GRABBER_PX,
-                    "a ${TABLET_WIDTH}px-wide touch device drew no swipe handle — the affordance is " +
-                        "scoped by viewport width again, which is the bug that left every tablet " +
-                        "unable to dismiss the palette",
-                )
-
-                val desktop = paletteInk("dialog-ink-desktop") { browser.fineContext() }
-                assertTrue(
-                    !desktop.grabberVisible,
-                    "a fine pointer was given a swipe handle it can never use",
+            val tablet = paletteInk("dialog-ink-tablet") {
+                browser.touchContext(
+                    width = TABLET_WIDTH,
+                    height = TABLET_HEIGHT,
+                    deviceScaleFactor = TABLET_SCALE,
                 )
             }
+            assertTrue(
+                tablet.grabberVisible && tablet.grabberHeight >= MIN_GRABBER_PX,
+                "a ${TABLET_WIDTH}px-wide touch device drew no swipe handle — the affordance is " +
+                    "scoped by viewport width again, which is the bug that left every tablet " +
+                    "unable to dismiss the palette",
+            )
+
+            val desktop = paletteInk("dialog-ink-desktop") { browser.fineContext() }
+            assertTrue(
+                !desktop.grabberVisible,
+                "a fine pointer was given a swipe handle it can never use",
+            )
         }
     }
 
@@ -490,27 +467,34 @@ class DialogDismissTest {
         block: (Harness, BrowserContext, Page) -> Unit,
     ) {
         Harness(SESSIONS_SCENARIO).use { harness ->
-            Playwright.create().use { pw ->
-                touchChromium(pw).use { browser ->
-                    val context = if (touch) browser.touchContext() else browser.newContext()
-                    context.use {
-                        context.traced(trace) {
-                            context.loginWithTicket(harness.ticket, harness.baseUrl)
-                            beforeLoad(context)
-                            val page = context.newPage()
-                            page.navigate("${harness.baseUrl}/")
-                            // The app's own first render, not index.html's static mount point: the global
-                            // keydown listener that opens the palette is installed with it.
-                            assertThat(page.locator("#sidebar")).hasCount(1)
-                            block(harness, context, page)
-                        }
+            onChromium { browser ->
+                val context = if (touch) browser.touchContext() else browser.newContext()
+                context.use {
+                    context.traced(trace) {
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        beforeLoad(context)
+                        val page = context.newPage()
+                        page.navigate("${harness.baseUrl}/")
+                        // The app's own first render, not index.html's static mount point: the global
+                        // keydown listener that opens the palette is installed with it. `hasCount(1)`
+                        // rather than `isVisible()`: under `touch = true` the sidebar is the phone's
+                        // closed drawer, which is rendered and deliberately not visible.
+                        assertThat(page.locator("#sidebar")).hasCount(1)
+                        block(harness, context, page)
                     }
                 }
             }
         }
     }
 
-    /** Open the command palette on its leader grid, the state a mnemonic row can be tapped from. */
+    /**
+     * Open the command palette on its leader grid, the state a mnemonic row can be tapped from.
+     *
+     * The NON-mac binding on purpose, and this is the only file in the tier that presses it: every other
+     * palette test drives `PALETTE_OPENER` (⌘K), so exercising `app.js`'s second door here costs nothing
+     * and keeps it from being the one shortcut no test has ever pressed. Nothing below depends on which
+     * of the two opened the dialog.
+     */
     private fun openPalette(page: Page) {
         page.keyboard().press("Control+Shift+K")
         assertThat(page.locator(PALETTE)).isVisible()
@@ -695,24 +679,8 @@ class DialogDismissTest {
     }
 
     private fun touchUp(cdp: CDPSession, page: Page) {
-        // Chromium refuses a `touchEnd` that still names points: the release IS their absence.
         dispatchTouch(cdp, "touchEnd", null, null)
         page.waitForTimeout(TOUCH_FRAME_MILLIS)
-    }
-
-    private fun dispatchTouch(cdp: CDPSession, type: String, x: Double?, y: Double?) {
-        val points = JsonArray()
-        if (x != null && y != null) {
-            val point = JsonObject()
-            point.addProperty("x", x)
-            point.addProperty("y", y)
-            point.addProperty("id", 0)
-            points.add(point)
-        }
-        val params = JsonObject()
-        params.addProperty("type", type)
-        params.add("touchPoints", points)
-        cdp.send("Input.dispatchTouchEvent", params)
     }
 
     /**
@@ -892,9 +860,5 @@ class DialogDismissTest {
 
         /** One frame is not enough to be sure a close did not happen; a quarter second is. */
         const val SETTLE_MILLIS = 250.0
-
-        /** Up to a second, in twentieths, for the held write to reach its interceptor. */
-        const val HOLD_WAIT_STEPS = 20
-        const val HOLD_WAIT_STEP_MILLIS = 50.0
     }
 }

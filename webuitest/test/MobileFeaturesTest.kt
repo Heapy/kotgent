@@ -2,7 +2,6 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Request
 import com.microsoft.playwright.Response
 import com.microsoft.playwright.WebSocketFrame
@@ -378,13 +377,11 @@ class MobileFeaturesTest {
      */
     private fun onMobileTerminal(trace: String, block: (Harness, BrowserContext, Page) -> Unit) {
         Harness(TERMINAL_SCENARIO).use { harness ->
-            Playwright.create().use { pw ->
-                touchChromium(pw).use { browser ->
-                    browser.touchContext().use { context ->
-                        context.traced(trace) {
-                            context.loginWithTicket(harness.ticket, harness.baseUrl)
-                            block(harness, context, context.newPage())
-                        }
+            onChromium { browser ->
+                browser.touchContext().use { context ->
+                    context.traced(trace) {
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        block(harness, context, context.newPage())
                     }
                 }
             }
@@ -422,8 +419,6 @@ class MobileFeaturesTest {
     private class SpecialKey(val label: String, val bytes: List<Int>, val echo: String?)
 
     private companion object {
-        const val TERMINAL_SCENARIO = "terminal"
-
         /** The `terminal` scenario's single session and the banner its upstream prints last. */
         const val SESSION_ROUTE = "/s/s-term"
         const val SESSION_CWD = "/w/terminal"

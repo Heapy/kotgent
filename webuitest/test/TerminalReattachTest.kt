@@ -2,7 +2,6 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PageAssertions
@@ -238,7 +237,6 @@ class TerminalReattachTest {
 
 // --- fixture ------------------------------------------------------------------------------------------
 
-private const val RESTART_SCENARIO = "restart"
 private const val SESSION_A = "s-restart-a"
 private const val SESSION_B = "s-restart-b"
 
@@ -288,20 +286,18 @@ private val RECORD_SOCKETS = """
 
 private fun withRestartPage(traceName: String, body: (Harness, Page) -> Unit) {
     Harness(RESTART_SCENARIO).use { harness ->
-        Playwright.create().use { playwright ->
-            touchChromium(playwright).use { browser ->
-                browser.touchContext().use { context ->
-                    context.setDefaultTimeout(WAIT_MS)
-                    context.addInitScript(RECORD_SOCKETS)
-                    context.loginWithTicket(harness.ticket, harness.baseUrl)
-                    context.traced(traceName) {
-                        val page = context.newPage()
-                        // Every grant re-checks `document.visibilityState`, so the page under test has to
-                        // be the front one — an unfocused tab would make each attempt return early.
-                        page.bringToFront()
-                        page.navigate(harness.baseUrl + "/")
-                        body(harness, page)
-                    }
+        onChromium { browser ->
+            browser.touchContext().use { context ->
+                context.setDefaultTimeout(WAIT_MS)
+                context.addInitScript(RECORD_SOCKETS)
+                context.loginWithTicket(harness.ticket, harness.baseUrl)
+                context.traced(traceName) {
+                    val page = context.newPage()
+                    // Every grant re-checks `document.visibilityState`, so the page under test has to
+                    // be the front one — an unfocused tab would make each attempt return early.
+                    page.bringToFront()
+                    page.navigate(harness.baseUrl + "/")
+                    body(harness, page)
                 }
             }
         }

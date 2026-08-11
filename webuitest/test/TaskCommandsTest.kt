@@ -2,7 +2,6 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.regex.Pattern
@@ -75,7 +74,7 @@ class TaskCommandsTest {
 
     @Test
     fun theBoardIsReachableFromThePaletteAndTheSameLetterLeadsBackOut() =
-        onScenario("board", "board-round-trip") { harness, page ->
+        onScenario(BOARD_SCENARIO, "board-round-trip") { harness, page ->
             page.navigate(harness.baseUrl + "/")
             page.awaitSessionView()
             // The witness for "the app never reloaded". It survives a `pushState` and every `popstate`
@@ -119,7 +118,7 @@ class TaskCommandsTest {
 
     @Test
     fun theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession() =
-        onScenario("task-linked-session", "session-group-per-screen") { harness, page ->
+        onScenario(TASK_LINKED_SESSION_SCENARIO, "session-group-per-screen") { harness, page ->
             page.navigate(harness.baseUrl + "/s/s-linked-1")
             page.awaitSessionView()
             page.awaitSelectedSession()
@@ -159,7 +158,7 @@ class TaskCommandsTest {
 
     @Test
     fun theSessionRowsSurviveOnTheBoardBecauseTheyAreNavigation() =
-        onScenario("task-linked-session", "session-rows-on-the-board") { harness, page ->
+        onScenario(TASK_LINKED_SESSION_SCENARIO, "session-rows-on-the-board") { harness, page ->
             // Arriving at the board FROM a selected session is what makes the assertion below sharp: the
             // list has demonstrably reached the browser, so an empty option list would be a missing
             // group rather than a snapshot that has not landed yet.
@@ -190,7 +189,7 @@ class TaskCommandsTest {
 
     @Test
     fun newTaskOpensTheBoardsCreateFormEveryTimeItIsAskedAndNeverUnasked() =
-        onScenario("board", "new-task-command") { harness, page ->
+        onScenario(BOARD_SCENARIO, "new-task-command") { harness, page ->
             page.navigate(harness.baseUrl + "/")
             page.awaitSessionView()
 
@@ -238,7 +237,7 @@ class TaskCommandsTest {
 
     @Test
     fun theBoardsNewProjectFormIsReachableFromTheSearchListWithoutAMnemonic() =
-        onScenario("board", "new-project-command") { harness, page ->
+        onScenario(BOARD_SCENARIO, "new-project-command") { harness, page ->
             page.navigate(harness.baseUrl + "/")
             page.awaitSessionView()
 
@@ -261,7 +260,7 @@ class TaskCommandsTest {
 
     @Test
     fun openingThisSessionsTaskIsRefusedAloudForASessionThatCarriesNoTask() =
-        onScenario("task-linked-session", "open-session-task") { harness, page ->
+        onScenario(TASK_LINKED_SESSION_SCENARIO, "open-session-task") { harness, page ->
             page.navigate(harness.baseUrl + "/s/s-linked-2")
             page.awaitSessionView()
             page.awaitSelectedSession()
@@ -304,7 +303,7 @@ class TaskCommandsTest {
 
     @Test
     fun everyMnemonicTheGridDrawsIsUniqueAndKIsLeftToTheWayBackToSearch() =
-        onScenario("task-linked-session", "leader-mnemonics") { harness, page ->
+        onScenario(TASK_LINKED_SESSION_SCENARIO, "leader-mnemonics") { harness, page ->
             page.navigate(harness.baseUrl + "/s/s-linked-1")
             page.awaitSessionView()
             page.awaitSelectedSession()
@@ -339,15 +338,10 @@ class TaskCommandsTest {
      */
     private fun onScenario(scenario: String, trace: String, block: (Harness, Page) -> Unit) {
         Harness(scenario).use { harness ->
-            Playwright.create().use { playwright ->
-                val browser = touchChromium(playwright)
-                val context = browser.touchContext()
-                try {
+            onChromium { browser ->
+                browser.touchContext().use { context ->
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
                     context.traced(trace) { block(harness, context.newPage()) }
-                } finally {
-                    context.close()
-                    browser.close()
                 }
             }
         }
@@ -521,12 +515,6 @@ class TaskCommandsTest {
         LocatorAssertions.IsVisibleOptions().setTimeout(millis)
 
     private companion object {
-        /**
-         * The palette opener, as a physical code: app.js matches `event.code`, so the shortcut survives
-         * a non-QWERTY layout. `Control+Shift+KeyK` is the same door for a non-mac keyboard.
-         */
-        const val PALETTE_OPENER = "Meta+KeyK"
-
         /** Matches "Show or hide done sessions" and nothing else on either screen. */
         const val SHOW_DONE_QUERY = "hide done"
 

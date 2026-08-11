@@ -1,8 +1,6 @@
 package io.kotgent.webuitest
 
-import com.microsoft.playwright.Browser
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.atomic.AtomicReference
@@ -92,7 +90,7 @@ class SessionRevMergeTest {
 
     /** `⌘K i` — the only affordance for Interrupt; there is no button for it anywhere in the shell. */
     private fun interruptFromPalette(page: Page) {
-        page.keyboard().press("Meta+KeyK")
+        page.keyboard().press(PALETTE_OPENER)
         assertThat(page.locator("#command-palette")).isVisible()
         // The leader grid takes the keyboard in a post-paint effect; a mnemonic pressed before that is
         // delivered to the <dialog> and dropped in silence (`CommandPalette.js`).
@@ -103,12 +101,6 @@ class SessionRevMergeTest {
 
     private fun badge(page: Page) =
         page.locator("#session-list .session-row[data-id='$SESSION'] .badge")
-
-    private fun onChromium(block: (Browser) -> Unit) {
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser -> block(browser) }
-        }
-    }
 
     private companion object {
         /** The `sessions` scenario's `running` claude row — the one live session an Interrupt can reach. */

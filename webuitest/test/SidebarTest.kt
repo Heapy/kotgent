@@ -3,7 +3,6 @@ package io.kotgent.webuitest
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.CopyOnWriteArrayList
@@ -625,13 +624,7 @@ class SidebarTest {
     }
 }
 
-/** The scenario with no sessions at all — a daemon nobody has started anything on yet. */
-private const val EMPTY_SCENARIO: String = "empty"
-
-/** The scenario that seeds a row with a real unread count (`lastSeq` 5 against a read cursor of 2). */
-private const val ATTENTION_SCENARIO: String = "attention"
-
-/** The row that carries it. Its sibling `s-quiet` has no unread and is not touched here. */
+/** The `attention` row that carries an unread count. Its sibling `s-quiet` has none, and is untouched. */
 private const val UNREAD_SESSION: String = "s-unread"
 
 /** The `sessions` scenario's `resumable` shell: selecting it attaches no pty, so Done has none to kill. */
@@ -744,17 +737,15 @@ private fun signedIn(
     block: (Harness, BrowserContext, Page) -> Unit,
 ) {
     Harness(scenario).use { harness ->
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser ->
-                browser.newContext().use { context ->
-                    initScripts.forEach(context::addInitScript)
-                    context.traced(trace) {
-                        context.loginWithTicket(harness.ticket, harness.baseUrl)
-                        val page = context.newPage()
-                        page.navigate("${harness.baseUrl}/")
-                        assertThat(page.locator("#sidebar")).isVisible()
-                        block(harness, context, page)
-                    }
+        onChromium { browser ->
+            browser.newContext().use { context ->
+                initScripts.forEach(context::addInitScript)
+                context.traced(trace) {
+                    context.loginWithTicket(harness.ticket, harness.baseUrl)
+                    val page = context.newPage()
+                    page.navigate("${harness.baseUrl}/")
+                    assertThat(page.locator("#sidebar")).isVisible()
+                    block(harness, context, page)
                 }
             }
         }

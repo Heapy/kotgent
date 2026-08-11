@@ -1,7 +1,6 @@
 package io.kotgent.webuitest
 
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.TimeoutError
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.test.Test
@@ -63,7 +62,7 @@ class TaskBadgeTest {
 
     @Test
     fun aLinkedSessionRendersItsTaskTitleAndAnUnlinkedOneRendersNothing() =
-        browse(LINKED, "badge-linked-title") { _, page ->
+        browse(TASK_LINKED_SESSION_SCENARIO, "badge-linked-title") { _, page ->
             val badge = page.locator("$SESSION_LIST li[data-id='s-linked-1'] a.task-badge")
             assertThat(badge).hasCount(1)
             assertThat(badge).hasAttribute("href", "/tasks/local%3A1")
@@ -87,7 +86,7 @@ class TaskBadgeTest {
 
     @Test
     fun aDanglingRefRendersTheUnknownBadgeRatherThanBreakingTheRow() =
-        browse(LINKED, "badge-dangling-ref") { _, page ->
+        browse(TASK_LINKED_SESSION_SCENARIO, "badge-dangling-ref") { _, page ->
             val row = page.locator("$SESSION_LIST li[data-id='s-linked-3']")
             val badge = row.locator("a.task-badge")
             assertThat(badge).hasCount(1)
@@ -106,7 +105,7 @@ class TaskBadgeTest {
 
     @Test
     fun aPlainClickOnTheBadgeOpensTheTaskRouteInsteadOfSelectingTheRow() =
-        browse(LINKED, "badge-plain-click") { _, page ->
+        browse(TASK_LINKED_SESSION_SCENARIO, "badge-plain-click") { _, page ->
             val badge = page.locator("$SESSION_LIST li[data-id='s-linked-1'] a.task-badge")
             assertThat(badge).hasCount(1)
             badge.click()
@@ -130,7 +129,7 @@ class TaskBadgeTest {
 
     @Test
     fun linkingASessionThroughTheApiBringsItsBadgeInWithoutAReload() =
-        browse(LINKED, "badge-link-arrives") { _, page ->
+        browse(TASK_LINKED_SESSION_SCENARIO, "badge-link-arrives") { _, page ->
             val badge = page.locator("$SESSION_LIST li[data-id='s-linked-2'] a.task-badge")
             assertThat(page.locator("$SESSION_LIST li[data-id='s-linked-2']")).hasCount(1)
             assertThat(badge).hasCount(0)
@@ -150,7 +149,7 @@ class TaskBadgeTest {
 
     @Test
     fun aTaskClosedToDoneUnlinksItsHolderAndTheBadgeLeavesLive() =
-        browse(LINKED, "badge-unlink-on-done") { harness, page ->
+        browse(TASK_LINKED_SESSION_SCENARIO, "badge-unlink-on-done") { harness, page ->
             val badge = page.locator("$SESSION_LIST li[data-id='s-linked-1'] a.task-badge")
             assertThat(badge).hasCount(1)
 
@@ -169,7 +168,7 @@ class TaskBadgeTest {
 
     @Test
     fun anEmitMovesTheSessionStateOnTheWireAndTheSidebarFollows() =
-        browse(ATTENTION, "badge-state-emit") { harness, page ->
+        browse(ATTENTION_SCENARIO, "badge-state-emit") { harness, page ->
             val row = page.locator("$SESSION_LIST li[data-id='s-quiet']")
             assertThat(row).hasCount(1)
             // The fixture starts this session OUT of attention on purpose, so the emit below is a real edge.
@@ -188,85 +187,86 @@ class TaskBadgeTest {
 
     @Test
     fun theNotifyEdgeRingsOnceForOneFalseToTrueTransition() =
-        browse(ATTENTION, "badge-notify-edge", extraInit = NOTIFICATION_RECORDER) { harness, page ->
-                val row = page.locator("$SESSION_LIST li[data-id='s-quiet']")
-                assertThat(row).hasCount(1)
-                assertThat(page.locator("#attention-num")).hasText("0")
-                assertEquals(
-                    emptyList<String>(),
-                    page.notificationTags(),
-                    "a session that was already in the list, quiet, rings for nothing",
-                )
+        browse(ATTENTION_SCENARIO, "badge-notify-edge", extraInit = NOTIFICATION_RECORDER) { harness, page ->
+            val row = page.locator("$SESSION_LIST li[data-id='s-quiet']")
+            assertThat(row).hasCount(1)
+            assertThat(page.locator("#attention-num")).hasText("0")
+            assertEquals(
+                emptyList<String>(),
+                page.notificationTags(),
+                "a session that was already in the list, quiet, rings for nothing",
+            )
 
-                harness.send("emit s-quiet needs_approval")
-                awaitFrame(page, SESSION_UPDATE, "\"sessionId\":\"s-quiet\"", "\"state\":\"needs_approval\"")
-                assertThat(page.locator("#attention-num")).hasText("1")
-                assertEquals(
-                    listOf("kotgent-attn-s-quiet"),
-                    page.notificationTags(),
-                    "the false → true transition rang exactly once, keyed by session id",
-                )
+            harness.send("emit s-quiet needs_approval")
+            awaitFrame(page, SESSION_UPDATE, "\"sessionId\":\"s-quiet\"", "\"state\":\"needs_approval\"")
+            assertThat(page.locator("#attention-num")).hasText("1")
+            assertEquals(
+                listOf("kotgent-attn-s-quiet"),
+                page.notificationTags(),
+                "the false → true transition rang exactly once, keyed by session id",
+            )
 
-                // A SECOND attention state is not a second edge. `needs_answer` is chosen precisely because it
-                // is observable in the DOM (the row's state badge relabels) while leaving `needsAttention`
-                // true, so this waits on a real change rather than on nothing happening: a repeat of
-                // `needs_approval` would be indistinguishable from a frame that never arrived, and — banked
-                // newest-per-session by the daemon's conflating sender — might legitimately never arrive.
-                harness.send("emit s-quiet needs_answer")
-                awaitFrame(page, SESSION_UPDATE, "\"sessionId\":\"s-quiet\"", "\"state\":\"needs_answer\"")
-                assertThat(row.locator(".badge")).hasText("needs answer")
-                assertThat(page.locator("#attention-num")).hasText("1")
-                assertEquals(
-                    listOf("kotgent-attn-s-quiet"),
-                    page.notificationTags(),
-                    "still one: the row never LEFT attention, so there was no new edge to ring for",
-                )
-            }
+            // A SECOND attention state is not a second edge. `needs_answer` is chosen precisely because it
+            // is observable in the DOM (the row's state badge relabels) while leaving `needsAttention`
+            // true, so this waits on a real change rather than on nothing happening: a repeat of
+            // `needs_approval` would be indistinguishable from a frame that never arrived, and — banked
+            // newest-per-session by the daemon's conflating sender — might legitimately never arrive.
+            harness.send("emit s-quiet needs_answer")
+            awaitFrame(page, SESSION_UPDATE, "\"sessionId\":\"s-quiet\"", "\"state\":\"needs_answer\"")
+            assertThat(row.locator(".badge")).hasText("needs answer")
+            assertThat(page.locator("#attention-num")).hasText("1")
+            assertEquals(
+                listOf("kotgent-attn-s-quiet"),
+                page.notificationTags(),
+                "still one: the row never LEFT attention, so there was no new edge to ring for",
+            )
+        }
 
-        // --- harness --------------------------------------------------------------------------------------
+    // --- harness --------------------------------------------------------------------------------------
 
-        /**
-         * One scenario, one fresh [com.microsoft.playwright.BrowserContext], one page already showing the
-         * session list.
-         *
-         * The viewport is desktop-sized on purpose (see the class KDoc). A fresh context per test is not a
-         * style choice: the login cookie is not bound to a port, so a reused one would carry a dead daemon's
-         * credential into the next harness.
-         */
-        private fun browse(
-            scenario: String,
-            trace: String,
-            extraInit: String? = null,
-            block: (Harness, Page) -> Unit,
-        ) {
-            Playwright.create().use { playwright ->
-                touchChromium(playwright).use { browser ->
-                    Harness(scenario).use { harness ->
-                        browser.touchContext(width = 1280, height = 900, deviceScaleFactor = 1.0, mobile = false)
-                            .use { context ->
-                                context.loginWithTicket(harness.ticket, harness.baseUrl)
-                                // Added after the login page and before the first page of the test: init
-                                // scripts apply to pages created afterwards, and the login flow has no use
-                                // for either.
-                                context.addInitScript(FRAME_RECORDER)
-                                if (extraInit != null) context.addInitScript(extraInit)
-                                // Named after the TEST, not the scenario: four tests share `task-linked-session`
-                                // and a scenario-named trace means the first failure's evidence is overwritten
-                                // by whichever of them runs last.
-                                context.traced(trace) {
-                                    val page = context.newPage()
-                                    page.navigate(harness.baseUrl + "/")
-                                    // The reload sentinel. It is set once, on the document the test starts
-                                    // with; any full navigation replaces that document and takes the flag
-                                    // with it.
-                                    page.evaluate("() => { window.__kotgentSameDocument = true; }")
-                                    block(harness, page)
-                                }
-                            }
+    /**
+     * One scenario, one fresh [com.microsoft.playwright.BrowserContext], one page already showing the
+     * session list.
+     *
+     * The context is desktop-SIZED and still touch-capable, which is deliberate on both counts: every
+     * badge here lives in a sidebar row, and below 720px the sidebar is an overlay drawer that would have
+     * to be opened first (see the class KDoc), while nothing in this file reads a pointer-accuracy media
+     * query — so [fineContext] would buy nothing and [touchContext] keeps one context builder for the
+     * whole tier. A fresh context per test is not a style choice: the login cookie is not bound to a port,
+     * so a reused one would carry a dead daemon's credential into the next harness.
+     */
+    private fun browse(
+        scenario: String,
+        trace: String,
+        extraInit: String? = null,
+        block: (Harness, Page) -> Unit,
+    ) {
+        onChromium { browser ->
+            Harness(scenario).use { harness ->
+                browser.touchContext(width = 1280, height = 900, deviceScaleFactor = 1.0, mobile = false)
+                    .use { context ->
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        // Added after the login page and before the first page of the test: init
+                        // scripts apply to pages created afterwards, and the login flow has no use
+                        // for either.
+                        context.addInitScript(FRAME_RECORDER)
+                        if (extraInit != null) context.addInitScript(extraInit)
+                        // Named after the TEST, not the scenario: four tests share `task-linked-session`
+                        // and a scenario-named trace means the first failure's evidence is overwritten
+                        // by whichever of them runs last.
+                        context.traced(trace) {
+                            val page = context.newPage()
+                            page.navigate(harness.baseUrl + "/")
+                            // The reload sentinel. It is set once, on the document the test starts
+                            // with; any full navigation replaces that document and takes the flag
+                            // with it.
+                            page.evaluate("() => { window.__kotgentSameDocument = true; }")
+                            block(harness, page)
+                        }
                     }
-                }
             }
         }
+    }
 
     /**
      * Wait until the `/events` socket has delivered a text frame containing every one of [needles].
@@ -343,13 +343,6 @@ class TaskBadgeTest {
     ) as String
 
     private companion object {
-
-        /** `s-linked-1` → `local:1`, `s-linked-2` unlinked, `s-linked-3` → the dangling `local:404`. */
-        const val LINKED = "task-linked-session"
-
-        /** `s-quiet` starts OUT of attention, which is what makes an `emit` a real edge. */
-        const val ATTENTION = "attention"
-
         /** Scoped to the full list: a needs-attention row is ALSO rendered in `#attention-list`. */
         const val SESSION_LIST = "#session-list"
 

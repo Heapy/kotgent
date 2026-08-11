@@ -53,7 +53,7 @@ internal fun deepLinkScenario(): Scenario = Scenario(
         fakes.tasks.seedTask(TaskRef("local:8"), project, "The card behind it")
         // One feed row, so the detail panel a deep link opens has something below the header: an empty
         // feed and a feed that failed to load look alike on screen, and only one of them is correct.
-        fakes.tasks.seedActivity(ref, ActivityKind.created, author = "board")
+        fakes.tasks.seedActivity(ref, ActivityKind.created, author = BOARD_ACTOR)
 
         fixtureSession(
             fakes, id = DEEP_LINK_SESSION_ID, name = "deep-link", agent = "claude", cwd = "/repo/deep",

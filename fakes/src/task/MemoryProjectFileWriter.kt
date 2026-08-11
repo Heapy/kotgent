@@ -37,14 +37,16 @@ class MemoryProjectFileWriter(
 
     private val mutex = Mutex()
 
-    /** `(dir, name)` per call, in order. */
-    val calls: MutableList<Pair<String, String>> = mutableListOf()
-
-    /** Directories the writer refuses, standing in for an unwritable location. Set before the server runs. */
+    /**
+     * Directories the writer refuses, standing in for an unwritable location. Set before the server runs.
+     *
+     * A modelled REFUSAL rather than a spy, which is why it stays although no scenario turns it on today
+     * (`fakes/module.yaml`): the real writer has this failure, and the check ORDER around it — an
+     * existing file is adopted even here — is one of the behaviours this double exists to reproduce.
+     */
     val failOn: MutableSet<String> = mutableSetOf()
 
     override suspend fun ensureProjectFile(dir: String, name: String): ProjectFile = mutex.withLock {
-        calls += dir to name
         val directory = directoryOrRefuse(dir)
         // Validated before anything is written, like the real writer: a name the READER would reject must
         // not reach the tree at all, or the project we just "created" is invisible to every later resolve.

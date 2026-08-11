@@ -33,9 +33,14 @@ import kotlinx.coroutines.runBlocking
  * ## Why a failure is `false` rather than an exception
  * The seam says `false` means "not a task command", and the harness turns an unhandled line into a stderr
  * message and a non-zero exit. A malformed argument — an unparseable ref, an unknown state word, a ref
- * that does not exist — takes the same exit, which is the right outcome for a fixture ("fail loudly")
- * even though the message names the wrong reason. The alternative, throwing across the seam, would put
- * the harness's exit behaviour in this file's hands rather than in the one place that owns it.
+ * that does not exist — takes the same exit, which is the right outcome for a fixture ("fail loudly").
+ * The alternative, throwing across the seam, would put the harness's exit behaviour in this file's hands
+ * rather than in the one place that owns it.
+ *
+ * What each arm below owes on the way out is the REASON, printed by [reject] before the `false` — the
+ * contract `Commands.kt` states for the whole protocol. Answering a bare `false` costs the same exit but
+ * hands the driver the wrong cause: `task local:1 dune` reached it as "unrecognised command", naming the
+ * verb rather than the state word that was actually wrong.
  */
 
 /**
@@ -74,10 +79,12 @@ fun handleTaskCommand(words: List<String>, ctx: HarnessContext): Boolean {
  * a fixture that quietly does nothing when a driver sends the wrong word.
  */
 private suspend fun applyTaskState(ctx: HarnessContext, words: List<String>): Boolean {
-    if (words.size != 3) return false
-    val ref = TaskRef.parseOrNull(words[1]) ?: return false
-    val state = taskStateOrNull(words[2]) ?: return false
-    return taskService(ctx).transition(ref, state, TASK_COMMAND_AUTHOR) != null
+    if (words.size != 3) return reject("usage: task <ref> <state>; states: ${taskStateNames()}")
+    val ref = TaskRef.parseOrNull(words[1]) ?: return rejectRef(words[1])
+    val state = taskStateOrNull(words[2])
+        ?: return reject("task: '${words[2]}' is not a task state; expected one of ${taskStateNames()}")
+    return taskService(ctx).transition(ref, state, TASK_COMMAND_AUTHOR) != null ||
+        reject("task: no task '${ref.value}' in this scenario")
 }
 
 /**
@@ -101,12 +108,23 @@ private suspend fun applyTaskState(ctx: HarnessContext, words: List<String>): Bo
  * space the seeds use (`1.0, 2.0, 3.0, …`), so `2.5` means "third slot".
  */
 private suspend fun addTask(ctx: HarnessContext, words: List<String>): Boolean {
-    if (words.size != 2 && words.size != 3) return false
-    val ref = TaskRef.parseOrNull(words[1]) ?: return false
-    val position = if (words.size == 3) words[2].toDoubleOrNull() ?: return false else null
+    if (words.size != 2 && words.size != 3) return reject("usage: task-add <ref> [position]")
+    val ref = TaskRef.parseOrNull(words[1]) ?: return rejectRef(words[1])
+    val position = if (words.size == 3) {
+        words[2].toDoubleOrNull()
+            ?: return reject("task-add: '${words[2]}' is not a rank; expected a number such as 2.5")
+    } else {
+        null
+    }
     val tasks = ctx.fakes.tasks
-    if (tasks.entry(ref) != null) return false
-    val project = tasks.listProjects().firstOrNull()?.id ?: return false
+    if (tasks.entry(ref) != null) {
+        return reject(
+            "task-add: '${ref.value}' already exists — the socket has carried it in its opening " +
+                "snapshot, so re-adding it would emit a `task_update` and not the `task_row` you asked for",
+        )
+    }
+    val project = tasks.listProjects().firstOrNull()?.id
+        ?: return reject("task-add: this scenario registers no project to file '${ref.value}' under")
     // `${ref.value}`, never `$ref`: a value class with no `toString` renders as `TaskRef(value=local:42)`,
     // and that string would go straight onto a card.
     tasks.addTask(ref, project, title = "Added ${ref.value}", position = position)
@@ -119,9 +137,9 @@ private suspend fun addTask(ctx: HarnessContext, words: List<String>): Boolean {
  * socket turns into `task_removed`.
  */
 private suspend fun deleteTask(ctx: HarnessContext, words: List<String>): Boolean {
-    if (words.size != 2) return false
-    val ref = TaskRef.parseOrNull(words[1]) ?: return false
-    return taskService(ctx).delete(ref)
+    if (words.size != 2) return reject("usage: task-del <ref>")
+    val ref = TaskRef.parseOrNull(words[1]) ?: return rejectRef(words[1])
+    return taskService(ctx).delete(ref) || reject("task-del: no task '${ref.value}' in this scenario")
 }
 
 /**
@@ -157,11 +175,13 @@ private suspend fun deleteTask(ctx: HarnessContext, words: List<String>): Boolea
  * this.
  */
 private suspend fun raceTask(ctx: HarnessContext, words: List<String>): Boolean {
-    if (words.size != 2) return false
-    val ref = TaskRef.parseOrNull(words[1]) ?: return false
-    val current = ctx.fakes.tasks.entry(ref) ?: return false
+    if (words.size != 2) return reject("usage: task-race <ref>")
+    val ref = TaskRef.parseOrNull(words[1]) ?: return rejectRef(words[1])
+    val current = ctx.fakes.tasks.entry(ref)
+        ?: return reject("task-race: no task '${ref.value}' in this scenario")
     val next = TaskState.entries[(current.state.ordinal + 1) % TaskState.entries.size]
-    return ctx.fakes.tasks.transition(ref, next, TASK_COMMAND_AUTHOR, message = null) != null
+    return ctx.fakes.tasks.transition(ref, next, TASK_COMMAND_AUTHOR, message = null) != null ||
+        reject("task-race: '${ref.value}' refused the step to ${next.name}")
 }
 
 /**
@@ -177,6 +197,13 @@ private fun taskService(ctx: HarnessContext): TaskService = ctx.taskService
 
 /** [word] as a [TaskState], or `null` — the enum name exactly, no aliases. */
 private fun taskStateOrNull(word: String): TaskState? = TaskState.entries.firstOrNull { it.name == word }
+
+/** Every accepted state word, for a refusal that can be acted on rather than guessed at. */
+private fun taskStateNames(): String = TaskState.entries.joinToString(" ") { it.name }
+
+/** The one refusal all four verbs share: a first word that is not a `<tracker>:<key>` at all. */
+private fun rejectRef(word: String): Boolean =
+    reject("'$word' is not a task ref; expected <tracker>:<key>, e.g. local:3")
 
 /**
  * The `author` every harness-driven task write signs.

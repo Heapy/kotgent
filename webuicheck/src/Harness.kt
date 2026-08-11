@@ -7,6 +7,7 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
+import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
@@ -19,7 +20,6 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalAttachEnv
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakeTaskStore
-import io.kotgent.daemon.FakeTmux
 import io.kotgent.task.FakeProjectFs
 import io.kotgent.task.MemoryProjectFileWriter
 import io.kotgent.transport.KotgentServer

@@ -1,7 +1,5 @@
 package io.kotgent.webuitest
 
-import com.microsoft.playwright.Browser
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.test.Test
 
@@ -80,12 +78,6 @@ class SmokeTest {
                     }
                 }
             }
-        }
-    }
-
-    private fun onChromium(block: (Browser) -> Unit) {
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser -> block(browser) }
         }
     }
 

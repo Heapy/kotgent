@@ -1,8 +1,11 @@
 package io.kotgent.webuitest
 
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.BrowserType
+import com.microsoft.playwright.CDPSession
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Tracing
@@ -20,7 +23,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.fail
 
-/**
+/*
  * The browser tier's one fixture: how a test gets a live kotgent Web UI, signed in, in a real browser.
  *
  * ```
@@ -46,8 +49,35 @@ import kotlin.test.fail
  * class of failure.
  */
 
-/** The scenario name every smoke assertion uses; the harness's own scenario map is the authority. */
+/**
+ * Every `--scenario=<name>` the harness registers, spelled once.
+ *
+ * The authority is `webuicheck/src/Scenarios.kt`'s map, which this cannot import (it is a constant of a
+ * NATIVE module and this is a JVM one). A name that drifts fails loudly and immediately: the harness
+ * exits non-zero with "unknown scenario" before a single page loads, so the duplication is safe — what it
+ * is not is a reason to spell each name once per test FILE, which is how five of them ended up with two
+ * or three private constants apiece and eighteen bare literals beside them.
+ */
+const val EMPTY_SCENARIO: String = "empty"
 const val SESSIONS_SCENARIO: String = "sessions"
+const val ATTENTION_SCENARIO: String = "attention"
+const val RESTART_SCENARIO: String = "restart"
+const val TERMINAL_SCENARIO: String = "terminal"
+const val BOARD_SCENARIO: String = "board"
+const val BOARD_EMPTY_SCENARIO: String = "board-empty"
+const val TASK_DETAIL_SCENARIO: String = "task-detail"
+const val TASK_LINKED_SESSION_SCENARIO: String = "task-linked-session"
+const val DEEP_LINK_SCENARIO: String = "deep-link"
+
+/**
+ * The command palette's opener, as macOS spells it.
+ *
+ * `webuicheck` is a `macos/app` binary, so this suite only ever runs where ⌘ is the modifier; the app's
+ * second binding (`Control+Shift+KeyK`) exists for the platforms this harness cannot be built on. `KeyK`
+ * and not `k`: `app.js` matches the physical `event.code`, and a test that spells the CHARACTER is
+ * describing a US layout rather than the key an operator presses.
+ */
+const val PALETTE_OPENER: String = "Meta+KeyK"
 
 /**
  * The login page's path. Spelled here rather than imported: `AUTH_PAGE_PATH` is a constant of the NATIVE
@@ -315,6 +345,21 @@ fun touchChromium(pw: Playwright): Browser =
     )
 
 /**
+ * A driver and a [touchChromium], both closed when [block] returns — the two lines every test that
+ * builds its own contexts opens with.
+ *
+ * It is deliberately NOT a whole runner: what a test does between the browser and its assertions (which
+ * context shape, which init scripts, whether it navigates, which readiness gate it waits on) is that
+ * file's own contract, and the nine per-file runners that follow this call each spell one. This is only
+ * the part that was byte-identical in four of them.
+ */
+fun onChromium(block: (Browser) -> Unit) {
+    Playwright.create().use { pw ->
+        touchChromium(pw).use { browser -> block(browser) }
+    }
+}
+
+/**
  * A phone-shaped context with touch on, for the gesture tests. Defaults describe a modern iPhone-class
  * viewport; pass a wider one for the tablet cases (the grabber's `any-pointer: coarse` ink is scoped by
  * pointer accuracy, not by width, so a tablet must show it too).
@@ -392,6 +437,55 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * [text] as one literal inside a regular expression — and deliberately NOT `Pattern.quote`.
+ *
+ * A `java.util.regex.Pattern` handed to a Playwright assertion is never evaluated in Java: the driver
+ * ships its SOURCE TEXT to Node and matches it there with a JavaScript `RegExp`, which has no `\Q…\E`
+ * quoting. `\Q` is simply an escaped `Q`, so `Pattern.quote("http://…")` compiles, on the far side, into
+ * a pattern that must begin with a literal `Q` and can therefore never match anything. The failure it
+ * produces is unusually cruel — it prints the Java spelling of the pattern next to a URL that plainly
+ * satisfies it — so escape by hand and keep the pattern portable to both engines.
+ */
+fun regexLiteral(text: String): String = buildString {
+    for (ch in text) {
+        if (ch in REGEX_METACHARACTERS) append('\\')
+        append(ch)
+    }
+}
+
+private const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"
+
+/**
+ * Deliver one CDP touch event — the primitive under every touch DRAG in this module.
+ *
+ * Playwright's `Touchscreen` offers `tap` and nothing else, so a drag has to be dispatched through
+ * `Input.dispatchTouchEvent` on a `context.newCDPSession(page)`. Chromium turns that into GENUINE
+ * `pointerType: "touch"` events with an ACTIVE pointer, which is what `el.setPointerCapture(pointerId)`
+ * needs — a made-up id throws `NotFoundError` and leaves the gesture inert before it can do anything.
+ *
+ * A null [x]/[y] means "no contact points", which is how a release is expressed: **Chromium refuses a
+ * `touchEnd` that still names points** — their absence IS the lift, the same way Playwright's own
+ * `touchscreen.tap()` ends a tap.
+ *
+ * The choreography around it — how many moves, how long between them, whether the contact rests before
+ * lifting — belongs to each caller, because it is what separates a swipe from a throw.
+ */
+fun dispatchTouch(cdp: CDPSession, type: String, x: Double?, y: Double?) {
+    val points = JsonArray()
+    if (x != null && y != null) {
+        val point = JsonObject()
+        point.addProperty("x", x)
+        point.addProperty("y", y)
+        point.addProperty("id", 0)
+        points.add(point)
+    }
+    val params = JsonObject()
+    params.addProperty("type", type)
+    params.add("touchPoints", points)
+    cdp.send("Input.dispatchTouchEvent", params)
 }
 
 /**

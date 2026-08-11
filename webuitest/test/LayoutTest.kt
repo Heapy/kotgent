@@ -2,7 +2,6 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -533,7 +532,6 @@ class LayoutTest {
 // --- fixtures ---------------------------------------------------------------------------------------
 
 /** The `terminal` scenario's single session, per the frozen fixture contract. */
-private const val TERMINAL_SCENARIO = "terminal"
 private const val TERMINAL_SESSION_ID = "s-term"
 
 /** The last thing that scenario's payload prints, so seeing it means the whole payload has landed. */
@@ -558,6 +556,9 @@ private const val EPS = 2.0
 
 /** Slack for two boxes that are meant to coincide exactly. */
 private const val EDGE_EPS = 1.0
+
+/** What FitAddon takes off the width for a scroll bar whenever `scrollback` is not exactly 0. */
+private const val SCROLLBAR_RESERVATION = 14
 
 /** A drawer or sidebar column narrower than this is not a panel anybody can use. */
 private const val MIN_DRAWER_WIDTH = 200.0
@@ -968,9 +969,6 @@ private fun assertFitInvariant(measured: PageValues, where: String) {
     )
 }
 
-/** What FitAddon takes off the width for a scroll bar whenever `scrollback` is not exactly 0. */
-private const val SCROLLBAR_RESERVATION = 14
-
 // --- plumbing ---------------------------------------------------------------------------------------
 
 /**
@@ -995,19 +993,17 @@ private fun onPage(
     mobile: Boolean,
     block: (Page) -> Unit,
 ) {
-    Playwright.create().use { pw ->
-        touchChromium(pw).use { browser ->
-            browser.touchContext(width, height, deviceScaleFactor, mobile).use { context ->
-                context.traced(trace) {
-                    context.loginWithTicket(harness.ticket, harness.baseUrl)
-                    val page = context.newPage()
-                    // Before the first navigation, so the accessor is already in place when xterm's
-                    // classic script publishes its global.
-                    page.addInitScript(TERMINAL_HOOK)
-                    page.navigate("${harness.baseUrl}/")
-                    assertThat(page.locator("#terminal-pane")).isVisible()
-                    block(page)
-                }
+    onChromium { browser ->
+        browser.touchContext(width, height, deviceScaleFactor, mobile).use { context ->
+            context.traced(trace) {
+                context.loginWithTicket(harness.ticket, harness.baseUrl)
+                val page = context.newPage()
+                // Before the first navigation, so the accessor is already in place when xterm's
+                // classic script publishes its global.
+                page.addInitScript(TERMINAL_HOOK)
+                page.navigate("${harness.baseUrl}/")
+                assertThat(page.locator("#terminal-pane")).isVisible()
+                block(page)
             }
         }
     }

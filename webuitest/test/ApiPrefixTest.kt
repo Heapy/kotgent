@@ -1,8 +1,6 @@
 package io.kotgent.webuitest
 
-import com.microsoft.playwright.Browser
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.net.URI
 import java.util.Collections
@@ -114,7 +112,7 @@ class ApiPrefixTest {
      * request URL is.
      */
     private fun openPhoneDialog(page: Page) {
-        page.keyboard().press("Meta+KeyK")
+        page.keyboard().press(PALETTE_OPENER)
         assertThat(page.locator("#command-palette")).isVisible()
         // Leader mode takes the keyboard in a post-paint effect; a mnemonic pressed before that lands on
         // the <dialog> and is dropped in silence (`CommandPalette.js`).
@@ -126,12 +124,6 @@ class ApiPrefixTest {
 
     /** The path of an absolute `http`/`ws` URL — what the prefix rule is actually about. */
     private fun pathOf(url: String): String = URI(url).path ?: url
-
-    private fun onChromium(block: (Browser) -> Unit) {
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser -> block(browser) }
-        }
-    }
 
     private companion object {
         const val API_PREFIX = "/api/v1"

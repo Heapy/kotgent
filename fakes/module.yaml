@@ -1,8 +1,9 @@
-# fakes — the shared test doubles, promoted out of the test source set into a real module because they
-# now have TWO consumers: the root module's test fragment (`test-dependencies: - ./fakes`) and the
-# `webuicheck` MAIN binary, which drives a real `KotgentServer` over these same doubles from a browser.
-# A double written as a `private class` inside one test file is unreachable from a second module, and
-# copying it would fork the behaviour the two consumers exist to agree on.
+# fakes — the shared test doubles, promoted out of the test source set into a real module because the
+# `webuicheck` MAIN binary needs them: it drives a real `KotgentServer` over these doubles from a
+# browser, and a double written as a `private class` inside a test file is unreachable from another
+# module. Two of them (`FakeTmux`, `FakeEventStore`) additionally serve the root module's test fragment
+# (`test-dependencies: - ./fakes`); copying either into the harness would fork the behaviour the two
+# tiers exist to agree on.
 #
 # ## What this module does NOT claim
 # It is emphatically not "every double in the repo lives here". The suite still holds narrower nested
@@ -19,10 +20,16 @@
 #   * several carry an interleaving hook that only their own test can express (`beforeConditionalClear`,
 #     `afterNextCandidate`, a `LockWitness`, a recorded `reads` log, a `failOn` set). Hoisting those
 #     into a shared double would put one test's race knobs on every other consumer's API surface.
-# So the rule this module encodes is narrow and checkable: **a double with more than one MODULE behind
-# it lives here.** A double with one module and one subject stays where its subject is. If a nested
-# prototype ever grows a second module's consumer, that is the moment it moves — and the move is then a
-# deletion plus an import, not a behaviour merge.
+# So the rule this module encodes is narrow and checkable: **a double a module OUTSIDE the root test
+# fragment has to reach lives here** — in practice, everything `webuicheck` stands its server on. A
+# double only a test file needs stays beside its subject, where it is free to throw on the members that
+# subject never calls and to carry the interleaving knobs above. If a nested prototype ever grows a
+# consumer outside the test fragment, that is the moment it moves — and the move is then a deletion plus
+# an import, not a behaviour merge.
+#
+# The corollary runs the other way too: nothing here may keep a knob NO consumer turns. A recorded read
+# log or a call spy that only a test could ever assert on is a nested prototype's tool, and leaving one
+# here makes the paragraph above false while costing every consumer the allocation.
 #
 # ## The dependency direction LOOKS circular and is not
 # It runs root(test) -> fakes -> root(main). The toolchain resolves FRAGMENTS, not modules, so those

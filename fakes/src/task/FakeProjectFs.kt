@@ -39,15 +39,10 @@ class FakeProjectFs(
 
     private val tree = AtomicReference(Tree(setOf("/"), emptyMap()))
 
-    private val readLog = AtomicReference<List<String>>(emptyList())
-
     init {
         dirs.forEach { addDirectory(it) }
         files.forEach { (path, body) -> writeFile(path, body) }
     }
-
-    /** Every path [readFile] was asked about, in order — the proof a branch consulted the tree, or did not. */
-    val reads: List<String> get() = readLog.load()
 
     /** Every file the tree currently holds, by canonical path. */
     val written: Map<String, String> get() = tree.load().files
@@ -90,7 +85,9 @@ class FakeProjectFs(
     override fun isDirectory(path: String): Boolean = normalize(path) in tree.load().directories
 
     override fun readFile(path: String, maxBytes: Int): String? {
-        record(path)
+        // Deliberately NOT recorded. The suite's nested `FakeProjectFs` prototypes keep a `reads` log
+        // because their own tests assert on it; nothing that reaches THIS copy can, and a CAS-copied
+        // growing list on every read is a cost with no reader (see `fakes/module.yaml`).
         val text = tree.load().files[normalize(path)] ?: return null
         if (maxBytes <= 0) return null
         // Truncate by BYTES, like a bounded read of a file really would — a cap counted in characters
@@ -117,13 +114,6 @@ class FakeProjectFs(
         while (true) {
             val current = tree.load()
             if (tree.compareAndSet(current, edit(current))) return
-        }
-    }
-
-    private fun record(path: String) {
-        while (true) {
-            val current = readLog.load()
-            if (readLog.compareAndSet(current, current + path)) return
         }
     }
 

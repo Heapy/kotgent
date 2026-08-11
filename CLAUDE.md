@@ -43,7 +43,7 @@ guide on how to test: @docs/TESTING.md
   `SUMMARY total=N failed=0` for `WebUiCheckTest` to verify. stdout is *claimed* at startup (fd 1 is
   redirected to stderr and the real one kept privately), so no stray `println` — ours, a scenario's or
   Ktor's — can corrupt the handshake.
-- **`webuitest/` — `jvm/lib`, `test/` only**: the browser tier. 105 Playwright-for-Java tests spawn
+- **`webuitest/` — `jvm/lib`, `test/` only**: the browser tier. 110 Playwright-for-Java tests spawn
   `webuicheck`, sign in through the real `/auth` form with its one ticket, and drive a real Chromium
   against the pages the harness serves. There is no `src/`: the module publishes nothing to anybody. There
   is no npm either — Playwright's Node driver ships inside the Maven artifact — so the whole tier costs one
@@ -1352,7 +1352,7 @@ These are real and cost time to rediscover. Respect them.
 ## Testing & running
 
 - Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1332 native tests passed /
-  0 skipped** and **108 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
+  0 skipped** and **110 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
   7 JVM tests, `ptycheck`'s 11 real-PTY checks (driven by `PtyTest`) and `webuicheck`'s 2 self-checks
   (driven by `WebUiCheckTest`) — keep a fixture's `EXPECTED_CHECKS` in sync when adding a check to it. The
   native count **fell** from 1432 when the Web UI grep tier was replaced: 101 tests removed, 1 added, delta
@@ -1460,21 +1460,25 @@ These are real and cost time to rediscover. Respect them.
   contains the literal `if (sameForm) closeDialogFrom(submittedDialog)` — the exact line that **was** bug
   (1). That tier had not merely failed to catch the defect; it had pinned it as a contract, and it broke
   when the bug was fixed. A test that spells out an implementation line cannot tell a fix from a regression.
-- **Four things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` reads a large number of
+- **Two things about the new tier are recorded, not fixed.** (a) `BoardStyleTest` reads a large number of
   **non-colour `getComputedStyle` strings** against the geometry rule above — count it in the file rather
   than trusting a figure here, because it moves with every test added. Defensible — the browser *resolved*
   the cascade, which no grep can do — but it is an exception the rule as written does not admit, so either
   widen the rule with that reason or mark the file; do not quietly copy the pattern into a new one.
-  (b) `CommandPaletteTest.thePaletteAnswersForTheScreenItIsOn` and `webuitest`'s
-  `TaskCommandsTest.theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession` (the
-  browser one — `test/cli/TaskCommandsTest.kt` is an unrelated class of the same name) assert
-  the same invariant twice, in two harness spawns. (c) `daemonServesTheComponentAndLibModules` still greps
-  `Sidebar.js` for `!sessionsReady` / `Loading sessions…`, now redundant with
-  `SidebarTest.theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecidesTheListIsEmpty`, which produces the
-  distinction on an empty scenario instead of reading it. (d) `webuitest/test-results/` is never pruned: it
+  (b) `webuitest/test-results/` is never pruned: it
   accumulates a screenshot and a trace per past failure (gitignored, uploaded by CI only `if: failure()`),
   so a local diagnosis can pick up a stale image of a test that now passes — check the timestamp before
   believing a picture.
+  Two items that used to be on this list are gone rather than still recorded. The screen-awareness
+  invariant was asserted twice, in two ~30 s harness spawns; `CommandPaletteTest.thePaletteAnswers`
+  `ForTheScreenItIsOn` was **deleted** as the weaker of the pair (it read only the leader grid, so a
+  group that became disabled-but-present in SEARCH would have passed it) and
+  `TaskCommandsTest.theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession` — the
+  browser one; `test/cli/TaskCommandsTest.kt` is an unrelated class of the same name — keeps it, reading
+  both views with a live control between its two empty answers. And
+  `daemonServesTheComponentAndLibModules` no longer greps `Sidebar.js` for `!sessionsReady` /
+  `Loading sessions…`; that pair is `SidebarTest.theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecides`
+  `TheListIsEmpty`'s alone.
 - Bound every Flow/WS/PTY test with `withTimeout(...)` (anti-hang) — the suite does this consistently.
 - `tmux` integration tests use a throwaway `-L kotgent-test` socket with a skip-guard and kill it in
   teardown; they never touch the real `-L kotgent` socket. `ptycheck` follows the same rule.

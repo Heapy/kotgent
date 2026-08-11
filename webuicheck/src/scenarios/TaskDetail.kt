@@ -131,4 +131,4 @@ internal fun taskLinkedSessionScenario(): Scenario = Scenario(
  * its own name instead (`TASK_COMMAND_AUTHOR`), so a feed row a test caused is never mistaken for one the
  * fixture shipped with.
  */
-private const val BOARD_ACTOR: String = "board"
+internal const val BOARD_ACTOR: String = "board"

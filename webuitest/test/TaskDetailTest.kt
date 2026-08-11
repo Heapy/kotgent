@@ -5,7 +5,6 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
@@ -68,8 +67,7 @@ import kotlin.test.assertTrue
  */
 class TaskDetailTest {
 
-    /** The scenario, its focus task, and the API path that carries the whole detail. */
-    private val scenario = "task-detail"
+    /** The focus task of the `task-detail` scenario, and the API path that carries its whole detail. */
     private val focus = "local:3"
     private val focusRoute = "/tasks/local%3A3"
     private val detailApi = "/api/v1/tasks/local%3A3"
@@ -78,7 +76,7 @@ class TaskDetailTest {
     private val firstPaintMs = 15_000.0
 
     /** A display name no activity author carries, so the two renderings cannot be confused. */
-    private val INJECTED_NAME = "the-session-that-holds-that-id-now"
+    private val injectedName = "the-session-that-holds-that-id-now"
 
     @Test
     fun theActivityFeedArrivesWithTheTaskAndRendersEveryRowIncludingOneNoSessionAnswersFor() {
@@ -121,7 +119,7 @@ class TaskDetailTest {
 
             // The live list DID resolve the injected session, so the panel demonstrably reads it.
             assertThat(page.panel(".task-sessions a[href=\"/s/s-detail-1\"]")).hasCount(1)
-            assertThat(page.panel(".task-sessions a[href=\"/s/s-detail-1\"]")).hasText(INJECTED_NAME)
+            assertThat(page.panel(".task-sessions a[href=\"/s/s-detail-1\"]")).hasText(injectedName)
 
             // …and the feed row for the same id is untouched by it. A feed outlives the sessions that
             // wrote it, so the author is the string that was RECORDED — resolving it through the live list
@@ -131,7 +129,7 @@ class TaskDetailTest {
             assertThat(orphan).hasCount(1)
             assertThat(orphan).hasAttribute("data-kind", "comment")
             assertThat(orphan.locator("strong")).hasText("s-detail-1")
-            assertThat(orphan).not().containsText(INJECTED_NAME)
+            assertThat(orphan).not().containsText(injectedName)
         }
     }
 
@@ -421,13 +419,11 @@ class TaskDetailTest {
      * body throws.
      */
     private fun onTheTaskDetail(trace: String, body: (Harness, Page) -> Unit) {
-        Harness(scenario).use { harness ->
-            Playwright.create().use { playwright ->
-                touchChromium(playwright).use { browser ->
-                    browser.touchContext().use { context ->
-                        context.loginWithTicket(harness.ticket, harness.baseUrl)
-                        context.traced("task-detail-$trace") { body(harness, context.newPage()) }
-                    }
+        Harness(TASK_DETAIL_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.touchContext().use { context ->
+                    context.loginWithTicket(harness.ticket, harness.baseUrl)
+                    context.traced("task-detail-$trace") { body(harness, context.newPage()) }
                 }
             }
         }
@@ -474,7 +470,7 @@ class TaskDetailTest {
         val root = JsonParser.parseString(body).asJsonObject
         val session = JsonObject().apply {
             addProperty("id", "s-detail-1")
-            addProperty("name", INJECTED_NAME)
+            addProperty("name", injectedName)
             addProperty("agent", "claude")
             addProperty("state", "running")
             addProperty("needsAttention", false)

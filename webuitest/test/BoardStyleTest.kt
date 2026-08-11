@@ -2,7 +2,6 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.math.abs
 import kotlin.test.Test
@@ -66,7 +65,7 @@ class BoardStyleTest {
      */
     @Test
     fun theBoardAndTheDetailWearTheTerminalPanesCardGeometry() =
-        onScreen("deep-link", "board-card-geometry") { harness, page ->
+        onScreen(DEEP_LINK_SCENARIO, "board-card-geometry") { harness, page ->
             page.navigate(harness.baseUrl + "/s/deep-session")
             val pane = page.locator("#terminal-pane")
             assertThat(pane).isVisible()
@@ -89,7 +88,7 @@ class BoardStyleTest {
             assertThat(board).isVisible()
 
             assertSameBox(paneBox, board.rect(), "the board takes exactly the terminal pane's slot")
-            assertEquals("14px", paneRadius, "the shell's pane radius is the 14px both are drawn to")
+            assertEquals(CARD_RADIUS, paneRadius, "the shell's pane radius is the one both are drawn to")
             assertEquals(paneRadius, board.style("border-top-left-radius"), "…and the board keeps it")
             assertNotEquals("none", paneShadow, "the pane really does cast a shadow, so the next line has teeth")
             assertEquals(paneShadow, board.style("box-shadow"), "…and the board casts the same one")
@@ -143,7 +142,7 @@ class BoardStyleTest {
      */
     @Test
     fun theBoardNeverScrollsWhileEachColumnScrollsItsOwnListUnderAStickyHead() =
-        onScreen("board", "board-column-scroll") { harness, page ->
+        onScreen(BOARD_SCENARIO, "board-column-scroll") { harness, page ->
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
 
@@ -247,7 +246,7 @@ class BoardStyleTest {
      */
     @Test
     fun eachColumnStateOwnsOneAccentThatItsHeadAndItsDropTintShare() =
-        onScreen("board", "board-column-accents") { harness, page ->
+        onScreen(BOARD_SCENARIO, "board-column-accents") { harness, page ->
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
 
@@ -351,7 +350,7 @@ class BoardStyleTest {
      */
     @Test
     fun aLinkedSessionDotIsColouredForEveryStateInBothSpellings() =
-        onScreen("task-linked-session", "board-session-dots") { harness, page ->
+        onScreen(TASK_LINKED_SESSION_SCENARIO, "board-session-dots") { harness, page ->
             page.navigate(taskUrl(harness.baseUrl, "local:1"))
             assertThat(page.locator(".task-detail")).isVisible()
             assertThat(page.locator(".task-card[data-ref='local:1']")).hasCount(1)
@@ -408,7 +407,7 @@ class BoardStyleTest {
      */
     @Test
     fun everyActivityKindGetsItsOwnLeftRuleThatTheBorderShorthandCannotErase() =
-        onScreen("task-detail", "board-activity-kinds") { harness, page ->
+        onScreen(TASK_DETAIL_SCENARIO, "board-activity-kinds") { harness, page ->
             page.navigate(taskUrl(harness.baseUrl, "local:3"))
             assertThat(page.locator("#task-detail-form")).isVisible()
             val rows = page.locator(".task-activity-row")
@@ -427,29 +426,34 @@ class BoardStyleTest {
                 )
             }
 
-            // The enum sweep, on the first rendered row.
+            // The enum sweep, on the first rendered row. Restored from a `finally`: a failure part-way
+            // through would otherwise leave the row wearing a kind the fixture never produced, and that
+            // patched page is what `traced` photographs for whoever reads the failure.
             val probe = rows.first()
             val original = probe.getAttribute("data-kind")
-            val stripes = linkedMapOf<String, String>()
-            for (kind in ACTIVITY_KINDS) {
-                probe.evaluate("(el, k) => { el.setAttribute('data-kind', k); }", kind)
-                val stripe = probe.style("border-left-color")
-                for ((other, seen) in stripes) {
-                    assertNotEquals(seen, stripe, "`$kind` and `$other` feed rows are indistinguishable")
+            try {
+                val stripes = linkedMapOf<String, String>()
+                for (kind in ACTIVITY_KINDS) {
+                    probe.evaluate("(el, k) => { el.setAttribute('data-kind', k); }", kind)
+                    val stripe = probe.style("border-left-color")
+                    for ((other, seen) in stripes) {
+                        assertNotEquals(seen, stripe, "`$kind` and `$other` feed rows are indistinguishable")
+                    }
+                    stripes[kind] = stripe
                 }
-                stripes[kind] = stripe
+                probe.evaluate("el => { el.setAttribute('data-kind', 'no-such-kind'); }")
+                val fallback = probe.style("border-left-color")
+                assertEquals(
+                    probe.style("border-top-color"),
+                    fallback,
+                    "an unmatched kind falls back to the plain border — which is how the sweep above can fail",
+                )
+                for ((kind, stripe) in stripes) {
+                    assertNotEquals(fallback, stripe, "the `$kind` row is not distinguishable from an unknown one")
+                }
+            } finally {
+                probe.evaluate("(el, k) => { el.setAttribute('data-kind', k); }", original)
             }
-            probe.evaluate("el => { el.setAttribute('data-kind', 'no-such-kind'); }")
-            val fallback = probe.style("border-left-color")
-            assertEquals(
-                probe.style("border-top-color"),
-                fallback,
-                "an unmatched kind falls back to the plain border — which is how the sweep above can fail",
-            )
-            for ((kind, stripe) in stripes) {
-                assertNotEquals(fallback, stripe, "the `$kind` row is not distinguishable from an unknown one")
-            }
-            probe.evaluate("(el, k) => { el.setAttribute('data-kind', k); }", original)
         }
 
     // --- the detail floats, and does not squeeze --------------------------------------------------
@@ -474,7 +478,7 @@ class BoardStyleTest {
      */
     @Test
     fun theTaskDetailFloatsOverTheBoardWithoutTakingAPixelFromItsColumns() =
-        onScreen("board", "board-detail-float") { harness, page ->
+        onScreen(BOARD_SCENARIO, "board-detail-float") { harness, page ->
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
             val closed = BOARD_STATES.map { column(page, it).rect() }
@@ -498,9 +502,9 @@ class BoardStyleTest {
             val app = page.locator("#app")
             val appBox = app.rect()
             val panel = detail.rect()
-            assertClose(appBox.top + 12.0, panel.top, "the panel is inset 12px from the top of the shell")
-            assertClose(appBox.right - 12.0, panel.right, "…12px from its right")
-            assertClose(appBox.bottom - 12.0, panel.bottom, "…and 12px from its bottom")
+            assertClose(appBox.top + CARD_INSET, panel.top, "the panel is inset from the top of the shell")
+            assertClose(appBox.right - CARD_INSET, panel.right, "…and from its right")
+            assertClose(appBox.bottom - CARD_INSET, panel.bottom, "…and from its bottom")
             // `clamp(320px, 34%, 520px)` against `#app`'s content box — the old flex basis, literally.
             assertClose(
                 (0.34 * appBox.width).coerceIn(320.0, 520.0),
@@ -517,13 +521,18 @@ class BoardStyleTest {
                 "the panel wins the hit test over the columns it covers",
             )
 
-            app.evaluate("el => { el.style.borderRight = '40px solid transparent'; }")
-            assertClose(
-                appBox.right - 40.0 - 12.0,
-                detail.rect().right,
-                "the panel is positioned against `#app`, not against the viewport",
-            )
-            app.evaluate("el => { el.style.borderRight = ''; }")
+            // Restored from a `finally`, because a failure BETWEEN the two would otherwise leave the shell
+            // 40px narrower — and that patched page is exactly what `traced` screenshots on the way out.
+            app.evaluate("(el, w) => { el.style.borderRight = w + 'px solid transparent'; }", PROBE_BORDER_PX)
+            try {
+                assertClose(
+                    appBox.right - PROBE_BORDER_PX - CARD_INSET,
+                    detail.rect().right,
+                    "the panel is positioned against `#app`, not against the viewport",
+                )
+            } finally {
+                app.evaluate("el => { el.style.borderRight = ''; }")
+            }
         }
 
     /**
@@ -541,7 +550,7 @@ class BoardStyleTest {
      */
     @Test
     fun thePhoneGivesTheDetailTheWholeScreenAndKeepsItsCloseButtonInTheCorner() =
-        onScreen("board", "board-detail-phone", PHONE_WIDTH, PHONE_HEIGHT, mobile = true) { harness, page ->
+        onScreen(BOARD_SCENARIO, "board-detail-phone", PHONE_WIDTH, PHONE_HEIGHT, mobile = true) { harness, page ->
             page.navigate(taskUrl(harness.baseUrl, "local:3"))
             assertThat(page.locator("#task-detail-form")).isVisible()
             assertThat(page.locator(".board")).isHidden()
@@ -594,7 +603,7 @@ class BoardStyleTest {
      */
     @Test
     fun theBoardCollapsesAtTheBreakpointWhileTheDragReservationDoesNot() =
-        onScreen("board", "board-breakpoint", BREAKPOINT + 1, DESKTOP_HEIGHT) { harness, page ->
+        onScreen(BOARD_SCENARIO, "board-breakpoint", BREAKPOINT + 1, DESKTOP_HEIGHT) { harness, page ->
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
 
@@ -610,13 +619,13 @@ class BoardStyleTest {
 
             val app = page.locator("#app")
             val board = page.locator(".board")
-            assertThat(page.locator(".board-column")).hasCount(4)
+            assertThat(page.locator(".board-column")).hasCount(BOARD_STATES.size)
             assertThat(page.locator(".board-column-switch")).hasCount(0)
             var appBox = app.rect()
             var boardBox = board.rect()
-            assertClose(appBox.top + 12.0, boardBox.top, "one pixel above the breakpoint the board is an inset card")
-            assertClose(appBox.right - 12.0, boardBox.right, "…inset on the other side too")
-            assertEquals("14px", board.style("border-top-left-radius"), "…with the shell's corner radius")
+            assertClose(appBox.top + CARD_INSET, boardBox.top, "one pixel above the breakpoint the board is an inset card")
+            assertClose(appBox.right - CARD_INSET, boardBox.right, "…inset on the other side too")
+            assertEquals(CARD_RADIUS, board.style("border-top-left-radius"), "…with the shell's corner radius")
             assertNotEquals("none", board.style("box-shadow"), "…and its shadow")
             assertDragReservation(page, "at ${BREAKPOINT + 1}px, one pixel above the phone breakpoint")
 
@@ -624,7 +633,7 @@ class BoardStyleTest {
             assertThat(page.locator(".board-column")).hasCount(1)
             val switcher = page.locator(".board-column-switch")
             assertThat(switcher).isVisible()
-            assertThat(switcher.locator("button")).hasCount(4)
+            assertThat(switcher.locator("button")).hasCount(BOARD_STATES.size)
             appBox = app.rect()
             boardBox = board.rect()
             assertSameBox(appBox, boardBox, "one pixel below it the board is the whole screen")
@@ -665,7 +674,7 @@ class BoardStyleTest {
         // `hasTouch`, which resolves `@media (any-pointer: coarse)` at EVERY width — so a "desktop" dialog
         // measured in one is really the phone's sheet, complete with the 20px grabber and the padding-top
         // that compensates for it. This test reasons about the mouse-only shape, so it runs on one.
-        onScreen("board", "board-new-task-dialog", coarse = false) { harness, page ->
+        onScreen(BOARD_SCENARIO, "board-new-task-dialog", coarse = false) { harness, page ->
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
             page.locator(".board-new-task").click()
@@ -771,7 +780,7 @@ class BoardStyleTest {
      */
     @Test
     fun theDetailsDescriptionOutranksTheSharedFieldRuleWithoutLosingItsWidth() =
-        onScreen("task-detail", "board-detail-textarea") { harness, page ->
+        onScreen(TASK_DETAIL_SCENARIO, "board-detail-textarea") { harness, page ->
             page.navigate(taskUrl(harness.baseUrl, "local:3"))
             assertThat(page.locator("#task-detail-form")).isVisible()
 
@@ -823,7 +832,7 @@ class BoardStyleTest {
      */
     @Test
     fun theUnknownTaskBadgeIsAPillOfItsOwnInTheMonospaceFace() =
-        onScreen("task-linked-session", "board-task-badges") { harness, page ->
+        onScreen(TASK_LINKED_SESSION_SCENARIO, "board-task-badges") { harness, page ->
             page.navigate(harness.baseUrl + "/")
             val known = page.locator("a.task-badge:not(.task-badge-unknown)").first()
             val unknown = page.locator("a.task-badge-unknown").first()
@@ -898,17 +907,15 @@ class BoardStyleTest {
         block: (Harness, Page) -> Unit,
     ) {
         Harness(scenario).use { harness ->
-            Playwright.create().use { playwright ->
-                touchChromium(playwright).use { browser ->
-                    val context = if (coarse) {
-                        browser.touchContext(width, height, if (mobile) 3.0 else 1.0, mobile)
-                    } else {
-                        browser.fineContext(width, height)
-                    }
-                    context.use {
-                        context.loginWithTicket(harness.ticket, harness.baseUrl)
-                        context.traced(trace) { block(harness, context.newPage()) }
-                    }
+            onChromium { browser ->
+                val context = if (coarse) {
+                    browser.touchContext(width, height, if (mobile) 3.0 else 1.0, mobile)
+                } else {
+                    browser.fineContext(width, height)
+                }
+                context.use {
+                    context.loginWithTicket(harness.ticket, harness.baseUrl)
+                    context.traced(trace) { block(harness, context.newPage()) }
                 }
             }
         }
@@ -1111,6 +1118,16 @@ class BoardStyleTest {
 
         /** `dialog` is `padding: 0`; every dialog FORM declares this inset instead. */
         const val DIALOG_INSET = 20.0
+
+        /** The shell's own card margin and corner radius — what every occupant of the pane's slot wears. */
+        const val CARD_INSET = 12.0
+        const val CARD_RADIUS = "14px"
+
+        /**
+         * The temporary right border the float test gives `#app`, wide enough that a panel anchored to the
+         * VIEWPORT instead of to the shell could not land within [assertClose]'s tolerance of the answer.
+         */
+        const val PROBE_BORDER_PX = 40.0
 
         /** `--detail-gutter` inside the width breakpoint, which is also the head's padding there. */
         const val PHONE_DETAIL_GUTTER = 10.0

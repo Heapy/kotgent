@@ -4,7 +4,6 @@ import com.microsoft.playwright.Browser
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Mouse
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.KeyboardModifier
@@ -601,14 +600,13 @@ class BoardTest {
         block: (Harness, Page) -> Unit,
     ) {
         Harness(scenario).use { harness ->
-            Playwright.create().use { playwright ->
-                val browser = touchChromium(playwright)
+            onChromium { browser ->
                 val context = if (phone) {
                     browser.touchContext()
                 } else {
                     browser.newContext(Browser.NewContextOptions().setViewportSize(DESKTOP_WIDTH, DESKTOP_HEIGHT))
                 }
-                try {
+                context.use {
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
                     context.traced(name) {
                         val page = context.newPage()
@@ -627,9 +625,6 @@ class BoardTest {
                         }
                         block(harness, page)
                     }
-                } finally {
-                    context.close()
-                    browser.close()
                 }
             }
         }
@@ -641,8 +636,6 @@ class BoardTest {
      * ordinary as `API_PREFIX` has no business competing for it.
      */
     private companion object {
-        private const val BOARD_SCENARIO = "board"
-        private const val BOARD_EMPTY_SCENARIO = "board-empty"
         private const val BOARD_PROJECT = "Board Fixture"
         private const val EMPTY_PROJECT = "Empty Fixture"
         private const val API_PREFIX = "/api/v1"

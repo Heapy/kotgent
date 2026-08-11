@@ -32,8 +32,6 @@ import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.store.EventStore
-// The in-memory store this file's server runs on now lives in the shared `fakes` module: the
-// `webuicheck` harness stands the same real server on the same double for the browser tier.
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SessionUpdate

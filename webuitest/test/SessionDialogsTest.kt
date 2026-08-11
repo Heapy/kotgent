@@ -1,10 +1,8 @@
 package io.kotgent.webuitest
 
-import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.net.InetAddress
@@ -59,7 +57,7 @@ class SessionDialogsTest {
      */
     @Test
     fun theAgentPickerTakesTheFirstFocusAndOneClickAnswersIt() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-agent-picker") {
@@ -119,7 +117,7 @@ class SessionDialogsTest {
      */
     @Test
     fun theHiddenRadiosStayInTheKeyboardsArrowGroup() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-radio-keyboard") {
@@ -186,7 +184,7 @@ class SessionDialogsTest {
      */
     @Test
     fun aPlannedAgentIsAnnouncedWithoutBecomingChoosable() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-planned-agent") {
@@ -223,7 +221,7 @@ class SessionDialogsTest {
      */
     @Test
     fun submittingWithNoAgentIsReportedInsteadOfQuietlyDoingNothing() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-no-agent") {
@@ -277,7 +275,7 @@ class SessionDialogsTest {
      */
     @Test
     fun theWorkingDirectoryCompletesFromTheDaemonAndCommitsWithTheKeyboard() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-cwd-completion") {
@@ -349,7 +347,7 @@ class SessionDialogsTest {
      */
     @Test
     fun aMissingAgentBinaryIsShownAsTheDaemonsOwnAdvice() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-missing-binary") {
@@ -411,7 +409,7 @@ class SessionDialogsTest {
      */
     @Test
     fun importModeAdoptsASessionAndOffersNoShell() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("new-session-import") {
@@ -816,7 +814,7 @@ class SessionDialogsTest {
      */
     @Test
     fun phoneAccessDrawsAQrThatCannotSpendTheDisplayedCode() {
-        Harness(EMPTY).use { harness ->
+        Harness(EMPTY_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("phone-dialog") {
@@ -879,12 +877,6 @@ class SessionDialogsTest {
 
     // --- fixtures ------------------------------------------------------------------------------------------
 
-    private fun onChromium(block: (Browser) -> Unit) {
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser -> block(browser) }
-        }
-    }
-
     /** Sign this context in and open the app; every test starts from a rendered shell. */
     private fun signIn(context: BrowserContext, harness: Harness): Page {
         context.loginWithTicket(harness.ticket, harness.baseUrl)
@@ -922,7 +914,7 @@ class SessionDialogsTest {
 
     /** Open the palette's leader grid and run one command by its title. */
     private fun runFromPalette(page: Page, title: String) {
-        page.keyboard().press("Meta+k")
+        page.keyboard().press(PALETTE_OPENER)
         assertThat(page.locator("#command-palette")).isVisible()
         page.locator(".command-palette-leader-command")
             .filter(Locator.FilterOptions().setHasText(title))
@@ -933,7 +925,7 @@ class SessionDialogsTest {
 
     /** Open the palette's search view and type [query] into it. */
     private fun openPaletteSearch(page: Page, query: String) {
-        page.keyboard().press("Meta+k")
+        page.keyboard().press(PALETTE_OPENER)
         assertThat(page.locator("#command-palette")).isVisible()
         page.locator("#command-palette-search-mode").click()
         page.locator("#command-palette-query").fill(query)
@@ -977,9 +969,6 @@ class SessionDialogsTest {
     """.trimIndent()
 
     private companion object {
-        /** The scenario with no sessions: its first-run panel is this file's New-session opener. */
-        const val EMPTY = "empty"
-
         /** Where every client-facing daemon route lives (`API_PREFIX` in `Server.kt`). */
         const val API = "/api/v1"
 

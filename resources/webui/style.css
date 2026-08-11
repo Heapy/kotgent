@@ -2326,13 +2326,15 @@ button.task-card-title:hover,
 /* The swipe handle, scoped by POINTER rather than by viewport width — the gesture only ever runs for a
    touch pointer, and a `max-width: 720px` query left the palette (the one dialog with no head, and so
    with no other handle) unswipeable on every tablet, the exact device the reservation was written for.
-   Its position in the file is load-bearing twice over. It must come AFTER every dialog's own `padding`
-   shorthand, because a media query carries no extra specificity and the compensation below wins from
-   source order alone. And it must come after `max-width: 720px` rather than before it, or it lands
-   inside the slice `theShellFloatsCardsWithoutMovingPaddingOntoTheTerminalHost` reads as DESKTOP — and
-   a future composite blur written here would then reach every phone past the guard that forbids it.
-   (That guard is a plain text search over the mobile slice, so it reads comments too: name the
-   property in prose here rather than spelling it, the way this sentence does.) */
+   Its position in the file is load-bearing: it must come AFTER every dialog's own `padding` shorthand,
+   because a media query carries no extra specificity and the compensation below wins from source order
+   alone.
+   It used to be load-bearing a SECOND time, against a plain text search that sliced this file at
+   `max-width: 720px` and read everything after it as desktop. That search is gone, and with it the rule
+   about writing property names in prose here: the phone's no-composite-blur invariant is now measured
+   by `LayoutTest.theCardsInsetTheShellWithoutPaddingTheMeasuredTerminalParent`, which reads the drawer's
+   computed `backdrop-filter` at both viewport sizes — so a blur written into any block, named plainly or
+   not, fails there. Write these comments for a reader. */
 @media (any-pointer: coarse) {
   .dialog-grabber {
     display: block;
@@ -2410,8 +2412,10 @@ button.task-card-title:hover,
    makes that box look like a chip: no border, no fill, no hover plate. A bell in the brand row is a
    status light more than a button, and the surround was competing with the one thing it has to say.
    That also retires a hard-coded pale blue left over from the light theme, which used to fill the
-   active state; its literal is deliberately not repeated here, because the test keeping it gone is a
-   plain text search over this file. */
+   active state. Nothing searches this file for that literal any more; what keeps it gone is
+   `LayoutTest.theNotificationsToggleWearsTheShellsOwnAccentInBothStates`, which reads the button's
+   computed colour in both states and demands it EQUAL the shell's own `--attn` / `--accent`, resolved
+   through a probe element — so any baked-in ink fails there whether or not it is spelled here. */
 .notify-toggle {
   align-items: center;
   background: none;

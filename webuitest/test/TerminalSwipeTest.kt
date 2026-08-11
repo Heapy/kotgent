@@ -1,10 +1,7 @@
 package io.kotgent.webuitest
 
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
 import com.microsoft.playwright.CDPSession
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.TimeoutError
 import com.microsoft.playwright.options.BoundingBox
 import java.util.concurrent.CopyOnWriteArrayList
@@ -320,10 +317,7 @@ class TerminalSwipeTest {
         }
 }
 
-/** The scenario whose pty prints the mouse-mode payload and then `exec cat`s. */
-private const val TERMINAL_SCENARIO = "terminal"
-
-/** Its single session (see the plan's scenario table): `s-term`, claude, `/w/terminal`, running. */
+/** The `terminal` scenario's single session: `s-term`, claude, `/w/terminal`, running. */
 private const val TERMINAL_SESSION = "s-term"
 
 /** Time for the bridge's frame loop to spend the bank and for the echo tail to land. */
@@ -492,21 +486,9 @@ private class TerminalSwipeFixture(
         touch("touchEnd", toX, toY)
     }
 
+    /** One contact, or — for the lift — none at all; see [dispatchTouch] for why the release names none. */
     private fun touch(type: String, x: Double, y: Double) {
-        val points = JsonArray()
-        // Chromium rejects a `touchEnd` that still names points: the release is expressed by their
-        // absence, which is also how Playwright's own `touchscreen.tap()` ends a tap.
-        if (type != "touchEnd") {
-            val point = JsonObject()
-            point.addProperty("x", x)
-            point.addProperty("y", y)
-            point.addProperty("id", 0)
-            points.add(point)
-        }
-        val params = JsonObject()
-        params.addProperty("type", type)
-        params.add("touchPoints", points)
-        cdp.send("Input.dispatchTouchEvent", params)
+        if (type == "touchEnd") dispatchTouch(cdp, type, null, null) else dispatchTouch(cdp, type, x, y)
     }
 }
 
@@ -536,31 +518,29 @@ private fun visibleRows(page: Page): Double {
  */
 private fun onTerminal(name: String, body: (TerminalSwipeFixture) -> Unit) {
     Harness(TERMINAL_SCENARIO).use { harness ->
-        Playwright.create().use { pw ->
-            touchChromium(pw).use { browser ->
-                browser.touchContext().use { context ->
-                    context.loginWithTicket(harness.ticket, harness.baseUrl)
-                    context.traced(name) {
-                        val page = context.newPage()
-                        page.addInitScript(WHEEL_PROBE)
-                        val sent = CopyOnWriteArrayList<String>()
-                        page.onWebSocket { socket ->
-                            if (socket.url().contains("/terminal")) {
-                                socket.onFrameSent { frame ->
-                                    // ISO-8859-1 keeps the mapping byte-for-char, so an ESC in the frame
-                                    // stays one character and the SGR report is searchable as written.
-                                    frame.binary()?.let { sent.add(String(it, Charsets.ISO_8859_1)) }
-                                }
+        onChromium { browser ->
+            browser.touchContext().use { context ->
+                context.loginWithTicket(harness.ticket, harness.baseUrl)
+                context.traced(name) {
+                    val page = context.newPage()
+                    page.addInitScript(WHEEL_PROBE)
+                    val sent = CopyOnWriteArrayList<String>()
+                    page.onWebSocket { socket ->
+                        if (socket.url().contains("/terminal")) {
+                            socket.onFrameSent { frame ->
+                                // ISO-8859-1 keeps the mapping byte-for-char, so an ESC in the frame
+                                // stays one character and the SGR report is searchable as written.
+                                frame.binary()?.let { sent.add(String(it, Charsets.ISO_8859_1)) }
                             }
                         }
-                        page.navigate(harness.baseUrl + "/s/" + TERMINAL_SESSION)
-                        page.waitForFunction(TERMINAL_READY)
-                        val cdp = context.newCDPSession(page)
-                        try {
-                            body(TerminalSwipeFixture(page, cdp, sent))
-                        } finally {
-                            cdp.detach()
-                        }
+                    }
+                    page.navigate(harness.baseUrl + "/s/" + TERMINAL_SESSION)
+                    page.waitForFunction(TERMINAL_READY)
+                    val cdp = context.newCDPSession(page)
+                    try {
+                        body(TerminalSwipeFixture(page, cdp, sent))
+                    } finally {
+                        cdp.detach()
                     }
                 }
             }

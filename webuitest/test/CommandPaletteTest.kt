@@ -53,9 +53,15 @@ import kotlin.test.assertTrue
  * recorded rather than tested: the board's own New task / New project forms live in `Board.js` and never
  * reach `app.js`'s `dialogRef`, so ⌘K does open over those.
  *
- * **The registry is screen-aware.** `/tasks` REPLACES the session view, so while the board is up the
- * palette must not offer commands aimed at a session nobody can see; the one board mnemonic turns around
- * and leads back out instead. Session ROWS stay on both screens, because selecting one is navigation.
+ * **The registry is screen-aware**, and that half lives in `TaskCommandsTest`, not here. `/tasks`
+ * REPLACES the session view, so while the board is up the palette must not offer commands aimed at a
+ * session nobody can see; the one board mnemonic turns around and leads back out instead, and session
+ * ROWS stay on both screens because selecting one is navigation. This file used to assert the same thing
+ * in `thePaletteAnswersForTheScreenItIsOn`, which was deleted: it read only the leader GRID, so a group
+ * that had become disabled-but-present in SEARCH would have passed it, while
+ * `TaskCommandsTest.theSessionGroupAndTheShowDoneToggleAreBuiltOnlyForTheScreenThatShowsASession` reads
+ * both views and carries a live control between its two empty answers. Two harness spawns for one
+ * invariant is the cost this tier can least afford, so the weaker of the pair went.
  *
  * Every test here runs on the `sessions` scenario with NOTHING selected, which is deliberate: an empty
  * selection is what makes the session commands disabled, and a disabled command is how the availability
@@ -470,83 +476,6 @@ class CommandPaletteTest {
             assertThat(page.locator("#new-session-dialog")).isVisible()
         }
 
-    /**
-     * The palette answers for the screen it is on.
-     *
-     * `/tasks` REPLACES the session view rather than covering it, so while the board is up every command
-     * aimed at a session is aimed at something nobody can see: `⌘K a` wrote `attachedId` with no
-     * `TerminalPane` mounted and did visibly nothing, `⌘K e` announced a detach from a terminal that was
-     * not on screen, and Interrupt/Stop/Done reached whatever row happened to be selected before the
-     * operator left for the backlog. Those descriptors are BUILT AWAY rather than disabled — a disabled
-     * row is for a command that could apply here and does not right now, and none of these applies at all
-     * — and the sidebar-only "show done" toggle goes with them, the sidebar being exactly what the board
-     * unmounts.
-     *
-     * The board mnemonic is ONE descriptor that turns around, not two: `o` leads to the board from the
-     * session view and back out of it from the board, where "Open the task board" was a dead letter and
-     * the board's own "Sessions" link was the only way out — on a phone, a text link instead of the
-     * surface every other action lives in. Two descriptors claiming `o` would make one of them a grid row
-     * its own key can never reach.
-     *
-     * Session ROWS stay on both screens, because selecting one is navigation: on the board the search view
-     * is also the way back to a particular session.
-     */
-    @Test
-    fun thePaletteAnswersForTheScreenItIsOn() =
-        onThePaletteScreen("palette-screen-aware") { harness, page ->
-            awaitSessionRows(page)
-
-            // The session view offers the session group, and the board mnemonic points at the board.
-            openLeaderMode(page)
-            assertThat(page.locator(LEADER_COMMAND).withText(INTERRUPT_COMMAND)).hasCount(1)
-            assertThat(page.locator(LEADER_COMMAND).withText("Open the task board")).hasCount(1)
-            page.keyboard().press("KeyO")
-            assertThat(page).hasURL("${harness.baseUrl}/tasks")
-            assertThat(page.locator("#board-status")).hasCount(1)
-            assertThat(page.locator("#terminal-pane")).hasCount(0)
-
-            // On the board none of the session commands is offered at all, and the one mnemonic reads —
-            // and does — the opposite.
-            openLeaderMode(page)
-            for (title in SESSION_COMMANDS) {
-                assertThat(page.locator(LEADER_COMMAND).withText(title)).hasCount(0)
-            }
-            assertThat(page.locator(LEADER_COMMAND).withText("Open the task board")).hasCount(0)
-            assertThat(page.locator(LEADER_COMMAND).withText("Back to sessions")).hasCount(1)
-            page.keyboard().press("KeyO")
-            assertThat(page).hasURL("${harness.baseUrl}/")
-            assertThat(page.locator("#terminal-pane")).hasCount(1)
-
-            // Back to the board for the search half: the sidebar-only toggle is gone there (it is present
-            // with an empty query on the session view — see the search test), while a session row is not,
-            // and running one is how the operator gets back to a particular terminal.
-            openLeaderMode(page)
-            page.keyboard().press("KeyO")
-            assertThat(page.locator("#board-status")).hasCount(1)
-
-            val input = openSearchMode(page)
-            val options = page.locator("#command-palette-results > li")
-            // The rows a board search still offers. Asserted before the absence below, so that a zero
-            // count there can only mean "filtered away" and never "the list never rendered".
-            assertThat(options.withText("/d")).hasCount(1)
-
-            input.fill(SHOW_DONE_COMMAND)
-            assertThat(options).hasCount(0)
-
-            input.fill("/d")
-            assertThat(options).hasCount(1)
-            // Enter runs whatever the query EFFECT last settled on, and an effect lands after the paint.
-            // The query before this one matched nothing, so the pointer is parked at -1 and an Enter typed
-            // into that window is a silent no-op — which is exactly how this line used to fail, sitting on
-            // `/tasks` while the row it meant to run was on screen. The highlight is the observable that
-            // says the effect has run.
-            assertThat(options.first()).hasAttribute("aria-selected", "true")
-            page.keyboard().press("Enter")
-            assertThat(page).hasURL(Pattern.compile(regexLiteral(harness.baseUrl) + "/s/[^/]+$"))
-            assertThat(page.locator("#terminal-pane")).hasCount(1)
-            assertThat(page.locator("#board-status")).hasCount(0)
-        }
-
     // --- fixture ---------------------------------------------------------------------------------
 
     /**
@@ -672,13 +601,6 @@ class CommandPaletteTest {
         filter(Locator.FilterOptions().setHasText(text))
 
     private companion object {
-        /**
-         * The opener as macOS spells it. `webuicheck` is a `macos/app` binary, so this suite only ever
-         * runs where ⌘ is the modifier; the app's second binding (Ctrl+Shift+K) exists for the platforms
-         * this harness cannot be built on. `KeyK` and not `k`: the app matches the physical key.
-         */
-        const val PALETTE_OPENER = "Meta+KeyK"
-
         const val PALETTE = "#command-palette"
         const val LEADER_GRID = ".command-palette-leader-grid"
         const val LEADER_COMMAND = ".command-palette-leader-command"
@@ -701,23 +623,6 @@ class CommandPaletteTest {
         const val SHOW_DONE_COMMAND = "Show or hide done sessions"
 
         /**
-         * The session-group titles that must not be offered while the board is on screen. Detach and
-         * Attach are the two that used to fail most quietly there — one announced a detach from a
-         * terminal that was not mounted, the other wrote an attachment nothing rendered.
-         */
-        val SESSION_COMMANDS = listOf(
-            INTERRUPT_COMMAND,
-            "Resume this session",
-            "Attach current terminal",
-            "Detach current terminal",
-            "Stop current session",
-            "Done current session",
-            "Copy tmux command",
-            "Upload files to current folder",
-            "Open this session's task",
-        )
-
-        /**
          * What the sidebar header and the terminal header no longer draw: the four general-action
          * buttons that duplicated the palette, plus `session-actions` — the mobile-only icon ROW that
          * repeated the lifecycle commands and their disabled rules, which the leader grid now states
@@ -730,25 +635,5 @@ class CommandPaletteTest {
             "prefs-button",
             "session-actions",
         )
-
     }
 }
-
-/**
- * [text] as one literal inside a regular expression — and deliberately NOT `Pattern.quote`.
- *
- * A `java.util.regex.Pattern` handed to a Playwright assertion is never evaluated in Java: the driver
- * ships its SOURCE TEXT to Node and matches it there with a JavaScript `RegExp`, which has no `\Q…\E`
- * quoting. `\Q` is just an escaped `Q`, so a quoted URL compiles on the far side into a pattern that must
- * begin with a literal `Q` and can never match — while the failure prints the Java spelling beside a URL
- * that plainly satisfies it. `RouterTest` carries the same helper for the same reason; each browser test
- * file in this module stays self-contained.
- */
-private fun regexLiteral(text: String): String = buildString {
-    for (ch in text) {
-        if (ch in REGEX_METACHARACTERS) append('\\')
-        append(ch)
-    }
-}
-
-private const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"
