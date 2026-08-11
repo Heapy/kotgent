@@ -160,6 +160,41 @@ class TaskProjectWiringTest {
     }
 
     @Test
+    fun aStartInsideAnArchivedProjectIsNotStampedAndResurrectsNothing() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture(this)
+            f.tasks.setProjectArchived(alpha, true)
+
+            val started = f.manager().start("claude", "/repo/sub")
+
+            assertEquals(SessionState.running, started.state, "a tombstone must never fail a launch")
+            assertNull(started.projectId, "the file is still on disk, but the project it names was deleted")
+            assertNull(f.store.getSession(started.id)!!.projectId)
+            assertTrue(f.tasks.registrations.isEmpty(), "and the row it would have written was refused")
+        }
+    }
+
+    @Test
+    fun restoringTheProjectMakesTheNextStartBindItAgain() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture(this)
+            f.tasks.setProjectArchived(alpha, true)
+            val manager = f.manager(newIds = listOf(SessionId("while001"), SessionId("after001")))
+
+            assertNull(manager.start("claude", "/repo/sub").projectId)
+
+            f.tasks.setProjectArchived(alpha, false)
+
+            assertEquals(
+                alpha,
+                manager.start("claude", "/repo/sub").projectId,
+                "the guard reads the mark on every registration; it is not a latch",
+            )
+            assertEquals(listOf(RegisteredProject(alpha, "kotgent", "/repo")), f.tasks.registrations)
+        }
+    }
+
+    @Test
     fun withNoTaskStoreToRegisterInTheProjectIsNotStampedEither() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture(this)
@@ -196,6 +231,27 @@ class TaskProjectWiringTest {
                 f.store.projectWrites,
                 "exactly one targeted write, for the row that had none",
             )
+        }
+    }
+
+    @Test
+    fun theBackfillSkipsASessionWhoseProjectIsArchivedInsteadOfRetryingIt() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture(this)
+            f.tasks.setProjectArchived(alpha, true)
+            f.seedSession("tombed01", cwd = "/repo/sub")
+
+            f.reconciler().reconcile()
+
+            assertNull(
+                f.store.getSession(SessionId("tombed01"))!!.projectId,
+                "a deleted project must not come back through the backfill either",
+            )
+            assertTrue(
+                f.store.projectWrites.isEmpty(),
+                "a refusal is final while the mark stands — unlike a store failure, it is not worth retrying",
+            )
+            assertTrue(f.tasks.registrations.isEmpty(), "and no row was written")
         }
     }
 

@@ -10,6 +10,7 @@ import io.kotgent.core.SessionState
 import io.kotgent.store.EventStore
 import io.kotgent.store.TaskStore
 import io.kotgent.task.ProjectFs
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.resolveProject
 import io.kotgent.tmux.TmuxControl
 import io.kotgent.tmux.TmuxPane
@@ -125,13 +126,21 @@ class Reconciler(
         store.setTaskRef(meta.id, null, sortKeyOf(meta))
     }
 
+    /**
+     * Only rows with no [SessionMeta.projectId] are looked at, which is how a registration that THREW on an
+     * earlier start is retried here. A registration refused because the project is archived is not that: the
+     * project file is still on disk and will resolve on every restart, so the refusal is skipped as quietly
+     * as an unresolvable cwd rather than retried until an operator restores the project.
+     */
     private suspend fun backfillProjectId(tasks: TaskStore, meta: SessionMeta) {
         if (meta.projectId != null) return
         val fs = projectFs ?: return
         val resolved = resolveProject(fs, meta.cwd) ?: return
         // Register first so a failure cannot leave a session referencing an absent project row.
-        tasks.upsertProject(resolved.id, resolved.name, resolved.root)
-        store.setProjectId(meta.id, resolved.id, sortKeyOf(meta))
+        when (tasks.upsertProject(resolved.id, resolved.name, resolved.root)) {
+            ProjectRegistration.registered -> store.setProjectId(meta.id, resolved.id, sortKeyOf(meta))
+            ProjectRegistration.refusedArchived -> Unit
+        }
     }
 
     // Re-read after liveness writes; derived cleanup must neither advance nor rewind activity ordering.

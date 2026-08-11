@@ -200,17 +200,16 @@ would land in a deleted project.
 **Files:**
 - Modify: `src/daemon/SessionManager.kt`
 - Modify: `src/daemon/Reconciler.kt`
-- Modify: `test/daemon/SessionManagerTest.kt`
-- Modify: `test/daemon/ReconcilerTest.kt`
-- Modify: `test/daemon/TaskProjectWiringTest.kt`
+- Modify: `test/daemon/TaskProjectWiringTest.kt` (both sides live here; `SessionManagerTest` /
+  `ReconcilerTest` own no project wiring, so neither was touched)
 
-- [ ] write the failing test first: with `.kotgent.json` present on `FakeProjectFs` and its project
+- [x] write the failing test first: with `.kotgent.json` present on `FakeProjectFs` and its project
       archived in `FakeTaskStore`, a started session gets `project_id = null`
-- [ ] write the paired failing test: `Reconciler`'s backfill leaves such a session's `project_id` null
-- [ ] make `resolveAndRegisterProject` return null when registration reports refusal
-- [ ] make the reconciler backfill skip it quietly, the same way it skips an unresolvable cwd
-- [ ] add a test that an unarchived project still binds normally (the guard must not swallow the ordinary case)
-- [ ] run tests — must pass before task 3
+- [x] write the paired failing test: `Reconciler`'s backfill leaves such a session's `project_id` null
+- [x] make `resolveAndRegisterProject` return null when registration reports refusal
+- [x] make the reconciler backfill skip it quietly, the same way it skips an unresolvable cwd
+- [x] add a test that an unarchived project still binds normally (the guard must not swallow the ordinary case)
+- [x] run tests — must pass before task 3
 
 ### Task 3: `task add` refuses instead of creating a file
 
