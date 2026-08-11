@@ -1192,8 +1192,9 @@ function App() {
     // prefs.revision and remounts PreferencesDialog under the SAME dialog object (see the render key),
     // re-seeding a fresh draft the operator may already be editing — the dialog identity alone cannot
     // tell the two forms apart. prefsRef tracks the last RENDERED prefs, so this matches the mounted
-    // form's key; preferencesRevisionRef advances ahead of render and would misread the user's own
-    // batched save as a remount.
+    // form's key. It survives only to route a LATE FAILURE to the instance that can still show it
+    // (the catch below); it is deliberately no longer part of the success path's close decision, which
+    // used to read it and got the ordinary case wrong — see there.
     const revisionAtSubmit = prefsRef.current.revision;
     try {
       const saved = await apiRequest("/preferences", {
@@ -1203,19 +1204,40 @@ function App() {
           groupingLevel: next.groupingLevel,
         }),
       });
-      const sameForm = prefsRef.current.revision === revisionAtSubmit;
-      // A preferences_update for this write (or a later write from another browser) may have arrived while
-      // PUT was in flight. Apply only if this response is not older; the per-device font is independent.
-      applyServerPreferences(saved);
+      // A 2xx whose body is not a preference snapshot is a BROKEN DAEMON, not a concurrent edit: it
+      // says nothing about what is committed, so it cannot be allowed to look like one. Raised before
+      // anything is applied or persisted, so the whole save fails as one and the operator can retry.
+      if (!sanitizeServerPreferences(saved)) {
+        throw new Error("the daemon answered the save with an unreadable preferences payload");
+      }
+      // A preferences_update for this write (or a later write from another browser) may have arrived
+      // while the PUT was in flight, so the response is applied only if it is not older; the
+      // per-device font and unicode mode are independent of the daemon's revision entirely.
+      //
+      // That same answer is the close decision, and the two must not be separated: this returns TRUE
+      // exactly when the revision the daemon just answered with is still the newest one this browser
+      // knows of. Equal counts, and equal is the ordinary case — the daemon publishes every accepted
+      // save to /events and over loopback that echo BEATS the PUT response, every single time. The
+      // echo carries this very write's revision, so "equal" means "the newest thing we know is our own
+      // commit" and the dialog closes. The check this replaced asked instead whether the mounted
+      // form's revision had changed since submit; the echo always changes it, so Save never closed the
+      // dialog at all. FALSE means a STRICTLY newer revision already landed: a write this browser did
+      // not make, whose values are what the remounted form is now showing. Closing it would hide an
+      // external change behind our own success, so the form stays open and the status line says so.
+      const applied = applyServerPreferences(saved);
       persistTerminalFontSize(next.terminalFontSize);
       persistTerminalUnicode(next.terminalUnicode);
       setPrefs((current) => Object.assign({}, current, {
         terminalFontSize: next.terminalFontSize,
         terminalUnicode: next.terminalUnicode,
       }));
-      // A remounted form holds a FRESHER draft than the one this save came from — leave it open and let
-      // the status line below carry the outcome; closing it would discard the operator's newer edits.
-      if (sameForm) closeDialogFrom(submittedDialog);
+      if (!applied) {
+        say("Preferences were saved, but newer settings arrived. Review the current values.");
+        return;
+      }
+      // No await between the apply and this close: an interleaved delivery could otherwise turn a
+      // decision already taken into a stale one.
+      closeDialogFrom(submittedDialog);
       const current = serverPreferencesRef.current;
       say(current.basePath.length > 0
         ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
@@ -1513,10 +1535,15 @@ function App() {
           the reopened (or echo-remounted, busy reset) dialog could still land an overlapping stale PUT;
           prefsSaveInFlightRef in savePreferences refuses that second PUT until the first settles. And
           because a remount keeps the dialog OBJECT identical, savePreferences also captures the
-          revision at submit: a completion never closes a remounted form (its re-seeded draft is
-          fresher) and a late failure routes to the status line, not the unmounted instance's error
-          line. The user's own in-dialog save never remounts visibly: its applyServerPreferences and
-          closeDialogFrom land in one batched render with the dialog closed. */ ""}
+          revision at submit — but only to route a LATE FAILURE away from an instance whose setError
+          is already a no-op. Whether a success closes the form is decided by the revision the daemon
+          answered with, not by this key: a form remounted by someone ELSE's write is not closed (its
+          re-seeded draft is fresher), while a form remounted by the echo of this write is, because
+          that echo IS this write. The belief this comment used to record — that the user's own save
+          never remounts visibly, because applyServerPreferences and closeDialogFrom batch into one
+          render — is simply wrong over loopback: the preferences_update for the write arrives BEFORE
+          the PUT response, so the remount happens first, every time, and reading this key at
+          completion made Save stop closing the dialog at all. */ ""}
     ${dialog && dialog.kind === "prefs" && html`
       <${PreferencesDialog} key=${prefs.revision} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}

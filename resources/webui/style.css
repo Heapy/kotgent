@@ -1488,6 +1488,13 @@ dialog::backdrop {
   margin: 0;
   max-width: min(560px, calc(100vw - 24px));
   padding: 8px 12px;
+  /* Announcing is ALL it does — there is nothing in it to click — and `say()` never clears one, so this
+     fixed box parks over the bottom-centre of the board for the rest of the page's life. Without this
+     it silently eats every pointer interaction beneath it: `dropTargetAt`'s `elementFromPoint` answered
+     the TOAST for a drop over the bottom of a middle column (its `closest(".board-column")` is null,
+     so the card landed nowhere at all), and the card, its menu or "show all done" under that strip
+     could not be clicked either. A wider message covers proportionally more, up to the 560px cap. */
+  pointer-events: none;
   position: fixed;
   transform: translateX(-50%);
   /* Above the drawer scrim (20), below a `<dialog>`, which the browser puts in the top layer. */

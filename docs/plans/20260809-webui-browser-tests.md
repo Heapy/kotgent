@@ -954,15 +954,30 @@ WebUiCheckTest.kt` против `{Scenarios,Commands}.kt + scenarios/{Empty,Sess
 
 **Files:**
 - Modify: `test/transport/WebUiServingTest.kt`
+- Delete: `test/transport/WebUiTaskStateTest.kt`, `test/transport/WebUiBoardTest.kt`, `test/transport/WebUiRouterTest.kt`
 
-- [ ] собрать все строки `[replaces]` из прогресс-файла и сверить с таблицей диспозиции: каждый переезжающий тест заявлен **ровно один раз**; ни один KEEP не заявлен
-- [ ] удалить заявленные тесты; сжать `theWebUiWiresTheBrowserPushSubscriptionFlow` до контракта роутов `/api/v1/push/*`; удалить `sessionAndPaletteRowsSharePillInteractionStates` и grep-половину `daemonServesTheServiceWorkerAtTheRootScope`
-- [ ] собрать строки `[keep]` из прогресс-файла: перенести уцелевшие KEEP-тесты из ужатых `WebUiBoardTest.kt`,
+- [x] собрать все строки `[replaces]` из прогресс-файла и сверить с таблицей диспозиции: каждый переезжающий тест заявлен **ровно один раз**; ни один KEEP не заявлен
+- [x] удалить заявленные тесты; сжать `theWebUiWiresTheBrowserPushSubscriptionFlow` до контракта роутов `/api/v1/push/*`; удалить `sessionAndPaletteRowsSharePillInteractionStates` и grep-половину `daemonServesTheServiceWorkerAtTheRootScope`
+- [x] собрать строки `[keep]` из прогресс-файла: перенести уцелевшие KEEP-тесты из ужатых `WebUiBoardTest.kt`,
       `WebUiRouterTest.kt` и `WebUiTaskStateTest.kt` в `WebUiServingTest.kt`, после чего удалить эти три файла;
       свернуть дубли serving-контракта в один реестр модулей
-- [ ] удалить осиротевшие хелперы (`sliceBetween`, `descriptorOf`, `agentPickerOf`, `cssRuleOf` и прочие)
-- [ ] обновить KDoc класса: чем файл теперь является и чем перестал быть
-- [ ] прогнать `## Validation Commands`, пометить `[x]`, закоммитить
+- [x] удалить осиротевшие хелперы (`sliceBetween`, `descriptorOf`, `agentPickerOf`, `cssRuleOf` и прочие)
+- [x] обновить KDoc класса: чем файл теперь является и чем перестал быть
+- [x] прогнать `## Validation Commands`, пометить `[x]` (коммит — за приёмкой, задача 25: волна 4 ничего не коммитит)
+
+**Сделано (факт).** 28 заявленных тестов удалены (27 полных переездов + `sessionAndPaletteRowsSharePillInteractionStates`),
+`theUnicodeAddonsAreVendoredAndLoadedOnlyWhenThePreferenceSelectsThem` ужат до половины «завендорены и отдаются»
+и переименован в `theUnicodeAddonsAreVendoredAndServed`, `theWebUiWiresTheBrowserPushSubscriptionFlow` ужат
+и переименован в `theBrowserPushModuleCallsTheDaemonsOwnPushRoutes` (маунт и авторизацию `/api/v1/push/*`
+целиком держит `PushRoutesTest` — дублировать его здесь значило бы завести вторую слабую копию; здесь остаётся
+единственное, чего нет больше нигде: отдаваемый модуль адресует ровно те три константы, которые монтирует
+`PushRoutes.kt`). Четыре KEEP-теста перенесены как тесты, пятый
+(`WebUiTaskStateTest.theTaskStateModuleIsServedAsJavaScript`) свёрнут В РЕЕСТР — его строка `[keep]` сама
+называет реестр его местом, а `/lib/tasks.js` там уже был; в цикл реестра добавлено утверждение о непустом
+теле, которое этот тест приносил. Реестр уже содержал `lib/router.js`, `lib/tasks.js`, `components/Board.js`,
+`components/TaskCard.js` и `components/TaskDetail.js` — предположение задачи 22 подтвердилось, добавлять было
+нечего. Итог: 4050 → 1102 строки, 49 → 25 тестов в одном файле вместо четырёх; нативная сюита
+**1332 / 0 skipped** (1361 − 29), браузерная — 102/102.
 
 ### Task 25: Приёмка
 

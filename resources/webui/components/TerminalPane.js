@@ -345,6 +345,19 @@ export function TerminalPane({
     setCtrlActive(false);
 
     const term = new Terminal({
+      // `term.unicode` is xterm's PROPOSED API: its getter runs `_checkProposedApi()` and THROWS
+      // ("You must set the allowProposedApi option to true to use proposed API") unless this is on.
+      // That getter is the whole of `lib/unicode.js` — it reads `activeVersion` to remember what to
+      // restore and writes it to make a loaded provider the active one — so without the flag every
+      // opt-in width table fetched its 65 KB and then changed absolutely nothing. The failure had no
+      // symptom: the throw lands in the install's own `.catch`, which exists to survive a vendored
+      // addon that will not load, and a terminal measuring with the built-in table looks exactly like
+      // a terminal that was never asked to change. It took a browser reading `activeVersion` back to
+      // see it. Nothing else in these options depends on the gate, and turning it on changes no
+      // rendering behaviour of its own: in the vendored bundle `allowProposedApi` is read at exactly
+      // one place, and what it unlocks besides `unicode` — `markers`, the character joiners,
+      // `registerDecoration` — kotgent never touches.
+      allowProposedApi: true,
       convertEol: false,
       // A STEADY cursor. With the DOM renderer the cursor is an ordinary <span> carrying a CSS
       // `blink … 1s step-end infinite`, and that element is rebuilt every time its row repaints — so the

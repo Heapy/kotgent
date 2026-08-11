@@ -366,14 +366,27 @@ export function Board({
   const dragPointerDown = useCallback((event, entry) => {
     if (event.isPrimary === false) return;
     if (event.button !== undefined && event.button !== 0) return;
+    const element = event.currentTarget;
     gestureRef.current = {
       pointerId: event.pointerId,
       ref: entry.ref,
       startX: event.clientX,
       startY: event.clientY,
       claimed: false,
-      element: event.currentTarget,
+      element: element,
     };
+    // Captured on the PRESS, not on the claim below — the same immediate capture `installSwipeScroll`
+    // takes, and for the same reason: without it the gesture is delivered somewhere else before it can
+    // qualify. The handle is a ⠿ of about 12x16 px and the slop is half its height, so the very move
+    // that would claim the drag has already left the element; it went to whatever sat under the
+    // pointer, this handler never heard about it, and the drag was effectively unclaimable by mouse.
+    // This is deliberately NOT the dialog's slop-before-capture rule (`dialogs.js`): that gesture
+    // shares its surface with a scroll and a tap and must steal neither, while this handle exists ONLY
+    // to start a drag — no click handler, `aria-hidden`, already `touch-action: none` — so there is no
+    // competing gesture to disambiguate and nothing an early capture can take away. The slop stays
+    // exactly as it was and keeps its own job, telling a click on the handle from a drag: capture and
+    // claim were merely coupled here, never the same rule.
+    if (element && element.setPointerCapture) element.setPointerCapture(event.pointerId);
   }, []);
 
   const dragPointerMove = useCallback((event) => {
@@ -384,11 +397,8 @@ export function Board({
       if (Math.abs(event.clientX - gesture.startX) < DRAG_SLOP_PX &&
         Math.abs(event.clientY - gesture.startY) < DRAG_SLOP_PX) return;
       gesture.claimed = true;
-      // Capture retargets every later move to the handle, so the gesture survives the re-render its own
-      // drop-target highlight causes and the pointer leaving the card it started on.
-      if (gesture.element && gesture.element.setPointerCapture) {
-        gesture.element.setPointerCapture(event.pointerId);
-      }
+      // The capture that makes this move reach us at all was taken on the press; it is also what keeps
+      // the gesture alive across the re-render its own drop-target highlight causes.
       setDraggingRef(gesture.ref);
     }
     if (event.cancelable) event.preventDefault();
