@@ -969,8 +969,12 @@ daemon's limit per file; a partial batch must report each failed name without re
 adding another global listener. Match physical keys with `event.code`, not layout-dependent `event.key`.
 Leader mnemonics likewise read bare `event.code` without modifier checks because the opener's modifier may
 be released before the second key arrives. The listener must continue to yield while another dialog owns
-the keyboard. `⌘1` is reliable in the installed PWA but reserved for tab switching in ordinary browser
-tabs, so `#sidebar-toggle` remains the guaranteed path.
+the keyboard. The sidebar toggle is **`⌘.`** (`event.code === "Period"`): `⌘1` was reserved for tab
+switching in ordinary browser tabs and reliable only in the installed PWA, while nothing claims `⌘.` the
+same way (Safari reads it as "stop loading", which the listener's `preventDefault` should suppress —
+**unverified on Safari**, so it belongs on the real-device checklist). `#sidebar-toggle` remains the
+guaranteed path in either surface, and it is what `LayoutTest` drives — no automated test presses the
+chord itself, though unlike `⌘1` a Chromium `Meta+Period` press is now possible if one is wanted.
 
 **The Web UI is dark-only, and the canvas is a second copy of `--bg` that must be kept equal to it.**
 `style.css` carries one unconditional dark palette with the Kotlin-purple accent; do not reintroduce

@@ -382,9 +382,11 @@ function App() {
       const opensPalette =
         (event.metaKey && event.code === "KeyK") ||
         (event.ctrlKey && event.shiftKey && event.code === "KeyK");
-      // A normal browser tab reserves Command-1 for tab switching; the installed PWA receives it
-      // reliably. The visible desktop toggle remains the guaranteed path in either surface.
-      const togglesSidebar = event.metaKey && event.code === "Digit1";
+      // Command-period, because a normal browser tab reserves Command-1 for tab switching and only the
+      // installed PWA ever received that reliably. Nothing claims Command-period the same way; Safari
+      // reads it as "stop loading", which the capture-phase preventDefault below should suppress —
+      // unverified on Safari, so the visible desktop toggle stays the guaranteed path in either surface.
+      const togglesSidebar = event.metaKey && event.code === "Period";
       if ((!opensPalette && !togglesSidebar) || dialogRef.current) return;
       event.preventDefault();
       event.stopPropagation();
@@ -1433,7 +1435,7 @@ function App() {
               onClick=${closeDrawer}></button>`}
     ${/* One sidebar for the whole app, outside the screen branch below. Its body is what changes: the
           session list on the session view, the project list on the board. That is what makes the two
-          links in its head reachable from anywhere, and it is why ⌘1, the mobile drawer and the status
+          links in its head reachable from anywhere, and it is why ⌘., the mobile drawer and the status
           footer are written once instead of once per screen. */ ""}
     <${Sidebar}
       screen=${onBoard ? SCREEN_TASKS : SCREEN_SESSIONS}

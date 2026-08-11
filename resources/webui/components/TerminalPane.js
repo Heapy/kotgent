@@ -683,7 +683,7 @@ export function TerminalPane({
           aria-label=${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded=${sidebarCollapsed ? "false" : "true"}
           aria-controls="sidebar"
-          title=${sidebarCollapsed ? "Expand sidebar (⌘1)" : "Collapse sidebar (⌘1)"}
+          title=${sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
           onClick=${onToggleSidebar}
         >${sidebarCollapsed ? "›" : "‹"}</button>
         <div class="terminal-identity">

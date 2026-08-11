@@ -503,7 +503,7 @@ export function Board({
 
             The drawer opener and the collapse toggle are rendered on EVERY screen and hidden by the
             breakpoint — the phone gets ☰, the desktop gets ‹ / › — exactly as `#terminal-head` does.
-            Without them the board would be the one screen whose sidebar cannot be reopened after ⌘1, or
+            Without them the board would be the one screen whose sidebar cannot be reopened after ⌘., or
             opened at all on a phone.
 
             All three carry the SAME ids as the terminal header's, which is legal because the two heads
@@ -530,7 +530,7 @@ export function Board({
           aria-label=${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-expanded=${sidebarCollapsed ? "false" : "true"}
           aria-controls="sidebar"
-          title=${sidebarCollapsed ? "Expand sidebar (⌘1)" : "Collapse sidebar (⌘1)"}
+          title=${sidebarCollapsed ? "Expand sidebar (⌘.)" : "Collapse sidebar (⌘.)"}
           onClick=${onToggleSidebar}
         >${sidebarCollapsed ? "›" : "‹"}</button>
         <div class="board-identity">

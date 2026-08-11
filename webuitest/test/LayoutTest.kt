@@ -219,10 +219,10 @@ class LayoutTest {
     /**
      * The desktop collapse, and the proof it does not overload the drawer.
      *
-     * `⌘1` is reserved for tab switching in an ordinary browser tab (it is reliable only in the installed
-     * PWA), so `#sidebar-toggle` is the guaranteed path and the one this drives. Collapsing is measured
-     * where it is meant to be felt: the sidebar's box goes to zero width and the terminal pane takes the
-     * space back.
+     * The keyboard path is `⌘.` — `⌘1` was reserved for tab switching in an ordinary browser tab and
+     * reliable only in the installed PWA — but the button is the guaranteed path in either surface, so
+     * `#sidebar-toggle` is what this drives. Collapsing is measured where it is meant to be felt: the
+     * sidebar's box goes to zero width and the terminal pane takes the space back.
      *
      * The second half is the interesting one. The collapse is a persisted, app-level state, so it survives
      * the window becoming phone-sized — where the sidebar is no longer a flex column at all but a fixed
