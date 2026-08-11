@@ -15,7 +15,9 @@ import kotlinx.serialization.json.putJsonObject
  * delivery fails. The secret stays in a `0600` curl header file.
  */
 object JunieHookConfig {
-    const val INGRESS_PATH: String = "/hooks/junie"
+    const val INGRESS_PATH: String = "/api/v1/hooks/junie"
+
+    const val LEGACY_INGRESS_PATH: String = "/hooks/junie"
 
     const val HOOK_TOKEN_HEADER: String = "X-Kotgent-Hook-Token"
 

@@ -13,7 +13,9 @@ import kotlinx.serialization.json.putJsonObject
  * than an argv; only `$TMUX_PANE` is deliberately shell-expanded at hook time.
  */
 object ClaudeHookConfig {
-    const val INGRESS_PATH: String = "/hooks/claude"
+    const val INGRESS_PATH: String = "/api/v1/hooks/claude"
+
+    const val LEGACY_INGRESS_PATH: String = "/hooks/claude"
 
     const val HOOK_TOKEN_HEADER: String = "X-Kotgent-Hook-Token"
 

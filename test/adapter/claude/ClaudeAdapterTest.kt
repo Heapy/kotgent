@@ -219,7 +219,8 @@ class ClaudeAdapterTest {
 
     @Test
     fun ingressUrlIsLocalOnlyLoopback() {
-        assertEquals("http://127.0.0.1:41337/hooks/claude", ClaudeHookConfig.ingressUrl(41337))
+        assertEquals("/hooks/claude", ClaudeHookConfig.LEGACY_INGRESS_PATH)
+        assertEquals("http://127.0.0.1:41337/api/v1/hooks/claude", ClaudeHookConfig.ingressUrl(41337))
     }
 
     @Test

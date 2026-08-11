@@ -10,6 +10,8 @@ import io.kotgent.transport.API_PREFIX
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
 import io.kotgent.transport.AUTH_TICKET_PATH
+import io.kotgent.transport.LEGACY_AUTH_ROTATE_PATH
+import io.kotgent.transport.LEGACY_AUTH_TICKET_PATH
 import io.kotgent.transport.ImportSessionRequest
 import io.kotgent.transport.RotateResponse
 import io.kotgent.transport.SessionDto
@@ -417,12 +419,14 @@ class CliTest {
     }
 
     @Test
-    fun daemonPathPrefixesTheControlSurfaceAndExemptsTheAuthBootstrap() {
+    fun daemonPathCanonicalizesProgrammaticRoutesAndLeavesOnlyTheAuthPageAtRoot() {
         assertEquals("$API_PREFIX/sessions", daemonPath("/sessions"))
         assertEquals("$API_PREFIX/sessions/abc/stop", daemonPath("/sessions/abc/stop"))
-        assertEquals(AUTH_TICKET_PATH, daemonPath(AUTH_TICKET_PATH), "the phone ticket did not move")
-        assertEquals(AUTH_ROTATE_PATH, daemonPath(AUTH_ROTATE_PATH), "neither did token rotation")
-        assertEquals(AUTH_PAGE_PATH, daemonPath(AUTH_PAGE_PATH), "nor the login page")
+        assertEquals(AUTH_TICKET_PATH, daemonPath(AUTH_TICKET_PATH), "canonical paths are not double-prefixed")
+        assertEquals(AUTH_ROTATE_PATH, daemonPath(AUTH_ROTATE_PATH), "canonical paths are stable")
+        assertEquals(AUTH_TICKET_PATH, daemonPath(LEGACY_AUTH_TICKET_PATH), "legacy ticket input is canonicalized")
+        assertEquals(AUTH_ROTATE_PATH, daemonPath(LEGACY_AUTH_ROTATE_PATH), "legacy rotate input is canonicalized")
+        assertEquals(AUTH_PAGE_PATH, daemonPath(AUTH_PAGE_PATH), "the login page alone stays at the root")
     }
 
 

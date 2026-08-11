@@ -34,7 +34,7 @@ fun Route.claudeHookRoutes(
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
     modelCapture: ClaudeModelCapture = ClaudeModelCapture(store),
 ) = hookRoutes(
-    path = ClaudeHookConfig.INGRESS_PATH,
+    paths = listOf(ClaudeHookConfig.INGRESS_PATH, ClaudeHookConfig.LEGACY_INGRESS_PATH),
     tokenHeader = ClaudeHookConfig.HOOK_TOKEN_HEADER,
     paneHeader = ClaudeHookConfig.TMUX_PANE_HEADER,
     eventHeader = ClaudeHookConfig.HOOK_EVENT_HEADER,
@@ -55,7 +55,7 @@ fun Route.codexHookRoutes(
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
     onProviderIdRebound: suspend (SessionId) -> Unit = {},
 ) = hookRoutes(
-    path = CodexHookConfig.INGRESS_PATH,
+    paths = listOf(CodexHookConfig.INGRESS_PATH, CodexHookConfig.LEGACY_INGRESS_PATH),
     tokenHeader = CodexHookConfig.HOOK_TOKEN_HEADER,
     paneHeader = CodexHookConfig.TMUX_PANE_HEADER,
     eventHeader = CodexHookConfig.HOOK_EVENT_HEADER,
@@ -76,7 +76,7 @@ fun Route.junieHookRoutes(
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
     onProviderIdRebound: suspend (SessionId) -> Unit = {},
 ) = hookRoutes(
-    path = JunieHookConfig.INGRESS_PATH,
+    paths = listOf(JunieHookConfig.INGRESS_PATH, JunieHookConfig.LEGACY_INGRESS_PATH),
     tokenHeader = JunieHookConfig.HOOK_TOKEN_HEADER,
     paneHeader = JunieHookConfig.TMUX_PANE_HEADER,
     eventHeader = JunieHookConfig.HOOK_EVENT_HEADER,
@@ -93,33 +93,35 @@ fun Route.tmuxHookRoutes(
     token: () -> String,
     onSessionClosed: suspend (SessionId) -> Unit,
 ) = loopbackOnly {
-    post(TmuxHookConfig.INGRESS_PATH) {
-        val presented = call.request.headers[TmuxHookConfig.HOOK_TOKEN_HEADER]
-        if (presented == null || !constantTimeEquals(presented, token())) {
-            call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
-            return@post
-        }
+    for (path in listOf(TmuxHookConfig.INGRESS_PATH, TmuxHookConfig.LEGACY_INGRESS_PATH)) {
+        post(path) {
+            val presented = call.request.headers[TmuxHookConfig.HOOK_TOKEN_HEADER]
+            if (presented == null || !constantTimeEquals(presented, token())) {
+                call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
+                return@post
+            }
 
-        val sessionId = call.request.headers[TmuxHookConfig.SESSION_HEADER]
-            ?.takeIf { it.startsWith(TMUX_SESSION_PREFIX) }
-            ?.removePrefix(TMUX_SESSION_PREFIX)
-            ?.let { raw -> runCatching { SessionId(raw) }.getOrNull() }
+            val sessionId = call.request.headers[TmuxHookConfig.SESSION_HEADER]
+                ?.takeIf { it.startsWith(TMUX_SESSION_PREFIX) }
+                ?.removePrefix(TMUX_SESSION_PREFIX)
+                ?.let { raw -> runCatching { SessionId(raw) }.getOrNull() }
 
-        if (sessionId == null) {
-            // The global tmux hook also observes sessions not owned by kotgent.
-            call.respondText("ignored", status = HttpStatusCode.OK)
-            return@post
-        }
+            if (sessionId == null) {
+                // The global tmux hook also observes sessions not owned by kotgent.
+                call.respondText("ignored", status = HttpStatusCode.OK)
+                return@post
+            }
 
-        runCatching { onSessionClosed(sessionId) }.onFailure { failure ->
-            eprintln("tmux session-close handling failed for '${sessionId.value}': $failure")
+            runCatching { onSessionClosed(sessionId) }.onFailure { failure ->
+                eprintln("tmux session-close handling failed for '${sessionId.value}': $failure")
+            }
+            call.respondText("ok", status = HttpStatusCode.OK)
         }
-        call.respondText("ok", status = HttpStatusCode.OK)
     }
 }
 
 private fun Route.hookRoutes(
-    path: String,
+    paths: List<String>,
     tokenHeader: String,
     paneHeader: String,
     eventHeader: String,
@@ -133,73 +135,75 @@ private fun Route.hookRoutes(
     onProviderIdRebound: suspend (SessionId) -> Unit = {},
 ) = loopbackOnly {
     // Provider hooks originate locally; keeping this wrapper here prevents accidental tunnel exposure.
-    post(path) {
-        val presented = call.request.headers[tokenHeader]
-        if (presented == null || !constantTimeEquals(presented, token())) {
-            call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
-            return@post
-        }
-
-        val event = call.request.queryParameters["event"]
-            ?: call.request.headers[eventHeader]
-        if (event.isNullOrBlank()) {
-            call.respondText("missing hook event name", status = HttpStatusCode.BadRequest)
-            return@post
-        }
-        val paneRaw = call.request.headers[paneHeader]
-        if (paneRaw.isNullOrBlank()) {
-            call.respondText("missing tmux pane header", status = HttpStatusCode.BadRequest)
-            return@post
-        }
-        val paneId = runCatching { PaneId(paneRaw) }.getOrNull()
-        if (paneId == null) {
-            call.respondText("malformed pane id '$paneRaw'", status = HttpStatusCode.BadRequest)
-            return@post
-        }
-
-        val sessionId = resolvePane(paneLookup, paneId, paneLookupGraceMillis)
-        if (sessionId == null) {
-            call.respondText("unknown pane ${paneId.value}", status = HttpStatusCode.NotFound)
-            return@post
-        }
-
-        val body = call.receiveText()
-        val payload: JsonElement = if (body.isBlank()) {
-            EMPTY_OBJECT
-        } else {
-            try {
-                json.parseToJsonElement(body)
-            } catch (_: SerializationException) {
-                call.respondText("invalid JSON payload", status = HttpStatusCode.BadRequest)
+    for (path in paths) {
+        post(path) {
+            val presented = call.request.headers[tokenHeader]
+            if (presented == null || !constantTimeEquals(presented, token())) {
+                call.respondText("unauthorized", status = HttpStatusCode.Unauthorized)
                 return@post
             }
-        }
 
-        onHookPayload(sessionId, payload)
-
-        val normalized = normalize(event, payload, paneId)
-        if (normalized != null) {
-            val priorProviderId =
-                if (normalized is AgentEvent.SessionBound) store.getSession(sessionId)?.providerSessionId
-                else null
-            val displacing = normalized is AgentEvent.SessionBound &&
-                priorProviderId != null &&
-                priorProviderId != normalized.providerSessionId
-            if (displacing) {
-                // Once the authoritative id commits, a retry no longer looks like a displacement. Keep
-                // append plus correction non-cancellable so a dropped hook connection cannot split them.
-                withContext(NonCancellable) {
-                    store.append(sessionId, normalized, EventSource.hook)
-                    runCatching { onProviderIdRebound(sessionId) }.onFailure { failure ->
-                        eprintln("provider-id rebind correction failed for '${sessionId.value}': $failure")
-                    }
-                }
-            } else {
-                store.append(sessionId, normalized, EventSource.hook)
+            val event = call.request.queryParameters["event"]
+                ?: call.request.headers[eventHeader]
+            if (event.isNullOrBlank()) {
+                call.respondText("missing hook event name", status = HttpStatusCode.BadRequest)
+                return@post
             }
-            call.respondText("ok", status = HttpStatusCode.OK)
-        } else {
-            call.respondText("ignored", status = HttpStatusCode.OK)
+            val paneRaw = call.request.headers[paneHeader]
+            if (paneRaw.isNullOrBlank()) {
+                call.respondText("missing tmux pane header", status = HttpStatusCode.BadRequest)
+                return@post
+            }
+            val paneId = runCatching { PaneId(paneRaw) }.getOrNull()
+            if (paneId == null) {
+                call.respondText("malformed pane id '$paneRaw'", status = HttpStatusCode.BadRequest)
+                return@post
+            }
+
+            val sessionId = resolvePane(paneLookup, paneId, paneLookupGraceMillis)
+            if (sessionId == null) {
+                call.respondText("unknown pane ${paneId.value}", status = HttpStatusCode.NotFound)
+                return@post
+            }
+
+            val body = call.receiveText()
+            val payload: JsonElement = if (body.isBlank()) {
+                EMPTY_OBJECT
+            } else {
+                try {
+                    json.parseToJsonElement(body)
+                } catch (_: SerializationException) {
+                    call.respondText("invalid JSON payload", status = HttpStatusCode.BadRequest)
+                    return@post
+                }
+            }
+
+            onHookPayload(sessionId, payload)
+
+            val normalized = normalize(event, payload, paneId)
+            if (normalized != null) {
+                val priorProviderId =
+                    if (normalized is AgentEvent.SessionBound) store.getSession(sessionId)?.providerSessionId
+                    else null
+                val displacing = normalized is AgentEvent.SessionBound &&
+                    priorProviderId != null &&
+                    priorProviderId != normalized.providerSessionId
+                if (displacing) {
+                    // Once the authoritative id commits, a retry no longer looks like a displacement. Keep
+                    // append plus correction non-cancellable so a dropped hook connection cannot split them.
+                    withContext(NonCancellable) {
+                        store.append(sessionId, normalized, EventSource.hook)
+                        runCatching { onProviderIdRebound(sessionId) }.onFailure { failure ->
+                            eprintln("provider-id rebind correction failed for '${sessionId.value}': $failure")
+                        }
+                    }
+                } else {
+                    store.append(sessionId, normalized, EventSource.hook)
+                }
+                call.respondText("ok", status = HttpStatusCode.OK)
+            } else {
+                call.respondText("ignored", status = HttpStatusCode.OK)
+            }
         }
     }
 }

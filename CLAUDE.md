@@ -43,8 +43,7 @@ testing strategy. Implementation plans belong in `docs/plans/`; move completed p
 
 ## Transport and Web UI
 
-- Client APIs live under `/api/v1`. Provider hooks and the `/auth` bootstrap remain unprefixed because
-  existing hook files and unauthenticated clients depend on those paths.
+- Client APIs live under `/api/v1`.
 - Authorization decisions belong in the shared authorization function. Never put the master token in a
   URL; browser access uses one-time tickets and the stateless session cookie.
 - The service worker remains a classic, network-only worker at `/sw.js`; do not add module imports or an

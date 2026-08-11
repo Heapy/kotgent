@@ -5,7 +5,9 @@ package io.kotgent.adapter.codex
  * Codex session, while `-c` is session-scoped. The secret stays in a `0600` curl header file.
  */
 object CodexHookConfig {
-    const val INGRESS_PATH: String = "/hooks/codex"
+    const val INGRESS_PATH: String = "/api/v1/hooks/codex"
+
+    const val LEGACY_INGRESS_PATH: String = "/hooks/codex"
 
     const val HOOK_TOKEN_HEADER: String = "X-Kotgent-Hook-Token"
 

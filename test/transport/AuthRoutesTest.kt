@@ -97,6 +97,67 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun canonicalAndLegacyAuthApiPathsServeTheSameOperations() = withAuthServer { env ->
+        val canonicalTicketResponse = env.client.req(
+            env.port,
+            AUTH_TICKET_PATH,
+            HttpMethod.Post,
+            bearer = token,
+        )
+        val legacyTicketResponse = env.client.req(
+            env.port,
+            LEGACY_AUTH_TICKET_PATH,
+            HttpMethod.Post,
+            bearer = token,
+        )
+        assertEquals(HttpStatusCode.OK, canonicalTicketResponse.status, "canonical ticket route")
+        assertEquals(HttpStatusCode.OK, legacyTicketResponse.status, "legacy ticket alias")
+
+        val canonicalTicket = TRANSPORT_JSON.decodeFromString(
+            TicketResponse.serializer(),
+            canonicalTicketResponse.bodyAsText(),
+        ).ticket
+        val legacyTicket = TRANSPORT_JSON.decodeFromString(
+            TicketResponse.serializer(),
+            legacyTicketResponse.bodyAsText(),
+        ).ticket
+        assertEquals(HttpStatusCode.OK, env.exchange(env.port, canonicalTicket).status, "canonical exchange route")
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(
+                env.port,
+                LEGACY_AUTH_EXCHANGE_PATH,
+                HttpMethod.Post,
+                origin = "http://127.0.0.1:${env.port}",
+                jsonBody = """{"ticket":"$legacyTicket"}""",
+            ).status,
+            "legacy exchange alias",
+        )
+
+        val canonicalRotate = env.client.req(
+            env.port,
+            AUTH_ROTATE_PATH,
+            HttpMethod.Post,
+            bearer = token,
+        )
+        assertEquals(HttpStatusCode.OK, canonicalRotate.status, "canonical rotate route")
+        val rotated = TRANSPORT_JSON.decodeFromString(
+            RotateResponse.serializer(),
+            canonicalRotate.bodyAsText(),
+        ).token
+        assertEquals(
+            HttpStatusCode.OK,
+            env.client.req(
+                env.port,
+                LEGACY_AUTH_ROTATE_PATH,
+                HttpMethod.Post,
+                bearer = rotated,
+            ).status,
+            "legacy rotate alias",
+        )
+    }
+
+    @Test
     fun aSessionCookieCanMintATicketThatExchangesIntoAWorkingCookie() = withAuthServer { env ->
         val loginCookie = parseServerSetCookieHeader(
             env.exchange(env.port, env.issueTicket()).headers[HttpHeaders.SetCookie]!!,
@@ -143,7 +204,7 @@ class AuthRoutesTest {
         val page = env.client.req(env.port, AUTH_PAGE_PATH)
         assertEquals(HttpStatusCode.OK, page.status, "the page is served without any credential")
         assertTrue(page.contentType()?.match(ContentType.Text.Html) == true, "as HTML")
-        assertTrue(page.bodyAsText().contains("/auth/exchange"), "the page posts to the exchange")
+        assertTrue(page.bodyAsText().contains(AUTH_EXCHANGE_PATH), "the page posts to the canonical exchange")
 
         env.client.req(env.port, AUTH_PAGE_PATH)
 

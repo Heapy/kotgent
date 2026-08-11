@@ -7,7 +7,7 @@ import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
 import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
-import { apiRequest, errorMessage } from "../lib/api.js";
+import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
 
 const SWIPE_SLOP_PX = 8;
@@ -763,7 +763,7 @@ export function PhoneDialog({ onClose }) {
   const issue = useCallback(async () => {
     setState({ status: "loading" });
     try {
-      const ticket = await apiRequest("/auth/ticket", { method: "POST" });
+      const ticket = await apiRequest(AUTH_TICKET_PATH, { method: "POST" });
       setState({ status: "ready", ticket: ticket });
     } catch (e) {
       setState({ status: "error", message: errorMessage(e) });

@@ -313,8 +313,12 @@ per minute in addition to the short lifetime and single-use rule.
 `http://127.0.0.1:<port>/auth#ticket=…`, while the equivalent grouped code and human hint go to stderr,
 so piping the URL remains safe. The fragment and typed code are two representations of the **same**
 credential; spending either invalidates the other. A browser opening the fragment reads it locally,
-`POST`s it to `/auth/exchange`, and then uses `location.replace("/")`, so neither the server's initial
+`POST`s it to `/api/v1/auth/exchange`, and then uses `location.replace("/")`, so neither the server's initial
 `GET /auth` nor browser history receives the live fragment.
+
+Programmatic auth calls use `/api/v1/auth/{ticket,exchange,rotate}`. The former root paths remain aliases for
+older clients, just as `/hooks/*` remains an alias for hook scripts generated before hooks moved to
+`/api/v1/hooks/*`; newly generated scripts and all bundled clients use the versioned paths.
 
 The UI shows the session list with live state badges and a "Needs attention" queue (fed by the events
 WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
@@ -479,7 +483,7 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `adapter/` | `AgentAdapter` contract + the Claude, Codex and Junie adapters (launch/resume spec, hook config, event normalization). |
 | `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes, and `TaskService` — the two stores called sequentially, never nested. |
 | `push/` | Attention-edge tracking, SQLite subscription store, VAPID key/JWT signing, Darwin/NSURLSession delivery, and notifier lifecycle. |
-| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. Every client-facing route lives under `/api/v1`; the hook ingresses and the whole `/auth` bootstrap surface deliberately do not. |
+| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. Every programmatic endpoint has a canonical `/api/v1` path; `GET /auth` stays at root, while `/hooks/*` and `/auth/{ticket,exchange,rotate}` remain compatibility aliases. |
 | `cli/` | Subcommands + the raw `attach` passthrough, and the JSON-only `task`/`project` family (which resolves its own tmux pane through `/whoami`). |
 | `launchd/` | `plist` generation + install/uninstall. |
 | `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |

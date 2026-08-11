@@ -29,11 +29,23 @@ import kotlin.time.Clock
 
 const val AUTH_PAGE_PATH: String = "/auth"
 
-const val AUTH_TICKET_PATH: String = "/auth/ticket"
+const val AUTH_TICKET_PATH: String = "$API_PREFIX/auth/ticket"
 
-const val AUTH_EXCHANGE_PATH: String = "/auth/exchange"
+const val AUTH_EXCHANGE_PATH: String = "$API_PREFIX/auth/exchange"
 
-const val AUTH_ROTATE_PATH: String = "/auth/rotate"
+const val AUTH_ROTATE_PATH: String = "$API_PREFIX/auth/rotate"
+
+const val LEGACY_AUTH_TICKET_PATH: String = "/auth/ticket"
+
+const val LEGACY_AUTH_EXCHANGE_PATH: String = "/auth/exchange"
+
+const val LEGACY_AUTH_ROTATE_PATH: String = "/auth/rotate"
+
+private val AUTH_TICKET_PATHS: List<String> = listOf(AUTH_TICKET_PATH, LEGACY_AUTH_TICKET_PATH)
+
+private val AUTH_EXCHANGE_PATHS: List<String> = listOf(AUTH_EXCHANGE_PATH, LEGACY_AUTH_EXCHANGE_PATH)
+
+private val AUTH_ROTATE_PATHS: List<String> = listOf(AUTH_ROTATE_PATH, LEGACY_AUTH_ROTATE_PATH)
 
 @Serializable
 data class TicketResponse(
@@ -98,7 +110,7 @@ fun Route.authRoutes(
 ) {
     authenticated(tokens::current, publicUrl) {
         loopbackOnly {
-            post(AUTH_TICKET_PATH) {
+            for (path in AUTH_TICKET_PATHS) post(path) {
                 // Re-check one token snapshot and bind the ticket to that exact value: rotation between
                 // the outer gate and issuance must not launder an old credential onto the new token.
                 val token = tokens.current()
@@ -126,7 +138,7 @@ fun Route.authRoutes(
                 )
             }
 
-            post(AUTH_ROTATE_PATH) {
+            for (path in AUTH_ROTATE_PATHS) post(path) {
                 // Rotation returns the machine key, so a browser cookie must never authorize it.
                 val presented = call.presentedToken()
                 if (presented == null) {
@@ -150,7 +162,7 @@ fun Route.authRoutes(
         call.respondText(AUTH_PAGE_HTML, ContentType.Text.Html)
     }
 
-    post(AUTH_EXCHANGE_PATH) {
+    for (path in AUTH_EXCHANGE_PATHS) post(path) {
         val facts = call.requestFacts()
         val decision = authorizeTicketExchange(facts, publicUrl)
         if (decision is AuthDecision.Deny) {
@@ -249,7 +261,7 @@ private suspend fun ApplicationCall.respondToUnconsumedExchangeAndClose(
 
 @OptIn(ExperimentalCoroutinesApi::class)
 internal suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush(
-    reason: String = "closing unconsumed /auth/exchange request body",
+    reason: String = "closing unconsumed $AUTH_EXCHANGE_PATH request body",
 ) {
     // Pinned to Ktor CIO 3.4.x: the grandparent owns raw-body parsing and closes the accepted socket.
     val callJob = coroutineContext[Job] ?: return
@@ -370,7 +382,7 @@ const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
   }
 
   function exchange(value) {
-    return fetch("/auth/exchange", {
+    return fetch("$AUTH_EXCHANGE_PATH", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },

@@ -81,7 +81,8 @@ class JunieHookConfigTest {
         val script = JunieHookConfig.hookScript(port = 7777, headerFilePath = headerPath)
 
         assertTrue(script.startsWith("#!/bin/sh"), "it is a shell script")
-        assertTrue(script.contains("http://127.0.0.1:7777/hooks/junie?event="))
+        assertEquals("/hooks/junie", JunieHookConfig.LEGACY_INGRESS_PATH)
+        assertTrue(script.contains("http://127.0.0.1:7777/api/v1/hooks/junie?event="))
         assertTrue(script.contains("\"\$1\""), "the event name comes from the first argument")
         assertTrue(script.contains("-H '@$headerPath'"), "the token is read from the header file: $script")
         assertTrue(script.contains("X-Kotgent-Tmux-Pane: \$TMUX_PANE"))

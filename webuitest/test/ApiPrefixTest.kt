@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 class ApiPrefixTest {
 
     @Test
-    fun everyDaemonCallThePageMakesCarriesTheApiPrefixExceptTheAuthBootstrap() {
+    fun everyProgrammaticDaemonCallThePageMakesCarriesTheApiPrefix() {
         Harness(SESSIONS_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.fineContext().use { context ->
@@ -45,12 +45,15 @@ class ApiPrefixTest {
                         }
 
                         val offenders = seen.map { pathOf(it) }
-                            .filter { !it.startsWith(API_PREFIX) && !it.startsWith(AUTH_PAGE_PATH) }
+                            .filter { path ->
+                                val relative = path.removePrefix(API_PREFIX)
+                                !path.startsWith("$API_PREFIX/") ||
+                                    relative == API_PREFIX || relative.startsWith("$API_PREFIX/")
+                            }
                             .distinct()
                         assertTrue(
                             offenders.isEmpty(),
-                            "every daemon call must live under $API_PREFIX, or be part of the " +
-                                "$AUTH_PAGE_PATH bootstrap. These did neither: $offenders",
+                            "every programmatic daemon call must carry exactly one $API_PREFIX. Offenders: $offenders",
                         )
                     }
                 }
@@ -83,8 +86,8 @@ class ApiPrefixTest {
             "the project list" to "$API_PREFIX/projects",
             "the version read" to "$API_PREFIX/version",
             "a terminal socket" to "/terminal",
-            "the sign-in exchange" to "$AUTH_PAGE_PATH/exchange",
-            "the exempted ticket mint" to "$AUTH_PAGE_PATH/ticket",
+            "the sign-in exchange" to "$API_PREFIX$AUTH_PAGE_PATH/exchange",
+            "the ticket mint" to "$API_PREFIX$AUTH_PAGE_PATH/ticket",
         )
     }
 }

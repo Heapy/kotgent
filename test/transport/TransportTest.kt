@@ -1303,18 +1303,19 @@ class TransportTest {
     }
 
     @Test
-    fun theHookIngressDidNotMoveBecauseRunningSessionsHaveItsUrlOnDisk() = withServer { ctx ->
-        val bare = ctx.client.post("http://127.0.0.1:${ctx.port}${ClaudeHookConfig.INGRESS_PATH}?event=Stop")
-        assertEquals(HttpStatusCode.Unauthorized, bare.status, "the hook ingress still answers at its baked-in path")
-
-        val moved = ctx.client.post(
-            "http://127.0.0.1:${ctx.port}$API_PREFIX${ClaudeHookConfig.INGRESS_PATH}?event=Stop",
-        )
-        assertEquals(HttpStatusCode.NotFound, moved.status, "and it was NOT also mounted under the prefix")
+    fun theHookIngressUsesTheApiPrefixAndKeepsItsLegacyAlias() = withServer { ctx ->
+        for (path in listOf(ClaudeHookConfig.INGRESS_PATH, ClaudeHookConfig.LEGACY_INGRESS_PATH)) {
+            val response = ctx.client.post("http://127.0.0.1:${ctx.port}$path?event=Stop")
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                response.status,
+                "$path reaches the hook handler and applies its token gate",
+            )
+        }
     }
 
     @Test
-    fun theWholeAuthBootstrapSurfaceStayedWhereEveryClientAlreadyPointsAtIt() = withServer { ctx ->
+    fun theAuthPageStaysAtRootAndTheTicketApiKeepsItsLegacyAlias() = withServer { ctx ->
         assertEquals(
             HttpStatusCode.OK,
             ctx.client.get("http://127.0.0.1:${ctx.port}$AUTH_PAGE_PATH").status,
@@ -1326,21 +1327,16 @@ class TransportTest {
             "and did not move under the prefix",
         )
 
-        val ticket = ctx.client.post("http://127.0.0.1:${ctx.port}$AUTH_TICKET_PATH") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-        }
-        assertEquals(HttpStatusCode.OK, ticket.status, "the phone ticket still mints through the unprefixed path")
-        assertTrue(
-            TRANSPORT_JSON.decodeFromString(TicketResponse.serializer(), ticket.bodyAsText()).ticket.isNotBlank(),
-            "and answers a real ticket",
-        )
-        assertEquals(
-            HttpStatusCode.NotFound,
-            ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX$AUTH_TICKET_PATH") {
+        for (path in listOf(AUTH_TICKET_PATH, LEGACY_AUTH_TICKET_PATH)) {
+            val ticket = ctx.client.post("http://127.0.0.1:${ctx.port}$path") {
                 header(HttpHeaders.Authorization, "Bearer $token")
-            }.status,
-            "ticket issuance was not also mounted under the prefix",
-        )
+            }
+            assertEquals(HttpStatusCode.OK, ticket.status, "$path mints a phone ticket")
+            assertTrue(
+                TRANSPORT_JSON.decodeFromString(TicketResponse.serializer(), ticket.bodyAsText()).ticket.isNotBlank(),
+                "$path answers a real ticket",
+            )
+        }
     }
 
     @Test

@@ -58,8 +58,12 @@ class MissingTokenException(val tokenPath: String) : RuntimeException(
 class ApiException(val status: Int, val body: String) :
     RuntimeException("kotgent daemon returned HTTP $status: ${body.trim().ifEmpty { "(no body)" }}")
 
-/** `/auth*` is an unprefixed bootstrap surface; all other daemon routes live under [API_PREFIX]. */
-fun daemonPath(path: String): String = if (path.startsWith(AUTH_PAGE_PATH)) path else "$API_PREFIX$path"
+/** Programmatic daemon routes live under [API_PREFIX]; only the HTML login page stays at the root. */
+fun daemonPath(path: String): String = when {
+    path == AUTH_PAGE_PATH -> path
+    path == API_PREFIX || path.startsWith("$API_PREFIX/") -> path
+    else -> "$API_PREFIX$path"
+}
 
 /**
  * Client for the daemon's control API. Every call authenticates with [token] and fails before network

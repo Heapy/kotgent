@@ -1,10 +1,10 @@
 export const AUTH_PATH = "/auth";
 
 const API_PREFIX = "/api/v1";
+export const AUTH_TICKET_PATH = "/auth/ticket";
 
-// Keep `/auth*` unprefixed: unauthenticated clients need it, and ApiClient.daemonPath mirrors this rule.
 function apiPath(path) {
-  return path.indexOf(AUTH_PATH) === 0 ? path : API_PREFIX + path;
+  return API_PREFIX + path;
 }
 
 export function isUnauthenticated(error) {

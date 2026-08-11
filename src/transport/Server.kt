@@ -45,7 +45,7 @@ import kotlin.concurrent.Volatile
 import platform.posix.F_OK
 import platform.posix.access
 
-// Client control APIs are versioned here; persisted provider hooks and credential bootstrap stay at root.
+// Programmatic endpoints are versioned; hook and auth handlers also expose root aliases for older clients.
 const val API_PREFIX: String = "/api/v1"
 
 class KotgentServer(

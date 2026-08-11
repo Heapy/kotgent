@@ -10,10 +10,11 @@ class TmuxHookConfigTest {
 
     @Test
     fun headerAndIngressUseThePinnedWireNamesAndRequestedPort() {
-        assertEquals("/hooks/tmux", TmuxHookConfig.INGRESS_PATH)
+        assertEquals("/api/v1/hooks/tmux", TmuxHookConfig.INGRESS_PATH)
+        assertEquals("/hooks/tmux", TmuxHookConfig.LEGACY_INGRESS_PATH)
         assertEquals("X-Kotgent-Hook-Token", TmuxHookConfig.HOOK_TOKEN_HEADER)
         assertEquals("X-Kotgent-Tmux-Session", TmuxHookConfig.SESSION_HEADER)
-        assertEquals("http://127.0.0.1:7419/hooks/tmux", TmuxHookConfig.ingressUrl(7419))
+        assertEquals("http://127.0.0.1:7419/api/v1/hooks/tmux", TmuxHookConfig.ingressUrl(7419))
         assertEquals(
             "X-Kotgent-Hook-Token: s3cr3t\n",
             TmuxHookConfig.headerFileContent("s3cr3t"),
@@ -28,7 +29,7 @@ class TmuxHookConfigTest {
 
         assertTrue(script.startsWith("#!/bin/sh"))
         assertContains(script, "exec /usr/bin/curl -sS -o /dev/null -X POST")
-        assertContains(script, "http://127.0.0.1:7419/hooks/tmux")
+        assertContains(script, "http://127.0.0.1:7419/api/v1/hooks/tmux")
         assertContains(script, "--connect-timeout 2 --max-time 5")
         assertContains(script, "-H '@$headerPath'", message = "curl reads the private header file")
         assertContains(script, "-H \"X-Kotgent-Tmux-Session: \$1\"")

@@ -78,8 +78,11 @@ class HookRoutesTest {
         }
     }
 
-    private fun url(port: Int, event: String): String =
-        "http://127.0.0.1:$port${ClaudeHookConfig.INGRESS_PATH}?event=$event"
+    private fun url(
+        port: Int,
+        event: String,
+        path: String = ClaudeHookConfig.INGRESS_PATH,
+    ): String = "http://127.0.0.1:$port$path?event=$event"
 
     private suspend fun HttpClient.postHook(
         port: Int,
@@ -87,7 +90,8 @@ class HookRoutesTest {
         token: String? = this@HookRoutesTest.token,
         pane: String? = this@HookRoutesTest.pane.value,
         body: String = "{}",
-    ): HttpResponse = post(url(port, event)) {
+        path: String = ClaudeHookConfig.INGRESS_PATH,
+    ): HttpResponse = post(url(port, event, path)) {
         if (token != null) header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
         if (pane != null) header(ClaudeHookConfig.TMUX_PANE_HEADER, pane)
         setBody(body)
@@ -122,7 +126,8 @@ class HookRoutesTest {
         token: String? = this@HookRoutesTest.token,
         sessionName: String? = "kt-abc123",
         host: String? = null,
-    ): HttpResponse = post("http://127.0.0.1:$port${TmuxHookConfig.INGRESS_PATH}") {
+        path: String = TmuxHookConfig.INGRESS_PATH,
+    ): HttpResponse = post("http://127.0.0.1:$port$path") {
         if (token != null) header(TmuxHookConfig.HOOK_TOKEN_HEADER, token)
         if (sessionName != null) header(TmuxHookConfig.SESSION_HEADER, sessionName)
         if (host != null) header(HttpHeaders.Host, host)
@@ -141,6 +146,20 @@ class HookRoutesTest {
             assertEquals(session, appended.sessionId, "appended under the pane-resolved session")
             assertEquals(AgentEvent.TurnCompleted, appended.event, "Stop → TurnCompleted")
             assertEquals(EventSource.hook, appended.source, "source is the hook ingress")
+        }
+    }
+
+    @Test
+    fun theClaudeLegacyIngressAliasStillRunsTheHandler() {
+        val store = RecordingEventStore()
+        withIngress(store) { port, client ->
+            val response = client.postHook(
+                port,
+                ClaudeHookConfig.STOP,
+                path = ClaudeHookConfig.LEGACY_INGRESS_PATH,
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.TurnCompleted, store.appended.receive().event)
         }
     }
 
@@ -348,6 +367,22 @@ class HookRoutesTest {
     }
 
     @Test
+    fun theTmuxLegacyIngressAliasStillRunsTheHandler() {
+        val closed = Channel<SessionId>(Channel.UNLIMITED)
+        withTmuxIngress(onSessionClosed = { closed.send(it) }) { port, client ->
+            assertEquals(
+                HttpStatusCode.OK,
+                client.postTmuxHook(
+                    port,
+                    sessionName = "kt-1a2b3c4d",
+                    path = TmuxHookConfig.LEGACY_INGRESS_PATH,
+                ).status,
+            )
+            assertEquals(SessionId("1a2b3c4d"), closed.receive())
+        }
+    }
+
+    @Test
     fun tmuxCloseIngressIgnoresMissingForeignAndBlankSessionNames() {
         val closed = Channel<SessionId>(Channel.UNLIMITED)
         withTmuxIngress(onSessionClosed = { closed.send(it) }) { port, client ->
@@ -410,7 +445,8 @@ class HookRoutesTest {
         token: String? = this@HookRoutesTest.token,
         pane: String? = this@HookRoutesTest.pane.value,
         body: String = "{}",
-    ): HttpResponse = post("http://127.0.0.1:$port${CodexHookConfig.INGRESS_PATH}?event=$event") {
+        path: String = CodexHookConfig.INGRESS_PATH,
+    ): HttpResponse = post("http://127.0.0.1:$port$path?event=$event") {
         if (token != null) header(CodexHookConfig.HOOK_TOKEN_HEADER, token)
         if (pane != null) header(CodexHookConfig.TMUX_PANE_HEADER, pane)
         setBody(body)
@@ -430,6 +466,20 @@ class HookRoutesTest {
             assertEquals(session, appended.sessionId, "the pane resolved to its session")
             assertEquals(AgentEvent.ApprovalRequested("shell"), appended.event)
             assertEquals(EventSource.hook, appended.source)
+        }
+    }
+
+    @Test
+    fun theCodexLegacyIngressAliasStillRunsTheHandler() {
+        val store = RecordingEventStore()
+        withCodexIngress(store) { port, client ->
+            val response = client.postCodexHook(
+                port,
+                CodexHookConfig.STOP,
+                path = CodexHookConfig.LEGACY_INGRESS_PATH,
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.TurnCompleted, store.appended.receive().event)
         }
     }
 
@@ -599,7 +649,8 @@ class HookRoutesTest {
         token: String? = this@HookRoutesTest.token,
         pane: String? = this@HookRoutesTest.pane.value,
         body: String = "{}",
-    ): HttpResponse = post("http://127.0.0.1:$port${JunieHookConfig.INGRESS_PATH}?event=$event") {
+        path: String = JunieHookConfig.INGRESS_PATH,
+    ): HttpResponse = post("http://127.0.0.1:$port$path?event=$event") {
         if (token != null) header(JunieHookConfig.HOOK_TOKEN_HEADER, token)
         if (pane != null) header(JunieHookConfig.TMUX_PANE_HEADER, pane)
         setBody(body)
@@ -619,6 +670,20 @@ class HookRoutesTest {
             assertEquals(session, appended.sessionId, "the pane resolved to its session")
             assertEquals(AgentEvent.ToolCall("Bash"), appended.event)
             assertEquals(EventSource.hook, appended.source)
+        }
+    }
+
+    @Test
+    fun theJunieLegacyIngressAliasStillRunsTheHandler() {
+        val store = RecordingEventStore()
+        withJunieIngress(store) { port, client ->
+            val response = client.postJunieHook(
+                port,
+                JunieHookConfig.STOP,
+                path = JunieHookConfig.LEGACY_INGRESS_PATH,
+            )
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(AgentEvent.TurnCompleted, store.appended.receive().event)
         }
     }
 

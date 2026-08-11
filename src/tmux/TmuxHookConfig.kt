@@ -5,7 +5,9 @@ package io.kotgent.tmux
  * are bounded against orphan-held sockets, and absolute curl avoids launchd PATH dependence.
  */
 object TmuxHookConfig {
-    const val INGRESS_PATH: String = "/hooks/tmux"
+    const val INGRESS_PATH: String = "/api/v1/hooks/tmux"
+
+    const val LEGACY_INGRESS_PATH: String = "/hooks/tmux"
 
     const val HOOK_TOKEN_HEADER: String = "X-Kotgent-Hook-Token"
 

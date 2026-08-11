@@ -89,7 +89,8 @@ class CodexAdapterTest {
         val script = CodexHookConfig.hookScript(port = 7777, headerFilePath = "/home/u/.kotgent/codex-hook-header")
 
         assertTrue(script.startsWith("#!/bin/sh"), "it is a shell script")
-        assertTrue(script.contains("http://127.0.0.1:7777/hooks/codex?event="))
+        assertEquals("/hooks/codex", CodexHookConfig.LEGACY_INGRESS_PATH)
+        assertTrue(script.contains("http://127.0.0.1:7777/api/v1/hooks/codex?event="))
         assertTrue(script.contains("\"\$1\""), "the event name comes from the first argument")
         assertTrue(script.contains("-H '@/home/u/.kotgent/codex-hook-header'"))
         assertTrue(script.contains("X-Kotgent-Tmux-Pane: \$TMUX_PANE"))
