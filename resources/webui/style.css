@@ -2297,11 +2297,17 @@ button.task-card-title:hover,
   /* The identity is the row's only flexible item, so it is what gives way to ☰ and the two actions. */
   .board-identity { flex: 1 1 auto; }
   .board-project { font-size: 12px; }
+  /* The track scrolls here and the column does not, so the column's row must be sized by its cards.
+     An implicit `auto` row takes its base size from `.board-column`'s `min-height: 0` and is then
+     maximized into the container's height, which clipped the column to one scrollport while its cards
+     went on painting outside it. No top padding: the head is sticky against this scrollport, and a band
+     above it is one cards scroll through in view — the switcher below holds that gap instead. */
   .board-columns {
     gap: 8px;
+    grid-auto-rows: max-content;
     grid-template-columns: minmax(0, 1fr);
     overflow-y: auto;
-    padding: 8px;
+    padding: 0 8px 8px;
   }
   .board-column {
     min-height: 0;
@@ -2311,18 +2317,20 @@ button.task-card-title:hover,
      or directly under `.board` (a flex COLUMN) is not knowable from here, and a basis means height in
      the second one.
 
-     The padding is the SAME 8px `.board-columns` below already insets by, and it is not decoration:
-     without it the first segment starts at x = 0, hard against the edge of the phone, while the column
-     it switches to starts eight pixels in — the row read as knocked out of alignment with the board it
-     belongs to. Scrolling is kept (a long label or a three-digit count can still overflow four
-     segments) but its bar is hidden: the row is one line tall, so a bar would eat a third of it. */
+     The padding is the SAME 8px `.board-columns` below insets by, and it is not decoration: without it
+     the first segment starts at x = 0, hard against the edge of the phone, while the column it switches
+     to starts eight pixels in — the row read as knocked out of alignment with the board it belongs to.
+     The BOTTOM 8px is the gap above the first column, held here rather than in the track because the
+     track scrolls and its sticky head would leave that band open for cards to travel through. Scrolling
+     is kept (a long label or a three-digit count can still overflow four segments) but its bar is
+     hidden: the row is one line tall, so a bar would eat a third of it. */
   .board-column-switch {
     align-items: center;
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
     overflow-x: auto;
-    padding: 8px 8px 0;
+    padding: 8px;
     scrollbar-width: none;
     width: 100%;
   }

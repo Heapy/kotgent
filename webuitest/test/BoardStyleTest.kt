@@ -643,6 +643,77 @@ class BoardStyleTest {
         }
 
     /**
+     * The phone counterpart of [theBoardNeverScrollsWhileEachColumnScrollsItsOwnListUnderAStickyHead], and
+     * its inversion: there the board clips and every column scrolls its own list, here the TRACK scrolls
+     * and the one column on screen is simply as tall as the cards it holds.
+     *
+     * It shipped broken, and the mechanism is worth writing down because the repair is one line of track
+     * sizing. `.board-columns` is a grid whose rows are all implicit, so the stacked column sat in an
+     * `auto` row; such a row takes its base size from the item's MINIMUM contribution, which
+     * `.board-column`'s `min-height: 0` pins at zero, and the algorithm then maximizes that base into the
+     * free space of a container whose own height is definite. The row therefore came out exactly one
+     * scrollport tall whatever the column held — and since a phone column's overflow is `visible` (the
+     * track is what scrolls), every card past that point was painted OUTSIDE it: on a long `todo` the
+     * fill, the border and the rounded corner ended part-way down the list and the rest of the backlog
+     * hung in the board's own background, under a head pinned over a box its content had left.
+     *
+     * So the observable is containment, measured on both sides of a scroll, plus the statement that makes
+     * it falsifiable: the column is TALLER than the port it scrolls in. A column clipped to the scrollport
+     * is exactly as tall as it, so that line is what fails the moment a row is sized by the viewport again
+     * — while containment alone would pass on the broken shape at any height short enough to hold the
+     * whole fixture.
+     *
+     * The head rides along as it does on the desktop, but its claim here is the phone's own: it pins to
+     * the very top of the track, with no band above it for a card to travel through in full view. That gap
+     * belongs to the switcher, which is outside the scrolling box entirely.
+     */
+    @Test
+    fun theStackedPhoneColumnHoldsEveryCardWhileTheTrackScrollsUnderAPinnedHead() =
+        onScreen(BOARD_SCENARIO, "board-phone-track", PHONE_WIDTH, PHONE_HEIGHT, mobile = true) { harness, page ->
+            page.navigate(harness.baseUrl + "/tasks")
+            val cards = page.locator(".task-card")
+            assertThat(cards).hasCount(BOARD_CARDS - 5)
+
+            val track = page.locator(".board-columns")
+            val todo = column(page, "todo")
+            page.setViewportSize(PHONE_WIDTH, overflowingPhoneHeight(page, track))
+            assertTrue(
+                track.number("el => el.scrollHeight") > track.number("el => el.clientHeight") + 1,
+                "the derived viewport still fits the whole column — nothing below is being tested",
+            )
+
+            val port = track.rect()
+            val idle = todo.rect()
+            assertTrue(
+                idle.height > port.height + 1,
+                "the column $idle is no taller than the port $port it scrolls in — it was sized by the " +
+                    "viewport rather than by its own cards",
+            )
+            assertCardsInside(cards, idle, "before the track is scrolled")
+
+            val scrolled = track.number("el => { el.scrollTop = 9999; return el.scrollTop; }")
+            assertTrue(scrolled > 0, "the stacked track is what scrolls on a phone")
+            val moved = todo.rect()
+            assertClose(idle.top - scrolled, moved.top, "the column travels with the track it is stacked in")
+            assertCardsInside(cards, moved, "after the track is scrolled to the bottom")
+
+            val head = todo.locator(".board-column-head")
+            val headBox = head.rect()
+            assertClose(port.top, headBox.top, "the head pins to the very top of the track")
+            val stack = page.stackAt(headBox.centerX, headBox.centerY)
+            assertEquals(
+                ".board-column-head",
+                stack.firstOrNull(),
+                "something is painted over the pinned head at its own centre; the stack was $stack",
+            )
+            assertTrue(
+                stack.contains(".task-card"),
+                "no card is behind the head, so this point proves nothing about the ones it hides — the " +
+                    "track is not scrolled far enough; the stack was $stack",
+            )
+        }
+
+    /**
      * The phone's switcher, which is the only way three of the four columns are reachable there — and
      * which shipped with three defects at once, each measurable and none visible to a stylesheet search.
      *
@@ -1064,6 +1135,43 @@ class BoardStyleTest {
         return (chrome + shorterContent + COLUMN_SLACK).toInt()
     }
 
+    /**
+     * The phone viewport height that leaves the stacked track [PHONE_TRACK_OVERFLOW] short of its content.
+     *
+     * Derived rather than picked, for [shortViewportHeight]'s reason, and the squeeze to [PROBE_HEIGHT] is
+     * load-bearing rather than a shortcut: `scrollHeight` never answers below `clientHeight`, so on a tall
+     * phone it reports the PORT and the arithmetic returns a height that still fits everything — which is
+     * exactly what the first draft of this did. Under the squeeze it reports the cards, and the chrome
+     * above the track does not move with the viewport. Both readings hold whether the column is sized by
+     * its cards or clipped to the port, which is what lets the same number come out on both sides of the
+     * defect this measures.
+     */
+    private fun overflowingPhoneHeight(page: Page, track: Locator): Int {
+        page.setViewportSize(PHONE_WIDTH, PROBE_HEIGHT)
+        val port = track.number("el => el.clientHeight")
+        assertTrue(port > 0, "the probe viewport left no track at all to measure the chrome from")
+        val content = track.number("el => el.scrollHeight")
+        assertTrue(
+            content > port + PHONE_TRACK_OVERFLOW,
+            "the probe viewport did not overflow the track by enough to measure the cards at all — " +
+                "${content}px of content in a ${port}px port",
+        )
+        return (PROBE_HEIGHT - port + content - PHONE_TRACK_OVERFLOW).toInt()
+    }
+
+    /** Every card the page currently draws, inside [box] — the column's own border box. */
+    private fun assertCardsInside(cards: Locator, box: Box, where: String) {
+        val count = cards.count()
+        assertTrue(count > 0, "$where there were no cards to measure at all")
+        for (index in 0 until count) {
+            val card = cards.nth(index).rect()
+            assertTrue(
+                card.top >= box.top - 1 && card.bottom <= box.bottom + 1,
+                "$where card ${index + 1} of $count $card is painted outside its column $box",
+            )
+        }
+    }
+
     private fun columnSelector(state: String): String = ".board-column[data-state='$state']"
 
     private fun column(page: Page, state: String): Locator = page.locator(columnSelector(state))
@@ -1234,6 +1342,13 @@ class BoardStyleTest {
         const val COLUMN_SLACK = 12.0
         const val PHONE_WIDTH = 390
         const val PHONE_HEIGHT = 844
+
+        /**
+         * How far the stacked phone track is made to overflow its port. Deep enough that several cards
+         * really travel behind the pinned head — the hit test at its centre is only a statement while one
+         * of them is under it — and shallow enough to leave a short viewport that still draws the chrome.
+         */
+        const val PHONE_TRACK_OVERFLOW = 160.0
 
         /**
          * The narrowest phone still in use (an iPhone SE-class screen). A quarter of it is 72px, which
