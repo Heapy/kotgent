@@ -1347,7 +1347,7 @@ These are real and cost time to rediscover. Respect them.
 ## Testing & running
 
 - Every change keeps `./kotlin build` and `./kotlin test` green. Baseline: **1333 native tests passed /
-  0 skipped** and **116 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
+  0 skipped** and **117 browser tests passed / 0 skipped** (`webuitest`), plus the build-info plugin's
   7 JVM tests, `ptycheck`'s 11 real-PTY checks (driven by `PtyTest`) and `webuicheck`'s 2 self-checks
   (driven by `WebUiCheckTest`) — keep a fixture's `EXPECTED_CHECKS` in sync when adding a check to it. The
   native count **fell** from 1432 when the Web UI grep tier was replaced: 101 tests removed, 1 added, delta

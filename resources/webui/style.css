@@ -1529,11 +1529,17 @@ dialog::backdrop {
   transition: background 120ms ease-out, border-color 120ms ease-out;
 }
 /* One custom property per column carries the whole state colour: the head's label and the drop
-   highlight both derive from it, so a column's identity is set in exactly one place. */
-.board-column[data-state="todo"] { --column-accent: #8a93a2; }
-.board-column[data-state="in_progress"] { --column-accent: var(--accent); }
-.board-column[data-state="review"] { --column-accent: #d9a441; }
-.board-column[data-state="done"] { --column-accent: #4fae72; }
+   highlight both derive from it, so a column's identity is set in exactly one place. The phone's
+   switcher buttons carry the same `data-state`, so they join each rule as a second SELECTOR rather
+   than as a second colour — a re-theme still edits one line per state. */
+.board-column[data-state="todo"],
+.board-column-switch [data-state="todo"] { --column-accent: #8a93a2; }
+.board-column[data-state="in_progress"],
+.board-column-switch [data-state="in_progress"] { --column-accent: var(--accent); }
+.board-column[data-state="review"],
+.board-column-switch [data-state="review"] { --column-accent: #d9a441; }
+.board-column[data-state="done"],
+.board-column-switch [data-state="done"] { --column-accent: #4fae72; }
 /* Opaque by inheritance of `--column-fill`, not by repeating a colour: the head is sticky, so cards
    scrolling under it must not show through, and a column that is currently a drop target must tint as
    ONE surface rather than leaving its header on the old shade. Reading the property (rather than the
@@ -2303,14 +2309,62 @@ button.task-card-title:hover,
   }
   /* `width: 100%` rather than a flex basis: whether this row lands inside `.board-head` (a flex ROW)
      or directly under `.board` (a flex COLUMN) is not knowable from here, and a basis means height in
-     the second one. */
+     the second one.
+
+     The padding is the SAME 8px `.board-columns` below already insets by, and it is not decoration:
+     without it the first segment starts at x = 0, hard against the edge of the phone, while the column
+     it switches to starts eight pixels in — the row read as knocked out of alignment with the board it
+     belongs to. Scrolling is kept (a long label or a three-digit count can still overflow four
+     segments) but its bar is hidden: the row is one line tall, so a bar would eat a third of it. */
   .board-column-switch {
     align-items: center;
     display: flex;
     flex: 0 0 auto;
     gap: 6px;
     overflow-x: auto;
+    padding: 8px 8px 0;
+    scrollbar-width: none;
     width: 100%;
+  }
+  .board-column-switch::-webkit-scrollbar { display: none; }
+  /* Four EQUAL segments, and each declaration is one of the measurements that buys that.
+
+     `flex: 1 1 0` divides the ROW rather than the leftover, which is what `1 0 auto` could not do: a
+     basis of `auto` sizes each segment to its own words, so the four came out 79/113/87/77 across a
+     390px phone — a switcher whose boxes disagree about how big a choice is. The compact type is what
+     makes equality reachable at all: at the shared 12px with 11px of padding, "In progress 2" wants
+     113px against the 89px a quarter of that phone can give it, so it printed over its own border;
+     at 11px with a quieter count it wants 90.
+
+     Below that width the row degrades on the flex AUTOMATIC MINIMUM — a flex item's `min-width: auto`
+     resolves to its min-content size, so the long segment keeps its label while the other three stay
+     equal (measured at 320px: 66/88/66/66, everything inside its border, no scrolling needed). That is
+     free, and it is exactly what a well-meant `min-width: 0` here would switch OFF: the segments would
+     become four true quarters and the longest label would run over the corner again. Do not add one.
+     34px is the tap target; the shared `.button` is a desktop 30. */
+  .board-column-switch .button {
+    align-items: center;
+    display: inline-flex;
+    flex: 1 1 0;
+    font-size: 11px;
+    gap: 5px;
+    justify-content: center;
+    min-height: 34px;
+    padding: 0 6px;
+    white-space: nowrap;
+  }
+  /* The count is the second span, and it steps back the way the column head's does: a switcher is read
+     for WHICH state it is on, and the number is the footnote to that. */
+  .board-column-switch .button span + span { opacity: 0.65; }
+  /* Which column is on screen is otherwise unknowable: four identical buttons, and `aria-pressed` is
+     read by nothing that paints. The ink rides the state's own `--column-accent` in the same shape a
+     drop target uses, so the segment and the column below it say the same colour, and the inactive
+     three step back to `--muted` so the pressed one reads as pressed rather than merely different. */
+  .board-column-switch .button { color: var(--muted); }
+  .board-column-switch .button[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--column-accent) 20%, var(--bg));
+    border-color: color-mix(in srgb, var(--column-accent) 65%, transparent);
+    color: var(--text);
   }
   .task-card { padding: 11px 12px; }
   .task-card-menu {

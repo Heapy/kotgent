@@ -557,11 +557,18 @@ export function Board({
             Above the breakpoint all four are on screen and this is not rendered. */ ""}
       ${phone && html`
         <nav class="board-column-switch" aria-label="Column">
+          ${/* Label and count are separate spans for the same reason `.board-column-head` splits its
+                own two: the count is quieter ink than the label, and one text node cannot be. They
+                carry no class — the vocabulary has no name for either, and the switcher's own rules
+                reach them as children. The space BETWEEN them is deliberate and is not what draws the
+                gap: a whitespace-only run between flex items produces no box, so the row is spaced by
+                `gap` — but it stays in the DOM text, which is what the button's accessible name is
+                computed from. Without it a screen reader announces "To do5". */ ""}
           ${columns.map((column) => html`
             <button key=${column.state} type="button" class="button" data-state=${column.state}
                     aria-pressed=${column.state === activeColumn ? "true" : "false"}
                     onClick=${() => setActiveColumn(column.state)}>
-              ${column.label} ${column.entries.length}
+              <span>${column.label}</span> <span>${column.entries.length}</span>
             </button>`)}
         </nav>`}
 

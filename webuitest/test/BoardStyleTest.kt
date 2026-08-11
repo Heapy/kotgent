@@ -642,6 +642,115 @@ class BoardStyleTest {
             assertDragReservation(page, "at ${BREAKPOINT}px, one pixel below it")
         }
 
+    /**
+     * The phone's switcher, which is the only way three of the four columns are reachable there — and
+     * which shipped with three defects at once, each measurable and none visible to a stylesheet search.
+     *
+     * It had no ink for `aria-pressed`, so the four segments were identical and which column was on
+     * screen could be learned only by reading the head below them. It had no inset, so the first segment
+     * started hard against the edge of the phone while the column it switches to started eight pixels
+     * in. And its buttons were sized by their own words (measured: 79/113/87/77 across a 390px phone),
+     * so the row read as four differently-sized answers to one question.
+     *
+     * All three are asserted as relationships rather than literals. The inset is compared against the
+     * COLUMN's own left edge, so re-tuning the board's gutter moves both or fails here. The pressed ink
+     * is compared against the pressed segment's own `--column-accent` — the same property the column head
+     * paints from, resolved through a probe inside the element — so the segment and the column below it
+     * are proven to be saying the same colour rather than two colours that happen to match today.
+     * Equality is compared across the four widths.
+     *
+     * The narrow arm is the one that fixes the size in place. Four equal quarters of a 320px phone cannot
+     * hold "In progress 2", and what keeps the label inside its border there is the flex automatic
+     * minimum — `min-width: auto` on an item resolves to its min-content size, so the long segment simply
+     * takes what it needs. That is free until somebody writes the `min-width: 0` this shape usually
+     * invites, which switches it off and puts the label back over the corner. So the observable here is
+     * containment rather than a width, and it is measured on the GLYPHS: a span is itself a flex item and
+     * shrinks below its own text without complaint, so its box stays put while the text spills. Asserting
+     * equality alone would pass on exactly the broken row.
+     */
+    @Test
+    fun thePhoneSwitcherIsFourEqualSegmentsThatSayWhichColumnIsOnScreen() =
+        onScreen(BOARD_SCENARIO, "board-switcher", PHONE_WIDTH, PHONE_HEIGHT, mobile = true) { harness, page ->
+            page.navigate(harness.baseUrl + "/tasks")
+            assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS - 5)
+
+            val segments = page.locator(".board-column-switch button")
+            assertThat(segments).hasCount(BOARD_STATES.size)
+
+            // The row lines up with the board it switches, on both edges.
+            val visible = page.locator(".board-column").rect()
+            assertClose(visible.left, segments.first().rect().left, "the first segment starts where the column does")
+            assertClose(visible.right, segments.last().rect().right, "…and the last one ends where it ends")
+
+            // Four equal boxes, and the count is a quieter span than the label rather than one text node.
+            val widths = BOARD_STATES.indices.map { segments.nth(it).rect().width }
+            for (index in 1 until widths.size) {
+                assertClose(
+                    widths[0],
+                    widths[index],
+                    "the `${BOARD_STATES[index]}` segment is a different size from the `todo` one $widths",
+                )
+            }
+            val label = segments.first().locator("span").first()
+            val count = segments.first().locator("span").last()
+            assertTrue(
+                count.number("el => parseFloat(getComputedStyle(el).opacity)") <
+                    label.number("el => parseFloat(getComputedStyle(el).opacity)"),
+                "the count should step back from the label it annotates",
+            )
+            // The space between the two spans is what the accessible name is computed from.
+            assertEquals("To do 5", segments.first().evaluate("el => el.textContent.trim()"))
+
+            // The pressed segment wears its own column's accent; the other three do not.
+            for (state in BOARD_STATES) {
+                page.locator(".board-column-switch button[data-state='$state']").click()
+                assertThat(page.locator(columnSelector(state))).hasCount(1)
+                val pressed = page.locator(".board-column-switch button[aria-pressed='true']")
+                assertThat(pressed).hasCount(1)
+                assertEquals(state, pressed.getAttribute("data-state"), "the pressed segment is the shown column")
+                page.paintSettled(".board-column-switch button[aria-pressed='true']")
+                val accent = pressed.resolvedInside("var(--column-accent)")
+                val idle = page.locator(".board-column-switch button[aria-pressed='false']").first()
+                assertEquals(
+                    pressed.resolvedInside("color-mix(in srgb, var(--column-accent) 20%, var(--bg))"),
+                    pressed.style("background-color"),
+                    "the `$state` segment should be filled from its own column's accent",
+                )
+                assertNotEquals(
+                    idle.style("background-color"),
+                    pressed.style("background-color"),
+                    "the `$state` segment reads exactly like the three it is not",
+                )
+                assertEquals(
+                    accent,
+                    column(page, state).locator(".board-column-head").style("color"),
+                    "the segment and the column head below it should say one colour",
+                )
+            }
+
+            // The narrowest phone still in use: the quarters no longer fit the longest label, so the rule
+            // that has to hold is containment, not equality.
+            page.setViewportSize(NARROW_PHONE_WIDTH, PHONE_HEIGHT)
+            page.paintSettled(".board-column-switch")
+            for (index in BOARD_STATES.indices) {
+                val segment = segments.nth(index)
+                val box = segment.rect()
+                val text = segment.locator("span")
+                for (part in 0 until text.count()) {
+                    // The GLYPHS, not the span. A span is itself a flex item and shrinks below its own
+                    // text without complaint, so its box stays inside the button while the label prints
+                    // over the border — the exact failure this arm exists for, and one that a
+                    // `getBoundingClientRect` on the element cannot see.
+                    val span = text.nth(part).textRect()
+                    assertTrue(
+                        span.left >= box.left - 0.5 && span.right <= box.right + 0.5,
+                        "at ${NARROW_PHONE_WIDTH}px the `${BOARD_STATES[index]}` label $span leaves its " +
+                            "own button $box",
+                    )
+                }
+            }
+        }
+
     // --- the dialog and the two textareas ---------------------------------------------------------
 
     /**
@@ -1021,6 +1130,22 @@ class BoardStyleTest {
 
     private fun List<*>.at(index: Int): Double = (this[index] as Number).toDouble()
 
+    /**
+     * The box the element's TEXT actually occupies, measured with a `Range` over its contents.
+     *
+     * [rect] answers for the element, which is a different question wherever the element can be smaller
+     * than what it draws — a flex item shrunk below its own content, or anything with `overflow:
+     * visible`. There the element's box stays put while the glyphs spill out of it.
+     */
+    private fun Locator.textRect(): Box {
+        val raw = evaluate(
+            "el => { const range = document.createRange(); range.selectNodeContents(el);" +
+                " const r = range.getBoundingClientRect(); range.detach();" +
+                " return [r.left, r.top, r.width, r.height]; }",
+        ) as List<*>
+        return Box(raw.at(0), raw.at(1), raw.at(2), raw.at(3))
+    }
+
     /** A resolved value off the element itself — the END of the cascade, not a line of the stylesheet. */
     private fun Locator.style(property: String): String =
         evaluate("(el, p) => getComputedStyle(el).getPropertyValue(p)", property) as String
@@ -1109,6 +1234,13 @@ class BoardStyleTest {
         const val COLUMN_SLACK = 12.0
         const val PHONE_WIDTH = 390
         const val PHONE_HEIGHT = 844
+
+        /**
+         * The narrowest phone still in use (an iPhone SE-class screen). A quarter of it is 72px, which
+         * "In progress 2" does not fit into at any weight the row is legible at — so this is the width at
+         * which the switcher's equal tracks have to give way to their `min-content` floor.
+         */
+        const val NARROW_PHONE_WIDTH = 320
 
         /** The one width query the whole sheet uses: `max-width: 720px`. */
         const val BREAKPOINT = 720
