@@ -22,15 +22,16 @@ import kotlin.test.assertTrue
  * The kanban board in a real browser: what the four columns draw, and the pointer drag that moves a
  * card between them.
  *
- * This replaces `test/transport/WebUiBoardTest.kt`, which asserted the same subjects by GETting
- * `Board.js` / `TaskCard.js` off the daemon and grepping the source it was handed — the only thing a
- * `macosArm64` test binary can do about a screen. Everything that file could only spell is a behaviour
+ * This replaces the deleted `test/transport/WebUiBoardTest.kt`, which asserted the same subjects by
+ * GETting `Board.js` / `TaskCard.js` off the daemon and grepping the source it was handed — the only thing
+ * a `macosArm64` test binary can do about a screen. Everything that file could only spell is a behaviour
  * here: `DRAG_SLOP_PX = 8` is a press that travels four pixels and stays a press, `setPointerCapture` is
  * a highlight that keeps following a pointer which has left the card it started on, and "the PATCH is
  * issued before the move" is the two requests the daemon actually received, in the order it received
- * them. Two of that file's tests stay behind in Kotlin because they are not browser-observable at all:
- * the frozen CSS class vocabulary shared with `style.css`, and the `<input maxlength>` bound to the
- * daemon's own `PROJECT_NAME_MAX_LENGTH` (a native root-module constant this JVM module cannot see).
+ * them. Two of its tests live on in `test/transport/WebUiServingTest.kt` because they are not
+ * browser-observable at all: the frozen CSS class vocabulary shared with `style.css`, and the
+ * `<input maxlength>` bound to the daemon's own `PROJECT_NAME_MAX_LENGTH` (a native root-module constant
+ * this JVM module cannot see).
  *
  * **Chromium only**, for the reason the light-dismiss tests are (plan fact 4): WebKit delivered nothing
  * whatsoever to a touched element, and every gesture below is pointer-driven.
@@ -54,6 +55,13 @@ class BoardTest {
      * The column head counts EVERY entry, not the slice a capped `done` renders; with two done cards the
      * two numbers coincide, which is why the count is asserted against the seeded totals rather than
      * against the rendered cards.
+     *
+     * One limit is recorded rather than hidden: the ORDER here does not falsify the board's own
+     * `position`-then-`createdAt`-then-`ref` sort. The fixture's snapshot already arrives in that order
+     * (`FakeTaskStore.listTasks` sorts by position), and nothing a browser can drive delivers a task
+     * out of order — a `task_update` replaces a row in place and `task-add` appends one whose position
+     * puts it last anyway. What is pinned is the mapping from the daemon's list to the four columns; the
+     * client sort would need a fixture that hands the socket an inverted snapshot.
      */
     @Test
     fun theBoardRendersEverySeededColumnInItsPositionOrder() =
@@ -152,6 +160,7 @@ class BoardTest {
             assertEquals(1, page.dragClaims(), "only the primary-button press past the slop claimed a drag")
             assertEquals(emptyList<String>(), writes.snapshot(), "a press that is not a drag writes nothing")
             assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))
+            page.proveTheWriteRecorderWasLive(writes, "local:1", "in_progress")
         }
 
     /**
@@ -192,6 +201,7 @@ class BoardTest {
             assertThat(page.locator(".task-card.is-dragging")).hasCount(0)
             assertEquals(emptyList<String>(), writes.snapshot(), "a release outside every column drops nothing")
             assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))
+            page.proveTheWriteRecorderWasLive(writes, "local:1", "in_progress")
         }
 
     /**
@@ -297,7 +307,12 @@ class BoardTest {
                 "the SPA did not navigate: the modified click is the browser's",
             )
 
-            // The browser may well have opened a tab for it; this one is the subject.
+            // The browser really does open a background tab for it. Closed rather than merely ignored: it
+            // holds a second signed-in session against this harness, and `Harness.close()` asserts a clean
+            // exit — a page still fetching while the daemon stops is exactly what that would catch.
+            for (other in page.context().pages()) {
+                if (other != page) other.close()
+            }
             page.bringToFront()
             title.click()
             page.waitForURL("**/tasks/local%3A1")
@@ -366,6 +381,11 @@ class BoardTest {
      * already claimed for scrolling never reaches `pointermove` — but reserving it on the card, or on
      * the column, would cost a phone the scroll of the one column it can see. So the property is
      * asserted in both directions, on the device where it decides anything.
+     *
+     * What is read is the RESOLVED value, which is the only thing the gesture depends on: the handle
+     * carries the reservation twice, in `style.css` and inline in `TaskCard.js`, and which of the two
+     * supplies it is neither observable here nor interesting. (`BoardStyleTest` reads the same pair on
+     * both sides of the phone breakpoint; this one is the 390px device itself.)
      */
     @Test
     fun theGestureReservationIsScopedToTheCardHandleAlone() =
@@ -499,6 +519,26 @@ class BoardTest {
 
     /** A copy taken under the list's own lock — the recorder is written from the Playwright thread. */
     private fun MutableList<String>.snapshot(): List<String> = synchronized(this) { toList() }
+
+    /**
+     * Settle an "and it wrote nothing" claim by making the recorder write.
+     *
+     * An empty log is not evidence on its own: a filter that matched no URL at all answers the same
+     * emptiness for every gesture, and absence has no moment at which it can be observed. So a real drop
+     * is performed afterwards and the WHOLE log is asserted to be exactly that drop's two calls — anything
+     * the earlier gestures had sent would sit in front of them, in the same list, in order.
+     */
+    private fun Page.proveTheWriteRecorderWasLive(writes: MutableList<String>, ref: String, into: String) {
+        dragToBottomOf(ref, into)
+        waitForCondition { writes.snapshot().size >= 2 }
+        val encoded = ref.replace(":", "%3A")
+        assertEquals(
+            listOf("PATCH /tasks/$encoded", "POST /tasks/$encoded/move"),
+            writes.snapshot(),
+            "the recorder's whole log must be this drop's two calls — which says both that it CAN see a " +
+                "task write and that the gestures above added none",
+        )
+    }
 
     private fun Page.watchDragClaims() = evaluate(DRAG_CLAIM_WATCHER_JS)
 

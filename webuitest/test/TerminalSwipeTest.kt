@@ -100,11 +100,21 @@ class TerminalSwipeTest {
 
             val up = f.wheels()
             assertTrue(up.total > 0, "a vertical swipe must reach xterm as wheel events")
+            // The reservation itself, read as the value the browser resolved on the element the bridge is
+            // installed on. `up.trusted` below cannot stand for it: Chromium emits no `wheel` for a touch
+            // scroll at all, so that count is zero whatever `touch-action` says — it only tells the reader
+            // that every report in the log is one the bridge dispatched.
+            assertEquals(
+                "none",
+                f.touchActionOfTheTerminal(),
+                "the terminal must reserve the vertical gesture unconditionally, or the browser claims " +
+                    "the swipe before a single `pointermove` reaches the bridge",
+            )
             assertEquals(
                 0,
                 up.trusted,
-                "the reports are the bridge's own dispatches; a trusted wheel would mean the browser " +
-                    "scrolled something itself, which is what `touch-action: none` exists to prevent",
+                "every report in the log is the bridge's own dispatch, so the counts below are about the " +
+                    "bridge's rate and not about anything the browser contributed",
             )
             assertEquals(
                 0,
@@ -118,6 +128,16 @@ class TerminalSwipeTest {
                 up.positive,
                 "a finger moving up scrolls the content down, so every delta is positive",
             )
+            // The band only discriminates while the row count it predicts is far from the number of
+            // `touchMove`s the gesture delivered — otherwise a bridge that emitted one report per MOVE,
+            // ignoring `rowHeight` entirely, would land inside it and the band would prove nothing about
+            // the rate. Pinned rather than assumed, because both sides depend on the rendered grid.
+            assertTrue(
+                expected >= SWIPE_STEPS * 2.5,
+                "this grid gives a ${travel.toInt()}px swipe only ${expected.toInt()} rows of travel " +
+                    "against $SWIPE_STEPS touch moves, so the band below no longer separates the row-for-" +
+                    "row rate from one report per move",
+            )
             assertTrue(
                 up.total >= expected * 0.6,
                 "a ${travel.toInt()}px swipe over ${rowHeight.toInt()}px rows is about " +
@@ -129,12 +149,16 @@ class TerminalSwipeTest {
                 "the bank is spent row for row, not multiplied: expected about ${expected.toInt()} " +
                     "reports, got ${up.total}",
             )
+            // Not "an SGR report arrived" — the echo above already proves that, since the pty can only
+            // echo what the socket carried. What the wire adds is that the whole gesture went out under
+            // ONE button: a bridge whose sign flipped mid-bank would echo 65 and still send 64s.
             assertTrue(
-                f.wire().contains("[<65;"),
-                "an SGR wheel-down report reached the daemon on the terminal socket",
+                !f.wire().contains("[<64;"),
+                "the upward swipe sent an opposite-direction report as well; the wire was: ${f.wire()}",
             )
 
             f.resetWheels()
+            val alreadySent = f.wire().length
             f.swipe(x, high, x, low)
             f.waitForEcho("[<64;")
             f.settle()
@@ -146,9 +170,12 @@ class TerminalSwipeTest {
                 down.negative,
                 "a finger moving down scrolls the content up, so every delta is negative",
             )
+            // Only what THIS gesture put on the wire, so the assertion is about the reverse swipe and not
+            // about bytes the first one left behind.
+            val reverse = f.wire().substring(alreadySent)
             assertTrue(
-                f.wire().contains("[<64;"),
-                "the opposite SGR button reached the daemon, so the sign survives the whole path",
+                reverse.contains("[<64;") && !reverse.contains("[<65;"),
+                "the reverse gesture must send the opposite SGR button and only that one, sent: $reverse",
             )
         }
 
@@ -161,10 +188,11 @@ class TerminalSwipeTest {
      * therefore carries a real 40px of vertical drift: "no vertical movement at all" would pass against a
      * bridge that only checked the slop.
      *
-     * The second half is the control that keeps the first from being vacuous. "No reports" is exactly what
-     * a broken terminal, a dead socket or a CDP sequence the browser never delivered would also produce,
-     * so the same start point is then swiped vertically and must report — proving the gesture stream was
-     * live all along and the silence was the lock, not the fixture.
+     * The control comes FIRST, and that ordering is the point. "No reports" is exactly what a broken
+     * terminal, a dead socket or a CDP sequence the browser never delivered would also produce, so the
+     * same start point is swiped vertically before anything is asserted absent: the stream is demonstrably
+     * live at the moment the horizontal sweep is made, rather than shown to be live afterwards against a
+     * log the test reset in between.
      */
     @Test
     fun aHorizontalSwipeIsNotClaimedWhileTheSameStartPointStillScrollsVertically() =
@@ -173,6 +201,17 @@ class TerminalSwipeTest {
             val startX = box.x + box.width * 0.08
             val startY = box.y + box.height * 0.45
 
+            // The control: this exact start point DOES scroll when the gesture is vertical.
+            f.swipe(startX, startY, startX, startY - box.height * 0.35)
+            f.waitForEcho("[<65;")
+            f.settle()
+            assertTrue(
+                f.wheels().total > 0,
+                "the fixture must be able to report at all before an absence below can mean anything",
+            )
+
+            f.resetWheels()
+            val alreadySent = f.wire().length
             f.swipe(startX, startY, box.x + box.width * 0.92, startY + 40.0)
             f.settle()
 
@@ -182,20 +221,10 @@ class TerminalSwipeTest {
                 across.total,
                 "a predominantly horizontal sweep is not a scroll, even with vertical drift past the slop",
             )
+            val sweep = f.wire().substring(alreadySent)
             assertTrue(
-                !f.wire().contains("[<64;") && !f.wire().contains("[<65;"),
-                "and no wheel report reached the daemon either",
-            )
-
-            f.resetWheels()
-            f.swipe(startX, startY, startX, startY - box.height * 0.35)
-            f.waitForEcho("[<65;")
-            f.settle()
-
-            assertTrue(
-                f.wheels().total > 0,
-                "the same start point still scrolls when the gesture is vertical, so the silence above " +
-                    "was the direction lock rather than a terminal that never saw the touch",
+                !sweep.contains("[<64;") && !sweep.contains("[<65;"),
+                "and no wheel report reached the daemon either, sent: $sweep",
             )
         }
 
@@ -208,13 +237,20 @@ class TerminalSwipeTest {
      * own `mousedown` focus nor the pane's click handler runs at all. `shouldFocus()`'s 350ms suppression
      * is a second line for a browser that still delivers a click, not the mechanism.
      *
-     * This test cannot attribute the result to either half, and says so: Chromium's own touch slop already
-     * withholds the tap gesture (and therefore the click) from a drag this long, so "focus did not move"
-     * has more than one possible author here. What keeps it from being vacuous is the pairing. The tap
-     * first proves this fixture CAN observe focus arriving in the helper textarea — the unclaimed gesture
-     * that is supposed to focus, which is also why `preventDefault()` may only run after the claim gate.
-     * Then focus is parked on a header button, and the swipe must both report (so it was genuinely claimed
-     * and reached the bridge) and leave that focus alone.
+     * The first two thirds of this test cannot attribute the result to either half, and say so: Chromium's
+     * own touch slop already withholds the tap gesture (and therefore the click) from a drag this long, so
+     * "focus did not move after a swipe" has more than one possible author here. The tap first proves this
+     * fixture CAN observe focus arriving in the helper textarea — the unclaimed gesture that is supposed to
+     * focus, which is also why `preventDefault()` may only run after the claim gate. Then focus is parked
+     * on a header button, and the swipe must both report (so it was genuinely claimed and reached the
+     * bridge) and leave that focus alone.
+     *
+     * The last third IS attributable, and it is the only assertion here that fails when `shouldFocus()`
+     * alone is deleted. The pane's own `click` listener is dispatched directly — SYNTHESISED, and labelled,
+     * because Chromium will not produce a trusted click after a drag and a trusted MOUSE click would be
+     * answered by xterm's own `mousedown` focus before this handler ever ran. Inside the 350ms window the
+     * gate must swallow it; past the window the very same dispatch must focus, which is what stops the
+     * refusal from being "the click handler does nothing at all".
      */
     @Test
     fun aClaimedSwipeLeavesTheKeyboardShutThatATapOpens() =
@@ -253,6 +289,34 @@ class TerminalSwipeTest {
                 "a claimed swipe must not move focus into xterm's helper textarea — that, and only that, " +
                     "is what opens the software keyboard on iOS; focus ended on <$focused>",
             )
+
+            // SYNTHESISED click, straight at the pane's own handler, inside the suppression window. A
+            // FRESH swipe with no rest before its lift, because the window is 350ms from the last claimed
+            // move and the gesture above spent far longer than that waiting for its echo — the assertion
+            // has to be made while the suppression is still armed or it says nothing.
+            f.resetWheels()
+            f.swipe(x, box.y + box.height * 0.9, x, box.y + box.height * 0.4, restMillis = 0.0)
+            f.page.locator(TERMINAL_HOST).dispatchEvent("click")
+            assertTrue(
+                f.activeElement() != "xterm-helper-textarea",
+                "a click delivered within 350ms of a claimed swipe was answered with focus, so a browser " +
+                    "that does complete the tap after a drag would open the keyboard the swipe suppressed",
+            )
+            f.settle()
+            assertTrue(
+                f.wheels().total > 0,
+                "that swipe has to have been CLAIMED for the refusal above to be the suppression window " +
+                    "— an unclaimed gesture arms nothing and would have focused",
+            )
+
+            // Past the window, the same dispatch must focus — otherwise the refusal above is only "the
+            // click handler is dead".
+            f.page.waitForTimeout(FOCUS_SUPPRESSION_MS)
+            f.page.locator(TERMINAL_HOST).dispatchEvent("click")
+            f.page.waitForFunction(
+                "() => !!document.activeElement && " +
+                    "document.activeElement.classList.contains('xterm-helper-textarea')",
+            )
         }
 }
 
@@ -264,6 +328,22 @@ private const val TERMINAL_SESSION = "s-term"
 
 /** Time for the bridge's frame loop to spend the bank and for the echo tail to land. */
 private const val SETTLE_MS = 250.0
+
+/** The element the bridge is installed on and the pane's click handler listens on. */
+private const val TERMINAL_HOST = "#terminal-host"
+
+/** `suppressFocusUntil` is `Date.now() + 350`; wait past it with room for a slow runner. */
+private const val FOCUS_SUPPRESSION_MS = 500.0
+
+/** How many `touchMove`s one [TerminalSwipeFixture.swipe] delivers — the report band's other side. */
+private const val SWIPE_STEPS = 8
+
+/**
+ * The pause before the lift. A still-moving finger is a THROW: the bridge keeps its frame loop running
+ * under a decaying velocity, which would make the report count a function of round-trip timing rather than
+ * of travel. A finger that rested first means "stop here" (`inertiaHandoffMs`).
+ */
+private const val REST_BEFORE_LIFT_MS = 150.0
 
 /**
  * Every `wheel` event the page sees, recorded before any application script runs.
@@ -326,6 +406,11 @@ private class TerminalSwipeFixture(
         "() => { const a = document.activeElement; return a ? (a.id || a.className || a.tagName) : ''; }",
     ) as String
 
+    /** What the browser RESOLVED for the element the bridge listens on — the end of the cascade. */
+    fun touchActionOfTheTerminal(): String = page.evaluate(
+        "() => getComputedStyle(document.querySelector('$TERMINAL_HOST .xterm')).touchAction",
+    ) as String
+
     /**
      * Wait until [needle] has been echoed back into the rendered grid.
      *
@@ -385,8 +470,14 @@ private class TerminalSwipeFixture(
      * function of CDP round-trip timing rather than of the travel. A finger that rested first means "stop
      * here" (`inertiaHandoffMs`), so the count becomes travel/rowHeight and can be asserted.
      */
-    fun swipe(fromX: Double, fromY: Double, toX: Double, toY: Double) {
-        val steps = 8
+    fun swipe(
+        fromX: Double,
+        fromY: Double,
+        toX: Double,
+        toY: Double,
+        restMillis: Double = REST_BEFORE_LIFT_MS,
+    ) {
+        val steps = SWIPE_STEPS
         touch("touchStart", fromX, fromY)
         page.waitForTimeout(16.0)
         for (step in 1..steps) {
@@ -394,7 +485,10 @@ private class TerminalSwipeFixture(
             touch("touchMove", fromX + (toX - fromX) * fraction, fromY + (toY - fromY) * fraction)
             page.waitForTimeout(16.0)
         }
-        page.waitForTimeout(150.0)
+        // Zero rest is for the ONE caller that has to act inside the 350ms focus-suppression window the
+        // last claimed move armed; it makes the lift a THROW, so the report count is no longer a function
+        // of travel alone and must not be asserted against the band.
+        page.waitForTimeout(restMillis)
         touch("touchEnd", toX, toY)
     }
 

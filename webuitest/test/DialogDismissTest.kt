@@ -1,6 +1,9 @@
 package io.kotgent.webuitest
 
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.microsoft.playwright.BrowserContext
+import com.microsoft.playwright.CDPSession
 import com.microsoft.playwright.Mouse
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
@@ -8,6 +11,7 @@ import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -29,6 +33,11 @@ import kotlin.test.fail
  *   target as the `<dialog>` itself — but so does a drag that started on the panel (selecting a path,
  *   releasing a slider) and so does a click a native `<select>` popup lets through. So `pointerdown` and
  *   `click` are paired and each is tested against `getBoundingClientRect()`; both halves must land outside.
+ *   That geometry branch has a test OF ITS OWN
+ *   ([aPressWhoseTargetIsTheDialogButWhoseCoordinatesAreInsideItIsRefused]) and it needs one: every other
+ *   "inside" press in this file lands on a CHILD (`dialog` is `padding: 0`, so a form or the grabber
+ *   covers the content box), and a child target is refused by `event.target !== el` before a rectangle is
+ *   ever read. Deleting the whole branch left this file green until that test was written.
  * - **A dismiss is a positively completed down → up → click transaction by ONE pointer.** The record is one
  *   slot, `{ pointerId, released }`, armed only by `event.isPrimary && event.button === 0`. Both halves are
  *   load-bearing. The BUTTON, because a press that answers with no `click` at all (a secondary button
@@ -68,13 +77,17 @@ import kotlin.test.fail
  *   no hit-test and triggers no compatibility burst. It is used for exactly one thing no single-tap API can
  *   express — a two-pointer sequence — and every such assertion says so at its call site.
  *
- * Two things stay out of reach here and are recorded rather than faked. The SWIPE half of the superseded
- * grep test is not covered: a claimed swipe calls `el.setPointerCapture(event.pointerId)`, which throws
- * `NotFoundError` for a pointer id the platform never made active, so a synthesised swipe cannot even reach
- * the transform — and Playwright's `Touchscreen` offers `tap` alone, with no touch drag. And the note in
- * CLAUDE.md stands unchanged: **on a current iPhone and iPad, confirm a backdrop
- * `pointerdown`/`pointerup`/`click` carry the same `pointerId`, including in a two-finger sequence.** WebKit
- * has regressed click metadata before; `released` is what carries the guarantee if it has again.
+ * - **CDP TOUCH DRAG** — `Input.dispatchTouchEvent` through `context.newCDPSession`, which is how the SWIPE
+ *   half is driven. Playwright's `Touchscreen` really does offer `tap` alone, but Chromium turns a CDP
+ *   touch sequence into genuine `pointerType: "touch"` events with an ACTIVE pointer, which is exactly what
+ *   `el.setPointerCapture(event.pointerId)` needs (a made-up id throws `NotFoundError` and leaves the
+ *   gesture inert before it can translate anything). So the claim, the capture, the transform and the
+ *   release are all the platform's own here; only the contact geometry is synthetic.
+ *
+ * One thing stays out of reach and is recorded rather than faked. The note in CLAUDE.md stands unchanged:
+ * **on a current iPhone and iPad, confirm a backdrop `pointerdown`/`pointerup`/`click` carry the same
+ * `pointerId`, including in a two-finger sequence.** WebKit has regressed click metadata before; `released`
+ * is what carries the guarantee if it has again.
  *
  * ## Vacuity
  *
@@ -171,6 +184,123 @@ class DialogDismissTest {
             page.mouse().click(backdrop.x, backdrop.y)
             assertThat(page.locator(HELP_DIALOG)).hasCount(0)
         }
+    }
+
+    /**
+     * GENUINE mouse. The geometry branch of `outside()`, and the only test in this file that reaches it.
+     *
+     * Every other "inside" press here lands on a CHILD of the `<dialog>` — `dialog { padding: 0 }` means a
+     * form (or, under a coarse pointer, the grabber) covers the whole content box — so `event.target !== el`
+     * refuses them and `getBoundingClientRect()` is never consulted. The branch therefore existed with no
+     * test at all: deleting it left all six other tests green.
+     *
+     * What produces the missing case is the panel's own EDGE. A `<dialog>` with no padding still has a 1px
+     * border and a 12px radius, so there are real points that belong to the dialog element itself and lie
+     * INSIDE its bounding rectangle — the border strip, and the notch a rounded corner leaves. Those are
+     * the same shape as the two cases the branch is written for and cannot be staged: a click a native
+     * `<select>` popup lets through, and a drag that began on the panel whose `click` the browser reports
+     * on the nearest common ancestor at a coordinate the operator never meant as "outside".
+     *
+     * The point is SEARCHED for and its target is recorded from the real events rather than assumed, so a
+     * layout in which no such point exists fails loudly instead of quietly re-testing the target check.
+     */
+    @Test
+    fun aPressWhoseTargetIsTheDialogButWhoseCoordinatesAreInsideItIsRefused() {
+        withApp("dialog-inside-geometry", touch = false) { _, _, page ->
+            openHelp(page)
+            val owned = dialogOwnedPointInsideTheBox(page, HELP_DIALOG)
+            recordDialogTargets(page, HELP_DIALOG)
+
+            page.mouse().move(owned.x, owned.y)
+            page.mouse().down()
+            page.mouse().up()
+
+            // The precondition, read off the events that were actually delivered: both halves of the press
+            // reported the <dialog> itself, and both landed inside its box. That is precisely the input the
+            // geometry branch exists to refuse — and the only input for which `event.target !== el` cannot.
+            assertEquals(
+                listOf("pointerdown:dialog:inside", "pointerup:dialog:inside", "click:dialog:inside"),
+                dialogTargets(page),
+                "the press did not produce the target-is-the-dialog-but-inside case this test is about",
+            )
+            assertStaysOpen(
+                page,
+                HELP_DIALOG,
+                "a press whose target was the <dialog> but whose coordinates were INSIDE the panel closed " +
+                    "it — outside-ness is being decided by the target alone",
+            )
+
+            // The control. Without it the refusal above would pass just as happily against a dialog no
+            // pointer could ever close.
+            val backdrop = backdropPoint(page, HELP_DIALOG)
+            page.mouse().click(backdrop.x, backdrop.y)
+            assertThat(page.locator(HELP_DIALOG)).hasCount(0)
+        }
+    }
+
+    /**
+     * CDP TOUCH DRAG. The other gesture the wrapper adds, on the dialog it was written for.
+     *
+     * A downward pull that begins on `.dialog-grabber` translates the panel with the finger and dismisses
+     * on release once it has travelled far enough; a shorter pull springs the panel back and keeps the
+     * screen. Both halves are asserted through the inline `transform`, which is what `springBack` clears
+     * synchronously — so "the panel came back" is read as the state the code writes, not as a picture.
+     *
+     * The distances bracket `SWIPE_DISMISS_PX` (96) from both sides and the drag rests before its lift, so
+     * neither arm can be decided by the flick rule instead: a stationary contact ages its last speed sample
+     * past `SWIPE_FLICK_HANDOFF_MS`, which the wrapper counts as zero velocity.
+     */
+    @Test
+    fun aDownwardSwipeOffTheGrabberDismissesWhileAShorterPullSpringsBack() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            Playwright.create().use { pw ->
+                touchChromium(pw).use { browser ->
+                    browser.touchContext().use { context ->
+                        context.traced("dialog-swipe") {
+                            context.loginWithTicket(harness.ticket, harness.baseUrl)
+                            val page = context.newPage()
+                            page.navigate("${harness.baseUrl}/")
+                            assertThat(page.locator("#sidebar")).hasCount(1)
+                            openPalette(page)
+                            val cdp = context.newCDPSession(page)
+                            try {
+                                swipeCases(page, cdp)
+                            } finally {
+                                cdp.detach()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun swipeCases(page: Page, cdp: CDPSession) {
+        val grabber = page.locator("$PALETTE .dialog-grabber").boundingBox()
+            ?: fail("the palette drew no swipe handle in a coarse-pointer context")
+        val x = grabber.x + grabber.width / 2
+        val y = grabber.y + grabber.height / 2
+
+        // A pull the wrapper claims (past the 8px slop, dominantly downward) but does not act on.
+        touchDown(cdp, page, x, y)
+        touchDragTo(cdp, page, x, y, x, y + SHORT_PULL_PX)
+        assertTrue(
+            panelTransform(page, PALETTE).contains("translateY"),
+            "a claimed swipe must carry the panel with the finger; the panel never moved",
+        )
+        touchUp(cdp, page)
+        assertStaysOpen(page, PALETTE, "a ${SHORT_PULL_PX.toInt()}px pull dismissed the palette")
+        assertEquals(
+            "",
+            panelTransform(page, PALETTE),
+            "the panel was left under its transform instead of being sprung back",
+        )
+
+        // The same gesture, past the dismissal distance.
+        touchDown(cdp, page, x, y)
+        touchDragTo(cdp, page, x, y, x, y + LONG_PULL_PX)
+        touchUp(cdp, page)
+        assertThat(page.locator(PALETTE)).hasCount(0)
     }
 
     /**
@@ -308,7 +438,7 @@ class DialogDismissTest {
     fun theSwipeHandleIsDrawnWhereverACoarsePointerIsAndNowhereElse() {
         Playwright.create().use { pw ->
             touchChromium(pw).use { browser ->
-                val phone = paletteInk(browser.touchContext(), "dialog-ink-phone")
+                val phone = paletteInk("dialog-ink-phone") { browser.touchContext() }
                 assertTrue(phone.grabberVisible, "a phone draws no swipe handle")
                 assertTrue(
                     phone.grabberHeight >= MIN_GRABBER_PX,
@@ -320,14 +450,13 @@ class DialogDismissTest {
                         "than the ${THUMB_PX}px box a thumb needs above a row that runs a command",
                 )
 
-                val tablet = paletteInk(
+                val tablet = paletteInk("dialog-ink-tablet") {
                     browser.touchContext(
                         width = TABLET_WIDTH,
                         height = TABLET_HEIGHT,
                         deviceScaleFactor = TABLET_SCALE,
-                    ),
-                    "dialog-ink-tablet",
-                )
+                    )
+                }
                 assertTrue(
                     tablet.grabberVisible && tablet.grabberHeight >= MIN_GRABBER_PX,
                     "a ${TABLET_WIDTH}px-wide touch device drew no swipe handle — the affordance is " +
@@ -335,7 +464,7 @@ class DialogDismissTest {
                         "unable to dismiss the palette",
                 )
 
-                val desktop = paletteInk(browser.newContext(), "dialog-ink-desktop")
+                val desktop = paletteInk("dialog-ink-desktop") { browser.fineContext() }
                 assertTrue(
                     !desktop.grabberVisible,
                     "a fine pointer was given a swipe handle it can never use",
@@ -423,12 +552,13 @@ class DialogDismissTest {
      * `/auth`. That is exactly how this test used to fail — a 30s `waitForURL` inside `loginWithTicket`,
      * which reads as a hung browser rather than as a spent credential. The harness has no "issue another
      * ticket" command and should not grow one; one code per process is the daemon's own rule, and the
-     * fixture's contract is a fresh context per sign-in anyway. The context is closed inside the harness's
-     * `use`, so no page is still fetching when `Harness.close()` asserts a clean exit.
+     * fixture's contract is a fresh context per sign-in anyway. The context is BUILT and closed inside the
+     * harness's `use` — built there so a harness that throws on construction cannot leak one, closed there
+     * so no page is still fetching when `Harness.close()` asserts a clean exit.
      */
-    private fun paletteInk(context: BrowserContext, trace: String): Ink =
+    private fun paletteInk(trace: String, newContext: () -> BrowserContext): Ink =
         Harness(SESSIONS_SCENARIO).use { harness ->
-            context.use {
+            newContext().use { context ->
                 var measured: Ink? = null
                 context.traced(trace) {
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
@@ -463,6 +593,127 @@ class DialogDismissTest {
     // --- gestures and geometry -----------------------------------------------------------------------
 
     private data class ViewportPoint(val x: Double, val y: Double)
+
+    /**
+     * A point that hit-tests to the `<dialog>` ELEMENT and lies inside its bounding rectangle — the one
+     * input shape the geometry branch of `outside()` exists to refuse, and the one no other test here
+     * produces.
+     *
+     * `dialog { padding: 0 }` means the content box belongs to a child, so the candidates are the parts of
+     * the box that are still the dialog's own paint: its 1px border, and the notch its 12px radius leaves
+     * at each corner (Chromium hit-tests a rounded border box, so a press in the notch reaches whatever is
+     * behind — the backdrop, which reports the dialog). Searched rather than named, because which of the
+     * two answers depends on the engine's rounding; a layout that offers neither fails here with the box it
+     * measured rather than silently degrading into a second target-check test.
+     */
+    private fun dialogOwnedPointInsideTheBox(page: Page, dialog: String): ViewportPoint {
+        val found = page.evaluate(
+            """
+            (sel) => {
+              const el = document.querySelector(sel);
+              if (!el) return null;
+              const r = el.getBoundingClientRect();
+              const midX = r.left + r.width / 2;
+              const midY = r.top + r.height / 2;
+              const candidates = [];
+              for (const d of [0.5, 1.5, 2.5, 3.5]) {
+                candidates.push([r.left + d, midY], [r.right - d, midY]);
+                candidates.push([midX, r.top + d], [midX, r.bottom - d]);
+                candidates.push([r.left + d, r.top + d], [r.right - d, r.top + d]);
+                candidates.push([r.left + d, r.bottom - d], [r.right - d, r.bottom - d]);
+              }
+              for (const [x, y] of candidates) {
+                if (x <= r.left || x >= r.right || y <= r.top || y >= r.bottom) continue;
+                if (document.elementFromPoint(x, y) === el) return x + "," + y;
+              }
+              return "none:" + [r.left, r.top, r.width, r.height].join("/");
+            }
+            """.trimIndent(),
+            dialog,
+        ) as? String ?: fail("there is no $dialog on screen to measure")
+        if (found.startsWith("none")) {
+            fail(
+                "no point of $dialog both hit-tests to the dialog element and lies inside its box " +
+                    "(${found.removePrefix("none:")}), so the geometry branch of `outside()` cannot be " +
+                    "reached from a real press any more — this test has stopped testing it",
+            )
+        }
+        val (x, y) = found.split(",").map { it.toDouble() }
+        return ViewportPoint(x, y)
+    }
+
+    /**
+     * Record, for every pointer event the dialog element receives, whether its target WAS that element and
+     * whether its coordinates fell inside the element's box. That pair is the whole input to `outside()`.
+     */
+    private fun recordDialogTargets(page: Page, dialog: String) {
+        page.evaluate(
+            """
+            (sel) => {
+              const el = document.querySelector(sel);
+              window.__kotgentDialogEvents = [];
+              for (const type of ["pointerdown", "pointerup", "click"]) {
+                el.addEventListener(type, (event) => {
+                  const r = el.getBoundingClientRect();
+                  const inside = event.clientX > r.left && event.clientX < r.right &&
+                    event.clientY > r.top && event.clientY < r.bottom;
+                  window.__kotgentDialogEvents.push(
+                    type + ":" + (event.target === el ? "dialog" : "child") +
+                    ":" + (inside ? "inside" : "outside"),
+                  );
+                }, true);
+              }
+            }
+            """.trimIndent(),
+            dialog,
+        )
+    }
+
+    private fun dialogTargets(page: Page): List<String> {
+        val raw = page.evaluate("() => window.__kotgentDialogEvents || []") as List<*>
+        return raw.map { it.toString() }
+    }
+
+    /** The panel's inline transform — what a claimed swipe writes and `springBack` clears. */
+    private fun panelTransform(page: Page, dialog: String): String =
+        page.evaluate("(sel) => document.querySelector(sel)?.style.transform ?? \"(gone)\"", dialog) as String
+
+    private fun touchDown(cdp: CDPSession, page: Page, x: Double, y: Double) {
+        dispatchTouch(cdp, "touchStart", x, y)
+        page.waitForTimeout(TOUCH_FRAME_MILLIS)
+    }
+
+    private fun touchDragTo(cdp: CDPSession, page: Page, fromX: Double, fromY: Double, toX: Double, toY: Double) {
+        for (step in 1..TOUCH_STEPS) {
+            val fraction = step.toDouble() / TOUCH_STEPS
+            dispatchTouch(cdp, "touchMove", fromX + (toX - fromX) * fraction, fromY + (toY - fromY) * fraction)
+            page.waitForTimeout(TOUCH_FRAME_MILLIS)
+        }
+        // Rest before the lift, so the release cannot be read as a FLICK: a stationary contact emits no
+        // further move, and the wrapper ages a sample older than `SWIPE_FLICK_HANDOFF_MS` to zero velocity.
+        page.waitForTimeout(TOUCH_REST_MILLIS)
+    }
+
+    private fun touchUp(cdp: CDPSession, page: Page) {
+        // Chromium refuses a `touchEnd` that still names points: the release IS their absence.
+        dispatchTouch(cdp, "touchEnd", null, null)
+        page.waitForTimeout(TOUCH_FRAME_MILLIS)
+    }
+
+    private fun dispatchTouch(cdp: CDPSession, type: String, x: Double?, y: Double?) {
+        val points = JsonArray()
+        if (x != null && y != null) {
+            val point = JsonObject()
+            point.addProperty("x", x)
+            point.addProperty("y", y)
+            point.addProperty("id", 0)
+            points.add(point)
+        }
+        val params = JsonObject()
+        params.addProperty("type", type)
+        params.add("touchPoints", points)
+        cdp.send("Input.dispatchTouchEvent", params)
+    }
 
     /**
      * Dispatch ONE constructed `PointerEvent` on the dialog element itself — SYNTHESISED, see the class
@@ -613,6 +864,20 @@ class DialogDismissTest {
 
         /** Intermediate mouse moves, so a drag is a drag and not a teleport. */
         const val DRAG_STEPS = 8
+
+        /**
+         * The two swipe distances, bracketing `SWIPE_DISMISS_PX` (96) from both sides: one past the 8px
+         * slop and well under the threshold, one comfortably over it.
+         */
+        const val SHORT_PULL_PX = 40.0
+        const val LONG_PULL_PX = 150.0
+
+        /** Intermediate touch points, and a frame between them, so the wrapper sees a stream of moves. */
+        const val TOUCH_STEPS = 8
+        const val TOUCH_FRAME_MILLIS = 16.0
+
+        /** Longer than `SWIPE_FLICK_HANDOFF_MS` (90), so neither arm can be decided by the flick rule. */
+        const val TOUCH_REST_MILLIS = 150.0
 
         /** The handle is 20px on a coarse pointer; anything at or above this is drawn rather than absent. */
         const val MIN_GRABBER_PX = 12.0

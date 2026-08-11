@@ -331,6 +331,26 @@ fun Browser.touchContext(
 )
 
 /**
+ * A desktop context with a FINE pointer — no touch at all.
+ *
+ * [touchContext] always sets `hasTouch`, and that is not merely about `touchscreen().tap()`: a touch
+ * context resolves `@media (any-pointer: coarse)`, measured, at EVERY width including 1280px. So a test
+ * that reasons about the desktop shape of a dialog while running in a touch context is measuring the
+ * phone's ink — the 20px `.dialog-grabber`, its `padding-top` compensation and the palette's 44px × are
+ * all drawn there. Use this whenever the subject is what a mouse-only machine renders.
+ */
+fun Browser.fineContext(
+    width: Int = 1280,
+    height: Int = 900,
+): BrowserContext = newContext(
+    Browser.NewContextOptions()
+        .setViewportSize(width, height)
+        .setDeviceScaleFactor(1.0)
+        .setIsMobile(false)
+        .setHasTouch(false),
+)
+
+/**
  * Where a failing browser test must leave its evidence.
  *
  * CI uploads `test-results/` and `webuitest/test-results/` and nothing else, and only on `failure()`. A

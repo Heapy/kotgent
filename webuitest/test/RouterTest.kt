@@ -16,8 +16,9 @@ import kotlin.test.Test
  *   /tasks/{ref} one task's detail, mounted as the board's sibling
  *   /s/{id}      one session
  *
- * This replaces two source-reading files, `WebUiScreenRoutingTest` (deleted) and most of
- * `WebUiRouterTest` (shrunk to the two guards a browser cannot make): those could only read the served
+ * This replaces two source-reading files, `WebUiScreenRoutingTest` and `WebUiRouterTest` (both deleted;
+ * the two guards a browser cannot make were folded into `test/transport/WebUiServingTest.kt`): those
+ * could only read the served
  * text of `router.js` and `app.js` and argue that the two would meet at runtime. Here they actually do —
  * a route is entered the way an operator enters one, and what is asserted is the address bar, the history
  * stack and the screen that came up.
@@ -107,7 +108,7 @@ class RouterTest {
     /**
      * The notification deep link. `sw.js` is a classic script with no module graph — it cannot import the
      * router — so it hand-builds `/?session=<id>` in `openWindow`, and the two spellings of that
-     * parameter are kept in step by the one source guard left in `WebUiRouterTest`. What that guard
+     * parameter are kept in step by the one source guard in `test/transport/WebUiServingTest.kt`. What that guard
      * cannot show is that the parameter arrives somewhere: here the tap's URL really does select the
      * session, and the address is rewritten to the session's own path, so a later reload re-selects it
      * from the path instead of re-honouring a query the operator has already spent.
@@ -267,17 +268,15 @@ class RouterTest {
     private fun routerTest(name: String, block: (String, Page) -> Unit) {
         Harness(DEEP_LINK_SCENARIO).use { harness ->
             Playwright.create().use { playwright ->
-                val context = touchChromium(playwright).touchContext(
-                    width = 1280,
-                    height = 900,
-                    deviceScaleFactor = 1.0,
-                    mobile = false,
-                )
-                context.loginWithTicket(harness.ticket, harness.baseUrl)
-                try {
-                    context.traced(name) { block(harness.baseUrl, context.newPage()) }
-                } finally {
-                    context.close()
+                touchChromium(playwright).use { browser ->
+                    browser.fineContext(width = 1280, height = 900).use { context ->
+                        // Inside the tracing, because signing in is the step most worth a screenshot when
+                        // it fails: a spent ticket leaves a 30s `waitForURL` that reads as a hung browser.
+                        context.traced(name) {
+                            context.loginWithTicket(harness.ticket, harness.baseUrl)
+                            block(harness.baseUrl, context.newPage())
+                        }
+                    }
                 }
             }
         }
@@ -311,13 +310,18 @@ class RouterTest {
 
     /**
      * One task's detail, mounted as the board's SIBLING: `/tasks/{ref}` is still the board's screen, with
-     * the detail over it. The title carries the ref in every state of the panel (loading, loaded, gone),
-     * so this identifies the task without waiting on the detail's own fetch.
+     * the detail over it.
+     *
+     * The title identifies WHICH task, but it cannot say the panel arrived: `#task-detail-title` renders
+     * the ref in all four head shapes, "Loading…" and "this task has been deleted" included, so a panel
+     * whose fetch never resolved satisfies it. `#task-detail-form` belongs to the loaded arm alone, which
+     * is what makes the pair a statement about a working screen rather than about a mounted component.
      */
     private fun assertTaskDetail(page: Page) {
         assertBoard(page)
         assertThat(page.locator("section.task-detail")).isVisible()
         assertThat(page.locator("#task-detail-title")).hasText(DEEP_TASK)
+        assertThat(page.locator("#task-detail-form")).isVisible()
     }
 }
 

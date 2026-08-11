@@ -41,6 +41,9 @@ import kotlin.test.fail
  *   point of the triage dot is that it survives being folded away.
  * - The footer carries the running daemon's version, which is how an operator on a phone knows which
  *   build they are talking to.
+ * - "Done" (`archived`) is a THIRD list, not a deletion: the row leaves the main list, a `#done-section`
+ *   appears with its own count, and only a row inside it is given Restore — which takes the state badge's
+ *   place. No scenario can seed an archived session, so the browser makes one the way an operator does.
  *
  * Two rules of the same grouping helper are recorded here but NOT observable from this scenario, because
  * no seeded session sits directly in a directory that also has a subdirectory: direct sessions render
@@ -327,6 +330,68 @@ class SidebarTest {
     }
 
     /**
+     * "Done" hides a row without losing it, and Restore brings it back — the sidebar's third list.
+     *
+     * `archived` is one of the three fields written OUTSIDE the reducer, and it is the only one with a
+     * body of sidebar chrome of its own: a `#done-section` that exists only while something is archived, a
+     * disclosure that keeps its own count, a `#done-list` the rows move into, and a Restore control that
+     * only a row in that list is given. None of that was reachable from any fixture — no scenario seeds an
+     * archived session — so the whole branch shipped unexercised once the grep tier that pinned
+     * `general.show-done` went away.
+     *
+     * The browser can produce the state itself, which is the point: `⌘K d` runs the same
+     * `POST /sessions/{id}/done` an operator runs, so what is set up here is exactly what is asserted
+     * about. `s-delta` is the `resumable` shell — selecting it attaches no terminal, and "Done" on it is a
+     * pure archive with no pane to kill.
+     *
+     * The disclosure is asserted CLOSED first. That is not ceremony: the row is out of `#session-list` the
+     * moment it is archived, so without the closed state being observed the test could not tell "hidden
+     * behind a collapsed section" from "gone".
+     */
+    @Test
+    fun aDoneSessionMovesIntoItsOwnCollapsedListAndRestoreBringsItBack() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-done") { _, _, page ->
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            // Nothing is archived yet, so the section does not exist at all — an empty disclosure would be
+            // furniture on every first run.
+            assertThat(page.locator("#done-section")).hasCount(0)
+
+            // "Done" is one of the two destructive verbs that ask first, and Playwright DISMISSES a native
+            // dialog unless something answers it — which would silently make this test about a cancelled
+            // confirm. Accepting is what an operator does; the prompt itself is the palette's subject.
+            page.onDialog { dialog -> dialog.accept() }
+
+            page.locator("#session-list .session-row[data-id='$DONE_SESSION']").click()
+            runLeaderCommand(page, "Done current session")
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+            assertThat(page.locator("#session-list .session-row[data-id='$DONE_SESSION']")).hasCount(0)
+            val toggle = page.locator("#show-done-toggle")
+            assertThat(toggle).hasText("▸ Show done (1)")
+            assertThat(toggle).hasAttribute("aria-expanded", "false")
+            assertThat(page.locator("#done-list")).hasCount(0)
+
+            toggle.click()
+            assertThat(toggle).hasAttribute("aria-expanded", "true")
+            val doneRow = page.locator("#done-list .session-row[data-id='$DONE_SESSION']")
+            assertThat(doneRow).hasCount(1)
+            // The control only this list gives a row — `onRestore` is passed here and nowhere else — and
+            // it takes the state badge's PLACE, which is the visible difference between an archived row
+            // and a live one.
+            val restore = doneRow.locator(".session-restore")
+            assertThat(restore).hasCount(1)
+            assertThat(doneRow.locator(".badge")).hasCount(0)
+
+            restore.click()
+
+            // Un-archived: back in the main list, and the section is gone again because it is empty.
+            assertThat(page.locator("#session-list .session-row[data-id='$DONE_SESSION']")).hasCount(1)
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            assertThat(page.locator("#done-section")).hasCount(0)
+        }
+    }
+
+    /**
      * The unread pill is the DAEMON's number, and `POST /sessions/{id}/read` is the only thing that moves
      * it: nothing is zeroed locally, because the cursor is server state that every other client (a phone,
      * a second tab) reads the same badge out of.
@@ -400,7 +465,25 @@ class SidebarTest {
             assertEquals(
                 listOf("""{"seq":5}"""),
                 bodies.distinct(),
-                "every retry re-sends the newest seq, coalesced — not a queue of one POST per trigger",
+                "every retry re-sends the newest seq",
+            )
+
+            // COALESCED, and this is the only assertion that can say so. Every trigger here carries the
+            // same seq, so a `distinct()` over the bodies answers one element whether the poster keeps one
+            // request per session or fires one per trigger — what separates the two is the COUNT. A burst
+            // of frames lands while a retry timer is already pending; `deliverRead`'s guard must turn each
+            // of them into nothing at all, so the only request that may appear inside a window shorter
+            // than one retry delay is that pending retry itself.
+            val beforeBurst = attempts.get()
+            repeat(TRIGGER_BURST) { i ->
+                harness.send("emit $UNREAD_SESSION ${if (i % 2 == 0) "running" else "ready"}")
+            }
+            page.waitForTimeout(BURST_WINDOW_MILLIS)
+            val burst = attempts.get() - beforeBurst
+            assertTrue(
+                burst <= 1,
+                "$TRIGGER_BURST session_update frames inside ${BURST_WINDOW_MILLIS.toLong()}ms produced " +
+                    "$burst requests — one per trigger rather than one in flight per session",
             )
 
             // And the badge clears only now, on the daemon's own broadcast: the retry that finally lands
@@ -455,6 +538,14 @@ class SidebarTest {
             assertThat(page.locator("#sessions-loading")).hasCount(0)
             assertThat(page.locator("#status-line")).hasText("0 session(s).")
 
+            // The recorder is proven live against a request this page certainly makes before the absence
+            // below is read: `__kotgentFetches` is installed by an init script, and if that ever stopped
+            // wrapping `window.fetch` the count would be zero for the wrong reason.
+            assertTrue(
+                recordedFetches(page).any { it.contains("/api/v1/preferences") },
+                "the fetch recorder saw nothing at all, so the zero below would be its own silence: " +
+                    "${recordedFetches(page)}",
+            )
             assertEquals(
                 0,
                 wholesaleSessionFetches(page),
@@ -543,6 +634,9 @@ private const val ATTENTION_SCENARIO: String = "attention"
 /** The row that carries it. Its sibling `s-quiet` has no unread and is not touched here. */
 private const val UNREAD_SESSION: String = "s-unread"
 
+/** The `sessions` scenario's `resumable` shell: selecting it attaches no pty, so Done has none to kill. */
+private const val DONE_SESSION: String = "s-delta"
+
 /** What `onclose` says, once per outage. Spelled exactly as `app.js` says it, ellipsis included. */
 private const val DISCONNECT_LINE: String = "Daemon connection lost — reconnecting…"
 
@@ -561,6 +655,14 @@ private const val READ_ACCEPTED: String = "accepted"
  * be due, and the transient phase proves the window really is long enough by filling it with them.
  */
 private const val RETRY_WINDOW_MILLIS: Double = 6_000.0
+
+/**
+ * A burst of triggers, and a window shorter than ONE `READ_RETRY_DELAY_MS` to watch it in. Both halves
+ * are load-bearing: the burst has to be big enough that "one request per trigger" is unmistakable, and the
+ * window short enough that at most one scheduled retry can fall inside it.
+ */
+private const val TRIGGER_BURST: Int = 6
+private const val BURST_WINDOW_MILLIS: Double = 900.0
 
 /** Fault modes for [SOCKET_FAULT_SCRIPT]; the empty one is a healthy socket. */
 private const val EVENTS_HEALTHY: String = ""
@@ -736,8 +838,10 @@ private fun interceptMarkRead(
         if (!intercepted.request().method().equals("POST", ignoreCase = true)) {
             intercepted.resume()
         } else {
-            attempts.incrementAndGet()
+            // The body is banked BEFORE the counter is bumped: a waiter on `attempts` would otherwise be
+            // free to run between the two and read a list that is one entry short of the count it saw.
             bodies.add(intercepted.request().postData().orEmpty())
+            attempts.incrementAndGet()
             when (answer.get()) {
                 READ_DEFINITE -> intercepted.fulfill(
                     Route.FulfillOptions()
@@ -776,6 +880,12 @@ private fun closeNewestEventsSocket(page: Page) {
         }
         """.trimIndent(),
     )
+}
+
+/** Every URL the page has fetched since the recorder was installed. */
+private fun recordedFetches(page: Page): List<String> {
+    val raw = page.evaluate("() => window.__kotgentFetches || []") as List<*>
+    return raw.map { it.toString() }
 }
 
 /** How many times the page fetched the WHOLE session list. The answer must always be zero. */

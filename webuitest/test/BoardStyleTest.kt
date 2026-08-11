@@ -41,7 +41,8 @@ import kotlin.test.assertTrue
  * The old file's first test walked the plan's frozen "Board CSS vocabulary" and asserted every name was a
  * selector somewhere in the sheet. There is no browser counterpart worth writing — a name that matches
  * nothing shows up here as an element with no ink, which is what the measurements below are for — and its
- * companion half (that the markup EMITS those names) survives in `WebUiBoardTest.kt`. Two smaller
+ * companion half (that the markup EMITS those names) survives in `test/transport/WebUiServingTest.kt`.
+ * Two smaller
  * assertions went the same way rather than being faked into a pass; each is named at the point where it
  * would have gone.
  */
@@ -199,9 +200,21 @@ class BoardStyleTest {
                 "the head paints the column's own fill, inherited through `--column-fill`",
             )
             assertNotEquals(TRANSPARENT, head.style("background-color"), "…and that fill is opaque")
+            // A hit test at the head's centre is nearly free of content on its own — `elementFromPoint`
+            // does not care about transparency, and a sticky head is above the in-flow cards by
+            // definition. What makes it a statement is the STACK: the head has to be on top AND a card
+            // has to be underneath it at that very point, which is only true because the column really is
+            // scrolled far enough for one to have travelled behind the head.
+            val stack = page.stackAt(headBox.centerX, headBox.centerY)
+            assertEquals(
+                ".board-column-head",
+                stack.firstOrNull(),
+                "something is painted over the sticky head at its own centre; the stack was $stack",
+            )
             assertTrue(
-                page.hitTest(headBox.centerX, headBox.centerY, ".board-column-head"),
-                "a card scrolled under the head does not show through it",
+                stack.contains(".task-card"),
+                "no card is behind the head, so this point proves nothing about cards showing through " +
+                    "it — the column is not scrolled far enough; the stack was $stack",
             )
         }
 
@@ -585,6 +598,16 @@ class BoardStyleTest {
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
 
+            // The device this runs on, stated rather than implied: a TOUCH tablet one pixel above the
+            // phone breakpoint, which is exactly the machine the drag-reservation half is about. The
+            // board's own collapse is a width query and answers the same on either kind of pointer.
+            assertEquals(
+                true,
+                page.evaluate("() => matchMedia('(any-pointer: coarse)').matches"),
+                "this arm is meant to be a wide TOUCH device; on a fine pointer it says nothing about " +
+                    "the drag a finger makes",
+            )
+
             val app = page.locator("#app")
             val board = page.locator(".board")
             assertThat(page.locator(".board-column")).hasCount(4)
@@ -638,13 +661,20 @@ class BoardStyleTest {
      */
     @Test
     fun theNewTaskDialogInsetsItsPanelAndDressesItsTextareaAsAField() =
-        onScreen("board", "board-new-task-dialog") { harness, page ->
+        // A FINE pointer, and that is load-bearing rather than tidy. Every other context in this file has
+        // `hasTouch`, which resolves `@media (any-pointer: coarse)` at EVERY width — so a "desktop" dialog
+        // measured in one is really the phone's sheet, complete with the 20px grabber and the padding-top
+        // that compensates for it. This test reasons about the mouse-only shape, so it runs on one.
+        onScreen("board", "board-new-task-dialog", coarse = false) { harness, page ->
             page.navigate(harness.baseUrl + "/tasks")
             assertThat(page.locator(".task-card")).hasCount(BOARD_CARDS)
             page.locator(".board-new-task").click()
 
             val dialog = page.locator("#new-task-dialog")
             assertThat(dialog).isVisible()
+            // The statement that this really is the desktop shape: the swipe handle exists only where a
+            // coarse pointer does, and the gesture it affords is `DialogDismissTest`'s subject.
+            assertThat(dialog.locator(".dialog-grabber")).isHidden()
             val panel = dialog.rect()
             val form = page.locator("#new-task-form").rect()
             // `dialog` is `padding: 0`, so its 1px border is all that stands between panel and form.
@@ -864,17 +894,21 @@ class BoardStyleTest {
         width: Int = DESKTOP_WIDTH,
         height: Int = DESKTOP_HEIGHT,
         mobile: Boolean = false,
+        coarse: Boolean = true,
         block: (Harness, Page) -> Unit,
     ) {
         Harness(scenario).use { harness ->
             Playwright.create().use { playwright ->
-                val context = touchChromium(playwright)
-                    .touchContext(width, height, if (mobile) 3.0 else 1.0, mobile)
-                try {
-                    context.loginWithTicket(harness.ticket, harness.baseUrl)
-                    context.traced(trace) { block(harness, context.newPage()) }
-                } finally {
-                    context.close()
+                touchChromium(playwright).use { browser ->
+                    val context = if (coarse) {
+                        browser.touchContext(width, height, if (mobile) 3.0 else 1.0, mobile)
+                    } else {
+                        browser.fineContext(width, height)
+                    }
+                    context.use {
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        context.traced(trace) { block(harness, context.newPage()) }
+                    }
                 }
             }
         }
@@ -1016,6 +1050,31 @@ class BoardStyleTest {
         listOf(x, y, selector),
     ) as Boolean
 
+    /**
+     * Which of [STACK_SELECTORS] the browser finds at this point, front to back and deduplicated.
+     *
+     * `elementsFromPoint` rather than `elementFromPoint`: what is on TOP is only half of "the head hides
+     * what is behind it" — the other half is that something is behind it at all.
+     */
+    private fun Page.stackAt(x: Double, y: Double): List<String> {
+        val raw = evaluate(
+            """
+            (a) => {
+              const [x, y, selectors] = a;
+              const out = [];
+              for (const el of document.elementsFromPoint(x, y)) {
+                for (const selector of selectors) {
+                  if (el.closest(selector) && !out.includes(selector)) out.push(selector);
+                }
+              }
+              return out;
+            }
+            """.trimIndent(),
+            listOf(x, y, STACK_SELECTORS),
+        ) as List<*>
+        return raw.map { it.toString() }
+    }
+
     private fun assertClose(expected: Double, actual: Double, message: String, tolerance: Double = 1.0) {
         assertTrue(abs(expected - actual) <= tolerance, "$message — expected ≈$expected, measured $actual")
     }
@@ -1065,12 +1124,16 @@ class BoardStyleTest {
         /**
          * `PROJECT_NAME_MAX_LENGTH` — what `POST /projects` really accepts, and therefore what the New task
          * head must be able to hold. Restated rather than imported: it is a constant of the native root
-         * module, which this JVM module cannot see, and `WebUiBoardTest` keeps the import-backed check.
+         * module, which this JVM module cannot see, and `test/transport/WebUiServingTest.kt` keeps the
+         * import-backed check.
          */
         const val PROJECT_NAME_MAX_LENGTH = 100
 
         /** What Chromium computes for a fully transparent background. */
         const val TRANSPARENT = "rgba(0, 0, 0, 0)"
+
+        /** What [stackAt] reports on, innermost first, so the answer reads as a paint order. */
+        val STACK_SELECTORS = listOf(".board-column-head", ".task-card", ".board-column", ".board")
 
         /** The four workflow states of `TaskState`, in board order — what `data-state` carries. */
         val BOARD_STATES = listOf("todo", "in_progress", "review", "done")

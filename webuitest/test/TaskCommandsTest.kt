@@ -284,6 +284,9 @@ class TaskCommandsTest {
 
             page.openPalette()
             val offered = page.leaderRow("Open this session's task")
+            // Counted first: a negated attribute assertion is satisfied by an element that is not there,
+            // so without this the "enabled" half would pass against a row the grid stopped drawing.
+            assertThat(offered).hasCount(1)
             assertThat(offered).not().hasAttribute("aria-disabled", "true")
             page.pressMnemonic("KeyJ")
             // `taskPath` carries the ref through `encodeURIComponent`, so the mandatory `:` of
@@ -293,6 +296,10 @@ class TaskCommandsTest {
             // what an operator does after the agent finished.
             assertThat(page).hasURL(Pattern.compile("/tasks/local%3A1$"))
             assertThat(page.locator("#task-detail-title")).hasText("local:1")
+            // The title alone would add nothing to the URL above: it renders the ref in all four head
+            // shapes, "Loading…" and "has been deleted" included. The form is the loaded arm's own, so the
+            // pair says the chord reached a working panel for THIS task and not merely a mounted one.
+            assertThat(page.locator("#task-detail-form")).isVisible()
         }
 
     @Test
@@ -444,10 +451,20 @@ class TaskCommandsTest {
      */
     private fun Page.assertMnemonicsAreDistinct(screen: String) {
         assertThat(locator(".command-palette-leader-grid")).isVisible()
-        val rows = locator(".command-palette-leader-command").count()
-        val keys = locator(".command-palette-leader-key").allTextContents().map { it.trim() }
-        assertTrue(keys.isNotEmpty(), "$screen offers leader mnemonics at all")
-        assertEquals(rows, keys.size, "every row of $screen's grid draws exactly one key")
+        val rowLocators = locator(".command-palette-leader-command").all()
+        assertTrue(rowLocators.isNotEmpty(), "$screen offers leader mnemonics at all")
+        // Read PER ROW, never as one document-wide list beside a row count: those two numbers are equal
+        // for a row with no key beside a row with two, which is exactly the shape "one key per row" is
+        // meant to forbid.
+        val keys = rowLocators.map { row ->
+            val drawn = row.locator(".command-palette-leader-key").allTextContents()
+            assertEquals(
+                1,
+                drawn.size,
+                "a row of $screen's grid draws ${drawn.size} keys ($drawn) instead of exactly one",
+            )
+            drawn.first().trim()
+        }
         for (key in keys) {
             assertTrue(
                 key.length == 1 && (key[0] in 'a'..'z' || key[0] in 'A'..'Z'),

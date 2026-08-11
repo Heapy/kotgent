@@ -225,12 +225,30 @@ class CommandPaletteTest {
     @Test
     fun theLeaderGridOwnsTheKeyboardAndAnswersOnlyBareMnemonics() =
         onThePaletteScreen("palette-leader") { _, page ->
+            // Records, for every keystroke that reaches the document, whether anything called
+            // `preventDefault()` on it. That flag IS the guard under test twice below: the Space swallow
+            // and the modifier refusal both do exactly one observable thing, and it is this.
+            installKeyRecorder(page)
             openLeaderMode(page)
             val footer = page.locator(".command-palette-footer")
             assertThat(footer).containsText(LEADER_HINT)
 
-            val keys = page.locator(".command-palette-leader-key").allTextContents().map { it.trim() }
-            assertTrue(keys.size >= 10, "the leader grid draws the registry's chord-bearing subset: $keys")
+            // Read PER ROW rather than as one document-wide list: a row with two keys beside a row with
+            // none satisfies any assertion made about the totals.
+            val rows = page.locator(LEADER_COMMAND).all()
+            val keys = rows.map { row ->
+                val drawn = row.locator(".command-palette-leader-key").allTextContents().map { it.trim() }
+                assertEquals(1, drawn.size, "a grid row draws ${drawn.size} keys ($drawn), not one")
+                drawn.first()
+            }
+            // Named rather than counted. A floor ("at least ten") lets eight rows disappear in silence,
+            // and an exact total would be a second copy of the registry's length that every new command
+            // has to edit. The letters this FILE presses are the ones its other assertions depend on, so
+            // those are what it insists the grid still draws.
+            assertTrue(
+                keys.map { it.lowercase() }.containsAll(EXERCISED_MNEMONICS),
+                "the grid no longer draws every mnemonic this file presses ($EXERCISED_MNEMONICS): $keys",
+            )
             assertTrue(
                 keys.all { it.length == 1 && (it[0] in 'a'..'z' || it[0] in 'A'..'Z') },
                 "every drawn key is ONE ASCII letter, or its \"Key\" + chord code is unreachable: $keys",
@@ -265,21 +283,34 @@ class CommandPaletteTest {
             assertThat(page.locator(LEADER_GRID)).isVisible()
             assertLeaderOwnsTheKeyboard(page)
 
-            // Space on the shell activates nothing: leader mode parks the focus there, and without the
-            // guard the keystroke would land on whatever the browser considered activatable.
+            // Space on the shell is SWALLOWED, and swallowing is all it does — the keystroke activates
+            // nothing here either way, so "the grid is still up" is true with the guard deleted. What the
+            // guard actually performs is `preventDefault()`, which is what suppresses the scroll the
+            // browser would otherwise give a focused container; that is read directly.
             page.keyboard().press("Space")
-            page.waitForTimeout(SETTLE_MILLIS)
+            assertEquals(
+                "Space:prevented",
+                lastKeyEvent(page, "Space"),
+                "Space on the leader shell must be cancelled, or the browser scrolls the grid out from " +
+                    "under a hand that meant to type a mnemonic",
+            )
             assertThat(page.locator(LEADER_GRID)).isVisible()
             assertThat(footer).containsText(LEADER_HINT)
 
             // …but the guard is scoped to the shell ITSELF, so the controls inside it still answer Space.
             // The first tab stop is the row that opens search; before the target test it did nothing at
-            // all, which read as a dead button rather than as an over-broad key handler.
+            // all, which read as a dead button rather than as an over-broad key handler. Both halves are
+            // visible here — the keystroke is NOT cancelled, and the mode really flips.
             page.keyboard().press("Tab")
             // Named rather than assumed: if the tab order ever changes, the failure says so instead of
             // reading as a Space that was swallowed after all.
             assertThat(page.locator("#command-palette-search-mode")).isFocused()
             page.keyboard().press("Space")
+            assertEquals(
+                "Space:default",
+                lastKeyEvent(page, "Space"),
+                "the shell's Space guard reached one of its own buttons and cancelled the activation",
+            )
             assertThat(page.locator("#command-palette-query")).isVisible()
 
             page.keyboard().press(PALETTE_OPENER)
@@ -289,16 +320,22 @@ class CommandPaletteTest {
 
             // A letter carrying a modifier is refused BEFORE the lookup, so the browser keeps its own
             // binding. Ctrl rather than ⌘ because macOS reserves several ⌘-letters at the window-server
-            // level, and this guard tests `metaKey || ctrlKey` either way. Asserting an absence needs a
-            // settling window: the palette renders the announcement within a frame of the keystroke.
+            // level, and this guard tests `metaKey || ctrlKey` either way. The observable is the keystroke
+            // itself rather than a settling window over the footer: the guard returns above
+            // `preventDefault()`, so a modified letter must leave the page having cancelled nothing.
             page.keyboard().press("Control+KeyI")
-            page.waitForTimeout(SETTLE_MILLIS)
+            assertEquals(
+                "KeyI:default",
+                lastKeyEvent(page, "KeyI"),
+                "a modified letter was answered by the grid, so the browser lost its own binding for it",
+            )
             assertThat(footer).containsText(LEADER_HINT)
 
-            // The same letter, bare, IS answered — and a command that cannot run says why rather than
-            // behaving like a dead chord. This is the contrast that makes the assertion above mean
-            // something: only the modifier separates the two keystrokes.
+            // The same letter, bare, IS answered — cancelled, and a command that cannot run says why
+            // rather than behaving like a dead chord. This is the contrast that makes the assertion above
+            // mean something: only the modifier separates the two keystrokes.
             page.keyboard().press("KeyI")
+            assertEquals("KeyI:prevented", lastKeyEvent(page, "KeyI"), "a bare mnemonic is the grid's")
             assertThat(footer).containsText("$INTERRUPT_COMMAND: no session is selected")
             assertThat(page.locator(PALETTE)).isVisible()
 
@@ -363,13 +400,15 @@ class CommandPaletteTest {
             assertThat(page.locator(PALETTE)).hasCount(0)
 
             page.keyboard().press(PALETTE_OPENER)
-            page.waitForTimeout(SETTLE_MILLIS)
             assertThat(page.locator(PALETTE)).hasCount(0)
             assertThat(page.locator("#prefs-dialog")).isVisible()
 
-            // The dialog still owns Esc, which is how it closes rather than the palette that never opened.
+            // The barrier that makes the absence above an answer rather than a moment too early: Esc goes
+            // to whichever dialog holds the top layer, so a palette that HAD opened would eat it and leave
+            // Preferences standing. Preferences closing is therefore proof the opener yielded.
             page.keyboard().press("Escape")
             assertThat(page.locator("#prefs-dialog")).hasCount(0)
+            assertThat(page.locator(PALETTE)).hasCount(0)
 
             openLeaderMode(page)
         }
@@ -390,13 +429,18 @@ class CommandPaletteTest {
     @Test
     fun theEntryPointsTheChromeNoLongerDrawsStayReachableFromThePalette() =
         onThePaletteScreen("palette-entry-points") { _, page ->
-            for (id in REMOVED_CHROME_BUTTONS) {
-                assertThat(page.locator("#$id")).hasCount(0)
-            }
+            // The two headers this test says nothing is left in have to be ON SCREEN before their
+            // emptiness means anything: a `hasCount(0)` over a component that has not mounted is the
+            // strongest possible pass for the weakest possible reason.
+            assertThat(page.locator("#terminal-title")).containsText("No session selected")
+            assertThat(page.locator("#palette-button")).isVisible()
             assertThat(page.locator(".brand-actions button")).hasCount(2)
             assertThat(page.locator("#notify-toggle")).isVisible()
 
-            assertThat(page.locator("#terminal-title")).containsText("No session selected")
+            for (id in REMOVED_CHROME_BUTTONS) {
+                assertThat(page.locator("#$id")).hasCount(0)
+            }
+
             page.locator("#palette-button").click()
             assertThat(page.locator(LEADER_GRID)).isVisible()
 
@@ -590,6 +634,39 @@ class CommandPaletteTest {
         return input
     }
 
+    /**
+     * Record every keystroke that reaches the document, and whether anything cancelled it.
+     *
+     * Installed on the DOCUMENT in the bubble phase, which is downstream of everything the palette does:
+     * `leaderKeyDown` sits on the shell, so by the time a keystroke arrives here the guard has either
+     * called `preventDefault()` or returned without doing so — and that single bit is the whole observable
+     * behaviour of two guards this file tests. It survives every remount of the palette, unlike a listener
+     * on the dialog, and it is deliberately not `capture`: a capture listener would run BEFORE the shell's
+     * handler and always report `default`.
+     */
+    private fun installKeyRecorder(page: Page) {
+        page.evaluate(
+            """
+            () => {
+              window.__kotgentKeys = [];
+              document.addEventListener("keydown", (event) => {
+                window.__kotgentKeys.push(
+                  event.code + ":" + (event.defaultPrevented ? "prevented" : "default"),
+                );
+              });
+            }
+            """.trimIndent(),
+        )
+    }
+
+    /** The newest recorded entry for [code], or a message naming what WAS recorded. */
+    private fun lastKeyEvent(page: Page, code: String): String {
+        val raw = page.evaluate("() => window.__kotgentKeys || []") as List<*>
+        val entries = raw.map { it.toString() }
+        return entries.lastOrNull { it.startsWith("$code:") }
+            ?: "no $code reached the document at all (saw: $entries)"
+    }
+
     /** Rows of this list whose text contains [text] — case-insensitive, like Playwright's own matcher. */
     private fun Locator.withText(text: String): Locator =
         filter(Locator.FilterOptions().setHasText(text))
@@ -612,6 +689,12 @@ class CommandPaletteTest {
 
         /** The palette's resting status line, and therefore the proof that nothing was announced. */
         const val LEADER_HINT = "Press a letter"
+
+        /**
+         * Every mnemonic this file presses. The grid must still draw all of them, or an assertion below
+         * is silently about a chord that no longer exists — which a floor on the row count cannot say.
+         */
+        val EXERCISED_MNEMONICS = listOf("b", "h", "i", "m", "n", "o", "p")
 
         const val INTERRUPT_COMMAND = "Interrupt current session"
         const val NOTIFICATIONS_COMMAND = "Toggle notifications"
@@ -648,12 +731,6 @@ class CommandPaletteTest {
             "session-actions",
         )
 
-        /**
-         * How long to let the app render before asserting that something did NOT happen. Every such
-         * assertion here is paired with a positive one that differs by a single keystroke, so this window
-         * only has to outlast one Preact commit.
-         */
-        const val SETTLE_MILLIS = 300.0
     }
 }
 

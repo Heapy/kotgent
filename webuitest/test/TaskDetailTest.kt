@@ -1,8 +1,12 @@
 package io.kotgent.webuitest
 
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
+import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.BoundingBox
@@ -27,7 +31,8 @@ import kotlin.test.assertTrue
  * Three contracts from that file are deliberately NOT reproduced here, and are recorded rather than
  * quietly dropped: the frozen "Board CSS vocabulary" class whitelist (a source-level lock between two
  * agents writing markup and stylesheet concurrently — it has no browser-observable half, and the board's
- * end of it survives in `WebUiBoardTest`), the generation guard on a superseded read (it needs a held
+ * end of it survives in `test/transport/WebUiServingTest.kt`), the generation guard on a superseded read
+ * (it needs a held
  * response and a route change inside it, which is a request-interception test of a race no fixture
  * produces on its own), and the newest-rev-wins merge of the panel's two observations, which the plan
  * gives to the board's `task-race` test.
@@ -72,37 +77,61 @@ class TaskDetailTest {
     /** The first paint waits on the harness boot, the SPA's module graph and one GET, so it gets room. */
     private val firstPaintMs = 15_000.0
 
+    /** A display name no activity author carries, so the two renderings cannot be confused. */
+    private val INJECTED_NAME = "the-session-that-holds-that-id-now"
+
     @Test
     fun theActivityFeedArrivesWithTheTaskAndRendersEveryRowIncludingOneNoSessionAnswersFor() {
         onTheTaskDetail("feed-loads") { harness, page ->
+            // The fixture's feed carries a comment by `s-detail-1` and its `sessions` list is empty, which
+            // makes "the author was not resolved through the live list" unfalsifiable: a panel that DID
+            // resolve authors would render the same thing against an empty list. So one session is
+            // injected into the panel's own response under exactly that id and a DIFFERENT display name.
+            // Now the two halves are distinguishable — the linked-sessions list must show the name, and
+            // the feed row must still show the recorded id.
+            page.route({ url: String -> url.endsWith(detailApi) }) { route ->
+                val original = route.fetch()
+                route.fulfill(
+                    Route.FulfillOptions()
+                        .setStatus(original.status())
+                        .setContentType("application/json")
+                        .setBody(withInjectedSession(original.text())),
+                )
+            }
             val seen = recordRequests(page)
             page.openFocusTask(harness.baseUrl)
 
             // One GET carries entry, deps, sessions AND activity. The claim worth checking is not the
             // count of that request but its shape: nothing goes out for a sub-resource, so there is no
-            // second endpoint the feed could quietly start arriving on.
+            // second endpoint the feed could quietly start arriving on. Both spellings of the ref are
+            // excluded, because the client percent-encodes the mandatory `:` and a browser is free to
+            // report either — a negative that named only one of them would miss a whole family of URLs.
             assertTrue(
                 seen.any { it.isDetailRequest("GET") },
                 "the panel reads the task over HTTP; requests seen: $seen",
             )
             assertTrue(
-                seen.none { it.contains("$detailApi/") },
+                seen.none { it.contains("$detailApi/") || it.contains("/api/v1/tasks/$focus/") },
                 "the feed is part of that one response, not a sub-resource of it; requests seen: $seen",
             )
 
-            val rows = page.panel(".task-activity-row")
             assertThat(page.panel(".task-activity-row[data-kind=\"created\"]")).hasCount(1)
             assertThat(page.panel(".task-activity-row[data-kind=\"comment\"]")).hasCount(2)
-            assertTrue(rows.count() >= 3, "the whole seeded feed rendered, one row per entry")
+            assertThat(page.panel(".task-activity-row")).hasCount(3)
 
-            // The row this fixture exists for. Its author is a session id no session row answers for —
-            // a feed outlives the sessions that wrote it, so the author is rendered as recorded text and
-            // must never be resolved through the live session list (which would blank it, or worse,
-            // silently attribute the comment to whoever holds that id next).
+            // The live list DID resolve the injected session, so the panel demonstrably reads it.
+            assertThat(page.panel(".task-sessions a[href=\"/s/s-detail-1\"]")).hasCount(1)
+            assertThat(page.panel(".task-sessions a[href=\"/s/s-detail-1\"]")).hasText(INJECTED_NAME)
+
+            // …and the feed row for the same id is untouched by it. A feed outlives the sessions that
+            // wrote it, so the author is the string that was RECORDED — resolving it through the live list
+            // would blank an author whose session is gone or, as here, silently re-attribute the comment
+            // to whoever holds that id now.
             val orphan = page.panel(".task-activity-row", Page.LocatorOptions().setHasText("s-detail-1"))
             assertThat(orphan).hasCount(1)
             assertThat(orphan).hasAttribute("data-kind", "comment")
-            assertThat(page.panel(".task-sessions a[href=\"/s/s-detail-1\"]")).hasCount(0)
+            assertThat(orphan.locator("strong")).hasText("s-detail-1")
+            assertThat(orphan).not().containsText(INJECTED_NAME)
         }
     }
 
@@ -136,8 +165,11 @@ class TaskDetailTest {
             page.locator("#task-detail-state").selectOption("done")
 
             assertThat(page.locator("#task-detail-state")).hasValue("done")
-            assertThat(page.panel(".task-activity-row")).not().hasCount(rowsBefore)
-            assertThat(page.panel(".task-activity-row[data-kind=\"transition\"]")).not().hasCount(0)
+            // Exactly two more rows, not merely "a different number": the external `review` transition
+            // that the feed could not see, plus the `done` one this click just made. `not().hasCount(n)`
+            // would also be satisfied by a feed that came back EMPTY — a crashed read looks like progress.
+            assertThat(page.panel(".task-activity-row")).hasCount(rowsBefore + 2)
+            assertThat(page.panel(".task-activity-row[data-kind=\"transition\"]")).hasCount(2)
         }
     }
 
@@ -247,6 +279,12 @@ class TaskDetailTest {
             assertThat(page.locator("#new-session-dialog")).isVisible()
             assertThat(page.locator("#new-session-task-ref")).containsText(focus)
             assertThat(page.locator("#session-cwd")).hasValue("/repo/detail")
+            // The positive control on the SAME list, so the absence below is this page's silence and not
+            // the recorder's: the panel's own read has to be in it.
+            assertTrue(
+                seen.any { it.isDetailRequest("GET") },
+                "the request log is empty, so nothing can be concluded from it; requests seen: $seen",
+            )
             assertTrue(
                 seen.none { it.startsWith("POST ") && it.endsWith("/api/v1/sessions") },
                 "opening the dialog starts nothing on its own; requests seen: $seen",
@@ -423,6 +461,29 @@ class TaskDetailTest {
 
     private fun Page.panel(selector: String, options: Page.LocatorOptions): Locator =
         locator(".task-detail $selector", options)
+
+    /**
+     * The same detail body with one linked session spliced into its (empty) `sessions` list, under the id
+     * an activity row already names and a display name that id does NOT carry.
+     *
+     * The whole point is the mismatch: with the two apart, "the author is recorded text" and "the author
+     * is resolved through the live list" render differently, which they cannot do against a fixture whose
+     * `sessions` list is empty.
+     */
+    private fun withInjectedSession(body: String): String {
+        val root = JsonParser.parseString(body).asJsonObject
+        val session = JsonObject().apply {
+            addProperty("id", "s-detail-1")
+            addProperty("name", INJECTED_NAME)
+            addProperty("agent", "claude")
+            addProperty("state", "running")
+            addProperty("needsAttention", false)
+            addProperty("alive", true)
+            addProperty("archived", false)
+        }
+        root.add("sessions", JsonArray().apply { add(session) })
+        return root.toString()
+    }
 
     /** Every request the page issues, in order, as `"<METHOD> <url>"`. */
     private fun recordRequests(page: Page): List<String> {

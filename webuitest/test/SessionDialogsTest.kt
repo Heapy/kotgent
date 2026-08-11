@@ -46,11 +46,16 @@ class SessionDialogsTest {
      * There is deliberately no default agent, so the picker — not the prefilled path — is the first
      * answer this dialog needs, and choosing one is a single click on a card.
      *
-     * Focus is the load-bearing half: it lands on the first agent that can actually be STARTED
-     * (`FIRST_AVAILABLE_AGENT`), not merely on the first card, because a planned agent's radio is
-     * disabled and could not take it. And the group announces the missing answer while it is missing —
-     * `aria-describedby` points at the hint only while no agent is chosen, so a screen reader stops
-     * repeating a requirement that has been met.
+     * Focus lands on the first agent that can actually be STARTED (`FIRST_AVAILABLE_AGENT`), because a
+     * planned agent's radio is disabled and could not take it. **That assertion cannot currently tell the
+     * rule from "the first card", and says so rather than pretending**: `claude` is both `AGENT_CHOICES[0]`
+     * and the first available one, and the only unavailable entry (`cursor`) is last, so no arrangement of
+     * this registry separates the two. What IS checked here is that the focus lands on a radio that can
+     * take it at all; the neighbouring test proves the disabled one is out of the keyboard group entirely,
+     * which is the half that would actually break.
+     *
+     * The group announces the missing answer while it is missing — `aria-describedby` points at the hint
+     * only while no agent is chosen, so a screen reader stops repeating a requirement that has been met.
      */
     @Test
     fun theAgentPickerTakesTheFirstFocusAndOneClickAnswersIt() {
@@ -121,13 +126,17 @@ class SessionDialogsTest {
                         val page = signIn(context, harness)
                         openNewSession(page)
 
+                        // A 0×0 box AND a box that is still LAID OUT. The second half is the whole point:
+                        // `display: none` and `visibility: hidden` also measure 0×0, and either of them
+                        // would take the radio out of the tab order and the arrow group this test walks
+                        // below — the exact regression the zero-sized-but-present trick exists to avoid.
                         assertEquals(
-                            true,
-                            page.locator("#session-agent-claude").evaluate(
-                                "el => { const r = el.getBoundingClientRect();" +
-                                    " return r.width === 0 && r.height === 0; }",
-                            ),
-                            "the radio paints nothing at all — the card behind it is the visible control",
+                            "zero-sized and still laid out",
+                            page.locator("#session-agent-claude").evaluate(RADIO_PAINT),
+                            "the radio must paint nothing at all — the card behind it is the visible " +
+                                "control — and must still be laid out, because the two ways to make a " +
+                                "0x0 box by REMOVING the element take it out of the tab order and the " +
+                                "arrow group this test walks below",
                         )
 
                         // The dialog put the focus here; Space answers on the spot, without moving.
@@ -144,7 +153,16 @@ class SessionDialogsTest {
                             assertThat(focused).hasAttribute("id", "session-agent-$expected")
                             assertThat(page.locator("#session-agent-$expected")).isFocused()
                         }
-                        assertThat(page.locator("#session-agent-cursor")).not().isChecked()
+                        // The wrap above visited four radios and came back to the first, which is the
+                        // group's whole membership — stated here as the two facts that make it so, since
+                        // "cursor is not checked" is already implied by the single `:checked` element the
+                        // loop resolves and can therefore never fail.
+                        assertEquals(
+                            4,
+                            page.locator("$AGENT_RADIOS:not([disabled])").count(),
+                            "the arrow group is exactly the radios that are not disabled",
+                        )
+                        assertThat(page.locator("#session-agent-cursor")).isDisabled()
                     }
                 }
             }
@@ -226,6 +244,19 @@ class SessionDialogsTest {
                         // Answering the question clears its complaint.
                         agentCard(page, "claude").click()
                         assertThat(page.locator("#new-session-error")).hasCount(0)
+
+                        // The control for the zero above. `countStartRequests` matches on a GLOB, and a
+                        // glob that matched nothing would answer zero for a form that posted happily —
+                        // so the same form is now submitted with the question answered and the counter
+                        // has to move. (The interceptor refuses it with a 500, so nothing is started.)
+                        page.locator("#new-session-submit").click()
+                        page.waitForCondition { starts.get() >= 1 }
+                        assertEquals(
+                            1,
+                            starts.get(),
+                            "an answered form posts exactly once, and the interceptor sees it — which is " +
+                                "what makes the zero above a silence rather than a glob that never fired",
+                        )
                     }
                 }
             }
@@ -254,17 +285,34 @@ class SessionDialogsTest {
                         openNewSession(page)
 
                         val cwd = page.locator("#session-cwd")
+                        val options = page.locator("#session-cwd-options li")
                         cwd.fill("/a/")
 
                         assertThat(page.locator("#session-cwd-options")).isVisible()
+                        // The daemon's tree under `/a` is `b`, `c` and `.hidden`. A bare prefix offers the
+                        // two ordinary ones and NOT the dotted one — that rule is the reason the fixture
+                        // carries a hidden directory at all, and "both children of /a are listed" is true
+                        // of a completer that filters nothing.
+                        assertThat(options).hasCount(2)
                         for (path in listOf("/a/b", "/a/c")) {
-                            assertThat(
-                                page.locator(
-                                    "#session-cwd-options li",
-                                    Page.LocatorOptions().setHasText(path),
-                                ),
-                            ).hasCount(1)
+                            assertThat(options.filter(Locator.FilterOptions().setHasText(path))).hasCount(1)
                         }
+
+                        // …and a dotted prefix asks for it, which is the other half of the same rule.
+                        cwd.fill("/a/.")
+                        assertThat(options).hasCount(1)
+                        assertThat(options.first()).containsText("/a/.hidden")
+
+                        // Prefix NARROWING, on the one pair of siblings that share a prefix: `/projects/`
+                        // offers both, and one more character drops the shorter of the two.
+                        cwd.fill("/projects/")
+                        assertThat(options).hasCount(2)
+                        cwd.fill("/projects/kotgent-")
+                        assertThat(options).hasCount(1)
+                        assertThat(options.first()).containsText("/projects/kotgent-web")
+
+                        cwd.fill("/a/")
+                        assertThat(options).hasCount(2)
                         assertThat(cwd).hasAttribute("aria-expanded", "true")
 
                         page.keyboard().press("ArrowDown")
@@ -324,9 +372,14 @@ class SessionDialogsTest {
                         fillWorkingDirectory(page, "/a/b")
                         page.locator("#new-session-submit").click()
 
+                        // The WHOLE line, not two substrings of it: the app's own framing plus the
+                        // daemon's answer VERBATIM after it. The body is supplied by this test, so no
+                        // assertion here can be evidence about the daemon's wording — what it can be
+                        // evidence about is that the browser prints that answer in full rather than
+                        // truncating it, summarising it, or replacing it with a bare "Could not start
+                        // session", which is what would strand an operator without the fix.
                         val error = page.locator("#new-session-error")
-                        assertThat(error).containsText("not found on the daemon's PATH")
-                        assertThat(error).containsText("kotgent install")
+                        assertThat(error).hasText("Could not start session: $MISSING_BINARY_BODY")
                         assertThat(error).hasAttribute("role", "alert")
 
                         // The draft survives the refusal, and the form is usable again.
@@ -444,6 +497,20 @@ class SessionDialogsTest {
                             0,
                             resumes.get(),
                             "register only stops at registration — the session is left resumable",
+                        )
+
+                        // The control for that zero. `**$API/sessions/*/resume` is a GLOB, and a glob that
+                        // matched nothing would answer zero for a flow that resumed eagerly — so the app's
+                        // OWN resume is now run against the adopted row (it is selected, and `resumable`
+                        // is exactly the state Resume applies to) and the counter has to move. The route
+                        // answers 500, so nothing is launched.
+                        runFromPalette(page, "Resume this session")
+                        page.waitForCondition { resumes.get() >= 1 }
+                        assertEquals(
+                            1,
+                            resumes.get(),
+                            "the app's own resume must reach this interceptor, or the zero above is the " +
+                                "glob's silence rather than the register-only rule",
                         )
                     }
                 }
@@ -617,6 +684,16 @@ class SessionDialogsTest {
                         page.locator("#prefs-cancel").click()
                         assertThat(page.locator("#prefs-dialog")).hasCount(0)
                         assertEquals(0, saves.get(), "leaving the screen commits nothing")
+
+                        // The control for that zero: the interceptor counts PUTs on a GLOB, and a glob
+                        // that matched nothing would answer zero for a Cancel that saved. Reopening and
+                        // SUBMITTING has to move it, which is also the shortest proof the two are the same
+                        // form and only the button differs.
+                        runFromPalette(page, "Preferences")
+                        assertThat(page.locator("#prefs-dialog")).isVisible()
+                        page.locator("#prefs-submit").click()
+                        assertThat(page.locator("#prefs-dialog")).hasCount(0)
+                        assertEquals(1, saves.get(), "the same form's submit is one PUT through that glob")
                     }
                 }
             }
@@ -626,29 +703,66 @@ class SessionDialogsTest {
     /**
      * Help opens and documents every state and control it claims to.
      *
-     * These lists are the operator's only explanation of a vocabulary that is otherwise implicit in
-     * badges and buttons, and they are written out by hand in `dialogs.js` — so a state renamed in the
-     * reducer, or a control renamed in the palette, must fail here rather than quietly ship a wrong
-     * explanation. The badges are read in order, which also pins that the alive states lead.
+     * These lists are the operator's only explanation of a vocabulary that is otherwise implicit in badges
+     * and buttons, and they are written out BY HAND in `dialogs.js`. A hard-coded list of seven strings
+     * asserted against them would only pin one hand-written list against another, so the expectation is
+     * DERIVED instead: each `SessionState` is driven onto a real row through the harness's `emit`, and the
+     * badge the sidebar paints for it — label and class both — is what the Help entry has to match. Only
+     * the ORDER is Help's own (the four alive states lead, which the section's closing note relies on) and
+     * is deliberately not the enum's declaration order.
+     *
+     * That closes the loop in two places. A state renamed in the reducer makes `emit` reject the word (the
+     * harness validates it against `SessionState.entries` and exits non-zero, which `Harness.close()`
+     * fails on), and a `stateBadge` label or class that drifts from Help's copy fails the comparison. What
+     * it still cannot catch is a state ADDED to the reducer and never documented — nothing in the browser
+     * can enumerate the enum — so the list of names below stays the one thing spelled out.
+     *
+     * The controls are the other half and are checked as names alone: Help's vocabulary ("Attach",
+     * "Import") is deliberately shorter than the palette's sentences ("Attach current terminal"), so
+     * neither list can be derived from the other.
      */
     @Test
     fun helpOpensAndDocumentsEveryStateAndControl() {
-        Harness(EMPTY).use { harness ->
+        Harness(SESSIONS_SCENARIO).use { harness ->
             onChromium { browser ->
                 browser.newContext().use { context ->
                     context.traced("help-dialog") {
                         val page = signIn(context, harness)
-                        runFromPalette(page, "Help")
 
+                        // What the app itself paints for each state, read off a live row one state at a
+                        // time. `s-alpha` is never selected, so nothing attaches and the sequence of dead
+                        // states below costs nothing.
+                        val row = page.locator("#session-list .session-row[data-id='$BADGE_SESSION']")
+                        assertThat(row).hasCount(1)
+                        val badge = row.locator(".badge")
+                        assertThat(badge).hasCount(1)
+                        var previous: String? = null
+                        val painted = SESSION_STATES.map { state ->
+                            harness.send("emit $BADGE_SESSION $state")
+                            // Every consecutive pair of states paints a DIFFERENT label, so "the text
+                            // changed" is a real barrier for each frame. The first is the row's seeded
+                            // state, already on screen, hence no wait before it.
+                            previous?.let { page.waitForFunction(BADGE_CHANGED, listOf(BADGE_SESSION, it)) }
+                            val label = badge.textContent().trim()
+                            previous = label
+                            label to badge.getAttribute("class").orEmpty()
+                        }
+
+                        runFromPalette(page, "Help")
                         assertThat(page.locator("#help-dialog")).isVisible()
                         assertThat(page.locator("#help-body")).isVisible()
 
-                        assertThat(page.locator("#help-body .badge")).hasText(
-                            arrayOf(
-                                "running", "ready", "needs approval", "needs answer",
-                                "stopped", "crashed", "resumable",
-                            ),
+                        val documented = page.locator("#help-body .badge")
+                        assertThat(documented).hasCount(painted.size)
+                        assertEquals(
+                            painted,
+                            documented.all().map {
+                                it.textContent().trim() to it.getAttribute("class").orEmpty()
+                            },
+                            "Help's state list must be the vocabulary the sidebar actually paints, in the " +
+                                "order the reducer declares — label AND badge class",
                         )
+
                         // Scoped to the Controls section: `hasText` matches case-insensitive substrings,
                         // and the states above it would answer "Stop" with their own "stopped" badge.
                         val controls = page.locator(
@@ -871,7 +985,51 @@ class SessionDialogsTest {
 
         const val AGENT_RADIOS = "#new-session-form input[name='session-agent']"
 
-        /** `AgentBinaryNotFoundException` under the start route's prefix, verbatim. */
+        /** The `sessions` scenario's `running` claude row: never selected here, so nothing attaches. */
+        const val BADGE_SESSION = "s-alpha"
+
+        /**
+         * Every `SessionState`, spelled as the enum spells it (which is what `emit` validates against) and
+         * ordered the way the Help dialog groups them: the four alive states first, then the three dead
+         * ones. Consecutive entries must keep painting DIFFERENT labels — that is what makes "the badge
+         * text changed" a barrier for each emitted frame.
+         */
+        val SESSION_STATES = listOf(
+            "running", "ready", "needs_approval", "needs_answer", "stopped", "crashed", "resumable",
+        )
+
+        /** True once the row's badge has stopped saying what it said before the emit. */
+        val BADGE_CHANGED = """
+            ([id, previous]) => {
+              const el = document.querySelector(
+                '#session-list .session-row[data-id="' + id + '"] .badge',
+              );
+              return !!el && el.textContent.trim() !== previous;
+            }
+        """.trimIndent()
+
+        /** What a hidden radio must measure: nothing painted, and yet still in the layout. */
+        val RADIO_PAINT = """
+            el => {
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              if (r.width !== 0 || r.height !== 0) return "painted " + r.width + "x" + r.height;
+              if (s.display === "none") return "display:none";
+              if (s.visibility === "hidden") return "visibility:hidden";
+              return "zero-sized and still laid out";
+            }
+        """.trimIndent()
+
+        /**
+         * `AgentBinaryNotFoundException` under the start route's prefix, verbatim — and a hand-copied
+         * duplicate of it, which is what this constant can and cannot be evidence for.
+         *
+         * The daemon's wording, its 400 and the `kotgent install` hint are the Kotlin tier's subject and
+         * are pinned there against the real exception; this JVM module cannot import a native constant, so
+         * a copy is the only shape available. What the copy buys is the browser half: the form shows the
+         * answer it was given, in full and unaltered. If the daemon's sentence ever changes, this test
+         * keeps passing — correctly, because nothing about the browser changed with it.
+         */
         const val MISSING_BINARY_BODY =
             "cannot start session: agent 'claude' not found on the daemon's PATH — run `kotgent install` " +
                 "from a shell where `claude` is on your PATH (install `claude` first if needed), then " +

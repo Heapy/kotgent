@@ -6,6 +6,7 @@ import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Request
 import com.microsoft.playwright.Response
 import com.microsoft.playwright.WebSocketFrame
+import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.FilePayload
 import java.util.concurrent.CopyOnWriteArrayList
@@ -19,11 +20,13 @@ import kotlin.test.assertTrue
  * All three used to be pinned by reading the SPA's own source text out of the daemon
  * (`WebUiServingTest`), which is exactly the wrong instrument for every one of them:
  *
- *  - the **key bar** promises that a special key leaves as a *binary* WebSocket frame and that pressing
- *    it does not move focus away from xterm's hidden textarea. A grep can see `Uint8Array.from(...)` and
- *    `event.preventDefault()`; it cannot see a frame or a `document.activeElement`. Here both are read
- *    directly — the frames off the live socket, and the echo the pty's line discipline sends back, which
- *    is what proves the bytes were delivered as terminal INPUT rather than parsed as a resize control.
+ *  - the **key bar** promises that a special key leaves as a *binary* WebSocket frame, that pressing it
+ *    does not move focus away from xterm's hidden textarea, and that its Ctrl is a ONE-SHOT modifier that
+ *    rewrites exactly the next printable key and then disarms. A grep can see `Uint8Array.from(...)`,
+ *    `event.preventDefault()` and the `ctrlBytesFor` switch; it cannot see a frame, a
+ *    `document.activeElement` or an `aria-pressed` that stayed true. Here all of them are read directly —
+ *    the frames off the live socket, and the echo the pty's line discipline sends back, which is what
+ *    proves the bytes were delivered as terminal INPUT rather than parsed as a resize control.
  *  - the **upload** promises that the palette's picker reaches `POST /sessions/{id}/files?name=…` with a
  *    leaf name, that the daemon's uploader stores it under the session's own cwd, and that a partial
  *    batch names every file that failed. A grep can see the URL being built; only a browser can pick
@@ -87,14 +90,26 @@ class MobileFeaturesTest {
             )
 
             var echoed = ""
+            var pressed = 0
             for (key in SPECIAL_KEYS) {
                 // A tap, not a click: this bar exists for a thumb, and `preserveTerminalFocus` cancels
                 // `pointerdown` precisely so the platform's compatibility mouse burst — the thing that
                 // would focus the button — never happens. The command itself stays on `click`, so
                 // keyboard and switch-control activation still work.
                 page.locator(KEY_BAR + " button[aria-label='" + key.label + "']").tap()
-                echoed += key.echo
-                assertThat(rows).containsText(echoed)
+                pressed++
+                // Every key waits for its own frame, which is what keeps the queue drained before `^C`
+                // (the INTR character) reaches the line discipline and flushes whatever is still in it.
+                page.waitForCondition { sent.count { frame -> frame.text() == null } >= pressed }
+                if (key.echo == null) {
+                    // Tab breaks the running string: the tty echoes it as a real HT, so the cursor jumps
+                    // to the next stop and the row's text carries a gap rather than a character. Its
+                    // BYTES are still asserted below, and the prefix restarts after it.
+                    echoed = ""
+                } else {
+                    echoed += key.echo
+                    assertThat(rows).containsText(echoed)
+                }
                 val focused = focusedElement(page)
                 assertTrue(
                     focused.contains(XTERM_TEXTAREA_CLASS),
@@ -102,8 +117,6 @@ class MobileFeaturesTest {
                         "which on a phone closes the software keyboard",
                 )
             }
-
-            page.waitForCondition { sent.count { frame -> frame.text() == null } >= SPECIAL_KEYS.size }
             // `WebSocketFrameImpl` carries either a text payload or a binary one and nulls the other, so
             // this partition IS the frame kind — not a guess about the payload's shape.
             val binary = sent.filter { it.text() == null }.map { it.binary().toList() }
@@ -122,6 +135,46 @@ class MobileFeaturesTest {
                 text.all { it.contains("\"type\":\"resize\"") },
                 "nothing but resize controls travels as text; a key that became one would be parsed as " +
                     "geometry and dropped: $text",
+            )
+
+            // --- the sticky Ctrl one-shot -------------------------------------------------------------
+            //
+            // The bar's Ctrl is a MODIFIER, not a key: it arms `ctrlActiveRef` and the NEXT printable
+            // character `term.onData` delivers is rewritten by `ctrlBytesFor` and consumes the arm. Two
+            // things ship silently if that breaks — a Ctrl left armed forever (every later keystroke
+            // becomes a control code) and a wrong byte out of the digit aliases, which are the only part
+            // of the mapping that is not `code & 0x1f`.
+            val ctrl = page.locator(CTRL_KEY)
+            assertThat(ctrl).hasAttribute("aria-pressed", "false")
+            val beforeCtrl = sent.count { frame -> frame.text() == null }
+
+            ctrl.tap()
+            assertThat(ctrl).hasAttribute("aria-pressed", "true")
+            // The tap kept xterm's textarea focused (same `preserveTerminalFocus` as every other key), so
+            // this really is typing at the terminal.
+            page.keyboard().type("a")
+            assertThat(rows).containsText("^A")
+            assertThat(ctrl).hasAttribute(
+                "aria-pressed",
+                "false",
+                LocatorAssertions.HasAttributeOptions().setTimeout(KEY_ECHO_TIMEOUT_MS),
+            )
+
+            // Disarmed: the very same key is now itself. Without the one-shot this would be a second `^A`.
+            page.keyboard().type("a")
+            assertThat(rows).containsText("^Aa")
+
+            // A digit alias: Ctrl+3 is ESC, which `code & 0x1f` would never produce (0x33 & 0x1f = 0x13).
+            ctrl.tap()
+            assertThat(ctrl).hasAttribute("aria-pressed", "true")
+            page.keyboard().type("3")
+            assertThat(rows).containsText("^Aa^[")
+
+            page.waitForCondition { sent.count { frame -> frame.text() == null } >= beforeCtrl + 3 }
+            assertEquals(
+                listOf(listOf(0x01.toByte()), listOf(0x61.toByte()), listOf(0x1b.toByte())),
+                sent.filter { it.text() == null }.drop(beforeCtrl).map { it.binary().toList() },
+                "armed Ctrl rewrites one printable key and then disarms; the digit alias is its own byte",
             )
         }
     }
@@ -289,6 +342,29 @@ class MobileFeaturesTest {
                 REVISIONED_UNICODE_11.containsMatchIn(addons[0]),
                 "the relative specifier resolved under the content-revision prefix: ${addons[0]}",
             )
+
+            // Back to the default, which is the disposer's whole job and the reason CLAUDE.md calls it
+            // load-bearing: `Unicode11Addon.dispose()` is EMPTY and a registered provider can never be
+            // unregistered, only shadowed — so `installTerminalUnicode` has to restore the version it
+            // captured at install time by hand. Without that line the selector moves and the terminal
+            // keeps measuring with Unicode 11 forever, on a preference the operator has turned off.
+            runLeaderCommand(page, "Preferences")
+            assertThat(page.locator("#prefs-dialog")).isVisible()
+            page.locator("#prefs-terminal-unicode").selectOption(DEFAULT_UNICODE_MODE)
+            page.locator("#prefs-submit").click()
+            assertThat(page.locator("#prefs-dialog")).hasCount(0)
+
+            page.waitForFunction(WAIT_FOR_BUILT_IN_UNICODE)
+            assertEquals(
+                BUILT_IN_UNICODE_VERSION,
+                activeUnicodeVersion(page),
+                "turning the preference off restores the version the install captured",
+            )
+            assertEquals(
+                1,
+                fetched.count { it.contains(UNICODE_ADDON_MARKER) },
+                "and nothing new is downloaded on the way back: the built-in table needs no module",
+            )
         }
     }
 
@@ -339,8 +415,11 @@ class MobileFeaturesTest {
     /** The leaf name a `POST …/files?name=<leaf>` carries. */
     private fun uploadedName(request: Request): String = request.url().substringAfter("name=")
 
-    /** One key bar button: what it is labelled, what it sends, and how the tty echoes that back. */
-    private class SpecialKey(val label: String, val bytes: List<Int>, val echo: String)
+    /**
+     * One key bar button: what it is labelled, what it sends, and how the tty echoes that back — `null`
+     * for a key whose echo moves the cursor instead of drawing a character (Tab).
+     */
+    private class SpecialKey(val label: String, val bytes: List<Int>, val echo: String?)
 
     private companion object {
         const val TERMINAL_SCENARIO = "terminal"
@@ -356,31 +435,53 @@ class MobileFeaturesTest {
         const val TERMINAL_WS_PATH = "/terminal"
         const val UPLOAD_PATH = "/files?name="
 
-        /** `lib/unicode.js`'s own name for what xterm registers in its constructor. */
+        /**
+         * `lib/unicode.js`'s own name for what xterm registers in its constructor — and, separately, the
+         * PREFERENCE value that selects it. The two are deliberately different words there
+         * (`DEFAULT_TERMINAL_UNICODE` is `"default"`, `BUILT_IN_UNICODE_VERSION` is `"6"`), because one
+         * names a menu entry and the other names the provider xterm ends up measuring with.
+         */
         const val BUILT_IN_UNICODE_VERSION = "6"
+        const val DEFAULT_UNICODE_MODE = "default"
         const val UNICODE_11_MODE = "11"
         const val UNICODE_ADDON_MARKER = "addon-unicode"
         val REVISIONED_UNICODE_11 = Regex("/_v/[0-9a-f]{12}/vendor/addon-unicode11\\.module\\.js")
 
         /**
-         * The keys, their bytes, and the echo the tty answers with.
+         * EVERY key the bar renders, its bytes, and the echo the tty answers with.
+         *
+         * All eight, not a sample: a byte is a byte and nothing else in the app or the tests would notice
+         * `←` sending the sequence for `→`. The four arrows differ only in their last character, which is
+         * exactly the mistake a partial list cannot catch.
          *
          * `ECHOCTL` renders a control byte as `^` plus the character 0x40 above it, so `0x1b` comes back
          * as the two printable characters `^[` and `0x03` as `^C`; the `[`, `A` and `Z` of a CSI sequence
          * are printable already and echo as themselves. Nothing here is interpreted by xterm as an escape
          * sequence — the terminal is showing the LITERAL text the line discipline produced, which is
-         * exactly why it is readable in the DOM.
+         * exactly why it is readable in the DOM. Tab is the exception and carries no echo string: `ECHOCTL`
+         * exempts HT, so the tty echoes a real tab and the cursor jumps instead of a character appearing.
          *
          * `^C` goes last: the INTR character makes the line discipline flush the output queue before it
          * echoes, so it is the one key that could discard an earlier key's echo if the two were pressed
-         * without waiting in between.
+         * without waiting in between. Tab goes second-to-last so the running echo prefix stays contiguous
+         * for as long as possible.
          */
         val SPECIAL_KEYS = listOf(
             SpecialKey("Escape", listOf(0x1b), "^["),
-            SpecialKey("Up arrow", listOf(0x1b, 0x5b, 0x41), "^[[A"),
             SpecialKey("Shift Tab", listOf(0x1b, 0x5b, 0x5a), "^[[Z"),
+            SpecialKey("Up arrow", listOf(0x1b, 0x5b, 0x41), "^[[A"),
+            SpecialKey("Down arrow", listOf(0x1b, 0x5b, 0x42), "^[[B"),
+            SpecialKey("Left arrow", listOf(0x1b, 0x5b, 0x44), "^[[D"),
+            SpecialKey("Right arrow", listOf(0x1b, 0x5b, 0x43), "^[[C"),
+            SpecialKey("Tab", listOf(0x09), null),
             SpecialKey("Control C", listOf(0x03), "^C"),
         )
+
+        /** The bar's sticky modifier. */
+        const val CTRL_KEY = "#key-bar-ctrl"
+
+        /** A key's echo has to cross a pty and a render; give the one-shot's own read the same room. */
+        const val KEY_ECHO_TIMEOUT_MS = 10_000.0
 
         const val NOTES_NAME = "kotgent-notes.txt"
         val NOTES_BYTES = "upload one\nupload two\n".toByteArray()
@@ -442,6 +543,14 @@ class MobileFeaturesTest {
             () => {
               const terms = window.__kotgentTerminals || [];
               return terms.length > 0 && terms[terms.length - 1].unicode.activeVersion === "$UNICODE_11_MODE";
+            }
+        """.trimIndent()
+
+        val WAIT_FOR_BUILT_IN_UNICODE = """
+            () => {
+              const terms = window.__kotgentTerminals || [];
+              return terms.length > 0 &&
+                terms[terms.length - 1].unicode.activeVersion === "$BUILT_IN_UNICODE_VERSION";
             }
         """.trimIndent()
 

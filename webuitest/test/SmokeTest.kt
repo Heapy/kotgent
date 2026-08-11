@@ -4,7 +4,6 @@ import com.microsoft.playwright.Browser
 import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import kotlin.test.Test
-import kotlin.test.assertTrue
 
 /**
  * The browser tier's own smoke test: it proves the three things every other test in this module rests on,
@@ -48,14 +47,10 @@ class SmokeTest {
                         // absence is what catches a list that rendered from a snapshot of nothing.
                         assertThat(page.locator("#empty-sessions")).hasCount(0)
 
-                        // Read the count only after the per-directory assertions have auto-waited the list
-                        // into place — `count()` itself does not retry.
-                        val rows = page.locator("#session-list .session-row").count()
-                        assertTrue(
-                            rows >= SESSION_CWDS.size,
-                            "expected at least ${SESSION_CWDS.size} session rows (one per scenario " +
-                                "directory ${SESSION_CWDS.joinToString()}), found $rows",
-                        )
+                        // EXACTLY the scenario's four rows, not "at least one per directory": two of them
+                        // share `/a/b`, so a floor of three is satisfied by a list that has lost one of
+                        // that pair — the very thing a smoke test over the snapshot exists to catch.
+                        assertThat(page.locator("#session-list .session-row")).hasCount(SESSION_ROWS)
                     }
                 }
             }
@@ -108,3 +103,6 @@ class SmokeTest {
 
 /** The working directories the `sessions` scenario is contracted to produce. */
 private val SESSION_CWDS = listOf("/a/b", "/a/c", "/d")
+
+/** …and how many rows they add up to: `s-alpha` and `s-beta` share `/a/b`, so it is four, not three. */
+private const val SESSION_ROWS = 4

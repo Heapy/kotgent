@@ -375,8 +375,15 @@ private fun closeNewestSocket(page: Page, kind: String) {
 
 /**
  * A barrier for the two NEGATIVE assertions. A grant made in `socket.onopen` queues its attempt with
- * `setTimeout(…, 0)` and the attempt issues its request synchronously at the top of that callback, so a
- * later zero-delay task followed by a full browser→daemon→browser round trip cannot still be ahead of it.
+ * `setTimeout(…, 0)`, and the attempt issues its request synchronously at the top of that callback.
+ *
+ * The order of the three steps is the whole design, and the LAST one is what makes it sound.
+ * [awaitSocketGeneration] resolves on `readyState === 1`, which Chromium sets before it dispatches the
+ * `open` event — so the app's `onopen`, and therefore the timer it queues, need not have run yet when the
+ * first hop below is scheduled. The full browser→daemon→browser round trip in between yields the event
+ * loop for real milliseconds, which is where that dispatch and its zero-delay task land; the second hop is
+ * then queued strictly after them. Dropping either the round trip or the trailing hop leaves a window in
+ * which "no attempt was made" only means "no attempt has been made YET".
  */
 private fun settleQueuedWork(page: Page) {
     page.evaluate(
@@ -384,6 +391,7 @@ private fun settleQueuedWork(page: Page) {
         async () => {
           await new Promise((resolve) => setTimeout(resolve, 0));
           await fetch("/api/v1/version", { credentials: "same-origin" }).catch(() => {});
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
         """.trimIndent(),
     )
