@@ -58,6 +58,27 @@ fun runSelfCheck(cases: List<SelfCheckCase>): Int {
  *
  * Two checks is the whole budget, and they are the two halves of the terminal's contract: bytes flow in
  * both directions over a real pty, and the lazy upstream really is torn down and really is respawned.
+ *
+ * ## Why this is a SECOND micro-framework and not a twelfth `ptycheck` check
+ * The duplication is real and was weighed: [SelfCheckCase] / [runSelfCheck] / [expect] / the PASS-FAIL
+ * lines / `SUMMARY total=N failed=M` / [receiveUntil] are all `ptycheck/src/Main.kt` again, and
+ * `WebUiCheckTest` is `PtyTest` again. Folding them together would delete a whole protocol — and it
+ * would cost more than it saves, in the one direction that matters:
+ *  - **`ptycheck` would have to depend on `webuicheck`.** These checks drive [Harness], which is the
+ *    real `KotgentServer` over the `fakes` doubles. `ptycheck` today depends on `../sysnative` and `..`
+ *    and links a pty and a tmux client; making it also link the whole browser fixture inverts the two
+ *    modules' purposes and puts the browser tier's fixture on the critical path of the PTY suite.
+ *  - **The shared helpers cannot be shared anyway.** The only module both fixtures can see is the root
+ *    module's MAIN source set — i.e. `src/`, production code. A `receiveUntil` for tests does not
+ *    belong there, so the alternative to two copies is one copy in the shipped binary.
+ *  - **What it buys is not the pty.** `ptycheck` already proves a pty round-trips bytes; this proves
+ *    THE HARNESS does — the pty reached through `Harness.terminalBridgeFactory`, with the doubles,
+ *    `TaskService` and a bound listener alive around it. That distinction is the whole point: when a
+ *    browser test sees no terminal output, this check is what says whether the fixture or the product
+ *    broke. The respawn half has no counterpart anywhere — `TerminalBridgeTest` proves lazy open/close
+ *    against a pure-Kotlin fake, and only a real pty can show the child was reaped and a new one spawned.
+ * If a third fixture ever needs this framework, THAT is the moment to hoist it — into a fixture-only
+ * module both can depend on, not into `src/`.
  */
 fun selfCheckCases(): List<SelfCheckCase> = listOf(
     SelfCheckCase("a real pty streams and echoes through the harness's own TerminalBridge") {
@@ -127,7 +148,13 @@ private fun selfCheckScenario(): Scenario = Scenario(
     terminalUpstream = listOf("/bin/sh", "-c", "printf '$SELF_CHECK_BANNER\\n'; exec cat"),
 )
 
-/** Receive from [subscriber] until [needle] shows up in the accumulated output, or time out. */
+/**
+ * Receive from [subscriber] until [needle] shows up in the accumulated output, or time out.
+ *
+ * Line-for-line `ptycheck/src/Main.kt`'s own `receiveUntil`, and deliberately so: the only module both
+ * fixtures can import is the root module's MAIN source set, and a test helper does not go into the
+ * shipped binary. See [selfCheckCases] for the whole judgement.
+ */
 private suspend fun receiveUntil(
     subscriber: Subscriber,
     needle: String,

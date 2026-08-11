@@ -74,16 +74,21 @@ class Scenario(
 )
 
 /**
- * What a stdin command is handed: the seeded doubles (so `emit`/`task` can write through them) and the
- * bound port, plus the one lifecycle operation a command may perform.
+ * What a stdin command is handed: the seeded doubles (so `emit`/`task` can write through them), the
+ * bound port, the harness's ONE [TaskService], plus the single lifecycle operation a command may
+ * perform.
  *
- * The first two parameters are the frozen seam other harness files code against; [onRestart] carries
- * the machinery and defaults to a no-op so a context can be built in isolation.
+ * [taskService] is passed rather than rebuilt per command because the class is the sequencing rule
+ * between two stores and both of those are the long-lived fakes — so a second instance is only a second
+ * CLOCK. It used to be exactly that: the harness's instance ran on the doubles' clock while
+ * `TaskCommands.kt` pinned its own to a fixture constant, and the same `transition` then wrote a
+ * different `sessions.updated_at` depending on whether the browser or a stdin command asked for it.
  */
 class HarnessContext(
     val fakes: HarnessFakes,
     val port: Int,
-    private val onRestart: suspend () -> Unit = {},
+    val taskService: TaskService,
+    private val onRestart: suspend () -> Unit,
 ) {
     /**
      * Stop the server and bring it back up on the **same** port, with the same [TokenHolder],
@@ -123,12 +128,22 @@ class Harness(
     /** Outstanding login codes. Survives [restart] — a restart must not invalidate a browser. */
     private val tickets = TicketStore()
 
-    /** The in-memory upload sink; exposed so a browser test's uploads can be inspected. */
-    val uploads: MemoryFileUploader = MemoryFileUploader()
+    /**
+     * The in-memory upload sink. Not inspectable and not meant to be: the browser tier is another
+     * process, so what an upload test reads is the route's own answer (a size, or the `409` a repeated
+     * name produces) — see [MemoryFileUploader].
+     */
+    private val uploads: MemoryFileUploader = MemoryFileUploader()
 
     /**
-     * Reader loops for the terminal bridges and the provider-id capture jobs. Deliberately NOT the
-     * Ktor application scope, because the bridges must outlive a [restart].
+     * The provider-id capture jobs' scope, and the scope `--self-check` drives a bridge on.
+     *
+     * Deliberately NOT the Ktor application scope, because [ProviderIdCapture]'s polling must survive a
+     * [restart] — it is the daemon-lifetime job, not a per-listener one. The terminal bridges do NOT
+     * live here: [terminalBridgeFactory] uses the scope its CALLER passes, and in production that
+     * caller is `KotgentServer`, so a bridge's reader loop is torn down with the application that owns
+     * it. That is the right shape for a restart (the browser reconnects and re-attaches, which reopens
+     * the upstream lazily) and it is why this scope is cancelled only in [stop].
      */
     val background: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -198,7 +213,7 @@ class Harness(
         val started = withContext(Dispatchers.Default) { buildServer(port = 0).start() }
         server = started
         boundPort = started.port()
-        return HarnessContext(fakes, boundPort) { restart() }
+        return HarnessContext(fakes, boundPort, taskService) { restart() }
     }
 
     /** A fresh one-shot login code, minted by the real [TicketStore] against the live master token. */
@@ -237,7 +252,7 @@ class Harness(
         preferencesStore = fakes.events,
         tokens = tokens,
         terminalBridgeFactory = terminalBridgeFactory,
-        directoryCompleter = harnessDirectoryCompleter(),
+        directoryCompleter = harnessDirectoryCompleter(fakes.projectFs),
         fileUploader = uploads,
         webUiDir = webUiDir,
         tickets = tickets,
@@ -249,9 +264,14 @@ class Harness(
 }
 
 /**
- * The upstream a scenario that declared none gets: a bare `cat` on a real pty. It echoes what is typed
- * and nothing else, so an accidental attach in a non-terminal scenario behaves like a quiet live
- * terminal rather than throwing inside the WS route — and it still spawns nothing but `/bin/cat`.
+ * The upstream a scenario that declared none gets: a bare `cat` on a real pty.
+ *
+ * **Nothing reaches it today, and that is a property of the scenarios rather than of this code.** The
+ * only scenarios leaving `terminalUpstream` null are `empty` (no session at all, so the terminal WS
+ * refuses before a bridge is ever built) and the five board scenarios (every session seeded
+ * `resumable`, so `app.js` never opens a terminal socket for one). It stays because the factory is
+ * total and the alternative is a `null` the WS route would have to throw on: a scenario that grows its
+ * first live session gets a quiet echoing terminal instead of a 500 in a screen it was not testing.
  */
 val DEFAULT_TERMINAL_UPSTREAM: List<String> = listOf("/bin/cat")
 

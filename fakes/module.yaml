@@ -4,6 +4,26 @@
 # A double written as a `private class` inside one test file is unreachable from a second module, and
 # copying it would fork the behaviour the two consumers exist to agree on.
 #
+# ## What this module does NOT claim
+# It is emphatically not "every double in the repo lives here". The suite still holds narrower nested
+# prototypes of the same interfaces — `FakeTaskStore` in `test/daemon/TaskServiceTest.kt`,
+# `test/daemon/TaskProjectWiringTest.kt`, `test/transport/Task{Events,Link,Read,Write}*Test.kt`;
+# `FakeProjectFs` in `test/daemon/TaskProjectWiringTest.kt`, `test/task/ProjectFileTest.kt`,
+# `test/transport/TaskIntegrationTest.kt`, `test/transport/TaskWriteRoutesTest.kt`; `FakeEventStore` in
+# `test/daemon/TaskServiceTest.kt` and three transport route tests; `FakeProjectFileWriter` in
+# `test/transport/TaskWriteRoutesTest.kt` — and they stay. They are a DIFFERENT tool, not an
+# un-migrated backlog:
+#   * they model exactly the members their own subject reaches and THROW on the rest, so a route that
+#     grows an unmodelled call fails loudly instead of reading an empty answer as a result. The doubles
+#     here must do the opposite — a throwing member becomes a 500 on whatever board gesture reaches it;
+#   * several carry an interleaving hook that only their own test can express (`beforeConditionalClear`,
+#     `afterNextCandidate`, a `LockWitness`, a recorded `reads` log, a `failOn` set). Hoisting those
+#     into a shared double would put one test's race knobs on every other consumer's API surface.
+# So the rule this module encodes is narrow and checkable: **a double with more than one MODULE behind
+# it lives here.** A double with one module and one subject stays where its subject is. If a nested
+# prototype ever grows a second module's consumer, that is the moment it moves — and the move is then a
+# deletion plus an import, not a behaviour merge.
+#
 # ## The dependency direction LOOKS circular and is not
 # It runs root(test) -> fakes -> root(main). The toolchain resolves FRAGMENTS, not modules, so those
 # line up as a proper task-level DAG:

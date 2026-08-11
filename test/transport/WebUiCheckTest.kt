@@ -59,6 +59,12 @@ class WebUiCheckTest {
     /**
      * Locate the `webuicheck` binary. The test binary runs with the project root as its working
      * directory (Kotlin Toolchain behaviour), so the toolchain's task-output path is relative.
+     *
+     * **The same two candidate paths and the same `./kotlin build` sentence live in
+     * `webuitest/test/HarnessFixture.kt` (`HARNESS_BINARIES` / `harnessBinary`).** They cannot share a
+     * constant — this is a Kotlin/Native test binary and that is a JVM one, with no module either can
+     * import from the other — so the duplication is structural. Change one and change the other; this
+     * comment is the only thing linking them.
      */
     @OptIn(ExperimentalForeignApi::class)
     private fun webuicheckBinary(): String {

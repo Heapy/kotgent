@@ -8,13 +8,16 @@ import io.kotgent.core.SessionState
 import io.kotgent.webuicheck.Scenario
 
 /**
- * The wall clock every seeded row is stamped with.
+ * The wall clock every seeded row in every scenario is stamped from — `SEED_EPOCH_MS + n`, one `n` per
+ * row. It is the ONE session-seeding clock; there is no second constant for the task scenarios (they
+ * seed through [io.kotgent.webuicheck.scenarios.fixtureSession], which is a door onto [harnessSession]).
  *
  * A FIXED value rather than `Clock.System.now()`, because a scenario is a fixture and a fixture that
  * changes between two runs cannot be asserted against. Nothing in the Web UI renders a session
  * timestamp today (the sidebar shows name / agent / model / state, never an age), and the client sorts
- * nothing — the sidebar's order is the daemon's `listSessions()` order, which for `FakeEventStore` is
- * its `LinkedHashMap` insertion order. So the seeding order below IS the row order the browser sees.
+ * nothing — the sidebar's order is the daemon's `listSessions()` order, which is `(created_at, id)`
+ * (`Sessions.sq`, mirrored by `FakeEventStore`). So the ascending seeding order below IS the row order
+ * the browser sees.
  */
 internal const val SEED_EPOCH_MS: Long = 1_700_000_000_000L
 
@@ -25,9 +28,9 @@ internal const val SEED_EPOCH_MS: Long = 1_700_000_000_000L
  * harness never runs a tmux server — nothing the browser can see depends on either
  * (`SessionDto.alive` is derived from [state] alone, and `stateSource` is not on the wire at all).
  *
- * [createdAt] is mandatory and distinct per row on purpose: `EventStore.sessionsHoldingTask` orders
- * its answer by it, so two rows sharing a timestamp would make a link-related assertion depend on a
- * tie-break rather than on the fixture.
+ * [createdAt] is mandatory and distinct per row on purpose: both `EventStore.listSessions` and
+ * `EventStore.sessionsHoldingTask` order by `(created_at, id)`, so two rows sharing a timestamp would
+ * make an ordering assertion depend on the id tie-break rather than on the fixture.
  */
 internal fun harnessSession(
     id: String,

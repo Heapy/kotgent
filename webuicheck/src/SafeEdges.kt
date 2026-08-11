@@ -28,15 +28,21 @@ import kotlinx.coroutines.sync.withLock
  */
 
 /**
- * The directory tree every scenario starts with. It is the ONE declaration of the harness filesystem:
- * [FakeProjectFs] is seeded from it (which expands ancestors itself) and the completer lists children
- * out of it, so the path a browser completes and the path project resolution then canonicalizes cannot
- * drift apart.
+ * The directory tree every scenario STARTS with — the seed, not the whole filesystem.
+ *
+ * [FakeProjectFs] is built from it (expanding ancestors itself) and then a scenario adds its own
+ * directories on top: `/w/terminal`, `/repo/board`, `/repo/empty`, `/repo/detail`, `/repo/linked`,
+ * `/repo/deep`, `/w/restart-*`. The completer therefore lists children out of the LIVE tree
+ * ([harnessDirectoryCompleter]), never out of this list, which is what actually makes the path a
+ * browser completes and the path project resolution then canonicalizes the same set. Reading this list
+ * directly would have made them differ by every directory a scenario ever added.
  *
  * The entries are chosen to exercise the completion rules rather than to look realistic: `/a/b` and
  * `/a/c` share a parent (two candidates for `/a/`), `/projects/kotgent` and `/projects/kotgent-web`
  * share a PREFIX (so a typed `kotgent` narrows to two), and `/a/.hidden` is only offered once the typed
- * segment itself starts with a dot.
+ * segment itself starts with a dot. Those three rules are pinned by a browser test
+ * (`SessionDialogsTest.theWorkingDirectoryCompletesFromTheDaemonAndCommitsWithTheKeyboard`, which runs
+ * on the `empty` scenario precisely so the seed IS the whole tree there); do not remove an entry.
  */
 val HARNESS_DIRECTORIES: List<String> = listOf(
     "/a/b",
@@ -71,28 +77,20 @@ fun newHarnessFakes(): HarnessFakes {
 
 /**
  * The completer the server is given: the production POLICY ([completeDirectoryPaths] — prefix match,
- * hidden entries only for a dotted prefix, case-insensitive sort, the shared limit) over an in-memory
+ * hidden entries only for a dotted prefix, case-insensitive sort, the shared limit) over [fs]'s live
  * listing instead of `opendir`. Reusing the pure policy is the point: a browser test then asserts the
  * behaviour the daemon really has, not a second implementation of it.
+ *
+ * **[fs], not [HARNESS_DIRECTORIES].** The listing is re-read from the tree on every keystroke, so a
+ * directory a scenario declared (or a `POST /projects` published a `.kotgent.json` into) is completable
+ * the moment it exists. Snapshotting the seed instead made the completer answer about a filesystem the
+ * rest of the harness had already moved past — `/repo/board` resolved as a project and could not be
+ * typed.
  */
-fun harnessDirectoryCompleter(dirs: Set<String> = harnessDirectoryTree()): DirectoryCompleter =
+fun harnessDirectoryCompleter(fs: FakeProjectFs): DirectoryCompleter =
     DirectoryCompleter { basePath, input ->
-        completeDirectoryPaths(basePath, input) { parent -> childDirectoryNames(dirs, parent) }
+        completeDirectoryPaths(basePath, input) { parent -> childDirectoryNames(fs.directories, parent) }
     }
-
-/** [HARNESS_DIRECTORIES] with every ancestor made a directory of its own, mirroring `FakeProjectFs`. */
-fun harnessDirectoryTree(dirs: List<String> = HARNESS_DIRECTORIES): Set<String> {
-    val tree = LinkedHashSet<String>()
-    for (dir in dirs) {
-        var current = ""
-        for (segment in dir.split('/')) {
-            if (segment.isEmpty()) continue
-            current += "/$segment"
-            tree += current
-        }
-    }
-    return tree
-}
 
 /** Immediate child directory NAMES of [parent] within [tree] — the in-memory `posixChildDirectoryNames`. */
 private fun childDirectoryNames(tree: Set<String>, parent: String): List<String> {
@@ -113,19 +111,17 @@ private fun childDirectoryNames(tree: Set<String>, parent: String): List<String>
  * overwrite (the real writer's no-clobber `link(2)`). The size bound and the declared-length check are
  * kept because they are the two ways a well-formed request is still refused; the deadline is not, since
  * nothing here can stall.
+ *
+ * ## The map is state, not a spy
+ * There is deliberately no accessor for what it holds. The browser tier is a DIFFERENT PROCESS, so a
+ * `stored()` it could never call would be an inspection API for nobody; the bytes are retained only
+ * because the second upload of one name has to see the first one. What a browser test reads is the
+ * response the route returns — a size, or the `409` this map's `AlreadyExists` produces.
  */
-class MemoryFileUploader(private val maxBytes: Long = MAX_UPLOAD_FILE_BYTES) : FileUploader {
+class MemoryFileUploader : FileUploader {
 
     private val mutex = Mutex()
     private val files = LinkedHashMap<String, ByteArray>()
-
-    /** Every accepted upload, in arrival order, keyed by `<directory>/<name>`. */
-    suspend fun stored(): Map<String, ByteArray> = mutex.withLock { LinkedHashMap(files) }
-
-    /** Forget everything uploaded so far, so one scenario's uploads cannot leak into the next check. */
-    suspend fun clear() {
-        mutex.withLock { files.clear() }
-    }
 
     override suspend fun upload(
         directory: String,
@@ -133,7 +129,7 @@ class MemoryFileUploader(private val maxBytes: Long = MAX_UPLOAD_FILE_BYTES) : F
         body: ByteReadChannel,
         expectedBytes: Long?,
     ): FileUploadResult {
-        if (expectedBytes != null && expectedBytes > maxBytes) return FileUploadResult.TooLarge
+        if (expectedBytes != null && expectedBytes > MAX_UPLOAD_FILE_BYTES) return FileUploadResult.TooLarge
         if (expectedBytes != null && expectedBytes < 0L) return FileUploadResult.LengthMismatch
 
         val buffer = ByteArray(UPLOAD_CHUNK_BYTES)
@@ -149,7 +145,7 @@ class MemoryFileUploader(private val maxBytes: Long = MAX_UPLOAD_FILE_BYTES) : F
             }
             if (count < 0) break
             if (count == 0) continue
-            if (received > maxBytes - count.toLong()) return FileUploadResult.TooLarge
+            if (received > MAX_UPLOAD_FILE_BYTES - count.toLong()) return FileUploadResult.TooLarge
             chunks += buffer.copyOf(count)
             received += count
         }

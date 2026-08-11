@@ -89,6 +89,8 @@ class Harness(scenario: String) : AutoCloseable {
 
     init {
         configurePlaywrightDefaults()
+        // BEFORE the spawn, and that order is the whole point — see `installBrowserBundleOnce`.
+        installBrowserBundleOnce()
         val binary = harnessBinary()
         val webUiDir = repoRoot.resolve(WEB_UI_RELATIVE).toAbsolutePath().normalize()
         if (!Files.isDirectory(webUiDir)) {
@@ -392,7 +394,13 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
     }
 }
 
-/** Task-output paths of the harness binary, in the order `./kotlin build` is likely to have produced them. */
+/**
+ * Task-output paths of the harness binary, in the order `./kotlin build` is likely to have produced them.
+ *
+ * **The same two paths and the same `./kotlin build` sentence live in
+ * `test/transport/WebUiCheckTest.kt` (`webuicheckBinary`).** No constant can span the native/JVM
+ * boundary, so the duplication is structural — change one and change the other.
+ */
 private val HARNESS_BINARIES = listOf(
     "build/tasks/_webuicheck_linkMacosArm64Debug/webuicheck.kexe",
     "build/tasks/_webuicheck_linkMacosArm64Release/webuicheck.kexe",
@@ -424,6 +432,28 @@ private fun configurePlaywrightDefaults() {
     if (playwrightConfigured.compareAndSet(false, true)) {
         PlaywrightAssertions.setDefaultAssertionTimeout(ASSERTION_TIMEOUT_MILLIS)
     }
+}
+
+private val browserBundleInstalled = AtomicBoolean(false)
+
+/**
+ * Provision Playwright's browser bundle ONCE per JVM, **before the first harness is spawned**.
+ *
+ * `Playwright.create()` is what installs the ~1.1 GB bundle (`playwright-java` runs the driver's
+ * `install` on first create), and on a cold cache that download takes minutes. Every test spawns its
+ * harness first and creates Playwright inside the `use {}` block, so the harness's own
+ * `--exit-after-ms` watchdog was already ticking through a download it knows nothing about: on a cold
+ * machine it fired, the harness exited `4`, and [Harness.close] then failed the test with "the
+ * webuicheck harness exited with code 4" — a message about the wrong subject entirely.
+ *
+ * Doing the install here moves the whole download outside every watchdog window. The cost on a warm
+ * cache is one extra driver start/stop per JVM, once. The flag is set BEFORE the call so a failure is
+ * not retried by each of a hundred tests — the test's own `Playwright.create()` reports the real error
+ * a moment later, which is where it belongs.
+ */
+private fun installBrowserBundleOnce() {
+    if (!browserBundleInstalled.compareAndSet(false, true)) return
+    Playwright.create().close()
 }
 
 /**

@@ -251,30 +251,18 @@ class WebUiServingTest {
             "the stored preferences are exported",
         )
         // app.js imports these by name — a rename (or an empty file) would break the entire SPA at load
-        // time, which the 200 + content-type loop above cannot see. The rev comparison is the load-bearing
-        // half of the protocol: helpers that applied frames unconditionally would let a stale HTTP DTO
-        // roll back a fresher WS frame, and the applied rev must land ON the row or if-newer self-destructs.
+        // time, which the 200 + content-type loop above cannot see. That is an EXPORT-NAME check and
+        // nothing more: what the two appliers DO (compare revs, keep the fresher row, stamp the applied
+        // rev onto it) is behaviour, and it is measured against a live page and a real socket in
+        // `webuitest/test/SessionRevMergeTest.kt`. The greps that used to stand in for it here pinned
+        // three expressions verbatim, so a renamed local broke the test while an applier that stopped
+        // comparing revs did not. The Sidebar's loading state went the same way
+        // (`SidebarTest.theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecidesTheListIsEmpty`).
         val sessionHelpers = ctx.get("/lib/sessions.js").bodyAsText()
         assertTrue(
             sessionHelpers.contains("export function upsertIfNewer") &&
                 sessionHelpers.contains("export function patchIfNewer"),
             "the newest-rev-wins appliers are exported under the names app.js imports",
-        )
-        assertTrue(
-            sessionHelpers.contains("if (!(row.rev > list[index].rev)) return list;") &&
-                sessionHelpers.contains("if (!(msg.rev > prev.rev)) return list;"),
-            "both appliers compare revs and keep the fresher row",
-        )
-        assertTrue(
-            sessionHelpers.contains("model: msg.model") && sessionHelpers.contains("rev: msg.rev"),
-            "the patch applier takes the model verbatim (null included) and stamps the frame's rev on the row",
-        )
-        // Before the first snapshot an empty list is not yet a fact: the sidebar must say it is loading
-        // rather than show an honest-looking but false "No sessions yet".
-        val sidebar = ctx.get("/components/Sidebar.js").bodyAsText()
-        assertTrue(
-            sidebar.contains("!sessionsReady") && sidebar.contains("Loading sessions…"),
-            "the sidebar distinguishes 'not loaded yet' from 'genuinely empty'",
         )
     }
 
@@ -699,25 +687,35 @@ class WebUiServingTest {
     // that is not one of those three now lives in `webuitest/`; do not grow this section with anything a
     // Chromium could answer.
 
+    /**
+     * An agreement between two FILES about one prefix (was the whole of the old prefix test).
+     *
+     * `lib/api.js` declares `API_PREFIX` once and `apiPath` puts it on every URL the page builds — but
+     * `sw.js` is a classic script with no module graph, so it cannot import that constant and hand-writes
+     * `/api/v1/…` into three URL literals of its own. Nothing but this keeps the two spellings in step,
+     * and a browser cannot see the disagreement at all: the worker's fetches happen inside a push handler
+     * a headless browser has no push service to trigger.
+     *
+     * The rest of the old assertion — "every request the page makes carries the prefix, except the
+     * `/auth` bootstrap" — is a claim about running code and moved to
+     * `webuitest/test/ApiPrefixTest.kt`, which collects every request a live page issues. The grep it
+     * replaced pinned the literal expression inside `apiPath`, so a rename broke it while a route that
+     * skipped `apiPath` entirely did not.
+     */
     @Test
-    fun theBrowserLearnsTheApiPrefixInExactlyOnePlaceAndExemptsTheAuthBootstrap() = withServer { ctx ->
+    fun theServiceWorkerHandWritesTheSameApiPrefixTheModuleDeclares() = withServer { ctx ->
         val api = ctx.get("/lib/api.js").bodyAsText()
+        val worker = ctx.get("/sw.js").bodyAsText()
         assertTrue(
-            api.contains("const API_PREFIX = \"/api/v1\"") &&
-                api.contains("function apiPath(path)") &&
-                api.contains("path.indexOf(AUTH_PATH) === 0 ? path : API_PREFIX + path"),
-            "one registry of the prefix, with the /auth bootstrap surface exempted from it",
+            api.contains("const API_PREFIX = \"$API_PREFIX\";"),
+            "lib/api.js names the prefix once, and it is the daemon's own $API_PREFIX",
         )
-        assertTrue(
-            api.contains("await fetch(apiPath(path), opts)") &&
-                api.contains("return proto + \"//\" + loc.host + apiPath(path);"),
-            "both doors — apiRequest and wsUrl — go through it, which is what keeps every call site bare",
-        )
-        // The exemption has a live caller: the phone dialog mints its ticket through apiRequest.
-        assertTrue(
-            ctx.get("/components/dialogs.js").bodyAsText().contains("apiRequest(\"/auth/ticket\""),
-            "the phone ticket rides the exemption rather than a hand-built URL",
-        )
+        for (url in listOf("/sessions", "/push/subscribe", "/push/unsubscribe")) {
+            assertTrue(
+                worker.contains("\"$API_PREFIX$url\""),
+                "the service worker still spells `$API_PREFIX$url`; the two spellings must agree",
+            )
+        }
     }
 
     /**
@@ -759,23 +757,36 @@ class WebUiServingTest {
     }
 
     /**
-     * The board's frozen CSS vocabulary (was `WebUiBoardTest`).
+     * The board's frozen CSS vocabulary (was `WebUiBoardTest` + `WebUiBoardStyleTest`).
      *
-     * `style.css` and these two components were written by different hands from one frozen class list,
-     * and neither side can read the other's file. A class invented on either side is a rule that matches
-     * nothing, or an element that draws nothing — and the browser's answer to both is a page that renders,
-     * just wrong, which is why `webuitest/test/BoardStyleTest.kt` (which measures real paint) cannot see
-     * it. This asserts one end of the contract: every `board-*` / `task-*` class the two modules emit is
-     * on the list, and the classes they OWN are all really emitted.
+     * `style.css` and the three board components were written by different hands from one frozen class
+     * list, and neither side can read the other's file. A class invented on either side is a rule that
+     * matches nothing, or an element that draws nothing — and the browser's answer to both is a page that
+     * renders, just wrong, which is why `webuitest/test/BoardStyleTest.kt` (which measures real paint)
+     * cannot see it. All THREE ends of the contract are asserted here, because all three are agreements
+     * between files:
+     *  1. every class the components emit is on the list;
+     *  2. every class the components own is really emitted;
+     *  3. every class on the list has a rule in `style.css` — the end that was lost with
+     *     `WebUiBoardStyleTest.everyClassInTheBoardVocabularyIsStyled` and is restored here.
+     *
+     * `TaskDetail.js` is in the scan because the vocabulary carries its `task-detail*` / `task-activity*`
+     * classes; without it those entries had no emitter-side owner at all after `WebUiTaskDetailTest` was
+     * deleted. Adding it is what forced [vocabularyTokensIn] to read CLASS ATTRIBUTES rather than the
+     * whole file — that component addresses most of its own elements by `id`.
      */
     @Test
-    fun theTwoComponentsEmitOnlyTheSharedBoardVocabulary() = withServer { ctx ->
+    fun theBoardComponentsEmitOnlyTheSharedVocabularyAndTheStylesheetDressesAllOfIt() = withServer { ctx ->
         val sources = mapOf(
             "Board.js" to ctx.get("/components/Board.js").bodyAsText(),
             "TaskCard.js" to ctx.get("/components/TaskCard.js").bodyAsText(),
+            "TaskDetail.js" to ctx.get("/components/TaskDetail.js").bodyAsText(),
         )
+        val emitted = mutableSetOf<String>()
         for ((name, source) in sources) {
-            for (className in vocabularyTokensIn(source)) {
+            val tokens = vocabularyTokensIn(source)
+            emitted += tokens
+            for (className in tokens) {
                 assertTrue(
                     BOARD_VOCABULARY.contains(className),
                     "$name emits '$className', which is not in the plan's Board CSS vocabulary — " +
@@ -783,13 +794,21 @@ class WebUiServingTest {
                 )
             }
         }
-        // The other end of the same contract: the classes these two files OWN are all really emitted.
-        val combined = sources.values.joinToString("\n")
+        // The second end: the classes these three files OWN are all really emitted.
         for (owned in BOARD_OWNED_CLASSES) {
             assertTrue(
-                combined.contains("\"$owned\"") || combined.contains("\"$owned ") ||
-                    combined.contains(" $owned\"") || combined.contains(" $owned "),
+                emitted.contains(owned),
                 "the board emits the '$owned' class the stylesheet is dressing",
+            )
+        }
+        // The third: the stylesheet answers for every word of the vocabulary. A selector, not a bare
+        // mention — `.task-blocked` must appear as a class selector, so a class named only inside a
+        // comment does not count as dressed.
+        val css = ctx.get("/style.css").bodyAsText()
+        for (className in BOARD_VOCABULARY) {
+            assertTrue(
+                Regex("\\.${Regex.escape(className)}(?![-\\w])").containsMatchIn(css),
+                "style.css carries no rule for '$className' — a vocabulary word nothing draws",
             )
         }
     }
@@ -931,27 +950,79 @@ class WebUiServingTest {
     }
 
     /**
-     * Every `board-…` / `task-…` token in [source] that could be a class name.
+     * The board vocabulary this [source] emits AS A CLASS — read out of `class=` attribute values only.
      *
-     * The preceding character decides: a letter, digit or hyphen in front means the match is the tail of
-     * something else — `keyboard-reachable` and the `new-task-title` element id are both real occurrences
-     * in these files, and neither is a class. What survives is the set a stylesheet would have to know.
+     * Scanning the whole file was enough while the scan covered `Board.js` and `TaskCard.js`, which name
+     * almost nothing by `id`. It is not enough for `TaskDetail.js`, which addresses most of its own
+     * elements that way (`id="task-detail-loading"`, `aria-labelledby="task-detail-title"`, …): those are
+     * element identities, not stylesheet words, and a whole-file scan reports twenty of them as classes
+     * the vocabulary has never heard of.
+     *
+     * A value is either a quoted literal or a `${…}` expression, and a quoted one may itself contain
+     * interpolations (`class="task-card ${blocked ? "task-blocked" : ""}"`), so the reader tracks `${…}`
+     * nesting rather than stopping at the first quote. Out of each value it takes the hyphenated
+     * lowercase words and keeps the ones shaped like this vocabulary — `board` itself, or a `board-` /
+     * `task-` prefix. Everything else a class list carries (`button`, `field-hint`, `icon-button`) is
+     * shared UI vocabulary these components only borrow.
      */
     private fun vocabularyTokensIn(source: String): Set<String> {
         val found = mutableSetOf<String>()
-        for (prefix in listOf("board-", "task-")) {
-            var at = source.indexOf(prefix)
-            while (at >= 0) {
-                val before = if (at == 0) ' ' else source[at - 1]
-                if (!before.isLetterOrDigit() && before != '-') {
-                    var end = at + prefix.length
-                    while (end < source.length && (source[end].isLowerCase() || source[end] == '-')) end++
-                    found.add(source.substring(at, end).trimEnd('-'))
+        for (value in classAttributeValues(source)) {
+            for (token in CLASS_TOKEN.findAll(value).map { it.value }) {
+                if (token == "board" || token.startsWith("board-") || token.startsWith("task-")) {
+                    found.add(token)
                 }
-                at = source.indexOf(prefix, at + 1)
             }
         }
         return found
+    }
+
+    /** Every `class=` attribute value in [source], quoted literals and `${…}` expressions alike. */
+    private fun classAttributeValues(source: String): List<String> {
+        val values = mutableListOf<String>()
+        var at = source.indexOf(CLASS_ATTRIBUTE)
+        while (at >= 0) {
+            val start = at + CLASS_ATTRIBUTE.length
+            when {
+                start >= source.length -> Unit
+                source[start] == '"' -> values += readQuotedValue(source, start + 1)
+                source.startsWith("\${", start) -> values += readInterpolation(source, start + 2)
+            }
+            at = source.indexOf(CLASS_ATTRIBUTE, at + 1)
+        }
+        return values
+    }
+
+    /** From [from] to the closing quote, skipping over any `${…}` whose own quotes must not end it. */
+    private fun readQuotedValue(source: String, from: Int): String {
+        var depth = 0
+        var at = from
+        while (at < source.length) {
+            when {
+                source.startsWith("\${", at) -> { depth++; at += 2 }
+                source[at] == '}' && depth > 0 -> { depth--; at++ }
+                depth == 0 && source[at] == '"' -> return source.substring(from, at)
+                else -> at++
+            }
+        }
+        return source.substring(from)
+    }
+
+    /** From [from] (just past a `${`) to its matching `}`. */
+    private fun readInterpolation(source: String, from: Int): String {
+        var depth = 1
+        var at = from
+        while (at < source.length) {
+            when (source[at]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return source.substring(from, at)
+                }
+            }
+            at++
+        }
+        return source.substring(from)
     }
 
     /**
@@ -1008,6 +1079,12 @@ private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 /** `rwx------` for the throwaway directory the revision test builds its tree in. */
 private const val MODE_0700: Int = 0b111_000_000
 
+/** The attribute whose value carries a class list; the only place a class name is looked for. */
+private const val CLASS_ATTRIBUTE: String = "class="
+
+/** One hyphenated lowercase word out of a class list — `task-card-handle`, `field-hint`, `button`. */
+private val CLASS_TOKEN = Regex("[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+
 /** Every class name in the plan's frozen "Board CSS vocabulary" — the contract `style.css` is written from. */
 private val BOARD_VOCABULARY: Set<String> = setOf(
     "board", "board-head", "board-identity", "board-project", "board-project-path",
@@ -1021,15 +1098,20 @@ private val BOARD_VOCABULARY: Set<String> = setOf(
     "task-badge", "task-badge-unknown",
 )
 
-/** The subset of [BOARD_VOCABULARY] that `Board.js` and `TaskCard.js` themselves own and must emit. */
-private val BOARD_OWNED_CLASSES: List<String> = listOf(
-    "board", "board-head", "board-identity", "board-project", "board-project-path",
-    "board-new-task",
-    "board-columns", "board-column", "board-column-head", "board-column-switch",
-    "board-show-all-done", "board-drop-target",
-    "task-card", "task-card-handle", "task-card-title", "task-card-meta",
-    "task-blocked", "task-dep-count", "task-sessions", "task-session-dot", "task-card-menu",
-)
+/**
+ * The two words of [BOARD_VOCABULARY] the three board components do NOT own.
+ *
+ * `taskBadge` lives in `lib/sessions.js` and is rendered by the sidebar and the terminal header, so a
+ * board component that emitted one would be reaching outside its own screen.
+ */
+private val BOARD_BADGE_CLASSES: Set<String> = setOf("task-badge", "task-badge-unknown")
+
+/**
+ * The subset of [BOARD_VOCABULARY] that `Board.js`, `TaskCard.js` and `TaskDetail.js` own and must emit
+ * — derived rather than restated, so a word added to the vocabulary is immediately owed an emitter and
+ * cannot sit on the list unclaimed.
+ */
+private val BOARD_OWNED_CLASSES: Set<String> = BOARD_VOCABULARY - BOARD_BADGE_CLASSES
 
 /**
  * Locate the `resources/webui` directory robustly: `./kotlin test` runs from the module root (so the

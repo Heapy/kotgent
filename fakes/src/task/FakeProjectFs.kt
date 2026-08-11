@@ -52,6 +52,16 @@ class FakeProjectFs(
     /** Every file the tree currently holds, by canonical path. */
     val written: Map<String, String> get() = tree.load().files
 
+    /**
+     * Every directory the tree currently holds, canonical and including `/` and every ancestor.
+     *
+     * A LIVE read of the snapshot, not a copy of the seed: the harness's directory completer lists out
+     * of it, and a completer built from the seed list alone cannot offer a directory a scenario added
+     * afterwards — which is how "the path a browser completes and the path project resolution then
+     * canonicalizes" quietly stopped being the same set.
+     */
+    val directories: Set<String> get() = tree.load().directories
+
     /** Declare [path] and every ancestor of it a directory. */
     fun addDirectory(path: String) {
         val normalized = normalize(path)

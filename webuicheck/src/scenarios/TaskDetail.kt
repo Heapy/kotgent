@@ -109,15 +109,15 @@ internal fun taskLinkedSessionScenario(): Scenario = Scenario(
 
         fixtureSession(
             fakes, id = "s-linked-1", name = "push-worker", agent = "claude", cwd = "/repo/linked",
-            project = project, taskRef = TaskRef("local:1"),
+            createdAt = SEED_EPOCH_MS + 1, project = project, taskRef = TaskRef("local:1"),
         )
         fixtureSession(
             fakes, id = "s-linked-2", name = "sweeper", agent = "codex", cwd = "/repo/linked",
-            project = project,
+            createdAt = SEED_EPOCH_MS + 2, project = project,
         )
         fixtureSession(
             fakes, id = "s-linked-3", name = "ghost", agent = "shell", cwd = "/repo/linked",
-            project = project, taskRef = TaskRef("local:404"),
+            createdAt = SEED_EPOCH_MS + 3, project = project, taskRef = TaskRef("local:404"),
         )
     },
 )

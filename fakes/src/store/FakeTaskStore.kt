@@ -454,10 +454,26 @@ class FakeTaskStore(
         }
     }
 
-    /** `todo` with some dependency that is not `done` — the derived rule, never a stored input. */
+    /**
+     * `todo` with some dependency that is PRESENT IN THE SAME PROJECT and not `done` — the derived rule,
+     * never a stored input.
+     *
+     * The two qualifiers are not defensive padding, they are what the SQL says. `listBacklogLocked`
+     * (`src/store/BacklogDependencies.kt`) builds `present` and `done` from the rows of ONE
+     * `WHERE project = ?` and then asks `it in present && it !in done` — the in-memory form of
+     * `unfinishedDependencyCount`'s JOIN, where an edge pointing outside that row set simply has no row
+     * to be un-`done`. So production does NOT block on a dangling edge, and does NOT block on an edge
+     * into another project; a bare `entries[it]?.state != TaskState.done` blocks on both (a missing
+     * entry answers `null`, and `null != done`). No scenario reaches either case today, which is
+     * exactly why it had to be written down rather than left to a future fixture to discover: browser
+     * assertions are measured against this implementation, so a second rule here is a second product.
+     */
     private fun derivedBlocked(entry: BacklogEntry): Boolean =
         entry.state == TaskState.todo &&
-            deps[entry.ref].orEmpty().any { entries[it]?.state != TaskState.done }
+            deps[entry.ref].orEmpty().any { dependency ->
+                val row = entries[dependency]
+                row != null && row.project == entry.project && row.state != TaskState.done
+            }
 
     private fun dependentsLocked(ref: TaskRef): List<TaskRef> =
         deps.filterValues { ref in it }.keys.toList()

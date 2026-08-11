@@ -7,7 +7,14 @@ import io.kotgent.core.SessionState
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Clock
 
-/** Split on any run of whitespace; a command line is a verb and its words, nothing more. */
+/**
+ * Split on any run of whitespace, so a line pasted with a tab or a double space still parses.
+ *
+ * The ONE splitter for the whole stdin protocol: a line is split here and the resulting words are
+ * handed to [handleTaskCommand], never re-split there. Two regexes over one line is two chances to
+ * disagree about what a word is, and a fixture that parsed `task  local:1  done` one way in this file
+ * and another way in its sibling would answer a driver differently depending on which verb it typed.
+ */
 private val WORDS = Regex("\\s+")
 
 /**
@@ -30,19 +37,20 @@ private val WORDS = Regex("\\s+")
  * coroutine context by construction, rather than by everybody remembering.
  *
  * ## Delegation
- * Anything this file does not recognise is offered to [handleTaskCommand] before it is refused, so the
- * board's `task` / `task-add` / `task-del` verbs need no entry here and the two halves of the command
- * table can be written independently.
+ * Anything this file does not recognise is offered to [handleTaskCommand] — with the words this
+ * function already split — before it is refused, so the board's `task` / `task-add` / `task-del` verbs
+ * need no entry here and the two halves of the command table can be written independently.
  */
 fun handleCommand(line: String, ctx: HarnessContext): Boolean {
+    // `firstOrNull`, not `words[0]`: a blank line splits to nothing, and the read loop already skips
+    // those (`Main.kt` trims and continues), so a guard here would be an unreachable branch pretending
+    // to be a policy. Falling through to the `else` keeps the one policy that IS reachable — an
+    // unrecognised line is refused, loudly — true for the impossible line too.
     val words = line.trim().split(WORDS).filter { it.isNotEmpty() }
-    // A blank line is noise, not garbage: a driver that writes "\n" between commands has not asked for
-    // anything, and failing the run over it would be a false alarm rather than a caught mistake.
-    if (words.isEmpty()) return true
-    return when (words[0]) {
+    return when (words.firstOrNull()) {
         "restart" -> handleRestart(words, ctx)
         "emit" -> handleEmit(words, ctx)
-        else -> handleTaskCommand(line, ctx)
+        else -> handleTaskCommand(words, ctx)
     }
 }
 

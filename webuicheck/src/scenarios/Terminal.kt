@@ -64,6 +64,13 @@ private const val SCREEN_LINES: String =
  * after the print (a child that exits closes the master and the socket with it) and doubles as the
  * echo that makes input observable.
  *
+ * **`exec cat`, not `cat`.** `Pty.close` sends SIGTERM to the DIRECT child only, so a forked `cat`
+ * outlives the shell that spawned it and keeps the slave open until the master fd is released —
+ * teardown then depends on the fd close rather than on the signal, and a `stop`-then-reattach test is
+ * measuring a race instead of a lifecycle. `exec` makes the shell REPLACE itself, so the one process on
+ * the pty is the one the bridge's close terminates and reaps. `SelfCheck.kt`'s own upstream has always
+ * said so; this file used to disagree with it silently.
+ *
  * [banner] goes LAST, so waiting for it is proof the WHOLE payload arrived rather than a prefix of it.
  *
  * `command[0]` must be an absolute path: the pty spawns with `posix_spawn`, which performs no `PATH`
@@ -76,7 +83,7 @@ private const val SCREEN_LINES: String =
 internal fun deterministicUpstream(banner: String): List<String> = listOf(
     "/bin/sh",
     "-c",
-    "printf '" + MOUSE_TRACKING_ENABLE + SCREEN_LINES + banner + "\\n'; cat",
+    "printf '" + MOUSE_TRACKING_ENABLE + SCREEN_LINES + banner + "\\n'; exec cat",
 )
 
 /**

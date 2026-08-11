@@ -1,8 +1,6 @@
 package io.kotgent.webuicheck.scenarios
 
 import io.kotgent.core.ProjectId
-import io.kotgent.core.SessionId
-import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.task.PROJECT_FILE_NAME
@@ -148,15 +146,18 @@ internal fun fixtureProject(
 }
 
 /**
- * Seed one session row.
+ * Seed one session row that belongs to a PROJECT — the task scenarios' door onto [harnessSession].
  *
- * [state] defaults to [SessionState.resumable] — dead, so the Web UI never attaches a terminal to it (see
- * the file header). A caller that wants a live row must say so, and owes the terminal upstream that goes
- * with it.
+ * It exists for the two fields the sessions scenarios never set ([project], [taskRef]) and for the
+ * default that keeps a board test out of the terminal: [state] is [SessionState.resumable], i.e. dead,
+ * so the Web UI never attaches a real pty to it (see the file header). A caller that wants a live row
+ * must say so, and owes the terminal upstream that goes with it. Everything else — the `kt-<id>` tmux
+ * name, the null pane, the clock — comes from [harnessSession], because a second row builder is a
+ * second answer to "what does a seeded session look like".
  *
- * The timestamps are fixed rather than read from a clock: the sidebar groups by cwd and sorts the tree by
- * path, so seed order is what decides a row's position within its group, and a wall-clock value would
- * only make a screenshot differ per run.
+ * [createdAt] is distinct per row for the reason [harnessSession] states: `sessionsHoldingTask` and
+ * `listSessions` both order by `(created_at, id)`, and a scenario that stamped its whole cast at one
+ * instant would be asserting against the id tie-break rather than against the fixture it wrote.
  */
 internal suspend fun fixtureSession(
     fakes: HarnessFakes,
@@ -164,31 +165,19 @@ internal suspend fun fixtureSession(
     name: String,
     agent: String,
     cwd: String,
+    createdAt: Long,
     project: ProjectId? = null,
     taskRef: TaskRef? = null,
     state: SessionState = SessionState.resumable,
 ) {
     fakes.events.upsertSession(
-        SessionMeta(
-            id = SessionId(id),
+        harnessSession(
+            id = id,
             name = name,
             agent = agent,
             cwd = cwd,
-            tmuxSession = "kt-$id",
             state = state,
-            createdAt = FIXTURE_CLOCK_MS,
-            updatedAt = FIXTURE_CLOCK_MS,
-            taskRef = taskRef,
-            projectId = project,
-        ),
+            createdAt = createdAt,
+        ).copy(taskRef = taskRef, projectId = project),
     )
 }
-
-/**
- * The one timestamp every seeded session row carries.
- *
- * It matches [io.kotgent.store.FakeTaskStore]'s own default clock so a seeded card and a seeded session
- * describe the same instant; nothing in the Web UI renders a session's `updatedAt` as an age, so the
- * value only has to be stable, not plausible.
- */
-internal const val FIXTURE_CLOCK_MS: Long = 1_000L

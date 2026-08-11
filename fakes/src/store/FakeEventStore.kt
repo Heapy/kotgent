@@ -199,13 +199,25 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
 
     override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = mutex.withLock {
         // A LIST, not an optional: linking is many-sessions-to-one-task by design. Oldest first, the
-        // stable order `transition(done)` and `delete` iterate to unlink every holder.
-        metas.values.filter { it.taskRef == taskRef }.sortedBy { it.createdAt }
+        // stable order `transition(done)` and `delete` iterate to unlink every holder — and the id
+        // breaks a tie, because `Sessions.sq` says `ORDER BY created_at, id` and two rows sharing a
+        // timestamp is the ordinary case for a fixture that stamps a whole scenario at one instant.
+        metas.values.filter { it.taskRef == taskRef }.sortedWith(ROW_ORDER)
     }
 
     override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { metas[sessionId] }
 
-    override suspend fun listSessions(): List<SessionMeta> = mutex.withLock { metas.values.toList() }
+    /**
+     * Every row, in the daemon's own order.
+     *
+     * `Sessions.sq`'s `list` is `ORDER BY created_at, id`, and this is the list the sidebar renders and
+     * `kotgent list` prints, so insertion order was a second contract that happened to agree only
+     * because every fixture seeds ascending. It stops agreeing the moment a scenario stamps two rows
+     * with one timestamp, and the disagreement shows up as a row in the wrong place in a browser
+     * assertion rather than as a failure here.
+     */
+    override suspend fun listSessions(): List<SessionMeta> =
+        mutex.withLock { metas.values.sortedWith(ROW_ORDER) }
 
     override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
         mutex.withLock {
@@ -288,4 +300,12 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
     }
 
     private fun unread(last: Long, readCursor: Long): Long = (last - readCursor).coerceAtLeast(0)
+
+    private companion object {
+        /**
+         * `ORDER BY created_at, id` — the one row order `Sessions.sq` declares, shared by `list` and
+         * `sessionsHoldingTask` there and therefore by both of them here.
+         */
+        val ROW_ORDER: Comparator<SessionMeta> = compareBy({ it.createdAt }, { it.id.value })
+    }
 }

@@ -3,7 +3,6 @@ package io.kotgent.webuicheck
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.task.TaskState
-import io.kotgent.webuicheck.scenarios.FIXTURE_CLOCK_MS
 import kotlinx.coroutines.runBlocking
 
 /*
@@ -14,12 +13,12 @@ import kotlinx.coroutines.runBlocking
  * whether IT has carried the ref before (`EventsWs.kt`), so a driver cannot ask for a `task_row` — it can
  * only produce a ref the socket has never carried and let the sender reach that conclusion:
  *
- * | command             | store call                        | frame the socket derives |
- * |---------------------|-----------------------------------|--------------------------|
- * | `task <ref> <state>`| `TaskService.transition`          | `task_update`            |
- * | `task-add <ref>`    | `FakeTaskStore.addTask`           | `task_row`               |
- * | `task-del <ref>`    | `TaskService.delete`              | `task_removed`           |
- * | `task-race <ref>`   | `FakeTaskStore.transition`        | `task_update` (see below)|
+ * | command                    | store call                 | frame the socket derives |
+ * |----------------------------|----------------------------|--------------------------|
+ * | `task <ref> <state>`       | `TaskService.transition`   | `task_update`            |
+ * | `task-add <ref> [position]`| `FakeTaskStore.addTask`    | `task_row`               |
+ * | `task-del <ref>`           | `TaskService.delete`       | `task_removed`           |
+ * | `task-race <ref>`          | `FakeTaskStore.transition` | `task_update` (see below)|
  *
  * ## Two of them go through `TaskService` and two through the store, and the split is the contract
  * `task` and `task-del` are the operator-shaped ones: they stand for "somebody outside this browser
@@ -40,8 +39,11 @@ import kotlinx.coroutines.runBlocking
  */
 
 /**
- * Run [line] if it is a task command. Answers `false` for anything else — including a task command whose
- * arguments do not parse or do not name a live row (see the file header).
+ * Run [words] if they are a task command. Answers `false` for anything else — including a task command
+ * whose arguments do not parse or do not name a live row (see the file header).
+ *
+ * The line arrives ALREADY SPLIT, by the one splitter in `Commands.kt`. Re-splitting here would be a
+ * second, independently-maintained definition of "a word" over the same protocol.
  *
  * ## The `runBlocking` bridge
  * The seam is non-suspend while every store call under it suspends, so each arm owns one `runBlocking` —
@@ -53,8 +55,7 @@ import kotlinx.coroutines.runBlocking
  * all. Nothing here waits on work scheduled on the caller's dispatcher, which is the shape that deadlocks
  * a nested `runBlocking`.
  */
-fun handleTaskCommand(line: String, ctx: HarnessContext): Boolean {
-    val words = line.trim().split(COMMAND_WORDS)
+fun handleTaskCommand(words: List<String>, ctx: HarnessContext): Boolean {
     return when (words.firstOrNull()) {
         "task" -> runBlocking { applyTaskState(ctx, words) }
         "task-add" -> runBlocking { addTask(ctx, words) }
@@ -80,8 +81,8 @@ private suspend fun applyTaskState(ctx: HarnessContext, words: List<String>): Bo
 }
 
 /**
- * `task-add <ref>` — file a brand-new card at a ref the driver names, so the socket ships it as a
- * `task_row` rather than a patch.
+ * `task-add <ref> [position]` — file a brand-new card at a ref the driver names, so the socket ships it
+ * as a `task_row` rather than a patch.
  *
  * **A ref that already exists is refused**, and that refusal is the whole point: the socket carries every
  * seeded ref in its opening `tasks_snapshot`, so re-adding one would emit a `task_update` and the test
@@ -90,16 +91,25 @@ private suspend fun applyTaskState(ctx: HarnessContext, words: List<String>): Bo
  * The project is the first one the store knows, which is also the one the board has selected: `app.js`
  * picks `projects[0]` of the name-sorted `GET /projects`, and [io.kotgent.store.FakeTaskStore.listProjects]
  * sorts by the same key. Every scenario here registers exactly one project, so the two can only agree.
+ *
+ * ## Why the optional rank
+ * Without it a new card always lands at the END of the project's column, and a board that ignored
+ * `position` entirely — appending each `task_row` frame to the list as it arrives — would render it in
+ * exactly the same place. So an ordering assertion built on the default is unfalsifiable. Naming a rank
+ * that falls BETWEEN two seeded neighbours is what separates the two behaviours: the card must appear
+ * between them, and an appending board puts it last. The value is a plain double in the same gap-based
+ * space the seeds use (`1.0, 2.0, 3.0, …`), so `2.5` means "third slot".
  */
 private suspend fun addTask(ctx: HarnessContext, words: List<String>): Boolean {
-    if (words.size != 2) return false
+    if (words.size != 2 && words.size != 3) return false
     val ref = TaskRef.parseOrNull(words[1]) ?: return false
+    val position = if (words.size == 3) words[2].toDoubleOrNull() ?: return false else null
     val tasks = ctx.fakes.tasks
     if (tasks.entry(ref) != null) return false
     val project = tasks.listProjects().firstOrNull()?.id ?: return false
     // `${ref.value}`, never `$ref`: a value class with no `toString` renders as `TaskRef(value=local:42)`,
     // and that string would go straight onto a card.
-    tasks.addTask(ref, project, title = "Added ${ref.value}")
+    tasks.addTask(ref, project, title = "Added ${ref.value}", position = position)
     return true
 }
 
@@ -155,23 +165,15 @@ private suspend fun raceTask(ctx: HarnessContext, words: List<String>): Boolean 
 }
 
 /**
- * A [TaskService] over the harness's fakes, built per command.
+ * The harness's ONE [TaskService] — the same instance the HTTP routes run on.
  *
- * The class holds no state of its own — it is the sequencing rule between the two stores, and both of
- * those are the long-lived fakes — so a fresh instance is identical to a shared one and avoids adding a
- * field to a context another task owns.
- *
- * The clock is pinned rather than left on the daemon's: it only ever writes `sessions.updated_at`, which
- * nothing in the Web UI renders as an age, and a wall-clock value would make a fixture's rows differ
- * between runs for no observable gain.
+ * It used to be built per command with its own pinned clock, on the argument that the class is stateless
+ * so a second instance is free. It is not free: `TaskService` carries a `now`, and a second instance is
+ * a second clock, so `task local:1 done` typed on stdin stamped a different `sessions.updated_at` than
+ * the identical transition performed from the board. A fixture that answers differently depending on
+ * which door a request came in by is the one thing a fixture may never do.
  */
-private fun taskService(ctx: HarnessContext): TaskService = TaskService(
-    tasks = ctx.fakes.tasks,
-    sessions = ctx.fakes.events,
-    projectFs = ctx.fakes.projectFs,
-    projectFiles = ctx.fakes.projectFiles,
-    now = { FIXTURE_CLOCK_MS },
-)
+private fun taskService(ctx: HarnessContext): TaskService = ctx.taskService
 
 /** [word] as a [TaskState], or `null` — the enum name exactly, no aliases. */
 private fun taskStateOrNull(word: String): TaskState? = TaskState.entries.firstOrNull { it.name == word }
@@ -184,6 +186,3 @@ private fun taskStateOrNull(word: String): TaskState? = TaskState.entries.firstO
  * indistinguishable from one the fixture shipped with.
  */
 private const val TASK_COMMAND_AUTHOR: String = "webuicheck"
-
-/** Split on any run of whitespace, so a line pasted with a tab or a double space still parses. */
-private val COMMAND_WORDS = Regex("\\s+")

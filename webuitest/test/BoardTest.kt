@@ -56,12 +56,12 @@ class BoardTest {
      * two numbers coincide, which is why the count is asserted against the seeded totals rather than
      * against the rendered cards.
      *
-     * One limit is recorded rather than hidden: the ORDER here does not falsify the board's own
-     * `position`-then-`createdAt`-then-`ref` sort. The fixture's snapshot already arrives in that order
-     * (`FakeTaskStore.listTasks` sorts by position), and nothing a browser can drive delivers a task
-     * out of order — a `task_update` replaces a row in place and `task-add` appends one whose position
-     * puts it last anyway. What is pinned is the mapping from the daemon's list to the four columns; the
-     * client sort would need a fixture that hands the socket an inverted snapshot.
+     * What this test pins is the mapping from the daemon's list to the four columns, and NOT the board's
+     * own `position`-then-`createdAt`-then-`ref` sort: the snapshot already arrives in that order
+     * (`FakeTaskStore.listBacklog` sorts by position, exactly as `selectEntriesByProject`'s
+     * `ORDER BY position, task_ref` does), so a board that never sorted at all would render this
+     * identically. The sort is falsified separately, by
+     * [aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList].
      */
     @Test
     fun theBoardRendersEverySeededColumnInItsPositionOrder() =
@@ -78,6 +78,37 @@ class BoardTest {
             for ((state, count) in listOf("todo" to "5", "in_progress" to "2", "review" to "1", "done" to "2")) {
                 assertThat(page.column(state).locator(".board-column-head span")).hasText(count)
             }
+        }
+
+    /**
+     * A card that arrives as a LIVE frame is placed by its rank, not by the moment it arrived.
+     *
+     * This is the half of the board's ordering that the seeded snapshot cannot test. The snapshot is
+     * already in position order when it lands, so the client sort is invisible there; a `task_row` frame
+     * is the opposite — it is appended to a list that is otherwise settled, and only the sort decides
+     * where the card is drawn. `task-add local:11 2.5` files a card whose rank falls BETWEEN the seeded
+     * `local:2` (2.0) and `local:3` (3.0), so:
+     *  - a board that sorts renders it third in `todo`;
+     *  - a board that appends renders it last, which is also where the DEFAULT `task-add` would have put
+     *    it — which is precisely why the command grew an optional rank rather than being used bare.
+     *
+     * `todo` is the right column for it because it holds five seeded cards, so "third" is unambiguously
+     * neither the head nor the tail. A new task is always `todo` (`FakeTaskStore.addTask`, and
+     * `TaskService` has no create at all), so no state has to be named.
+     */
+    @Test
+    fun aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList() =
+        onTheBoard("aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList") { harness, page ->
+            assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))
+
+            harness.send("task-add $INSERTED_REF $INSERTED_POSITION")
+            assertThat(page.locator(".task-card")).hasCount(SEEDED_CARDS + 1)
+
+            assertEquals(
+                listOf("local:1", "local:2", INSERTED_REF, "local:3", "local:4", "local:10"),
+                page.refsIn("todo"),
+                "the new card belongs at its rank; last would mean the board renders arrival order",
+            )
         }
 
     /**
@@ -626,6 +657,15 @@ class BoardTest {
         /** The `board` scenario's ten tasks, and the five of them the phone's first column holds. */
         private const val SEEDED_CARDS = 10
         private const val SEEDED_TODO_CARDS = 5
+
+        /**
+         * The card the ordering test files, and the rank it files it at.
+         *
+         * `2.5` sits in the gap the seeds leave between `local:2` (2.0) and `local:3` (3.0) — the same
+         * `x.5` a real drag lands on — so the card is third in `todo` and neither first nor last.
+         */
+        private const val INSERTED_REF = "local:11"
+        private const val INSERTED_POSITION = "2.5"
 
         private val COLUMN_STATES = listOf("todo", "in_progress", "review", "done")
 

@@ -57,7 +57,7 @@ internal fun deepLinkScenario(): Scenario = Scenario(
 
         fixtureSession(
             fakes, id = DEEP_LINK_SESSION_ID, name = "deep-link", agent = "claude", cwd = "/repo/deep",
-            project = project, taskRef = ref,
+            createdAt = SEED_EPOCH_MS + 1, project = project, taskRef = ref,
         )
     },
 )
