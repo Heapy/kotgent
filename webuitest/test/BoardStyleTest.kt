@@ -711,6 +711,25 @@ class BoardStyleTest {
                 "no card is behind the head, so this point proves nothing about the ones it hides — the " +
                     "track is not scrolled far enough; the stack was $stack",
             )
+
+            // The other half of the row's sizing, and the reason `min-height: auto` is the fix rather
+            // than `grid-auto-rows: max-content`: a column SHORTER than the port still fills it. A
+            // `max-content` row never reaches grid's stretch step, so `review` stopped at its one card
+            // (measured: 173px of a 403px port), giving up the full box and the tail a drop-to-the-end
+            // lands on.
+            page.locator(".board-column-switch button[data-state='review']").click()
+            val short = column(page, "review")
+            assertThat(short).isVisible()
+            assertThat(short.locator(".task-card")).hasCount(1)
+            val contentBottom = track.number(
+                "el => el.getBoundingClientRect().bottom - parseFloat(getComputedStyle(el).paddingBottom)",
+            )
+            val shortBox = short.rect()
+            assertClose(contentBottom, shortBox.bottom, "a short column stops above the track's content box")
+            assertTrue(
+                shortBox.bottom > short.locator(".task-card").rect().bottom + 1,
+                "…while its one card ends well above that, or this measures nothing",
+            )
         }
 
     /**
