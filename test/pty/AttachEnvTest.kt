@@ -6,15 +6,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Unit tests for the PURE [terminalAttachEnv] overload — the environment shaping for the `tmux attach`
- * upstream. Only the `getenv` reads live outside this (the no-arg overload in `RealPtyHandle.kt`), so
- * every rule that matters is asserted here without touching the daemon's real environment.
- *
- * The rules: `TERM` is pinned (never inherited — a `xterm-ghostty` would need a `TERMINFO` launchd has
- * not got), `PATH` has a floor, and `LANG` is ALWAYS a UTF-8 locale — a tmux client that is not UTF-8
- * renders every non-ASCII cell as `_`, and under launchd nothing is inherited to fall back on.
- */
 class AttachEnvTest {
 
     @Test
@@ -26,16 +17,13 @@ class AttachEnvTest {
 
     @Test
     fun langIsAlwaysPresentAndUtf8() {
-        // The launchd case: the daemon inherits no LANG whatsoever.
         val none = terminalAttachEnv(lang = null, home = "/Users/tester", path = "/usr/bin")
         assertEquals(DEFAULT_UTF8_LOCALE, none["LANG"], "a missing LANG is substituted, not omitted")
         assertTrue("LANG" in none, "LANG is never left out of the attach env")
 
-        // Present but not UTF-8 — same failure mode, same substitution.
         val c = terminalAttachEnv(lang = "C", home = null, path = null)
         assertEquals(DEFAULT_UTF8_LOCALE, c["LANG"], "a non-UTF-8 LANG is replaced")
 
-        // A real UTF-8 locale is respected (the user's own language survives).
         val ru = terminalAttachEnv(lang = "ru_RU.UTF-8", home = null, path = null)
         assertEquals("ru_RU.UTF-8", ru["LANG"], "an inherited UTF-8 locale is passed through")
     }
@@ -60,13 +48,11 @@ class AttachEnvTest {
             val env = terminalAttachEnv(lang = null, home = null, path = blank)
             assertEquals(ATTACH_FALLBACK_PATH, env["PATH"], "a blank PATH (<$blank>) falls back to the floor")
         }
-        // The floor must carry the locations tmux itself lives in.
         assertTrue("/opt/homebrew/bin" in ATTACH_FALLBACK_PATH && "/usr/bin" in ATTACH_FALLBACK_PATH)
     }
 
     @Test
     fun theEnvCarriesNothingBeyondTheFourShapedKeys() {
-        // Identity is never derived from inherited env, so the upstream gets a deliberately tiny set.
         val env = terminalAttachEnv(lang = "en_US.UTF-8", home = "/Users/tester", path = "/usr/bin")
         assertEquals(setOf("TERM", "HOME", "PATH", "LANG"), env.keys.toSet())
     }
@@ -79,8 +65,6 @@ class AttachEnvTest {
             argv,
             "the upstream is `tmux -f /dev/null -u -L <socket> attach -t <session>`",
         )
-        // Both -f (with its value) and -u must precede the subcommand: they are tmux global flags,
-        // not `attach` flags.
         val attach = argv.indexOf("attach")
         val f = argv.indexOf("-f")
         assertTrue(f >= 0, "the attach upstream passes -f")
@@ -89,18 +73,6 @@ class AttachEnvTest {
         assertTrue(argv.indexOf("-u") < attach, "-u is a global flag, before the subcommand")
     }
 
-    /**
-     * The per-subscriber seed is what a client joining an **existing** bridge gets, and it is the only
-     * thing it gets — the upstream's private-mode enables were broadcast as live deltas back when the
-     * upstream opened. `capture-pane -p -e` carries ZERO private-mode sequences (measured), so every
-     * non-empty seed must restore tmux's unconditional bracketed-paste mode; otherwise xterm.js sends
-     * multiline paste as ordinary input and a shell can execute it line by line. With `mouse on`
-     * forced the seed additionally arms mouse reporting or that viewer's wheel never reaches tmux and
-     * the pane history — the whole point of the option — stays unreachable for it.
-     *
-     * The enable comes FIRST (armed before the repaint) and an empty capture stays empty (an unknown
-     * session must not be answered with a stray mode change).
-     */
     @Test
     fun theSeedRestoresBracketedPasteAndConditionallyArmsMouseReporting() {
         val esc = "\u001b"
@@ -128,8 +100,6 @@ class AttachEnvTest {
 
     @Test
     fun anEmptySeedStaysEmptyEvenWithMouseForced() {
-        // capturePane() returns "" for an unknown session / torn-down server, and Broadcaster.attach
-        // reads an empty seed as "nothing to send". Prefixing a mode change would break that contract.
         assertTrue(terminalSeed("", mouseForced = true).isEmpty(), "an empty capture yields an empty seed")
         assertTrue(terminalSeed("", mouseForced = false).isEmpty())
     }

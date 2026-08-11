@@ -8,30 +8,8 @@ import io.kotgent.tmux.TmuxPane
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/**
- * A host-free fake [TmuxControl] for the daemon unit tests — no real tmux, no cinterop, so it runs in
- * the test binary. It models a tiny in-memory tmux: [newSession] adds a live pane, [killSession]
- * removes it, and [listPanes] reports the current set. Every mutating call is recorded
- * ([newSessionCommands] / [killed] / [sentKeys]) so tests can assert what the [SessionManager] asked
- * tmux to do. Panes handed out are `%100`, `%101`, … so they are unambiguous.
- *
- * The [Reconciler] tests seed the live-pane set through the constructor; a scenario that seeds its rows
- * one at a time uses [seedPane]. Sessions with no seeded pane are "gone" (dead/torn-down).
- *
- * It lives in the `fakes` module — with its package deliberately UNCHANGED, so none of its consumers
- * needed an edit when it moved — because the `webuicheck` harness stands a real `KotgentServer` on it
- * too: the browser tier must never reach a real tmux server. See `fakes/module.yaml`.
- *
- * ## Concurrency
- * All mutable state lives in ONE immutable [State] behind an [AtomicReference], mutated by CAS. It was
- * written for single-threaded unit tests and now also backs a live `KotgentServer` whose engine threads
- * call it concurrently (two browser tabs interrupting two sessions is two threads inside [sendKeys]);
- * plain `MutableList` fields would corrupt under that, and the corruption would present as an
- * inexplicable browser assertion rather than as a fault here. The recorders are therefore read as
- * SNAPSHOTS — every accessor answers an immutable list — which is what every existing call site already
- * does with them.
- */
 @OptIn(ExperimentalAtomicApi::class)
+/** Shared by unit tests and the multithreaded browser harness, so all exposed lists are CAS snapshots. */
 class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
 
     private class State(
@@ -47,7 +25,6 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
         State(seedPanes.toList(), 100, emptyList(), emptyList(), emptyList(), emptyList()),
     )
 
-    /** Apply [transform] under a CAS retry loop and answer whatever it computed alongside the new state. */
     private fun <T> mutate(transform: (State) -> Pair<State, T>): T {
         while (true) {
             val current = state.load()
@@ -56,41 +33,24 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
         }
     }
 
-    /** (logical id, rendered command) for every [newSession] call, in order. */
     val newSessionCommands: List<Pair<String, String>> get() = state.load().newSessionCommands
 
-    /** Logical ids passed to [killSession], in order. */
     val killed: List<String> get() = state.load().killed
 
-    /** (logical id, bytes) for every [sendKeys] call, in order. */
     val sentKeys: List<Pair<String, ByteArray>> get() = state.load().sentKeys
 
-    /** Logical ids passed to [leaveCopyMode], in order. */
     val copyModeCancels: List<String> get() = state.load().copyModeCancels
 
-    /**
-     * When true, [leaveCopyMode] reports failure — the fake stand-in for a pane a wheel scroll keeps
-     * dragging back into copy-mode, which makes the "input write did not proceed" path testable.
-     */
     var copyModeStuck: Boolean = false
 
-    /**
-     * When true, [sendKeys] throws [TmuxCopyModeException] — the real wrapper's `#{pane_in_mode}`
-     * read-back catching a send that went to the copy-mode key table. Distinct from [sendKeysFailure]
-     * because the two carry different wire contracts (retryable 409 vs generic failure 400).
-     */
+    // Models the post-send copy-mode check, distinct from failure to leave copy mode before sending.
     var sendKeysCopyModeStuck: Boolean = false
 
-    /** When non-null, [sendKeys] throws a plain [TmuxException] with this message (an ordinary failure). */
     var sendKeysFailure: String? = null
 
     override fun sessionName(id: String): String = "kt-$id"
 
-    /**
-     * Register a live pane for [id] without a [newSession] call, and answer it — what a fixture that
-     * seeds an ALIVE session row owes, since a session the daemon believes is running has a pane behind
-     * it in production. Recorded nowhere: seeding is not a command the [SessionManager] issued.
-     */
+    /** Adds fixture state without recording a SessionManager command. */
     fun seedPane(id: String): PaneId = mutate { current ->
         val name = sessionName(id)
         val pane = PaneId("%${current.paneCounter}")
@@ -131,11 +91,7 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
             )
         }
         sendKeysFailure?.let { throw TmuxException(it) }
-        // The pane set is CONSULTED, not ignored. Real `Tmux.sendKeys` (src/tmux/Tmux.kt:327-332) reads
-        // its chain's answer and throws on `isAbsence()` — "no live server/session/pane" — before it can
-        // ever record a delivery, so a control action against a session tmux does not hold FAILS. A fake
-        // that recorded the bytes anyway made every such action succeed in the harness and turned the
-        // route's own failure branch into dead code no browser test could reach.
+        // Real tmux refuses delivery when the session has no live pane; the fake must not record it.
         mutate { current ->
             val name = sessionName(id)
             if (current.panes.none { it.session == name }) {

@@ -28,35 +28,16 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * [SessionManager.importSession] TDD — registering a provider session started OUTSIDE kotgent as a
- * `resumable` row + `SessionBound`, with zero tmux side effects. Host-free: [FakeTmux] + in-memory
- * [SqliteEventStore] + fake probe/locator (the real probe/locator wiring is covered by
- * ImportWiringTest over throwaway vendor homes). Separate from [SessionManagerTest] on purpose —
- * that file already carries 30+ launch/control cases.
- *
- * `/tmp` serves as the "existing" project directory for the cwd gate (`realpath(3)` runs for real —
- * stock `platform.posix` links into the test binary fine), so the STORED/PROBED spelling is its
- * canonical form [canonicalTmp] (`/private/tmp` — /tmp is a symlink on macOS, and importSession
- * canonicalizes through the filesystem before probing and storing).
- */
 class SessionImportTest {
 
     private val providerId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
-    /** What importSession turns an explicit `--cwd /tmp` into everywhere downstream of the gate. */
     private val canonicalTmp = canonicalPath("/tmp")!!
 
-    /**
-     * An [AgentFactory] that FAILS the test if import ever touches it: import must never build an
-     * adapter — the agent-binary fail-fast belongs to `resume()`, not to a side-effect-free
-     * registration.
-     */
     private val untouchableFactory = AgentFactory { kind, _ ->
         throw AssertionError("importSession must never build an adapter (asked for '$kind')")
     }
 
-    /** A real factory for the tests that go on to `resume()` (which does build the launch spec). */
     private val catFactory = AgentFactory { _, cwd ->
         object : AgentAdapter {
             override val events: Flow<AgentEvent> = emptyFlow()
@@ -86,7 +67,6 @@ class SessionImportTest {
         now = { 42L },
     )
 
-    // ---- happy path: a full resumable row + SessionBound, with zero tmux side effects ----
 
     @Test
     fun shellCanStartButCannotBeImportedAgainstTheSameManager() = runBlocking {
@@ -148,22 +128,18 @@ class SessionImportTest {
             assertEquals(42L, row.createdAt)
             assertEquals(42L, row.updatedAt)
 
-            // SessionBound is in the event log (replay stays consistent with the row) …
             val events = store.read(SessionId("imp00001"), Seq(0))
             assertEquals(1, events.size, "exactly one event: the import's SessionBound")
             assertEquals(AgentEvent.SessionBound(providerId), events[0].event)
             assertEquals(EventSource.system, events[0].source)
-            // … and the bind append did NOT resurrect the dead cache state.
             assertEquals(
                 SessionState.resumable,
                 store.getSession(SessionId("imp00001"))!!.state,
                 "the row stays resumable after the SessionBound append",
             )
 
-            // The probe was asked exactly the (agent, cwd, id) triple that went into the row.
             assertEquals(listOf(Triple("claude", canonicalTmp, providerId)), probed)
 
-            // ZERO tmux side effects — sessionName is a pure formatter, everything else untouched.
             assertTrue(tmux.newSessionCommands.isEmpty(), "import must not create a tmux session")
             assertTrue(tmux.killed.isEmpty(), "import must not kill anything")
             assertTrue(tmux.sentKeys.isEmpty(), "import must not send keys")
@@ -175,10 +151,7 @@ class SessionImportTest {
     fun anImportedSessionStaysResumableThroughReconcile() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 42L })
-            val tmux = FakeTmux() // no live panes — the imported session has none
-            // ONE probe answers BOTH the import and the reconcile, and only for the exact triple the
-            // import stores — the discovery↔probe consistency guard: a mismatching cwd would flunk the
-            // import instead of silently degrading resumable → crashed on the next daemon start.
+            val tmux = FakeTmux()
             val probe = VendorStoreProbe { a, c, id -> a == "claude" && c == canonicalTmp && id == providerId }
             val mgr = manager(store, tmux, probe = probe)
             mgr.importSession("claude", providerId, cwd = "/tmp")
@@ -197,9 +170,6 @@ class SessionImportTest {
     fun importOfASupportedKindSucceedsEvenWhenTheAgentBinaryIsMissing() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 42L })
-            // The daemon-under-launchd shape: the kind is supported but its binary does not resolve, so
-            // the factory would throw. Import never asks it — the fail-fast stays in resume(), where the
-            // `kotgent install` hint belongs.
             val factory = AgentFactory { kind, _ -> throw AgentBinaryNotFoundException(kind) }
             val mgr = manager(store, factory = factory)
 
@@ -214,7 +184,6 @@ class SessionImportTest {
         }
     }
 
-    // ---- duplicates: 409-shaped conflict, including archived rows and concurrent imports ----
 
     @Test
     fun aDuplicateProviderIdConflictsAndNamesTheExistingSessionIncludingArchived() = runBlocking {
@@ -229,7 +198,6 @@ class SessionImportTest {
             assertEquals(SessionId("imp00001"), again.existingId, "the conflict names the existing session")
             assertFalse(again.archived)
 
-            // Archived rows count too: the right move there is Restore, not a second import.
             store.setArchived(SessionId("imp00001"), true, 43L)
             val archived = assertFailsWith<DuplicateImportException> {
                 mgr.importSession("claude", providerId, cwd = "/tmp")
@@ -246,9 +214,6 @@ class SessionImportTest {
     fun twoConcurrentImportsOfTheSameIdYieldExactlyOneRow() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 42L })
-            // Park the FIRST import inside its probe, then start a second import of the same provider
-            // id. The daemon-wide import mutex must serialize them: the loser sees the winner's
-            // committed row (the duplicate conflict), never a second row.
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
             var first = true
@@ -264,9 +229,9 @@ class SessionImportTest {
             val mgr = manager(store, probe = probe, newSessionId = { SessionId(ids.removeFirst()) })
 
             val a = async { runCatching { mgr.importSession("claude", providerId, cwd = "/tmp") } }
-            entered.await() // the first import is mid-flight, holding the import mutex
+            entered.await()
             val b = async { runCatching { mgr.importSession("claude", providerId, cwd = "/tmp") } }
-            repeat(20) { yield() } // give the second import every chance to interleave
+            repeat(20) { yield() }
             release.complete(Unit)
             val results = listOf(a.await(), b.await())
 
@@ -285,9 +250,6 @@ class SessionImportTest {
     fun aConcurrentImportCannotTakeTheIdAStartHasDrawnButNotYetUpserted() = runBlocking {
         withTimeout(20_000) {
             val real = SqliteEventStore.inMemory(now = { 42L })
-            // Park the START's upsert: its session id is allocated but not yet visible to the store —
-            // exactly the check-to-upsert window in which only the id reservation can protect it. The
-            // import's own (later) upsert must pass through unparked.
             val startUpsertReached = CompletableDeferred<Unit>()
             val releaseStartUpsert = CompletableDeferred<Unit>()
             var parkedOnce = false
@@ -301,12 +263,8 @@ class SessionImportTest {
                     real.upsertSession(meta)
                 }
             }
-            // The generator INSISTS on the colliding id: the import draws "dup00001" too, and only the
-            // reservation — not the store, which does not know the id while the upsert is parked — can
-            // make it re-draw.
             val ids = ArrayDeque(listOf("dup00001", "dup00001", "dup00002"))
             val startProvider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-            // Preallocated id so start() binds inline (no background capture job to wait out).
             val startFactory = AgentFactory { _, cwd ->
                 object : AgentAdapter {
                     override val events: Flow<AgentEvent> = emptyFlow()
@@ -318,7 +276,7 @@ class SessionImportTest {
             val mgr = manager(store, tmux, factory = startFactory, newSessionId = { SessionId(ids.removeFirst()) })
 
             val start = async { mgr.start("claude", "/tmp") }
-            startUpsertReached.await() // start holds "dup00001" — drawn and reserved, NOT stored yet
+            startUpsertReached.await()
 
             val imported = mgr.importSession("codex", providerId, cwd = "/tmp")
             assertEquals(
@@ -330,7 +288,6 @@ class SessionImportTest {
             releaseStartUpsert.complete(Unit)
             assertEquals(SessionId("dup00001"), start.await().id)
 
-            // Two sessions, two untangled rows — the import overwrote neither the row nor the log.
             val startRow = real.getSession(SessionId("dup00001"))!!
             assertEquals(SessionState.running, startRow.state)
             assertEquals(startProvider, startRow.providerSessionId)
@@ -341,7 +298,6 @@ class SessionImportTest {
         }
     }
 
-    // ---- the failure ladder: kind, cwd discovery, cwd existence, probe ----
 
     @Test
     fun anUnknownAgentKindIsRejectedBeforeAnythingElse() = runBlocking {
@@ -389,7 +345,7 @@ class SessionImportTest {
             val mgr = manager(store, locator = VendorSessionLocator { _, _ -> null })
 
             val ex = assertFailsWith<ImportCwdException> {
-                mgr.importSession("claude", providerId) // no explicit cwd, discovery finds nothing
+                mgr.importSession("claude", providerId)
             }
 
             assertTrue(ex.message!!.contains("--cwd"), "the error points at --cwd: ${ex.message}")
@@ -420,12 +376,6 @@ class SessionImportTest {
     @Test
     fun anExplicitCwdIsCanonicalizedThroughTheFilesystemBeforeTheProbeAndTheRow() = runBlocking {
         withTimeout(20_000) {
-            // The daemon is the one place with the real filesystem in hand, so IT owns canonicalization:
-            // a `/repo/./`-style spelling (the Web UI / API can send one raw), a trailing slash, and a
-            // symlinked prefix (`/tmp` really is `/private/tmp` on macOS) must all converge on the ONE
-            // string Claude's transcript key encodes and the Reconciler later re-probes — a verbatim
-            // spelling would falsely reject a valid claude import and persist a noncanonical codex cwd.
-            // Deliberately NOT lexical: realpath crosses the symlink, a string cleanup cannot.
             val store = SqliteEventStore.inMemory(now = { 42L })
             val probedCwds = mutableListOf<String>()
             val mgr = manager(store, probe = VendorStoreProbe { _, c, _ -> probedCwds += c; true })
@@ -459,11 +409,6 @@ class SessionImportTest {
     @Test
     fun aRelativeCwdIsRejectedAtTheDaemon() = runBlocking {
         withTimeout(20_000) {
-            // The CLI resolves relative paths client-side, but the Web UI / any API client can send one
-            // raw. The daemon lives under launchd with cwd `/`, so realpath(3) on "tmp" would resolve
-            // it against `/` — an answer the caller never meant — and for codex the probe ignores cwd
-            // entirely, so a quietly-resolved wrong path would be stored and later handed to resume's
-            // `tmux new-session -c`.
             val store = SqliteEventStore.inMemory(now = { 42L })
             var probeAsked = false
             val mgr = manager(store, probe = VendorStoreProbe { _, _, _ -> probeAsked = true; true })
@@ -481,13 +426,11 @@ class SessionImportTest {
     @Test
     fun aCwdThatIsAPlainFileIsRejected() = runBlocking {
         withTimeout(20_000) {
-            // Existence alone (realpath succeeding) accepts a file; tmux `new-session -c` would only
-            // trip over it at resume time, long after the row was stored.
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
 
             val ex = assertFailsWith<ImportCwdException> {
-                mgr.importSession("claude", providerId, cwd = "/etc/hosts") // exists, but is a file
+                mgr.importSession("claude", providerId, cwd = "/etc/hosts")
             }
 
             assertTrue(ex.message!!.contains("not a directory"), "the error names the shape: ${ex.message}")
@@ -498,9 +441,6 @@ class SessionImportTest {
     @Test
     fun anUppercaseIdVariantIsNormalizedAndConflictsWithItsLowercaseTwin() = runBlocking {
         withTimeout(20_000) {
-            // macOS's default FS is case-insensitive, so an uppercase re-casing of the same UUID finds
-            // the same on-disk transcript — it must land as ONE session (stored lowercase, matching
-            // what hooks later report), never as two rows for one conversation.
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
             val upper = ProviderSessionId(providerId.value.uppercase())
@@ -519,22 +459,15 @@ class SessionImportTest {
     @Test
     fun aDiscoveredCwdThatFailsTheProbeFailsLoudlyNotSilently() = runBlocking {
         withTimeout(20_000) {
-            // The claude mismatch shape that SURVIVES canonicalization: discovery found the transcript
-            // and read its recorded cwd, but even the canonical form of that cwd re-encodes into a
-            // project dir the probe — the same question the Reconciler will re-ask — cannot see. This
-            // must be a loud error naming --cwd, never a session that silently degrades
-            // resumable → crashed after restart. (The /tmp-vs-/private/tmp shape specifically is now
-            // HEALED by realpath before the probe — ImportWiringTest pins that — so the loud path is
-            // for genuinely different directories.)
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(
                 store,
                 probe = VendorStoreProbe { _, _, _ -> false },
-                locator = VendorSessionLocator { _, _ -> "/tmp" }, // exists, but flunks the probe
+                locator = VendorSessionLocator { _, _ -> "/tmp" },
             )
 
             val ex = assertFailsWith<TranscriptNotFoundException> {
-                mgr.importSession("claude", providerId) // no explicit cwd — discovery answers
+                mgr.importSession("claude", providerId)
             }
 
             assertEquals(canonicalTmp, ex.cwd, "the error names the canonical form of the discovered cwd")
@@ -543,15 +476,10 @@ class SessionImportTest {
         }
     }
 
-    // ---- the accepted bind residual (see importSession's KDoc), pinned ----
 
     @Test
     fun aBindFailureAfterTheRowCommitLeavesAFunctionalResumableRow() = runBlocking {
         withTimeout(20_000) {
-            // idCapture.bind fails AFTER upsertSession committed. The exception surfaces (the route
-            // would answer 500, and the client's retry then gets the duplicate conflict), but the row
-            // survives carrying the provider id — resume() reads the row, so the session stays
-            // functional; only the event log misses its SessionBound (the recorded replay divergence).
             val real = SqliteEventStore.inMemory(now = { 42L })
             val failing = object : EventStore by real {
                 override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
@@ -568,13 +496,11 @@ class SessionImportTest {
                 real.read(SessionId("imp00001"), Seq(0)).isEmpty(),
                 "the log has no SessionBound — the KDoc's accepted replay divergence",
             )
-            // A retry of the same import sees the surviving row: the duplicate conflict, not a twin.
             assertFailsWith<DuplicateImportException> { mgr.importSession("claude", providerId, cwd = "/tmp") }
             assertEquals(1, real.listSessions().size, "still exactly one row")
         }
     }
 
-    // ---- resume() picks up the model of an imported (codex) session ----
 
     @Test
     fun resumeInvokesTheBackgroundModelCaptureForTheRevivedSession() = runBlocking {

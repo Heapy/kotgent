@@ -1,44 +1,18 @@
-/*
- * Server-sent Web Push, from the browser's side.
- *
- * The daemon can only reach a locked phone through the browser's push service, and it can only do that if
- * this page hands it a subscription first. That handshake is:
- *
- *   1. Notification.requestPermission — iOS refuses this outside a user gesture (see the ordering note)
- *   2. register `/sw.js`            — the worker that will be woken; its scope must be `/`
- *   3. GET /push/vapid-key          — the daemon's P-256 public point; the browser will not subscribe
- *                                     without an applicationServerKey, so the KEY call comes first
- *   4. pushManager.subscribe        — userVisibleOnly: true, i.e. every push MUST end in a banner
- *   5. POST /push/subscribe         — the endpoint + keys, stored by the daemon against this device
- *
- * ## Ordering matters more than it looks
- * `ensurePermission()` runs BEFORE any other await. On iOS the permission prompt is only allowed while the
- * page is still inside the user-gesture task, and awaiting a service-worker registration first is enough to
- * lose that. Every function here is therefore written to be called directly from a click handler.
- *
- * ## Failure is a downgrade, never an error the user has to read
- * A browser without push (desktop Safari outside an installed PWA, a private window), a denied prompt, a
- * daemon with no `openssl` (`GET /push/vapid-key` answers 503) — all of these leave the active flag false,
- * and the caller falls back to the in-tab notifications `lib/notify.js` has always raised.
- */
+// On iOS, request notification permission before the first await or the user gesture is lost.
 
 import { apiRequest } from "./api.js";
 import { ensurePermission, isEnabled as notifyEnabled, setPushActive } from "./notify.js";
 
-/** The worker script — served from the root so its scope is the whole origin. */
 export const SW_URL = "/sw.js";
 
-/** The daemon's push routes (mirrors `PUSH_*_PATH` in src/transport/PushRoutes.kt). */
 export const VAPID_KEY_URL = "/push/vapid-key";
 export const SUBSCRIBE_URL = "/push/subscribe";
 export const UNSUBSCRIBE_URL = "/push/unsubscribe";
 
-/** Last endpoint handed to the daemon by this tab. OFF can revoke it without a browser lookup. */
 const ENDPOINT_KEY = "kotgent.push.endpoint.v1";
 const PUSH_PREFERENCE_ACK_TIMEOUT_MS = 2_000;
-/** The classic worker duplicates this value because it cannot import this ES module. */
+// The classic worker duplicates this value because it cannot import modules.
 export const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
-/** A stale irreversible mutation asks every other open tab to reconcile the origin-wide preference. */
 export const PUSH_REPAIR_SIGNAL_KEY = "kotgent.push.repair.v1";
 let endpointMemory = null;
 let activeRegistrationMemory = null;
@@ -59,13 +33,10 @@ function rememberedEndpoints() {
   const endpoints = new Set();
   if (endpointMemory) endpoints.add(endpointMemory);
   try {
-    // Another tab may have replaced this tab's remembered endpoint. Delete both: either POST may have
-    // reached the daemon, and a stalled browser lookup must not leave the cross-tab endpoint subscribed.
+    // Either the in-memory or cross-tab endpoint may have reached the daemon.
     const stored = window.localStorage.getItem(ENDPOINT_KEY);
     if (stored) endpoints.add(stored);
-  } catch (_) {
-    // Private mode can deny storage while the in-memory fallback remains usable.
-  }
+  } catch (_) {}
   return endpoints;
 }
 
@@ -73,15 +44,10 @@ function rememberEndpoint(endpoint) {
   endpointMemory = endpoint;
   try {
     window.localStorage.setItem(ENDPOINT_KEY, endpoint);
-  } catch (_) { /* private mode / quota — browser lookup remains the fallback */ }
+  } catch (_) {}
 }
 
-/**
- * Publish the CURRENT origin preference, never a captured transition value. The service worker serializes
- * these messages with `pushsubscriptionchange`, persists the value, and owns OFF cleanup after this page
- * disappears. Re-reading here also keeps a delayed registration lookup from replaying an obsolete ON.
- * ON-side browser mutations wait for an acknowledgement so an older worker cleanup cannot cross them.
- */
+// Publish current intent, not a captured transition; delayed lookups must not replay obsolete state.
 export async function syncWorkerPushPreference(registration = null, waitForApply = false) {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return false;
   if (registration) activeRegistrationMemory = registration;
@@ -139,15 +105,10 @@ function signalPushRepair() {
       PUSH_REPAIR_SIGNAL_KEY,
       repairSignalSource + ":" + repairSignalSequence,
     );
-  } catch (_) { /* storage-disabled tabs still repair their own latest choice below */ }
+  } catch (_) {}
 }
 
-/**
- * Browser PushManager calls and daemon writes cannot be cancelled safely. If one settles after a newer
- * generation started, queue a fresh reconciliation AFTER that stale mutation so the latest choice wins.
- * Also signal the other tabs: the tab holding the newest choice must repair even though its preference
- * already matches, and current mutations never signal so their mirror writes cannot create a ping-pong.
- */
+// Irreversible stale mutations trigger repair after they settle, including in other tabs.
 async function settleMutation(promise, context) {
   try {
     return await promise;
@@ -159,10 +120,6 @@ async function settleMutation(promise, context) {
   }
 }
 
-/**
- * Whether this browser can be a push target at all. All three are required: the worker to be woken, the
- * push machinery, and the notification API the subscription promises to use.
- */
 export function supported() {
   return typeof window !== "undefined" &&
     typeof navigator !== "undefined" &&
@@ -171,11 +128,7 @@ export function supported() {
     "Notification" in window;
 }
 
-/**
- * Decode a base64url string (RFC 4648 §5, unpadded — what `base64Url` in src/crypto emits) into the byte
- * array `applicationServerKey` wants. A DOMString is legal per spec but not accepted everywhere, so the
- * conversion is done here rather than trusted to the browser.
- */
+// Some browsers reject the spec-permitted string form of applicationServerKey.
 export function decodeBase64Url(value) {
   const standard = String(value).replace(/-/g, "+").replace(/_/g, "/");
   const padded = standard + "=".repeat((4 - (standard.length % 4)) % 4);
@@ -185,7 +138,6 @@ export function decodeBase64Url(value) {
   return out;
 }
 
-/** Register the worker (idempotent) and wait until one is actually active — subscribe() needs that. */
 async function activeRegistration(context) {
   await navigator.serviceWorker.register(SW_URL, { scope: "/" });
   if (!context.isCurrent()) return null;
@@ -195,11 +147,7 @@ async function activeRegistration(context) {
   return registration;
 }
 
-/**
- * Whether [subscription] is provably tied to a different application-server key. Missing/non-standard
- * option data is NOT proof: delete a working subscription only when the lengths differ or at least one
- * stored byte differs from the requested key.
- */
+// Never delete a working subscription unless its stored key proves it is stale.
 function applicationServerKeyDiffers(subscription, requestedKey) {
   const storedKey = subscription && subscription.options && subscription.options.applicationServerKey;
   if (!storedKey) return false;
@@ -212,12 +160,7 @@ function applicationServerKeyDiffers(subscription, requestedKey) {
   }
 }
 
-/**
- * Subscribe with [key], replacing a subscription that was minted under a DIFFERENT application server key.
- * That happens whenever the daemon's `vapid.pem` is regenerated, and the browser reports it by throwing
- * from `subscribe()` rather than by returning the stale subscription — leaving the device permanently
- * unreachable until it is dropped and re-taken.
- */
+// VAPID regeneration requires replacing the browser subscription tied to the old key.
 async function subscribeWith(registration, key, context) {
   const options = { userVisibleOnly: true, applicationServerKey: decodeBase64Url(key) };
   try {
@@ -235,7 +178,6 @@ async function subscribeWith(registration, key, context) {
   }
 }
 
-/** A successful VAPID response always carries a non-empty key; anything else is a broken server contract. */
 function responseKey(response) {
   const key = response && response.key;
   if (typeof key !== "string" || key.length === 0) {
@@ -244,11 +186,7 @@ function responseKey(response) {
   return key;
 }
 
-/**
- * Read the application-server key when push is available. A failed request is the daemon's documented
- * capability downgrade (notably its 503 when openssl/key persistence is unavailable); a malformed successful
- * response still throws from responseKey because that is a broken server contract.
- */
+// Failure to obtain a key is a capability downgrade; malformed success remains an error.
 async function vapidKeyOrNull(context) {
   let response;
   try {
@@ -259,7 +197,6 @@ async function vapidKeyOrNull(context) {
   return context.isCurrent() ? responseKey(response) : null;
 }
 
-/** Hand an existing browser subscription to the daemon, which is what makes this device reachable. */
 async function registerSubscription(subscription, context) {
   if (!context.isCurrent()) return false;
   const json = subscription.toJSON();
@@ -275,16 +212,7 @@ async function registerSubscription(subscription, context) {
   return context.isCurrent();
 }
 
-/**
- * Make this device a push target. Returns whether it now is — false (not a throw) for every "this browser
- * / this daemon cannot do push" case, so a caller can simply fall back to in-tab notifications. A genuine
- * fault (the daemon refusing the subscription) does throw, so the UI can log it.
- *
- * Must be called from a user gesture: the permission prompt is requested before anything is awaited.
- * [permissionRequest] lets a serialized UI transition start that prompt synchronously in its click handler,
- * then wait for an older on/off transition before it performs the subscription I/O. [context] carries the
- * latest-choice predicate and repair hook; a queue deadline never turns a still-current choice into stale.
- */
+// The caller starts permission synchronously in the click handler, before serialized network work.
 export async function subscribe(permissionRequest = null, transition = DEFAULT_TRANSITION) {
   const context = transitionContext(transition);
   if (!supported() || !context.isCurrent()) return false;
@@ -305,12 +233,7 @@ export async function subscribe(permissionRequest = null, transition = DEFAULT_T
   return true;
 }
 
-/**
- * Stop being a push target. Daemon cleanup starts from remembered endpoints BEFORE any browser await:
- * service-worker lookup and PushSubscription.unsubscribe() are not cancellable, and neither may keep sending
- * notifications after the toggle is off. Browser and daemon cleanup then settle independently. A browser
- * rejection never skips the daemon request, and a stale completion schedules a latest-state repair.
- */
+// Start daemon cleanup before any browser await; browser subscription calls are not cancellable.
 export async function unsubscribe(transition = DEFAULT_TRANSITION) {
   const context = transitionContext(transition);
   if (!context.isCurrent()) return false;
@@ -330,7 +253,6 @@ export async function unsubscribe(transition = DEFAULT_TRANSITION) {
     daemonDrops.set(endpoint, drop);
   };
 
-  // This request is deliberately launched, not merely prepared, before getRegistration/getSubscription.
   rememberedEndpoints().forEach(startDaemonDrop);
   let browserDropped = false;
   try {
@@ -358,19 +280,13 @@ export async function unsubscribe(transition = DEFAULT_TRANSITION) {
     }
     return browserDropped && context.isCurrent();
   } finally {
-    // Keep the last endpoint cached after success: a stale subscribe POST may land after this delete, and
-    // the repair must still know which idempotent daemon delete to repeat even when the browser already dropped it.
+    // Retain the endpoint so repair can repeat a delete after a stale subscribe POST lands.
     await Promise.allSettled(Array.from(daemonDrops.values()));
     if (!context.isCurrent()) context.repairLatest();
   }
 }
 
-/**
- * Reconcile the mirror flag with BOTH halves of the subscription, and return it. A browser-side subscription
- * alone is not enough: the daemon may have lost its row after a failed POST, database replacement, or key
- * regeneration. Re-subscribe with the current VAPID key and POST the endpoint again before standing down the
- * in-tab path. Every uncertain answer resolves to false.
- */
+// Browser and daemon subscription state must both be restored before disabling in-tab notifications.
 export async function refreshActive(transition = DEFAULT_TRANSITION) {
   const context = transitionContext(transition);
   if (!context.isCurrent()) return false;
@@ -386,8 +302,7 @@ export async function refreshActive(transition = DEFAULT_TRANSITION) {
     const existing = registration ? await registration.pushManager.getSubscription() : null;
     if (!context.isCurrent()) return false;
     if (!registration || !existing) {
-      // Register the worker for an upgrading user, or recreate a subscription removed by a stale OFF.
-      // Reload/repair may use an already-granted permission but must never open a prompt without a gesture.
+      // Repair may reuse granted permission but must not prompt without a gesture.
       return Notification.permission === "granted"
         ? subscribe(Promise.resolve(true), context)
         : false;

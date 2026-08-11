@@ -1,34 +1,11 @@
 /*
- * The kotgent service worker: the half of the notification path that runs when nothing else does.
- *
- * Served from `/sw.js` so its scope is the whole origin — a worker registered from `/lib/` could never
- * control `/`, and on iOS an installed PWA's push permission is bound to that scope.
- *
- * ## Why a push carries no payload
- * The daemon POSTs an EMPTY message to the push service (RFC 8030 allows it), so this worker is told
- * "something happened" and nothing else. It then fetches `/api/v1/sessions` with the page's cookie to learn
- * WHICH sessions are waiting. That is what buys the whole feature without RFC 8291 payload encryption
- * (ECDH P-256 + HKDF + AES-128-GCM, which Kotlin/Native has no BigInteger to implement).
- *
- * The cost is that this handler needs the network at wake time. When the fetch fails — an expired
- * Cloudflare Access session, a rotated master token, no connectivity — it must STILL show something:
- * the subscription is `userVisibleOnly: true`, so a push that ends without a notification is a promise
- * broken to the browser (Safari substitutes its own "…updated in the background" filler, and Chrome
- * eventually revokes the subscription). Silence is never an option here; the generic fallback text is.
- *
- * Repeat pushes for one session collapse onto a single banner via `tag` = the session id, with
- * `renotify: false` so an already-visible banner is replaced quietly rather than re-buzzing the phone.
- *
- * This file is a CLASSIC worker script — no `import`, no bare specifiers, nothing from `lib/`. It is
- * registered without `{ type: "module" }` because module workers are still the narrower path on Safari,
- * and the deep-link shape below (`/?session=<id>`) is the one thing it shares with `app.js`.
+ * Classic, root-scoped, network-only worker. Pushes are payloadless, so it fetches session state; a
+ * failed fetch still shows a generic banner because the subscription promises user-visible delivery.
  */
 
 /* eslint-env serviceworker */
 
-// The three daemon paths this worker talks to. They spell `/api/v1` out rather than importing it: a
-// classic worker has no module graph, and this file is the ONE client that can outlive every page that
-// could have told it the prefix moved (see the third compatibility break on `API_PREFIX`).
+// A classic worker cannot import the shared API-prefix helper.
 const TITLE = "Kotgent — needs attention";
 const SESSIONS_URL = "/api/v1/sessions";
 const SESSIONS_TIMEOUT_MS = 10_000;
@@ -41,16 +18,11 @@ const GENERIC_TAG = "kotgent-attention";
 const GENERIC_BODY = "A session needs your attention.";
 let pushLifecycle = Promise.resolve();
 
-// Take over as soon as a new worker is installed: the shell is served `Cache-Control: no-cache`, so a
-// deploy must not leave yesterday's push handler in charge until every tab is closed.
+// Activate updates without waiting for every tab to close.
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
-/**
- * Straight to the network for everything. Registering the handler at all is what makes Chrome consider
- * the app installable; not calling `respondWith` leaves the browser's own fetch untouched, which is what
- * we want — there is no offline story here (without the daemon there is nothing to show).
- */
+// Intentionally omit respondWith: without the daemon, there is no useful offline shell.
 self.addEventListener("fetch", () => { /* default network handling */ });
 
 self.addEventListener("push", (event) => {
@@ -72,7 +44,7 @@ self.addEventListener("message", (event) => {
   const answer = (value) => {
     try {
       if (reply) reply.postMessage(value);
-    } catch (_) { /* the page may have closed after posting */ }
+    } catch (_) {}
   };
   event.waitUntil(applied.then(
     () => answer(true),
@@ -110,23 +82,18 @@ async function unregisterPushSubscription(endpoint) {
   await postPushState(PUSH_UNSUBSCRIBE_URL, { endpoint: endpoint });
 }
 
-/** Serialize preference writes and browser-initiated rotations under the worker's waitUntil lifetime. */
 function queuePushLifecycle(operation) {
   const queued = pushLifecycle.catch(() => {}).then(operation);
   pushLifecycle = queued.catch(() => {});
   return queued;
 }
 
-/**
- * Persist the page's origin-wide preference where a worker can read it after every client disappears.
- * This cache is only a one-record state store; the fetch handler remains deliberately network-only.
- */
+// Cache is only a one-record preference store; it is never used for fetch responses.
 async function storePushPreference(enabled) {
   const cache = await self.caches.open(PUSH_PREFERENCE_CACHE);
   await cache.put(PUSH_PREFERENCE_URL, new Response(enabled ? "1" : "0"));
 }
 
-/** Missing/corrupt state and storage failures fail closed; permission is re-read after the cache await. */
 async function pushIsStillWanted() {
   if (Notification.permission !== "granted") return false;
   try {
@@ -140,11 +107,7 @@ async function pushIsStillWanted() {
   }
 }
 
-/**
- * Apply one serialized page choice. OFF persists first, starts remembered daemon deletes, then also removes
- * whatever browser subscription exists now; therefore it compensates a whole rotation that won the queue
- * before the OFF message even when the sending page has already closed.
- */
+// Persist OFF before deleting both remembered daemon endpoints and the current browser subscription.
 async function applyPushPreference(enabled, rememberedEndpoints) {
   await storePushPreference(enabled);
   if (enabled) return;
@@ -160,7 +123,7 @@ async function applyPushPreference(enabled, rememberedEndpoints) {
   let subscription = null;
   try {
     subscription = await self.registration.pushManager.getSubscription();
-  } catch (_) { /* remembered daemon cleanup still completes */ }
+  } catch (_) {}
   if (subscription) startDaemonDrop(subscription.endpoint);
   await Promise.allSettled([
     ...Array.from(daemonDrops.values()),
@@ -168,7 +131,6 @@ async function applyPushPreference(enabled, rememberedEndpoints) {
   ]);
 }
 
-/** Undo a replacement that crossed an explicit OFF. Start daemon cleanup before dropping the browser side. */
 async function discardPushSubscription(subscription) {
   await Promise.allSettled([
     unregisterPushSubscription(subscription.endpoint),
@@ -176,12 +138,7 @@ async function discardPushSubscription(subscription) {
   ]);
 }
 
-/**
- * Propagate a browser-initiated endpoint/key rotation while no page is open. New details are stored before
- * the obsolete endpoint is removed, and a same-endpoint key rotation is only upserted. Some browsers report
- * an expired subscription without a replacement, so make one best-effort attempt with the old options; a
- * lost permission rejects that attempt and leaves only the obsolete daemon row to remove.
- */
+// Store a rotated endpoint before removing the old one; recreate a missing replacement only if still wanted.
 async function syncPushSubscription(event) {
   const oldSubscription = event.oldSubscription || null;
   let replacement = event.newSubscription || null;
@@ -198,7 +155,7 @@ async function syncPushSubscription(event) {
   }
   if (replacement) {
     await registerPushSubscription(replacement);
-    // OFF may cross the non-cancellable POST after its own delete. Re-read intent and compensate after it.
+    // Compensate if OFF crossed the non-cancellable registration POST.
     if (!(await pushIsStillWanted())) {
       await discardPushSubscription(replacement);
       replacement = null;
@@ -209,7 +166,6 @@ async function syncPushSubscription(event) {
   }
 }
 
-/** The sessions the daemon says are waiting on the operator, or an empty list if it could not be asked. */
 async function waitingSessions() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SESSIONS_TIMEOUT_MS);
@@ -221,10 +177,9 @@ async function waitingSessions() {
     if (!resp.ok) return [];
     const list = await resp.json();
     if (!Array.isArray(list)) return [];
-    // The same filter the daemon's own AttentionTracker uses: an archived ("done") session never rings.
     return list.filter((s) => s && s.needsAttention && !s.archived);
   } catch (_) {
-    return [];   // offline / signed out — the caller still shows the generic banner
+    return [];
   } finally {
     clearTimeout(timeout);
   }
@@ -234,7 +189,6 @@ function sessionName(s) {
   return (s && (s.name || s.tmuxSession || s.id)) || "A session";
 }
 
-/** Raise one banner per waiting session, or the generic one when we could not find out which. */
 async function showAttention() {
   const waiting = await waitingSessions();
   if (waiting.length === 0) {
@@ -253,17 +207,13 @@ async function showAttention() {
   })));
 }
 
-/**
- * Bring the operator to [sessionId]. An already-open window is focused and told to switch (a focus alone
- * would leave whatever session was on screen, which makes the tap useless in the common case); otherwise
- * the app is opened deep-linked, and `app.js` reads `?session=` on load.
- */
+// Focused clients must also switch sessions; focus alone leaves the old session selected.
 async function openSession(sessionId) {
   const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   if (clients.length > 0) {
     const client = clients[0];
     if (sessionId) {
-      try { client.postMessage({ type: "select-session", sessionId: sessionId }); } catch (_) { /* gone */ }
+      try { client.postMessage({ type: "select-session", sessionId: sessionId }); } catch (_) {}
     }
     if ("focus" in client) return client.focus();
     return undefined;

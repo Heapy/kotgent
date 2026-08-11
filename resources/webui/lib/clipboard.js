@@ -1,15 +1,10 @@
-/*
- * Clipboard writing shared by the terminal header and the command palette's app-owned action.
- */
-
 export async function writeClipboard(text) {
   if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return;
     } catch (_) {
-      // A non-secure origin or browser permission can reject the modern API; the click still gives the
-      // legacy path the user gesture it needs.
+      // Preserve the click's user gesture for the legacy fallback.
     }
   }
 

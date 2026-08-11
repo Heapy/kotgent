@@ -16,18 +16,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
-/**
- * Unit tests for [ClaudeHookNormalizer] (plan Task 12) — the pure `hook payload → AgentEvent` mapping,
- * the INCOMING half of the Claude adapter. Two kinds of assertion:
- *
- *  1. Each representative hook payload maps to the expected [AgentEvent] (or `null` for ignored hooks).
- *  2. A realistic hook SEQUENCE, once normalized, folds through the real [reduce] into the expected
- *     state trajectory — in particular that a `PostToolUse` (→ [AgentEvent.ToolCall], a running-
- *     producer) CLEARS the `pendingApprovals` a prior `Notification` raised, since Claude has no
- *     "permission answered" signal.
- *
- * Pure Kotlin, no cinterop / no IO, so these run for real in the test binary.
- */
 class HookNormalizerTest {
 
     private val pane = PaneId("%1")
@@ -35,7 +23,6 @@ class HookNormalizerTest {
     private fun norm(event: String, payload: JsonElement = JsonObject(emptyMap())): AgentEvent? =
         ClaudeHookNormalizer.normalize(event, payload, pane)
 
-    // ---- per-hook mapping ----
 
     @Test
     fun userPromptSubmitBecomesTurnStarted() {
@@ -63,7 +50,6 @@ class HookNormalizerTest {
 
     @Test
     fun anyNotificationBecomesApprovalRequestedCoarse() {
-        // COARSE mapping: ANY Notification → ApprovalRequested (→ needs_attention), regardless of text.
         val withMessage = norm(
             ClaudeHookConfig.NOTIFICATION,
             buildJsonObject { put("message", "Claude needs your permission to use Bash") },
@@ -71,7 +57,6 @@ class HookNormalizerTest {
         assertIs<AgentEvent.ApprovalRequested>(withMessage)
         assertEquals("Claude needs your permission to use Bash", withMessage.approvalId)
 
-        // Even a Notification with no message still maps (coarse) — the label falls back to the pane.
         val bare = norm(ClaudeHookConfig.NOTIFICATION)
         assertIs<AgentEvent.ApprovalRequested>(bare)
         assertEquals("notification@%1", bare.approvalId)
@@ -101,11 +86,9 @@ class HookNormalizerTest {
         assertNull(norm(""))
     }
 
-    // ---- realistic sequence folded through the reducer ----
 
     @Test
     fun aRealisticHookSequenceFoldsToTheExpectedStateTrajectory() {
-        // UserPromptSubmit → PostToolUse → Notification → PostToolUse → Stop.
         val names = listOf(
             ClaudeHookConfig.USER_PROMPT_SUBMIT,
             ClaudeHookConfig.POST_TOOL_USE,
@@ -113,14 +96,12 @@ class HookNormalizerTest {
             ClaudeHookConfig.POST_TOOL_USE,
             ClaudeHookConfig.STOP,
         )
-        // A payload rich enough for every hook to pull the field it reads.
         val payload = buildJsonObject {
             put("tool_name", "Bash")
             put("message", "Claude needs your permission to use Bash")
         }
         val events = names.map { norm(it, payload) ?: error("hook $it should normalize") }
 
-        // Step-by-step (state, pendingApprovals) trajectory as the reducer folds each event.
         var projection = Projection.EMPTY
         val trajectory = mutableListOf<Pair<SessionState, Int>>()
         for (event in events) {
@@ -130,17 +111,16 @@ class HookNormalizerTest {
 
         assertEquals(
             listOf(
-                SessionState.running to 0,        // UserPromptSubmit → TurnStarted
-                SessionState.running to 0,        // PostToolUse → ToolCall
-                SessionState.needs_approval to 1, // Notification → ApprovalRequested (needs attention)
-                SessionState.running to 0,        // PostToolUse → ToolCall — CLEARS the pending approval
-                SessionState.ready to 0,          // Stop → TurnCompleted
+                SessionState.running to 0,
+                SessionState.running to 0,
+                SessionState.needs_approval to 1,
+                SessionState.running to 0,
+                SessionState.ready to 0,
             ),
             trajectory,
             "the hook sequence drives running → needs_approval → (cleared) running → ready",
         )
 
-        // replay determinism: incremental fold equals a fold-from-scratch over the same events.
         assertEquals(projection, replay(events))
         assertEquals(SessionState.ready, projection.state)
         assertEquals(0, projection.pendingApprovals, "entering running on PostToolUse cleared the approval")

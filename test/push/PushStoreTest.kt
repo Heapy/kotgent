@@ -11,13 +11,6 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * [PushStore] contract tests, driven against [SqlitePushStore] over in-memory SQLite — the same shape
- * as `EventStoreTest`, including a store opened over a schema that predates the `push_subscriptions`
- * table (the existing-`kotgent.db` upgrade path, which the fresh-`create()` path never exercises).
- *
- * Every DB interaction is bounded by [withTimeout] (anti-hang, matching the other suites).
- */
 class PushStoreTest {
 
     private fun sub(
@@ -40,7 +33,6 @@ class PushStoreTest {
             store.save(a)
             store.save(b)
 
-            // Ordered oldest-first (created_at, then endpoint) — the order the sender iterates in.
             assertEquals(listOf(a, b), store.list(), "every field round-trips, oldest first")
         }
     }
@@ -75,8 +67,6 @@ class PushStoreTest {
             store.remove(doomed.endpoint)
             assertEquals(listOf(kept), store.list(), "only the named endpoint is dropped")
 
-            // Both callers (an explicit unsubscribe and a 410 from the push service) can race a
-            // removal that already happened, so a second remove must be a silent no-op, not a throw.
             store.remove(doomed.endpoint)
             store.remove("https://web.push.apple.com/never-stored")
             assertEquals(listOf(kept), store.list(), "removing an absent endpoint changes nothing")
@@ -86,21 +76,15 @@ class PushStoreTest {
     @Test
     fun theInitCreateAddsTheTableToAPreExistingDatabase() = runBlocking {
         withTimeout(20_000) {
-            // A driver whose schema predates push_subscriptions (an existing ~/.kotgent/kotgent.db).
-            // Schema.migrate() is empty by design, so opening the store must create the table itself.
             val driver = inMemoryDriver(prePushSchema)
             val store = SqlitePushStore(driver)
             val one = sub("https://web.push.apple.com/mig", createdAt = 5L)
-            store.save(one) // would fail with "no such table: push_subscriptions" without the init CREATE
+            store.save(one)
             assertEquals(listOf(one), store.list(), "the created table is usable")
 
-            // Re-opening over the now-migrated DB is a clean no-op (IF NOT EXISTS), and the data stays.
             val reopened = SqlitePushStore(driver)
             assertEquals(listOf(one), reopened.list(), "a second open over the migrated DB still reads")
 
-            // The pre-existing tables are untouched by the migration. Counted via raw SQL: the fixture's
-            // `sessions` predates columns the generated SELECT * model now expects (archived-era schema
-            // without `rev`), and ONLY SqliteEventStore.init — deliberately not run here — adds them.
             val sessionCount = driver.executeQuery(
                 identifier = null,
                 sql = "SELECT COUNT(*) FROM sessions",
@@ -114,7 +98,6 @@ class PushStoreTest {
         }
     }
 
-    /** The `sessions`/`events` schema BEFORE `push_subscriptions` existed (the upgrade path). */
     private val prePushSchema = object : SqlSchema<QueryResult.Value<Unit>> {
         override val version: Long = 1
         override fun create(driver: SqlDriver): QueryResult.Value<Unit> {

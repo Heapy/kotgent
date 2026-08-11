@@ -1,11 +1,3 @@
-/*
- * Phone-only terminal keys that software keyboards do not expose.
- *
- * The WebSocket remains owned by TerminalPane. This component receives its live sender as a ref so a
- * socket opening or being replaced does not require a render, and every command stays a binary terminal
- * frame rather than becoming a text resize frame.
- */
-
 import { html } from "htm/preact";
 
 const NAVIGATION_KEYS = [
@@ -28,8 +20,7 @@ export function KeyBar({ barRef, sendBytesRef, ctrlActive, onToggleCtrl, onRelea
     if (sendBytes) sendBytes(Uint8Array.from(key.bytes));
     if (key.releasesCtrl) onReleaseCtrl();
   };
-  // Cancelling pointer focus keeps xterm's hidden textarea (and the phone keyboard) active. Commands
-  // stay on click so keyboard/switch-control activation still works.
+  // Keep xterm's hidden textarea and the phone keyboard focused.
   const preserveTerminalFocus = (event) => event.preventDefault();
   const renderKey = (key) => html`
     <button key=${key.name} class=${"key-bar-key" + (key.wide ? " key-bar-wide" : "")}

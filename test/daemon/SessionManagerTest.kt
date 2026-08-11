@@ -48,21 +48,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * [SessionManager] + [ProviderIdCapture] TDD (plan Task 13). The provider-id-capture and control-op
- * cases are host-free ([FakeTmux] + in-memory [SqliteEventStore]); one guarded INTEGRATION test drives
- * the real [Tmux] against a throwaway `tmux -L kotgent-test` server (a harmless `cat` pane — never
- * `claude`), then simulates a daemon restart with a fresh [Reconciler] over the same tmux + store.
- * Every body is bounded by [withTimeout] as an anti-hang tripwire.
- */
 @OptIn(ExperimentalForeignApi::class)
 class SessionManagerTest {
 
-    private val cat = listOf("cat") // a harmless, long-lived pane command
+    private val cat = listOf("cat")
 
-    // The import seams are REQUIRED constructor parameters (no defaults — every call-site must
-    // choose). The tests here never import, so they pass inert stand-ins; the import behavior itself
-    // is covered by SessionImportTest / ImportWiringTest.
     private val importProbe = VendorStoreProbe { _, _, _ -> false }
     private val importLocator = VendorSessionLocator { _, _ -> null }
     private val importKinds = setOf("claude", "codex")
@@ -86,7 +76,6 @@ class SessionManagerTest {
         updatedAt = 1_000L,
     )
 
-    /** A real shell-wired manager for the close-callback tests below. */
     private fun CoroutineScope.shellManager(
         store: EventStore,
         tmux: TmuxControl,
@@ -109,7 +98,6 @@ class SessionManagerTest {
         )
     }
 
-    /** Create a throwaway cwd which a test may then remove to model a deleted shell directory. */
     private fun makeClosedSessionTestDirectory(): String {
         val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
         val path = "$tmp/kotgent-session-close-${getpid()}-${closedSessionDirectoryCounter++}"
@@ -122,26 +110,18 @@ class SessionManagerTest {
         var closedSessionDirectoryCounter: Int = 0
     }
 
-    /**
-     * An [EventStore] decorator that PARKS the first `projectionOf` after [arm] — i.e. a control op is
-     * held between its READ of the session row and its WRITE of the derived state. That is the exact
-     * window in which a racing `stop` used to be overwritten: the parked op resumes with a pre-stop
-     * snapshot and writes `ready` over the committed `stopped`.
-     */
+    // Parks a control operation after its read so a racing stop can commit first.
     private class GatedStore(
         private val delegate: EventStore,
         private val gateFor: SessionId,
     ) : EventStore by delegate {
-        /** Completed once the gated call has been entered (the op is parked mid-flight). */
         val entered = CompletableDeferred<Unit>()
 
-        /** Complete this to let the parked op continue. */
         val release = CompletableDeferred<Unit>()
 
         private var armed = false
         private var used = false
 
-        /** Arm the gate — done AFTER setup so the store calls made by `start()` are not parked. */
         fun arm() {
             armed = true
         }
@@ -156,7 +136,6 @@ class SessionManagerTest {
         }
     }
 
-    /** Parks a close callback after it observed a dead pane but before it classifies the row. */
     private class GatedVendorProbe(
         private val result: Boolean,
     ) : VendorStoreProbe {
@@ -174,13 +153,7 @@ class SessionManagerTest {
         }
     }
 
-    /**
-     * An [EventStore] decorator that simulates a step failing AFTER a durable write committed — the
-     * window a compensation path has to clean up. [failAppend] fails `start`'s `SessionBound` append
-     * (the session row is already `running` by then); [failAfterStateWrite] lets a state write commit
-     * and then throws (as a later step in the same op would); [failStateWrite] makes the state write
-     * itself fail, which is how a COMPENSATION's own cleanup fails.
-     */
+    // Failure modes distinguish a write that failed from a later step failing after it committed.
     private class FailingStore(
         private val delegate: EventStore,
         private val failAppend: Boolean = false,
@@ -205,26 +178,15 @@ class SessionManagerTest {
         }
     }
 
-    /**
-     * An [EventStore] decorator that (a) records every `updateSessionState` in order and (b) optionally
-     * PARKS the first `upsertSession` for [gateUpsertFor] AFTER the row has committed — the window in
-     * which `start` has published a listable session row but has not yet registered its pane.
-     *
-     * `updateSessionState` opens with a real suspension point ([yield]), which is what makes a
-     * compensation running in a CANCELLED coroutine observable: without `NonCancellable` that `yield`
-     * throws and the cleanup write silently never happens.
-     */
+    // Parks after upsert commits; the yield makes cancelled compensation require NonCancellable.
     private class TracingStore(
         private val delegate: EventStore,
         private val gateUpsertFor: SessionId? = null,
     ) : EventStore by delegate {
-        /** Completed once the gated upsert has been entered (start is parked, row already committed). */
         val entered = CompletableDeferred<Unit>()
 
-        /** Complete this to let the parked start continue. */
         val release = CompletableDeferred<Unit>()
 
-        /** States passed to [updateSessionState], in call order. */
         val stateWrites = mutableListOf<SessionState>()
 
         private var used = false
@@ -251,12 +213,6 @@ class SessionManagerTest {
         }
     }
 
-    /**
-     * A [TmuxControl] wrapper over [FakeTmux] that observes/fails the calls a compensation depends on:
-     * [onKill] runs before each `kill-session` (so a test can snapshot what was already persisted at
-     * that moment), [failKill] makes it throw, and [failAfterCreate] makes `new-session` create the
-     * session and THEN throw — the real "tmux created it but the pane id never came back" failure.
-     */
     private class ObservingTmux(
         val inner: FakeTmux = FakeTmux(),
         private val failKill: Boolean = false,
@@ -276,7 +232,6 @@ class SessionManagerTest {
         }
     }
 
-    /** An [AgentFactory] that yields a canned launch spec ([command] + optional [preallocated] id). */
     private class StubAgentFactory(
         private val command: List<String>,
         private val preallocated: ProviderSessionId?,
@@ -375,7 +330,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- live tmux session-closed trigger: targeted, serialized reclassification ----
 
     @Test
     fun aClosedShellWhoseCwdStillExistsBecomesResumableAndLosesItsPaneRegistration() = runBlocking {
@@ -447,8 +401,6 @@ class SessionManagerTest {
             )
             store.upsertSession(initial)
             registry.register(pane, id)
-            // The committed row, not `initial`: the store stamps its own `rev` on the upsert, and the
-            // assertion below is about the CLOSE TRIGGERS not writing — any write would bump rev again.
             val committed = store.getSession(id)!!
 
             mgr.onTmuxSessionClosed(id)
@@ -478,7 +430,7 @@ class SessionManagerTest {
                 .copy(agent = SHELL_AGENT_KIND, stateSource = EventSource.hook)
             store.upsertSession(initial)
             registry.register(pane, id)
-            val committed = store.getSession(id)!! // rev is store-stamped; compare against the row, not the input
+            val committed = store.getSession(id)!!
 
             mgr.onTmuxSessionClosed(id)
 
@@ -505,8 +457,6 @@ class SessionManagerTest {
             )
             registry.register(oldPane, id)
 
-            // The callback has observed the old pane as gone and is parked in its vendor probe while
-            // holding the session control lock. A resume for the same id must not launch through it.
             val closing = async(start = CoroutineStart.UNDISPATCHED) { mgr.onTmuxSessionClosed(id) }
             probe.entered.await()
             val resuming = async(start = CoroutineStart.UNDISPATCHED) { mgr.resume(id) }
@@ -547,8 +497,6 @@ class SessionManagerTest {
                     .copy(agent = SHELL_AGENT_KIND),
             )
 
-            // Park after the callback read the provisional id. Hooks remain independent of the control
-            // lock and may advance the append-only log while the vendor probe is in flight.
             val closing = async(start = CoroutineStart.UNDISPATCHED) { mgr.onTmuxSessionClosed(id) }
             probe.entered.await()
             store.append(id, AgentEvent.SessionBound(authoritative), EventSource.hook)
@@ -587,7 +535,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- cli version/path from the spec are persisted onto the session ----
 
     @Test
     fun startPersistsTheCliVersionAndPathFromTheSpec() = runBlocking {
@@ -655,11 +602,6 @@ class SessionManagerTest {
     @Test
     fun aProviderIdRebindClearsTheSuspectModelAndRetriggersTheCapture() = runBlocking {
         withTimeout(20_000) {
-            // The rebind scenario: the fallback rollout scan bound a same-cwd NEIGHBOUR's id, the model
-            // capture persisted that neighbour's model under it (and stopped polling), then the hook's
-            // authoritative SessionBound displaced the id. The ingress calls onProviderIdRebound, which
-            // must (1) clear the now-suspect model and (2) re-run the capture with the row meta, whose
-            // per-attempt row re-read keys every lookup off the NEW id.
             val store = SqliteEventStore.inMemory(now = { 1L })
             val captured = CompletableDeferred<SessionMeta>()
             val mgr = SessionManager(
@@ -673,7 +615,7 @@ class SessionManagerTest {
             val hookId = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
             store.upsertSession(
                 meta("rbnd01", SessionState.running, providerId = hookId)
-                    .copy(agent = "codex", model = "gpt-6"), // the neighbour's model, id already displaced
+                    .copy(agent = "codex", model = "gpt-6"),
             )
 
             mgr.onProviderIdRebound(SessionId("rbnd01"))
@@ -685,7 +627,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- provider-id capture: preallocated -> SessionBound in the log immediately ----
 
     @Test
     fun startBindsThePreallocatedProviderIdIntoTheLogImmediately() = runBlocking {
@@ -705,13 +646,11 @@ class SessionManagerTest {
 
             val meta = mgr.start("claude", "/tmp/work")
 
-            // The tmux session was created with the harmless command; the pane is captured + registered.
             assertEquals(listOf("sess01" to "'cat'"), tmux.newSessionCommands)
             assertEquals("kt-sess01", meta.tmuxSession)
             val pane = meta.paneId!!
             assertEquals(SessionId("sess01"), registry.lookup(pane), "start registered pane->session")
 
-            // SessionBound is in the log IMMEDIATELY (source = system), and the caches reflect it.
             val events = store.read(SessionId("sess01"), Seq(0))
             assertEquals(1, events.size, "exactly one event: the preallocated SessionBound")
             assertEquals(AgentEvent.SessionBound(provider), events[0].event)
@@ -724,8 +663,6 @@ class SessionManagerTest {
     @Test
     fun startFallsBackToProviderDiscoveryWhenNothingIsPreallocated() = runBlocking {
         withTimeout(20_000) {
-            // The codex shape: no `--session-id` to preallocate, and (here) no SessionStart hook either,
-            // so the id can only come from the provider's own store — the rollout scan in production.
             val store = SqliteEventStore.inMemory(now = { 1L })
             val discovered = ProviderSessionId("cccccccc-cccc-7ccc-8ccc-cccccccccccc")
             val seen = mutableListOf<SessionMeta>()
@@ -741,7 +678,6 @@ class SessionManagerTest {
 
             mgr.start("codex", "/work/repo")
 
-            // The background capture is bounded and fire-and-forget; give it its first poll.
             withTimeout(5_000) {
                 while (store.projectionOf(SessionId("cx0001")).providerSessionId == null) delay(5)
             }
@@ -750,8 +686,6 @@ class SessionManagerTest {
             assertEquals(AgentEvent.SessionBound(discovered), events[0].event)
             assertEquals(discovered, store.getSession(SessionId("cx0001"))!!.providerSessionId, "resume is unblocked")
 
-            // Discovery is handed the session's own meta — that is what lets it scope the search to this
-            // session's cwd and launch time instead of grabbing whatever the provider wrote most recently.
             assertEquals("codex", seen.first().agent)
             assertEquals("/work/repo", seen.first().cwd)
         }
@@ -760,9 +694,6 @@ class SessionManagerTest {
     @Test
     fun aHookDeliveredIdWinsOverProviderDiscovery() = runBlocking {
         withTimeout(20_000) {
-            // Both sources can answer; the hook is authoritative for THIS session, whereas discovery
-            // infers from what the provider happened to write on disk. Binding the wrong id would point
-            // `resume` at someone else's conversation, so the order matters.
             val store = SqliteEventStore.inMemory(now = { 1L })
             val fromHook = ProviderSessionId("dddddddd-dddd-7ddd-8ddd-dddddddddddd")
             val fromDisk = ProviderSessionId("eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee")
@@ -777,7 +708,6 @@ class SessionManagerTest {
             )
 
             mgr.start("codex", "/work/repo")
-            // The SessionStart hook lands first (this is what the ingress does).
             store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
 
             withTimeout(5_000) {
@@ -787,7 +717,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- provider-id capture: fallback stalls -> retry -> Bound / never -> Pending ----
 
     @Test
     fun providerIdCaptureRetriesAStallThenBindsOnDiscovery() = runBlocking {
@@ -796,7 +725,6 @@ class SessionManagerTest {
             val idCapture = ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1)
             val provider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
             var calls = 0
-            // Null on the first two polls (the SessionStart hook has not arrived yet), then the id.
             val result = idCapture.captureWithFallback(SessionId("late01")) {
                 if (++calls >= 3) provider else null
             }
@@ -834,7 +762,6 @@ class SessionManagerTest {
                 importProbe, importLocator, importKinds,
                 now = { 1L },
             )
-            // A dead session whose provider id was never captured (id pending).
             store.upsertSession(meta("dead01", SessionState.crashed, providerId = null))
 
             val ex = assertFailsWith<ResumeBlockedException> { mgr.resume(SessionId("dead01")) }
@@ -843,7 +770,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- Done: kill + archive, and Restore ----
 
     @Test
     fun markDoneKillsTheAgentAndArchivesTheSession() = runBlocking {
@@ -863,7 +789,7 @@ class SessionManagerTest {
             val started = mgr.start("claude", "/tmp")
             val pane = started.paneId!!
 
-            mgr.markDone(SessionId("done01")) // completes (does NOT hang — terminate locks internally)
+            mgr.markDone(SessionId("done01"))
 
             assertEquals(listOf("done01"), tmux.killed, "Done kills the agent")
             val row = store.getSession(SessionId("done01"))!!
@@ -908,7 +834,6 @@ class SessionManagerTest {
                 importProbe, importLocator, importKinds,
                 now = { 7L },
             )
-            // Exactly what "Done" leaves behind: a dead, archived, still-resumable row.
             store.upsertSession(
                 meta("done03", SessionState.stopped, providerId = provider, paneId = PaneId("%1"))
                     .copy(archived = true),
@@ -940,7 +865,6 @@ class SessionManagerTest {
                 importProbe, importLocator, importKinds,
                 now = { 7L },
             )
-            // The row an earlier lost Done → Resume left behind: alive again, but still hidden.
             store.upsertSession(
                 meta("done04", SessionState.running, providerId = provider, paneId = PaneId("%1"))
                     .copy(archived = true),
@@ -955,7 +879,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- control ops: stop / interrupt / resume / detach ----
 
     @Test
     fun stopKillsTheTmuxSessionAndCachesStopped() = runBlocking {
@@ -975,7 +898,7 @@ class SessionManagerTest {
             val started = mgr.start("claude", "/tmp")
             val pane = started.paneId!!
 
-            mgr.stop(SessionId("stop01")) // default StopMode.Kill
+            mgr.stop(SessionId("stop01"))
 
             assertEquals(listOf("stop01"), tmux.killed, "a clean kill-session")
             val row = store.getSession(SessionId("stop01"))!!
@@ -1037,7 +960,7 @@ class SessionManagerTest {
 
             val interrupting = launch { mgr.interrupt(id) }
             try {
-                store.entered.await() // projection read entered only after verified Ctrl-C delivery
+                store.entered.await()
                 assertEquals(1, tmux.sentKeys.size, "Ctrl-C was irreversibly delivered exactly once")
                 interrupting.cancel()
             } finally {
@@ -1111,7 +1034,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- control ops are serialized per session; compensations leave no phantom state ----
 
     @Test
     fun anInterruptRacingAStopDoesNotResurrectTheStoppedSession() = runBlocking {
@@ -1131,16 +1053,12 @@ class SessionManagerTest {
             val started = mgr.start("claude", "/tmp")
             val pane = started.paneId!!
 
-            // Park `interrupt` between its read of the (live) row and its write of the derived state …
             store.arm()
             val interrupting = launch { mgr.interrupt(SessionId("race01")) }
             store.entered.await()
 
-            // … and issue a full `stop` while it sits there. Per-session serialization must keep the two
-            // ops from interleaving: whatever the order, the session must not end up alive again with its
-            // tmux session killed (a cache-resurrected row with no live pane, unfixable until a restart).
             val stopping = launch { mgr.stop(SessionId("race01")) }
-            repeat(50) { yield() } // give the stop every chance to interleave with the parked op
+            repeat(50) { yield() }
             store.release.complete(Unit)
             interrupting.join()
             stopping.join()
@@ -1158,8 +1076,6 @@ class SessionManagerTest {
     @Test
     fun aStartThatFailsAfterTheRowIsWrittenLeavesNoPhantomRunningSession() = runBlocking {
         withTimeout(20_000) {
-            // The `sessions` row is upserted `running` BEFORE the provider-id bind; failing that append
-            // leaves a committed `running` row whose tmux session the compensation then kills.
             val store = FailingStore(SqliteEventStore.inMemory(now = { 1L }), failAppend = true)
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1190,7 +1106,6 @@ class SessionManagerTest {
     @Test
     fun aResumeThatFailsAfterTheStateWriteRestoresTheDeadRow() = runBlocking {
         withTimeout(20_000) {
-            // The resume write commits `ready` + the fresh pane, then a later step fails.
             val store = FailingStore(
                 SqliteEventStore.inMemory(now = { 1L }),
                 failAfterStateWrite = { it == SessionState.ready },
@@ -1224,8 +1139,6 @@ class SessionManagerTest {
     @Test
     fun aStopCannotInterleaveWithAStartThatHasAlreadyPublishedItsRow() = runBlocking {
         withTimeout(20_000) {
-            // Park `start` right after its `sessions` row commits — from that instant the session is
-            // listable, so a `stop` can legitimately target it while the start is still mid-flight.
             val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }), gateUpsertFor = SessionId("strt01"))
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1243,8 +1156,7 @@ class SessionManagerTest {
             store.entered.await()
 
             val stopping = launch { mgr.stop(SessionId("strt01")) }
-            repeat(50) { yield() } // give the stop every chance to interleave with the parked start
-            // Mutual exclusion: start holds the session's control lock, so the stop cannot act yet.
+            repeat(50) { yield() }
             assertTrue(tmux.killed.isEmpty(), "a stop must not run while the start still holds the session lock")
 
             store.release.complete(Unit)
@@ -1265,8 +1177,6 @@ class SessionManagerTest {
     @Test
     fun aStartWhoseLaunchFailsAfterTheTmuxSessionExistsKillsTheOrphan() = runBlocking {
         withTimeout(20_000) {
-            // tmux CREATED the session and the call still failed (`new-session -P` reported no pane id).
-            // The agent is live but we never learned its pane — it must not be left running untracked.
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = ObservingTmux(failAfterCreate = true)
@@ -1291,12 +1201,6 @@ class SessionManagerTest {
     @Test
     fun aResumeWhoseLaunchFailsAfterTheTmuxSessionExistsKillsTheOrphan() = runBlocking {
         withTimeout(20_000) {
-            // The resume mirror of the start case above: tmux CREATED the `kt-<id>` session running
-            // `claude --resume` and the call still failed (`new-session -P` reported no pane id). With the
-            // launch outside the guarded region that left a live agent nothing tracks — its pane is never
-            // registered, so every hook 404s and its events are lost — while the row still asserted the
-            // pre-resume dead state with the stale pane id, so the next resume went straight back to
-            // `new-session` and collided with the duplicate tmux session name.
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = ObservingTmux(failAfterCreate = true)
@@ -1328,9 +1232,6 @@ class SessionManagerTest {
     @Test
     fun aStartCancelledMidLaunchStillCompensatesTheRowItPublished() = runBlocking {
         withTimeout(20_000) {
-            // Cancellation is an ordinary way for a launch to fail (daemon shutting down mid-start). The
-            // compensation is itself suspending, so unless it runs under NonCancellable every one of its
-            // steps aborts instantly — leaving the `running` row it exists to erase.
             val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }), gateUpsertFor = SessionId("cncl01"))
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1345,7 +1246,7 @@ class SessionManagerTest {
             )
 
             val starting = launch { runCatching { mgr.start("claude", "/tmp") } }
-            store.entered.await() // the row is committed; the start is parked
+            store.entered.await()
             starting.cancel()
             store.release.complete(Unit)
             starting.join()
@@ -1363,9 +1264,6 @@ class SessionManagerTest {
     @Test
     fun aCompensationThatItselfFailsIsSurfacedOnThePrimaryError() = runBlocking {
         withTimeout(20_000) {
-            // The `SessionBound` append fails (primary), and the cleanup state-write fails too. The
-            // primary error must still win, but the failed cleanup must not vanish: a phantom `running`
-            // row survived and nothing else will report it.
             val store = FailingStore(
                 SqliteEventStore.inMemory(now = { 1L }),
                 failAppend = true,
@@ -1397,12 +1295,7 @@ class SessionManagerTest {
     @Test
     fun stopPersistsTheStopIntentBeforeKillingTmux() = runBlocking {
         withTimeout(20_000) {
-            // `stopped` is the ONLY record that a teardown was intended (control signals are never
-            // logged), so it must be durable before the pane can disappear — otherwise a crash between
-            // the kill and the write leaves a dead pane with no intent, which the reconciler would
-            // misread as `resumable`/`crashed` instead of a clean operator stop.
             val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }))
-            // Seeded with a sentinel no code path writes, so a never-invoked observer cannot pass vacuously.
             var persistedAtKill: List<SessionState> = listOf(SessionState.needs_answer)
             val tmux = ObservingTmux(onKill = { persistedAtKill = store.stateWrites.toList() })
             val provider = ProviderSessionId("88888888-8888-4888-8888-888888888888")
@@ -1426,8 +1319,6 @@ class SessionManagerTest {
     @Test
     fun aStopWhoseKillFailsRollsTheStopIntentBack() = runBlocking {
         withTimeout(20_000) {
-            // The intent is written first — so when the kill itself fails (the session may well still be
-            // alive) it has to be rolled back, or the cache would claim a `stopped` that never happened.
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = ObservingTmux(failKill = true)
@@ -1454,7 +1345,6 @@ class SessionManagerTest {
         }
     }
 
-    // ---- id uniqueness / agent gating / dead-pane resume ----
 
     @Test
     fun startRegeneratesTheSessionIdOnACollisionWithAnExistingSessionOrLog() = runBlocking {
@@ -1462,10 +1352,8 @@ class SessionManagerTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
-            // A dead HISTORICAL session already occupies "dup00001" — its row AND event log survive.
             store.upsertSession(meta("dup00001", SessionState.crashed, providerId = null))
             store.append(SessionId("dup00001"), AgentEvent.TurnStarted, EventSource.hook)
-            // The id generator hands out the taken id twice, then a free one.
             val ids = ArrayDeque(listOf("dup00001", "dup00001", "fresh001"))
             val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             val mgr = SessionManager(
@@ -1480,7 +1368,6 @@ class SessionManagerTest {
             val started = mgr.start("claude", "/tmp")
 
             assertEquals("fresh001", started.id.value, "the colliding id is rejected; a free id is used")
-            // The historical session's row + log are intact — not overwritten, not spliced into.
             assertEquals(SessionState.crashed, store.getSession(SessionId("dup00001"))!!.state, "historical row untouched")
             assertEquals(1, store.read(SessionId("dup00001"), Seq(0)).size, "the historical log is untouched")
         }
@@ -1497,12 +1384,10 @@ class SessionManagerTest {
                     "codex" to { cwd: String -> StubAgentFactory(cat, null).create("codex", cwd) },
                 ),
             )
-            // The factory itself rejects an unregistered kind (and surfaces which one, plus what it knows).
             val direct = assertFailsWith<UnsupportedAgentException> { factory.create("aider", "/tmp") }
             assertEquals("aider", direct.agentKind)
             assertEquals(setOf("claude", "codex"), direct.supported)
             assertTrue(direct.message!!.contains("claude, codex"), "the error names the supported kinds")
-            // And a start() with an unsupported agent propagates it WITHOUT creating a tmux session.
             val mgr = SessionManager(
                 tmux, store, PaneRegistry(), factory,
                 ProviderIdCapture(store, this),
@@ -1519,22 +1404,16 @@ class SessionManagerTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
-            // The daemon-bootstrap shape when `locate()` returned null under launchd's minimal PATH: the
-            // builder for that kind fails fast instead of falling back to a bare name that dies at exec.
             val factory = agentFactoryOf(
                 mapOf(
                     "claude" to { _: String -> throw AgentBinaryNotFoundException("claude") },
-                    // The real daemon registers both providers; codex resolves here so the fail-fast for
-                    // claude stays scoped to the requested kind and is not masked by a resolvable sibling.
                     "codex" to { cwd: String -> StubAgentFactory(cat, null).create("codex", cwd) },
                 ),
             )
-            // The factory surfaces the not-found directly, carrying the kind and the `kotgent install` hint.
             val direct = assertFailsWith<AgentBinaryNotFoundException> { factory.create("claude", "/tmp") }
             assertEquals("claude", direct.agentKind)
             assertTrue(direct.message!!.contains("claude"), "the message names the agent kind")
             assertTrue(direct.message!!.contains("kotgent install"), "the message points at `kotgent install`")
-            // And a start() with that agent propagates it, leaving NO tmux session and NO phantom row.
             val mgr = SessionManager(
                 tmux, store, PaneRegistry(), factory,
                 ProviderIdCapture(store, this),
@@ -1552,26 +1431,15 @@ class SessionManagerTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
-            // `locate()` (command -v) can print a NON-absolute path (a name resolved via a relative PATH
-            // dir / `.`, or a name with a slash). tmux does `new-session -c <cwd>` (cd into the session
-            // cwd) before exec, so a relative binaryName would exec a wrong cwd-local binary. The daemon
-            // bootstrap runs its `locate()` result through requireAbsoluteBinary, so treat non-absolute
-            // exactly like not-found.
             val direct = assertFailsWith<AgentBinaryNotFoundException> { requireAbsoluteBinary("claude", "claude") }
             assertEquals("claude", direct.agentKind)
             assertTrue(direct.message!!.contains("kotgent install"), "the message points at `kotgent install`")
-            // A relative-with-slash path is rejected too (the cwd-relative exec hole this closes).
             assertFailsWith<AgentBinaryNotFoundException> { requireAbsoluteBinary("claude", "./claude") }
-            // An absolute path passes through unchanged.
             assertEquals("/opt/homebrew/bin/claude", requireAbsoluteBinary("claude", "/opt/homebrew/bin/claude"))
 
-            // The bootstrap factory shape: the builder resolves via requireAbsoluteBinary, so a non-absolute
-            // resolved path fails fast with NO tmux side-effect and NO phantom `running` row.
             val factory = agentFactoryOf(
                 mapOf(
                     "claude" to { cwd: String ->
-                        // requireAbsoluteBinary is the daemon's binaryName resolution — a non-absolute
-                        // path throws here, before the adapter is built (mirrors the bootstrap).
                         requireAbsoluteBinary("claude", "claude")
                         StubAgentFactory(cat, null).create("claude", cwd)
                     },
@@ -1594,15 +1462,11 @@ class SessionManagerTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
-            val tmux = FakeTmux() // no live pane for this session — it is dead and would be resumed
-            // resume() also calls agentFactory.create() (SessionManager.kt:382) to build the resume launch
-            // spec, so an unresolvable agent must fail fast there too — before tmux is touched.
+            val tmux = FakeTmux()
             val factory = agentFactoryOf(
                 mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") }),
             )
             val provider = ProviderSessionId("ffffffff-ffff-4fff-8fff-ffffffffffff")
-            // A dead session WITH a captured provider id — so resume gets past the alive/pending guards
-            // and reaches create().
             store.upsertSession(meta("nfr01", SessionState.crashed, providerId = provider))
             val mgr = SessionManager(
                 tmux, store, registry, factory,
@@ -1614,7 +1478,6 @@ class SessionManagerTest {
             val ex = assertFailsWith<AgentBinaryNotFoundException> { mgr.resume(SessionId("nfr01")) }
             assertEquals("claude", ex.agentKind)
             assertTrue(tmux.newSessionCommands.isEmpty(), "resume must not spawn tmux for an unresolvable agent")
-            // create() throws before any state mutation, so the stored row keeps its pre-resume dead state.
             assertEquals(
                 SessionState.crashed, store.getSession(SessionId("nfr01"))!!.state,
                 "the failed resume leaves the stored row unchanged (no phantom state transition)",
@@ -1627,7 +1490,7 @@ class SessionManagerTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
-            val tmux = FakeTmux() // NO live pane for this session — it "died" while the daemon was up
+            val tmux = FakeTmux()
             val provider = ProviderSessionId("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
             val mgr = SessionManager(
                 tmux, store, registry,
@@ -1636,7 +1499,6 @@ class SessionManagerTest {
                 importProbe, importLocator, importKinds,
                 now = { 1L },
             )
-            // Cache still claims the session is alive (running), but tmux reports no live pane for it.
             store.upsertSession(meta("zomb01", SessionState.running, providerId = provider, paneId = PaneId("%1")))
 
             val updated = mgr.resume(SessionId("zomb01"))
@@ -1647,20 +1509,17 @@ class SessionManagerTest {
         }
     }
 
-    // ---- INTEGRATION (guarded): real tmux start + captured pane, then a restart reconciles it ----
 
     @Test
     fun startCreatesARealTmuxSessionThenAReconcilerRestoresItAndRebuildsTheRegistry() = runBlocking {
         val realTmux = Tmux(socket = "kotgent-test")
-        if (!realTmux.isAvailable()) return@runBlocking // skip-guard: no tmux on this host
-        // Isolate: tear down any leftover throwaway server before starting (never the real -L kotgent).
+        if (!realTmux.isAvailable()) return@runBlocking
         ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
         try {
             withTimeout(30_000) {
                 val store = SqliteEventStore.inMemory()
                 val registry = PaneRegistry()
                 val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
-                // HARMLESS: `cat` stays alive reading stdin — this never spawns `claude`.
                 val mgr = SessionManager(
                     realTmux, store, registry,
                     StubAgentFactory(cat, preallocated = provider),
@@ -1676,9 +1535,6 @@ class SessionManagerTest {
                 assertEquals(provider, store.projectionOf(SessionId("itg01")).providerSessionId, "SessionBound captured")
                 assertTrue(realTmux.listPanes().any { it.session == "kt-itg01" }, "a real tmux session exists")
 
-                // Simulate a daemon restart: a FRESH registry (in-memory state lost) + a NEW Reconciler over
-                // the SAME real tmux + SAME store. The live `cat` session must reclassify running and the
-                // registry rebuild from the live pane.
                 val freshRegistry = PaneRegistry()
                 val reconciler = Reconciler(realTmux, store, VendorStoreProbe { _, _, _ -> false }, freshRegistry)
                 val result = reconciler.reconcile()
@@ -1688,7 +1544,6 @@ class SessionManagerTest {
                 assertEquals(mapOf(pane to SessionId("itg01")), result.livePanes)
             }
         } finally {
-            // Tear down ONLY the throwaway test server; never the real -L kotgent socket.
             realTmux.killSession("itg01")
             ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
         }

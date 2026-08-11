@@ -1,12 +1,4 @@
-/*
- * The terminal pane: the session header, its lifecycle controls, and the xterm.js terminal itself.
- *
- * xterm owns real DOM and a WebSocket, so it is deliberately kept OUT of the vdom: `#terminal-host` is
- * rendered once with no children of its own, and everything inside it is created and disposed by the
- * effect below. The effect keys on the attached session id — attaching, detaching, switching sessions
- * and unmounting all go through the same setup/teardown pair, so there is exactly one place where a
- * terminal (and its socket) can leak.
- */
+/* xterm owns terminal-host DOM and its WebSocket outside the vdom; one attachment effect owns both. */
 
 import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -32,12 +24,7 @@ function sendResize(ws, cols, rows) {
   }
 }
 
-/**
- * Apply the terminal's ordinary Ctrl-key rules to one printable character. A null means "this was not
- * one printable key" (paste, an escape sequence, Enter, etc.), so sticky Ctrl must remain armed.
- * Unsupported printable characters pass through unchanged but still consume the one-shot modifier,
- * matching a physical Ctrl key rather than inventing a control code with a blanket `code & 0x1f`.
- */
+/** Apply Ctrl only to one printable character; null leaves the sticky modifier armed. */
 function ctrlBytesFor(data) {
   const chars = Array.from(data);
   if (chars.length !== 1) return null;
@@ -51,7 +38,7 @@ function ctrlBytesFor(data) {
     return Uint8Array.of(upperCode & 0x1f);
   }
 
-  // The digit aliases are the sequences xterm emits for Ctrl+2 through Ctrl+8.
+  // Match xterm's Ctrl+2 through Ctrl+8 aliases.
   switch (char) {
     case " ":
     case "2": return Uint8Array.of(0x00);
@@ -66,60 +53,26 @@ function ctrlBytesFor(data) {
   }
 }
 
-/**
- * Bridge a one-finger phone swipe into xterm's ordinary wheel path.
- *
- * The transport is POINTER events with `setPointerCapture`, not TouchEvents. A touch gesture is bound to
- * the node it started on, and xterm repaints the rows under the finger as the terminal scrolls; measured
- * on a real iPhone, a swipe over glyphs then delivered 1-2 reports for a whole gesture while the empty
- * gutter beside the text — a node nothing repaints — stayed smooth. Capturing the pointer retargets every
- * later move to the terminal element, so the stream survives the repaint it causes.
- *
- * A bare finger drag reaches nothing on its own. xterm 5.5 handled touch scrolling only while mouse
- * tracking was OFF, and xterm 6.0 dropped the terminal element's own `touchstart`/`touchmove` handlers
- * altogether when the viewport moved onto VS Code's scrollable element — so on a phone this bridge is the
- * only path either way. Kotgent's tmux client keeps tracking on so a desktop wheel reaches tmux's pane
- * history, which is what the bridge feeds. Synthetic wheel events reuse xterm's current mouse protocol and
- * coordinate mapping instead of hard-coding SGR bytes here; tmux or a mouse-aware TUI therefore sees
- * exactly the input a real wheel would have produced.
- *
- * The gesture is SEPARATED from the emission. A move only banks travel and estimates a velocity; a
- * `requestAnimationFrame` loop turns that bank into reports at a bounded, even rate and keeps running
- * after the finger lifts, with the velocity decaying. That shape is the point: an agent pane repaints its
- * whole alternate screen for every report it receives, so emitting a whole move's worth at once arrived
- * as visible lurches, and a phone gesture — unlike a macOS trackpad, whose momentum the browser
- * synthesises for free — stopped dead the moment the finger left the glass.
- */
+/* Capture touch pointers across xterm repaints and feed synthetic wheel events through xterm's current
+ * mouse protocol. Animation-frame banking bounds bursts and supplies momentum after release. */
 function installSwipeScroll(term) {
   const element = term.element;
   if (!element) return { shouldFocus: () => true, dispose: () => {} };
 
   const startThreshold = 6;
-  // The emission budget per frame. It must stay ABOVE what a finger actually delivers (~60px, i.e. about
-  // four rows, per frame on the measured device) or the picture falls behind the finger, which reads far
-  // worse than a burst. Everything above it stays banked rather than being dropped.
+  // Keep this above measured finger delivery; excess travel remains banked.
   const maxReportsPerFrame = 6;
   const velocityWeight = 0.6;
-  // Per-millisecond decay: ~0.92 across one 60Hz frame, ~0.22 over 300ms. A 3.6px/ms throw therefore
-  // coasts roughly 700px — about two screens — before it dies.
   const inertiaDecayPerMs = 0.995;
   const minInertiaVelocity = 0.03;
   const maxInertiaMs = 1200;
-  // A finger that rested before lifting means "stop here", not "throw"; only a still-moving lift coasts.
+  // A rested finger stops rather than handing stale velocity to inertia.
   const inertiaHandoffMs = 90;
-  // One report per ROW, deliberately, even though tmux's own copy-mode binding is
-  // `send-keys -X -N 5 scroll-up` and therefore moves five lines per report. What a report is worth
-  // depends on who consumes it, and this side cannot tell them apart: tmux keeps mouse reporting enabled
-  // on the client either way, while the pane decides. A quiet pane goes to copy-mode (five lines), but an
-  // agent pane runs a full-screen TUI — measured on live kotgent sessions, every claude pane reports
-  // `mouse_any_flag=1 alternate_on=1` — so tmux forwards the wheel with `send-keys -M` and the
-  // application scrolls its own way, typically one line. Converting at five made agent panes, the common
-  // case, scroll five times too slowly. Row-for-row is the honest default until the daemon tells the
-  // browser which pane it is looking at.
+  // Emit one report per row because the browser cannot know whether tmux or a TUI consumes it.
   let gesture = null;
   let suppressFocusUntil = 0;
 
-  // Scheduler state, deliberately outside `gesture`: it outlives the touch that produced it.
+  // Scheduler state outlives the touch during inertia.
   let pendingPx = 0;
   let velocity = 0;
   let lastMoveAt = 0;
@@ -135,7 +88,6 @@ function installSwipeScroll(term) {
     lastFrameAt = 0;
   };
 
-  /** Drop every trace of motion: the bank, the throw, and the loop burning frames for them. */
   const stopMotion = () => {
     pendingPx = 0;
     velocity = 0;
@@ -144,8 +96,7 @@ function installSwipeScroll(term) {
   };
 
   const dispatchReports = (count, direction, bounds) => {
-    // Keep the reported position inside the character grid: the finger may be long gone by the time
-    // inertia emits these, and a report has to name a cell tmux will accept.
+    // Inertial reports still need coordinates inside a cell tmux accepts.
     const point = lastPoint || { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
     const clientX = Math.max(bounds.left + 1, Math.min(point.x, bounds.right - 1));
     const clientY = Math.max(bounds.top + 1, Math.min(point.y, bounds.bottom - 1));
@@ -165,12 +116,11 @@ function installSwipeScroll(term) {
 
   const frame = (now) => {
     frameHandle = 0;
-    // A backgrounded tab resumes with a huge gap; clamp it so inertia cannot teleport on return.
+    // Clamp background-tab gaps so inertia cannot jump on resume.
     const elapsed = lastFrameAt ? Math.min(now - lastFrameAt, 64) : 16.7;
     lastFrameAt = now;
 
-    // The mode can go away under a running throw (a pane leaving mouse reporting); stop rather than
-    // keep feeding events xterm would now interpret differently.
+    // Stop if the pane disables mouse tracking during inertia.
     if (term.modes.mouseTrackingMode === "none") {
       stopMotion();
       return;
@@ -196,8 +146,7 @@ function installSwipeScroll(term) {
     if (banked !== 0) {
       const direction = Math.sign(banked);
       const count = Math.min(Math.abs(banked), maxReportsPerFrame);
-      // Only what is actually emitted leaves the bank; the rest rides the next frames, and a reversal
-      // simply subtracts from it instead of being paid off after the old direction.
+      // Remove only emitted travel; reversals subtract from what remains banked.
       pendingPx -= direction * count * rowHeight;
       dispatchReports(count, direction, bounds);
     }
@@ -212,12 +161,10 @@ function installSwipeScroll(term) {
   };
 
   const onPointerDown = (event) => {
-    // Mouse and trackpad already have a real wheel; only a finger needs this bridge.
     if (event.pointerType !== "touch") return;
-    // Any new contact kills a coasting scroll — the same "catch the page" reflex native momentum has.
+    // A new touch catches an inertial scroll.
     stopMotion();
-    // Capture immediately. Without it the stream dies mid-swipe: measured on a real iPhone, a gesture
-    // over repainting rows delivered 1-2 reports where the captured pointer delivers dozens.
+    // Immediate capture keeps the stream alive while xterm repaints rows beneath it.
     element.setPointerCapture(event.pointerId);
     lastMoveAt = performance.now();
     lastPoint = { x: event.clientX, y: event.clientY };
@@ -231,12 +178,8 @@ function installSwipeScroll(term) {
   };
 
   const onPointerMove = (event) => {
-    // A captured pointer is the only one that can reach here for this gesture, so the id check is the
-    // whole "is this our finger" test — a second finger elsewhere is simply not this pointer.
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    // With tracking off nobody asked for wheel reports, so there is nothing to fabricate: xterm would
-    // either scroll its own local buffer (5.5's native touch path) or ignore the gesture entirely (6.0).
-    // Either way the bridge yields rather than double-scrolling or inventing cursor keys.
+    // Yield when xterm is not requesting mouse reports.
     if (term.modes.mouseTrackingMode === "none") {
       gesture = null;
       stopMotion();
@@ -253,19 +196,17 @@ function installSwipeScroll(term) {
       gesture.claimed = true;
     }
 
-    // Claim only a proven vertical swipe. A tap therefore still reaches the click-to-focus handler below,
-    // while Safari cannot turn the swipe into page navigation or pull-to-refresh.
+    // Claim only vertical swipes, preserving tap-to-focus.
     if (event.cancelable) event.preventDefault();
     suppressFocusUntil = Date.now() + 350;
 
     pendingPx += deltaY;
     lastPoint = { x: event.clientX, y: event.clientY };
-    // `performance.now()`, not `event.timeStamp`: the two are not guaranteed to share an origin, and a
-    // mismatched pair would make every elapsed reading garbage, leaving velocity at zero forever.
+    // Do not mix event.timeStamp with performance.now; their origins may differ.
     const now = performance.now();
     const elapsed = now - lastMoveAt;
     lastMoveAt = now;
-    // Smooth the estimate: iOS delivers moves unevenly, and one fat frame must not define the throw.
+    // Smooth uneven iOS move delivery.
     if (elapsed > 0) {
       const sample = deltaY / elapsed;
       velocity = velocity === 0 ? sample : velocity * (1 - velocityWeight) + sample * velocityWeight;
@@ -284,7 +225,7 @@ function installSwipeScroll(term) {
     if (performance.now() - lastMoveAt > inertiaHandoffMs) velocity = 0;
     coasting = true;
     inertiaUntil = performance.now() + maxInertiaMs;
-    // Even without a throw the loop must run once more: the last fraction of travel is still banked.
+    // Flush the final bank even when velocity has expired.
     ensureScheduler();
   };
 
@@ -326,12 +267,9 @@ export function TerminalPane({
   const [ctrlActive, setCtrlActive] = useState(false);
   const fontSizeRef = useRef(terminalFontSize);
   fontSizeRef.current = terminalFontSize;
-  // The live unicode addon's disposer. It is cleared — never called — by the attachment teardown below,
-  // because `term.dispose()` already disposes every addon it loaded and the restore it would perform
-  // targets a terminal that no longer exists.
+  // Attachment teardown clears this because term.dispose already disposes loaded addons.
   const unicodeDisposeRef = useRef(null);
-  // The close callback is read through a ref so a re-render cannot re-run the effect (which would tear
-  // down a live terminal) just because the parent handed us a fresh closure.
+  // Callback identity must not tear down a live attachment.
   const closedRef = useRef(onTerminalClosed);
   closedRef.current = onTerminalClosed;
 
@@ -345,77 +283,29 @@ export function TerminalPane({
     setCtrlActive(false);
 
     const term = new Terminal({
-      // `term.unicode` is xterm's PROPOSED API: its getter runs `_checkProposedApi()` and THROWS
-      // ("You must set the allowProposedApi option to true to use proposed API") unless this is on.
-      // That getter is the whole of `lib/unicode.js` — it reads `activeVersion` to remember what to
-      // restore and writes it to make a loaded provider the active one — so without the flag every
-      // opt-in width table fetched its 65 KB and then changed absolutely nothing. The failure had no
-      // symptom: the throw lands in the install's own `.catch`, which exists to survive a vendored
-      // addon that will not load, and a terminal measuring with the built-in table looks exactly like
-      // a terminal that was never asked to change. It took a browser reading `activeVersion` back to
-      // see it. Nothing else in these options depends on the gate, and turning it on changes no
-      // rendering behaviour of its own: in the vendored bundle `allowProposedApi` is read at exactly
-      // one place, and what it unlocks besides `unicode` — `markers`, the character joiners,
-      // `registerDecoration` — kotgent never touches.
+      // Required for term.unicode.activeVersion used by the optional width providers.
       allowProposedApi: true,
       convertEol: false,
-      // A STEADY cursor. With the DOM renderer the cursor is an ordinary <span> carrying a CSS
-      // `blink … 1s step-end infinite`, and that element is rebuilt every time its row repaints — so the
-      // animation restarts from its "on" phase at every repaint. Under an agent TUI, which repaints on
-      // each keystroke and each spinner tick, the blink phase is reset at irregular intervals and reads
-      // as stuttering rather than blinking. A steady cursor has no phase to lose. This is only the
-      // STARTING value: an app asking for a blinking shape through DECSCUSR (`CSI Ps SP q`) or
-      // `DECSET 12` still gets one, since xterm maps both onto this same option — claude, measured,
-      // sends `?12l` and therefore agrees with this default.
+      // DOM row repaints restart CSS cursor animation, so default to steady; terminal modes may override.
       cursorBlink: false,
-      // NO local scrollback: history belongs to the tmux pane, and `mouse on` is forced precisely so a
-      // wheel reaches it. What xterm keeps beside it is at best a partial duplicate, and it costs real
-      // width — FitAddon reserves a FIXED 14px (`ViewportConstants.DEFAULT_SCROLL_BAR_WIDTH`) for the
-      // scroll bar of any terminal whose `scrollback` is non-zero, with no check that a bar could ever
-      // appear, so the grid stopped about two columns short of the right edge. (xterm 5.5 reserved 15px
-      // the same way, through `Viewport`'s "assume an OSX overlay scroll bar" fallback — this is older
-      // than the 6.0 update, not caused by it.) `scrollback: 0` is the one supported way to reclaim it:
-      // the addon short-circuits on exactly this option.
-      //
-      // What that bar could actually scroll is measured, and it differs by subscriber. The FIRST one
-      // gets the upstream's own stream, whose third sequence is tmux's `?1049h` — the client spends the
-      // entire attach on the ALTERNATE screen, and xterm builds that buffer with `hasScrollback = false`
-      // (`BufferSet`), so its scroll bar can never become visible at all. A JOINER is seeded from
-      // `capture-pane` instead, and `terminalSeed` deliberately synthesizes no app-owned modes, so it
-      // starts on the NORMAL screen — where tmux's line feeds (measured: 247 CR-LFs under a full-screen
-      // `CSI 1;24 r` region, which is exactly the `scrollTop === 0` case that pushes to scrollback) DO
-      // fill it. That was the one way the bar appeared, and it scrolled the wrong history: a mirror
-      // beginning at the capture, while the wheel reaches tmux's complete one. Zero makes every
-      // subscriber behave alike.
-      //
-      // The one behaviour that rides along is unreachable here. With NO mouse reporting AND no
-      // scrollback, xterm converts a wheel into a single cursor-key press instead of scrolling itself —
-      // but tmux's client always requests wheel reports (that is what makes the swipe bridge work at
-      // all), so the fallback never runs.
+      // History belongs to tmux; local scrollback duplicates it and reserves 14px for an xterm scrollbar.
       scrollback: 0,
       fontFamily: "Menlo, Monaco, \"Courier New\", monospace",
       fontSize: fontSizeRef.current,
       theme: { background: "#000000" },
-      // When the pane's app turns on mouse reporting, xterm.js disables its selection service and the
-      // only way back is shouldForceSelection() — Shift+drag elsewhere, but on macOS Alt+drag AND this
-      // option, which defaults to false. Without it a macOS browser cannot select terminal text at all
-      // while a mouse-reporting TUI is running, and there is no copy button to fall back on.
+      // Preserve macOS Alt-drag selection while a TUI has mouse reporting enabled.
       macOptionClickForcesSelection: true,
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(host);
 
-    // The layout viewport does not shrink reliably when a phone keyboard opens. Cap this flex item at
-    // the visual viewport's bottom before the first fit so even the WebSocket URL carries the correct
-    // OPEN geometry when a session is switched while the keyboard is still visible. An installed iOS
-    // PWA also reports visualViewport.height short by its safe areas with NO keyboard; tolerate exactly
-    // that loss and leave the ordinary 100vh flex layout uncapped in the hidden-keyboard state.
+    // Use visualViewport for keyboard geometry, tolerating iOS PWA safe-area loss without a keyboard.
     const viewport = window.visualViewport;
     const sizeForVisualViewport = () => {
       if (!viewport) return;
       if (!Number.isFinite(viewport.height) || !Number.isFinite(viewport.offsetTop) ||
-          viewport.height <= 0) return;                  // Safari emits transient zeroes during rotation
+          viewport.height <= 0) return; // Safari emits transient zeroes during rotation.
 
       const appBounds = app.getBoundingClientRect();
       if (!Number.isFinite(appBounds.height) || appBounds.height <= 0) return;
@@ -425,21 +315,17 @@ export function TerminalPane({
         (Number.parseFloat(appStyle.getPropertyValue("--device-safe-area-bottom")) || 0);
       const viewportShrunken = viewport.height < appBounds.height - safeAreaHeight - 1;
 
-      // Measure the ordinary flex height, not yesterday's keyboard-constrained one. Restoring the prior
-      // cap on a bad measurement avoids collapsing the terminal during an in-progress viewport update.
+      // Measure without the previous keyboard cap; restore it if new metrics are invalid.
       const previousHeight = host.style.getPropertyValue("--terminal-visible-height");
       host.classList.remove("visual-viewport-sized");
       host.style.removeProperty("--terminal-visible-height");
-      // CSS uses the same state to suppress WebKit's stale bottom inset above the open keyboard. Toggle
-      // before measuring the key bar so its now-smaller height is what the xterm ceiling reserves.
+      // Toggle before measuring the key bar because the state changes its safe-area height.
       app.classList.toggle("visual-viewport-shrunken", viewportShrunken);
       if (!viewportShrunken) return;
 
       const bounds = host.getBoundingClientRect();
       const visibleBottom = viewport.offsetTop + viewport.height;
-      // The key bar follows the host in the pane's flex column. Its ordinary layout already reduces
-      // bounds.height; subtract it from the visual-viewport ceiling too so the row itself stays above
-      // the software keyboard instead of occupying the last keyboard-covered pixels.
+      // Reserve the key bar inside the visual-viewport ceiling.
       const keyBarHeight = keyBarRef.current?.getBoundingClientRect().height || 0;
       const visibleHeight = Math.floor(Math.min(
         bounds.height,
@@ -456,18 +342,15 @@ export function TerminalPane({
       host.style.setProperty("--terminal-visible-height", visibleHeight + "px");
     };
     sizeForVisualViewport();
-    try { fit.fit(); } catch (_) { /* host not laid out yet — the ResizeObserver below will fit */ }
+    try { fit.fit(); } catch (_) { /* ResizeObserver retries after layout. */ }
 
-    // The size travels in the URL, not only in the first resize frame: the daemon opens the upstream
-    // `tmux attach` at this geometry, so the first bytes we receive are already the right shape
-    // instead of the pty's default 80x24 reflowing to ours a moment later.
+    // Put initial geometry in the URL so tmux attaches at the correct size before emitting bytes.
     const ws = new WebSocket(wsUrl(
       "/sessions/" + encodeURIComponent(attachedId) + "/terminal" +
       "?cols=" + term.cols + "&rows=" + term.rows,
     ));
     ws.binaryType = "arraybuffer";
-    // Distinguishes "we tore this down" from "the daemon dropped us": only the latter is worth
-    // reporting to the user and reflecting in the parent's state.
+    // Report daemon disconnects, not our own teardown.
     let teardown = false;
     const sendBytes = (bytes) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(bytes);
@@ -476,9 +359,7 @@ export function TerminalPane({
 
     const fitAndReport = () => {
       if (teardown) return;
-      // A Terminal opened before its host was laid out has no valid character measurement, and fit()
-      // silently bails on one; resizing to the current size is the public way to force a re-measure
-      // (it skips the actual resize path, so it costs nothing and fires no onResize).
+      // A same-size resize forces measurement when open preceded host layout.
       try { term.resize(term.cols, term.rows); } catch (_) {}
       try { fit.fit(); } catch (_) {}
       sendResize(ws, term.cols, term.rows);
@@ -488,23 +369,21 @@ export function TerminalPane({
       fitAndReport();
     };
     ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") return;            // no server->client text frames defined
-      term.write(new Uint8Array(ev.data));                // raw terminal bytes (seed, then live deltas)
+      if (typeof ev.data === "string") return;
+      term.write(new Uint8Array(ev.data));
     };
     ws.onclose = () => {
       if (teardown) return;
       term.write("\r\n[terminal disconnected]\r\n");
-      // Name the socket that closed: the parent may already be rendering another selected session by
-      // the time this callback runs, and must never tear that replacement attachment down by mistake.
+      // Identify the closed attachment so a late callback cannot tear down its replacement.
       closedRef.current(attachedId);
     };
 
-    // Keystrokes / pastes -> UTF-8 binary frames (binary = input per the terminal WS protocol).
     const dataSubscription = term.onData((data) => {
       if (ctrlActiveRef.current) {
         const ctrlBytes = ctrlBytesFor(data);
         if (ctrlBytes !== null) {
-          // Clear the live ref before scheduling the render: two input events can arrive in one turn.
+          // Clear synchronously because two input events may arrive before rendering.
           ctrlActiveRef.current = false;
           setCtrlActive(false);
           sendBytes(ctrlBytes);
@@ -513,40 +392,20 @@ export function TerminalPane({
       }
       sendBytes(new TextEncoder().encode(data));
     });
-    // The OTHER half of xterm's output: mouse reports whose active encoding is the legacy X10 one are
-    // emitted on `onBinary`, not `onData` (`CoreMouseService` routes `DEFAULT` to `triggerBinaryEvent`),
-    // because their coordinates are raw bytes above 127 that UTF-8 encoding would corrupt. Without this
-    // subscription those reports are generated and dropped on the floor — no error, the mouse simply does
-    // nothing. The encoding goes legacy whenever tracking arrived without SGR (`?1006h`), which is the
-    // same degradation `TERMINAL_MODE_RESET`'s ordering rule exists to avoid. The payload is a string of
-    // char codes 0-255, so it is narrowed byte-wise rather than run through TextEncoder, and it never
-    // consults sticky Ctrl: these are pointer reports, not keystrokes.
+    // Legacy X10 mouse reports arrive on onBinary and must not be UTF-8 encoded.
     const binarySubscription = term.onBinary((data) => {
       const bytes = new Uint8Array(data.length);
       for (let i = 0; i < data.length; i += 1) bytes[i] = data.charCodeAt(i) & 0xff;
       sendBytes(bytes);
     });
-    // xterm-initiated resizes (including from fit) -> text resize control frame.
     const resizeSubscription = term.onResize(({ cols, rows }) => sendResize(ws, cols, rows));
 
-    // Observe the HOST, not just the window: the pane also changes size without a window resize (the
-    // hint paragraph appearing/disappearing, the sidebar collapsing at the mobile breakpoint), and the
-    // observer's initial callback re-fits if `term.open()` ran before the host had been laid out — a
-    // fit() on an unmeasured terminal is a silent no-op that would otherwise leave it at 80x24.
+    // Host geometry changes without window resize, and initial layout may follow term.open().
     const refit = debounce(fitAndReport, 120);
     const observer = new ResizeObserver(refit);
     observer.observe(host);
 
-    // iOS only opens the software keyboard when the textarea is focused synchronously from a user
-    // gesture. In particular, never move this back to ws.onopen: asynchronous focus cannot summon the
-    // keyboard and steals focus from whichever control the operator was using. A click is the browser's
-    // completed-tap signal, so a swipe over the terminal does not open the keyboard on pointer-down.
-    //
-    // What actually keeps a swipe from summoning the keyboard is the bridge's `preventDefault()`, which
-    // suppresses the whole compatibility mouse burst — measured on a real iPhone: after a swipe neither
-    // xterm's own `mousedown` focus nor this click handler runs. `shouldFocus()` is therefore a second
-    // line for a browser that still delivers a click, not the mechanism; do not "prove" the keyboard
-    // rule by asserting this call exists.
+    // iOS keyboard focus must happen synchronously from the completed tap, never from ws.onopen.
     const swipeScroll = installSwipeScroll(term);
     const focusTerminal = () => {
       if (swipeScroll.shouldFocus()) term.focus();
@@ -555,8 +414,7 @@ export function TerminalPane({
 
     const viewportChanged = () => {
       sizeForVisualViewport();
-      // visualViewport fires throughout the keyboard animation. Move the host immediately, but wait
-      // for the settled metrics before reflowing tmux rather than sending every intermediate geometry.
+      // Move immediately but debounce tmux reflow across keyboard animation frames.
       refit();
     };
     if (viewport) {
@@ -599,22 +457,8 @@ export function TerminalPane({
     };
   }, [attachedId]);
 
-  /*
-   * The unicode provider, applied to the LIVE terminal for the same reason as the font size: it is a
-   * view preference, and rebuilding the attachment for it would drop the upstream WebSocket.
-   *
-   * `attachedId` is a dependency even though this effect never reads it: a new attachment is a new
-   * `Terminal` with only xterm's built-in provider registered, so the chosen mode has to be installed on
-   * it again. The effect ordering is what makes that safe — Preact runs every cleanup before any effect,
-   * so on a switch the attachment teardown has already replaced `terminalRef.current` and cleared the
-   * previous disposer by the time this runs.
-   *
-   * The fetch is asynchronous and the install is not, which is what lets `cancelled` be checked BETWEEN
-   * them: a load superseded by another mode, or by the attachment going away, never touches the terminal
-   * at all. Installing first and undoing afterwards would not be equivalent — two loads in flight can
-   * resolve in either order, so the loser would land last and its disposer would carry a stale version to
-   * restore.
-   */
+  /* Install unicode providers on the live attachment. attachedId retriggers for each Terminal, and
+   * cancellation prevents out-of-order asynchronous loads from installing stale providers. */
   useEffect(() => {
     const term = terminalRef.current;
     if (!term) return undefined;
@@ -628,15 +472,13 @@ export function TerminalPane({
       if (cancelled || !loaded) return;
       unicodeDisposeRef.current = installTerminalUnicode(term, loaded);
     }).catch(() => {
-      // A vendored addon that would not load leaves the built-in table in charge. That is a degraded
-      // rendering of wide characters, not a broken terminal, so it must not take the session down.
+      // Addon failure falls back to xterm's built-in width table.
     });
 
     return () => { cancelled = true; };
   }, [attachedId, terminalUnicode]);
 
-  // Font changes are a view preference, not a new terminal attachment. Updating the live xterm instance
-  // in a separate effect keeps the one upstream WebSocket intact, then re-fits and reports its new grid.
+  // Font changes re-fit the live terminal without replacing its WebSocket.
   useEffect(() => {
     const term = terminalRef.current;
     const fit = fitRef.current;
@@ -664,8 +506,6 @@ export function TerminalPane({
   return html`
     <main id="terminal-pane">
       <div id="terminal-head">
-        ${/* The drawer opener. Rendered on every screen but display:none above the mobile breakpoint, so
-              the desktop header is laid out exactly as it was before the drawer existed. */ ""}
         <button
           id="drawer-toggle"
           class="icon-button icon-button-small drawer-toggle"
@@ -691,18 +531,8 @@ export function TerminalPane({
           <span id="terminal-state" class=${badge ? "badge " + badge.cls : "badge"}>
             ${badge ? badge.label : ""}
           </span>
-          ${/* Rendered unconditionally, on purpose: the component itself answers null both when nothing
-                is selected and when the selection is linked to no task, so a conditional here would buy
-                nothing — and no part of this header may be wrapped in one, which is what keeps the
-                palette button reachable on a phone with no session selected. */ ""}
           <${HeaderTaskBadge} session=${session} tasks=${tasks} />
         </div>
-        ${/* The one lifecycle control in the header, on every screen: it opens the palette's leader grid,
-              which is exactly the chord-bearing descriptors of lib/commands.js — disabled ones included,
-              since a disabled row announces its reason instead of running. The icon row that used to sit
-              beside it was mobile-only markup repeating those same actions and their disabled rules; the
-              grid states its own reasons, so the phone header keeps the drawer opener, the title and this
-              button and nothing else. */ ""}
         <button
           id="palette-button"
           class="icon-button icon-button-small palette-button"
@@ -713,7 +543,6 @@ export function TerminalPane({
         >⋯</button>
       </div>
 
-      ${/* Owned by xterm.js, never by the vdom: rendered childless so Preact has nothing to diff. */ ""}
       <div id="terminal-host" ref=${hostRef}></div>
 
       ${attached && html`
@@ -731,20 +560,7 @@ export function TerminalPane({
   `;
 }
 
-/**
- * The header's task badge — the same text builder and the same two classes the sidebar row uses, so the
- * two places a session's task is named can never disagree. See `TaskBadge` in `Sidebar.js` for why this
- * is an `<a href>` that steals only the plain left click; here there is no enclosing click target, so the
- * `stopPropagation` that matters there is merely harmless.
- *
- * It answers null both for a header with nothing selected and for a session linked to nothing, so the
- * header renders it unconditionally — a guard there would buy nothing and would trip the serving test
- * that keeps every conditional rendering out of the region around that header.
- *
- * Declared BELOW the component it serves, which a function declaration's hoisting makes free: it keeps
- * the pane's own markup the first one in this module, and `WebUiServingTest` bounds its terminal-header
- * assertions from exactly there.
- */
+/** Preserve real-link behavior while routing plain task-badge clicks in-app. */
 function HeaderTaskBadge({ session, tasks }) {
   const task = session ? taskBadge(session, tasks) : null;
   if (!task) return null;

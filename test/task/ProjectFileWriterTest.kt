@@ -42,23 +42,10 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-/**
- * Tests for [PosixProjectFileWriter] — the whole publication sequence against a real `$TMPDIR` tree.
- *
- * There is no fake here on purpose: everything this class is FOR is a syscall (`mkstemp`, `fchmod`,
- * `link(2)`'s refusal to clobber, the `unlink` in the `finally`), and a fake filesystem would assert
- * the test's own model of those instead of the kernel's behaviour. Only the uuid source is injected,
- * because a random id makes an expectation unwritable — and that injection doubles as the seam that
- * makes the lost-`link`-race deterministic: [PosixProjectFileWriter]'s minter runs after the existence
- * check and before the `link`, i.e. exactly in the window a competing daemon's file lands in.
- *
- * The suite touches nothing outside a throwaway directory named after the pid, and never runs `git`.
- */
 class ProjectFileWriterTest {
 
     private val minted = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
 
-    // ---- the happy path ------------------------------------------------------------------------
 
     @Test
     fun aFreshDirectoryGetsTheDocumentedShapeAndNoLeftoverTemp() {
@@ -92,7 +79,6 @@ class ProjectFileWriterTest {
     @Test
     fun theModeIs0666MinusTheUmaskRatherThanThe0600MkstempGaveIt() {
         runBlocking {
-            // 0o022 -> 0644, the everyday case: committed, world-readable, owner-writable.
             val ordinary = makeDir("${makeBase()}/ordinary")
             withUmask(S_IWGRP or S_IWOTH) { writerMinting(minted).ensureProjectFile(ordinary, "kotgent") }
             assertEquals(
@@ -100,13 +86,10 @@ class ProjectFileWriterTest {
                 modeOf(joinPath(ordinary, PROJECT_FILE_NAME)),
             )
 
-            // 0o077 -> 0600. It coincides with what `mkstemp` created, which is the point: the mode
-            // follows the operator's umask, it is not pinned to either value.
             val private = makeDir("${makeBase()}/private")
             withUmask(S_IRWXG or S_IRWXO) { writerMinting(minted).ensureProjectFile(private, "kotgent") }
             assertEquals(S_IRUSR or S_IWUSR, modeOf(joinPath(private, PROJECT_FILE_NAME)))
 
-            // 0o002 -> 0664, a group-writable checkout.
             val shared = makeDir("${makeBase()}/shared")
             withUmask(S_IWOTH) { writerMinting(minted).ensureProjectFile(shared, "kotgent") }
             assertEquals(
@@ -151,7 +134,6 @@ class ProjectFileWriterTest {
         }
     }
 
-    // ---- an existing file always wins ------------------------------------------------------------
 
     @Test
     fun aSecondCallReturnsTheFirstCallsIdAndMintsNothing() {
@@ -199,8 +181,6 @@ class ProjectFileWriterTest {
         runBlocking {
             val dir = makeDir("${makeBase()}/repo")
             val winner = ProjectId.of("11111111-2222-4333-8444-555555555555")
-            // The minter runs after the existence check and before the link: the file this creates is
-            // the one a competing `kotgent task add` would have published a microsecond earlier.
             val racing = PosixProjectFileWriter {
                 writeFile(joinPath(dir, PROJECT_FILE_NAME), projectFileText(ProjectFile(winner, "theirs")))
                 minted
@@ -233,7 +213,6 @@ class ProjectFileWriterTest {
         }
     }
 
-    // ---- refusals ---------------------------------------------------------------------------------
 
     @Test
     fun aRelativeTargetIsRefused() {
@@ -325,11 +304,9 @@ class ProjectFileWriterTest {
         }
     }
 
-    // ---- harness ------------------------------------------------------------------------------------
 
     private fun writerMinting(id: ProjectId) = PosixProjectFileWriter { id }
 
-    /** Run [block] under [mask], restoring whatever the process had. There is no `getumask(2)`. */
     @OptIn(ExperimentalForeignApi::class)
     private inline fun <T> withUmask(mask: Int, block: () -> T): T {
         val previous = umask(mask.convert())
@@ -345,8 +322,6 @@ class ProjectFileWriterTest {
     @AfterTest
     @OptIn(ExperimentalForeignApi::class)
     fun cleanUp() {
-        // A test may have made a directory unwritable; give every one of them back its owner bits
-        // before trying to empty it, or the sweep silently leaves a tree in $TMPDIR.
         for (d in dirs) chmod(d, S_IRWXU.convert())
         for (d in dirs.asReversed()) {
             for (name in entriesIn(d)) unlink(joinPath(d, name))
@@ -358,8 +333,6 @@ class ProjectFileWriterTest {
     private fun makeBase(): String {
         val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
         val made = makeDir("$tmp/kotgent-project-writer-${getpid()}-${counter++}")
-        // $TMPDIR sits behind the /var -> /private/var symlink; the paths this test compares are the
-        // ones it built, so it builds them from the canonical spelling.
         return PosixProjectFs().canonicalize(made) ?: made
     }
 
@@ -384,7 +357,6 @@ class ProjectFileWriterTest {
     private fun readAll(path: String): String =
         assertNotNull(PosixProjectFs().readFile(path, PROJECT_FILE_MAX_BYTES), "cannot read $path")
 
-    /** The permission bits of [path]; fails rather than answering for a file that is not there. */
     @OptIn(ExperimentalForeignApi::class)
     private fun modeOf(path: String): Int = memScoped {
         val st = alloc<stat>()

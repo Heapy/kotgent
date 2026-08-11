@@ -2,17 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <!-- viewport-fit=cover lets the layout reach under the notch/home indicator; style.css pays that back
-       with env(safe-area-inset-*) padding. Without it an installed iOS PWA letterboxes the whole app. -->
+  <!-- Required for the safe-area padding used by the installed iOS PWA. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Kotgent</title>
 
-  <!--
-    PWA install surface. On iOS this is not polish: Web Push exists ONLY inside an installed PWA
-    (iOS 16.4+), so the manifest and the apple-* meta tags below are the precondition for notifications,
-    not a nicety. `black-translucent` draws the app under the status bar, which is what viewport-fit=cover
-    and the safe-area padding are for.
-  -->
+  <!-- iOS Web Push requires an installed PWA. -->
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icons/logo.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
@@ -22,41 +16,13 @@
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#14171c" />
 
-  <!--
-    `__REV__` is replaced by the daemon (src/transport/WebUiAssets.kt) with a content hash of the whole
-    resources/webui tree, and anything served under /_v/<rev>/ is `immutable`. One changed byte anywhere
-    changes the revision, so an installed PWA cannot keep serving an old module: the URL it cached it
-    under no longer exists. This shell itself is `no-cache`, which is what makes the new revision arrive.
+  <!-- WebUiAssets replaces __REV__; import-map targets are document-relative and need the prefix explicitly. -->
 
-    Only the references BELOW carry the prefix. Relative imports inside app.js resolve against app.js's
-    own /_v/<rev>/ URL, so the prefix reaches the whole module graph for free — but the importmap resolves
-    against the DOCUMENT, so its targets have to spell the prefix out. The manifest and the icons stay on
-    stable URLs on purpose: an installed PWA refers to them by a fixed address.
-
-    Those three stable URLs are ROOT-ABSOLUTE, and that is load-bearing now that the SPA owns deep paths:
-    a document-relative `manifest.webmanifest` resolves to `/tasks/manifest.webmanifest` at /tasks/local:42,
-    which 404s — taking the iOS install path, and therefore push, with it for anyone who arrived by a deep
-    link. Root-absolute keeps them at the one fixed address an installed PWA already refers to.
-  -->
-
-  <!--
-    Vendored, offline: pinned @xterm/xterm@6.0.0 + @xterm/addon-fit@0.11.0, preact@10.29.8 + htm@3.1.1.
-
-    Two more are vendored but appear NOWHERE on this page: @xterm/addon-unicode11@0.9.0 and
-    @xterm/addon-unicode-graphemes@0.4.0 are opt-in, so `lib/unicode.js` imports them dynamically when —
-    and only when — the Terminal unicode preference selects one. A <script> tag here would download 65 KB
-    of width tables for every operator who leaves the setting alone.
-
-    vendor/qrcode.module.js is in none of those lists: it is a hand-trimmed port of Project Nayuki's QR
-    generator with no npm package behind it, so it updates by re-porting, not by pulling a version.
-  -->
+  <!-- Vendored: xterm 6.0.0, addon-fit 0.11.0, preact 10.29.8, htm 3.1.1. -->
   <link rel="stylesheet" href="/_v/__REV__/vendor/xterm.css" />
   <link rel="stylesheet" href="/_v/__REV__/style.css" />
 
-  <!--
-    No bundler: bare specifiers are resolved to the vendored ES modules by the browser itself. This map
-    must precede the first module load, which is why it lives in <head>.
-  -->
+  <!-- The import map must precede the first module load. -->
   <script type="importmap">
   {
     "imports": {
@@ -70,11 +36,9 @@
   </script>
 </head>
 <body>
-  <!-- data-webui-marker is asserted by test/transport/WebUiServingTest.kt (serving path). -->
   <div id="app" data-webui-marker="kotgent-webui"></div>
 
-  <!-- Classic scripts: xterm publishes the globals the terminal pane uses, and they run before the
-       deferred module below. -->
+  <!-- xterm globals must exist before app.js loads. -->
   <script src="/_v/__REV__/vendor/xterm.js"></script>
   <script src="/_v/__REV__/vendor/addon-fit.js"></script>
   <script type="module" src="/_v/__REV__/app.js"></script>

@@ -1,14 +1,5 @@
 package io.kotgent.crypto
 
-/**
- * Lowercase hex encoding — the one place bytes become a secret-carrying string in this codebase.
- *
- * Every secret kotgent hands out (the master token, a session-cookie HMAC, a one-shot ticket) is
- * hex-encoded, so they all share this encoder rather than each re-deriving a `joinToString { … }`
- * one-liner: one function, one alphabet, one review.
- */
-
-/** Lowercase hex of [bytes] — two characters per byte, no separators, no `0x` prefix. */
 fun hex(bytes: ByteArray): String {
     val out = StringBuilder(bytes.size * 2)
     for (b in bytes) {

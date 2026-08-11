@@ -6,20 +6,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The SQLDelight-backed [PushStore], over the SAME [SqlDriver] the event store uses (the daemon opens
- * one `~/.kotgent/kotgent.db`). `EventStore` is untouched by this: the two stores share a connection,
- * not a schema concern.
- *
- * **Migration for pre-existing databases.** The `sqldelight-gen` plugin drops `.sqm` files and leaves
- * the generated `Schema.migrate()` empty, so `push_subscriptions` from `PushSubscriptions.sq` is only
- * created on a FRESH database. An existing `kotgent.db` therefore gets it here, in [init], via
- * `CREATE TABLE IF NOT EXISTS`. Unlike the additive `ALTER TABLE … ADD COLUMN` in
- * `SqliteEventStore.init` — which needs a `PRAGMA table_info` guard because a duplicate-column ALTER
- * makes sqliter log a SQLITE_ERROR stack trace on every start — `IF NOT EXISTS` can neither fail nor
- * log, so it runs unguarded. The statement must stay in sync with the `.sq` DDL.
- *
- * All operations are serialized by [mutex], matching the single-writer discipline of the event store
- * (the driver is one connection shared by concurrently-running route handlers).
+ * SQLDelight generation does not apply migrations, so existing databases create this additive table at
+ * runtime. [CREATE_TABLE_IF_NOT_EXISTS] must stay synchronized with `PushSubscriptions.sq`. Operations
+ * serialize access to the shared single connection.
  */
 class SqlitePushStore(driver: SqlDriver) : PushStore {
 
@@ -52,7 +41,6 @@ class SqlitePushStore(driver: SqlDriver) : PushStore {
     }
 
     companion object {
-        /** Mirror of the `PushSubscriptions.sq` DDL, for databases created before the table existed. */
         const val CREATE_TABLE_IF_NOT_EXISTS: String =
             "CREATE TABLE IF NOT EXISTS push_subscriptions (" +
                 "endpoint TEXT NOT NULL PRIMARY KEY, " +

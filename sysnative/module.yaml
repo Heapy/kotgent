@@ -1,22 +1,11 @@
-# sysnative — dedicated native library module owning ALL low-level POSIX/cinterop
-# bindings and their thin Kotlin wrappers for kotgent (PTY today; ProcessRunner/tmux
-# and any sqlite cinterop land here in later tasks). The app depends on this module, so
-# the auto-discovered cinterop klib (cinterop/*.def) links into the app's MAIN binary as
-# a normal module dependency — no machine-specific -library path (the removed Task 2 hack).
-#
-# KNOWN TOOLCHAIN BLOCKER (0.11.x, still present in 0.12.0-dev): cinterop klibs are NOT linked into
-# the TEST binary of any module — transitive (consumer) OR same-module — so cinterop-touching code
-# throws IrLinkageError there (KT-78062: the cinterop task is registered for the non-test fragment
-# only, while the test link selects test-fragment cinterop artifacts). Not a code defect; the cinterop
-# works in MAIN binaries — which is why the real-PTY assertions live in the `ptycheck` app module and
-# are driven from the suite by PtyTest. See CLAUDE.md.
+# Owns native POSIX/cinterop bindings. Toolchain 0.11 links custom cinterop only into main binaries
+# (KT-78062), so real-PTY assertions run through the `ptycheck` main app.
 product:
   type: kmp/lib
   platforms: [macosArm64]
 
 dependencies:
-  # Pty.output is a Channel<ByteArray>, so coroutines types are part of this module's
-  # public API -> exported so consumers see them without re-declaring the dependency.
+  # Pty.output exposes Channel, so consumers need this dependency exported.
   - $libs.kotlinx.coroutines.core:
       exported: true
 
@@ -24,6 +13,4 @@ settings:
   kotlin:
     version: 2.4.10
 
-# cinterop/pty.def is auto-discovered by the toolchain (no YAML wiring). It applies to
-# the single native platform (macosArm64). See its header for the openpty/winsize
-# C-helper rationale.
+# Toolchain auto-discovers cinterop/pty.def; no YAML cinterop wiring is required.

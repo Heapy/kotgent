@@ -1,5 +1,3 @@
-/* Kotgent Web UI — a single dark, mac-native shell. */
-
 :root {
   color-scheme: dark;
   --bg: #14171c;
@@ -24,10 +22,7 @@
 }
 
 * { box-sizing: border-box; }
-/* Nothing in the SPA renders a `hidden` attribute today; this is a prospective default, kept because the
-   failure it prevents is silent. An author `display` (e.g. `.key-bar { display: flex }`) beats the UA's
-   `[hidden]` rule whatever its specificity, so the first component to reach for `hidden` would stay
-   visible — and with no build step and no DOM tests there is nothing to catch that but the eye. */
+/* Author display rules otherwise override the browser's hidden behavior. */
 [hidden] { display: none !important; }
 .visually-hidden {
   position: absolute !important;
@@ -40,8 +35,6 @@
   white-space: nowrap !important;
   border: 0 !important;
 }
-/* `textarea` belongs here with the rest: its UA default is a monospace face of its own, so a form field
-   left out of this reset renders in a different typeface from the inputs beside it. */
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 
@@ -49,17 +42,10 @@ html, body {
   margin: 0;
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  /* The canvas must equal `--bg`, and the pair is maintained by hand on both sides of the breakpoint
-     (below, in the desktop block). Safari 26 derives its surrounding system surface from the page canvas
-     — an installed app's window strip, the one carrying the traffic lights — and on the iPhone the
-     safe-area bands around the notch paint it directly, so a canvas that differs from the shell draws a
-     seam in exactly the place a native app has none. Black is therefore the PHONE's value, where `--bg`
-     is `#000` too; the desktop overrides both together. Keeping these literal rather than `var(--bg)` is
-     deliberate: a failed colour inference on a custom property falls back to white. */
+  /* Safari paints installed-app chrome and safe areas from this canvas; keep it equal to --bg. */
   background-color: #000;
   color: var(--text);
-  /* Pull-to-refresh would reload the page mid-session on a phone — losing the terminal attach for a
-     gesture the operator meant as a scroll. Nothing here scrolls the document anyway. */
+  /* Prevent a terminal scroll from triggering pull-to-refresh. */
   overscroll-behavior: none;
 }
 
@@ -69,35 +55,24 @@ html, body {
   --active-safe-area-bottom: var(--device-safe-area-bottom);
   background: var(--bg);
   display: flex;
-  /* 100vh first as the fallback, then 100dvh: mobile browsers size vh against the LARGEST viewport (the
-     one with the toolbars hidden), so a 100vh shell is taller than the screen and pushes the terminal
-     under the address bar. dvh tracks the visible height. On desktop the two are the same value. */
+  /* dvh follows mobile browser chrome; vh is the fallback. */
   height: 100vh;
   height: 100dvh;
   width: 100%;
-  /* `viewport-fit=cover` (index.html) plus iOS's black-translucent status bar draw the app under the
-     notch and the home indicator; these insets pay it back. env() is 0 on everything else, which is why
-     this sits outside the media query — a phone in landscape is wider than the breakpoint but still has
-     a notch on one side. */
+  /* Keep safe-area padding outside width queries so landscape phones retain it. */
   padding: var(--device-safe-area-top) env(safe-area-inset-right)
            var(--active-safe-area-bottom) env(safe-area-inset-left);
-  /* The desktop task detail is positioned against this box rather than the viewport (see `.task-detail`),
-     which is what makes it respect the safe-area padding above instead of reaching under a notch. */
   position: relative;
 }
 
-/* WebKit bug 217754 leaves the Home-indicator inset set while the software keyboard already replaces that
-   unsafe edge. TerminalPane owns this state because visualViewport, unlike CSS env(), sees the keyboard. */
+/* WebKit 217754: visualViewport sees the keyboard while CSS safe-area env values do not. */
 #app.visual-viewport-shrunken {
   --active-safe-area-bottom: 0px;
 }
 
-/* WebKit bugs 254868 and 264218: an installed PWA's `dvh` omits its safe areas, and current iOS reports a
-   manifest standalone app as fullscreen. app.js resolves both display-mode queries plus navigator's iOS
-   installed signal before rendering; `vh` is physical in that chrome-less context. */
+/* WebKit 254868/264218: installed-PWA dvh omits safe areas. */
 #app.installed-app { height: 100vh; }
 
-/* --- Sidebar --- */
 #sidebar {
   width: 320px;
   min-width: 240px;
@@ -138,7 +113,6 @@ html, body {
   letter-spacing: 0.3px;
 }
 
-/* --- Buttons --- */
 .button,
 .icon-button {
   border: 1px solid var(--border);
@@ -200,9 +174,6 @@ textarea:focus-visible {
   width: 28px;
 }
 
-/* The app's navigation, and the reason neither screen is reachable only from the other. A segmented
-   control rather than two buttons: the pair is one choice, and the shared trough is what says so. The
-   links are real anchors, so they carry the underline and inline layout a <button> never had to lose. */
 .nav-switch {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -228,7 +199,6 @@ textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* The selected half carries the panel fill, so it reads as the raised one out of the shared trough. */
 .nav-link.active {
   background: var(--pill-active);
   color: var(--text);
@@ -263,7 +233,6 @@ textarea:focus-visible {
 }
 .section-title.attn { color: var(--attn); }
 
-/* The configured base path, shown next to "Sessions" and clickable back into preferences. */
 .base-note {
   background: none;
   border: 0;
@@ -299,7 +268,6 @@ textarea:focus-visible {
 }
 .empty-sessions p { margin: 0 0 10px; }
 
-/* --- Directory tree (base path + maximum visible depth) --- */
 .session-group { margin-bottom: 2px; }
 .session-group.collapsed { margin-bottom: 2px; }
 .session-group:last-child { margin-bottom: 0; }
@@ -311,7 +279,6 @@ textarea:focus-visible {
   min-height: 24px;
   padding: 2px var(--list-inset);
 }
-/* The head doubles as the collapse toggle: a full-width button that still reads as a plain heading. */
 .group-toggle {
   flex: 1 1 auto;
   min-width: 0;
@@ -359,7 +326,6 @@ textarea:focus-visible {
   opacity: 0;
   transition: opacity 120ms ease-in-out;
 }
-/* Keep each folder's "+" out of the way until that exact heading is in play. */
 .group-head:hover > .group-new,
 .group-head:focus-within > .group-new { opacity: 1; }
 @media (hover: none) {
@@ -415,10 +381,6 @@ textarea:focus-visible {
   text-overflow: ellipsis;
 }
 
-/* --- Projects (the sidebar's body on the board) ---
-   The same row the session list draws, restated rather than shared: the two lists carry different
-   contents and the declarations that make a row a row are five lines. What they must NOT differ in is
-   the shape, so the padding, the radius and both selected colours are literally the session row's. */
 .project-list {
   list-style: none;
   margin: 0;
@@ -462,16 +424,12 @@ textarea:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The section head is a `.section-title`, which is uppercase 10px — a button inheriting that would read
-   as "+ NEW" in the heading's own type. It states both, and takes the right edge. */
 #sidebar-new-project {
   letter-spacing: 0;
   margin-left: auto;
   text-transform: none;
 }
 
-/* Open tasks, not every task: `done` grows forever. Quieter than the unread pill deliberately — an
-   unread count is news, a backlog size is context. */
 .project-count {
   flex: 0 0 auto;
   font-size: 10px;
@@ -506,7 +464,6 @@ textarea:focus-visible {
   line-height: 16px;
 }
 
-/* --- State badges --- */
 .badge {
   flex: 0 0 auto;
   font-size: 10px;
@@ -546,7 +503,6 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
-/* --- Terminal pane --- */
 #terminal-pane {
   flex: 1 1 auto;
   min-width: 0;
@@ -591,27 +547,16 @@ textarea:focus-visible {
   min-height: 0;
   overflow: hidden;
 }
-/* visualViewport sets this ceiling while the software keyboard is open. Keeping it as a max-height
-   preserves the ordinary flex layout when that API is absent and leaves the keyboard-covered remainder
-   as terminal background instead of making the document scroll. */
 #terminal-host.visual-viewport-sized {
   max-height: var(--terminal-visible-height);
 }
-/* FitAddon measures this element's parent, then subtracts padding from `.xterm` itself. Keep the visual
-   gutter here—not on #terminal-host—so the fitted grid never includes pixels hidden by the host. */
-/* `touch-action: none` is what makes the swipe bridge possible at all, so it travels with the bridge —
-   which is installed unconditionally — rather than living inside the phone breakpoint. Measured on a real
-   iPhone: under `pinch-zoom` or `auto` the browser claims the gesture and the terminal stops scrolling
-   entirely, which is exactly what a landscape phone or an iPad (both wider than the 720px breakpoint)
-   used to get. Losing pinch-zoom over the terminal is the accepted price; `overscroll-behavior: none`
-   above already covers pull-to-refresh. */
+/* FitAddon subtracts .xterm padding; touch-action keeps the swipe bridge alive on tablets and landscape. */
 #terminal-host .xterm {
   height: 100%;
   padding: 6px 8px;
   touch-action: none;
 }
-/* Safari zooms the page when a focused input computes below 16px. xterm's real text size remains the
-   preference above; this only prevents its off-screen input shim from changing visualViewport geometry. */
+/* Safari zooms the page when xterm's hidden input is below 16px. */
 #terminal-host .xterm-helper-textarea { font-size: 16px !important; }
 .terminal-hint {
   color: var(--muted);
@@ -620,9 +565,6 @@ textarea:focus-visible {
   margin: 0;
 }
 
-/* The special-key row exists only with an attached terminal, and becomes layout only at the mobile
-   breakpoint below. Keeping the desktop rule explicit prevents an extra row from stealing terminal
-   height if the component is rendered on a narrow desktop window and then widened. */
 .key-bar {
   display: none;
   flex: 0 0 auto;
@@ -666,7 +608,6 @@ textarea:focus-visible {
   color: #fff;
 }
 
-/* --- New-session dialog --- */
 dialog {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -681,19 +622,9 @@ dialog::backdrop {
   background: rgba(13, 18, 28, 0.58);
   backdrop-filter: blur(2px);
 }
-/* The one swipe-to-dismiss handle. `touch-action: none` is what keeps the browser from claiming the
-   vertical gesture before the first pointermove reaches the dialog — which is exactly why the head is
-   NOT a handle: `dialog:modal` makes an overflowing dialog its own scroller, so reserving the head
-   would turn "pan the sheet by its title" into a dead zone with the fields unreachable. The grabber
-   scrolls nothing, so reserving it costs nothing. Sized by POINTER, not by width: the gesture only
-   exists for a touch pointer, and a tablet is wider than the phone breakpoint and has no Esc either —
-   a width query left the palette (the one dialog with no head) unswipeable on every tablet. The rest
-   of the handle lives in the `any-pointer: coarse` block far below, because a media query adds no
-   specificity: written here it would lose its `padding-top` compensation to the `padding` shorthands
-   that every dialog form declares LATER in this file. */
+/* Only the grabber reserves touch gestures; making an overflowing dialog head a handle blocks scrolling. */
 .dialog-grabber { display: none; }
 
-/* --- Command palette: search list + spacemacs-style leader grid --- */
 #command-palette {
   overflow: hidden;
   width: min(680px, calc(100vw - 32px));
@@ -705,13 +636,8 @@ dialog::backdrop {
   min-height: 240px;
   padding: 12px;
 }
-/* Leader mode focuses this container so its key handler receives the mnemonics (the search input is
-   unmounted there). That focus is programmatic, never a tab stop, so it draws no ring of its own —
-   the grid's own buttons keep theirs. */
 .command-palette-shell:focus,
 .command-palette-shell:focus-visible { outline: none; }
-/* The palette's own head: the mode's control plus the close button that every other dialog draws in
-   `.dialog-head`. */
 .command-palette-top {
   align-items: center;
   display: flex;
@@ -850,11 +776,7 @@ dialog::backdrop {
   margin: 10px 2px 0;
   min-height: 16px;
 }
-/* Every dialog FORM declares this, because `dialog` itself is `padding: 0` — the panel's inset belongs to
-   the form so the grabber above it can span the full width. A form left out of this group is not a
-   slightly tighter dialog, it is one whose head, fields and actions all sit flush against the border;
-   that is exactly how the board's two forms shipped. `#phone-form` stays LAST on the line the
-   coarse-pointer test locates this group by. */
+/* Form padding leaves the swipe grabber full-width. */
 #new-session-form,
 #new-task-form,
 #new-project-form,
@@ -868,10 +790,6 @@ dialog::backdrop {
   gap: 16px;
   margin-bottom: 18px;
 }
-/* The copy is one flex item beside the ×, and a flex item refuses to shrink below its content unless it
-   is told to. New task interpolates the PROJECT NAME into this row, and a name is up to 100 characters
-   with no guaranteed break opportunity (`validProjectName` forbids control characters, not a run of
-   letters), so without these two the head pushes the close button out of the panel. */
 .dialog-head > div {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -901,13 +819,6 @@ dialog::backdrop {
   font-size: 11px;
   font-weight: 400;
 }
-/* `.field-hint` is an app-wide family, but its only rule was the NESTED one below — so every hint that
-   is not inside a dialog's `.field` label had no rule at all and rendered as full-size body text in the
-   foreground colour. The whole task panel is written that way (its project path, and all four of its
-   "nothing here yet" lines), which is what made it read as unstyled markup rather than as hints.
-   Margins deliberately stay OUT of this base rule: a `<p class="field-hint">` in a dialog has carried
-   the UA's own paragraph margins for as long as those dialogs have been looked at, and only the panel,
-   whose sections already own their spacing, takes them off. */
 .field-hint {
   color: var(--muted);
   font-size: 11px;
@@ -933,26 +844,12 @@ dialog::backdrop {
   padding: 7px 10px;
   width: 100%;
 }
-/* `width` is what a <textarea> actually needs from the rule above: it is a replaced element whose `auto`
-   width is its `cols` attribute, not its container, so an unstyled one is 20 characters wide and spills
-   out of a 460px dialog (`.task-detail-body` carries the same note for the same reason). `resize` is
-   capped to the one axis that cannot break the dialog's width, and the inline-block default would
-   otherwise leave a baseline gap under it.
-
-   `:where(textarea)` in BOTH selectors is load-bearing and is the one thing here that is not cosmetic.
-   Written plainly, `.field textarea` is (0,1,1) — and `.task-detail-body`, the ONE textarea in the app
-   that dresses itself, is (0,1,0) inside a `.field` label of its own (`TaskDetail.js`). A class rule
-   does not beat a more specific one by being later in the file, so a bare `.field textarea` silently
-   took that element's width, padding, radius and line-height away: `width: 100%` plus its own
-   `margin: 12px 14px` is 28px wider than the panel it sits in. `:where()` contributes ZERO, which puts
-   both at (0,1,0) and hands the tie back to source order, where the specialised rule really is later. */
+/* :where keeps this rule from outranking the specialized task-detail textarea by specificity. */
 .field :where(textarea) {
   display: block;
   line-height: 1.5;
   resize: vertical;
 }
-/* The New session dialog's two modes (start new / import existing): a segmented pair of toggle
-   buttons whose state rides `aria-pressed`, styled to match the selected agent card. */
 .dialog-mode {
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -984,9 +881,6 @@ dialog::backdrop {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* A checkbox row in a dialog form. `.field input` above sizes text inputs full-width at 38px, which
-   would blow a checkbox up with it — hence the more specific reset; the span reset relies on source
-   order against `.field > span`. */
 .checkbox-field {
   align-items: flex-start;
   display: flex;
@@ -1000,8 +894,6 @@ dialog::backdrop {
   width: auto;
 }
 .checkbox-field > span { margin-bottom: 0; }
-/* `margin-inline` is the UA's own 2px on every fieldset. Left in place it insets the whole picker
-   relative to the full-width fields under it, so the cards no longer line up with the path input. */
 .agent-picker {
   border: 0;
   margin-inline: 0;
@@ -1024,11 +916,7 @@ dialog::backdrop {
   min-width: 0;
   position: relative;
 }
-/* `.field input` above also reaches these radios, which sit behind their cards: without the resets the
-   hidden control keeps a full-width, 38px, bordered box and — being positioned — paints over the card
-   it is supposed to be under. Only `opacity` hides that today. The box is zeroed rather than removed:
-   `display: none` or `visibility: hidden` would take the radio out of the tab order and kill both the
-   arrow-key group and the `:focus-visible` outline below. */
+/* Keep hidden radios focusable for keyboard navigation. */
 .agent-option input {
   background: none;
   border: 0;
@@ -1063,9 +951,6 @@ dialog::backdrop {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* A planned agent: its radio is `disabled`, so the card must not answer to the pointer either — the
-   hover highlight from the rule above outranks nothing on its own and would keep offering a choice the
-   input refuses. */
 .agent-option-unavailable {
   cursor: default;
 }
@@ -1084,16 +969,12 @@ dialog::backdrop {
   justify-content: center;
   width: 38px;
 }
-/* The marks are the vendors' own filled paths (see `lib/agents.js`), so they take `fill`, not a stroke,
-   and they read heavier than an outline at the same size — hence 20px inside the 38px chip. */
 .agent-icon svg {
   fill: currentColor;
   height: 20px;
   stroke: none;
   width: 20px;
 }
-/* The brand chips are the only literal colours in the picker. Their dark-shell tints keep the glyph
-   distinct from both the card and its selected `--row-active` state. */
 .agent-icon-claude {
   background: #4a2a1c;
   color: #f6bda6;
@@ -1106,7 +987,6 @@ dialog::backdrop {
   background: #16351c;
   color: #48e054;
 }
-/* A shell has no vendor colour, so its generic terminal glyph stays on the themed palette. */
 .agent-icon-shell {
   background: var(--row-active);
   color: var(--accent);
@@ -1115,8 +995,6 @@ dialog::backdrop {
   background: #2b3a4d;
   color: #b9cde5;
 }
-/* A column so a planned agent's `Soon` sits under its name: a card is only ~160px wide on a phone, and
-   the two side by side would not fit next to the 38px chip. `.field small` above styles the note. */
 .agent-option-name {
   display: flex;
   flex-direction: column;
@@ -1217,7 +1095,6 @@ dialog::backdrop {
   margin-top: 20px;
 }
 
-/* --- Phone / QR dialog --- */
 .phone-status {
   color: var(--muted);
   font-size: 13px;
@@ -1230,7 +1107,6 @@ dialog::backdrop {
   width: 232px;
   max-width: 100%;
 }
-/* The generated SVG carries its own white quiet-zone; a little padding keeps it off the panel edge. */
 .phone-qr svg {
   display: block;
   width: 100%;
@@ -1251,8 +1127,6 @@ dialog::backdrop {
   font-size: 11.5px;
   padding: 2px 6px;
 }
-/* The typed sign-in code: read off this screen and keyed into an installed home-screen app, so it is set
-   big enough to read from arm's length and spaced so the grouping halves are obvious. */
 .phone-code {
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 30px;
@@ -1303,7 +1177,6 @@ dialog::backdrop {
 }
 .phone-steps .help-code { margin-top: 6px; }
 
-/* --- Help dialog --- */
 #help-dialog { width: 640px; }
 #help-form {
   display: flex;
@@ -1313,7 +1186,6 @@ dialog::backdrop {
 }
 #help-form .dialog-head,
 #help-form .dialog-actions { flex: 0 0 auto; }
-/* The body is the only scroller, so the title and Done button stay put on a long read. */
 #help-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -1359,7 +1231,6 @@ dialog::backdrop {
   line-height: 1.5;
   margin: 0;
 }
-/* A state badge sits on the baseline of its description rather than filling the column. */
 .help-list dt .badge { display: inline-block; }
 
 .help-section code,
@@ -1382,18 +1253,6 @@ dialog::backdrop {
   padding: 10px 12px;
 }
 
-/* --- Task board: the /tasks screen, its cards, and the task detail view ---
-   Every selector below is spelled from the plan's frozen "Board CSS vocabulary". `Board.js`,
-   `TaskCard.js`, `TaskDetail.js`, `Sidebar.js` and `TerminalPane.js` were written by other hands at the
-   same time as this block and ship no CSS of their own, so the list IS the contract: a class invented on
-   either side is a rule that matches nothing, or an element that draws nothing, with no build step to
-   catch it. That also shapes how defensively this is written — the markup's nesting is not knowable from
-   here, so the layout leans on `flex-wrap` and full-row basis rather than explicit grid placement, which
-   would collapse into one illegible row the moment a component wrapped two of its children in a div.
-
-   The board reuses the shell's furniture rather than inventing a second one: the same 14px pane radius,
-   panel fill, card shadow and 12px inset the terminal pane draws, so switching screens changes the
-   contents and not the frame. */
 .board {
   flex: 1 1 auto;
   min-width: 0;
@@ -1406,14 +1265,6 @@ dialog::backdrop {
   overflow: hidden;
 }
 
-/* The same row `#terminal-head` draws, in the same order and for the same reason — the two are the same
-   slot of one shell: the two sidebar controls, the identity of what is on screen, then the actions. The
-   identity is what grows, which puts every action right whatever order the markup brings them in.
-
-   Its three controls reuse the terminal header's own ids, so `#sidebar-toggle`, `.drawer-toggle` and
-   `.palette-button` reach this row with nothing restated — including the breakpoint's rule that
-   neutralizes the collapse toggle where the sidebar is an overlay drawer. The two heads are the two arms
-   of one branch and are never in the document together, which is what makes that legal. */
 .board-head {
   display: flex;
   align-items: center;
@@ -1430,8 +1281,6 @@ dialog::backdrop {
   gap: 1px;
   min-width: 0;
 }
-/* The name of the project the four columns belong to. This was the `<select>` until the project list
-   became sidebar rows; what is left of it is a title, so it is dressed as one. */
 .board-project {
   color: var(--text);
   font-size: 13px;
@@ -1440,10 +1289,6 @@ dialog::backdrop {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Truncated from the right like every other path in the app, with the whole value in a `title`. An
-   RTL-direction trick would keep the identifying tail visible, but it moves a LEADING `/` — a neutral
-   character at a paragraph edge takes the paragraph's direction — to the far end of the line, so
-   `/Users/yoda/dev` renders as `Users/yoda/dev/`. Not worth it for a subline that has a tooltip. */
 .board-project-path {
   color: var(--muted);
   font-size: 11px;
@@ -1452,8 +1297,7 @@ dialog::backdrop {
   white-space: nowrap;
 }
 .board-new-task { flex: 0 0 auto; }
-/* The chrome is `:not(.button)`-scoped so it dresses a bare header button but never outranks
-   `.button-primary`, which is declared far above and would otherwise lose on source order. */
+/* Avoid outranking the shared primary-button class. */
 .board-new-task:not(.button) {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1471,12 +1315,6 @@ dialog::backdrop {
   outline-offset: 2px;
 }
 
-/* Every announcement the board and the detail make used to render NOWHERE. `status` has exactly one
-   renderer in the app — `#status-line`, in the sidebar footer — and the sidebar is precisely what the
-   route branch that mounts these two screens unmounts, so a refused drag, a failed delete and a
-   dependency refused for a cycle all came out as silence. This is the same live region for the screens
-   that have no sidebar: a toast rather than a footer line, because neither screen has a chrome row to
-   spare, and `:empty`-hidden so a quiet board draws nothing at all. */
 .board-status {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1488,12 +1326,7 @@ dialog::backdrop {
   margin: 0;
   max-width: min(560px, calc(100vw - 24px));
   padding: 8px 12px;
-  /* Announcing is ALL it does — there is nothing in it to click — and `say()` never clears one, so this
-     fixed box parks over the bottom-centre of the board for the rest of the page's life. Without this
-     it silently eats every pointer interaction beneath it: `dropTargetAt`'s `elementFromPoint` answered
-     the TOAST for a drop over the bottom of a middle column (its `closest(".board-column")` is null,
-     so the card landed nowhere at all), and the card, its menu or "show all done" under that strip
-     could not be clicked either. A wider message covers proportionally more, up to the 560px cap. */
+  /* Persistent announcements must not intercept board drops or clicks. */
   pointer-events: none;
   position: fixed;
   transform: translateX(-50%);
@@ -1502,8 +1335,6 @@ dialog::backdrop {
 }
 .board-status:empty { display: none; }
 
-/* Four equal tracks that never scroll the page: the track clips, and each column scrolls its own list,
-   so a long `todo` cannot push `done` off the bottom of the screen. */
 .board-columns {
   display: grid;
   flex: 1 1 auto;
@@ -1528,10 +1359,6 @@ dialog::backdrop {
   padding: 0 8px 8px;
   transition: background 120ms ease-out, border-color 120ms ease-out;
 }
-/* One custom property per column carries the whole state colour: the head's label and the drop
-   highlight both derive from it, so a column's identity is set in exactly one place. The phone's
-   switcher buttons carry the same `data-state`, so they join each rule as a second SELECTOR rather
-   than as a second colour — a re-theme still edits one line per state. */
 .board-column[data-state="todo"],
 .board-column-switch [data-state="todo"] { --column-accent: #8a93a2; }
 .board-column[data-state="in_progress"],
@@ -1540,10 +1367,7 @@ dialog::backdrop {
 .board-column-switch [data-state="review"] { --column-accent: #d9a441; }
 .board-column[data-state="done"],
 .board-column-switch [data-state="done"] { --column-accent: #4fae72; }
-/* Opaque by inheritance of `--column-fill`, not by repeating a colour: the head is sticky, so cards
-   scrolling under it must not show through, and a column that is currently a drop target must tint as
-   ONE surface rather than leaving its header on the old shade. Reading the property (rather than the
-   parent's `background`) is also what survives the head being wrapped in a div this file cannot see. */
+/* Keep the sticky head opaque and in sync with drop-target tinting. */
 .board-column-head {
   align-items: baseline;
   background: var(--column-fill);
@@ -1561,17 +1385,11 @@ dialog::backdrop {
   top: 0;
   z-index: 1;
 }
-/* Added to whichever column the pointer is currently over. It sets the FILL rather than the background,
-   so the tint reaches the sticky head through the same property the column already publishes — and it
-   rides the column's own accent, so a drag reads as "this state", not merely "somewhere". */
 .board-drop-target {
   --column-fill: color-mix(in srgb, var(--column-accent) 11%, var(--bg));
   border-color: color-mix(in srgb, var(--column-accent) 60%, transparent);
 }
-/* The phone-only switcher: hidden here so a desktop grid is laid out from exactly the boxes it always
-   had, and turned on inside the width breakpoint below. */
 .board-column-switch { display: none; }
-/* `done` is capped at the last N; this reveals the rest without leaving the board. */
 .board-show-all-done {
   align-self: stretch;
   background: none;
@@ -1594,8 +1412,6 @@ dialog::backdrop {
   outline-offset: 2px;
 }
 
-/* One card. Wrapping flex rather than a placed grid: `task-card-meta` takes a full-row basis so the
-   badges always start their own line, while the handle, title and menu share the first. */
 .task-card {
   align-items: flex-start;
   background: var(--panel);
@@ -1616,10 +1432,7 @@ dialog::backdrop {
   cursor: grabbing;
   opacity: 0.85;
 }
-/* The drag handle is the ONE board element that reserves the vertical gesture, for the same reason
-   `.dialog-grabber` and the terminal do: a pointer drag the browser has already claimed for scrolling
-   never reaches `pointermove`. Scoping it to the handle is what leaves the column itself scrollable
-   under a finger. */
+/* Reserve touch gestures only on the handle so the column remains scrollable. */
 .task-card-handle {
   color: var(--muted);
   cursor: grab;
@@ -1630,7 +1443,6 @@ dialog::backdrop {
   user-select: none;
 }
 .task-card-handle:hover { color: var(--text); }
-/* Written to survive being a div, an <a> or a <button>: the title is the card's link to its detail. */
 .task-card-title {
   background: none;
   border: 0;
@@ -1662,7 +1474,6 @@ button.task-card-title:hover,
   gap: 6px;
   min-width: 0;
 }
-/* Amber, matching `.badge-resumable`: blocked is "not yet", not "wrong". */
 .task-blocked {
   background: #4a3610;
   border-radius: 9px;
@@ -1687,20 +1498,13 @@ button.task-card-title:hover,
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  /* Chips are separated by more than the dot-to-name gap inside one of them, or a row of two sessions
-     reads as one name split in half. Wrapped LINES stay tight at 4px. The detail panel overrides both
-     axes with its own 8px, so this pair is the card's alone. */
   gap: 4px 8px;
   list-style: none;
   margin: 0;
   min-width: 0;
   padding: 0;
 }
-/* One linked session's state dot. `data-state` is accepted in BOTH spellings the vocabulary line can be
-   read as — the raw `SessionState` and the `cls` half of `stateBadge`'s return — because the components
-   that emit it are written in parallel with this file and cannot be consulted. The two collapse to the
-   same six colours either way, so accepting both costs a selector list and buys a dot that is never
-   silently grey. */
+/* Components emit either raw SessionState or stateBadge class names. */
 .task-session-dot {
   --dot: var(--muted);
   background: var(--dot);
@@ -1724,19 +1528,11 @@ button.task-card-title:hover,
 .task-session-dot[data-state="badge-crashed"] { --dot: #ff8f8f; }
 .task-session-dot[data-state="resumable"],
 .task-session-dot[data-state="badge-resumable"] { --dot: #d9a441; }
-/* The gap to the text the dot labels, in the three places the two are ADJACENT and nothing else can
-   supply one: the sidebar and terminal-header badges, where the label follows the span with no
-   separator at all, and a card's session chip, where htm drops the newline that looks like a space in
-   the source. The detail panel's dot is deliberately absent — there it is a flex SIBLING of the link
-   and the `<li>`'s own `gap` already spaces it, so a margin here would be added on top of that. The
-   2px ring is part of the dot's ink, so the visible gap is 2px narrower than this value. */
 .task-badge .task-session-dot,
 .task-badge-unknown .task-session-dot,
 .task-sessions li a .task-session-dot {
   margin-right: 6px;
 }
-/* Delete, plus the move actions a phone gets instead of dragging. Kept out of the way until the card is
-   in play, the way each folder's "+" is. */
 .task-card-menu {
   background: none;
   border: 0;
@@ -1761,21 +1557,10 @@ button.task-card-title:hover,
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* A pointer that cannot hover can never reveal it, and that includes every touch tablet above the width
-   breakpoint — same reservation `.group-new` makes for the folder "+". */
 @media (hover: none) {
   .task-card-menu { opacity: 1; }
 }
 
-/* The detail screen takes the terminal pane's slot, so it carries the same card geometry; unlike the
-   board it scrolls as one document, because the feed is the long thing on it.
-
-   `--detail-gutter` is this panel's ONE horizontal inset, and spelling it once is a fix rather than a
-   tidy-up. Before it every block invented its own: the head had 14px of padding, the textarea a 14px
-   margin plus a hand-computed `width: calc(100% - 28px)` to survive it, the deps and the feed a 14px
-   margin — and `#task-detail-form` none at all, so the title input ran edge to edge while the
-   description directly beneath it sat 14px in. The phone breakpoint now retunes the whole panel by
-   re-declaring this one value instead of restating a margin and a width per block. */
 .task-detail {
   --detail-gutter: 14px;
   background: var(--panel);
@@ -1789,56 +1574,23 @@ button.task-card-title:hover,
   overflow-y: auto;
   padding-bottom: 6px;
 }
-/* At `/tasks/{ref}` the board and the detail are SIBLINGS in `#app`'s flex row — `app.js` renders both,
-   because the board goes on highlighting the open card (`aria-current` on `.task-card`) and keeps its
-   project selector live while one task is read. Any detail that stays IN that row is paid for by the
-   board: two `flex: 1 1 auto` claimants split the viewport in half, and bounding the detail to
-   `flex: 0 1 clamp(320px, 34%, 520px)` only bounded the damage — the four tracks still divided what was
-   left, about 150px each on a 1440px window, which is narrower than the title of the card inside them.
-   So the panel leaves the flow and floats over the board at that same width, and the board keeps every
-   pixel it has when no task is open.
-
-   That trades compression for occlusion: the panel covers the right of the track, so `done` — and half
-   of `review` — are behind it, unreadable and undroppable until it closes. It is the better half of the
-   trade, because the columns a reader works FROM stay at full width and the panel is one × away, while
-   150px tracks degraded the whole board at once. The phone answer is the opposite again and lives in
-   the width breakpoint below: there is no room to overlay either, so the detail replaces the board. */
+/* Overlay details on desktop so opening one does not compress all four board columns. */
 @media (min-width: 721px) {
   #app:has(.task-detail) .task-detail {
     bottom: 12px;
-    /* Deeper than `--card-shadow`, which is tuned for a card lying on the shell. This one reads against
-       another card directly beneath its edge, so the same shadow would leave the panel looking inlaid. */
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
     margin: 0;
     position: absolute;
     right: 12px;
     top: 12px;
-    /* Literally the old flex basis: a percentage basis resolved against `#app`'s content box and so does
-       this width, so leaving the flow changed the panel's size by nothing. */
     width: clamp(320px, 34%, 520px);
-    /* Over the columns' sticky heads (1), under the `.board-status` toast (30) — a board announcement
-       has to stay readable while a task is open. */
+    /* Above sticky column heads, below board status messages. */
     z-index: 5;
-    /* Its own compositing layer, and this is a REPAINT fix, not a layout one. Measured on the installed
-       app: a ~17px band of the board's previous frame — the `review` and `done` columns at their real
-       widths, with the grid's own gutter between them — stayed painted over this panel, in exactly the
-       strip between the sticky head's border and the form's first label. No box model can cut a hole
-       there (the panel's background is opaque everywhere else, including below the last section), and
-       the two candidates that could paint over it cannot: a column head is `z-index: 1` against this 5,
-       in the same stacking context, and nothing between them creates another one. What is new in that
-       frame is the SIDEBAR, which is now on this screen too and carries `backdrop-filter` above the
-       breakpoint — enough to move the page onto a different compositing path, where a sticky element's
-       layer seam is where a stale tile survives. Promoting the panel gives the seam nothing to survive
-       on. If the band ever comes back, the blur is the next thing to take away, not this. */
+    /* Prevent stale sticky-column tiles on the sidebar backdrop-filter compositing path. */
     will-change: transform;
   }
 }
-/* The head is a GRID, not a wrapping flex row, and the reason is the ×. Flowed, it is the last item of
-   a row that wraps as soon as the identity beside it is wide — which, with a project path in it and a
-   panel that starts at 320px, is always — so the one control all four head shapes promise ended up
-   below the launch button instead of in the corner. Placed, it is in the top-right whatever else the
-   head happens to contain, and the three fallback shapes (loading, load error, deleted) get it for free
-   without agreeing with the loaded one about anything but the grid. */
+/* Grid keeps the close control in the corner for every detail state. */
 .task-detail-head {
   align-items: start;
   background: var(--panel);
@@ -1852,11 +1604,7 @@ button.task-card-title:hover,
   top: 0;
   z-index: 1;
 }
-/* The one definitely-placed item, so auto-placement runs around it: the identity takes 1/1 and the
-   toolbar, which spans both tracks, cannot fit beside it and drops to the second row. */
 #task-detail-close { grid-area: 1 / 2; }
-/* `min-width: 0` is what lets the ellipses below happen at all — a grid item's automatic minimum size
-   is its content, so a long project path would widen the elastic track and push the × off the panel. */
 #task-detail-ident { min-width: 0; }
 #task-detail-title {
   font-family: Menlo, Monaco, "Courier New", monospace;
@@ -1881,8 +1629,6 @@ button.task-card-title:hover,
   gap: 8px;
   grid-column: 1 / -1;
 }
-/* The state select is the head's one write and had no rule, so it rendered at the UA's own metrics
-   beside two 30px controls. */
 #task-detail-state {
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -1892,9 +1638,6 @@ button.task-card-title:hover,
   padding: 0 8px;
 }
 #task-detail-start { margin-left: auto; }
-/* The three shapes the panel renders INSTEAD of a task — still loading, deleted elsewhere, and a read
-   that failed — are lone paragraphs under the head with no section around them to carry the inset, so
-   they take the gutter themselves. Ids, because each already overrides a class rule's own margin. */
 #task-detail-loading,
 #task-detail-gone,
 #task-detail-error {
@@ -1907,16 +1650,9 @@ button.task-card-title:hover,
   gap: 12px;
   padding: 14px var(--detail-gutter) 16px;
 }
-/* `.field` carries a top margin for a dialog's stacked labels; here the flex gaps own the rhythm, and
-   keeping both would double every step. */
 #task-detail-form .field,
 #task-detail-dep-form .field { margin-top: 0; }
-/* `width` is what a <textarea> actually needs: it is a replaced element whose `auto` width is its
-   `cols` attribute, not its container. It no longer subtracts its own margins out of 100% — the form's
-   padding is the inset now and `box-sizing: border-box` does the rest. The specificity note above
-   `.field :where(textarea)` still governs: this rule is (0,1,0) exactly like that one, so it wins on
-   source order, and respelling that one as a bare `.field textarea` — (0,1,1) — would silently take
-   this element's geometry back. */
+/* Keep this selector tied with `.field :where(textarea)` so source order controls geometry. */
 .task-detail-body {
   background: var(--input-bg);
   border: 1px solid var(--border);
@@ -1938,15 +1674,8 @@ button.task-card-title:hover,
   flex-wrap: wrap;
   gap: 8px;
 }
-/* Destructive, so it sits at the far end rather than against Save, where a mis-aimed pointer lands. */
 #task-detail-delete { margin-left: auto; }
 
-/* The three sections under the form share one shape: a full-bleed rule between them with the gutter
-   inside, which is why the border sits on the section and the inset is its padding. Both were flex
-   ROWS before — `.task-deps` in its own right and `.task-sessions` because that class is shared with
-   the card, where it dresses a bare `<ul>` of chips. Here each wraps a heading AND a list (and, for the
-   deps, a form), so the row put the word "Sessions" beside the first session and the "Add a dependency"
-   field beside the list it adds to. */
 .task-detail .task-deps,
 .task-detail .task-sessions,
 .task-detail .task-activity {
@@ -1956,19 +1685,11 @@ button.task-card-title:hover,
   gap: 8px;
   list-style: none;
   margin: 0;
-  /* Symmetric on purpose: the bottom was 0, so each section's last row sat directly on the NEXT
-     section's rule with nothing between them — the separator read as a border on the list rather than
-     as a break between two sections. The panel's own `padding-bottom` is small for the same reason,
-     since the last section now brings its own. */
   padding: 14px var(--detail-gutter);
-  /* Both are inherited from the card's own `.task-sessions` rule, which this one only ever adds to —
-     and in a COLUMN they mean something else entirely: `center` would size every child to its own
-     content and centre it, and `wrap` would break the section into columns rather than lines. */
+  /* Override card-level `.task-sessions` flex settings. */
   align-items: stretch;
   flex-wrap: nowrap;
 }
-/* No heading on this panel had a rule, so an `<h2>` and four `<h3>`s carried the UA's own sizes and
-   block margins into a layout that had already decided its spacing. */
 .task-detail h3 {
   align-items: center;
   color: var(--muted);
@@ -1981,8 +1702,6 @@ button.task-card-title:hover,
   margin: 0;
   text-transform: uppercase;
 }
-/* The section gaps own the spacing here, so the hints drop the paragraph margins the base rule leaves
-   alone for the dialogs. */
 .task-detail .field-hint { margin: 0; }
 .task-detail .task-deps ul,
 .task-detail .task-sessions ul {
@@ -2018,9 +1737,6 @@ button.task-card-title:hover,
   flex: 0 0 auto;
   font-size: 10.5px;
 }
-/* There is no app-wide `a` rule, so every link on this panel — each dependency, each linked session,
-   each "Blocks:" ref — was painting itself in the UA's own link colour, the one blue nothing else in
-   this shell uses. */
 .task-detail a {
   color: var(--text);
   text-decoration: none;
@@ -2031,8 +1747,6 @@ button.task-card-title:hover,
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-/* `flex-end` rather than `center`: the 38px field and the 30px button are different heights, and it is
-   their baselines that have to line up. */
 #task-detail-dep-form {
   align-items: flex-end;
   display: flex;
@@ -2042,15 +1756,12 @@ button.task-card-title:hover,
   flex: 1 1 auto;
   min-width: 0;
 }
-/* The refs are rendered adjacent with no separator of their own, so the gap is what keeps them apart. */
 #task-detail-dependents {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-/* One feed entry, keyed on its `ActivityKind`. The left rule is the only thing that differs, so the feed
-   stays readable as a column of text rather than a set of coloured blocks. */
 .task-activity-row {
   --activity-accent: var(--border);
   background: var(--bg);
@@ -2068,9 +1779,6 @@ button.task-card-title:hover,
 .task-activity-row[data-kind="transition"] { --activity-accent: #d9a441; }
 .task-activity-row[data-kind="linked"] { --activity-accent: #4fae72; }
 .task-activity-row[data-kind="unlinked"] { --activity-accent: #6c7482; }
-/* The stamp and the author read as one muted meta line with the sentence under it. All three were
-   adjacent inline runs before, so a row's text ran straight on from the author's name with one space
-   between them and nothing said which was which. */
 .task-activity-row time {
   color: var(--muted);
   font-size: 10px;
@@ -2087,8 +1795,6 @@ button.task-card-title:hover,
   margin-top: 3px;
 }
 
-/* The session → task badge, in the sidebar row and the terminal header. It is a link to /tasks/{ref},
-   so it must not look like the state badge beside it: an outlined accent pill, never a filled one. */
 .task-badge {
   background: var(--pill-active);
   border: 1px solid var(--pill-active-border);
@@ -2113,11 +1819,6 @@ button.task-card-title:hover,
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* A ref whose task the browser does not know — briefly true right after a delete. It carries the bare
-   ref, so it is set in the monospace face and drops the accent: the pill is still a link, but it is no
-   longer claiming to name anything. The geometry is repeated rather than merely overridden, because
-   whether this class arrives beside `.task-badge` or on its own is a decision made in a file this one
-   cannot read. */
 .task-badge-unknown {
   background: none;
   border: 1px dashed var(--border);
@@ -2139,10 +1840,6 @@ button.task-card-title:hover,
   color: var(--text);
 }
 
-/* --- Mobile drawer: the three controls that exist only below the breakpoint ---
-   All three are in the DOM on every screen (the scrim only while the drawer is open) and hidden here, so
-   the desktop layout is laid out from exactly the boxes it always had — a display:none flex item takes no
-   space and consumes no `gap`. Everything that turns them on lives in the media query below. */
 .drawer-toggle,
 .drawer-close,
 .drawer-scrim { display: none; }
@@ -2153,12 +1850,7 @@ button.task-card-title:hover,
   flex: 0 0 auto;
 }
 
-/* Keep the blur off phones: their terminal repaints continuously behind the drawer. The canvas rides
-   along because it is the same question of device, not of chrome: `--bg` is `#14171c` here, so the canvas
-   Safari derives the window strip from has to be `#14171c` too, or the installed app wears a black band
-   above a lighter shell. `#app` covers the viewport, so this changes nothing a page ever paints — only
-   what the system reads off it. A phone in landscape is wider than the breakpoint and therefore already
-   on the desktop palette, which is exactly why both values move under the same query. */
+/* Keep blur off phones; match Safari's installed-app canvas to the desktop shell. */
 @media (min-width: 721px) {
   html, body { background-color: #14171c; }
 
@@ -2176,8 +1868,7 @@ button.task-card-title:hover,
     --input-bg: #101218;
   }
 
-  /* Let an ATTACHED bottom bar paint through the Home-indicator strip. Without that bar (initial,
-     detached, stopped or resumable), #app keeps its ordinary inset so the final hint stays safe. */
+  /* Only an attached key bar paints through the Home-indicator inset. */
   #app:has(.key-bar) { padding-bottom: 0; }
 
   #help-dialog { width: 100%; }
@@ -2187,9 +1878,6 @@ button.task-card-title:hover,
   }
   .help-list dd { margin-bottom: 10px; }
 
-  /* The sidebar leaves the flex row and becomes an overlay drawer: the terminal gets the whole screen,
-     which is the only way a phone-sized viewport has room for one. `fixed` positions it against the
-     viewport, so it re-applies the safe-area insets #app carries for the in-flow layout. */
   #sidebar,
   #sidebar.collapsed {
     border-radius: 0;
@@ -2207,8 +1895,7 @@ button.task-card-title:hover,
     overflow-y: auto;
     padding: calc(12px + env(safe-area-inset-top)) 12px
              calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
-    /* Closed: off-screen AND out of the tab order — a translated-away drawer is still focusable, so a
-       keyboard or VoiceOver user would otherwise walk into invisible controls. */
+    /* Translation alone leaves closed-drawer controls focusable. */
     transform: translateX(-100%);
     visibility: hidden;
     transition: transform 180ms ease-out, visibility 180ms;
@@ -2231,7 +1918,6 @@ button.task-card-title:hover,
     padding: 0;
   }
 
-  /* Sized up from the 28px desktop icon button: this one is hit with a thumb. */
   .drawer-toggle,
   .drawer-close {
     display: inline-flex;
@@ -2248,14 +1934,11 @@ button.task-card-title:hover,
     box-shadow: none;
     margin: 0;
   }
-  /* Keep the notification and drawer-close controls from squeezing the brand in the narrow drawer. */
   .brand-actions {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
 
-  /* The header stays a single row: the drawer opener, the truncating title, and the palette button that
-     replaced the lifecycle icon row this breakpoint used to draw. */
   #terminal-head {
     gap: 8px;
     padding: 6px 10px;
@@ -2272,65 +1955,32 @@ button.task-card-title:hover,
     padding-bottom: calc(5px + var(--active-safe-area-bottom));
   }
 
-  /* The board and the detail view become the whole screen, exactly like the terminal card above.
-     The four tracks collapse to one and the TRACK takes over the scrolling from the columns, so a
-     phone scrolls the board the way it scrolls any other page. The switcher below is what picks which
-     state is on screen; a Board that still renders all four simply stacks them, which is degraded but
-     never broken. */
   .board,
   .task-detail {
     border-radius: 0;
     box-shadow: none;
     margin: 0;
   }
-  /* "The whole screen" is a claim only one of them can make. A phone splitting 390px between a master
-     and a detail gives each about 195px — a single board column beside a title input, a state select,
-     a textarea and a feed, with the column switcher and the sticky detail head competing side by side.
-     So here the detail replaces the board outright, which is also what `.task-detail-head`'s × already
-     promised: it goes back to `/tasks`, i.e. back to a board this hid. */
+  /* On phones, task details replace rather than split the board. */
   #app:has(.task-detail) .board { display: none; }
   .board-head {
     flex-wrap: wrap;
     gap: 8px;
     padding: 6px 10px;
   }
-  /* The identity is the row's only flexible item, so it is what gives way to ☰ and the two actions. */
   .board-identity { flex: 1 1 auto; }
   .board-project { font-size: 12px; }
-  /* No top padding, because the head is sticky against this scroller and Chromium takes the sticky
-     constraint from its CONTENT box: with 8px there the head pinned 8px below the top and a card was
-     painted in that band in full view (measured). The switcher above holds the gap instead. */
+  /* Size the scrolling track from its cards; keep sticky heads flush with its top. */
   .board-columns {
     gap: 8px;
     grid-template-columns: minmax(0, 1fr);
     overflow-y: auto;
     padding: 0 8px 8px;
   }
-  /* `min-height: auto` is what sizes the row, and the desktop's `min-height: 0` is what broke it. The
-     track scrolls here while the column does not, so the column's implicit `auto` row must be sized by
-     its cards — but an explicit zero minimum suppresses the content-based automatic minimum, leaving the
-     row a tiny base that grid's maximize step then fills out to the track's content box. The column was
-     clipped there while its remaining cards, being `visible` overflow, went on painting outside it: the
-     fill, the border and the corner stopped part-way down the list. Restoring the automatic minimum
-     makes the base the content instead. `grid-auto-rows: max-content` fixes that half too, and is worse:
-     a `max-content` row is not an `auto` one, so it never reaches the stretch step, and a short column
-     (measured: `review`, one card, 173px in a 403px port) stops at its last card — losing the full box
-     and the tail a drop-to-the-end lands on. */
   .board-column {
     min-height: auto;
     overflow-y: visible;
   }
-  /* `width: 100%` rather than a flex basis: whether this row lands inside `.board-head` (a flex ROW)
-     or directly under `.board` (a flex COLUMN) is not knowable from here, and a basis means height in
-     the second one.
-
-     The padding is the SAME 8px `.board-columns` below insets by, and it is not decoration: without it
-     the first segment starts at x = 0, hard against the edge of the phone, while the column it switches
-     to starts eight pixels in — the row read as knocked out of alignment with the board it belongs to.
-     The BOTTOM 8px is the gap above the first column, held here rather than in the track because the
-     track scrolls and its sticky head would leave that band open for cards to travel through. Scrolling
-     is kept (a long label or a three-digit count can still overflow four segments) but its bar is
-     hidden: the row is one line tall, so a bar would eat a third of it. */
   .board-column-switch {
     align-items: center;
     display: flex;
@@ -2342,21 +1992,7 @@ button.task-card-title:hover,
     width: 100%;
   }
   .board-column-switch::-webkit-scrollbar { display: none; }
-  /* Four EQUAL segments, and each declaration is one of the measurements that buys that.
-
-     `flex: 1 1 0` divides the ROW rather than the leftover, which is what `1 0 auto` could not do: a
-     basis of `auto` sizes each segment to its own words, so the four came out 79/113/87/77 across a
-     390px phone — a switcher whose boxes disagree about how big a choice is. The compact type is what
-     makes equality reachable at all: at the shared 12px with 11px of padding, "In progress 2" wants
-     113px against the 89px a quarter of that phone can give it, so it printed over its own border;
-     at 11px with a quieter count it wants 90.
-
-     Below that width the row degrades on the flex AUTOMATIC MINIMUM — a flex item's `min-width: auto`
-     resolves to its min-content size, so the long segment keeps its label while the other three stay
-     equal (measured at 320px: 66/88/66/66, everything inside its border, no scrolling needed). That is
-     free, and it is exactly what a well-meant `min-width: 0` here would switch OFF: the segments would
-     become four true quarters and the longest label would run over the corner again. Do not add one.
-     34px is the tap target; the shared `.button` is a desktop 30. */
+  /* Preserve the automatic min-width: it prevents the longest label overflowing on narrow phones. */
   .board-column-switch .button {
     align-items: center;
     display: inline-flex;
@@ -2368,13 +2004,7 @@ button.task-card-title:hover,
     padding: 0 6px;
     white-space: nowrap;
   }
-  /* The count is the second span, and it steps back the way the column head's does: a switcher is read
-     for WHICH state it is on, and the number is the footnote to that. */
   .board-column-switch .button span + span { opacity: 0.65; }
-  /* Which column is on screen is otherwise unknowable: four identical buttons, and `aria-pressed` is
-     read by nothing that paints. The ink rides the state's own `--column-accent` in the same shape a
-     drop target uses, so the segment and the column below it say the same colour, and the inactive
-     three step back to `--muted` so the pressed one reads as pressed rather than merely different. */
   .board-column-switch .button { color: var(--muted); }
   .board-column-switch .button[aria-pressed="true"] {
     background: color-mix(in srgb, var(--column-accent) 20%, var(--bg));
@@ -2386,24 +2016,12 @@ button.task-card-title:hover,
     min-height: 34px;
     padding: 0 8px;
   }
-  /* One value retunes the whole panel: the head, the form, the textarea and all three sections take
-     their inset from it, so the phone no longer needs a margin and a width restated per block. */
   .task-detail { --detail-gutter: 10px; }
   .task-detail-head { padding: 10px; }
 }
 
-/* The swipe handle, scoped by POINTER rather than by viewport width — the gesture only ever runs for a
-   touch pointer, and a `max-width: 720px` query left the palette (the one dialog with no head, and so
-   with no other handle) unswipeable on every tablet, the exact device the reservation was written for.
-   Its position in the file is load-bearing: it must come AFTER every dialog's own `padding` shorthand,
-   because a media query carries no extra specificity and the compensation below wins from source order
-   alone.
-   It used to be load-bearing a SECOND time, against a plain text search that sliced this file at
-   `max-width: 720px` and read everything after it as desktop. That search is gone, and with it the rule
-   about writing property names in prose here: the phone's no-composite-blur invariant is now measured
-   by `LayoutTest.theCardsInsetTheShellWithoutPaddingTheMeasuredTerminalParent`, which reads the drawer's
-   computed `backdrop-filter` at both viewport sizes — so a blur written into any block, named plainly or
-   not, fails there. Write these comments for a reader. */
+/* Pointer capability, not viewport width, decides whether swipe handles are usable.
+   Keep this after dialog padding shorthands so the compensation wins by source order. */
 @media (any-pointer: coarse) {
   .dialog-grabber {
     display: block;
@@ -2422,8 +2040,6 @@ button.task-card-title:hover,
     transform: translateX(-50%);
     width: 38px;
   }
-  /* The panels give back HALF the 20px the handle costs — the rest stays as breathing room between the
-     grabber's ink and the title, which is the gap a native sheet draws there too. */
   #new-session-form,
   #new-task-form,
   #new-project-form,
@@ -2432,21 +2048,16 @@ button.task-card-title:hover,
   #phone-form,
   #help-form { padding-top: 10px; }
   .command-palette-shell { padding-top: 2px; }
-  /* The palette's × is the guaranteed way out of the one dialog with no head, and it sits about
-     16px above an option row whose tap RUNS a command. At the desktop `.icon-button` size a thumb
-     aiming at it can land on Interrupt instead, so it gets a thumb-sized box here. */
   .command-palette-close {
     min-height: 44px;
     width: 44px;
   }
 }
 
-/* A drawer that slides is decoration; an operator who asked for less motion still needs it to open. */
 @media (prefers-reduced-motion: reduce) {
   #sidebar { transition: none; }
 }
 
-/* "Done" / archived sessions */
 .session-restore {
   margin-left: auto;
   flex: 0 0 auto;
@@ -2472,19 +2083,6 @@ button.task-card-title:hover,
 
 .done-list .session-row { opacity: 0.75; }
 
-/* Notifications toggle. The mark is an inline SVG (`components/Sidebar.js`) and the state is a COLOUR
-   this stylesheet owns rather than a second glyph: the accent while notifications are on, `--attn` — the
-   red a session waiting for you already wears — while they are off, where it reads as the standing
-   warning it is rather than as a control someone forgot to switch back.
-
-   It keeps the icon-button classes for their box (28px, the thumb target) and drops everything that
-   makes that box look like a chip: no border, no fill, no hover plate. A bell in the brand row is a
-   status light more than a button, and the surround was competing with the one thing it has to say.
-   That also retires a hard-coded pale blue left over from the light theme, which used to fill the
-   active state. Nothing searches this file for that literal any more; what keeps it gone is
-   `LayoutTest.theNotificationsToggleWearsTheShellsOwnAccentInBothStates`, which reads the button's
-   computed colour in both states and demands it EQUAL the shell's own `--attn` / `--accent`, resolved
-   through a probe element — so any baked-in ink fails there whether or not it is spelled here. */
 .notify-toggle {
   align-items: center;
   background: none;
@@ -2495,16 +2093,12 @@ button.task-card-title:hover,
   padding: 0;
 }
 .notify-toggle.active { color: var(--accent); }
-/* The only hover the mark can afford, now that there is no plate to tint: `background` is restated
-   because `.icon-button`'s own hover rule carries the same specificity and would otherwise paint one. */
+/* Match `.icon-button:hover` specificity without restoring its plate. */
 .notify-toggle:hover:not(:disabled) {
   background: none;
   opacity: 0.75;
 }
-/* Size only. The mark's paint lives on the svg element itself (`components/Sidebar.js`) because the muted
-   state is drawn with a mask, and a stylesheet rule reaching inside it would repaint the mask's own
-   black-and-white shapes — a `fill` declared here beats their presentation attributes and the cut-out
-   silently turns into a solid block. */
+/* Do not set SVG fill here: it would repaint the muted-state mask. */
 .notify-toggle svg {
   height: 18px;
   width: 18px;

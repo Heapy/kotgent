@@ -9,28 +9,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/**
- * The `task` / `project` argv grammar (plan Task 19) — the pure half of the backlog CLI.
- *
- * Everything here goes through [parseArgs], which is a pure `argv → CliCommand` mapping with exactly one
- * seam: the `-m -` stdin reader, injected as the second parameter so a piped message is testable without
- * a pipe. No test in this file performs I/O, starts a daemon, or reaches [TaskCommands] (Task 21 owns the
- * execution side, and its bodies are still stubs here).
- *
- * What is asserted, and why each group exists:
- *  - **every subcommand's happy parse**, because the dispatch table is the contract between this file and
- *    `TaskCliCommands.kt`, and a subcommand wired to the wrong variant compiles perfectly;
- *  - **the missing-argument errors**, because these commands are run unattended by an AGENT: a swallowed
- *    flag value would comment on the wrong task or start a session linked to nothing;
- *  - **the optional-ref forms**, which are what makes a ref-less `show`/`comment`/`review`/`done`/`unlink`
- *    resolve through `/whoami` instead of failing;
- *  - **the four flags** — `--task` on `start`, `--session` everywhere, `--project` on `add`/`list`/`next`,
- *    and `-m/--message` with its `-` stdin convention;
- *  - **an unknown subcommand**, which must name the alternatives rather than just refusing.
- */
 class CliTaskParseTest {
 
-    /** A reader that fails the test if the `-m -` path consults stdin when it should not. */
     private val neverReadsStdin: () -> String = { fail("stdin must not be read for this argv") }
 
     private fun invalidMessage(args: List<String>, stdin: () -> String = neverReadsStdin): String {
@@ -39,7 +19,6 @@ class CliTaskParseTest {
         return invalid.message
     }
 
-    // ---- 1. happy parses, one per subcommand ------------------------------------------------------
 
     @Test
     fun parsesEveryTaskSubcommandsHappyForm() {
@@ -100,7 +79,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** `rm` is the only spelling of the removing half — `add|rm`, per the command's own KDoc. */
     @Test
     fun parsesBothDependencyActions() {
         assertEquals(
@@ -123,13 +101,7 @@ class CliTaskParseTest {
         )
     }
 
-    // ---- 2. the optional-ref forms ----------------------------------------------------------------
 
-    /**
-     * A ref-less `show`/`comment`/`review`/`done`/`unlink` is the AGENT's form: it knows its pane and
-     * nothing else, so a null ref here is what makes the CLI resolve the subject through `GET /whoami`.
-     * If any of these parsed as an error the agent-side workflow would not exist at all.
-     */
     @Test
     fun theFiveOptionalRefSubcommandsParseWithNoRef() {
         assertEquals(TaskShow(null, null), parseArgs(listOf("task", "show"), neverReadsStdin))
@@ -142,7 +114,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** The optional ref is still VALIDATED when given: a typo must not travel to the daemon as a 400. */
     @Test
     fun anOptionalRefIsStillCheckedAgainstTheRefGrammar() {
         val message = invalidMessage(listOf("task", "show", "local-42"))
@@ -150,18 +121,12 @@ class CliTaskParseTest {
         assertTrue("local:42" in message, "the error shows the shape it wanted: $message")
     }
 
-    /**
-     * The mandatory `:` is what keeps a bare word from ever parsing as a ref — the same property that
-     * keeps `POST /api/v1/tasks/claim` from being shadowed by `/tasks/{ref}/…` on the server. Pinned here
-     * because the CLI is the other end of it: `task show claim` must be a ref error, not a subcommand.
-     */
     @Test
     fun aBareWordIsNeverARef() {
         assertNull(TaskRef.parseOrNull("claim"))
         assertTrue("not a task ref" in invalidMessage(listOf("task", "show", "claim")))
     }
 
-    // ---- 3. the flags -----------------------------------------------------------------------------
 
     @Test
     fun sessionIsAcceptedOnEveryTaskSubcommand() {
@@ -203,11 +168,6 @@ class CliTaskParseTest {
         assertEquals(TaskNext(p, null), parseArgs(listOf("task", "next", "--project", p), neverReadsStdin))
     }
 
-    /**
-     * `--project` is not one of the flags `show`/`claim`/`move`/… take, and an unknown flag is refused
-     * rather than ignored: a `task show --project X` that quietly dropped the flag would look like it
-     * had scoped the lookup.
-     */
     @Test
     fun projectIsRejectedWhereItHasNoMeaning() {
         assertEquals(
@@ -216,7 +176,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** A `--project` that is not a canonical uuid is a usage error here, not a daemon round trip. */
     @Test
     fun aMalformedProjectIdIsRefusedAtParseTime() {
         val message = invalidMessage(listOf("task", "list", "--project", "kotgent"))
@@ -239,11 +198,6 @@ class CliTaskParseTest {
         )
     }
 
-    /**
-     * A swallowed `--task` value would start the session and silently NOT link it — the launch succeeds
-     * and the one thing the flag was for is missing, with nothing anywhere saying so. Both a missing
-     * value and a malformed ref are therefore refused before anything is started.
-     */
     @Test
     fun startRefusesATaskFlagItCannotHonour() {
         assertEquals("start: --task requires a task ref", invalidMessage(listOf("start", "claude", "--task")))
@@ -254,7 +208,6 @@ class CliTaskParseTest {
         assertTrue("not a task ref" in invalidMessage(listOf("start", "claude", "--task", "nope")))
     }
 
-    // ---- 4. -m / --message, and its `-` stdin convention ------------------------------------------
 
     @Test
     fun bothMessageSpellingsMeanTheSameFlag() {
@@ -268,10 +221,6 @@ class CliTaskParseTest {
         )
     }
 
-    /**
-     * `-m -` reads stdin, and only TRAILING whitespace is stripped: that is the newline a pipe or a
-     * heredoc adds, while the leading bytes are the operator's own content.
-     */
     @Test
     fun aBareDashReadsTheMessageFromStdin() {
         assertEquals(
@@ -288,7 +237,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** An empty pipe is the same usage error as a missing `-m` value: the operator asked to say something. */
     @Test
     fun anEmptyPipeIsAUsageErrorRatherThanAnEmptyComment() {
         assertEquals(
@@ -301,7 +249,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** Only `-m -` may consult stdin — an ordinary message must never block on a terminal. */
     @Test
     fun anOrdinaryMessageNeverTouchesStdin() {
         assertEquals(
@@ -319,7 +266,6 @@ class CliTaskParseTest {
         assertEquals(TaskDone(null, null, null), parseArgs(listOf("task", "done"), neverReadsStdin))
     }
 
-    // ---- 5. missing-argument and other usage errors -----------------------------------------------
 
     @Test
     fun everySubcommandThatNeedsAnArgumentSaysSo() {
@@ -332,11 +278,6 @@ class CliTaskParseTest {
         assertTrue("requires --on" in invalidMessage(listOf("task", "dep", "add", "local:1")))
     }
 
-    /**
-     * A value flag needs a REAL value: present, non-blank, and not itself a `--` flag. The last of the
-     * three is the dangerous one — `--body --session s` would file the literal text "--session" as the
-     * task's body AND drop the session the operator named.
-     */
     @Test
     fun everyValueFlagRefusesAMissingBlankOrFlagShapedValue() {
         assertEquals("task add: --body requires a value", invalidMessage(listOf("task", "add", "T", "--body")))
@@ -357,7 +298,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** Nothing in this family is repeatable, so a second one is a mistake — and last-wins would hide it. */
     @Test
     fun aRepeatedValueFlagIsAnErrorRatherThanLastWins() {
         assertEquals(
@@ -371,7 +311,6 @@ class CliTaskParseTest {
         )
     }
 
-    /** A move with no target, or with two, is refused: neither has an answer the daemon could invent. */
     @Test
     fun aMoveNeedsExactlyOneTarget() {
         assertTrue("requires a target" in invalidMessage(listOf("task", "move", "local:1")))
@@ -383,13 +322,11 @@ class CliTaskParseTest {
         )
     }
 
-    /** A `--before`/`--after` neighbour is a ref too, and is held to the same grammar. */
     @Test
     fun aMoveNeighbourMustAlsoBeARef() {
         assertTrue("not a task ref" in invalidMessage(listOf("task", "move", "local:1", "--before", "seven")))
     }
 
-    /** A typo'd single-dash flag must never be filed as a positional (a task title, a ref, a path). */
     @Test
     fun anUnknownFlagIsRefusedIncludingSingleDashSpellings() {
         assertEquals("task add: unknown flag '-s'", invalidMessage(listOf("task", "add", "T", "-s", "sess")))
@@ -397,7 +334,6 @@ class CliTaskParseTest {
         assertEquals("project list: unknown flag '--name'", invalidMessage(listOf("project", "list", "--name", "x")))
     }
 
-    /** `--` is the escape hatch for the one real case: content that starts with a dash. */
     @Test
     fun endOfFlagsLetsATitleStartWithADash() {
         assertEquals(
@@ -418,7 +354,6 @@ class CliTaskParseTest {
         assertTrue("unexpected argument" in invalidMessage(listOf("project", "init", "/a", "/b")))
     }
 
-    // ---- 6. unknown and missing subcommands -------------------------------------------------------
 
     @Test
     fun anUnknownTaskSubcommandNamesTheAlternatives() {
@@ -442,7 +377,6 @@ class CliTaskParseTest {
         assertTrue("requires a subcommand" in invalidMessage(listOf("project")))
     }
 
-    // ---- 7. the usage text advertises the family --------------------------------------------------
 
     @Test
     fun theUsageNamesTheTaskAndProjectFamilies() {

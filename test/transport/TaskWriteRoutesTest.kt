@@ -62,31 +62,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.cio.CIO as ServerCIO
 
-/**
- * The task layer's non-link write surface (plan Task 14): `POST /tasks`, `PATCH`/`DELETE /tasks/{ref}`,
- * `POST /tasks/{ref}/{move,deps,comment}` and `POST /projects`.
- *
- * ## What these tests are built around
- * Three things no single collaborator can show on its own:
- *
- *  1. **`POST /tasks`'s four-step project resolution, in order.** Each step is exercised with the earlier
- *     ones deliberately unable to answer, because a route that consulted them in the wrong order still
- *     passes any test that only sets up one of them. The fake filesystem and the fake writer are separate
- *     objects precisely so "the file was READ" and "the file was WRITTEN" cannot be confused.
- *  2. **`PATCH` with a message is ONE operation.** The assertion is the activity feed's LENGTH, not its
- *     contents: a route that transitioned and then posted the message as a comment would produce the same
- *     text and a different count.
- *  3. **A delete releases every holder.** Two sessions hold one task, and both must come back clear —
- *     which is a `sessions` write the task store never makes, so only the route-over-service path shows it.
- *
- * [TaskRouting.service] is the CONCRETE [TaskService], so the fixture builds the real one over fake stores
- * (the plan's instruction): `transition` and `delete` here are the production bodies, and the
- * transition-then-unlink ordering they own is what the delete case actually observes.
- * [ProjectFileWriter] *is* an interface and is faked — `PosixProjectFileWriter`'s body belongs to Task 4.
- *
- * The stores are `Mutex`-guarded because the CIO server runs handlers on its own engine threads and the
- * test thread reads what a handler wrote. Every body is bounded by [withTimeout] (anti-hang).
- */
 class TaskWriteRoutesTest {
 
     private val token = "task-write-routes-master-token-0123456789"
@@ -97,13 +72,7 @@ class TaskWriteRoutesTest {
     private val sessionOne = SessionId("s-one")
     private val sessionTwo = SessionId("s-two")
 
-    // --- POST /tasks: the project resolution order ---------------------------------------------------
 
-    /**
-     * Step 1, and the board's whole path: an explicit project with **no pane header at all**. The board
-     * has neither a pane nor a session, so a route that required one would make creating a card from the
-     * browser impossible — which is the product.
-     */
     @Test
     fun createWithAnExplicitProjectAndNoPaneNeedsNoSession() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
@@ -121,7 +90,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty(), "and writes none either")
     }
 
-    /** An explicit project the daemon has never registered is a `404`, not a row invented from nothing. */
     @Test
     fun createWithAnUnknownExplicitProjectIs404() = withTaskServer { env ->
         val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"x"}""")
@@ -131,7 +99,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.tasks.snapshotEntries().isEmpty(), "nothing was created")
     }
 
-    /** A `project` that is not a uuid is a bad REQUEST — `404` would claim the daemon looked for it. */
     @Test
     fun createWithAMalformedExplicitProjectIs400() = withTaskServer { env ->
         val resp = env.post("/tasks", """{"project":"not-a-uuid","title":"x"}""")
@@ -140,11 +107,6 @@ class TaskWriteRoutesTest {
         assertTrue(resp.bodyAsText().contains("uuid"))
     }
 
-    /**
-     * Step 2: the calling session already knows its project, so nothing on disk is consulted at all. The
-     * filesystem assertions are the point — a route that ran `resolveProject` anyway would still put the
-     * task in the right project here and be wrong about which step answered.
-     */
     @Test
     fun createFromAPaneWhoseSessionHasAProjectUsesItWithoutTouchingTheFilesystem() = withTaskServer { env ->
         env.tasks.seedProject(beta, "beta", "/repo")
@@ -160,11 +122,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty())
     }
 
-    /**
-     * Step 3: no stored project, but a committed `.kotgent.json` above the session's cwd. The row is
-     * upserted from what was READ — without that, a project reachable on disk would have a backlog the
-     * board's selector could never list.
-     */
     @Test
     fun createFromAPaneResolvesTheCommittedFileAboveTheCwdAndRegistersIt() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/sub")
@@ -185,11 +142,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty(), "an existing file is adopted, never rewritten")
     }
 
-    /**
-     * Step 4, and the branch that reads as contradictory until the order is written out: a projectless
-     * directory does NOT `400` — it gets a `.kotgent.json` at the checkout root (so every worktree of that
-     * repository shares the uuid) and a `projects` row.
-     */
     @Test
     fun createFromAPaneInAProjectlessDirectoryWritesTheFileAndRegistersTheProject() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/sub", "/repo/.git")
@@ -213,7 +165,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /** No repository anywhere: the session's own directory is the root, the same degradation the resolver makes. */
     @Test
     fun createFromAPaneOutsideAnyRepositoryCreatesTheFileInTheSessionsOwnDirectory() = withTaskServer { env ->
         env.fs.dirs += setOf("/scratch", "/scratch/notes")
@@ -226,7 +177,6 @@ class TaskWriteRoutesTest {
         assertEquals(listOf("/scratch/notes" to "notes"), env.writer.calls)
     }
 
-    /** The one case the plan makes a `400`: no project named and no session to resolve one from. */
     @Test
     fun createWithNeitherAProjectNorASessionIs400NamingProject() = withTaskServer { env ->
         val resp = env.post("/tasks", """{"title":"orphan"}""")
@@ -237,17 +187,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty(), "nothing is created on disk for a request that answers 400")
     }
 
-    /**
-     * A pane the registry does not know fails closed — it must not fall back to some other session, and
-     * it must not fall back to the BOARD either.
-     *
-     * The explicit `project` is what makes this test prove what its name claims, and it was missing. With
-     * no project named, the request reached `400` through project RESOLUTION — step 2 finds no session,
-     * so the message names `--project` — while the identity had already collapsed to `board` a line
-     * earlier and was never the reason for anything. Naming a project the daemon already knows removes
-     * that second reason: against the collapse this request answers `201` and files the card as the human
-     * board actor, in the one feed the no-exclusivity design tells operators to read.
-     */
     @Test
     fun createFromAnUnknownPaneIs400() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
@@ -261,15 +200,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.tasks.snapshotActivity().isEmpty(), "and nothing was filed on the board's behalf")
     }
 
-    /**
-     * The other two shapes of "supplied, and it names nobody": a header that is not a pane id at all, and
-     * a `sessionId` that is blank. Both used to resolve to the same `null` the board legitimately produces
-     * and were attributed to `board`; only an ABSENT identity may mean the board.
-     *
-     * A blank `sessionId` deliberately does NOT fall through to the pane header any more. The value was
-     * supplied and [io.kotgent.core.SessionId] refuses it, so it is a malformed request — and reading the
-     * header instead would silently attribute the write to a session the caller did not name.
-     */
     @Test
     fun anIdentityThatNamesNobodyIsRefusedRatherThanAttributedToTheBoard() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
@@ -286,7 +216,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.tasks.snapshotActivity().isEmpty(), "and neither was recorded as the board's")
     }
 
-    /** An explicit `--session` is the escape hatch for a caller outside any kotgent pane. */
     @Test
     fun createWithAnExplicitSessionIdResolvesItsProject() = withTaskServer { env ->
         env.tasks.seedProject(beta, "beta", "/repo")
@@ -301,20 +230,7 @@ class TaskWriteRoutesTest {
         )
     }
 
-    // --- POST /tasks: the resolved project is bound onto the calling session ---------------------------
 
-    /**
-     * Step 3 must WRITE `sessions.project_id`, not merely answer with the project it read.
-     *
-     * That column is what `GET /tasks` and `POST /tasks/next` resolve a ref-less request through
-     * (`TaskReadRoutes.resolveProjectParameter`, `TaskLinkRoutes`' `/tasks/next`), and the only other
-     * production caller of `setProjectId` is the `Reconciler`'s STARTUP backfill. So without this write the
-     * session that filed the first card could not then run `task show` / `task next` / `task list` until
-     * the daemon was restarted — the ref-less agent loop, which is the feature's headline path.
-     *
-     * `updated_at` is asserted UNCHANGED for the reason `Reconciler.sortKeyOf` writes down: it is activity,
-     * `kotgent list` sorts by it, and a derived backfill must neither advance nor rewind it.
-     */
     @Test
     fun createFromAPaneBindsTheProjectItResolvedOntoTheCallingSession() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/sub")
@@ -333,7 +249,6 @@ class TaskWriteRoutesTest {
         assertEquals(4242L, row.updatedAt, "a derived backfill is not activity and must not restamp the sort key")
     }
 
-    /** Step 4 owes the same write: the session that BOOTSTRAPPED the project is the one that will use it. */
     @Test
     fun createFromAPaneInAProjectlessDirectoryBindsTheProjectItCreatedOntoTheCallingSession() =
         withTaskServer { env ->
@@ -346,11 +261,6 @@ class TaskWriteRoutesTest {
             assertEquals(minted, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
         }
 
-    /**
-     * The other direction, and the reason the bind lives in steps 3 and 4 only: an explicit `project` is
-     * the BOARD naming a backlog, and a session that merely relayed that request must not be re-pointed at
-     * it. Its own project is the one its cwd resolves to, and its next `task next` must still use that.
-     */
     @Test
     fun createWithAnExplicitProjectDoesNotRePointTheCallingSession() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/other")
@@ -363,15 +273,7 @@ class TaskWriteRoutesTest {
         assertEquals(beta, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
     }
 
-    // --- POST /tasks: who filed it ---------------------------------------------------------------------
 
-    /**
-     * A card filed from a pane is attributed to that SESSION, not to `board`.
-     *
-     * The `created` row is the feed's first entry and the no-exclusivity design tells operators to read the
-     * feed to see who is doing what; `TaskTracker.create`'s author default exists for the board alone, so a
-     * route that never passes one makes every agent's own card claim a human filed it.
-     */
     @Test
     fun aCreateFromAPaneIsAttributedToTheCallingSession() = withTaskServer { env ->
         env.tasks.seedProject(beta, "beta", "/repo")
@@ -384,7 +286,6 @@ class TaskWriteRoutesTest {
         assertEquals(sessionOne.value, created.author)
     }
 
-    /** And one with genuinely nobody behind it stays the board's — the case the default was written for. */
     @Test
     fun aCreateFromTheBoardIsAttributedToTheBoard() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
@@ -400,11 +301,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /**
-     * A NAMED session that is not there is a `400`, and nothing is written — not the task, and not the
-     * project the resolution step would otherwise have created on disk on the way past. `comment` and
-     * `PATCH` refuse the same input for the same reason: a typo must not be re-attributed to `board`.
-     */
     @Test
     fun aCreateNamingASessionThatDoesNotExistIs400AndWritesNothing() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
@@ -433,12 +329,7 @@ class TaskWriteRoutesTest {
         assertTrue(env.tasks.snapshotEntries().isEmpty())
     }
 
-    // --- PATCH -------------------------------------------------------------------------------------
 
-    /**
-     * `kotgent task review -m "…"` is ONE operation, and the feed LENGTH is what proves it: a route that
-     * transitioned and then posted the message separately would write the same words in two rows.
-     */
     @Test
     fun aStateChangeWithAMessageWritesExactlyOneActivityRow() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "ship it")
@@ -460,7 +351,6 @@ class TaskWriteRoutesTest {
         assertEquals(sessionOne.value, feed.single().author, "attributed to the calling pane's session")
     }
 
-    /** With no session behind it — the board dragging a card — the row is attributed to the board. */
     @Test
     fun aStateChangeFromTheBoardIsAttributedToTheBoard() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "drag me")
@@ -474,15 +364,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /**
-     * A `sessionId` naming no row is refused, rather than silently re-attributed to the board.
-     *
-     * `comment` already refuses exactly this input; `PATCH` was the one attributed write in the package
-     * that did not, so `kotgent task review --session <typo> -m "…"` committed the transition and recorded
-     * a human action for an agent's write — in the one feed the no-exclusivity design tells operators to
-     * read to see who is doing what. The title assertion is the second half: the refusal is settled BEFORE
-     * the tracker edit, so a rejected patch leaves nothing half-written.
-     */
     @Test
     fun aStateChangeNamingASessionThatDoesNotExistIs400AndWritesNothing() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "old title")
@@ -507,21 +388,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /**
-     * The boundary of that refusal, and the half that used to be pinned the wrong way round: a pane
-     * header the registry cannot resolve is REFUSED too, not treated as "no session at all".
-     *
-     * This test previously asserted the opposite, so the collapse had a green test defending it. The
-     * reasoning it recorded — "an unresolvable pane is the board's own legitimate shape" — is exactly
-     * backwards: the BOARD sends no header, and the only caller that sends one is a CLI inside a kotgent
-     * pane ([io.kotgent.cli.TmuxSelf] withholds it otherwise). So a header the registry rejects means an
-     * agent's write, made under an identity the daemon lost, and recording it as the human board actor
-     * falsifies the one signal the no-exclusivity design gives operators. Absent, resolved and rejected
-     * are three answers, and only the first is the board.
-     *
-     * The two write assertions are the second half: the identity is settled before the transition, so a
-     * refused patch leaves neither a state nor a row behind.
-     */
     @Test
     fun aStateChangeFromAPaneTheRegistryDoesNotKnowIs400AndWritesNothing() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "drag me")
@@ -538,7 +404,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /** Tracker fields and the state travel together, and the answer is re-read rather than half of it. */
     @Test
     fun aPatchCanCarryTrackerFieldsAndAStateAtOnce() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "old title")
@@ -552,7 +417,6 @@ class TaskWriteRoutesTest {
         assertEquals(TaskState.done.name, dto.state)
     }
 
-    /** Closing a task from the board releases every worker session and leaves them alive. */
     @Test
     fun patchingATaskToDoneUnlinksEveryHolder() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "close me")
@@ -577,7 +441,6 @@ class TaskWriteRoutesTest {
         assertEquals(TaskState.todo, env.tasks.snapshotEntries().getValue(ref).state)
     }
 
-    /** A message with no state change has no activity row to ride, and dropping it silently is worse. */
     @Test
     fun aMessageWithoutAStateChangeIs400AndPointsAtComment() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "steady")
@@ -589,12 +452,7 @@ class TaskWriteRoutesTest {
         assertEquals("", env.tasks.snapshotTasks().getValue(ref).body, "the refused patch wrote nothing")
     }
 
-    // --- DELETE ------------------------------------------------------------------------------------
 
-    /**
-     * A delete releases every holder first — a `sessions` write the task store never makes, so this is
-     * the only place the route-over-service path can be seen doing it.
-     */
     @Test
     fun aDeleteUnlinksEveryHolderAndRemovesTheTask() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "obsolete")
@@ -616,7 +474,6 @@ class TaskWriteRoutesTest {
         assertTrue(resp.bodyAsText().contains("local:404"))
     }
 
-    // --- move --------------------------------------------------------------------------------------
 
     @Test
     fun aMoveReRanksTheEntryAndRequiresExactlyOneTarget() = withTaskServer { env ->
@@ -638,7 +495,6 @@ class TaskWriteRoutesTest {
         }
     }
 
-    /** `move` cannot say whether the ref or the neighbour was missing, so the one `404` says both. */
     @Test
     fun aMoveNamingSomethingThatIsNotThereIs404() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "only")
@@ -649,13 +505,7 @@ class TaskWriteRoutesTest {
         assertTrue(neighbour.bodyAsText().contains("neighbour"))
     }
 
-    // --- deps --------------------------------------------------------------------------------------
 
-    /**
-     * All four refusals answer `400` and each says which rule rejected the edge. `unknownRef` is
-     * deliberately reachable from the PATH ref too: pre-checking that ref for existence would answer
-     * `404` there and quietly make one of the four unreachable from one side.
-     */
     @Test
     fun theFourDependencyRefusalsAreEach400NamingWhich() = withTaskServer { env ->
         val a = env.seedTask(alpha, "a")
@@ -718,7 +568,6 @@ class TaskWriteRoutesTest {
         assertTrue(malformed.bodyAsText().contains("local:42"), "the message shows the shape it wanted")
     }
 
-    /** A `remove` naming a task that is not there reaches the read-back's `404`. */
     @Test
     fun removingADependencyOfAnUnknownTaskIs404() = withTaskServer { env ->
         val a = env.seedTask(alpha, "a")
@@ -728,7 +577,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    // --- comment -----------------------------------------------------------------------------------
 
     @Test
     fun aCommentRequiresASessionAndIsAttributedToIt() = withTaskServer { env ->
@@ -751,7 +599,6 @@ class TaskWriteRoutesTest {
         assertEquals(1, env.tasks.snapshotActivity().size)
     }
 
-    /** A `sessionId` naming a row that is not there is refused rather than attributed to a ghost. */
     @Test
     fun aCommentFromASessionThatDoesNotExistIs400() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "discuss")
@@ -779,12 +626,7 @@ class TaskWriteRoutesTest {
         )
     }
 
-    // --- refs --------------------------------------------------------------------------------------
 
-    /**
-     * A ref that cannot be parsed is a `400` on every route that takes one — `404` in this package means
-     * "no such task `{ref}`", which presupposes that `{ref}` names something.
-     */
     @Test
     fun aMalformedRefIs400OnEveryRouteThatTakesOne() = withTaskServer { env ->
         env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
@@ -804,7 +646,6 @@ class TaskWriteRoutesTest {
         }
     }
 
-    // --- POST /projects ------------------------------------------------------------------------------
 
     @Test
     fun postProjectsWritesTheFileAtAnAbsolutePathAndRegistersIt() = withTaskServer { env ->
@@ -821,16 +662,6 @@ class TaskWriteRoutesTest {
         assertNotNull(env.tasks.snapshotProjects()[minted])
     }
 
-    /**
-     * The named path says WHICH checkout; the file lands at that checkout's root.
-     *
-     * `kotgent project init` defaults to the caller's cwd, so the broken case was the ordinary one: run
-     * from `/repo/src`, it used to write `/repo/src/.kotgent.json`, and because resolution walks up with
-     * NEAREST WINS every session under `src` then belonged to a different project than the rest of the
-     * repository — two backlogs for one body of work, which is exactly what "a project is a file, not a
-     * path" exists to prevent. The name comes from the ROOT too: a project called `src` would be the same
-     * mistake wearing a label.
-     */
     @Test
     fun postProjectsAnchorsASubdirectoryAtTheMainCheckoutRoot() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/src")
@@ -852,12 +683,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /**
-     * The worktree half of the same rule, and the one that would be committed wrong: pointed at a linked
-     * worktree, the file must land in the MAIN checkout — a `.kotgent.json` written inside the worktree is
-     * committed on that branch alone, so `/repo` resolves to no project (or mints a second uuid) and the
-     * plan's "a worktree and its main checkout share one backlog" criterion is false.
-     */
     @Test
     fun postProjectsPointedAtALinkedWorktreeWritesIntoTheMainCheckout() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature")
@@ -873,17 +698,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /**
-     * The endpoint is "create or ADOPT the project owning an absolute path", and this is the adopt half —
-     * the one the anchor rule above silently broke while every test seeded a tree with no project file.
-     *
-     * `/repo/packages/api` carries its own committed `.kotgent.json` (the deliberately nested monorepo
-     * project the anchor's recorded cost still allows by hand). Jumping straight to the main checkout root
-     * writes a SECOND file at `/repo`: one repository with two projects, which is exactly the split the
-     * anchor exists to prevent, moved one level up. Worse, the uuid answered would be one no session under
-     * `packages/api` can ever resolve to — `resolveProject` is nearest-wins, so those sessions keep
-     * answering `alpha` while the browser was handed a project nobody's backlog is in.
-     */
     @Test
     fun postProjectsAdoptsTheProjectAlreadyCommittedAtThePathInsteadOfMintingOneAbove() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/packages", "/repo/packages/api")
@@ -908,11 +722,6 @@ class TaskWriteRoutesTest {
         )
     }
 
-    /**
-     * Adoption is the same walk `POST /tasks`' step 3 does, so a path with no file of its OWN adopts the
-     * project committed above it — the ordinary "run `project init` twice" case, which must be idempotent
-     * rather than a second write at the root under a re-derived default name.
-     */
     @Test
     fun postProjectsAdoptsTheProjectCommittedAboveTheNamedDirectory() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/src")
@@ -928,12 +737,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty())
     }
 
-    /**
-     * The second half also pins the ORDER of the name gate against the adopt step above it: by then the
-     * first call has committed a file at that very path, so a route that adopted before validating would
-     * answer `200` with the existing project for a name it had just refused at the same path. A malformed
-     * name is a malformed request whatever the filesystem says.
-     */
     @Test
     fun postProjectsHonoursAGivenNameAndRefusesOneAFileCouldNotCarry() = withTaskServer { env ->
         env.fs.dirs += "/srv/new-repo"
@@ -968,17 +771,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty())
     }
 
-    /**
-     * A path that EXISTS but is not a directory is refused — the third shape of a bad path, and the one
-     * the two above do not reach.
-     *
-     * `realpath(3)` canonicalizes a regular file perfectly happily, and every branch past that point then
-     * treats it as a directory: `resolveProject` walks UP from it, and with nothing committed anywhere
-     * `mainCheckoutRoot` walks up to the checkout, so `{"path":"/repo/README.md"}` answered `200` and
-     * adopted — or created — `/repo`'s project for a location that is not a project location at all. The
-     * writer's own "not an existing directory" refusal cannot catch this: by the time it is called the
-     * directory it is handed is the checkout root, which really is one.
-     */
     @Test
     fun postProjectsRefusesAPathThatIsNotADirectory() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git")
@@ -993,11 +785,6 @@ class TaskWriteRoutesTest {
         assertNull(env.fs.files["/repo/$PROJECT_FILE_NAME"], "no project file appeared at the checkout root")
     }
 
-    /**
-     * The same file with a project committed above it, because the gate has to sit ABOVE the adopt branch
-     * and not merely in front of the writer: adoption answers `200` without writing anything, so a gate
-     * placed only on the creating path would still hand the browser a project uuid for a README.
-     */
     @Test
     fun postProjectsRefusesAFileEvenWhenAProjectIsCommittedAboveIt() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git")
@@ -1011,7 +798,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.writer.calls.isEmpty())
     }
 
-    /** The writer's own refusal (`ProjectPathException`) is a `400`, not a 500. */
     @Test
     fun aWriterRefusalIsA400() = withTaskServer { env ->
         env.fs.dirs += "/srv/readonly"
@@ -1023,9 +809,7 @@ class TaskWriteRoutesTest {
         assertTrue(resp.bodyAsText().contains("/srv/readonly"))
     }
 
-    // --- the gate ------------------------------------------------------------------------------------
 
-    /** Every write route lives inside the `authenticated { route(API_PREFIX) }` block and inherits its gate. */
     @Test
     fun everyWriteRouteRequiresACredential() = withTaskServer { env ->
         val calls = listOf(
@@ -1047,7 +831,6 @@ class TaskWriteRoutesTest {
         assertTrue(env.tasks.snapshotEntries().isEmpty())
     }
 
-    // --- harness -------------------------------------------------------------------------------------
 
     private inner class Env(
         val port: Int,
@@ -1080,7 +863,6 @@ class TaskWriteRoutesTest {
         suspend fun patch(path: String, body: String, pane: String? = null): HttpResponse =
             request(HttpMethod.Patch, path, body, pane)
 
-        /** A task already in the backlog, created through the same tracker path the route uses. */
         suspend fun seedTask(project: ProjectId, title: String): TaskRef {
             tasks.seedProject(project, project.value.take(8), "/repo")
             return tasks.create(project, title, "").ref
@@ -1129,16 +911,7 @@ class TaskWriteRoutesTest {
         }
     }
 
-    // --- fakes ---------------------------------------------------------------------------------------
 
-    /**
-     * An in-memory [TaskStore] with real enough behaviour for the routes to be worth testing: `create`
-     * mints `local:<n>` and appends at the end, `transition` writes its own activity row, and
-     * `addDependency` enforces all four refusals for real rather than from a knob — a knob would prove the
-     * route maps an exception it was handed, not that the four inputs the plan names each produce one.
-     *
-     * Guarded by a [Mutex] because the CIO engine runs handlers on its own threads.
-     */
     private class FakeTaskStore : TaskStore {
         private val mutex = Mutex()
         private val tasks = mutableMapOf<TaskRef, Task>()
@@ -1185,8 +958,6 @@ class TaskWriteRoutesTest {
             tasks[ref] = task
             val end = entries.values.filter { it.project == project }.maxOfOrNull { it.position } ?: 0.0
             entries[ref] = BacklogEntry(ref, project, end + 1.0, TaskState.todo, false, 0L, 0L, ++rev)
-            // The author the caller passed, exactly as the real store records it — a fake that hardcoded
-            // "board" here would answer the same whether or not the route ever attributes the create.
             activity += TaskActivityEntry(++activityId, ref, 0L, ActivityKind.created, author, null, null, null)
             task
         }
@@ -1288,7 +1059,6 @@ class TaskWriteRoutesTest {
             entries[ref]?.let { entries[ref] = it.copy(rev = ++rev) }
         }
 
-        /** Whether [target] is reachable from [start] by following `depends on` edges. */
         private fun reaches(start: TaskRef, target: TaskRef): Boolean {
             val seen = mutableSetOf<TaskRef>()
             val stack = ArrayDeque(listOf(start))
@@ -1337,16 +1107,10 @@ class TaskWriteRoutesTest {
         override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
     }
 
-    /**
-     * An in-memory [EventStore] modelling the session row and the task link. All three link members are
-     * overridden — the interface's defaults throw precisely so a fake that forgot one cannot turn a link
-     * that persisted nothing into a green test.
-     */
     private class FakeEventStore : EventStore {
         private val mutex = Mutex()
         private val rows = mutableMapOf<SessionId, SessionMeta>()
 
-        /** Nothing here ever archives a session; the set exists so a test can assert that. */
         val archived: MutableSet<SessionId> = mutableSetOf()
 
         fun seed(
@@ -1406,11 +1170,6 @@ class TaskWriteRoutesTest {
         ): Boolean = unused("setModelForProvider")
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
 
-        /**
-         * Implemented, unlike the throwing stubs below it, because `POST /tasks` binds the project it
-         * resolved onto the calling session — a missing row is a documented no-op (the SQL is a targeted
-         * `UPDATE … WHERE id = ?`), so an unknown id must write nothing rather than throw.
-         */
         override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
             mutex.withLock {
                 rows[sessionId]?.let { rows[sessionId] = it.copy(projectId = projectId, updatedAt = updatedAt) }
@@ -1428,12 +1187,10 @@ class TaskWriteRoutesTest {
             error("the task write routes are not expected to call EventStore.$name")
     }
 
-    /** A fake tree: a set of directories and a map of file bodies, with `realpath` as identity over both. */
     private class FakeProjectFs : ProjectFs {
         val dirs: MutableSet<String> = mutableSetOf()
         val files: MutableMap<String, String> = mutableMapOf()
 
-        /** Every path [readFile] was asked about — the proof that a branch consulted the disk, or did not. */
         val reads: MutableList<String> = mutableListOf()
 
         override fun isDirectory(path: String): Boolean = path.trimEnd('/') in dirs
@@ -1449,23 +1206,12 @@ class TaskWriteRoutesTest {
         }
     }
 
-    /**
-     * A fake [ProjectFileWriter]. Task 4 is filling `PosixProjectFileWriter` in parallel, so this test may
-     * not depend on its body — only on the interface's contract: an existing file wins, a fresh one gets a
-     * new uuid, and a refusal is a [ProjectPathException].
-     *
-     * "An existing file wins" is modelled by PARSING it, not by answering [mint] regardless: the real
-     * writer reads the winner's file back, so a fake that returned its own uuid for a directory somebody
-     * else's project already owns would hide exactly the confusion the adopt tests are about.
-     */
     private class FakeProjectFileWriter(
         private val fs: FakeProjectFs,
         private val mint: ProjectId,
     ) : ProjectFileWriter {
-        /** `(dir, name)` per call, in order. */
         val calls: MutableList<Pair<String, String>> = mutableListOf()
 
-        /** Directories the writer refuses, standing in for an unwritable location. */
         val failOn: MutableSet<String> = mutableSetOf()
 
         override suspend fun ensureProjectFile(dir: String, name: String): ProjectFile {

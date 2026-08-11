@@ -17,43 +17,25 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * The [AgentAdapter] contract test (Task 10): verifies the whole "adapter -> events -> reducer" seam
- * end-to-end. A [FakeAdapter] stands in for a live provider; the test drives it to emit a
- * representative stream exercising ALL 7 v1 [AgentEvent] subtypes, collects [AgentAdapter.events]
- * (bounded by `withTimeout`), and folds the collected events through the [reduce] / [replay] reducer,
- * asserting the resulting [Projection] / [SessionState] trajectory. It also asserts the New-vs-Resume
- * [AgentAdapter.buildLaunchSpec] shapes.
- *
- * This is pure Kotlin (no cinterop), so it runs for real in the test binary — unlike the PTY paths,
- * there is no KT-78062 caveat here.
- */
 class AdapterContractTest {
 
     private val providerId = ProviderSessionId("11111111-2222-3333-4444-555555555555")
 
-    /**
-     * A representative stream covering every v1 [AgentEvent] subtype and the interesting reducer
-     * paths: SessionBound (identity, no state change), the running-producers TurnStarted/ToolCall,
-     * approval accumulation, the forward-modeled ApprovalResolved decrement back to running, the
-     * critical "entering running clears pending approvals" rule (ToolCall while blocked), and Exited.
-     */
     private val representative: List<AgentEvent> = listOf(
-        AgentEvent.SessionBound(providerId),         // running   — records provider id, no state change
-        AgentEvent.TurnStarted,                      // running
-        AgentEvent.ToolCall("Read"),                 // running
-        AgentEvent.ApprovalRequested("a1"),          // needs_approval (pending 1)
-        AgentEvent.ApprovalRequested("a2"),          // needs_approval (pending 2)
-        AgentEvent.ApprovalResolved("a1", true),     // needs_approval (pending 1) — decrement, still blocked
-        AgentEvent.ApprovalResolved("a2", false),    // running        (pending 0) — last resolved -> running
-        AgentEvent.ApprovalRequested("a3"),          // needs_approval (pending 1)
-        AgentEvent.ToolCall("Bash"),                 // running        (pending 0) — CRITICAL clear-on-running
-        AgentEvent.TurnCompleted,                    // ready
-        AgentEvent.TurnStarted,                      // running
-        AgentEvent.Exited(0),                        // stopped
+        AgentEvent.SessionBound(providerId),
+        AgentEvent.TurnStarted,
+        AgentEvent.ToolCall("Read"),
+        AgentEvent.ApprovalRequested("a1"),
+        AgentEvent.ApprovalRequested("a2"),
+        AgentEvent.ApprovalResolved("a1", true),
+        AgentEvent.ApprovalResolved("a2", false),
+        AgentEvent.ApprovalRequested("a3"),
+        AgentEvent.ToolCall("Bash"),
+        AgentEvent.TurnCompleted,
+        AgentEvent.TurnStarted,
+        AgentEvent.Exited(0),
     )
 
-    /** The state the reducer must reach after each event of [representative], in order. */
     private val expectedTrajectory: List<SessionState> = listOf(
         SessionState.running,
         SessionState.running,
@@ -69,20 +51,17 @@ class AdapterContractTest {
         SessionState.stopped,
     )
 
-    /** Simple names of all 7 v1 [AgentEvent] subtypes (K/N has no `sealedSubclasses`, so hardcoded). */
     private val allV1EventNames: Set<String> = setOf(
         "TurnStarted", "TurnCompleted", "ApprovalRequested",
         "ApprovalResolved", "ToolCall", "Exited", "SessionBound",
     )
 
-    // ---- the core contract: adapter -> events -> reducer ----
 
     @Test
     fun foldingTheAdapterStreamThroughTheReducerVisitsTheExpectedStateTrajectory() = runBlocking {
         withTimeout(5_000) {
             val adapter = FakeAdapter()
 
-            // A collector reduces the adapter's stream incrementally, exactly as the daemon would.
             val trajectory = mutableListOf<SessionState>()
             var projection = Projection.EMPTY
             val collector = launch {
@@ -92,7 +71,6 @@ class AdapterContractTest {
                 }
             }
 
-            // Drive the "provider": emit the whole representative sequence, then end the session.
             adapter.emitAll(representative)
             adapter.close()
             collector.join()
@@ -103,15 +81,12 @@ class AdapterContractTest {
                 "reducing the adapter's event stream must visit the expected states in order",
             )
 
-            // Final projection: stopped, provider id bound, no pending approvals, seq == #events.
             assertEquals(SessionState.stopped, projection.state)
             assertEquals(0, projection.pendingApprovals)
             assertEquals(providerId, projection.providerSessionId, "SessionBound bound the provider id")
             assertEquals(Seq(representative.size.toLong()), projection.lastSeq)
             assertFalse(projection.stopRequested)
 
-            // Streaming reduce over the live Flow must equal a batch replay of the same events —
-            // this IS the adapter->events->reducer contract (state == replay(adapter.events)).
             assertEquals(
                 replay(representative),
                 projection,
@@ -127,7 +102,6 @@ class AdapterContractTest {
             adapter.emitAll(representative)
             adapter.close()
 
-            // Collection bounded by the enclosing withTimeout; completes when the adapter closes.
             val collected: List<AgentEvent> = adapter.events.toList()
 
             assertEquals(representative, collected, "the adapter Flow delivers every event once, in order")
@@ -145,7 +119,7 @@ class AdapterContractTest {
     fun anEmptyAdapterStreamReducesToTheInitialRunningProjection() = runBlocking {
         withTimeout(5_000) {
             val adapter = FakeAdapter()
-            adapter.close() // the session ends before producing any event
+            adapter.close()
 
             val collected = adapter.events.toList()
             assertTrue(collected.isEmpty(), "no events were emitted")
@@ -157,7 +131,6 @@ class AdapterContractTest {
         }
     }
 
-    // ---- buildLaunchSpec: New vs Resume shapes ----
 
     @Test
     fun buildLaunchSpecNewVsResumeProduceTheExpectedShapes() {

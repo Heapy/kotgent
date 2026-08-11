@@ -14,13 +14,6 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * Reconciliation TDD (plan Task 13) — host-free with a [FakeTmux], an in-memory [SqliteEventStore], and
- * a fake [VendorStoreProbe]. Covers the classification truth table (running / resumable / crashed /
- * stopped) over the (tmux liveness × stop-intent × vendor-transcript) combinations, and that the
- * [PaneRegistry] is rebuilt from the LIVE panes tmux reports (stale entries pruned, `pane_id`
- * correlation refreshed). Every body is bounded by [withTimeout] as an anti-hang tripwire.
- */
 class ReconcilerTest {
 
     private fun meta(
@@ -46,35 +39,30 @@ class ReconcilerTest {
     private fun uuid(c: Char): ProviderSessionId =
         ProviderSessionId("$c$c$c$c$c$c$c$c-$c$c$c$c-4$c$c$c-8$c$c$c-$c$c$c$c$c$c$c$c$c$c$c$c")
 
-    // ---- the classification is a pure function: exhaustive, deterministic ----
 
     @Test
     fun classifyIsExhaustiveOverTheTruthTable() {
-        // paneAlive: keep a finer live state from the log; correct a stale dead classification up to running.
         assertEquals(SessionState.running, Reconciler.classify(true, SessionState.running, stopIntent = false, transcriptExists = false))
         assertEquals(SessionState.needs_approval, Reconciler.classify(true, SessionState.needs_approval, false, false), "alive keeps a finer live state")
         assertEquals(SessionState.running, Reconciler.classify(true, SessionState.crashed, false, false), "alive corrects a stale dead state up to running")
 
-        // dead + clean-stop intent -> stopped (wins over a surviving transcript).
         assertEquals(SessionState.stopped, Reconciler.classify(false, SessionState.running, stopIntent = true, transcriptExists = true))
         assertEquals(SessionState.stopped, Reconciler.classify(false, SessionState.running, stopIntent = true, transcriptExists = false))
 
-        // dead + transcript -> resumable ; dead + neither -> crashed.
         assertEquals(SessionState.resumable, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = true))
         assertEquals(SessionState.crashed, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = false))
     }
 
-    // ---- reconcile() over a mixed store: classify each + rebuild the registry from live panes ----
 
     @Test
     fun reconcileClassifiesEachCombinationAndRebuildsRegistryFromLivePanes() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
 
-            val idA = uuid('a') // alive
-            val idB = uuid('b') // cleanly stopped, transcript survives
-            val idC = uuid('c') // dead, transcript survives -> resumable
-            val idD = uuid('d') // dead, no transcript      -> crashed
+            val idA = uuid('a')
+            val idB = uuid('b')
+            val idC = uuid('c')
+            val idD = uuid('d')
 
             store.upsertSession(meta("alive", SessionState.running, providerId = idA, paneId = null))
             store.upsertSession(meta("stopd", SessionState.stopped, providerId = idB))
@@ -88,12 +76,11 @@ class ReconcilerTest {
                     TmuxPane(session = "kt-alive", paneId = livePane, pid = 1, dead = false, width = 80, height = 24),
                 ),
             )
-            // A, B, C have transcripts on disk; D does not (idD absent). The "noid" session has no id at all.
             val transcripts = setOf(idA, idB, idC)
             val vendorProbe = VendorStoreProbe { _, _, id -> id in transcripts }
 
             val registry = PaneRegistry()
-            registry.register(PaneId("%999"), SessionId("ghost")) // a stale entry that must be pruned
+            registry.register(PaneId("%999"), SessionId("ghost"))
 
             val reconciler = Reconciler(tmux, store, vendorProbe, registry, now = { 2L })
             val result = reconciler.reconcile()
@@ -104,17 +91,14 @@ class ReconcilerTest {
             assertEquals(SessionState.crashed, store.getSession(SessionId("crash"))!!.state, "dead + no transcript -> crashed")
             assertEquals(SessionState.crashed, store.getSession(SessionId("noid"))!!.state, "dead + no provider id -> crashed")
 
-            // pane_id correlation rebuilt from tmux's live pane (was null in the store).
             assertEquals(livePane, store.getSession(SessionId("alive"))!!.paneId, "reconcile recaptured the live pane_id")
 
-            // Registry rebuilt from LIVE panes only: the stale %999 ghost is gone, the live pane present.
             val expected = mapOf(livePane to SessionId("alive"))
             assertEquals(expected, registry.snapshot(), "registry rebuilt from live panes, stale entries pruned")
             assertEquals(expected, result.livePanes)
             assertEquals(SessionId("alive"), registry.lookup(livePane))
             assertEquals(null, registry.lookup(PaneId("%999")))
 
-            // Result reports per-session outcomes with liveness.
             val byId = result.sessions.associateBy { it.sessionId }
             assertEquals(true, byId.getValue(SessionId("alive")).paneAlive)
             assertEquals(false, byId.getValue(SessionId("crash")).paneAlive)
@@ -122,7 +106,6 @@ class ReconcilerTest {
         }
     }
 
-    // ---- the probe is dispatched per provider ----
 
     @Test
     fun eachSessionIsProbedWithItsOwnProvidersStore() = runBlocking {
@@ -134,9 +117,6 @@ class ReconcilerTest {
             store.upsertSession(meta("cxsess", SessionState.running, providerId = codexId, agent = "codex"))
             store.upsertSession(meta("unknwn", SessionState.running, providerId = claudeId, agent = "aider"))
 
-            // Each provider's probe recognises only its OWN session's id. A shared probe would answer for
-            // both, hiding exactly the bug this guards: a codex session probed against ~/.claude (or vice
-            // versa) always misses, so every dead session would classify as `crashed` instead of resumable.
             val probe = byAgentVendorStoreProbe(
                 mapOf(
                     "claude" to VendorStoreProbe { _, _, id -> id == claudeId },
@@ -156,7 +136,6 @@ class ReconcilerTest {
         }
     }
 
-    // ---- a live session reconciles from the CACHE-authoritative state, not the pure event log ----
 
     @Test
     fun reconcileClassifiesALiveSessionFromTheCacheAuthoritativeStateNotTheEventLog() = runBlocking {
@@ -164,13 +143,10 @@ class ReconcilerTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('a')
             store.upsertSession(meta("intr", SessionState.running, providerId = id, paneId = PaneId("%5")))
-            // The event LOG ends at needs_approval …
             store.append(SessionId("intr"), AgentEvent.ApprovalRequested("perm"), EventSource.hook)
             assertEquals(SessionState.needs_approval, store.projectionOf(SessionId("intr")).state, "log projection is needs_approval")
-            // … but a control interrupt set the CACHE to `ready` WITHOUT an event (as SessionManager.interrupt does).
             store.updateSessionState(SessionId("intr"), SessionState.ready, EventSource.user, PaneId("%5"), 2L)
 
-            // The pane is still alive across the "restart".
             val tmux = FakeTmux(
                 seedPanes = listOf(
                     TmuxPane(session = "kt-intr", paneId = PaneId("%5"), pid = 1, dead = false, width = 80, height = 24),
@@ -179,8 +155,6 @@ class ReconcilerTest {
             val reconciler = Reconciler(tmux, store, VendorStoreProbe { _, _, _ -> false }, PaneRegistry(), now = { 3L })
             reconciler.reconcile()
 
-            // Reconciliation keeps the cache-authoritative `ready`, NOT the log's stale `needs_approval` —
-            // a daemon restart must not resurrect a needs_approval a control interrupt already cleared.
             assertEquals(
                 SessionState.ready,
                 store.getSession(SessionId("intr"))!!.state,
@@ -189,7 +163,6 @@ class ReconcilerTest {
         }
     }
 
-    // ---- stop intent is INCARNATION-scoped: a previous incarnation's clean exit is not current intent ----
 
     @Test
     fun aStopFromAPreviousIncarnationDoesNotMaskAResumableAfterAResume() = runBlocking {
@@ -198,12 +171,9 @@ class ReconcilerTest {
             val id = uuid('a')
             store.upsertSession(meta("reinc", SessionState.running, providerId = id, paneId = PaneId("%7")))
             store.append(SessionId("reinc"), AgentEvent.SessionBound(id), EventSource.system)
-            // Incarnation #1 ended cleanly, so the LOG (and, transactionally, the cache) says `stopped`.
             store.append(SessionId("reinc"), AgentEvent.Exited(0), EventSource.hook)
             assertEquals(SessionState.stopped, store.projectionOf(SessionId("reinc")).state, "the log ends at stopped")
 
-            // Then the operator RESUMED it — a ControlSignal, never written to the log, so only the cache
-            // records the new incarnation — and that incarnation died while the daemon was down.
             store.updateSessionState(SessionId("reinc"), SessionState.ready, EventSource.user, PaneId("%8"), 2L)
 
             val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _, _ -> true }, PaneRegistry(), now = { 3L })
@@ -222,7 +192,6 @@ class ReconcilerTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('b')
-            // `SessionManager.terminate` caches `stopped` without any event (there is no Exited hook in v1).
             store.upsertSession(meta("stopd", SessionState.stopped, providerId = id, paneId = PaneId("%9")))
             val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _, _ -> true }, PaneRegistry(), now = { 3L })
 

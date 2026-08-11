@@ -23,19 +23,10 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * [TokenHolder] — the master token as a live provider (plan Task 5).
- *
- * Two layers are covered. The unit half pins the holder's own contract: what [TokenHolder.rotate] returns,
- * what it persists, and in which ORDER (persist before publish, so a failed write leaves the old token in
- * force). The server half proves the point of the whole change — a rotation is visible to a server that is
- * ALREADY running, which is exactly what a captured `val token: String` could not do.
- */
 class TokenHolderTest {
 
     private val initial = "initial-master-token-0123456789abcdef"
 
-    // --- the holder itself --------------------------------------------------------------------------
 
     @Test
     fun currentReturnsTheInitialTokenUntilItIsRotated() {
@@ -53,8 +44,6 @@ class TokenHolderTest {
         assertNotEquals(initial, rotated, "a rotation must actually change the secret")
         assertEquals(rotated, holder.current(), "the returned value is the one now in force")
         assertNotEquals(initial, holder.current(), "the pre-rotation value is gone")
-        // 32 bytes of entropy, hex-encoded — the same shape readOrCreateToken mints (both go through
-        // generateToken), so nothing downstream can tell a rotated token from a freshly created one.
         assertEquals(SECRET_BYTES * 2, rotated.length, "a rotated token carries the full 32 bytes, hex")
         assertTrue(rotated.all { it in "0123456789abcdef" }, "hex-encoded")
     }
@@ -74,8 +63,6 @@ class TokenHolderTest {
 
     @Test
     fun persistRunsBeforeTheNewValueIsPublished() {
-        // The callback observes ITS OWN holder mid-rotation: at that moment the OLD token must still be
-        // the live one, because the value on disk has to be durable before anything authenticates it.
         val seenDuringPersist = mutableListOf<String>()
         var holder: TokenHolder? = null
         holder = TokenHolder(initial) { seenDuringPersist += holder!!.current() }
@@ -91,28 +78,18 @@ class TokenHolderTest {
 
         assertFailsWith<IllegalStateException> { holder.rotate(expected = initial) }
 
-        // Publishing a token that was never written would leave the CLI and the hooks — which read the
-        // secret from disk — permanently 401ing, and a restart would roll it back anyway.
         assertEquals(initial, holder.current(), "a rotation that could not be persisted did not happen")
     }
 
     @Test
     fun rotateWithAStaleOrWrongExpectedReturnsNullAndChangesNothing() {
-        // The compare-and-swap heart of "rotate = revoke all": rotation proceeds ONLY if the caller presented
-        // the token that is still live. This is what makes two concurrent rotates resolve to one winner — the
-        // loser presents a token that is no longer current and gets null — instead of both minting and both
-        // learning a live value (a holder of the old token racing the operator).
         val persisted = mutableListOf<String>()
         val holder = TokenHolder(initial, persisted::add)
 
-        // A value that is not the live token cannot rotate: the CAS refuses, nothing is persisted, and the
-        // token is untouched.
         assertNull(holder.rotate(expected = "not-the-live-token"), "a wrong expected does not rotate")
         assertEquals(initial, holder.current(), "and leaves the token in force")
         assertTrue(persisted.isEmpty(), "a refused rotation persists nothing")
 
-        // The live token rotates once; presenting the NOW-STALE original again loses the CAS (the concurrent
-        // loser's path): null, and no second mint.
         val rotated = holder.rotate(expected = initial)
         assertNotNull(rotated, "the live token rotates")
         assertNull(holder.rotate(expected = initial), "the stale token cannot rotate again — someone rotated first")
@@ -120,7 +97,6 @@ class TokenHolderTest {
         assertEquals(listOf(rotated), persisted, "exactly one mint reached disk — the loser never persisted")
     }
 
-    // --- a running server picks the rotation up ------------------------------------------------------
 
     @Test
     fun afterARotationTheOldBearerIs401AndTheNewOneIs200OnALiveServer() {
@@ -152,13 +128,7 @@ class TokenHolderTest {
         }
     }
 
-    // --- harness --------------------------------------------------------------------------------------
 
-    /**
-     * A minimal server whose only route sits behind [authenticated] reading through [holder]. Deliberately
-     * not the full [KotgentServer]: the thing under test is that the gate resolves the token per request,
-     * and a bare route makes a failure point at the gate rather than at any of the daemon's fakes.
-     */
     private fun withPingServer(
         holder: TokenHolder,
         block: suspend (port: Int, client: HttpClient) -> Unit,

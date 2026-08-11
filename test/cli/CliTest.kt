@@ -45,16 +45,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * CLI tests (plan Task 15): the pure `argv → CliCommand` parser, [ApiClient] against an embedded stub
- * Ktor CIO server (list renders, start posts agent+cwd + surfaces the id, a control verb hits the right
- * path, a missing token fails fast), and the [AttachClient] smoke surface (URL construction, resize
- * frame encode/decode, raw-mode save/restore over an injected fake tty — never the real tty). Every
- * server-touching body is bounded by [withTimeout] (anti-hang).
- */
 class CliTest {
 
-    // ---- 1. arg / subcommand parsing (pure) -----------------------------------------------------
 
     @Test
     fun parsesVersionAndHelpAndNoArgs() {
@@ -86,18 +78,13 @@ class CliTest {
             CliCommand.Start("claude", "/tmp/p", "my-name", listOf("a", "b")),
             parseArgs(listOf("start", "claude", "/tmp/p", "--name", "my-name", "--tag", "a", "--tag", "b")),
         )
-        // cwd omitted → null (resolved to the current dir at run time, not during the pure parse).
         assertEquals(CliCommand.Start("claude", null, null, emptyList()), parseArgs(listOf("start", "claude")))
-        // The parser does not know the agent kinds — the daemon's builders map is the one gate — so every
-        // supported kind parses the same way.
         assertEquals(CliCommand.Start("junie", null, null, emptyList()), parseArgs(listOf("start", "junie")))
         assertEquals(CliCommand.Start("shell", null, null, emptyList()), parseArgs(listOf("start", "shell")))
     }
 
     @Test
     fun theUsageNamesEverySupportedAgentKind() {
-        // The kinds are gated by the daemon's builders map, but this text is where an operator learns
-        // they exist — a provider that ships without appearing here is invisible from the CLI.
         for (agent in listOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND, SHELL_AGENT_KIND)) {
             assertTrue("'$agent'" in USAGE, "the usage names the $agent agent: $USAGE")
         }
@@ -135,8 +122,6 @@ class CliTest {
 
     @Test
     fun importRejectsASurplusPositionalInsteadOfSilentlyDiscardingIt() {
-        // `start <agent> [cwd]` trains `import claude <id> ~/proj`; silently dropping the path would
-        // fall back to discovery and could register a DIFFERENT cwd than the one the operator typed.
         val result = parseArgs(listOf("import", "claude", PROVIDER_ID, "/tmp/project"))
         val invalid = assertIs<CliCommand.Invalid>(result, "a third positional is a usage error, not a discard")
         assertTrue(invalid.message.contains("--cwd"), "the error points at the flag form: ${invalid.message}")
@@ -144,10 +129,6 @@ class CliTest {
 
     @Test
     fun importValueFlagsRequireARealValueAndNeverSwallowAFlag() {
-        // `--name --no-start` used to name the session "--no-start" AND silently drop the --no-start
-        // semantics — the session was auto-resumed against the operator's stated intent. A missing or
-        // `--`-prefixed value is a usage error for every import value flag (stricter than parseStart
-        // on purpose: only import has a behavior-changing boolean flag that could be swallowed).
         assertTrue(
             parseArgs(listOf("import", "codex", PROVIDER_ID, "--name", "--no-start")) is CliCommand.Invalid,
             "--name must not swallow --no-start",
@@ -168,11 +149,6 @@ class CliTest {
 
     @Test
     fun importRejectsAnEmptyFlagValueInsteadOfResolvingItToTheCliCwd() {
-        // `--cwd "$UNSET_VAR"` expands to an EMPTY string, which resolveCwdAgainst would silently turn
-        // into the CLI's own cwd — sent as an EXPLICIT override of the daemon's transcript discovery.
-        // The codex probe ignores cwd, so the session would be registered (and resumed) under the wrong
-        // project with nothing downstream to catch it. Blank values are usage errors for every import
-        // value flag.
         assertTrue(
             parseArgs(listOf("import", "codex", PROVIDER_ID, "--cwd", "")) is CliCommand.Invalid,
             "an empty --cwd must not silently become the CLI's cwd",
@@ -193,9 +169,6 @@ class CliTest {
 
     @Test
     fun startTellsTaskCommandsWhetherTheOperatorNamedTheDirectory() {
-        // Both forms hand `startWithTask` the same absolute STRING, so the boolean is the only carrier of
-        // "the operator typed this" — and `--task`'s cwd rule may override the CLI's own cwd but never a
-        // named one. Dropping it here launched the session in the project's stale stored path instead.
         val seen = mutableListOf<Pair<String, Boolean>>()
         val startWithTask = { _: String, cwd: String, explicit: Boolean, _: String, _: String?, _: List<String> ->
             seen += cwd to explicit
@@ -236,10 +209,6 @@ class CliTest {
 
     @Test
     fun importResolvesAnExplicitCwdLikeStartButAnAbsentOneStaysAbsent() {
-        // `--cwd` goes through the same resolution rule as `runStart` (relative → anchored at the CLI's
-        // own cwd; absolute → untouched). The ONE deliberate difference: an absent `--cwd` stays null —
-        // the daemon then discovers the project directory from the provider's on-disk store, and
-        // defaulting it to the CLI's cwd would silently defeat that discovery.
         val seen = mutableListOf<String?>()
         assertEquals(0, runImportResolving(importCommand(cwd = null), "/base") { seen += it; 0 })
         assertEquals(0, runImportResolving(importCommand(cwd = "sub"), "/base") { seen += it; 0 })
@@ -249,8 +218,6 @@ class CliTest {
 
     @Test
     fun importWithAnUnresolvableCwdExitsTwoWithoutRunningTheCommand() {
-        // Same contract as runStart: a relative --cwd with no absolute base must fail LOUDLY (exit 2)
-        // instead of sending the daemon (cwd `/` under launchd) a relative path it would mis-resolve.
         var ran = false
         val exit = runImportResolving(importCommand(cwd = "sub"), base = ".") { ran = true; 0 }
         assertEquals(2, exit, "UnresolvableCwdException → usage exit code 2, like runStart")
@@ -260,24 +227,18 @@ class CliTest {
     @Test
     fun resolveCwdAgainstMakesRelativePathsAbsoluteAgainstTheCliCwd() {
         val base = "/Users/me/project"
-        // The daemon runs with cwd `/`, so the CLI must send an ABSOLUTE cwd; a relative one is anchored
-        // at the CLI's own cwd here.
         assertEquals(base, resolveCwdAgainst(base, null), "omitted cwd → the CLI's own cwd")
         assertEquals(base, resolveCwdAgainst(base, "."), "'.' → the CLI's own cwd")
         assertEquals("$base/sub", resolveCwdAgainst(base, "sub"), "a relative cwd is anchored at the CLI cwd")
         assertEquals("$base/sub", resolveCwdAgainst(base, "./sub"), "a leading ./ is stripped")
         assertEquals("/abs/elsewhere", resolveCwdAgainst(base, "/abs/elsewhere"), "an absolute cwd passes through")
         assertEquals("/Users/me/project/x", resolveCwdAgainst("/Users/me/project/", "x"), "a trailing slash on base is handled")
-        // "./" strips to an empty relative part — it must still resolve to the base, not to "".
         assertEquals(base, resolveCwdAgainst(base, "./"), "'./' → the CLI's own cwd")
         assertEquals(base, resolveCwdAgainst(base, "././"), "repeated './' segments collapse to the base")
     }
 
     @Test
     fun resolveCwdAgainstRootAlwaysYieldsAnAbsolutePath() {
-        // Root is the degenerate base: it TRIMS to the empty string, so a naive join produced "" — not a
-        // path at all, which tmux would reject or resolve against its own cwd. Every combination below
-        // must stay absolute.
         assertEquals("/", resolveCwdAgainst("/", null), "root base, omitted cwd")
         assertEquals("/", resolveCwdAgainst("/", ""), "root base, empty cwd")
         assertEquals("/", resolveCwdAgainst("/", "."), "root base, '.'")
@@ -287,7 +248,6 @@ class CliTest {
         assertEquals("/..", resolveCwdAgainst("/", ".."), "root base, '..' rides through for the kernel to clamp")
         assertEquals("/..", resolveCwdAgainst("/", "./.."), "root base, './..' — the '.' collapses, the '..' stays")
         assertEquals("/a/..", resolveCwdAgainst("/", "a/.."), "root base, an embedded '..' is preserved")
-        // Every result is absolute, whatever the relative part ('..' may legitimately escape the base).
         for (rel in listOf(null, "", ".", "./", "././", "..", "./..", "sub", "./sub", "a/b/..")) {
             assertTrue(resolveCwdAgainst("/", rel).startsWith("/"), "resolveCwdAgainst(\"/\", $rel) must be absolute")
             assertTrue(resolveCwdAgainst("/base", rel).startsWith("/"), "resolveCwdAgainst(\"/base\", $rel) must be absolute")
@@ -296,13 +256,6 @@ class CliTest {
 
     @Test
     fun resolveCwdAgainstCollapsesDotSegmentsButLeavesDotDotForTheFilesystem() {
-        // `.`/duplicate/trailing slashes are pure SPELLING — collapsing them can never change which
-        // directory is named. `..` is not: it crosses a directory boundary, and a lexical collapse
-        // resolves it against the path's spelling while the kernel resolves it against the real
-        // (symlink-traversed) tree — on macOS lexical `/tmp/../Users` says `/Users`, but /tmp is a
-        // symlink into /private, so the filesystem's answer is `/private/Users`. So `..` passes through
-        // untouched: `start` hands it to tmux (`new-session -c` resolves it in the kernel), and
-        // `import`'s daemon canonicalizes with realpath(3) before probing/storing (SessionImportTest).
         val base = "/Users/me/project"
         assertEquals("$base/a/b", resolveCwdAgainst(base, "a/./b"), "'.' segments collapse")
         assertEquals("/abs/x", resolveCwdAgainst(base, "/abs/x/"), "a trailing slash is dropped")
@@ -320,10 +273,6 @@ class CliTest {
 
     @Test
     fun resolveCwdAgainstRefusesABaseThatIsNotItselfAbsolute() {
-        // `currentWorkingDir()` can legitimately fail to name the cwd (getcwd errors, no usable $PWD) and
-        // falls back to ".". Joining onto that produced "./sub" — still relative, so the daemon (cwd `/`
-        // under launchd) would resolve it against root: the exact bug this function exists to prevent.
-        // An empty base was worse: it was read as ROOT and silently launched the agent in `/`.
         for (base in listOf(".", "", "relative/base", "./rel", "..")) {
             assertFailsWith<UnresolvableCwdException>("base '$base' must not silently produce a relative path") {
                 resolveCwdAgainst(base, "sub")
@@ -334,15 +283,12 @@ class CliTest {
             assertFailsWith<UnresolvableCwdException>("base '$base' with '.' must fail too") {
                 resolveCwdAgainst(base, ".")
             }
-            // An ABSOLUTE cwd needs no base at all, so it still resolves even when the cwd is unknown.
             assertEquals("/abs/elsewhere", resolveCwdAgainst(base, "/abs/elsewhere"))
         }
     }
 
     @Test
     fun currentWorkingDirIsAbsoluteOrTheExplicitlyUnusableFallback() {
-        // Either a real absolute cwd, or "." — a deliberate non-path that makes resolveCwdAgainst fail
-        // loudly rather than quietly emitting another relative path.
         val cwd = currentWorkingDir()
         assertTrue(cwd.startsWith("/") || cwd == ".", "unexpected working directory: '$cwd'")
         if (cwd.startsWith("/")) {
@@ -367,7 +313,6 @@ class CliTest {
     @Test
     fun parsesTokenRotateAndRejectsABareToken() {
         assertEquals(CliCommand.TokenRotate, parseArgs(listOf("token", "rotate")))
-        // A bare `token` is deliberately NOT `cat ~/.kotgent/token` — it has no default action.
         assertTrue(parseArgs(listOf("token")) is CliCommand.Invalid, "bare `token` needs a subcommand")
         assertTrue(parseArgs(listOf("token", "wat")) is CliCommand.Invalid, "an unknown subcommand is invalid")
     }
@@ -384,7 +329,6 @@ class CliTest {
         assertTrue(parseArgs(listOf("config")) is CliCommand.Invalid, "config without a subcommand")
     }
 
-    // ---- 2. ApiClient against an embedded stub daemon -------------------------------------------
 
     @Test
     fun listSessionsReturnsDaemonSessionsAndSendsBearer() = withStub { stub, api ->
@@ -474,9 +418,6 @@ class CliTest {
 
     @Test
     fun daemonPathPrefixesTheControlSurfaceAndExemptsTheAuthBootstrap() {
-        // The rule this one client cannot do without: a blanket prefix would send `kotgent web` and
-        // `kotgent token rotate` to routes that do not exist. The browser's `lib/api.js` carries the
-        // identical exemption, and the two must agree.
         assertEquals("$API_PREFIX/sessions", daemonPath("/sessions"))
         assertEquals("$API_PREFIX/sessions/abc/stop", daemonPath("/sessions/abc/stop"))
         assertEquals(AUTH_TICKET_PATH, daemonPath(AUTH_TICKET_PATH), "the phone ticket did not move")
@@ -484,7 +425,6 @@ class CliTest {
         assertEquals(AUTH_PAGE_PATH, daemonPath(AUTH_PAGE_PATH), "nor the login page")
     }
 
-    // ---- 3. list rendering (pure) ---------------------------------------------------------------
 
     @Test
     fun renderSessionsShowsIdsAndFlagsAttention() {
@@ -502,10 +442,6 @@ class CliTest {
 
     @Test
     fun theTaskColumnMarksATruncatedRefInsteadOfPrintingADifferentOne() {
-        // A ref cut to the column width is another WELL-FORMED ref: `local:1234567` would render as
-        // `local:123456`, which may name a different task, and a reader copying it into
-        // `kotgent task show` gets a confident wrong answer instead of an error. TaskRef.MAX_LENGTH is
-        // 128, so no width makes this impossible — only the marker does.
         val long = sampleDto("aaa11111", "running", needsAttention = false).copy(taskRef = "local:1234567")
         val short = sampleDto("bbb22222", "running", needsAttention = false).copy(taskRef = "local:42")
         val out = renderSessions(listOf(long, short))
@@ -517,9 +453,6 @@ class CliTest {
 
     @Test
     fun theWebOutputCarriesTheCodeAndAHintAboutTheInstalledApp() {
-        // `kotgent web` printing only a URL is a dead end for the one client that needs it most: an installed
-        // home-screen app opens at its own start_url with its own cookie jar and cannot be handed a fragment.
-        // So the block must show the CODE, and say what it is for — otherwise nobody knows to type it.
         val code = "A1B2C3D4"
         val out = renderSignInCode(
             TicketResponse(
@@ -533,8 +466,6 @@ class CliTest {
         assertTrue("home screen" in out, "with the reason an installed app needs it")
         assertTrue("${TICKET_TTL_MILLIS / 60_000} minutes" in out, "and its life, derived from the TTL")
 
-        // The printed (grouped) form is what someone retypes, so it must survive the daemon's own
-        // normalisation back to the exact value that was minted — the display cannot break the redemption.
         assertEquals(code, normalizeTicketCode("A1B2 C3D4"), "the grouped form redeems as the minted code")
     }
 
@@ -608,7 +539,6 @@ class CliTest {
         assertTrue(stderr.single().contains("open exited 7"))
     }
 
-    // ---- 3b. the import command (pure seams, no daemon) -----------------------------------------
 
     @Test
     fun importCommandRegistersThenResumesByDefault() = runBlocking {
@@ -647,10 +577,6 @@ class CliTest {
         val stderr = mutableListOf<String>()
         val exit = runImportCommand(
             noStart = false,
-            // The stub body is BUILT from the real exception the route flattens (behind its
-            // "cannot import session: " prefix), so a reworded DuplicateImportException fails this
-            // test instead of silently degrading the hint — the CLI half of the
-            // DUPLICATE_IMPORT_ID_IN_BODY contract (TransportTest pins the server half).
             importSession = {
                 throw ApiException(
                     409,
@@ -672,7 +598,6 @@ class CliTest {
         val stderr = mutableListOf<String>()
         val exit = runImportCommand(
             noStart = false,
-            // Built from the real exception — see importCommandPrintsTheExistingIdAndAResumeHintOnConflict.
             importSession = {
                 throw ApiException(
                     409,
@@ -692,11 +617,6 @@ class CliTest {
 
     @Test
     fun importCommandLetsAFailedFollowUpResumePropagateAfterReportingTheImport() = runBlocking {
-        // The single most likely real-world failure: the import registered fine, but the daemon's
-        // resume fails (e.g. the agent binary does not resolve on launchd's PATH). The registration
-        // must already be reported — the operator has to know the row exists — and the ApiException
-        // must propagate untouched to Commands' generic withApi handler, whose rendering carries the
-        // daemon's `kotgent install` hint.
         val stdout = mutableListOf<String>()
         val ex = assertFailsWith<ApiException> {
             runImportCommand(
@@ -754,12 +674,9 @@ class CliTest {
         assertFalse(resumeCalled, "a failed import must not resume anything")
     }
 
-    // ---- 4. AttachClient smoke (no real tty, no socket) -----------------------------------------
 
     @Test
     fun terminalWsUrlIsBuiltFromTheHttpOrigin() {
-        // No token in the URL any more (Task 9): AttachClient presents it as an Authorization header on
-        // the handshake, so the WS URL is a plain same-origin path with the scheme upgraded to ws(s).
         assertEquals(
             "ws://127.0.0.1:27508$API_PREFIX/sessions/sess1/terminal",
             terminalWsUrl("http://127.0.0.1:27508", "sess1"),
@@ -768,8 +685,6 @@ class CliTest {
             "wss://host:8443$API_PREFIX/sessions/s/terminal",
             terminalWsUrl("https://host:8443/", "s"),
         )
-        // A known geometry rides in the query so the daemon can open the upstream attach at OUR size
-        // instead of the pty default; a bogus one is omitted rather than sent as `?cols=0`.
         assertEquals(
             "ws://127.0.0.1:27508$API_PREFIX/sessions/sess1/terminal?cols=143&rows=53",
             terminalWsUrl("http://127.0.0.1:27508", "sess1", WinSize(143, 53)),
@@ -784,34 +699,12 @@ class CliTest {
     fun resizeFrameEncodesTheServersResizeControlShape() {
         val frame = resizeFrame(120, 40)
         assertEquals("""{"type":"resize","cols":120,"rows":40}""", frame)
-        // …and decodes to the expected fields (the server's terminalWs parses exactly this shape).
         val obj = TRANSPORT_JSON.parseToJsonElement(frame).jsonObject
         assertEquals("resize", obj.getValue("type").jsonPrimitive.content)
         assertEquals(120, obj.getValue("cols").jsonPrimitive.int)
         assertEquals(40, obj.getValue("rows").jsonPrimitive.int)
     }
 
-    /**
-     * `attach` must hand the terminal back the way it found it. `LocalTty.restore()` only covers
-     * termios; the terminal modes (mouse reporting, bracketed paste, theme reporting, alternate screen,
-     * cursor and application keypad) were turned on by bytes the *remote* side sent, and their disable
-     * sequences are written into the upstream pty only after the last subscriber has gone — so they
-     * never reach the operator. Hence an explicit reset written to stdout on exit; this pins its
-     * contents AND order.
-     *
-     * Measured against a real pty attach (tmux 3.7b): the client unconditionally turns on `1049`,
-     * `2004`, `2031`, `25`, and terminfo's `smkx` (`?1h` + `ESC =`); it turns on
-     * `1006`+`1000`+`1002` because kotgent forces `mouse on`; and it additionally forwards `1003`
-     * whenever the pane's own app asks for any-motion tracking
-     * (crossterm/ratatui's `EnableMouseCapture`, i.e. the codex TUI). **Every tracker must go off
-     * BEFORE the SGR encoding** — on terminals that model the three trackers as independent flags,
-     * clearing `1006` first downgrades a surviving tracker to the legacy X10 encoding and sprays
-     * bytes above 127 into the operator's shell, which is worse than not resetting at all.
-     *
-     * The name is scoped to what the constant really covers: DECCKM (`?1`, the cursor-key half of
-     * `smkx`) and cursor blink (`?12`) are deliberately left alone, while application keypad
-     * (`ESC =`, the other `smkx` half) is reset with `ESC >`; see [TERMINAL_MODE_RESET]'s KDoc.
-     */
     @Test
     fun theTerminalModeResetDisablesMousePasteThemeAltScreenAndApplicationKeypadModes() {
         val esc = "\u001b"
@@ -846,12 +739,9 @@ class CliTest {
         assertEquals(listOf("enter", "restore"), tty.events, "the tty is restored on the failure path too")
     }
 
-    // --- harness ---------------------------------------------------------------------------------
 
-    /** One recorded request the stub daemon saw. */
     private data class Recorded(val method: String, val path: String, val auth: String?, val body: String)
 
-    /** A minimal embedded stub of the daemon's control REST that records what the [ApiClient] sends. */
     private inner class Stub {
         val requests = Channel<Recorded>(Channel.UNLIMITED)
         private val cannedList = listOf(
@@ -957,11 +847,9 @@ class CliTest {
         updatedAt = 1,
     )
 
-    /** A [CliCommand.Start] with only the cwd and the task varying — the dispatch rule is what is probed. */
     private fun startCommand(cwd: String?, task: String?) =
         CliCommand.Start("claude", cwd, name = null, tags = emptyList(), task = task)
 
-    /** An [CliCommand.Import] with only the cwd varying — the resolution rule is what the tests probe. */
     private fun importCommand(cwd: String?) =
         CliCommand.Import("claude", PROVIDER_ID, cwd, name = null, tags = emptyList(), noStart = false)
 
@@ -972,7 +860,6 @@ class CliTest {
         expiresAt = 42,
     )
 
-    /** A pure fake [LocalTty] recording enter/restore order — never touches a real terminal. */
     private class FakeTty(private val size: WinSize = WinSize(80, 24)) : LocalTty {
         val events = mutableListOf<String>()
         override fun enterRaw() { events.add("enter") }
@@ -981,7 +868,6 @@ class CliTest {
     }
 
     private companion object {
-        /** A well-formed provider session id for the import tests (parsing never validates it). */
         const val PROVIDER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     }
 }

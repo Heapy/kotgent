@@ -4,11 +4,6 @@ on:
   push:
     tags: ['v*']
 
-# On a v* tag: build the optimized macosArm64 binary and publish it as a GitHub
-# Release asset. The tarball carries the `kotgent` binary next to `resources/webui`
-# so the daemon's webUiDir resolution (which walks up from the executable) finds
-# the SPA — the Homebrew formula unpacks this layout into libexec. arm64 only:
-# the module targets macosArm64, which is what Kotlin/Native links here.
 permissions:
   contents: write
 
@@ -29,8 +24,7 @@ jobs:
 
       - name: Build release binary
         env:
-          # The build-info plugin otherwise identifies ordinary source builds as VERSION+Git SHA.
-          # Published artifacts (including the one Homebrew installs) intentionally show VERSION only.
+          # Release artifacts report VERSION without the source-build Git suffix.
           KOTGENT_RELEASE_BUILD: "true"
         run: ./kotlin build -v release -p macosArm64 -m kotgent
 
@@ -40,8 +34,6 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           stage="kotgent-${version}-macos-arm64"
           mkdir -p "$stage/resources"
-          # The link output's directory and filename follow the checkout name, so ask the build-info
-          # plugin instead of hard-coding them. It fails if the previous step produced no executable.
           ./kotlin do releaseKexePath
           cp "$(cat build/kexe-path)" "$stage/kotgent"
           chmod +x "$stage/kotgent"

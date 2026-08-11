@@ -15,7 +15,6 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** Contract tests for the daemon-wide [PreferencesStore] implemented by [SqliteEventStore]. */
 class PreferencesStoreTest {
 
     @Test
@@ -91,14 +90,12 @@ class PreferencesStoreTest {
             )
             val saved = first.savePreferences("/legacy", 3)
 
-            // A second startup runs the same CREATE/seed path as a clean no-op and preserves the row.
             val reopened = SqliteEventStore.using(driver)
             assertEquals(saved, reopened.preferences.value)
             assertEquals(2L, reopened.savePreferences("/legacy-again", 1).revision)
         }
     }
 
-    /** Current events/sessions schema before `ui_preferences` existed. */
     private val prePreferencesSchema = object : SqlSchema<QueryResult.Value<Unit>> {
         override val version: Long = 1
 

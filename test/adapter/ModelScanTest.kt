@@ -4,11 +4,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/**
- * Unit tests for [extractModel] — pure model-name extraction from provider record text (Claude
- * transcript / Codex rollout), including the `model_provider` false-match guard — and for its
- * frequency-based sibling [extractDominantModel], which Junie needs.
- */
 class ModelScanTest {
 
     @Test
@@ -25,7 +20,6 @@ class ModelScanTest {
 
     @Test
     fun doesNotFalseMatchModelProviderAlone() {
-        // A Codex session_meta head has model_provider but NOT model — must yield null, not "openai".
         val head = """{"type":"session_meta","payload":{"cwd":"/x","model_provider":"openai"}}"""
         assertNull(extractModel(head))
     }
@@ -47,13 +41,9 @@ class ModelScanTest {
         assertEquals("m1", extractModel("""{"model":"m1"} ... {"model":"m2"}"""))
     }
 
-    // ---- extractDominantModel (Junie: several models per session) ----
 
     @Test
     fun theDominantModelIsTheMostFrequentNotTheFirst() {
-        // The real Junie shape, counts and order taken from a live session's events.jsonl: the FIRST
-        // model in the file is a helper, and the primary model is the one used on every turn. This is
-        // exactly why extractModel is the wrong function there.
         val text = """{"model":"claude-haiku-4-5"}""" +
             """{"model":"gpt-4.1-mini"}""" +
             """{"model":"claude-fable-5"}""".repeat(40) +

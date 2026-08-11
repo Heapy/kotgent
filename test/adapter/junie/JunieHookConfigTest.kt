@@ -27,19 +27,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * Unit tests for [JunieHookConfig] — the `--config-location` config JSON and the hook script.
- *
- * The generation itself is pure, but the two rules that MUST NOT regress are behavioural, so they are
- * pinned by RUNNING the script through the very command line the config hands Junie, against a port
- * nothing listens on:
- *  - it writes nothing to stdout (Junie parses a hook's stdout as a decision object, and anything that
- *    is not valid JSON becomes `additionalContext` injected into the model's turn);
- *  - its exit status is a fixed function of the event: `1` for `PermissionRequest` (so Junie still shows
- *    its own dialog — `0` would AUTO-APPROVE and `2` would auto-DENY the action) and `0` for everything
- *    else even though curl failed.
- * Neither can be proven by string-matching the script text.
- */
 @OptIn(ExperimentalForeignApi::class)
 class JunieHookConfigTest {
 
@@ -55,7 +42,6 @@ class JunieHookConfigTest {
     private val scriptPath = "/home/u/.kotgent/junie-hook.sh"
     private val headerPath = "/home/u/.kotgent/junie-hook-header"
 
-    // ---- the config file for `junie --config-location <file>` ----
 
     @Test
     fun configJsonWiresEveryEventToTheScript() {
@@ -81,8 +67,6 @@ class JunieHookConfigTest {
 
     @Test
     fun configJsonQuotesAPathWithASpaceOrAQuote() {
-        // A path is attacker-free but not character-free, and Junie runs the command through `sh -c`:
-        // a naive concatenation would re-split the path into several words.
         val json = JunieHookConfig.configJson("""/home/u/we ird's/junie-hook.sh""")
         val command = Json.parseToJsonElement(json).jsonObject["hooks"]!!.jsonObject
             .getValue(JunieHookConfig.STOP).jsonArray[0].jsonObject
@@ -91,7 +75,6 @@ class JunieHookConfigTest {
         assertEquals("""/bin/sh '/home/u/we ird'\''s/junie-hook.sh' Stop""", command)
     }
 
-    // ---- the hook script ----
 
     @Test
     fun hookScriptPostsToTheIngressWithTokenPaneAndEvent() {
@@ -100,7 +83,6 @@ class JunieHookConfigTest {
         assertTrue(script.startsWith("#!/bin/sh"), "it is a shell script")
         assertTrue(script.contains("http://127.0.0.1:7777/hooks/junie?event="))
         assertTrue(script.contains("\"\$1\""), "the event name comes from the first argument")
-        // The token is read from the 0600 header file — never inlined.
         assertTrue(script.contains("-H '@$headerPath'"), "the token is read from the header file: $script")
         assertTrue(script.contains("X-Kotgent-Tmux-Pane: \$TMUX_PANE"))
         assertTrue(script.contains("--data-binary @-"), "the hook payload is forwarded from stdin unchanged")
@@ -128,22 +110,17 @@ class JunieHookConfigTest {
         assertTrue(body.contains(">/dev/null"), "…and stdout is redirected on top of that")
     }
 
-    // ---- the behavioural contract: run the real script ----
 
     @Test
     fun everyEventExitsZeroExceptPermissionRequestEvenWhenTheDaemonIsUnreachable() {
-        if (!curlAvailable()) return // soft-skip: the script's one dependency
+        if (!curlAvailable()) return
         val dir = makeTempDir()
         val header = "$dir/junie-hook-header"
         writeFile(header, JunieHookConfig.headerFileContent("s3cr3t"))
         val script = "$dir/junie-hook.sh"
-        // Port 1 is privileged and unbound: the connection is refused at once, so curl fails fast — which
-        // is exactly the condition the exit contract has to survive. `--max-time` bounds the rest.
         writeFile(script, JunieHookConfig.hookScript(port = 1, headerFilePath = header))
 
         for (event in JunieHookConfig.HOOK_EVENTS) {
-            // Run it EXACTLY as junie would: the command string from the config, through `sh -c`.
-            // stdin is /dev/null because `--data-binary @-` reads the payload from it.
             val command = JunieHookConfig.hookCommand(script, event) + " < /dev/null"
             val result = ProcessRunner.run(listOf("/bin/sh", "-c", command))
 
@@ -161,7 +138,6 @@ class JunieHookConfigTest {
         }
     }
 
-    // --- harness ------------------------------------------------------------------------------------
 
     private fun curlAvailable(): Boolean = ProcessRunner.run(listOf("command", "-v", "curl")).isSuccess
 

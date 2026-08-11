@@ -29,13 +29,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * Real-socket lifecycle regressions for [KotgentServer].
- *
- * These use a live CIO client because a server-side close of an accepted connection is what leaves the
- * old local endpoint in TCP teardown state on macOS. The daemon must still be able to bind the same
- * well-known port immediately after a graceful stop.
- */
 class ServerLifecycleTest {
 
     @Test
@@ -51,8 +44,6 @@ class ServerLifecycleTest {
                 val port = first.port()
                 assertEquals(HttpStatusCode.NotFound, firstClient.get("http://127.0.0.1:$port/").status)
 
-                // Keep firstClient alive: stopping the server makes the server endpoint initiate the
-                // connection close, reproducing the TIME_WAIT-shaped immediate-restart failure.
                 first.stop()
                 first = null
 

@@ -35,18 +35,6 @@ import kotlin.test.assertEquals
 import platform.posix.SIGINT
 import platform.posix.raise
 
-/**
- * Guards the ORDER that makes Ctrl+C work: [installShutdownSignals] must run **after** the Ktor engine
- * started, so its SIGINT/SIGTERM handlers replace the ones `EmbeddedServer.start()` installs.
- *
- * Ktor's native shutdown hook (`ShutdownHookNative.kt`) registers `signal(SIGINT)`/`signal(SIGTERM)`
- * handlers whose only action is `EmbeddedServer.stop()` — no exit. With those in place a foreground
- * daemon answered Ctrl+C by quietly killing its own HTTP server and then living on forever in its park
- * loop: no listening socket, database still open, tty still held. This test reproduces the exact wiring
- * (start a real server, then install ours, then raise a real SIGINT) and asserts the two properties the
- * daemon depends on: the signal becomes an observable shutdown request, and the server is still serving
- * when it does — i.e. Ktor's handler did NOT run.
- */
 class ShutdownSignalsTest {
 
     private val token = "shutdown-signals-test-token"
@@ -93,12 +81,10 @@ class ShutdownSignalsTest {
 
                 assertEquals(HttpStatusCode.OK, sessionsStatus(), "the server serves before the signal")
 
-                // The daemon's order: start the server first, take the signals back second.
                 installShutdownSignals()
                 raise(SIGINT)
 
                 assertEquals(SIGINT, pendingShutdownSignal(), "SIGINT must reach OUR handler")
-                // Ktor's stop() is asynchronous, so give it time to close the listener if it ever ran.
                 delay(SETTLE_MILLIS)
                 assertEquals(
                     HttpStatusCode.OK,
@@ -115,7 +101,6 @@ class ShutdownSignalsTest {
     }
 
     private companion object {
-        /** Long enough for a Ktor `stop()` triggered by the signal to have closed the listener. */
         const val SETTLE_MILLIS: Long = 500
     }
 }

@@ -18,20 +18,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Regression cover for the orphaned-listener bug: a `tmux` server spawned by the daemon inherited its
- * whole descriptor table — listening socket included — daemonized, and then kept the port bound after
- * the daemon was gone (full mechanism on [markOpenFdsCloexec]).
- *
- * These run in the plain test binary: [markOpenFdsCloexec] and [ProcessRunner] deliberately use only
- * stock `platform.posix`, no custom cinterop (KT-78062). The child's view of its descriptor table is
- * read back through `ls /dev/fd`, which is the same information `lsof` would report.
- */
 class CloexecTest {
 
     @Test
     fun `marks an inherited descriptor close-on-exec`() = withHighFdPipe { fd ->
-        // F_DUPFD clears FD_CLOEXEC by definition, so the duplicate starts out inheritable.
+        // F_DUPFD deliberately clears CLOEXEC, providing an inheritable precondition.
         assertEquals(0, fcntl(fd, F_GETFD) and FD_CLOEXEC, "precondition: fd $fd starts inheritable")
 
         markOpenFdsCloexec()
@@ -57,19 +48,12 @@ class CloexecTest {
             .filter { it.isNotBlank() }
             .toSet()
 
-        // Sanity: the child really does report inherited descriptors, so an empty-ish result cannot
-        // masquerade as "nothing leaked".
         assertTrue("1" in childFds, "child should report its stdout; got $childFds")
         assertTrue("$fd" !in childFds, "fd $fd leaked into the child; got $childFds")
     }
 
-    /**
-     * Run [body] with a pipe whose read end is duplicated to a descriptor at or above [HIGH_FD] — high
-     * enough that neither the child's own `ls` descriptors nor anything else in the test process can
-     * collide with the number we assert on. `F_DUPFD` picks the lowest free slot at or above the
-     * request, so unlike `dup2` it can never close an unrelated descriptor.
-     */
     @OptIn(ExperimentalForeignApi::class)
+    // A high duplicate cannot collide with descriptors the child opens while reporting `/dev/fd`.
     private fun withHighFdPipe(body: (Int) -> Unit) = memScoped {
         val fds = allocArray<IntVar>(2)
         check(pipe(fds) == 0) { "pipe() failed" }

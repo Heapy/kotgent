@@ -16,14 +16,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 
-/** Required body of `PUT /preferences`. */
 @Serializable
 data class SavePreferencesRequest(
     val basePath: String,
     val groupingLevel: Int,
 )
 
-/** Snapshot returned by both preferences HTTP endpoints. */
 @Serializable
 data class PreferencesDto(
     val basePath: String,
@@ -31,11 +29,6 @@ data class PreferencesDto(
     val revision: Long,
 )
 
-/**
- * A preference snapshot/update on the global `/events` WebSocket — an [EventsFrame] variant, so its
- * `type` discriminator comes from the sealed hierarchy's serializer, never from a hand-written field.
- * [revision] is the preferences store's own save counter, unrelated to the sessions' `rev`.
- */
 @Serializable
 @SerialName("preferences_update")
 data class PreferencesUpdateDto(
@@ -44,14 +37,6 @@ data class PreferencesUpdateDto(
     val revision: Long,
 ) : EventsFrame()
 
-/**
- * Authenticated daemon-wide preferences API.
- *
- * Paths use the browser's existing normalization rule: trim whitespace, collapse repeated `/`, and
- * remove trailing `/` except for the root itself. Only an empty path (grouping disabled) or an absolute
- * POSIX path is accepted. Invalid requests are rejected before the store is touched, so they cannot
- * consume a revision.
- */
 fun Route.preferencesRoutes(
     store: PreferencesStore,
     json: Json = TRANSPORT_JSON,
@@ -91,12 +76,8 @@ fun Route.preferencesRoutes(
     }
 }
 
-/**
- * kotlinx.serialization deliberately accepts a quoted JSON number for an `Int`. This wire contract does
- * not: both fields have one exact JSON type, so inspect the parsed primitives before constructing the
- * request. Unknown fields remain harmless, matching [TRANSPORT_JSON]'s `ignoreUnknownKeys`.
- */
 private fun decodeSavePreferencesRequest(text: String, json: Json): SavePreferencesRequest? =
+    // kotlinx.serialization accepts quoted numbers for Int; this wire contract requires exact JSON types.
     runCatching {
         val body = json.parseToJsonElement(text).jsonObject
         val basePath = body["basePath"] as? JsonPrimitive
@@ -113,7 +94,7 @@ fun UiPreferences.toDto(): PreferencesDto = PreferencesDto(basePath, groupingLev
 fun UiPreferences.toUpdateDto(): PreferencesUpdateDto =
     PreferencesUpdateDto(basePath = basePath, groupingLevel = groupingLevel, revision = revision)
 
-/** Keep in exact step with `resources/webui/lib/paths.js`'s `normalizePath`. */
+// Keep this normalization compatible with the Web UI's path grouping implementation.
 fun normalizePreferencePath(path: String): String {
     val normalized = path.trim().replace(REPEATED_PATH_SLASHES, "/")
     return if (normalized.length > 1) normalized.trimEnd('/') else normalized

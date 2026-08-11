@@ -8,23 +8,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-/**
- * [PushSender] policy: what goes on the wire, and what each answer from a push service does to the
- * subscription table.
- *
- * The sender policy runs against a fake [PushTransport] — **no test in this suite may make a real outbound
- * call**. [DarwinPushTransportTest] covers the HTTP adapter itself with Ktor's no-network `MockEngine`.
- *
- * The token provider is a stub returning `jwt-for-<endpoint>` rather than the real [VapidTokenCache]: the
- * JWT format is pinned by `VapidJwtTest` against an independent encoder, and re-asserting it here would
- * only prove this file can call the same function. What matters at this layer is that the *right* token
- * reaches the *right* service and that a failing one is skipped rather than faked.
- *
- * The expected `Topic` is pinned from an INDEPENDENT digest (`python3 hashlib.sha256` +
- * `base64.urlsafe_b64encode`), not recomputed with [pushTopic].
- *
- * Every body is bounded by [withTimeout] (anti-hang, matching the other suites).
- */
 class PushSenderTest {
 
     private val apple = "https://web.push.apple.com/device-a"
@@ -32,7 +15,6 @@ class PushSenderTest {
     private val publicKey = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"
     private val session = SessionId("sess-alpha")
 
-    /** First 16 characters of `base64url(sha256("sess-alpha"))`, computed with python3, not [pushTopic]. */
     private val sessionTopic = "Cc0mtfSec0nSHnMY"
 
     private fun sub(endpoint: String, createdAt: Long = 1_000L) = PushSubscription(
@@ -42,7 +24,6 @@ class PushSenderTest {
         createdAt = createdAt,
     )
 
-    // --- happy path --------------------------------------------------------------------------------
 
     @Test
     fun aSuccessfulSendReachesEverySubscriptionAndKeepsEveryRow() = runBlocking {
@@ -65,14 +46,11 @@ class PushSenderTest {
 
             env.sender.send(session)
             assertTrue(env.transport.calls.isEmpty(), "an empty table must not produce a request")
-            // The key provider shells out to openssl on its first call; a daemon nobody enabled push on
-            // must never pay that, and must never fail on a machine without openssl either.
             assertEquals(0, keyCalls, "the VAPID key is resolved only when there is somewhere to send")
             assertTrue(env.errors.isEmpty(), "silence, not an error: ${env.errors}")
         }
     }
 
-    // --- the exact wire format ---------------------------------------------------------------------
 
     @Test
     fun theOutgoingHeadersAreExactlyWhatRfc8030AndRfc8292Need() = runBlocking {
@@ -141,7 +119,6 @@ class PushSenderTest {
         }
     }
 
-    // --- what each status does to the table ---------------------------------------------------------
 
     @Test
     fun aGoneSubscriptionIsPrunedAndTheRestStillGetTheirMessage() = runBlocking {
@@ -214,7 +191,6 @@ class PushSenderTest {
         }
     }
 
-    // --- failures never escape ----------------------------------------------------------------------
 
     @Test
     fun aThrowingTransportIsSwallowedAndTheOtherSubscriptionsAreStillAttempted() = runBlocking {
@@ -222,8 +198,6 @@ class PushSenderTest {
             val env = Env(statuses = mapOf(google to 201), throwFor = setOf(apple))
             env.store.seed(sub(apple), sub(google))
 
-            // The sender runs on the daemon's background scope: an exception here would kill the collector
-            // and silently end push for the rest of the daemon's life.
             env.sender.send(session)
             assertEquals(listOf(apple, google), env.transport.urls(), "the failure did not abort the fan-out")
             assertEquals(listOf(apple, google), env.store.endpoints(), "a transport failure proves nothing")
@@ -274,12 +248,9 @@ class PushSenderTest {
         }
     }
 
-    // --- harness ------------------------------------------------------------------------------------
 
-    /** One recorded outbound request. */
     private data class Call(val url: String, val headers: Map<String, String>)
 
-    /** A [PushTransport] that answers from a table and records everything, instead of opening a socket. */
     private class FakeTransport(
         private val statuses: Map<String, Int>,
         private val throwFor: Set<String>,
@@ -295,7 +266,6 @@ class PushSenderTest {
         fun urls(): List<String> = calls.map { it.url }
     }
 
-    /** In-memory [PushStore] preserving insertion order, with optional failing reads/removals. */
     private class FakePushStore(
         private val failList: Boolean = false,
         private val failRemoveFor: Set<String> = emptySet(),
@@ -325,7 +295,6 @@ class PushSenderTest {
         }
     }
 
-    /** A [PushSender] wired to fakes: a recording transport, an in-memory store, a readable token stub. */
     private inner class Env(
         statuses: Map<String, Int> = emptyMap(),
         throwFor: Set<String> = emptySet(),
@@ -336,7 +305,6 @@ class PushSenderTest {
         val transport = FakeTransport(statuses, throwFor)
         val errors = mutableListOf<String>()
 
-        /** Every endpoint the sender asked for a token for, in order. */
         val tokenRequests = mutableListOf<String>()
 
         val sender = PushSender(

@@ -1,17 +1,4 @@
-# Kotlin/Native C interop for the PTY primitive (Task 2 spike).
-#
-# The Kotlin Toolchain auto-discovers cinterop/*.def (no YAML wiring). The generated
-# bindings are importable from the package set below.
-#
-# Symbols exported for Pty.kt:
-#   - openpty            (<util.h>)                -> allocate a master/slave pty pair
-#   - posix_spawn + posix_spawn_file_actions_* + posix_spawnattr_* + POSIX_SPAWN_SETSID (<spawn.h>)
-#   - ioctl / TIOCSWINSZ / struct winsize         (<sys/ioctl.h> -> <sys/ttycom.h>)
-#   - termios                                     (<termios.h>)
-#
-# On macOS these all resolve via libSystem, so no extra linkerOpts are needed
-# (openpty lives in libutil, which is part of libSystem). If linking ever fails,
-# add:  linkerOpts = -lutil
+# Toolchain auto-discovers cinterop/*.def. These macOS symbols resolve through libSystem.
 
 package = io.kotgent.cinterop.pty
 headers = util.h sys/ioctl.h termios.h spawn.h
@@ -28,19 +15,12 @@ headers = util.h sys/ioctl.h termios.h spawn.h
 #include <limits.h>
 #include <stdint.h>
 
-// openpty() lives in <util.h>. cinterop's header scan does not pick up util.h's
-// declarations here (only spawn.h/ioctl.h/termios.h symbols come through), so we expose
-// openpty through a compiled helper in this body instead -- the body IS compiled against
-// util.h, so the call resolves even though the scan skipped it. Allocates a master/slave
-// pty pair with default termios and window size. Returns 0 on success, -1 on error.
+// cinterop does not surface util.h's openpty declaration, so expose it from the compiled body.
 static int kotgent_openpty(int *amaster, int *aslave) {
     return openpty(amaster, aslave, (char *)0, (struct termios *)0, (struct winsize *)0);
 }
 
-// Set the window size on a pty master fd. This wraps the ioctl(TIOCSWINSZ) call and
-// the struct winsize construction so Kotlin never has to deal with the variadic ioctl
-// signature or the _IOW()-expanded TIOCSWINSZ macro. Returns 0 on success, -1 on error
-// (errno set). Used by both Pty.open() (initial size) and Pty.resize().
+// Keep variadic ioctl and the macro-expanded TIOCSWINSZ outside Kotlin cinterop.
 static int kotgent_set_winsize(int fd, unsigned short rows, unsigned short cols) {
     struct winsize ws;
     ws.ws_row = rows;
@@ -50,12 +30,8 @@ static int kotgent_set_winsize(int fd, unsigned short rows, unsigned short cols)
     return ioctl(fd, TIOCSWINSZ, &ws);
 }
 
-// Resolve the slave (pts) path for a master fd. ptsname() lives in <stdlib.h> (included below)
-// but is not surfaced by cinterop's header scan, so it is wrapped here. The child spawned by
-// Pty.open() opens THIS path itself (via posix_spawn_file_actions_addopen) so that, as a session
-// leader under POSIX_SPAWN_SETSID, the pts becomes its CONTROLLING terminal — which `tmux attach`
-// requires. Writes a NUL-terminated path into buf; returns 0 on success, -1 on error (incl. buf
-// too small).
+// ptsname is also absent from the header scan. The child opens this path itself; the spawn file
+// action does not make it a controlling tty, so Pty.resize explicitly delivers SIGWINCH.
 static int kotgent_ptsname(int master, char *buf, unsigned int buflen) {
     const char *name = ptsname(master);
     if (name == (char *)0) return -1;
@@ -65,17 +41,12 @@ static int kotgent_ptsname(int master, char *buf, unsigned int buflen) {
     return 0;
 }
 
-// --- Local controlling-tty helpers for `kotgent attach` raw passthrough (Task 15) ---------------
-//
-// These wrap termios/ioctl so Kotlin never has to materialize a `struct termios` or `struct winsize`
-// (neither type is surfaced by cinterop's header scan; only the compiled body below sees them). The
-// saved termios lives in C as a single process-wide value — there is exactly one controlling tty per
-// `kotgent attach`, so a global is sufficient and keeps the Kotlin side free of the opaque struct.
+// Kotlin cannot materialize these opaque structs. One process owns one attach tty, so one saved
+// process-wide termios value is sufficient.
 
 static struct termios kotgent_saved_termios;
 static int kotgent_saved_termios_valid = 0;
 
-// Save fd's current termios, then switch it to raw mode (cfmakeraw). Returns 0 on success, -1 on error.
 static int kotgent_tty_enter_raw(int fd) {
     if (tcgetattr(fd, &kotgent_saved_termios) != 0) return -1;
     kotgent_saved_termios_valid = 1;
@@ -84,14 +55,12 @@ static int kotgent_tty_enter_raw(int fd) {
     return tcsetattr(fd, TCSANOW, &raw);
 }
 
-// Restore the termios saved by kotgent_tty_enter_raw. Returns 0 if nothing was saved (no-op) or on
-// success, -1 on error. Safe to call unconditionally on exit.
+// Safe to call unconditionally on exit; no saved termios is a successful no-op.
 static int kotgent_tty_restore(int fd) {
     if (!kotgent_saved_termios_valid) return 0;
     return tcsetattr(fd, TCSAFLUSH, &kotgent_saved_termios);
 }
 
-// Read fd's current window size (ioctl TIOCGWINSZ) into *rows/*cols. Returns 0 on success, -1 on error.
 static int kotgent_get_winsize(int fd, unsigned short *rows, unsigned short *cols) {
     struct winsize ws;
     if (ioctl(fd, TIOCGWINSZ, &ws) != 0) return -1;
@@ -100,14 +69,7 @@ static int kotgent_get_winsize(int fd, unsigned short *rows, unsigned short *col
     return 0;
 }
 
-// --- Running-executable path for `kotgent install` (Task 16) -------------------------------------
-//
-// launchd's ProgramArguments must be the absolute path of the kotgent binary, so `install` needs to
-// know where the currently-running binary lives. macOS exposes this via _NSGetExecutablePath
-// (<mach-o/dyld.h>), which is not in cinterop's header scan set — so, like openpty above, we wrap it
-// in a compiled body helper. The raw path can be non-canonical (contain `.`/`..`/symlinks), so it is
-// resolved through realpath. Writes a NUL-terminated path into buf; returns 0 on success, -1 on error
-// (including buf too small).
+// _NSGetExecutablePath is outside the header scan; canonicalize its result for launchd ProgramArguments.
 static int kotgent_executable_path(char *buf, unsigned int buflen) {
     char raw[PATH_MAX];
     uint32_t size = (uint32_t)sizeof(raw);

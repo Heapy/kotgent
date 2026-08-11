@@ -1,69 +1,5 @@
-/*
- * The kanban board: four columns (todo / in_progress / review / done) over ONE selected project.
- *
- * There is deliberately no "all projects" mode. `position` is a project-wide gap-based rank, so a
- * combined view would have to invent an ordering across projects that no move could then express — and
- * the one thing the board is for is ordering a backlog.
- *
- * Props `app.js` passes, which are fixed:
- *   tasks           BacklogEntryDto[] across every project, already merged newest-rev-wins. Filter by
- *                   the selected project here; the app does not know which one is selected.
- *   sessions        SessionDto[] — the card's session dots come from `session.taskRef`, never a fetch.
- *   route           { screen, id } from `lib/router.js`.
- *   projects        every project, from `app.js`'s one `GET /projects` read. The board draws the selected
- *                   one's name and path in its head; the LIST is the sidebar's.
- *   projectId       the selected project. The board filters `tasks` by it and can never change it —
- *                   selecting is the sidebar's job, and the selection has exactly one owner, in `app.js`.
- *   onProjectCreated  (createdProjectDto) → the app re-reads the project list and selects the new one.
- *                   The FORM is here because it is a sibling of the create-task one and shares its
- *                   directory-completion field; the list it lands in is not.
- *   basePath        the Preferences base path, the same value the New-session dialog is handed. It is
- *                   the New-project form's starting directory and the base its completion resolves a
- *                   relative name against — a project lives under the same tree a session does, so
- *                   there is no second place to configure it.
- *   newTaskRequest  a monotonically increasing counter. It increments when the palette's "new task"
- *                   command fires; `0` means "never asked". The create form opens when it CHANGES (an
- *                   effect keyed on it), not when it is truthy — the same command can fire twice while
- *                   the board is already open, and a boolean would need a reset round-trip to do that.
- *                   The comparison starts from `0`, not from the mounted value, because the palette
- *                   NAVIGATES and bumps in one event: the board is usually mounting with the counter
- *                   already at 1, and that mount is the request.
- *   newProjectRequest  the same one-shot counter for the new-project form, from the palette's chordless
- *                   "New project". It is a SECOND counter rather than a shared one because `form` holds
- *                   one value and the board has to know which form was asked for.
- *   onTaskRow       (BacklogEntryDto) → merge a row into `app.js`'s one task list, newest-rev-wins. It is
- *                   the SAME merge the socket's frames go through, so it is not a second path into the
- *                   list — just a second source for it.
- *   onTaskRemoved   (ref) → drop a row from that list; the task is gone on the daemon.
- *   onAnnounce      (text, isError) — the existing announcement channel; every rejected mutation goes
- *                   through it rather than failing silently.
- *
- * ## What the board never does
- * It does not fetch tasks. The `/events` socket sends `tasks_snapshot` on connect and a per-row frame
- * for every later change, so a created, moved, deleted or re-blocked card arrives the same way in every
- * connected tab — including this one.
- *
- * ## What it does with a write's own answer
- * It merges it. Every task write answers with the committed `BacklogEntryDto` carrying its `rev`, and
- * handing that to `onTaskRow` is the same newest-rev-wins merge the frame would do — an older answer
- * simply loses to the frame, and a frame that has not arrived yet loses to nothing. Discarding it was
- * a real hole rather than a purity: while the events socket is down or reconnecting REST still works,
- * and a create, a move or a delete then left the whole board unchanged with no error to show for it.
- *
- * ## What it does not fetch either, any more
- * `GET /projects` used to be the board's one read, because its `<select>` needed project NAMES that a
- * `BacklogEntryDto` (which carries only the uuid) cannot supply. That selector is gone: the projects are
- * a list of rows in the sidebar now, so the read, the selection and the healing of a selection naming a
- * project that is no longer listed all moved to `app.js`, which is the sidebar's and the board's one
- * common ancestor.
- *
- * ## Class names
- * Every class here comes from the plan's "Board CSS vocabulary" — Task 28 writes `style.css` at the same
- * time as this file and has no other way to learn what was emitted. The generic `button` / `field` /
- * `dialog-*` / `path-*` classes inside the two forms are existing ones, reused rather than invented, and
- * the modal itself is the shared [Dialog] wrapper so the board inherits Esc, the focus trap and both
- * light-dismiss gestures instead of re-implementing them.
- */
+/* Positions are project-scoped, so the board intentionally has no cross-project ordering. Task rows
+ * arrive from events; write responses merge into the same revision-ordered app state. */
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
@@ -80,7 +16,7 @@ import {
 import { Dialog } from "./dialogs.js";
 import { TaskCard } from "./TaskCard.js";
 
-/** The four workflow states, in board order. The `state` values are `io.kotgent.task.TaskState` names. */
+/** Mirrors `io.kotgent.task.TaskState` in board order. */
 export const BOARD_COLUMNS = [
   { state: "todo", label: "To do" },
   { state: "in_progress", label: "In progress" },
@@ -88,27 +24,17 @@ export const BOARD_COLUMNS = [
   { state: "done", label: "Done" },
 ];
 
-/**
- * How many `done` cards the column shows before the "show all" toggle. Done is unbounded and grows
- * forever, while the useful part of it is "what closed recently" — the tail of the ordered column.
- */
+/** Show only the recent tail of the unbounded done column by default. */
 export const DONE_VISIBLE_LIMIT = 10;
 
-/** Travel that turns a press on the handle into a drag. Below it the press is still a click. */
 const DRAG_SLOP_PX = 8;
 
-/** The phone breakpoint, the same one `style.css` uses for its single-column layout. */
+/** Must match the single-column breakpoint in style.css. */
 const PHONE_QUERY = "(max-width: 720px)";
 
-/** Debounce before a keystroke in the project-path field asks the daemon to complete it. */
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
-/**
- * The cap `POST /projects` really enforces — `PROJECT_NAME_MAX_LENGTH` in `src/task/ProjectFile.kt`, the
- * one number both the route and the `.kotgent.json` parser measure a name against. The field used to say
- * 80, which is not a stricter client-side rule but a shorter one than the daemon's: an `<input>` maxlength
- * silently REFUSES the 81st keystroke, so a name the API would have accepted could not be typed at all.
- */
+/** Must match PROJECT_NAME_MAX_LENGTH in ProjectFile.kt. */
 const PROJECT_NAME_MAX_LENGTH = 100;
 
 function phoneNow() {
@@ -116,14 +42,7 @@ function phoneNow() {
     window.matchMedia(PHONE_QUERY).matches;
 }
 
-/**
- * Which column the pointer is over and which card it would land above, read from the DOM at the
- * pointer's position rather than from React state: the columns are the authority on their own geometry,
- * and a captured pointer's coordinates are all the gesture has.
- *
- * [draggedRef] is skipped so a card never measures itself; the answer is `beforeRef = null` for "below
- * every card in this column".
- */
+/** Resolve a captured pointer against live DOM geometry, excluding the dragged card itself. */
 export function dropTargetAt(x, y, draggedRef) {
   if (typeof document === "undefined" || typeof document.elementFromPoint !== "function") return null;
   const at = document.elementFromPoint(x, y);
@@ -142,33 +61,23 @@ export function dropTargetAt(x, y, draggedRef) {
   return { state: state, beforeRef: null };
 }
 
-/**
- * The two requests a drop is worth, given where the card is now and where it was dropped.
- *
- * `/move` takes no state and `PATCH` takes no position, so a drop that changes both is two requests —
- * the `PATCH` first, then the `move`. A drop that changes only the column is ONE request, which is why
- * this compares against the position the card would land at after a bare `PATCH` ([natural]) rather than
- * assuming a cross-column drop always needs a move as well.
- *
- * Returns `{ state, move }`, either of which may be null, or null when the drop changes nothing at all.
- */
+/** Plan the minimal PATCH-state then /move sequence; the endpoints cannot change both at once. */
 export function dropPlan(entry, target, columnEntries) {
   if (!entry || !target || !target.state) return null;
   const others = columnEntries.filter((row) => row.ref !== entry.ref);
   const desired = target.beforeRef
     ? others.findIndex((row) => row.ref === target.beforeRef)
     : others.length;
-  // The named neighbour vanished between the last frame and the release: refuse rather than guess.
+  // Refuse rather than guess when the named neighbor vanished before release.
   if (desired < 0) return null;
 
   const stateChanged = target.state !== entry.state;
   let current;
   if (stateChanged) {
-    // Where a bare PATCH would leave it: `position` is project-wide and a transition does not touch it.
+    // A state PATCH preserves the project-wide position.
     const at = others.findIndex((row) => row.position > entry.position);
     current = at < 0 ? others.length : at;
   } else {
-    // Its index among `others` is its index in the column: removing itself shifts only what followed it.
     current = columnEntries.findIndex((row) => row.ref === entry.ref);
   }
   const needsMove = desired !== current;
@@ -178,7 +87,7 @@ export function dropPlan(entry, target, columnEntries) {
   if (needsMove) {
     if (target.beforeRef) move = { before: target.beforeRef };
     else if (others.length > 0) move = { after: others[others.length - 1].ref };
-    // An empty column has no neighbour to name, so the only expressible landing is the backlog's end.
+    // Empty columns have no neighbor, so only the backlog bottom is expressible.
     else move = { bottom: true };
   }
   return { state: stateChanged ? target.state : null, move: move };
@@ -203,7 +112,7 @@ export function Board({
   onOpenPalette,
   onAnnounce,
 }) {
-  const [form, setForm] = useState(null);          // null | "task" | "project"
+  const [form, setForm] = useState(null);
   const [showAllDone, setShowAllDone] = useState(false);
   const [phone, setPhone] = useState(phoneNow);
   const [activeColumn, setActiveColumn] = useState(BOARD_COLUMNS[0].state);
@@ -214,7 +123,6 @@ export function Board({
     if (onAnnounce) onAnnounce(text, error);
   }, [onAnnounce]);
 
-  /** Merge the committed row a write answered with into the app's list — see the header. */
   const publishRow = useCallback((row) => {
     if (row && row.ref && onTaskRow) onTaskRow(row);
   }, [onTaskRow]);
@@ -222,14 +130,12 @@ export function Board({
   const routeId = route && route.id;
   const project = projects.find((row) => row.id === projectId) || null;
 
-  // --- layout --------------------------------------------------------------------------------------
-
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
     const query = window.matchMedia(PHONE_QUERY);
     const apply = () => setPhone(query.matches);
     apply();
-    // Safari below 14 has no addEventListener on a MediaQueryList; the deprecated form is the fallback.
+    // Safari before 14 requires the deprecated MediaQueryList listener API.
     if (query.addEventListener) query.addEventListener("change", apply);
     else query.addListener(apply);
     return () => {
@@ -238,25 +144,19 @@ export function Board({
     };
   }, []);
 
-  // The palette's "new task" is a one-shot counter, so the effect compares against what it last acted
-  // on. Starting from 0 (not from the mounted value) is what makes the navigate-and-bump case open the
-  // form: the board mounts with the counter already incremented.
+  // Start at zero so a navigate-and-increment request is served on the board's first mount.
   const servedRequestRef = useRef(0);
   useEffect(() => {
     if (newTaskRequest === servedRequestRef.current) return;
     servedRequestRef.current = newTaskRequest;
     setForm("task");
   }, [newTaskRequest]);
-  // "New project" is the same one-shot counter for the other form, with its own served ref: `form` holds
-  // one value, so a shared counter could not tell which of the two the palette asked for.
   const servedProjectRequestRef = useRef(0);
   useEffect(() => {
     if (newProjectRequest === servedProjectRequestRef.current) return;
     servedProjectRequestRef.current = newProjectRequest;
     setForm("project");
   }, [newProjectRequest]);
-
-  // --- the board's rows ----------------------------------------------------------------------------
 
   const entries = useMemo(() => tasks
     .filter((task) => task.project === projectId)
@@ -266,7 +166,6 @@ export function Board({
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
 
-  /** One walk of the session list for the whole board, keyed by the ref each session points at. */
   const sessionsByTask = useMemo(() => {
     const map = new Map();
     for (const session of sessions) {
@@ -284,11 +183,8 @@ export function Board({
     entries: entries.filter((entry) => entry.state === column.state),
   })), [entries]);
 
-  // --- mutations -----------------------------------------------------------------------------------
-
   const openTask = useCallback((ref) => navigate(taskPath(ref)), []);
   const openSession = useCallback((id) => navigate(sessionPath(id)), []);
-  /** The way out of this screen without picking a session — see the header row's own comment. */
   const applyDrop = useCallback(async (ref, target) => {
     const entry = entriesRef.current.find((row) => row.ref === ref);
     if (!entry || !target) return;
@@ -296,9 +192,7 @@ export function Board({
     const plan = dropPlan(entry, target, column);
     if (!plan) return;
     try {
-      // The PATCH first: `/move` takes no state and PATCH takes no position, so the state lands before
-      // the rank is resolved against the column the card is joining. Each answer is merged as it comes,
-      // so a failing second request still leaves the first one's committed row on the board.
+      // State must land before position is resolved in the destination column.
       if (plan.state) publishRow(await patchTask(ref, { state: plan.state }));
       if (plan.move) publishRow(await moveTask(ref, plan.move));
     } catch (e) {
@@ -336,7 +230,7 @@ export function Board({
       !window.confirm("Delete " + label + "? Its dependencies and activity go with it.")) return;
     try {
       await deleteTask(entry.ref);
-      // A delete answers `ok` and no row, so the removal is the answer: drop it from the list here.
+      // Delete returns no row, so remove it locally without waiting for an event.
       if (onTaskRemoved) onTaskRemoved(entry.ref);
       say("Deleted " + entry.ref + ".");
     } catch (e) {
@@ -354,12 +248,9 @@ export function Board({
   const submitProject = useCallback(async (path, name) => {
     const created = await createProject(path, name);
     setForm(null);
-    // The list and the selection are the app's; this reports the row and lets it re-read and select.
     if (onProjectCreated) await onProjectCreated(created);
     say("Project " + ((created && created.name) || path) + " is ready.");
   }, [onProjectCreated, say]);
-
-  // --- dragging (desktop; the phone has the menu's move actions instead) ---------------------------
 
   const gestureRef = useRef(null);
 
@@ -375,17 +266,7 @@ export function Board({
       claimed: false,
       element: element,
     };
-    // Captured on the PRESS, not on the claim below — the same immediate capture `installSwipeScroll`
-    // takes, and for the same reason: without it the gesture is delivered somewhere else before it can
-    // qualify. The handle is a ⠿ of about 12x16 px and the slop is half its height, so the very move
-    // that would claim the drag has already left the element; it went to whatever sat under the
-    // pointer, this handler never heard about it, and the drag was effectively unclaimable by mouse.
-    // This is deliberately NOT the dialog's slop-before-capture rule (`dialogs.js`): that gesture
-    // shares its surface with a scroll and a tap and must steal neither, while this handle exists ONLY
-    // to start a drag — no click handler, `aria-hidden`, already `touch-action: none` — so there is no
-    // competing gesture to disambiguate and nothing an early capture can take away. The slop stays
-    // exactly as it was and keeps its own job, telling a click on the handle from a drag: capture and
-    // claim were merely coupled here, never the same rule.
+    // Capture immediately: the tiny drag-only handle is left before pointer travel clears the slop.
     if (element && element.setPointerCapture) element.setPointerCapture(event.pointerId);
   }, []);
 
@@ -393,12 +274,9 @@ export function Board({
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     if (!gesture.claimed) {
-      // Below the slop the press is still a press: a click on the handle must not become a drag.
       if (Math.abs(event.clientX - gesture.startX) < DRAG_SLOP_PX &&
         Math.abs(event.clientY - gesture.startY) < DRAG_SLOP_PX) return;
       gesture.claimed = true;
-      // The capture that makes this move reach us at all was taken on the press; it is also what keeps
-      // the gesture alive across the re-render its own drop-target highlight causes.
       setDraggingRef(gesture.ref);
     }
     if (event.cancelable) event.preventDefault();
@@ -419,8 +297,7 @@ export function Board({
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
     const claimed = gesture.claimed;
-    // The RELEASE position is the drop, not the last move: a browser need not precede `pointerup` with
-    // a `pointermove`, and a swipe that reversed and lifted would otherwise drop where it used to be.
+    // Pointerup need not be preceded by a move, so resolve the release position again.
     const target = claimed ? dropTargetAt(event.clientX, event.clientY, gesture.ref) : null;
     endGesture(gesture, event.pointerId);
     if (claimed && target) applyDrop(gesture.ref, target);
@@ -429,11 +306,8 @@ export function Board({
   const dragPointerCancel = useCallback((event) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    // A gesture the platform took away is not a drop: fail toward leaving the backlog alone.
     endGesture(gesture, event.pointerId);
   }, [endGesture]);
-
-  // --- render --------------------------------------------------------------------------------------
 
   const shownColumns = phone
     ? columns.filter((column) => column.state === activeColumn)
@@ -448,9 +322,7 @@ export function Board({
     const visible = capped
       ? column.entries.slice(column.entries.length - DONE_VISIBLE_LIMIT)
       : column.entries;
-    // A capped column still has cards above the first visible one, and `moveWithinColumn` resolves the
-    // neighbour against the WHOLE column — so the menu's up/down must be judged there too, or the first
-    // visible card of a capped `done` would refuse a move that is perfectly expressible.
+    // Judge moves against the full done column, including hidden cards.
     const hidden = column.entries.length - visible.length;
     const over = Boolean(draggingRef && dropTarget && dropTarget.state === column.state);
     return html`
@@ -460,8 +332,6 @@ export function Board({
           <h2>${column.label}</h2>
           <span>${column.entries.length}</span>
         </header>
-        ${/* The cards are direct children of the column: an intermediate <ul> would need a class of
-              its own to lose the UA's bullets, and the shared vocabulary has no name for one. */ ""}
         ${visible.map((entry, index) => html`
             <${TaskCard}
               key=${entry.ref}
@@ -495,23 +365,6 @@ export function Board({
 
   return html`
     <main class="board" aria-label="Task board">
-      ${/* The same three-part head the terminal pane draws, in the same order, because the two are the
-            same slot of the same shell: the two sidebar controls, the identity of what is on screen, and
-            the palette opener. Before the sidebar became shell furniture this row held a "Sessions" link
-            (the only in-app way off a screen an installed PWA draws no Back button for) and a project
-            `<select>`; both are now rows in the sidebar, reachable from either screen.
-
-            The drawer opener and the collapse toggle are rendered on EVERY screen and hidden by the
-            breakpoint — the phone gets ☰, the desktop gets ‹ / › — exactly as `#terminal-head` does.
-            Without them the board would be the one screen whose sidebar cannot be reopened after ⌘., or
-            opened at all on a phone.
-
-            All three carry the SAME ids as the terminal header's, which is legal because the two heads
-            are the two arms of one branch and can never be in the document together. That is the point:
-            every rule keyed on `#drawer-toggle` / `#sidebar-toggle` / `#palette-button` — including the
-            breakpoint's neutralization of the collapse toggle — reaches this row with nothing restated.
-            A `board-`-prefixed id would also have collided with the class vocabulary the board's two
-            serving tests scan for. */ ""}
       <header class="board-head">
         <button
           id="drawer-toggle"
@@ -539,8 +392,6 @@ export function Board({
             ${(project && project.path) || "Adopt a directory to start a backlog"}
           </span>
         </div>
-        ${/* The vocabulary class carries Task 28's rules; the generic `button` beneath it is a sane
-              default that those rules override, because they are written later in the same file. */ ""}
         <button type="button" class="button board-new-task" disabled=${!projectId}
                 onClick=${() => setForm("task")}>New task</button>
         <button
@@ -553,17 +404,8 @@ export function Board({
         >⋯</button>
       </header>
 
-      ${/* The phone shows ONE column, so the switcher is how the other three are reachable at all.
-            Above the breakpoint all four are on screen and this is not rendered. */ ""}
       ${phone && html`
         <nav class="board-column-switch" aria-label="Column">
-          ${/* Label and count are separate spans for the same reason `.board-column-head` splits its
-                own two: the count is quieter ink than the label, and one text node cannot be. They
-                carry no class — the vocabulary has no name for either, and the switcher's own rules
-                reach them as children. The space BETWEEN them is deliberate and is not what draws the
-                gap: a whitespace-only run between flex items produces no box, so the row is spaced by
-                `gap` — but it stays in the DOM text, which is what the button's accessible name is
-                computed from. Without it a screen reader announces "To do5". */ ""}
           ${columns.map((column) => html`
             <button key=${column.state} type="button" class="button" data-state=${column.state}
                     aria-pressed=${column.state === activeColumn ? "true" : "false"}
@@ -586,10 +428,6 @@ export function Board({
   `;
 }
 
-/**
- * Create a task in the SELECTED project. The board is the one client with no session, so the project id
- * is explicit in the body — every other caller lets the daemon resolve it from the calling pane.
- */
 function NewTaskForm({ project, onCreate, onClose }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -603,7 +441,7 @@ function NewTaskForm({ project, onCreate, onClose }) {
     event.preventDefault();
     const trimmed = title.trim();
     if (!trimmed) {
-      // Native `required` catches an empty field but not a whitespace-only one.
+      // Native required accepts whitespace-only input.
       setError("Give the task a title.");
       if (titleRef.current) titleRef.current.focus();
       return;
@@ -654,18 +492,7 @@ function NewTaskForm({ project, onCreate, onClose }) {
   `;
 }
 
-/**
- * The absolute directory a typed value names, given the Preferences base path: an absolute input is
- * itself, a relative one hangs off the base. This is deliberately the SAME join
- * `POST /directories/complete` applies on the daemon (`completionTarget`), so a name the suggestion list
- * offered is the name the create receives — a form whose completion resolved against the base while its
- * submit did not would list a real directory and then post a path the daemon refuses as relative.
- * With no base path configured a relative value stays relative and the submit refuses it below.
- *
- * It resolves AGAINST the base, which is not the same as under it: `..` is passed through for the
- * daemon's `realpath` to settle, exactly as `resolveCwdAgainst` does on the CLI side, so `../sibling`
- * legitimately names a directory outside the base. This is a spelling helper, not a containment gate.
- */
+/** Match directory completion's lexical base join; this is not a containment check. */
 export function resolveProjectPath(typed, basePath) {
   const input = String(typed || "").trim();
   if (input.charAt(0) === "/") return normalizePath(input);
@@ -674,25 +501,8 @@ export function resolveProjectPath(typed, basePath) {
   return normalizePath(joinPath(base, [input]));
 }
 
-/**
- * Adopt a directory as a project: the daemon writes `.kotgent.json` there and an existing file always
- * wins, so pointing this at a checkout that is already a project simply learns its uuid.
- *
- * The path field completes against the daemon's filesystem — a phone must complete paths on the Mac
- * that will hold the file, not on the phone. This is the same `POST /directories/complete` endpoint and
- * the same base path the New-session dialog uses: a project is created in the same tree sessions are
- * started in, so the field opens ON the base path and completes relative input against it rather than
- * making the operator retype an absolute prefix they already configured once. The picker is inlined
- * here rather than shared, because the dialog owns its one caller and this form has no import mode.
- */
 function NewProjectForm({ basePath = "", onCreate, onClose }) {
-  // The base is SNAPSHOT at mount, not read live off the prop. Preferences are shared by every browser
-  // on this daemon, so another tab can commit a new base while this form is open — and the form is not
-  // remounted for that (nothing keys it, and keying it would throw away a typed draft to apply a change
-  // the operator did not make here). A live read would then split the form against itself: the field
-  // still holds a directory under the OLD base, the hint names the new one, and completion resolves
-  // against a third answer. One frozen value keeps the field, the hint, the completion and the submit
-  // talking about the same tree; the next open picks up the new base.
+  // Freeze the base so cross-tab preference updates cannot reinterpret an open draft.
   const [base] = useState(() => normalizePath(basePath));
   const [path, setPath] = useState(base.charAt(0) === "/" ? base : "");
   const [name, setName] = useState("");
@@ -711,8 +521,6 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     const typed = query.trim();
     setSuggestions([]);
     setActiveSuggestion(-1);
-    // A relative name completes only when there is a base path to hang it off — the endpoint answers
-    // 400 for a relative input with no absolute base, so asking would be a round trip for an error.
     if (!typed || (typed.charAt(0) !== "/" && base.charAt(0) !== "/")) return undefined;
 
     const controller = new AbortController();
@@ -741,7 +549,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
 
   const choose = (candidate) => {
     setPath(candidate);
-    setQuery(null); // selecting is not another typing event: keep the just-closed list closed
+    setQuery(null);
     setSuggestions([]);
     setActiveSuggestion(-1);
     if (pathRef.current) pathRef.current.focus();
@@ -770,9 +578,6 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     event.preventDefault();
     const typed = resolveProjectPath(path, base);
     if (typed.charAt(0) !== "/") {
-      // Two ways in. No base path configured and a relative value; or a value that is ALL whitespace,
-      // which native `required` passes (a text input is missing only when its value is empty) and the
-      // resolver trims to nothing — so this branch survives a configured base and cannot be dropped.
       setError("Give an absolute path to an existing directory.");
       if (pathRef.current) pathRef.current.focus();
       return;
@@ -787,7 +592,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     }
   };
 
-  // Built with `joinPath`, not `base + "/name"`: a base of exactly "/" spells the latter `//name`.
+  // joinPath keeps the root base from producing //name.
   const placeholder = base.charAt(0) === "/" ? joinPath(base, ["name"]) : "/path/to/project";
 
   return html`
@@ -830,9 +635,6 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
               </ul>`}
           </div>
           ${base.charAt(0) === "/" && html`
-            ${/* "against", not "under": the join is not a containment check, and `../sibling` really
-                  does resolve outside the base. Enforcing containment would have to happen after the
-                  daemon's own `realpath`, where symlinks are known — not in a lexical helper here. */ ""}
             <small id="new-project-base-hint" class="field-hint">
               Starts at the Preferences base path ${base}; a name without a leading / resolves against it.
             </small>`}

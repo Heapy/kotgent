@@ -10,10 +10,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Unit tests for the Junie adapter — the OUTGOING side's argv: launch, resume, and the hook config that
- * rides along on both. Pure Kotlin (no cinterop, no live binary), so they run for real in the test binary.
- */
 class JunieAdapterTest {
 
     private val hookConfig = "/home/u/.kotgent/junie-hooks.json"
@@ -52,8 +48,6 @@ class JunieAdapterTest {
 
     @Test
     fun theCwdIsNotPassedAsAProjectFlag() {
-        // tmux `new-session -c <cwd>` already puts the pane in the session cwd, and that is the value
-        // junie records as its project dir — the key the import/resumability probes match on.
         val spec = adapter().buildLaunchSpec(LaunchMode.New)
         assertFalse(spec.command.contains("--project"), "the cwd comes from tmux, not from an argv flag")
         assertFalse(spec.command.contains("/work/repo"), "…so it never appears in the argv: ${spec.command}")
@@ -80,7 +74,6 @@ class JunieAdapterTest {
             assertEquals("/Users/u/.local/bin/junie", spec.cliPath)
         }
 
-        // Defaults are null when not supplied.
         val bare = adapter().buildLaunchSpec(LaunchMode.New)
         assertNull(bare.cliVersion)
         assertNull(bare.cliPath)
@@ -88,14 +81,10 @@ class JunieAdapterTest {
 
     @Test
     fun theLaunchArgvSurvivesTmuxShellQuoting() {
-        // The whole argv is rendered into ONE /bin/sh line for `tmux new-session`, so each element must
-        // come back out as a single literal word — a re-split config path would silently drop the hooks.
         val spec = adapter().buildLaunchSpec(LaunchMode.New)
         val line = SessionManager.shellCommand(spec.command)
 
         assertTrue(line.contains("'$hookConfig'"), "the config path is one quoted word: $line")
-        // Nothing in the rendered line lets the shell expand $TMUX_PANE at LAUNCH time — it must survive
-        // into the hook script, where the hook's own shell expands it per callback.
         assertFalse(line.contains("\$TMUX_PANE"), "the launch line carries no live \$TMUX_PANE")
     }
 }

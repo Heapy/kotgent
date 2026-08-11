@@ -29,13 +29,8 @@ import platform.posix.popen
 import platform.posix.unlink
 
 /**
- * The outcome of running a subprocess: its [exitCode] plus the fully captured [stdoutBytes] and
- * [stderrBytes]. A non-zero exit is a normal, non-throwing outcome (`tmux` reports "can't find
- * session" etc. that way) — callers inspect [isSuccess] / [exitCode] and decide.
- *
- * Not a `data class` on purpose: structural equality over [ByteArray] would be by-reference and
- * misleading. Consumers use the decoded [stdout] / [stderr] text (tmux speaks UTF-8) or the raw
- * bytes directly.
+ * Non-zero child exits are results, not runner failures. This is not a data class because ByteArray
+ * structural equality would be misleadingly reference-based.
  */
 @OptIn(ExperimentalForeignApi::class)
 class ProcessResult(
@@ -52,47 +47,15 @@ class ProcessResult(
 }
 
 /**
- * Runs child processes and captures their output, built entirely on the stock Kotlin/Native
- * `platform.posix` platform library (no custom cinterop).
- *
- * ## Why `popen`/`pclose` and not `posix_spawn`
- * `posix_spawn` and friends live in `<spawn.h>`, which is **not** in the macosArm64 `platform.posix`
- * header set (that is exactly why [io.kotgent.pty.Pty] had to add its own `pty.def` cinterop for
- * them). Custom cinterop klibs do not link into TEST binaries on Kotlin Toolchain 0.11.x (KT-78062,
- * see the Task 2 blocker), and these tmux commands MUST be spawnable from the test binary. That
- * rules out `posix_spawn`. A hand-rolled `fork()`+`execvp()` in Kotlin/Native is unsafe: only
- * async-signal-safe work may run between fork and exec, and any Kotlin allocation or GC safepoint
- * in the forked child risks a deadlock (the reason [io.kotgent.pty.Pty] chose `posix_spawn` over
- * `forkpty`). `popen` sidesteps both problems: the `fork`+`exec` happens **inside libc** — no
- * Kotlin/Native code ever runs in the child — and `popen`/`pclose` are stock `platform.posix`
- * (`stdio.h`), so they link and run in the test binary fine (like Task 3's `fopen`/`fread`).
- *
- * ## Deadlock-free capture
- * `popen` gives a single pipe (the child's stdout). We redirect the child's **stderr to a
- * per-call temp file** (`… 2> <tmpfile>`) and fully drain the one stdout pipe with a blocking
- * `fread` loop. With only one pipe, and it always drained to EOF, a chatty process can never fill
- * an unread pipe buffer and deadlock — and stdout stays uncontaminated by stderr (so e.g.
- * `capture-pane` content is exactly the pane content).
- *
- * ## No shell-injection despite the `/bin/sh` layer
- * `popen` runs `/bin/sh -c "<string>"`, so each argv element is wrapped with strict POSIX
- * single-quote quoting ([shQuote]) before being joined. Single quotes make every byte literal
- * (including tmux format specifiers like `#{pane_id}` and embedded tabs), so arguments cannot be
- * re-split or expanded by the shell.
+ * Uses libc `popen`, avoiding Kotlin work between fork and exec and custom spawn cinterop. Stderr goes
+ * to a per-call temp file so stdout's single pipe can always be drained without a two-pipe deadlock.
+ * Although popen invokes a shell, [shQuote] makes every argv element one literal word.
  */
 object ProcessRunner {
 
     /**
-     * Run [argv] (argv[0] is the program; PATH is honored via `/bin/sh`) and return its result. The
-     * child inherits the current environment. Never throws on a non-zero child exit — that is reported
-     * in [ProcessResult.exitCode]. Throws [ProcessException] only on a runner-level failure
-     * (e.g. `popen` itself failing).
-     *
-     * The child inherits stdin/stdout/stderr and nothing else: every other descriptor is flagged
-     * close-on-exec first ([markOpenFdsCloexec]). Without that, a `tmux new-session` here forks off a
-     * `tmux` **server** that daemonizes holding the daemon's listening socket, which then blocks every
-     * later rebind and silently swallows client connections — see [markOpenFdsCloexec] for the full
-     * mechanism. `popen`'s own pipe is created after the sweep and unaffected.
+     * Children inherit stdio but not other daemon descriptors. The popen pipe is created after the
+     * close-on-exec sweep and is therefore unaffected.
      */
     @OptIn(ExperimentalForeignApi::class)
     fun run(argv: List<String>): ProcessResult {
@@ -107,7 +70,6 @@ object ProcessRunner {
                 ?: throw ProcessException("popen failed for '${argv[0]}' (errno=$errno)")
 
             val stdoutBytes = readStreamToEof(fp)
-            // pclose returns the child's termination status in wait(2) format, or -1 on error.
             val status = pclose(fp)
             val exitCode = decodeExitCode(status)
             val stderrBytes = readFileBytes(errPath)
@@ -117,7 +79,6 @@ object ProcessRunner {
         }
     }
 
-    /** Fully drain a `FILE*` stream into a ByteArray (streamed 8 KiB reads, no size cap). */
     @OptIn(ExperimentalForeignApi::class)
     private fun readStreamToEof(fp: kotlinx.cinterop.CPointer<platform.posix.FILE>): ByteArray {
         val chunks = ArrayList<ByteArray>()
@@ -127,7 +88,7 @@ object ProcessRunner {
             val buf = allocArray<ByteVar>(bufSize)
             while (true) {
                 val n = fread(buf, 1.convert(), bufSize.convert(), fp).toInt()
-                if (n <= 0) break // 0 == EOF (or a read error, which we also treat as end)
+                if (n <= 0) break
                 chunks.add(buf.readBytes(n))
                 total += n
             }
@@ -141,22 +102,14 @@ object ProcessRunner {
         return out
     }
 
-    /**
-     * Decode a wait(2)-format status (as returned by `pclose`) into a conventional exit code:
-     * the low 7 bits hold the terminating signal (0 when the child exited normally), bits 8..15
-     * hold the exit code. A killed child reports `128 + signal`; a `-1` status (pclose error) is
-     * surfaced as `-1`.
-     */
+    /** Decodes wait(2) status; signalled children use the conventional `128 + signal`. */
     private fun decodeExitCode(status: Int): Int = when {
         status == -1 -> -1
         status and 0x7f == 0 -> (status shr 8) and 0xff
         else -> 128 + (status and 0x7f)
     }
 
-    /**
-     * Reserve a unique temp path via `mkstemp` (atomic, race-free) and hand back its name; the fd
-     * is closed immediately because the child re-opens the file through the shell's `2>` redirect.
-     */
+    /** Atomically reserves a path; the child reopens it through the stderr redirect. */
     @OptIn(ExperimentalForeignApi::class)
     private fun makeTempPath(): String {
         val dir = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
@@ -191,13 +144,7 @@ object ProcessRunner {
         }
     }
 
-    /**
-     * POSIX single-quote quoting: wrap in single quotes and rewrite every embedded `'` as the
-     * classic `'\''` (close-quote, escaped literal quote, reopen-quote). Makes [s] a single,
-     * fully literal shell word — no expansion, no re-splitting.
-     */
     internal fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
 }
 
-/** Thrown only for runner-level failures (not for a child's non-zero exit, which is a result). */
 class ProcessException(message: String) : RuntimeException(message)

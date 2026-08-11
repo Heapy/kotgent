@@ -19,37 +19,11 @@ import platform.posix.mkstemp
 import platform.posix.unlink
 import platform.posix.write
 
-/** Every signing failure: no openssl, an unreadable key, a temp file that cannot be written, junk DER. */
 class VapidSignerException(message: String) : IllegalStateException(message)
 
 /**
- * ES256 signing backed by the system openssl — the signing edge of the push feature, and the only place in
- * `src/push/` that spawns a process besides [VapidKey].
- *
- * ## Why a temp file for the input
- * The signing input has to reach openssl's stdin or a file, and [ProcessRunner] is `popen`-based
- * (`popen(cmd, "r")`), which gives a readable pipe and **no writable stdin** — by design, because `popen`
- * is the one spawn primitive usable from a test binary (KT-78062, see [ProcessRunner]). So the input goes
- * through a `mkstemp` file instead and openssl is pointed at it. Nothing secret is written: the input is
- * the JWT's already-public header and claims. The DER signature comes back on
- * [ProcessResult.stdoutBytes] — no output file at all — and the input temp is removed in a `finally`, so
- * neither a non-zero openssl nor a malformed signature can leave litter in `$TMPDIR`.
- *
- * ## Why `/usr/bin/openssl` again rather than a shared helper
- * The default is the same pinned absolute path [VapidKey] uses and for the same reason (a bare `openssl`
- * is Homebrew's build locally and possibly nothing at all under a stale launchd PATH). The two classes
- * stay separate because they fail differently: a key problem means "push cannot be enabled at all", a
- * signing problem means "this send failed" — [VapidTokenCache] caches nothing when [sign] throws, so the
- * next attempt retries from scratch.
- *
- * ## Failure is never fatal
- * Every path throws [VapidSignerException] with openssl's own stderr in the message. That is the
- * diagnostic the daemon prints once when it degrades to "push disabled"; nothing here takes the daemon
- * down and nothing here retries.
- *
- * @param keyPath the PEM private key — [VapidKey.ensureKeyFile]'s return value in production.
- * @param opensslPath the openssl binary; injected so a test can point at a nonexistent one.
- * @param runner the spawn seam, [ProcessRunner.run] in production.
+ * ES256 signing through system OpenSSL. ProcessRunner exposes no writable stdin, so the public JWT
+ * signing input uses an atomic temporary file that is always unlinked; the signature returns on stdout.
  */
 @OptIn(ExperimentalForeignApi::class)
 class OpensslVapidSigner(
@@ -58,17 +32,9 @@ class OpensslVapidSigner(
     private val runner: (List<String>) -> ProcessResult = { ProcessRunner.run(it) },
 ) {
 
-    /**
-     * The raw `r || s` signature over [input] (`base64url(header).base64url(claims)`), exactly
-     * [P256_RAW_SIGNATURE_LENGTH] bytes.
-     *
-     * @throws VapidSignerException if the signature cannot be produced for any reason. There is no
-     *   "partial" outcome: a caller either gets 64 valid bytes or an explanation.
-     */
+    /** Returns the fixed-width raw `r || s` signature or throws [VapidSignerException]. */
     fun sign(input: String): ByteArray {
         if (input.isBlank()) {
-            // Only reachable by bypassing vapidSigningInput; signing nothing would yield a JWT whose
-            // signature covers no claims, which a push service rejects with an opaque 401.
             throw VapidSignerException("refusing to sign an empty VAPID signing input")
         }
 
@@ -90,8 +56,6 @@ class OpensslVapidSigner(
             return try {
                 derToRawSignature(result.stdoutBytes)
             } catch (e: EcdsaDerException) {
-                // The bytes came from openssl, so this is "openssl gave us something unexpected", not a
-                // caller error — say so, or the operator goes looking in the wrong place.
                 throw VapidSignerException(
                     "$opensslPath produced a signature that is not a P-256 ECDSA DER value: ${e.message}",
                 )
@@ -101,11 +65,6 @@ class OpensslVapidSigner(
         }
     }
 
-    /**
-     * [runner] with runner-level failures (a `popen` that never got off the ground) folded into
-     * [VapidSignerException], so a caller has exactly one exception type to degrade on — the same shape
-     * [VapidKey.runOpenssl] uses.
-     */
     private fun runOpenssl(argv: List<String>): ProcessResult =
         try {
             runner(argv)
@@ -114,12 +73,8 @@ class OpensslVapidSigner(
         }
 
     /**
-     * [input] in a fresh `$TMPDIR` file, whose path is returned; the caller unlinks it.
-     *
-     * `mkstemp` (not a name we compose ourselves) because it creates the file atomically and `0600`, so
-     * two concurrent sends cannot collide on a path and no one can pre-place a symlink at it. The bytes go
-     * through the returned descriptor rather than a second `fopen` by name, which would reopen a path that
-     * is no longer guaranteed to be the file we just made.
+     * `mkstemp` prevents path collisions and symlink preplacement. Write through its descriptor rather
+     * than reopening the now-visible path.
      */
     private fun writeSigningInput(input: String): String {
         val dir = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
@@ -153,9 +108,8 @@ class OpensslVapidSigner(
     }
 
     /**
-     * All of [bytes] to [fd], looping because a single `write` may be short. A partial signing input would
-     * produce a perfectly valid signature over the WRONG bytes — silently unverifiable at the push
-     * service — so a short or failed write throws instead. [path] only names the file in the error.
+     * Partial input could produce a valid signature over the wrong claims, so short writes are completed
+     * or fail explicitly.
      */
     private fun writeAll(fd: Int, bytes: ByteArray, path: String) {
         if (bytes.isEmpty()) return
@@ -175,10 +129,6 @@ class OpensslVapidSigner(
     }
 
     companion object {
-        /**
-         * Prefix of the per-signature temp file. Distinctive on purpose: anything matching it in `$TMPDIR`
-         * is leaked litter from this class, which is exactly what the tests assert never happens.
-         */
         const val SIGNING_INPUT_PREFIX: String = "kotgent-vapidsign-"
     }
 }

@@ -1,14 +1,7 @@
 [versions]
 coroutines = "1.11.0"
 ktor = "3.5.1"
-# Playwright for Java — the browser tier's whole toolchain. Deliberately NOT npm: the Node driver ships
-# inside the Maven artifact, so there is no package.json, no node_modules and no `npx playwright install`,
-# and `resources/webui` keeps its no-build property. Two couplings ride on this literal. The browser
-# bundle the driver demands is pinned by the version, and `.github/workflows/ci.yml` spells it out in the
-# Playwright cache key WITHOUT restore-keys — bump both in the same commit or CI restores a bundle the new
-# driver ignores and re-downloads over. Dependabot will not do it: `.github/dependabot.yml` records that
-# this catalog is intentionally untracked (its gradle ecosystem needs a build.gradle(.kts) this repo has
-# by design not got), so the bump is manual.
+# Keep the literal Playwright version in .github/workflows/ci.yml's browser-cache key in sync.
 playwright = "1.62.0"
 sqldelight = "2.3.2"
 sql-psi = "0.7.3"

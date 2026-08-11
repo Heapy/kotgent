@@ -34,44 +34,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Tests for [TaskService] — the one place the task store and the event store meet.
- *
- * ## What they are built around
- * Three properties, none of which is visible from either store alone:
- *
- *  1. **Linking is two independent writes and there is no exclusivity.** Several sessions may hold one
- *     task, a link to a task that is already `in_progress` succeeds and leaves the state alone, and the
- *     conditional `todo → in_progress` answering `false` is normal rather than a failure. A test that
- *     merely checked "the link was made" would pass against an implementation that also refused the
- *     second session, so [twoSessionsLinkTheSameTaskAndBothHoldIt] asserts the second link *and* that the
- *     first is still there.
- *  2. **The two stores' locks are never nested.** [LockWitness] is a tripwire for that, and it is
- *     honest about being one: today's implementation calls both stores from the top level, so nothing
- *     here can make it fire — it is armed against the shape the bug would actually take, a suspend
- *     lambda handed to one store that reaches the other inside it. The contention gate deliberately
- *     runs OUTSIDE the witness for the same reason: it models a caller suspended BETWEEN store calls,
- *     which the witness must not read as a nested lock.
- *  3. **The order of the calls is itself the contract**, so both fakes append to one shared [journal]:
- *     `delete` unlinking every holder BEFORE removing the task is the difference between "no dangling
- *     badge" and "a badge pointing at nothing", and no per-store assertion can see it.
- *  4. **Linking is unconditional; CLEARING is not.** Every clear here reads the ref — from the row, or
- *     from the holder list — and writes second, so a link made inside that window is newer than
- *     everything the operation read and must survive it. The three tests that pin it
- *     ([aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone],
- *     [closingATaskCannotEraseAHoldersNewerLinkToADifferentTask],
- *     [deleteCannotEraseAHoldersNewerLinkToADifferentTask]) each drive that interleaving through a
- *     deterministic gate in [FakeEventStore] rather than a timed race, and each also asserts the FEED,
- *     because a suppressed write whose `unlinked` row was still appended is the same bug wearing the
- *     other half of the costume. None of this is exclusivity: no link is ever refused, and
- *     [twoSessionsLinkTheSameTaskAndBothHoldIt] still holds.
- *
- * Every body is bounded by [withTimeout] as an anti-hang tripwire; [linkNextUnderContentionHandsTwoSessionsTwoDifferentTasks]
- * needs it most, because a lost race there is a hang, not a wrong answer.
- */
 class TaskServiceTest {
 
-    // --- the vocabulary -------------------------------------------------------------------------
 
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
 
@@ -84,7 +48,6 @@ class TaskServiceTest {
 
     private val clock = 7_000L
 
-    /** The three collaborators plus the service over them, sharing one journal and one lock witness. */
     private inner class Fixture {
         val journal: MutableList<String> = mutableListOf()
         val witness = LockWitness()
@@ -133,14 +96,7 @@ class TaskServiceTest {
             tasks.activity.filter { it.ref == ref }.map { it.kind to it.author }
     }
 
-    // --- no exclusivity: several sessions, one task ------------------------------------------------
 
-    /**
-     * The headline property of the whole design: a task may be linked from ANY number of sessions.
-     * kotgent cannot enforce one worker per task — the operator opens a second terminal in the same
-     * repository and the daemon never hears about it — so the second link is not an error, does not
-     * displace the first, and puts both sessions on the card.
-     */
     @Test
     fun twoSessionsLinkTheSameTaskAndBothHoldIt() = runBlocking {
         withTimeout(5_000) {
@@ -168,12 +124,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * The conditional `todo → in_progress` advance answering `false` is NORMAL, not a refusal: an
-     * explicit `task claim <ref>` on a task somebody is already working on simply adds a link. The rev
-     * assertion is what proves the store was not written — a state check alone would also pass if the
-     * service had re-written `in_progress` over `in_progress`.
-     */
     @Test
     fun aLinkToATaskAlreadyInProgressSucceedsAndLeavesItsStateAlone() = runBlocking {
         withTimeout(5_000) {
@@ -195,13 +145,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * A session works ONE task at a time, so pointing it at another overwrites the link with no error —
-     * and, deliberately, without touching the task it was on. Recorded rather than "fixed": the previous
-     * task keeps its state (nobody can infer from a re-point that the work is finished) and gets no
-     * `unlinked` feed row, because `link` reads no session row at all and adding that read to the hot
-     * path buys one feed line.
-     */
     @Test
     fun pointingASessionAtAnotherTaskOverwritesTheLinkAndLeavesTheOldTaskAlone() = runBlocking {
         withTimeout(5_000) {
@@ -220,16 +163,7 @@ class TaskServiceTest {
         }
     }
 
-    // --- selection ---------------------------------------------------------------------------------
 
-    /**
-     * The contended `task next`, which is the ONLY reason the conditional advance exists. Both sessions
-     * are held just after [FakeTaskStore.nextCandidate] has answered, so both really are holding the
-     * SAME candidate before either advances it — the race is real rather than incidental: one wins
-     * `startIfTodo`, the loser sees zero rows, re-queries —
-     * the row is no longer `todo`, so it is naturally excluded, which is why no `skip` set is needed —
-     * and takes the next task.
-     */
     @Test
     fun linkNextUnderContentionHandsTwoSessionsTwoDifferentTasks() = runBlocking {
         withTimeout(5_000) {
@@ -273,11 +207,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * "Nothing eligible" is a `null` return and nothing else — the single signal the CLI maps to exit
-     * `3`. Nothing may be written on the way there, or a `task next` in an empty project would stamp an
-     * `updated_at` on a session for no reason.
-     */
     @Test
     fun linkNextOnAnEmptyBacklogReportsNothingEligibleAndWritesNothing() = runBlocking {
         withTimeout(5_000) {
@@ -291,7 +220,6 @@ class TaskServiceTest {
         }
     }
 
-    /** Every candidate already taken is the same answer as an empty project: the query runs dry. */
     @Test
     fun linkNextWithEveryTaskAlreadyStartedReportsNothingEligible() = runBlocking {
         withTimeout(5_000) {
@@ -305,13 +233,7 @@ class TaskServiceTest {
         }
     }
 
-    // --- release -----------------------------------------------------------------------------------
 
-    /**
-     * `release` says nothing about whether the work is finished — kotgent cannot infer that from a
-     * session detaching, and other sessions may still be linked — so the task's state is untouched and
-     * the other holder keeps its link.
-     */
     @Test
     fun unlinkDropsOneSessionsLinkAndLeavesTheTasksStateAlone() = runBlocking {
         withTimeout(5_000) {
@@ -334,19 +256,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * The lost-update rule on the single-session path.
-     *
-     * `unlink` reads the row to learn WHICH ref to attribute its `unlinked` row to, and writes second. A
-     * `claim` or a `task next` landing in that window has pointed this session at a NEWER task, and the
-     * older release must not erase it: doing so would leave `local:2` `in_progress` with no terminal
-     * behind it while the feed claimed a release of `local:1` for a write that destroyed the other link.
-     *
-     * The interleaving is deterministic, not timed: [FakeEventStore.afterGetSession] runs once the read
-     * has answered and the store is released, which is exactly the window the two-call shape opens.
-     * Falsifiable — with the unconditional `setTaskRef(s1, null, …)` the link is gone and `local:2` is
-     * orphaned, which is the defect this test was written for.
-     */
     @Test
     fun aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone() = runBlocking {
         withTimeout(5_000) {
@@ -358,7 +267,7 @@ class TaskServiceTest {
             f.journal.clear()
 
             f.sessions.afterGetSession = {
-                f.sessions.afterGetSession = null // the interleaving happens once, not on every read
+                f.sessions.afterGetSession = null
                 f.service.link(s1, t2)
             }
 
@@ -383,7 +292,6 @@ class TaskServiceTest {
         }
     }
 
-    /** A second `release` writes nothing at all — no `updated_at` bump and no duplicate feed row. */
     @Test
     fun unlinkOfASessionHoldingNoTaskWritesNothing() = runBlocking {
         withTimeout(5_000) {
@@ -398,13 +306,7 @@ class TaskServiceTest {
         }
     }
 
-    // --- transition --------------------------------------------------------------------------------
 
-    /**
-     * Closing a task from the board hands every worker session back to `task next`: the links go, the
-     * sessions stay ALIVE (archiving one is the session's own "Done", not this), and the feed records
-     * both the transition and who was released.
-     */
     @Test
     fun transitionToDoneUnlinksEveryHolder() = runBlocking {
         withTimeout(5_000) {
@@ -434,19 +336,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * The same lost-update rule on the BULK path, where the stale thing is the holder LIST.
-     *
-     * `sessionsHoldingTask` is a snapshot and the loop clears one holder at a time, so a session
-     * re-pointed anywhere inside that walk is newer than everything the close read. `s-two` takes
-     * `local:2` after the list is taken; closing `local:1` must release `s-one` and leave `s-two` alone,
-     * because the write it would make is not the write it decided to make.
-     *
-     * Two assertions carry it and both are needed: the surviving link (against the unconditional clear)
-     * and the feed, which must record exactly ONE release — an `unlinked` row for `s-two` would be the
-     * feed describing a write that did not happen. Falsifiable: with `setTaskRef(holder.id, null, …)`
-     * both fail, `s-two` is orphaned and `local:2` is left `in_progress` with no terminal.
-     */
     @Test
     fun closingATaskCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
         withTimeout(5_000) {
@@ -476,11 +365,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * `delete`'s half of the same rule. It writes no feed rows at all (the next statement deletes the
-     * feed), so the surviving link is the whole observable — and the deletion still goes through: a
-     * holder that slipped away is not a reason to keep the task.
-     */
     @Test
     fun deleteCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
         withTimeout(5_000) {
@@ -502,7 +386,6 @@ class TaskServiceTest {
         }
     }
 
-    /** Only `done` releases the workers: a move to `review` keeps the session that is being reviewed. */
     @Test
     fun transitionToReviewKeepsEveryLink() = runBlocking {
         withTimeout(5_000) {
@@ -518,7 +401,6 @@ class TaskServiceTest {
         }
     }
 
-    /** An unknown ref is the store's `null`, and nothing downstream of it runs. */
     @Test
     fun transitionOfAnUnknownRefIsNullAndUnlinksNobody() = runBlocking {
         withTimeout(5_000) {
@@ -531,13 +413,7 @@ class TaskServiceTest {
         }
     }
 
-    // --- delete ------------------------------------------------------------------------------------
 
-    /**
-     * Delete unlinks every holder BEFORE removing the task, which is the whole point of the ordering:
-     * the other way round leaves a badge pointing at nothing until reconciliation. The journal is the
-     * only place that order is observable.
-     */
     @Test
     fun deleteUnlinksEveryHolderBeforeRemovingTheTask() = runBlocking {
         withTimeout(5_000) {
@@ -566,10 +442,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * A dangling link — the task went away while a link write was in flight — is cleared by the delete
-     * that follows, even though the task itself is already gone and the answer is `false`.
-     */
     @Test
     fun deleteClearsADanglingHolderEvenWhenTheTaskIsAlreadyGone() = runBlocking {
         withTimeout(5_000) {
@@ -582,24 +454,7 @@ class TaskServiceTest {
         }
     }
 
-    // --- fakes -------------------------------------------------------------------------------------
-
-    /**
-     * The structural half of "never nest the two stores' locks".
-     *
-     * In production each store has its own `Mutex` over the same driver, so a call into one from inside
-     * the other's critical section blocks a `Dispatchers.Default` thread and two callers arriving from
-     * opposite directions deadlock. Here a boolean per store is enough — `runBlocking`'s event loop is
-     * single-threaded, so a flag set for the duration of a fake call means exactly "that store is inside
-     * a call right now".
-     *
-     * **What it can and cannot catch.** No test below can make it fire, and that is not a defect in the
-     * test: [TaskService] calls both stores from the top level, one returning before the next is made,
-     * so there is nothing to nest. It is armed against the shape a real regression would take — a store
-     * method that takes a suspend lambda (`tasks.transaction { sessions.setTaskRef(…) }`) and a caller
-     * that reaches the other store inside it. Nothing on either interface offers that today; the day one
-     * does, this fails here instead of deadlocking a daemon under load.
-     */
+    // Detects accidental nesting of the two production store critical sections without real mutexes.
     private class LockWitness {
         private var taskStoreHeld = false
         private var eventStoreHeld = false
@@ -627,11 +482,6 @@ class TaskServiceTest {
         }
     }
 
-    /**
-     * An in-memory [TaskStore] covering exactly the six methods [TaskService] calls; every other member
-     * throws, so a service that grew a call this test never modelled fails loudly rather than reading an
-     * empty list as an answer — the same reasoning as [EventStore]'s three throwing defaults.
-     */
     private class FakeTaskStore(
         private val journal: MutableList<String>,
         private val witness: LockWitness,
@@ -639,20 +489,9 @@ class TaskServiceTest {
         val entries: MutableMap<TaskRef, BacklogEntry> = mutableMapOf()
         val activity: MutableList<TaskActivityEntry> = mutableListOf()
 
-        /** How many times [nextCandidate] was asked — the contention test's proof that the loser re-queried. */
         var nextCandidateCalls: Int = 0
 
-        /**
-         * Run after [nextCandidate] has READ its answer and released the store, receiving the zero-based
-         * call index.
-         *
-         * Both halves of that placement are load-bearing. **After the read**, because the race the
-         * design handles is two callers holding the SAME candidate — a gate before the read just
-         * serializes them, and the second one sees a candidate the first has already advanced (which is
-         * how the first draft of this test passed with two queries instead of three). **Outside**
-         * [LockWitness.inTaskStore], because it models a caller suspended BETWEEN store calls, which is
-         * the one thing the witness must not read as a nested lock.
-         */
+        // Runs after the read and outside the witness so two callers can hold the same candidate.
         var afterNextCandidate: (suspend (Int) -> Unit)? = null
 
         private var rev = 0L
@@ -669,8 +508,6 @@ class TaskServiceTest {
         }
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
-            // The index is taken outside the safe call below: `hook?.invoke(i++)` would not evaluate its
-            // argument at all when the hook is null, so the counter would stop counting.
             val call = nextCandidateCalls++
             val candidate = witness.inTaskStore("nextCandidate") {
                 journal += "tasks.nextCandidate($project)"
@@ -768,18 +605,12 @@ class TaskServiceTest {
             error("TaskService is not expected to call TaskStore.$name")
     }
 
-    /**
-     * An in-memory [EventStore] modelling the session link only. It overrides all three task-link
-     * members — the interface's defaults throw precisely so a fake that forgot one cannot make a green
-     * test out of a link that persisted nothing.
-     */
     private class FakeEventStore(
         private val journal: MutableList<String>,
         private val witness: LockWitness,
     ) : EventStore {
         val rows: MutableMap<SessionId, SessionMeta> = mutableMapOf()
 
-        /** Nothing here ever archives a session; the set exists so a test can assert that. */
         val archived: MutableSet<SessionId> = mutableSetOf()
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? {
@@ -791,19 +622,9 @@ class TaskServiceTest {
             return row
         }
 
-        /**
-         * Run after [getSession] has READ its answer and released the store — the deterministic stand-in
-         * for "somebody re-pointed this session between the read and the clear".
-         *
-         * Placed exactly like [FakeTaskStore.afterNextCandidate], and for the same two reasons. **After
-         * the read**, because the window this models opens once the caller is holding a ref it will act
-         * on; a gate before the read would just serialize the two and there would be nothing stale. And
-         * **outside** [LockWitness.inEventStore], because it models a caller suspended BETWEEN store
-         * calls, which the witness must not read as a nested lock.
-         */
+        // Post-read, outside-witness gates model a newer link appearing before a conditional clear.
         var afterGetSession: (suspend () -> Unit)? = null
 
-        /** [afterGetSession]'s counterpart for the bulk paths, whose snapshot is the list, not one row. */
         var afterSessionsHoldingTask: (suspend () -> Unit)? = null
 
         override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
@@ -813,10 +634,6 @@ class TaskServiceTest {
                 if (row != null) rows[sessionId] = row.copy(taskRef = taskRef, updatedAt = updatedAt)
             }
 
-        /**
-         * The conditional clear, modelled as the ONE atomic step it is in SQL: the comparison and the
-         * write happen together inside the witness, so no gate can be placed between them here either.
-         */
         override suspend fun clearTaskRefIf(
             sessionId: SessionId,
             expectedRef: TaskRef,
@@ -881,10 +698,6 @@ class TaskServiceTest {
             error("TaskService is not expected to call EventStore.$name")
     }
 
-    /**
-     * [TaskService] carries the project filesystem and the project-file writer for the WRITE ROUTES and
-     * never calls either itself — so the fakes refuse to answer, which is what pins that.
-     */
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("TaskService must not touch the filesystem")
         override fun readFile(path: String, maxBytes: Int): String? =

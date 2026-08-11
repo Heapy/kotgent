@@ -24,23 +24,6 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Tests for [OpensslVapidSigner].
- *
- * The signature itself is checked by an OUTSIDE verifier: the raw `r||s` this class returns is re-encoded
- * as DER by the test and handed to `openssl dgst -sha256 -verify` with the matching public key. Anything
- * else — comparing against a pinned expected signature, or re-deriving it with our own code — would only
- * prove that this code agrees with itself, and ECDSA is randomised so there is no fixed expected value to
- * pin anyway.
- *
- * Every failure path additionally asserts that `$TMPDIR` is left exactly as it was found: the signing
- * input is a real file, one per signature, and a signer that leaks one per failed send would slowly fill
- * the temp directory of a daemon that runs for months. The check is a before/after diff rather than "no
- * matching files at all", so a stale file from an earlier crashed run cannot fail an unrelated test.
- *
- * The tests that need a genuine P-256 key skip-guard on the system openssl (the [VapidKeyTest] idiom); the
- * error paths use a fake runner, which is the only way to provoke them deterministically.
- */
 @OptIn(ExperimentalForeignApi::class)
 class OpensslVapidSignerTest {
 
@@ -51,7 +34,6 @@ class OpensslVapidSignerTest {
     private val messagePath = "$tmpDir/kotgent-signtest-${getpid()}.msg"
     private val signaturePath = "$tmpDir/kotgent-signtest-${getpid()}.der"
 
-    /** A realistic signing input: what [vapidSigningInput] produces for an Apple endpoint. */
     private val signingInput: String =
         vapidSigningInput(aud = "https://web.push.apple.com", exp = 1_800_000_000, sub = "mailto:a@b.c")
 
@@ -68,11 +50,9 @@ class OpensslVapidSignerTest {
         listOf(keyPath, publicKeyPath, messagePath, signaturePath).forEach { unlink(it) }
     }
 
-    /** True when the pinned system openssl exists — the tests that really sign need it. */
     private fun opensslAvailable(): Boolean =
         readFileBytesOrNull(VapidKey.DEFAULT_OPENSSL_PATH, limit = 1) != null
 
-    /** Names in `$TMPDIR` that this signer could have created (see the class KDoc on the diff). */
     private fun signingInputLitter(): Set<String> {
         val dir = opendir(tmpDir) ?: return emptySet()
         try {
@@ -94,10 +74,6 @@ class OpensslVapidSignerTest {
 
     private fun runnerReturning(result: ProcessResult): (List<String>) -> ProcessResult = { result }
 
-    /**
-     * The DER re-encoding of a raw `r||s` signature, so the OUTSIDE verifier (`openssl dgst -verify`, which
-     * only speaks DER) can be pointed at what [OpensslVapidSigner.sign] actually returned.
-     */
     private fun rawToDer(raw: ByteArray): ByteArray {
         fun integer(value: ByteArray): ByteArray {
             var start = 0
@@ -112,7 +88,6 @@ class OpensslVapidSignerTest {
         return byteArrayOf(DER_SEQUENCE, body.size.toByte()) + body
     }
 
-    /** `true` when the system openssl accepts [raw] as the signature of [signingInput] under our key. */
     private fun opensslVerifies(raw: ByteArray): Boolean {
         val pub = ProcessRunner.run(listOf(VapidKey.DEFAULT_OPENSSL_PATH, "ec", "-in", keyPath, "-pubout"))
         assertTrue(pub.isSuccess, "extracting the public key failed: ${pub.stderr}")
@@ -156,9 +131,6 @@ class OpensslVapidSignerTest {
             val first = signer.sign(signingInput)
             val second = signer.sign(signingInput)
 
-            // ECDSA embeds a per-signature nonce, so two signatures over the same bytes differ. Asserting
-            // that here is what proves nothing is being cached or reused at this layer — the caching lives
-            // one level up, in VapidTokenCache, over the finished JWT.
             assertTrue(!first.contentEquals(second), "two ECDSA signatures over the same input differ")
             assertTrue(opensslVerifies(first), "the first signature verifies")
             assertTrue(opensslVerifies(second), "the second signature verifies")
@@ -171,15 +143,12 @@ class OpensslVapidSignerTest {
         withTimeout(30_000) {
             if (!opensslAvailable()) return@withTimeout
             VapidKey(keyPath = keyPath).ensureKeyFile()
-            // The production wiring: the cache owns the format and calls this one method for the bytes.
             val cache = VapidTokenCache(subject = "mailto:a@b.c", sign = OpensslVapidSigner(keyPath)::sign)
 
             val jwt = cache.tokenFor("https://web.push.apple.com/12345")
 
             val segments = jwt.split(".")
             assertEquals(3, segments.size, "a JWT is three dot-separated segments: $jwt")
-            // 64 bytes → 86 unpadded base64url characters; anything else means a mis-sized signature made
-            // it into a token, which a push service answers with an opaque 401.
             assertEquals(86, segments[2].length, "the signature segment encodes 64 bytes")
             assertTrue(
                 segments[2].none { it == '+' || it == '/' || it == '=' },
@@ -198,7 +167,6 @@ class OpensslVapidSignerTest {
             opensslPath = "/usr/bin/openssl",
             runner = { argv ->
                 seenArgv = argv
-                // Read the file while openssl would be reading it: this is the only moment it exists.
                 inputSeenByOpenssl = readFileBytesOrNull(argv.last())
                 ProcessResult(0, VALID_DER_SIGNATURE, ByteArray(0))
             },
@@ -217,7 +185,6 @@ class OpensslVapidSignerTest {
             argv.last().substringAfterLast('/').startsWith(OpensslVapidSigner.SIGNING_INPUT_PREFIX),
             "the last argument is our temp file, not an option: ${argv.last()}",
         )
-        // A truncated input would be signed happily and verify against nothing.
         assertContentEquals(
             signingInput.encodeToByteArray(),
             inputSeenByOpenssl,
@@ -230,7 +197,6 @@ class OpensslVapidSignerTest {
     @Test
     fun aMissingKeyFileFailsWithOpensslsOwnDiagnostic() {
         if (!opensslAvailable()) return
-        // No VapidKey.ensureKeyFile() here: the PEM genuinely does not exist.
         assertNull(readFileBytesOrNull(keyPath), "precondition: no key file")
         val argvSeen = mutableListOf<List<String>>()
         val signer = OpensslVapidSigner(
@@ -291,8 +257,6 @@ class OpensslVapidSignerTest {
             runner = runnerReturning(ProcessResult(0, ByteArray(0), ByteArray(0))),
         )
 
-        // Exit 0 with no stdout would otherwise reach derToRawSignature as an empty array; failing here
-        // says "openssl printed nothing", which is the actionable message.
         val failure = assertFailsWith<VapidSignerException> { signer.sign(signingInput) }
 
         assertTrue(
@@ -311,8 +275,6 @@ class OpensslVapidSignerTest {
 
         val failure = assertFailsWith<VapidSignerException> { signer.sign(signingInput) }
 
-        // The bytes came from openssl, so an EcdsaDerException must not escape raw: the operator would go
-        // looking for a bug in the caller instead of at the binary that produced them.
         assertTrue(
             failure.message!!.contains("not a P-256 ECDSA DER value"),
             "the transcoding failure is attributed to openssl: ${failure.message}",
@@ -324,8 +286,6 @@ class OpensslVapidSignerTest {
     fun aRunnerLevelFailureBecomesAVapidSignerException() {
         val signer = OpensslVapidSigner(keyPath = keyPath, runner = { error("popen failed") })
 
-        // popen itself failing (fd exhaustion) must degrade like every other push problem — one exception
-        // type, never something the sender does not expect.
         val failure = assertFailsWith<VapidSignerException> { signer.sign(signingInput) }
 
         assertTrue(failure.message!!.contains("popen failed"), "the cause is preserved: ${failure.message}")
@@ -352,12 +312,6 @@ class OpensslVapidSignerTest {
         const val DER_INTEGER: Byte = 0x02
         const val DER_SEQUENCE: Byte = 0x30
 
-        /**
-         * A well-formed 70-byte ECDSA DER value — the common shape, both coordinates a full 32 bytes with
-         * the top bit clear. Only its STRUCTURE matters here: it is what a fake runner hands back so the
-         * transcoding step has something valid to chew on. Whether real openssl output of every shape
-         * transcodes correctly is [EcdsaDerTest]'s job, against genuine signatures.
-         */
         val VALID_DER_SIGNATURE: ByteArray = byteArrayOf(
             0x30, 0x44,
             0x02, 0x20,

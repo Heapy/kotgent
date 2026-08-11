@@ -3,19 +3,10 @@ package io.kotgent.transport
 import io.ktor.util.logging.Logger
 import io.ktor.utils.io.errors.PosixException
 
-/**
- * Keeps Ktor's application logger intact except for an expected WebSocket peer reset.
- *
- * Ktor 3.4.3 avoids logging [io.ktor.util.cio.ChannelIOException] from a WebSocket handler, but CIO on
- * Kotlin/Native surfaces `ECONNRESET` as a `ClosedByteChannelException` chain whose root cause is
- * [PosixException.ConnectionResetException]. Ktor consequently logs a full ERROR stack trace whenever
- * a browser, proxy, or CLI drops a socket without completing the close handshake.
- *
- * Match both Ktor's exact log message and the typed POSIX cause. This keeps unrelated channel closures,
- * handler bugs, and resets logged from non-WebSocket code at their original severity.
- */
 fun websocketDisconnectAwareLogger(delegate: Logger): Logger = object : Logger by delegate {
     override fun error(message: String, cause: Throwable) {
+        // Ktor/CIO Native reports ordinary peer resets as handler errors. Narrow on both its exact
+        // message and typed POSIX cause so unrelated channel/handler failures stay errors.
         if (message == KTOR_WEBSOCKET_HANDLER_FAILED && cause.hasConnectionResetCause()) {
             delegate.debug("WebSocket peer reset the connection")
         } else {

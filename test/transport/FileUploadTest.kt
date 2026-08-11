@@ -24,7 +24,6 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Filesystem-level proof for the bounded, atomic no-clobber upload edge. */
 @OptIn(ExperimentalForeignApi::class)
 class FileUploadTest {
 
@@ -134,7 +133,6 @@ class FileUploadTest {
         encoded.forEachIndexed { index, byte -> chars[index] = byte }
         chars[encoded.size] = 0
         mkdtemp(chars)?.toKString() ?: run {
-            // A very defensive fallback for hosts whose /tmp policy rejects mkdtemp's template.
             val path = "/tmp/kotgent-upload-test-fallback-${kotlin.random.Random.nextInt().toUInt()}"
             assertEquals(0, mkdir(path, 0b111_000_000.convert()), "could not create upload test directory")
             path

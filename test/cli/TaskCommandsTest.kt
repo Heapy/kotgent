@@ -20,21 +20,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Task 21: the `task` / `project` command bodies.
- *
- * Every test drives a `run…Command` free function directly, with fakes for the daemon calls and lists for
- * the two output sinks — the `runImportCommand` shape at `CliTest`. That is not a stylistic choice: a test
- * that went through a live [ApiClient] would hit Task 20's `TODO()` bodies, and Kotlin/Native offers no way
- * to capture `println`, so the sinks are the only way to assert what is printed at all.
- *
- * What is deliberately NOT tested here: [TaskCommands]' own entry points. They exist to resolve the pane
- * ([TmuxSelf.currentPane], Task 18) and build a client, and that is exactly the environment-reading edge
- * the seam was introduced to keep out of a tested path.
- */
 class TaskCommandsTest {
 
-    // --- add / list ------------------------------------------------------------------------------
 
     @Test
     fun addPrintsTheCreatedEntryAsJson() = runCommandTest {
@@ -54,7 +41,6 @@ class TaskCommandsTest {
         val json = out.onlyJsonObject()
         assertEquals("local:1", json["ref"]?.jsonPrimitive?.content)
         assertEquals("wire the board", json["title"]?.jsonPrimitive?.content)
-        // A null --body reaches the daemon as "", never as JSON null: `body` is non-null on the wire.
         assertEquals(listOf("wire the board", "", PROJECT, null), seen)
     }
 
@@ -92,7 +78,6 @@ class TaskCommandsTest {
             stderr = out.stderr::add,
         )
         assertEquals(0, exit)
-        // GET /tasks carries no body, so the daemon cannot resolve a session; the CLI reads the row itself.
         assertEquals(listOf<String?>(PROJECT), asked, "the named session's project is what gets listed")
         assertEquals("[]", out.only())
     }
@@ -104,8 +89,6 @@ class TaskCommandsTest {
             project = null,
             session = "ghost001",
             findSession = { null },
-            // The bug this pins: a null resolution used to send NO project, and `GET /tasks` then answers
-            // from the calling pane — so `--session <other>` printed this pane's own backlog, exit 0.
             listTasks = { error("nothing may be listed for a session that does not exist") },
             resolveCwdProjectId = { error("an explicit --session is never answered from the cwd") },
             stdout = out.stdout::add,
@@ -134,7 +117,6 @@ class TaskCommandsTest {
         assertTrue("--project" in err, "the error says how to answer the question instead: $err")
     }
 
-    // --- the cwd fallback that closes the first-run loop -------------------------------------------
 
     @Test
     fun listAsksTheDaemonFirstAndNeverSecondGuessesAnAnswer() = runCommandTest {
@@ -161,8 +143,6 @@ class TaskCommandsTest {
             project = null,
             session = null,
             findSession = { error("no session lookup on the pane path") },
-            // The first-run hole: `task add` wrote .kotgent.json but the session ROW still carries no
-            // project, so the daemon refuses. The CLI is standing in the checkout and can answer.
             listTasks = { p ->
                 asked += p
                 if (p == null) throw ApiException(400, NO_PROJECT_BODY) else listOf(entry("local:1"))
@@ -202,8 +182,6 @@ class TaskCommandsTest {
             project = null,
             session = null,
             findSession = { error("no session lookup on the pane path") },
-            // A .kotgent.json this daemon has never seen: the retry 404s for a uuid the caller never
-            // named, so the answer stays the refusal they can act on.
             listTasks = { p ->
                 if (p == null) throw ApiException(400, NO_PROJECT_BODY) else throw ApiException(404, "no project '$p'")
             },
@@ -234,7 +212,6 @@ class TaskCommandsTest {
         assertEquals(1, calls, "a 401 is not a missing project and must not be retried")
     }
 
-    // --- the /whoami rule ------------------------------------------------------------------------
 
     @Test
     fun showResolvesARefLessSubjectThroughWhoami() = runCommandTest {
@@ -296,10 +273,6 @@ class TaskCommandsTest {
         val exit = runTaskShowCommand(
             ref = null,
             session = null,
-            // Outside a kotgent pane there is no pane header, so `GET /whoami` never answers `200` with
-            // nulls — it REFUSES (`TaskReadRoutes`: "cannot resolve the calling session … pass --session
-            // <id> from outside a kotgent pane"). Modelling it as a 200 pinned a branch that cannot be
-            // reached this way and left the real one — the daemon's 400 — unpinned.
             whoami = { throw ApiException(400, NO_SESSION_BODY) },
             findSession = { error("no session lookup on the pane path") },
             taskDetail = { error("there is no subject to fetch") },
@@ -322,8 +295,6 @@ class TaskCommandsTest {
         val exit = runTaskShowCommand(
             ref = null,
             session = null,
-            // The branch a `200` with a null ref really covers: the pane DID resolve to a session, and
-            // that session holds no link. This is the only way the CLI's own message can be produced.
             whoami = { WhoamiDto(sessionId = "sess0001", projectId = PROJECT, taskRef = null) },
             findSession = { error("no session lookup on the pane path") },
             taskDetail = { error("there is no subject to fetch") },
@@ -369,7 +340,6 @@ class TaskCommandsTest {
         assertTrue("ghost001" in out.onlyErrorJson(), "the error names the session it could not find")
     }
 
-    // --- next ------------------------------------------------------------------------------------
 
     @Test
     fun nextPrintsTheLinkedEntry() = runCommandTest {
@@ -395,7 +365,6 @@ class TaskCommandsTest {
         val exit = runTaskNextCommand(
             project = null,
             session = null,
-            // The daemon refuses before it links anything, so re-asking cannot take two tasks.
             nextTask = { p ->
                 asked += p
                 if (p == null) throw ApiException(400, NO_PROJECT_BODY) else entry("local:4", state = "in_progress")
@@ -416,8 +385,6 @@ class TaskCommandsTest {
         val exit = runTaskNextCommand(
             project = null,
             session = "sess0001",
-            // POST /tasks/next carries a body, so --session rides in it and the DAEMON resolves the
-            // project. The caller's own cwd has nothing to do with the session they named.
             nextTask = { p -> asked += p; throw ApiException(400, "session 'sess0001' resolves to no project") },
             resolveCwdProjectId = { error("an explicit --session is never answered from the cwd") },
             stdout = out.stdout::add,
@@ -444,7 +411,6 @@ class TaskCommandsTest {
         assertEquals(JsonNull, out.onlyJsonObject()["task"], "the answer is parseable, not an empty stream")
     }
 
-    // --- claim / comment / review / done / unlink --------------------------------------------------
 
     @Test
     fun claimAcknowledgesTheLink() = runCommandTest {
@@ -492,10 +458,6 @@ class TaskCommandsTest {
         val out = Sinks()
         var whoamiCalls = 0
         var seen: List<String?>? = null
-        // `comment` is the fifth verb on the `resolveSubjectRef` seam, and the seam being proved from the
-        // other four does not prove THIS verb is wired to it: a body that read `ref!!` would still pass
-        // every test above. Commenting on its own task without being told its id is half of what an agent
-        // in a pane does, so the wiring gets its own case.
         val exit = runTaskCommentCommand(
             ref = null,
             message = "picked this up",
@@ -535,7 +497,6 @@ class TaskCommandsTest {
             stderr = out.stderr::add,
         )
         assertEquals(0, exit)
-        // One PATCH, not a transition plus a comment: the message commits with the state or not at all.
         assertEquals(listOf("local:8", "review", "ready for a look", "sess0001"), seen)
         assertEquals("review", out.onlyJsonObject()["state"]?.jsonPrimitive?.content)
     }
@@ -578,7 +539,6 @@ class TaskCommandsTest {
         assertEquals(true, out.onlyJsonObject()["unlinked"]?.jsonPrimitive?.content?.toBoolean())
     }
 
-    // --- move / dep / delete -----------------------------------------------------------------------
 
     @Test
     fun movePassesItsTargetThroughUntouched() = runCommandTest {
@@ -633,8 +593,6 @@ class TaskCommandsTest {
             ref = "local:1",
             on = "local:2",
             remove = false,
-            // `blocked` is derived server-side and is the ONE thing this edit changes, so echoing the
-            // request back left the CLI — the consumer with no events socket — unable to see it.
             editTaskDependency = { r, _, _ -> entry(r, blocked = true) },
             stdout = out.stdout::add,
             stderr = out.stderr::add,
@@ -672,7 +630,6 @@ class TaskCommandsTest {
         assertTrue("local:404" in out.onlyErrorJson(), "the error names the ref that matched nothing")
     }
 
-    // --- projects ----------------------------------------------------------------------------------
 
     @Test
     fun projectListPrintsEveryKnownProject() = runCommandTest {
@@ -722,7 +679,6 @@ class TaskCommandsTest {
             stderr = out.stderr::add,
         )
         assertEquals(0, exit)
-        // The daemon runs under launchd with cwd `/`, so a relative path must never leave the CLI.
         assertEquals(listOf("/repo/nested"), created)
     }
 
@@ -732,8 +688,6 @@ class TaskCommandsTest {
         val exit = runProjectInitCommand(
             path = "nested",
             name = null,
-            // What currentWorkingDir() falls back to when getcwd fails — resolving against it would send
-            // the daemon a relative path, which it would read against `/`.
             callerCwd = ".",
             createProject = { _, _ -> error("nothing may be created from an unresolvable path") },
             stdout = out.stdout::add,
@@ -744,7 +698,6 @@ class TaskCommandsTest {
         assertTrue(out.onlyErrorJson().isNotEmpty())
     }
 
-    // --- start --task's cwd rule ---------------------------------------------------------------------
 
     @Test
     fun startWithTaskPrefersTheCallerCwdWhenItResolvesToTheTaskProject() = runCommandTest {
@@ -759,8 +712,6 @@ class TaskCommandsTest {
             tags = listOf("a"),
             taskDetail = { r -> detail(entry(r), projectPath = "/repo") },
             startSession = { a, c, n, t, r -> started += listOf(a, c, n, t, r); startedSession(c) },
-            // A worktree of the same checkout: one uuid, a different directory — and the operator is
-            // standing in the one they mean, which the stored path cannot know.
             resolveProjectId = { dir -> if (dir == "/repo-wt/feature") PROJECT else null },
             isDirectory = { true },
             stdout = out.stdout::add,
@@ -811,8 +762,6 @@ class TaskCommandsTest {
             taskRef = "local:1",
             name = null,
             tags = emptyList(),
-            // projects.path is "the checkout the daemon saw most recently" — it can name a directory that
-            // has since moved or been deleted, and starting there would fail for an unrelated reason.
             taskDetail = { r -> detail(entry(r), projectPath = "/gone") },
             startSession = { _, c, _, _, _ -> started += c; startedSession(c) },
             resolveProjectId = { null },
@@ -852,9 +801,6 @@ class TaskCommandsTest {
         val started = mutableListOf<String>()
         val exit = runStartWithTaskCommand(
             agent = "claude",
-            // `kotgent start claude /Users/me/scratch --task local:1` — a directory that is not the
-            // task's project. Before this, the stored `projects.path` won and the session was launched
-            // in a checkout the operator never named, with only "cwdSource" to say so.
             callerCwd = "/Users/me/scratch",
             cwdExplicit = true,
             taskRef = "local:1",
@@ -884,8 +830,6 @@ class TaskCommandsTest {
             taskRef = "local:404",
             name = null,
             tags = emptyList(),
-            // An explicit cwd skips the cwd RULE, not the fetch: a mistyped ref must still fail before
-            // any tmux side effect.
             taskDetail = { throw ApiException(404, "no task 'local:404'") },
             startSession = { _, _, _, _, _ -> error("nothing may be launched for an unknown task") },
             resolveProjectId = { error("a named directory is never weighed against the task's project") },
@@ -920,7 +864,6 @@ class TaskCommandsTest {
         assertTrue("local:404" in (err["error"]?.jsonPrimitive?.content ?: ""))
     }
 
-    // --- failure rendering ---------------------------------------------------------------------------
 
     @Test
     fun aDaemonFailurePrintsOneLineOfJsonOnStderrCarryingTheStatus() = runCommandTest {
@@ -967,9 +910,7 @@ class TaskCommandsTest {
         assertTrue("kotgent daemon" in out.onlyErrorJson(), "the setup hint survives the JSON wrapper")
     }
 
-    // --- fixtures ------------------------------------------------------------------------------------
 
-    /** Both output streams, plus the assertions every test makes about them. */
     private class Sinks {
         val stdout = mutableListOf<String>()
         val stderr = mutableListOf<String>()
@@ -983,10 +924,6 @@ class TaskCommandsTest {
         fun assertNoErrors() = assertTrue(stderr.isEmpty(), "nothing was expected on stderr: $stderr")
     }
 
-    /**
-     * Every command body is a suspend function and every test bounds it, the suite-wide anti-hang rule —
-     * a fake that never answers must fail the test rather than park the runner.
-     */
     private fun runCommandTest(block: suspend () -> Unit) = runBlocking {
         withTimeout(30_000) { block() }
     }
@@ -1040,11 +977,9 @@ class TaskCommandsTest {
         const val PROJECT: String = "0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34"
         const val OTHER_PROJECT: String = "11111111-2222-4333-8444-555555555555"
 
-        /** `TaskReadRoutes`' refusal when nothing named a project and the caller's session resolves none. */
         const val NO_PROJECT_BODY: String =
             "no project: the request named none and the calling session resolves to none — pass --project <uuid>"
 
-        /** `TaskReadRoutes`' `GET /whoami` refusal when there is no pane header to resolve. */
         const val NO_SESSION_BODY: String =
             "cannot resolve the calling session: no X-Kotgent-Tmux-Pane header, or the pane it names is " +
                 "not a kotgent session — pass --session <id> from outside a kotgent pane"

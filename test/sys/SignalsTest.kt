@@ -9,21 +9,9 @@ import platform.posix.SIGINT
 import platform.posix.SIGTERM
 import platform.posix.raise
 
-/**
- * Unit tests for the daemon's shutdown-signal plumbing ([installShutdownSignals]).
- *
- * These run the REAL mechanism — `signal(2)` and `raise(3)` are stock `platform.posix`, so they link into
- * the test binary (unlike our own cinterop, KT-78062) — which is the point: the bug being guarded is
- * precisely that a delivered SIGINT did *not* do what the process expected of it (Ktor's native
- * `EmbeddedServer.start()` had taken the handler over and only stopped the engine, leaving the process
- * alive forever). A test asserting that the signal both fails to kill this process AND is observable
- * afterwards is exactly the contract the daemon's park loop depends on.
- *
- * Every test restores the default disposition afterwards — a leaked handler would swallow a signal for
- * the rest of the binary, and a leaked *flag* would make the daemon's loop exit instantly.
- */
 class SignalsTest {
 
+    // Never leak a process-wide handler or pending flag into later tests.
     @AfterTest
     fun restore() = restoreDefaultShutdownSignals()
 
@@ -36,8 +24,6 @@ class SignalsTest {
     @Test
     fun sigintIsCaughtInsteadOfKillingTheProcess() {
         installShutdownSignals()
-        // If the default disposition were still in effect this line would terminate the test binary; the
-        // assertion below therefore also proves the handler is installed.
         raise(SIGINT)
         assertEquals(SIGINT, pendingShutdownSignal(), "SIGINT must surface as a shutdown request")
     }
@@ -64,8 +50,6 @@ class SignalsTest {
         raise(SIGINT)
         restoreDefaultShutdownSignals()
         assertEquals(0, pendingShutdownSignal(), "the flag is cleared with the handlers")
-        // Re-installing must work after a restore (the daemon path installs exactly once, but tests and
-        // any future re-entry must not depend on that).
         installShutdownSignals()
         raise(SIGTERM)
         assertEquals(SIGTERM, pendingShutdownSignal())

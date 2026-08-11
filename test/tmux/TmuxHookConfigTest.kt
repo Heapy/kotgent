@@ -6,7 +6,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Unit tests for the pure tmux hook script/header/command generation. */
 class TmuxHookConfigTest {
 
     @Test
@@ -56,7 +55,6 @@ class TmuxHookConfigTest {
             headerFilePath = "/private/tmp/a header's file",
         )
 
-        // `-n` parses the generated script but executes none of its curl command.
         val result = ProcessRunner.run(listOf("/bin/sh", "-n", "-c", script))
         assertEquals(0, result.exitCode, "stderr=${result.stderr}")
         assertEquals("", result.stdout)

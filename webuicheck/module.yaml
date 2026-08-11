@@ -1,52 +1,16 @@
-# webuicheck — a browser-test fixture, not a product. Its MAIN binary stands the REAL `KotgentServer`
-# up over the shared `fakes` doubles, prints the port and a login ticket, and then takes scenario
-# commands on stdin, so the Web UI can be DRIVEN in a real browser instead of grepped as text.
-#
-# ## Why this is a main binary and not a test
-# The fixture has to serve a terminal, and a terminal is a real `Pty` — `openpty` + `posix_spawn` out of
-# the `sysnative` cinterop. Kotlin Toolchain 0.11.x registers the cinterop-klib task for the NON-test
-# fragment only (`isTest=false`) while a test link asks for cinterop artifacts of the test fragment
-# (`isTest=true`), so nothing matches, partial linkage stubs every call and it throws `IrLinkageError`
-# at the call site (KT-78062, verified on 0.11.0 / 0.11.1 / 0.12.0-dev). A MAIN binary links it fine —
-# the same reason `ptycheck` exists, and the reason `--self-check` carries ONLY the checks that need
-# that cinterop. Everything else about this harness is proven by the browser tier, which touches those
-# same facts first and reports them with a real assertion instead of a hand-rolled counter.
-#
-# ## What it deliberately does not touch
-#  - **No `~/.kotgent`.** The master token is minted in memory (`generateToken`) and never persisted;
-#    the `TicketStore` is in-memory and per-run by design already.
-#  - **No tmux server.** `FakeTmux` models panes in memory, so no `-L kotgent` (or any other) socket is
-#    ever contacted and no agent process is ever spawned.
-#  - **No SQLite.** `FakeEventStore` / `FakeTaskStore` are the same doubles the native suite runs on.
-#  - **No disk.** All THREE writing edges are replaced in `src/SafeEdges.kt` — the directory completer
-#    reads an in-memory tree, the upload sink keeps bytes in a map, and `MemoryProjectFileWriter`
-#    publishes into the same `FakeProjectFs`, so no `.kotgent.json` is ever created anywhere.
-#
-# The one real resource it does use is a loopback port (`port = 0`, ephemeral) and, in the `terminal`
-# scenarios, a real pty running a deterministic `/bin/sh` snippet.
+# Browser fixture main binary: Toolchain 0.11 cannot link custom cinterop into tests (KT-78062).
+# It may use only an ephemeral loopback port and scenario PTYs; tokens, tmux, stores, uploads,
+# directory completion, and project-file writes must remain in memory.
 product:
   type: macos/app
   platforms: [macosArm64]
 
 dependencies:
-  # The application under test: KotgentServer, SessionManager, TaskService, TerminalBridge, the
-  # transport's DirectoryCompleter/FileUploader seams. A fixture module depending on the app module is
-  # the established one-way shape (`ptycheck` does it); there is no cycle.
   - ..
-  # The PTY primitive behind `realPtyFactory`, and — just as importantly — its EXPORTED
-  # kotlinx-coroutines: the root module depends on coroutines WITHOUT `exported: true`, so `..` alone
-  # would not bring `CoroutineScope` / `Mutex` into view. Same reasoning as `fakes/module.yaml`.
+  # Supplies the real PTY plus its exported coroutines types.
   - ../sysnative
-  # The shared test doubles. NOTE the spelling: paths in a module.yaml resolve against THIS module's
-  # directory, so the plan's project-root form `./fakes` has to be written `../fakes` here (the same
-  # way ptycheck names `../sysnative`).
   - ../fakes
-  # Ktor is named explicitly for exactly ONE reason: `FileUploader.upload` takes an
-  # `io.ktor.utils.io.ByteReadChannel`, and this harness MUST implement that interface in memory — the
-  # production `posixFileUploader` writes into a session's cwd on the developer's disk. The root
-  # module's Ktor dependency is not `exported: true`, so the type is invisible through `..`; this is
-  # the same gap `fakes` closed by naming kotlinx-coroutines. Same catalog entry, same version as root,
-  # so no second Ktor lands on the link line.
+  # Root does not export Ktor, but the in-memory uploader must implement its public channel type.
   - $libs.ktor.server.cio
 
 settings:

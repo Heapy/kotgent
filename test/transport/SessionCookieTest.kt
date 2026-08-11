@@ -21,17 +21,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.cio.CIO as ServerCIO
 
-/**
- * Session-cookie tests (plan Task 2): the stateless `v1.<issuedAt>.<hmac>` value round-trips, everything
- * malformed or foreign is refused, and rotating the master token invalidates every cookie ever issued —
- * which is the whole revocation mechanism, so it gets a test of its own.
- *
- * The last test is a real Ktor CIO server: the plan's premise is that `RequestCookies`/`ResponseCookies`
- * exist in the `macosArm64` klib, so kotgent writes no `Cookie:` parser and no `Set-Cookie` serializer. A
- * pure-function test could not tell us whether that premise holds on native — this one does, end to end,
- * including the attributes the browser's behaviour actually depends on (`HttpOnly`, `SameSite=Strict`,
- * `Path=/`, an explicit `Max-Age`, and `Secure` only when asked for).
- */
 class SessionCookieTest {
 
     private val token = "a".repeat(64)
@@ -104,11 +93,11 @@ class SessionCookieTest {
             "v1.$issuedAt",
             "$issuedAt.$mac",
             "v1.$issuedAt.$mac.extra",
-            "v2.$issuedAt.$mac", // an unknown version — the version is signed, so it cannot be re-cut
-            "V1.$issuedAt.$mac", // the version tag is compared exactly
+            "v2.$issuedAt.$mac",
+            "V1.$issuedAt.$mac",
             "v1..$mac",
             "v1.notanumber.$mac",
-            "v1.+$issuedAt.$mac", // toLongOrNull() would accept this; a canonical timestamp must not
+            "v1.+$issuedAt.$mac",
             "v1.-1.$mac",
             "v1.$issuedAt.",
             "   ",
@@ -120,12 +109,9 @@ class SessionCookieTest {
 
     @Test
     fun anEmptyMasterTokenNeverVerifies() {
-        // An empty HMAC key is a perfectly valid key, so without the explicit guard a blank/unreadable
-        // token file would let anyone mint a cookie that verifies. Fail closed instead.
         assertFalse(verifySessionCookie("", issueSessionCookie("", issuedAt)), "an empty key is refused")
     }
 
-    // --- Ktor core cookie API (the plan's klib premise, proven on a live native server) --------------
 
     @Test
     fun theCookieRoundTripsThroughKtorsOwnCookieApi() = withCookieServer { port, client ->
@@ -146,7 +132,6 @@ class SessionCookieTest {
         assertFalse(cookie.secure, "not Secure on loopback http, or the browser would silently drop it")
         assertTrue(verifySessionCookie(token, cookie.value), "the transmitted value is the one we signed")
 
-        // …and the browser's next request is accepted: read back through call.request.cookies[…].
         val echoed = client.get("http://127.0.0.1:$port/check") {
             header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=${cookie.value}")
         }
@@ -170,11 +155,6 @@ class SessionCookieTest {
         assertNull(cookie.domain, "no Domain: the cookie stays on the exact host that set it")
     }
 
-    /**
-     * A bare Ktor CIO server on an ephemeral port with just the two cookie endpoints — no
-     * [KotgentServer], because the thing under test is the cookie helpers, not the daemon's wiring
-     * (that arrives with the auth routes in Task 8).
-     */
     private fun withCookieServer(block: suspend (port: Int, client: HttpClient) -> Unit) = runBlocking {
         withTimeout(30_000) {
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {

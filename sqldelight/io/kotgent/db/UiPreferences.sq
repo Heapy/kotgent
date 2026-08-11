@@ -1,9 +1,4 @@
--- One daemon-wide Web UI preference row. There are no user identities in kotgent's authentication
--- model, so the singleton is intentionally shared by every connected browser.
---
--- NOTE for pre-existing databases: the sqldelight-gen plugin drops `.sqm` files and leaves the
--- generated `Schema.migrate()` empty. A legacy `kotgent.db` gets this table from the matching
--- `CREATE TABLE IF NOT EXISTS` in SqliteEventStore.init, followed by seedDefaults below.
+-- Existing databases create and seed this table in SqliteEventStore.init; SQLDelight migrations are disabled.
 CREATE TABLE ui_preferences (
   singleton      INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
   base_path      TEXT NOT NULL,

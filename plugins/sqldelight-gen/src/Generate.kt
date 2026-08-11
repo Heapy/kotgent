@@ -14,28 +14,14 @@ import java.nio.file.Path
 import java.util.ServiceLoader
 import kotlin.io.path.createDirectories
 
-/**
- * Kotlin Toolchain task action that runs SQLDelight's code generation over the module's `.sq`
- * files and writes typed Kotlin into [generatedSourceDir], which the toolchain then compiles into
- * the enabling (macosArm64 app) module via `generated.sources` (see plugin.yaml).
- *
- * SQLDelight only ships a Gradle plugin, and the Kotlin Toolchain has no Gradle plugins — so we
- * drive SQLDelight's compiler directly. The heavy lifting (mocking a headless IntelliJ environment
- * to parse `.sq` PSI and invoking `SqlDelightCompiler`) lives in the vendored, Gradle-free
- * [SqlDelightEnvironment]. Here we just build the compiler's input model (which SQLDelight normally
- * derives from the Gradle project) and hand it the `.sq` source folder + output directory.
- *
- * The compiler's input model types (`SqlDelightDatabaseProperties`, `SqlDelightCompilationUnit`,
- * `SqlDelightSourceFolder`) are simple `Serializable` interfaces in `app.cash.sqldelight:core`;
- * we implement them with the small private data classes below.
- */
+// SQLDelight ships code generation only through Gradle; this Toolchain plugin drives its compiler
+// directly through the vendored, Gradle-free SqlDelightEnvironment.
 @TaskAction
 fun generateDatabase(
     @Input sqDir: Path,
     @Output generatedSourceDir: Path,
 ) {
-    // Clean stale output first (the task output dir is reused across builds; SQLDelight's own
-    // Gradle task does the same deleteRecursively) so removed/renamed `.sq` don't leave orphans.
+    // The task output is reused, so deleted or renamed queries must not leave generated sources behind.
     val outDir = generatedSourceDir.toFile()
     outDir.deleteRecursively()
     outDir.mkdirs()
@@ -43,7 +29,6 @@ fun generateDatabase(
     val sqRoot = sqDir.toFile()
     val hasSqFiles = sqRoot.isDirectory &&
         sqRoot.walkTopDown().any { it.isFile && it.extension == "sq" }
-    // Nothing to generate on a fresh/empty module — keep the task a no-op rather than failing.
     if (!hasSqFiles) return
 
     val compilationUnit = CompilationUnit(
@@ -63,7 +48,7 @@ fun generateDatabase(
         expandSelectStar = true,
     )
 
-    // SQLDelight discovers dialects via ServiceLoader; sqlite-3-38-dialect registers SqliteDialect.
+    // The dialect artifact registers its implementation through ServiceLoader.
     val dialect: SqlDelightDialect = ServiceLoader
         .load(SqlDelightDialect::class.java, SqlDelightDialect::class.java.classLoader)
         .firstOrNull()
@@ -84,13 +69,10 @@ fun generateDatabase(
     }
 }
 
-/** Package of the generated database class + schema. */
 private const val DATABASE_PACKAGE = "io.kotgent.db"
 
-/** Name of the generated database interface (companion carries `Schema` and the `invoke` factory). */
 private const val DATABASE_CLASS_NAME = "KotgentDatabase"
 
-/** Sanitized module name SQLDelight uses in generated symbols. */
 private const val MODULE_NAME = "kotgent"
 
 private data class SourceFolder(

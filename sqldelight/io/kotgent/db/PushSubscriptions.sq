@@ -1,15 +1,5 @@
--- Web Push device subscriptions (PWA push). One row per browser push subscription: the endpoint
--- URL the daemon POSTs to is the identity of the device, so it is the primary key.
---
--- `p256dh` / `auth` are the RFC 8291 client keys. Nothing reads them today — the daemon sends
--- payload-less pushes (RFC 8030), which need no encryption — but they are stored so that adding
--- encrypted payloads later requires no device to re-subscribe. `created_at` is epoch millis.
---
--- NOTE for pre-existing databases: the sqldelight-gen plugin drops `.sqm` files and leaves the
--- generated `Schema.migrate()` empty, so this CREATE only runs on a FRESH database. An existing
--- `~/.kotgent/kotgent.db` gets the table from the `CREATE TABLE IF NOT EXISTS` in
--- io.kotgent.push.SqlitePushStore's init (unlike an additive column, a whole-table create needs no
--- `PRAGMA table_info` guard — `IF NOT EXISTS` neither fails nor logs).
+-- p256dh/auth are retained for future encrypted payloads although current pushes are payload-less.
+-- Existing databases create this table in SqlitePushStore.init; keep the DDL synchronized.
 CREATE TABLE push_subscriptions (
   endpoint   TEXT NOT NULL PRIMARY KEY,
   p256dh     TEXT NOT NULL,
@@ -17,15 +7,11 @@ CREATE TABLE push_subscriptions (
   created_at INTEGER NOT NULL
 );
 
--- Every known subscription, oldest first. The sender iterates this on each notification.
 selectAll:
 SELECT endpoint, p256dh, auth, created_at
 FROM push_subscriptions
 ORDER BY created_at, endpoint;
 
--- Insert-or-refresh keyed by endpoint. A browser that re-subscribes on the same endpoint may hand
--- back rotated keys, so every non-key column (created_at included) is refreshed from the new row:
--- a re-subscribe genuinely re-creates the subscription, and nothing here reads subscription age.
 upsert:
 INSERT INTO push_subscriptions(endpoint, p256dh, auth, created_at)
 VALUES (?, ?, ?, ?)
@@ -34,7 +20,6 @@ ON CONFLICT(endpoint) DO UPDATE SET
   auth       = excluded.auth,
   created_at = excluded.created_at;
 
--- Drop one subscription: an explicit unsubscribe, or a push service answering 404/410 (gone).
 deleteByEndpoint:
 DELETE FROM push_subscriptions
 WHERE endpoint = ?;

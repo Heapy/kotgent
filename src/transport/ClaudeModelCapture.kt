@@ -21,27 +21,12 @@ import platform.posix.ftell
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
-/**
- * Best-effort capture of the Claude model into `SessionMeta.model`, driven from the hook ingress.
- *
- * Every Claude hook payload carries a `transcript_path`; the transcript JSONL's assistant messages carry
- * `"model":"…"`. On a hook for a session whose model is not yet known, this reads a bounded TAIL of that
- * transcript (the model is on every assistant line, so the tail always has the latest), extracts it with
- * the pure [extractModel], and persists it once. It never fails the hook — any miss (no path, unreadable
- * file, no model) simply leaves the model null, to be tried again on the next hook.
- *
- * File IO is behind the injectable [readTranscriptTail] so it is unit-testable with a fake reader; the
- * default reads the real file via stock `platform.posix` (which links into the test binary).
- */
 class ClaudeModelCapture(
     private val store: EventStore,
     private val readTranscriptTail: (String) -> String? = ::readFileTail,
     private val now: () -> Long = ::captureEpochMillis,
 ) {
-    /**
-     * If [sessionId]'s model is still unknown and [payload] has a readable `transcript_path` carrying a
-     * model, persist it. Best-effort and idempotent (a session that already has a model is skipped).
-     */
+    // Hook delivery must not fail when transcript IO/model extraction misses; later hooks retry.
     suspend fun maybeCapture(sessionId: SessionId, payload: JsonElement) {
         val meta = store.getSession(sessionId) ?: return
         if (meta.model != null) return
@@ -60,13 +45,11 @@ class ClaudeModelCapture(
     companion object {
         private const val FIELD_TRANSCRIPT_PATH = "transcript_path"
 
-        /** How much of the transcript tail to read — the model sits on every assistant line, so a modest
-         *  window always contains the most recent one while keeping the read O(1). */
+        // Claude repeats model on assistant records, so a bounded recent window is sufficient.
         const val TAIL_BYTES: Int = 64 * 1024
     }
 }
 
-/** Read up to the last [ClaudeModelCapture.TAIL_BYTES] of [path] as text, or `null` if unreadable. */
 @OptIn(ExperimentalForeignApi::class)
 fun readFileTail(path: String): String? {
     val fp = fopen(path, "rb") ?: return null
@@ -87,6 +70,5 @@ fun readFileTail(path: String): String? {
     }
 }
 
-/** Default wall-clock for the model-capture write: epoch millis. */
 @OptIn(ExperimentalTime::class)
 private fun captureEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

@@ -13,12 +13,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
-/**
- * Unit tests for [JunieHookNormalizer] — the INCOMING half of the Junie adapter. Pure `(name, payload)`
- * → `AgentEvent?`, so every case is a plain assertion with a representative payload (the bodies below are
- * the shapes Junie's hook documentation specifies). A few tests fold the result through the real reducer,
- * because what a mapping is FOR is the state it produces.
- */
 class JunieHookNormalizerTest {
 
     private val pane = PaneId("%7")
@@ -28,7 +22,6 @@ class JunieHookNormalizerTest {
     private fun normalize(event: String, body: String = "{}") =
         JunieHookNormalizer.normalize(event, payload(body), pane)
 
-    // ---- the mapped events ----
 
     @Test
     fun userPromptSubmitStartsATurn() {
@@ -91,8 +84,6 @@ class JunieHookNormalizerTest {
 
     @Test
     fun stopFailureAlsoCompletesTheTurn() {
-        // A turn that dies in an LLM/API failure fires StopFailure INSTEAD of Stop and leaves the TUI
-        // idle. Without this mapping the session would sit at `running` with nothing left to move it.
         assertEquals(
             AgentEvent.TurnCompleted,
             normalize(
@@ -114,12 +105,9 @@ class JunieHookNormalizerTest {
         )
     }
 
-    // ---- SessionStart: normally nothing to bind ----
 
     @Test
     fun sessionStartAsDocumentedCarriesNoIdSoItIsIgnored() {
-        // Junie's documented payload is `{"hook_event_name":"SessionStart","source":"startup"}` — the id
-        // comes from JunieSessionScan instead, and every documented `source` behaves the same way here.
         for (source in listOf("startup", "resume", "clear", "compact")) {
             assertNull(
                 normalize(JunieHookConfig.SESSION_START, """{"hook_event_name":"SessionStart","source":"$source"}"""),
@@ -130,7 +118,6 @@ class JunieHookNormalizerTest {
 
     @Test
     fun sessionStartBindsAJunieIdWhenOneIsPresent() {
-        // Future-proof: junie ids are NOT UUIDs, so this must bind without a UUID guard.
         val id = "session-260730-015553-1j1h"
         assertEquals(
             AgentEvent.SessionBound(ProviderSessionId(id)),
@@ -148,7 +135,6 @@ class JunieHookNormalizerTest {
         )
     }
 
-    // ---- ignored / malformed ----
 
     @Test
     fun anUnmappedHookIsIgnored() {
@@ -159,13 +145,11 @@ class JunieHookNormalizerTest {
 
     @Test
     fun aClaudeOnlyHookNameIsNotMapped() {
-        // The three providers share an ingress SHAPE but not a vocabulary; `Notification` is Claude's.
         assertNull(normalize("Notification"), "Claude's Notification has no meaning on the junie route")
     }
 
     @Test
     fun aNonObjectPayloadDegradesInsteadOfThrowing() {
-        // The ingress hands over whatever the hook posted; an untrusted body must never crash the route.
         assertEquals(
             AgentEvent.ToolCall(JunieHookNormalizer.UNKNOWN_TOOL),
             JunieHookNormalizer.normalize(JunieHookConfig.PRE_TOOL_USE, payload("[1,2,3]"), pane),
@@ -177,13 +161,9 @@ class JunieHookNormalizerTest {
         assertNull(JunieHookNormalizer.normalize(JunieHookConfig.SESSION_START, JsonObject(emptyMap()), pane))
     }
 
-    // ---- the mapping seen through the reducer ----
 
     @Test
     fun aPermissionThenAToolCallIsNeedsApprovalThenRunning() {
-        // The approval lifecycle kotgent actually observes: junie asks (and keeps showing its own dialog),
-        // the operator answers in the terminal (no callback for that), and the next PreToolUse is what
-        // proves it was answered.
         var projection = Projection.EMPTY
         projection = reduce(projection, normalize(JunieHookConfig.USER_PROMPT_SUBMIT)!!)
         assertEquals(SessionState.running, projection.state)
@@ -210,7 +190,6 @@ class JunieHookNormalizerTest {
 
     @Test
     fun theReducerInvariantHoldsAcrossTheJunieMapping() {
-        // pendingApprovals > 0 <=> needs_approval, for every event this normalizer can produce.
         val bodies = listOf(
             JunieHookConfig.USER_PROMPT_SUBMIT to "{}",
             JunieHookConfig.PERMISSION_REQUEST to """{"tool_name":"Bash"}""",

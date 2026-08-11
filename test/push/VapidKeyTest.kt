@@ -29,16 +29,6 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Tests for [VapidKey], driven against a throwaway `$TMPDIR` PEM so the real `~/.kotgent/vapid.pem` is
- * never touched, and against the REAL `/usr/bin/openssl` — the key has to be a genuine P-256 key, so a
- * fake runner would only prove that our own string plumbing agrees with itself. The error paths (a
- * non-zero openssl, an empty stdout) use a fake runner, which is the only way to provoke them
- * deterministically.
- *
- * If the system openssl is missing the openssl-backed tests skip-guard and return (the [TmuxTest] idiom),
- * so the suite stays green on a host without it; the pure [publicPointFromSpki] cases always run.
- */
 @OptIn(ExperimentalForeignApi::class)
 class VapidKeyTest {
 
@@ -47,7 +37,6 @@ class VapidKeyTest {
         "$dir/kotgent-vapidtest-${getpid()}.pem"
     }
 
-    /** True when the pinned system openssl exists — the tests that actually generate a key need it. */
     private fun opensslAvailable(): Boolean =
         readFileBytesOrNull(VapidKey.DEFAULT_OPENSSL_PATH, limit = 1) != null
 
@@ -67,7 +56,6 @@ class VapidKeyTest {
         fclose(fp)
     }
 
-    /** The nine `rwxrwxrwx` permission bits of [path], or `null` if it cannot be `stat`ed. */
     private fun fileMode(path: String): Int? = memScoped {
         val st = alloc<stat>()
         if (stat(path, st.ptr) != 0) null else st.st_mode.toInt() and 0b111_111_111
@@ -85,8 +73,6 @@ class VapidKeyTest {
             assertEquals(P256_POINT_LENGTH, point.size, "the VAPID public key is a 65-byte P-256 point")
             assertEquals(UNCOMPRESSED_POINT_TAG, point[0], "the point is uncompressed (0x04)")
 
-            // The private key must never be world-readable: openssl's own -out would leave it 0644,
-            // which is exactly why the PEM comes back on stdout and WE persist it.
             assertEquals(0b110_000_000, fileMode(keyPath), "vapid.pem is 0600")
 
             val pem = readFileBytesOrNull(keyPath) ?: error("no PEM was persisted")
@@ -95,10 +81,7 @@ class VapidKeyTest {
                 "what we persisted is the PEM openssl printed",
             )
 
-            // A re-mint would silently kill every existing browser subscription (which cannot
-            // re-subscribe without a user gesture), so a second read must return the SAME key…
             assertContentEquals(point, key.publicPoint(), "the cached point is stable")
-            // …including from a fresh instance, i.e. across daemon restarts.
             assertContentEquals(
                 point,
                 VapidKey(keyPath = keyPath).publicPoint(),
@@ -115,7 +98,6 @@ class VapidKeyTest {
             val key = VapidKey(keyPath = keyPath)
 
             val encoded = key.publicKeyBase64Url()
-            // 65 bytes → 87 unpadded base64url characters; the leading 0x04 always encodes as 'B'.
             assertEquals(87, encoded.length, "the application server key is 87 base64url characters")
             assertTrue(encoded.startsWith("B"), "the encoded point starts with the 0x04 tag")
             assertTrue(
@@ -185,8 +167,6 @@ class VapidKeyTest {
     fun anEmptyPemFailsLoudlyInsteadOfBeingSilentlyReplaced() = runBlocking {
         withTimeout(20_000) {
             writeFile(keyPath, "")
-            // Truncated by a crashed writer or a full disk. Overwriting it could destroy a key whose
-            // subscriptions are still live, and using it would fail only at send time — so it throws.
             val failure = assertFailsWith<VapidKeyException> {
                 VapidKey(keyPath = keyPath).publicPoint()
             }
@@ -213,7 +193,6 @@ class VapidKeyTest {
     fun aCorruptPemSurfacesOpensslsOwnDiagnostic() = runBlocking {
         withTimeout(20_000) {
             if (!opensslAvailable()) return@withTimeout
-            // Shaped like a PEM (so the file check passes) but not a key: only openssl can tell.
             writeFile(keyPath, "-----BEGIN EC PRIVATE KEY-----\nnot base64 at all\n-----END EC PRIVATE KEY-----\n")
 
             val failure = assertFailsWith<VapidKeyException> {
@@ -237,7 +216,6 @@ class VapidKeyTest {
                 failure.message!!.contains("cannot generate the VAPID keypair"),
                 "the message points at generation: ${failure.message}",
             )
-            // Push is simply unavailable; nothing half-written is left for the next start to adopt.
             assertNull(readFileBytesOrNull(keyPath), "a failed generation persists no key file")
         }
     }
@@ -266,8 +244,6 @@ class VapidKeyTest {
                 keyPath = keyPath,
                 runner = runnerReturning(ProcessResult(0, ByteArray(0), ByteArray(0))),
             )
-            // Exit 0 with no stdout would otherwise persist an EMPTY vapid.pem that every later start
-            // refuses to use — a permanently broken push path from one flaky run.
             assertFailsWith<VapidKeyException> { key.ensureKeyFile() }
             assertNull(readFileBytesOrNull(keyPath), "an empty key is never written")
         }
@@ -276,8 +252,6 @@ class VapidKeyTest {
     @Test
     fun aRunnerLevelFailureBecomesAVapidKeyException() = runBlocking {
         withTimeout(20_000) {
-            // popen itself failing (fd exhaustion) must degrade like every other push problem — one
-            // exception type for the route's 503, never an exception the daemon does not expect.
             val key = VapidKey(keyPath = keyPath, runner = { error("popen failed") })
             val failure = assertFailsWith<VapidKeyException> { key.ensureKeyFile() }
             assertTrue(failure.message!!.contains("popen failed"), "the cause is preserved: ${failure.message}")
@@ -305,8 +279,6 @@ class VapidKeyTest {
 
     @Test
     fun publicPointFromSpkiRejectsACompressedPoint() {
-        // 0x02/0x03 is a COMPRESSED point: accepted by nothing in the Web Push stack, and a silent
-        // pass here would surface as an opaque rejection from Apple much later.
         val der = ByteArray(P256_SPKI_HEADER_LENGTH) { 0x2a } + ByteArray(P256_POINT_LENGTH).also { it[0] = 0x03 }
 
         val failure = assertFailsWith<VapidKeyException> { publicPointFromSpki(der) }

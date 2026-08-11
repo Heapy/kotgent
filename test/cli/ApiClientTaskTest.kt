@@ -52,18 +52,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * [ApiClient]'s task/project surface (plan Task 20) against an embedded stub daemon.
- *
- * The stub is this file's own — deliberately not `CliTest`'s, which is a shared suite no wave-2 task may
- * touch — and it records the method, path, query, credentials and body of every request, because what
- * these methods must get right is exactly that: the route each one calls, the `/api/v1` prefix, the pane
- * header when (and only when) a pane was resolved, the session id in the body, and the shapes of the
- * request DTOs. Every server-touching body is bounded by [withTimeout] (anti-hang).
- */
 class ApiClientTaskTest {
 
-    // --- identity: the pane header and the session id ---------------------------------------------
 
     @Test
     fun aResolvedPaneRidesEveryTaskCallAsAHeader() = withStub(paneId = PaneId("%7")) { stub, api ->
@@ -117,7 +107,6 @@ class ApiClientTaskTest {
         )
     }
 
-    // --- reads --------------------------------------------------------------------------------------
 
     @Test
     fun listTasksWithoutAProjectSendsNoQuery() = withStub { stub, api ->
@@ -163,7 +152,6 @@ class ApiClientTaskTest {
         assertEquals("$API_PREFIX/projects", stub.requests.receive().path)
     }
 
-    // --- writes -------------------------------------------------------------------------------------
 
     @Test
     fun createTaskPostsTitleBodyProjectAndSession() = withStub { stub, api ->
@@ -245,8 +233,6 @@ class ApiClientTaskTest {
 
     @Test
     fun aDependencyEditSendsItsActionAndTargetAndReturnsTheUpdatedEntry() = withStub { stub, api ->
-        // The route answers the re-read entry, and `blocked` — derived server-side from the very edge
-        // this request adds — is the field that makes the body worth decoding rather than discarding.
         assertEquals(BLOCKED_ENTRY, api.editTaskDependency(REF, "add", "local:7"))
         val seen = stub.requests.receive()
         assertEquals("$API_PREFIX/tasks/$REF/deps", seen.path)
@@ -288,7 +274,6 @@ class ApiClientTaskTest {
         assertEquals(CreateProjectRequest("/repo", "kotgent"), body)
     }
 
-    // --- next: "nothing eligible" is an answer, not a failure ----------------------------------------
 
     @Test
     fun nextReturnsTheTaskItLinked() = withStub { stub, api ->
@@ -309,7 +294,6 @@ class ApiClientTaskTest {
         )
     }
 
-    // --- credentials and timeouts --------------------------------------------------------------------
 
     @Test
     fun everyTaskCallFailsFastWithoutAToken() = withStub(token = null) { stub, api ->
@@ -330,11 +314,6 @@ class ApiClientTaskTest {
         assertNull(stub.requests.tryReceive().getOrNull(), "no network I/O happens without a token")
     }
 
-    /**
-     * The task methods issue their calls through the client they were GIVEN, so a daemon that accepts the
-     * connection and then says nothing — an orphan holding the listening socket — is a reportable error
-     * rather than a hang. A method that built its own client would keep waiting here.
-     */
     @Test
     fun aSilentDaemonTimesOutInsteadOfHanging(): Unit = runBlocking {
         withTimeout(30_000) {
@@ -349,8 +328,6 @@ class ApiClientTaskTest {
             server.start(wait = false)
             val port = server.engine.resolvedConnectors().first().port
             val impatient = HttpClient(ClientCIO) {
-                // Only the end-to-end budget is short, so the failure is deterministically the request
-                // timeout rather than a race between it and the socket one.
                 install(HttpTimeout) {
                     connectTimeoutMillis = 3_000
                     requestTimeoutMillis = 300
@@ -366,9 +343,7 @@ class ApiClientTaskTest {
         }
     }
 
-    // --- harness ---------------------------------------------------------------------------------
 
-    /** One recorded request the stub daemon saw. */
     private data class Recorded(
         val method: String,
         val path: String,
@@ -379,17 +354,13 @@ class ApiClientTaskTest {
         val body: String,
     )
 
-    /** A stub of the daemon's task surface that records what [ApiClient] sends and answers canned DTOs. */
     private class Stub {
         val requests = Channel<Recorded>(Channel.UNLIMITED)
 
-        /** `DELETE /tasks/{ref}`'s answer — the one status [ApiClient.deleteTask] reads instead of throwing. */
         var deleteStatus: HttpStatusCode = HttpStatusCode.NoContent
 
-        /** `POST /tasks/{ref}/deps`' answer, so a refusal can be driven from a test. */
         var depsStatus: HttpStatusCode = HttpStatusCode.OK
 
-        /** What `POST /tasks/next` links; `null` is "nothing eligible", which is a `200`. */
         var nextEntry: BacklogEntryDto? = ENTRY
 
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
@@ -519,7 +490,6 @@ class ApiClientTaskTest {
             rev = 3,
         )
 
-        /** What `POST /tasks/{ref}/deps` answers: the same row, re-read, now `blocked` by the new edge. */
         val BLOCKED_ENTRY = ENTRY.copy(blocked = true)
 
         val ACTIVITY = ActivityEntryDto(

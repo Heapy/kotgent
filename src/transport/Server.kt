@@ -45,108 +45,9 @@ import kotlin.concurrent.Volatile
 import platform.posix.F_OK
 import platform.posix.access
 
-/**
- * The one prefix every **client-facing** daemon route lives under.
- *
- * ## Why the API moved
- * Ktor scores a literal path segment above the `get("/{path...}")` tailcard that serves the SPA
- * ([staticWebUi]), which is why `GET /sessions` has always answered JSON and never the shell. The flip
- * side is that a **UI** route named after any API route would be permanently unreachable — so the SPA
- * could never own `/tasks`, `/s/{id}` or anything else it wants in the address bar. Moving the whole
- * cookie/`Bearer`-gated surface under one prefix separates the two URL spaces once, structurally,
- * instead of negotiating each new name against the API's.
- *
- * ## What deliberately did NOT move
- *  - **The `/hooks/…` ingresses.** Each adapter bakes `ingressUrl(port)` into a per-session shell script ON DISK
- *    (`ClaudeHookConfig.kt` and its codex/junie siblings). Those files belong to sessions that are
- *    already running: moving the ingress would silently stop every one of them from ever reporting
- *    again — no error anywhere, just a projection that stops advancing — until each was relaunched.
- *  - **The whole `/auth*` bootstrap surface.** `/auth` is addressed by the phone QR code and by the
- *    PWA's `location.replace(AUTH_PATH)`; `/auth/exchange` is fetched by an inline script inside the
- *    page the daemon itself serves ([authRoutes]); and `/auth/ticket` is called from BOTH the browser
- *    (`components/dialogs.js`, through `apiRequest`) and the CLI (`ApiClient`, via [AUTH_TICKET_PATH] /
- *    [AUTH_ROTATE_PATH]). It is the surface a client reaches when it has no credential yet, so it
- *    cannot be allowed to move under a client's feet — hence the matching `/auth` exemption in
- *    `lib/api.js`'s `apiRequest`/`wsUrl` and in `ApiClient.daemonPath`.
- *
- * ## Three compatibility breaks, recorded rather than papered over
- *  1. **An older `kotgent` binary cannot talk to a newer daemon.** Every control call 404s at the bare
- *     path. There is no dual-mount grace period; upgrade both halves together.
- *  2. **An already-open browser tab breaks hard rather than degrading.** Its `/events` upgrade now falls
- *     through to the static catch-all and answers `404`, not `401`, so the sign-out recovery in `app.js`
- *     (which keys on `401`) never fires. A reload is the recovery.
- *  3. **An installed service worker outlives its pages, and this one is SILENT.** With every tab closed
- *     the worker can still be woken by a push while holding the old `/sessions` and `/push/…` paths; its
- *     fetch 404s and the operator gets the generic "a session needs your attention" banner instead of a
- *     per-session one, with nothing anywhere saying why. `sw.js` is served `no-cache`, so the next
- *     navigation replaces it — but until one happens, nobody is told.
- */
+// Client control APIs are versioned here; persisted provider hooks and credential bootstrap stay at root.
 const val API_PREFIX: String = "/api/v1"
 
-/**
- * The real kotgent transport server (plan Task 14) — assembles the control REST, the events WS, the
- * terminal WS, the Claude hook ingress, and the static Web UI onto one Ktor CIO server on
- * `127.0.0.1:<port>`, all behind the shared token.
- *
- * Everything is constructor-injected so the whole server is testable end-to-end against fakes: a
- * [SessionManager] over a fake tmux + fake agent, an in-memory [EventStore], and a
- * [terminalBridgeFactory] backed by a fake `PtyFactory`. The production wiring is [production].
- *
- * ## Auth layering
- *  - The **hook ingresses** ([claudeHookRoutes], [codexHookRoutes], [junieHookRoutes]) are mounted at the
- *    root, restricted to a loopback `Host` ([loopbackOnly] — they are `curl`s from this machine, never
- *    tunnel traffic) and do their own header-token check (Task 12) against the **same** master token — the
- *    plan's "one token on all". They read it through [TokenHolder.current], never as a captured string, so
- *    `kotgent token rotate` reaches every gate at once.
- *  - The **login routes** ([authRoutes]) carry their own layering: ticket issuance and token rotation are
- *    `Bearer` + loopback-only, the login page is open, and the exchange is gated by `Host`/`Origin` alone
- *    because the ticket it spends IS its credential.
- *  - The **control REST + both WebSockets** are wrapped in [authenticated], i.e. the one [authorize] rule:
- *    a `Host` allowlist built from [publicUrl], the `Origin` requirement on non-GET and on WS handshakes,
- *    then a `Bearer` master token or the browser's session cookie. A refusal is written before any upgrade,
- *    so a rejected WS handshake never becomes a socket. That same block — and only it — sits under
- *    [API_PREFIX]: the gated surface and the moved surface are the same set, so the prefix is one
- *    `route(API_PREFIX)` around the block's body rather than an edit per route. The nesting is sound
- *    because [authenticated]'s selector evaluates `Transparent` (`Auth.kt`), adding no path segment of
- *    its own.
- *  - The **static Web UI** is deliberately UNauthenticated: the browser fetches it before it has any
- *    credential, then the SPA calls the API with the cookie the login flow set. Serving the bootstrap
- *    HTML/JS openly is what makes that first paint possible at all.
- *
- * @param tokens the live master token. A [TokenHolder] rather than a plain `() -> String` because the
- *   server does not only READ the secret any more: `POST /auth/rotate` re-mints it, and every gate below
- *   has to observe the new value on the very next request.
- * @param preferencesStore daemon-wide UI preferences. Kept as a separate contract from [store] even
- *   though production passes the same SQLite object for both.
- * @param terminalBridgeFactory builds the lazy [TerminalBridge] for a session id on a given scope; the
- *   server calls it (via a [TerminalRegistry]) on its own application scope. This is where the
- *   `PtyFactory` is injected (production: a real `tmux attach` + `capture-pane` seed; tests: a fake).
- * @param directoryCompleter lists one directory level for the working-directory autocomplete.
- * @param fileUploader streams a phone/browser upload into the selected session's stored cwd. Production
- *   uses the atomic POSIX writer; transport tests inject a recorder and never touch the host filesystem.
- * @param currentVersion the running application's display version exposed by `GET /version`.
- * @param webUiDir directory served at `/` (the Task-17 SPA). `null` disables static serving (tests);
- *   the default serves whatever exists under `resources/webui` — nothing yet, i.e. `404`, until Task 17.
- * @param publicUrl the origin the daemon is published at through the cloudflared tunnel
- *   (`~/.kotgent/config.json`), or `null` for loopback-only. Passed IN by the daemon rather than read here:
- *   the dependency runs cli → transport, and the transport does not read configuration files.
- * @param tickets the outstanding one-shot login tickets; in-memory and per-daemon-run by design.
- * @param pushStore where Web Push subscriptions live, or `null` to leave the `/push` routes unmounted.
- * @param vapidPublicKey the base64url VAPID application server key provider, or `null` for no push. Both
- *   this and [pushStore] must be present for [pushRoutes] to be mounted at all — push is an optional
- *   capability (it needs `openssl` and a writable `~/.kotgent`), so a daemon without it, and every test
- *   harness that does not pass them, behaves exactly as before.
- * @param onTmuxSessionClosed receives authenticated tmux close triggers. Production forwards this to
- *   [SessionManager.onTmuxSessionClosed], which re-derives truth under the per-session control lock.
- * @param taskStore the local task/backlog layer, or `null` to leave [taskRoutes] unmounted and the
- *   events socket's task branch inert. Optional exactly like [pushStore]: both this and [taskService]
- *   must be present for the routes to exist at all, so a daemon (or a harness) without them behaves
- *   precisely as before rather than serving a half-wired surface.
- * @param taskService the two-store link/transition/delete coordinator. It also carries the project
- *   filesystem and the project-file writer, which is why the task surface costs two parameters here and
- *   not four.
- * @param port `0` binds an ephemeral port (tests); [port] reports the resolved one.
- */
 class KotgentServer(
     private val sessionManager: SessionManager,
     private val store: EventStore,
@@ -168,18 +69,12 @@ class KotgentServer(
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
 ) {
-    /** The terminal bridge registry, captured so [stop] can tear its bridges (and their ptys) down. */
     private var terminalRegistry: TerminalRegistry? = null
 
-    /**
-     * Ktor starts CIO in a root `launch`. On Kotlin/Native an expected bind failure is therefore also
-     * sent to the process-wide uncaught-exception handler, which aborts before [start] can wrap it.
-     * Suppress that duplicate delivery only while startup is in progress; [start] observes the same
-     * failure through Ktor's startup deferred and reports it as [ServerBindException]. Once startup
-     * succeeds, an unexpected engine failure keeps Ktor's existing fail-fast behavior.
-     */
     @Volatile
     private var startupInProgress: Boolean = true
+    // Kotlin/Native also sends an expected CIO bind failure to the uncaught handler. Suppress only
+    // that duplicate during startup; start() observes and wraps the same failure.
     private val engineExceptionHandler = CoroutineExceptionHandler { _, cause ->
         if (!startupInProgress) throw cause
     }
@@ -193,28 +88,15 @@ class KotgentServer(
                     log = websocketDisconnectAwareLogger(KtorSimpleLogger(KTOR_APPLICATION_LOGGER_NAME))
                 },
             ) {
-                // Preserve the startup exception handler used by the former CoroutineScope.embeddedServer
-                // convenience overload while supplying the application logger explicitly.
                 parentCoroutineContext = engineScope.coroutineContext
                 module {
-                    // `this` is the Application (a CoroutineScope): terminal bridges + their reader loops live on it.
                     val registry = TerminalRegistry(this, terminalBridgeFactory).also { terminalRegistry = it }
-                    // Programmatic input: cancel copy-mode first (a wheel scroll by ANY viewer parks the shared
-                    // pane there, where tmux silently eats every keystroke), then write into the one upstream.
-                    // BOTH halves answer: `&&` short-circuits, so a pane that would eat the bytes is never written
-                    // to, and a write that found no upstream (the lazy bridge with zero subscribers — the more
-                    // common drop of the two) is reported instead of being answered `ok`. The interactive terminal
-                    // WS deliberately does neither — see `Tmux.leaveCopyMode`.
                     val inputSink: TerminalInputSink = { id, bytes ->
+                        // Programmatic writes must leave shared tmux copy-mode first or bytes are silently eaten.
                         sessionManager.leaveCopyMode(id) && registry.getOrCreate(id.value).write(bytes)
                     }
                     install(WebSockets)
                     routing {
-                        // Hook ingress, one route per provider: same token, their own header check (Task 12).
-                        // Codex and junie additionally wire the rebind seam: neither can preallocate an id,
-                        // so their fallback filesystem scan can bind a same-cwd neighbour's, and a hook
-                        // SessionBound that displaces it must clear the (possibly neighbour-derived) model
-                        // and re-run the id-keyed capture.
                         claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
                         codexHookRoutes(
                             tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
@@ -225,11 +107,7 @@ class KotgentServer(
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )
                         tmuxHookRoutes(tokens::current, onTmuxSessionClosed)
-                        // Login flow: ticket issuance (Bearer + loopback), the open page, the exchange, rotation.
-                        // Deliberately OUTSIDE API_PREFIX — see the constant's KDoc: this is the surface a
-                        // client reaches while it still has no credential.
                         authRoutes(tokens, tickets, publicUrl, json)
-                        // Token-gated control plane, all of it under /api/v1 so the SPA owns the bare paths.
                         authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
                                 fileUploadRoutes(store, fileUploader, json)
@@ -240,19 +118,12 @@ class KotgentServer(
                                     currentVersion,
                                     taskService,
                                     json,
-                                    // `POST /sessions {taskRef}` must refuse a ref naming no task, and
-                                    // TaskService validates nothing by design — so the route needs the
-                                    // backlog too. Both nullable together: no task layer, no link.
                                     taskStore,
                                 )
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
                                 eventsWs(store, preferencesStore, taskStore, json)
                                 terminalWs(registry, store, json)
-                                // The task/backlog surface, only when the daemon actually has one (a
-                                // store AND the two-store service). Same shape as push below: absent
-                                // either, the routes do not exist, and `/tasks` falls through to the
-                                // static catch-all — which is exactly what the SPA route wants anyway.
                                 val backlog = taskStore
                                 val coordinator = taskService
                                 if (backlog != null && coordinator != null) {
@@ -266,16 +137,11 @@ class KotgentServer(
                                         ),
                                     )
                                 }
-                                // Web Push registration, only when the daemon actually has push wired (a store AND a
-                                // key provider). Absent either, the routes simply do not exist — a 404 the page reads
-                                // as "this daemon cannot do push", rather than a half-mounted surface that accepts
-                                // subscriptions nothing will ever send to.
                                 val subscriptions = pushStore
                                 val key = vapidPublicKey
                                 if (subscriptions != null && key != null) pushRoutes(subscriptions, key, json)
                             }
                         }
-                        // Static Web UI at / (open bootstrap — see the auth-layering KDoc).
                         staticWebUi(webUiDir)
                     }
                 }
@@ -289,26 +155,10 @@ class KotgentServer(
                 )
             },
         ).also {
-            // CIO defaults this to false. After serving a browser/WebSocket client, stopping the daemon
-            // can leave the old local endpoint in TCP teardown state on macOS; without SO_REUSEADDR an
-            // immediate restart then fails with EADDRINUSE even though no process owns the listener.
+            // macOS can otherwise reject an immediate daemon restart while the prior socket tears down.
             it.engineConfig.reuseAddress = true
         }
 
-    /**
-     * Start the engine without serving on the caller's thread, returning once the listening socket is
-     * actually bound.
-     *
-     * Binding happens on a CIO engine coroutine. On Native, `start(wait = false)` waits for that startup
-     * job, while [io.ktor.server.engine.ApplicationEngine.resolvedConnectors] is the explicit
-     * bound-socket contract needed for `port = 0`. Keeping both inside one startup boundary turns any
-     * bind failure into [ServerBindException], which the CLI turns into a diagnosis (`Commands.daemon`).
-     *
-     * With the socket bound, [markOpenFdsCloexec] flags it close-on-exec **before** any `tmux` can be
-     * spawned, so it can never be inherited by a `tmux` server that outlives this daemon — the
-     * orphaned-listener bug documented on [markOpenFdsCloexec]. The per-spawn sweep in
-     * [io.kotgent.tmux.ProcessRunner] covers descriptors opened later.
-     */
     fun start(): KotgentServer {
         try {
             server.start(wait = false)
@@ -318,51 +168,32 @@ class KotgentServer(
         } catch (e: TimeoutCancellationException) {
             throw ServerBindException("timed out after ${BIND_TIMEOUT_MS}ms waiting for the bind", e)
         } catch (e: CancellationException) {
-            // CIO reports a failed root server job as JobCancellationException and keeps the actual
-            // bind error as its cause. Preserve genuine caller cancellation, but unwrap this startup
-            // failure so the CLI receives the promised ServerBindException.
             val cause = e.cause
             if (cause == null || cause === e) throw e
             throw ServerBindException(cause.message ?: cause::class.simpleName ?: "bind failed", cause)
         } catch (e: Throwable) {
             throw ServerBindException(e.message ?: e::class.simpleName ?: "bind failed", e)
         }
+        // Prevent a spawned tmux server from inheriting a listener that outlives this daemon.
         markOpenFdsCloexec()
         startupInProgress = false
         return this
     }
 
-    /** The actual OS-assigned port (resolves an ephemeral `port = 0` binding). */
     suspend fun port(): Int = server.engine.resolvedConnectors().first().port
 
     fun stop() {
-        // Tear the terminal bridges (and their real ptys/reader threads) down before stopping the
-        // engine, so a server stop reclaims those resources instead of leaking them.
         terminalRegistry?.let { runBlocking { it.shutdownAll() } }
         server.stop(gracePeriodMillis = 100, timeoutMillis = 500)
     }
 
     companion object {
-        /** Default directory served at `/` (the Task-17 Web UI). Cwd-relative; see [resolveWebUiDir]. */
         const val DEFAULT_WEBUI_DIR: String = "resources/webui"
 
-        /** How long [start] waits for the engine to resolve its connectors before giving up. */
         private const val BIND_TIMEOUT_MS: Long = 10_000
 
-        /** The name used by Ktor's former embedded-server convenience overload. */
         private const val KTOR_APPLICATION_LOGGER_NAME: String = "io.ktor.server.Application"
 
-        /**
-         * Production wiring: terminal bridges attach the real
-         * `tmux -f /dev/null -u -L <socket> attach` upstream with a real `capture-pane -p -e` seed
-         * ([terminalBridgeForSession]) over the given [ptyFactory] (default [realPtyFactory] — a real
-         * cinterop `Pty`). The web UI directory is resolved to an ABSOLUTE path ([resolveWebUiDir]) so
-         * an installed daemon (launchd sets no `WorkingDirectory`, so its cwd is `/`) still serves the
-         * SPA instead of 404ing on a cwd-relative default.
-         *
-         * [pushStore] and [vapidPublicKey] are forwarded verbatim: this factory, not the constructor, is
-         * what `Commands.daemon` calls, so push has to be reachable from here to be reachable at all.
-         */
         fun production(
             sessionManager: SessionManager,
             store: EventStore,
@@ -400,16 +231,10 @@ class KotgentServer(
             port = port,
         )
 
-        /**
-         * Resolve a (possibly cwd-relative) web UI [dir] to an absolute path anchored at the running
-         * executable's location, so an installed daemon whose cwd is `/` still finds the SPA. An
-         * already-absolute path is returned as-is; otherwise the executable's directory and its
-         * ancestors are searched for `<ancestor>/<dir>`, falling back to the cwd-relative [dir] (which
-         * resolves for a dev `./kotlin run` launched from the repo root).
-         */
         @OptIn(ExperimentalForeignApi::class)
         internal fun resolveWebUiDir(dir: String): String {
             if (dir.startsWith("/")) return dir
+            // launchd starts with cwd `/`; anchor installed assets to the executable hierarchy.
             val exe = NativeExe.path() ?: return dir
             var d: String = exe.substringBeforeLast('/', missingDelimiterValue = "")
             while (d.isNotEmpty()) {
@@ -424,20 +249,9 @@ class KotgentServer(
     }
 }
 
-/**
- * Thrown by [KotgentServer.start] when the listening socket never came up — most often `EADDRINUSE`
- * because another process holds the port. Carries the engine's own failure as [cause] so the CLI can
- * both report it and add a diagnosis of who holds the port.
- */
 class ServerBindException(message: String, cause: Throwable?) :
     RuntimeException("failed to bind the kotgent server: $message", cause)
 
-/**
- * Serve a static SPA from [dir] at `/` (Task 14 mounts it now; Task 17 fills [dir] with the UI). Reads
- * files with posix I/O — Ktor's JVM `staticFiles`/`staticResources` are unavailable on native (the Task-3
- * decision). `null` [dir] mounts nothing. The catch-all is lower routing priority than the literal API
- * routes, so it never shadows them; `..` is rejected to prevent path traversal.
- */
 fun Route.staticWebUi(dir: String?) {
     if (dir == null) return
     get("/") { serveStaticFile(dir, "index.html") }
@@ -448,35 +262,24 @@ fun Route.staticWebUi(dir: String?) {
 }
 
 private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: String, rel: String) {
-    // Strip the revision BEFORE the traversal guard, so `_v/<rev>/../../etc/passwd` is still rejected.
+    // Strip the cache prefix before traversal validation so `_v/<rev>/../../…` cannot bypass it.
     val (rev, stripped) = stripRevPrefix(rel)
     if (stripped.contains("..") || stripped.startsWith("/")) {
         call.respondText("bad path", status = HttpStatusCode.Forbidden)
         return
     }
     val direct = readFileBytesOrNull("$dir/$stripped")
-    // A History-API deep link (`/tasks`, `/tasks/{ref}`, `/s/{id}`) names no file on disk, so an absent
-    // file plus an exact route match is answered with the shell. It falls through to the `index.html`
-    // branch below rather than short-circuiting, because that branch is what substitutes the revision:
-    // skipping it would ship a shell whose every asset URL is literally `/_v/__REV__/…`. The traversal
-    // guard stays FIRST, and the grammar is exact — `/s/id/extra` and `/tasks/id/missing.js` still 404.
     val path = if (direct == null && isSpaRoute(rel)) "index.html" else stripped
     val bytes = direct ?: if (path != stripped) readFileBytesOrNull("$dir/$path") else null
     if (bytes == null) {
         call.respondText("not found", status = HttpStatusCode.NotFound)
         return
     }
-    // `index.html` is the only file carrying the placeholder, and the only one that has to: the revision
-    // it receives here is what gives every asset it references a content-addressed URL.
     val body = if (path == "index.html") {
         bytes.decodeToString().replace(WEBUI_REV_PLACEHOLDER, webUiRevision(dir)).encodeToByteArray()
     } else {
         bytes
     }
-    // One rule: a valid revision in the path means the bytes can never change under this URL, so cache it
-    // forever; everything else revalidates. The `no-cache` half ("revalidate before use", NOT "do not
-    // store") also covers assets reached WITHOUT the prefix — a stale bookmark or an old shell — which
-    // used to be served with no caching header at all, i.e. under the browser's own heuristic freshness.
     val immutable = rev != null && isRevToken(rev) && !neverImmutable(path)
     call.response.headers.append(
         HttpHeaders.CacheControl,
@@ -490,12 +293,11 @@ private fun contentTypeFor(path: String): ContentType = when (path.substringAfte
     "js" -> ContentType.Text.JavaScript
     "css" -> ContentType.Text.CSS
     "json" -> ContentType.Application.Json
-    // The manifest's own media type (W3C). Serving it as octet-stream makes Chrome refuse the install
-    // prompt outright, which would silently cost the whole PWA half of this feature.
     "webmanifest" -> MANIFEST_CONTENT_TYPE
     "svg" -> ContentType.Image.SVG
     "png" -> ContentType.Image.PNG
     else -> ContentType.Application.OctetStream
 }
 
+// Chrome rejects installation when a manifest is served as generic octet-stream.
 private val MANIFEST_CONTENT_TYPE: ContentType = ContentType("application", "manifest+json")

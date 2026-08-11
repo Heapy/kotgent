@@ -1,8 +1,3 @@
-/*
- * Search view over the one command registry. Focus stays in the combobox while aria-activedescendant
- * points at the selected option, matching the working-directory autocomplete in dialogs.js.
- */
-
 import { html } from "htm/preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { filterCommands } from "../lib/commands.js";
@@ -45,10 +40,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
     }
   }, [activeIndex]);
 
-  // Both modes must own the focus, not only search. `leaderKeyDown` sits on the shell, so it only ever
-  // runs for a keystroke that BUBBLES out of that subtree — and leaving leader mode unfocused parks the
-  // focus on the <dialog> itself, which is the shell's parent. Every mnemonic was silently dropped that
-  // way; the grid's click handlers still worked, which is exactly what made it look like a chord bug.
+  // Leader mode must focus the shell because its mnemonics rely on bubbled key events.
   useEffect(() => {
     setLeaderMessage("");
     if (mode === "search") {
@@ -60,8 +52,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
 
   const closeThenRun = (item) => {
     if (!item || item.disabled) return;
-    // Closing the native top-layer element is synchronous and preserves this click/key's user gesture
-    // for clipboard commands. The wrapper's close event then unmounts it through ordinary app state.
+    // Close synchronously so clipboard commands retain the initiating user gesture.
     const dialog = document.getElementById("command-palette");
     if (dialog && dialog.open) dialog.close();
     else onClose();
@@ -100,32 +91,18 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
 
   const leaderKeyDown = (event) => {
     if (mode !== "leader") return;
-    // Never let Space activate whatever leader mode parked the focus on, modified or not — but the
-    // guard belongs to the SHELL alone. It sits on the shell and sees everything that bubbles, so
-    // without the target test it also swallowed Space on the shell's own buttons: a Tab to the × (the
-    // control this dialog exists to offer) answered Enter and did nothing at all on Space.
+    // Suppress Space on the focused shell, but not on its buttons.
     if (event.code === "Space" && event.target === event.currentTarget) {
       event.preventDefault();
       return;
     }
-    // ⌘K K reaches search: the opener leaves the palette on the leader grid, so the second K is an
-    // ordinary mnemonic here. It is checked BEFORE the registry lookup, so registering a "k" chord in
-    // commands.js can never silently steal the one way back to search (a test keeps that letter free).
-    // It also sits ABOVE the modifier guard on purpose: while ⌘ is held app.js's capture-phase opener
-    // consumes this key, but the non-mac opener is Ctrl+SHIFT+K, so releasing Shift first and keeping
-    // Ctrl produces a Ctrl-K that reaches neither — this branch is the one that still answers it.
+    // Reserve K/Backspace for search before command lookup or modifier filtering.
     if (event.code === "KeyK" || event.code === "Backspace") {
       event.preventDefault();
       onModeChange("search");
       return;
     }
-    // Mnemonics are bare `code` matches with no modifier test, so once attach took "a" and detach "e"
-    // every ⌘A (Select All) and ⌘E ran a lifecycle command and swallowed the browser's own default. The
-    // guard must precede `preventDefault` and the run — the lookup itself is a pure `find` — and its
-    // cost is known and accepted: a mnemonic pressed with ⌘ STILL held from the opener is refused too,
-    // so the second key has to be typed bare. That is the gesture the operator already uses (⌘K,
-    // release, then the letter), which is what makes the trade free here. Alt is left alone: no browser
-    // binds ⌥-letter to anything the page can shadow, and AltGr arrives carrying Ctrl anyway.
+    // Chords are sequential: release Command-K before the mnemonic, leaving modified letters to the browser.
     if (event.metaKey || event.ctrlKey) return;
     const item = leaderCommands.find(
       (command) => event.code === "Key" + command.chord.toUpperCase(),
@@ -137,14 +114,9 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
 
   return html`
     <${Dialog} id="command-palette" labelledBy="command-palette-title" onClose=${onClose}>
-      ${/* tabIndex -1: programmatically focusable so leader mode can hold the keyboard, but never a
-            tab stop of its own. */ ""}
       <div class=${"command-palette-shell " + mode} ref=${shellRef} tabIndex="-1"
            onKeyDown=${leaderKeyDown}>
         <h2 id="command-palette-title" class="visually-hidden">Command palette</h2>
-        ${/* The palette is the one dialog with no head of its own, so its × lives on this row beside
-              whichever control opens the mode. Without it a phone had no visible way out at all — there
-              is no Esc there, and the palette is opened by a thumb far more often than by ⌘K. */ ""}
         <div class="command-palette-top">
           ${mode === "leader"
             ? html`

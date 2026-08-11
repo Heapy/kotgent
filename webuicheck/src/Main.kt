@@ -24,34 +24,8 @@ import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.write
 
-/**
- * `webuicheck` — the scenario harness the browser tier drives.
- *
- * ## The contract with the driver, in three lines
- * ```
- * PORT=<n>
- * TICKET=<code>
- * READY
- * ```
- * Those are the ONLY bytes that ever reach stdout (plus one repeated `READY` per [HarnessContext.restart],
- * and `SUMMARY total=… failed=…` in `--self-check` mode). Everything else — diagnostics, Ktor's own
- * logging, a scenario's chatter — goes to stderr. That is not a convention the code is asked to
- * remember: [claimStdout] moves the real stdout to a private descriptor and points fd 1 at stderr
- * before anything else runs, so a stray `println` ANYWHERE in this process (ours, Ktor's, a future
- * scenario's) lands on stderr and cannot corrupt the driver's parser.
- *
- * ## Modes
- *  - `--self-check` runs the cinterop-dependent checks in-process, prints `SUMMARY total=N failed=M`
- *    and exits. It reads NO stdin, which is what lets the native suite drive it through `popen`
- *    (`ProcessRunner` cannot write to a child's stdin — `src/tmux/ProcessRunner.kt`).
- *  - `--scenario=<name> --webui-dir=<abs> [--exit-after-ms=<n>]` is the working mode: seed, bind,
- *    handshake, then one command per stdin line until EOF.
- *
- * ## Failing loudly
- * A fixture that keeps going after being asked for something it does not understand turns a driver bug
- * into a mysterious browser assertion twenty seconds later. An unknown argument, an unknown scenario
- * and an unrecognised stdin line therefore each print one stderr line and exit non-zero.
- */
+// Driver protocol: only PORT, TICKET, READY (and self-check SUMMARY) reach stdout. Diagnostics and
+// stray println calls are redirected to stderr before any other work begins.
 fun main(args: Array<String>) {
     claimStdout()
 
@@ -66,8 +40,6 @@ fun main(args: Array<String>) {
     }
 
     val harness = Harness(scenario, options.webUiDir)
-    // One blocking region for both, so the ticket is minted against the token the server just started
-    // under and the three handshake lines are written back-to-back with nothing between them.
     val (context, ticket) = runBlocking { harness.start() to harness.issueTicket() }
     writeStdoutLine("PORT=${context.port}")
     writeStdoutLine("TICKET=$ticket")
@@ -79,17 +51,10 @@ fun main(args: Array<String>) {
     exitProcess(exitCode)
 }
 
-/**
- * Read one command per line until EOF, dispatching through `handleCommand`.
- *
- * Deliberately NOT inside a `runBlocking`: `handleCommand` is a plain function that has to bridge into
- * suspending work itself, and `KotgentServer.stop()` runs a nested `runBlocking` — starting that chain
- * from a coroutine on the main thread's single-threaded event loop is the one shape that can deadlock.
- * Read on the bare thread and let each command own its own blocking region.
- */
+// Keep the stdin loop off a coroutine context: restart reaches server stop(), which nests runBlocking.
 private fun readCommands(context: HarnessContext): Int {
     while (true) {
-        val line = readlnOrNull() ?: return EXIT_OK // EOF: the driver went away, shut down cleanly.
+        val line = readlnOrNull() ?: return EXIT_OK
         val command = line.trim()
         if (command.isEmpty()) continue
         val handled = try {
@@ -105,15 +70,7 @@ private fun readCommands(context: HarnessContext): Int {
     }
 }
 
-/**
- * Exit after [afterMs] whatever else is happening.
- *
- * A driver that is killed (a crashed test JVM, a cancelled CI job) never closes this process's stdin,
- * so the EOF that would normally end the run never arrives and the harness sits on its port forever.
- * The watchdog exits IMMEDIATELY rather than attempting a graceful stop: the very situation it exists
- * for is one where something is already wedged, and a graceful path that could itself hang would defeat
- * it. Process exit releases the port and the pty regardless.
- */
+// A crashed driver never closes stdin; force process exit so its port and pty cannot be orphaned.
 private fun startWatchdog(afterMs: Long) {
     watchdogScope.launch {
         delay(afterMs)
@@ -122,7 +79,6 @@ private fun startWatchdog(afterMs: Long) {
     }
 }
 
-/** Its own scope on [Dispatchers.Default] so the timer runs while the main thread blocks in `readln`. */
 private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 private class Options(
@@ -132,7 +88,6 @@ private class Options(
     val exitAfterMs: Long?,
 )
 
-/** Parse the four accepted arguments, or print why not and answer `null`. */
 private fun parseArgs(args: Array<String>): Options? {
     var selfCheck = false
     var scenario: String? = null
@@ -165,8 +120,7 @@ private fun parseArgs(args: Array<String>): Options? {
 
     if (scenario.isNullOrBlank()) return usage("$SCENARIO_FLAG<name> is required")
     if (webUiDir.isNullOrBlank()) return usage("$WEBUI_DIR_FLAG<abs> is required")
-    // KotgentServer.resolveWebUiDir is `internal`, so the harness cannot anchor a relative path against
-    // its own executable the way the daemon does. The driver knows the repo root; it passes it in.
+    // The harness cannot call the root module's internal path resolver.
     if (!webUiDir.startsWith("/")) return usage("$WEBUI_DIR_FLAG must be ABSOLUTE, got '$webUiDir'")
 
     return Options(selfCheck = false, scenario = scenario, webUiDir = webUiDir, exitAfterMs = exitAfterMs)
@@ -183,43 +137,20 @@ private const val SCENARIO_FLAG = "--scenario="
 private const val WEBUI_DIR_FLAG = "--webui-dir="
 private const val EXIT_AFTER_FLAG = "--exit-after-ms="
 
-/** Everything the driver asked for happened. */
 const val EXIT_OK: Int = 0
 
-/** A `--self-check` check failed. */
 const val EXIT_SELF_CHECK_FAILED: Int = 1
 
-/** The arguments do not describe a run this binary can perform. */
 const val EXIT_USAGE: Int = 2
 
-/** A line arrived on stdin that no command claimed — the fixture refuses to guess. */
 const val EXIT_BAD_INPUT: Int = 3
 
-/** `--exit-after-ms` fired: the driver is gone and never closed stdin. */
 const val EXIT_WATCHDOG: Int = 4
 
-/**
- * The private duplicate of the process's real stdout. Everything the driver parses is written here with
- * a raw `write(2)`; fd 1 itself points at stderr from [claimStdout] onwards.
- */
 private var handshakeFd: Int = STDOUT_FILENO
 
-/**
- * Take stdout away from the rest of the process.
- *
- * `dup` the real stdout to a private descriptor, then point fd 1 at stderr. After this, every ordinary
- * write to stdout — `println` in this module, Ktor's `KtorSimpleLogger` (which prints on Kotlin/Native),
- * anything a future scenario adds — is delivered to stderr, where it is diagnostics rather than
- * protocol. The alternative, "remember never to print", is a rule that only has to be broken once, and
- * the failure it produces is a driver hanging on a handshake it can no longer parse.
- *
- * The saved descriptor is marked close-on-exec for the same reason every other descriptor in this
- * project is: spawned children (the pty's `/bin/sh`) inherit stdio and must inherit nothing else.
- *
- * If `dup` or `dup2` fails, the handshake keeps using fd 1 unchanged — degraded (a stray print could
- * still corrupt it) but functional, which is better than a fixture that refuses to start.
- */
 @OptIn(ExperimentalForeignApi::class)
+// Save the protocol fd, mark it close-on-exec, then make ordinary stdout writes diagnostic stderr.
 private fun claimStdout() {
     val saved = dup(STDOUT_FILENO)
     if (saved < 0) return
@@ -231,12 +162,6 @@ private fun claimStdout() {
     handshakeFd = saved
 }
 
-/**
- * Write one line to the driver's stdout, bypassing stdio entirely.
- *
- * This is the ONLY way anything reaches stdout after [claimStdout]. Use it for the handshake, the
- * repeated `READY` and the self-check `SUMMARY` — nothing else; every other message belongs on stderr.
- */
 @OptIn(ExperimentalForeignApi::class)
 fun writeStdoutLine(text: String) {
     val bytes = (text + "\n").encodeToByteArray()

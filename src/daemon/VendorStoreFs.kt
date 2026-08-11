@@ -23,21 +23,7 @@ import platform.posix.opendir
 import platform.posix.readdir
 import platform.posix.stat
 
-/*
- * Thin POSIX filesystem helpers shared by the vendor-store scans — Codex's rollout walking
- * ([CodexRolloutScan]), Claude's `projects` scan ([claudeSessionLocator]) and Junie's session tree
- * ([JunieSessionScan]). Vendor-agnostic on purpose: nothing here knows a file FORMAT, only how to list a
- * directory, read a bounded head/tail, and pull one field out of a JSONL record. Like the rest of the
- * vendor-store edge, everything degrades to `null`/empty on filesystem trouble — never an exception into
- * the daemon. Public rather than `internal` because toolchain 0.11 gives tests no friend-module
- * visibility.
- */
-
-/**
- * Whether [path] exists and is a directory (`stat` + `S_IFDIR`). Shared by the import cwd gate and
- * the shell resumability probe: existence alone would accept a regular file that tmux cannot use as
- * `new-session -c`.
- */
+// Vendor-store filesystem failures are absence, not daemon failures.
 @OptIn(ExperimentalForeignApi::class)
 fun isDirectory(path: String): Boolean = memScoped {
     val st = alloc<stat>()
@@ -45,7 +31,6 @@ fun isDirectory(path: String): Boolean = memScoped {
     (st.st_mode.toInt() and S_IFMT) == S_IFDIR
 }
 
-/** Entry names in [path] excluding `.`/`..`; empty if it cannot be opened. */
 @OptIn(ExperimentalForeignApi::class)
 fun listDir(path: String): List<String> {
     val dir = opendir(path) ?: return emptyList()
@@ -62,13 +47,8 @@ fun listDir(path: String): List<String> {
     }
 }
 
-/**
- * The first [bytes] of [path] as text, or `null` if it cannot be read. What it returns is usually a
- * TRUNCATED head, which is why the pure parsers over it ([rolloutCwd], [claudeTranscriptCwd]) tolerate
- * cut-off lines. Deliberately no default window: every caller names its own bound (e.g.
- * [CodexRolloutScan.HEAD_BYTES], [CLAUDE_CWD_SCAN_BYTES]) instead of inheriting one vendor's.
- */
 @OptIn(ExperimentalForeignApi::class)
+// Callers choose a byte bound; the returned text may end mid-record.
 fun readHead(path: String, bytes: Int): String? {
     val fp = fopen(path, "rb") ?: return null
     try {
@@ -83,15 +63,8 @@ fun readHead(path: String, bytes: Int): String? {
     }
 }
 
-/**
- * The LAST [bytes] of [path] as text (the whole file when it is smaller), or `null` if it cannot be read.
- *
- * The counterpart of [readHead], for a record file whose INTERESTING end is the newest one:
- * [JunieSessionScan]'s `index.jsonl` grows/rewrites by session, so a bounded head could answer with
- * nothing but long-dead sessions. A bounded tail cuts the FIRST line instead of the last, which the
- * per-line parsers already tolerate the same way (an unparseable line is skipped, never fatal).
- */
 @OptIn(ExperimentalForeignApi::class)
+// The returned tail may begin mid-record; per-line parsers must tolerate it.
 fun readTail(path: String, bytes: Int): String? {
     val fp = fopen(path, "rb") ?: return null
     try {
@@ -110,16 +83,7 @@ fun readTail(path: String, bytes: Int): String? {
     }
 }
 
-/**
- * The value of the first `"<name>":"…"` field in [text], or `null` when it is absent or its value never
- * closes (a truncated read). Pure and host-free — the ONE escape-aware string-field scanner behind
- * [rolloutCwd], [claudeTranscriptCwd] and [JunieSessionScan]'s index parsing.
- *
- * Deliberately a scan rather than a JSON parse: callers read a BOUNDED window of a JSONL file, so what
- * arrives here is usually a truncated line no JSON parser would accept (a codex `session_meta` line
- * embeds the full base instructions and runs to tens of KB). JSON string escapes are unescaped, so a
- * path containing a quote or a backslash round-trips.
- */
+// A scanner is used because bounded JSONL windows are commonly not valid JSON documents.
 fun jsonStringField(text: String, name: String): String? {
     val marker = "\"$name\":\""
     val start = text.indexOf(marker)
@@ -131,7 +95,7 @@ fun jsonStringField(text: String, name: String): String? {
         when (val c = text[i]) {
             '"' -> return sb.toString()
             '\\' -> {
-                if (i + 1 >= text.length) return null // truncated mid-escape: no usable value
+                if (i + 1 >= text.length) return null
                 when (val esc = text[i + 1]) {
                     'n' -> sb.append('\n')
                     'r' -> sb.append('\r')
@@ -142,7 +106,7 @@ fun jsonStringField(text: String, name: String): String? {
                         sb.append(code.toChar())
                         i += 4
                     }
-                    else -> sb.append(esc) // covers \" \\ \/ and anything else, literally
+                    else -> sb.append(esc)
                 }
                 i++
             }
@@ -150,14 +114,9 @@ fun jsonStringField(text: String, name: String): String? {
         }
         i++
     }
-    return null // the closing quote never arrived (truncated text)
+    return null
 }
 
-/**
- * The value of the first `"<name>":<digits>` field in [text], or `null` when it is absent, not an
- * integer, or does not fit a [Long]. Pure and host-free; the numeric sibling of [jsonStringField] (JSON
- * numbers carry no quotes, so the string scanner cannot read them).
- */
 fun jsonLongField(text: String, name: String): Long? {
     val marker = "\"$name\":"
     val start = text.indexOf(marker)
@@ -166,7 +125,5 @@ fun jsonLongField(text: String, name: String): Long? {
     val digits = StringBuilder()
     if (i < text.length && text[i] == '-') digits.append(text[i++])
     while (i < text.length && text[i].isDigit()) digits.append(text[i++])
-    // A run that ends at the very end of a bounded read may be cut mid-number, but the callers' windows
-    // always contain whole records past the first line, so a partial value is not worth a special case.
     return digits.toString().toLongOrNull()
 }

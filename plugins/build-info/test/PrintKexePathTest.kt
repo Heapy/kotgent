@@ -19,14 +19,12 @@ class PrintKexePathTest {
             Path.of("/w/out/tasks/_kotgent_linkMacosArm64Debug/kotgent.kexe"),
             linkedExecutable(tasksDir, "kotgent", "Debug"),
         )
-        // The module name follows the checkout directory and must reach both path segments.
         assertEquals(
             Path.of("/w/out/tasks/_review-wt_linkMacosArm64Release/review-wt.kexe"),
             linkedExecutable(tasksDir, "review-wt", "Release"),
         )
     }
 
-    /** The record is what a script reads, so it must follow `--build-dir` like the executable does. */
     @Test
     fun theRecordSitsInTheBuildRootTheTaskRunsUnder() {
         assertEquals(Path.of("/w/out/kexe-path"), kexePathRecord(Path.of("/w/out/tasks")))
@@ -43,10 +41,6 @@ class PrintKexePathTest {
         assertEquals("$executable\n", buildRoot.resolve(KEXE_PATH_FILE_NAME).readText())
     }
 
-    /**
-     * Both commands write one record, so a lookup that fails must leave none behind: a script that
-     * ignored the exit code would otherwise read an executable from an earlier, unrelated run.
-     */
     @Test
     fun aFailedLookupRemovesAnEarlierRecord() = withBuildRoot { buildRoot ->
         val record = buildRoot.resolve(KEXE_PATH_FILE_NAME)

@@ -13,11 +13,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
-/**
- * Unit tests for [CodexHookNormalizer] — the INCOMING half of the Codex adapter. Pure `(name, payload)`
- * → `AgentEvent?`, so every case is a plain assertion with a representative payload. A few tests fold
- * the result through the real reducer, because what a mapping is FOR is the state it produces.
- */
 class CodexHookNormalizerTest {
 
     private val pane = PaneId("%7")
@@ -27,7 +22,6 @@ class CodexHookNormalizerTest {
     private fun normalize(event: String, body: String = "{}") =
         CodexHookNormalizer.normalize(event, payload(body), pane)
 
-    // ---- the six mapped events ----
 
     @Test
     fun userPromptSubmitStartsATurn() {
@@ -93,7 +87,6 @@ class CodexHookNormalizerTest {
         )
     }
 
-    // ---- ignored / malformed ----
 
     @Test
     fun anUnmappedHookIsIgnored() {
@@ -104,7 +97,6 @@ class CodexHookNormalizerTest {
 
     @Test
     fun aClaudeOnlyHookNameIsNotMapped() {
-        // The two providers share an ingress SHAPE but not a vocabulary; `Notification` is Claude's.
         assertNull(normalize("Notification"), "Claude's Notification has no meaning on the codex route")
     }
 
@@ -120,7 +112,6 @@ class CodexHookNormalizerTest {
 
     @Test
     fun aNonObjectPayloadDegradesInsteadOfThrowing() {
-        // The ingress hands over whatever the hook posted; an untrusted body must never crash the route.
         assertEquals(
             AgentEvent.ToolCall(CodexHookNormalizer.UNKNOWN_TOOL),
             CodexHookNormalizer.normalize(CodexHookConfig.POST_TOOL_USE, payload("[1,2,3]"), pane),
@@ -128,12 +119,9 @@ class CodexHookNormalizerTest {
         assertNull(CodexHookNormalizer.normalize(CodexHookConfig.SESSION_START, JsonObject(emptyMap()), pane))
     }
 
-    // ---- the mapping seen through the reducer ----
 
     @Test
     fun aPermissionThenAToolCallIsNeedsApprovalThenRunning() {
-        // This is the approval lifecycle kotgent actually observes: Codex asks, the operator answers in
-        // the terminal (no callback for that), and the next tool call is what proves it was answered.
         var projection = Projection.EMPTY
         projection = reduce(projection, normalize(CodexHookConfig.USER_PROMPT_SUBMIT)!!)
         assertEquals(SessionState.running, projection.state)
@@ -152,7 +140,6 @@ class CodexHookNormalizerTest {
 
     @Test
     fun theReducerInvariantHoldsAcrossTheCodexMapping() {
-        // pendingApprovals > 0 <=> needs_approval, for every event this normalizer can produce.
         val bodies = listOf(
             CodexHookConfig.USER_PROMPT_SUBMIT to "{}",
             CodexHookConfig.PERMISSION_REQUEST to """{"tool_name":"shell"}""",

@@ -80,17 +80,9 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 
 /**
- * The `kotgent` subcommand handlers (plan Task 15). The network verbs (`list`/`start`/`stop`/`resume`/
- * `interrupt`) go through [ApiClient] against the running daemon and print human output; `daemon` wires
- * and runs the real [KotgentServer]; `attach` runs the interactive raw passthrough; `install`/
- * `uninstall` are Task-16 stubs.
- *
- * Each handler returns a process exit code (0 = success). Network errors (daemon down, missing token,
- * non-2xx) are turned into a one-line stderr message + a non-zero code, never a stack trace.
+ * CLI handlers return process exit codes and render expected failures on stderr without stack traces.
  */
 object Commands {
-
-    // --- network verbs (via the daemon's control REST) -------------------------------------------
 
     fun list(): Int = withApi { api ->
         val sessions = api.listSessions()
@@ -104,11 +96,6 @@ object Commands {
         0
     }
 
-    /**
-     * `import <agent> <session-id>` — register a session started outside kotgent
-     * (`POST /sessions/import`), then, unless [noStart], immediately resume it. Output, hints and the
-     * exit contract live in [runImportCommand]; this wires it to the real [ApiClient].
-     */
     fun importSession(
         agent: String,
         providerSessionId: String,
@@ -135,9 +122,6 @@ object Commands {
         return 0
     }
 
-    // --- interactive attach ----------------------------------------------------------------------
-
-    /** `attach <id>` — raw terminal passthrough over the terminal WS. INTERACTIVE (see [AttachClient]). */
     fun attach(id: String): Int = runBlocking {
         val token = readTokenOrNull() ?: run {
             eprintln("no kotgent token found — is the daemon running? start it with: kotgent daemon")
@@ -152,23 +136,10 @@ object Commands {
         }
     }
 
-    // --- web / token / config (Task 10) ----------------------------------------------------------
-
     /**
-     * `web [--print]` — mint a one-shot login ticket from the daemon and open the local sign-in form in the
-     * default browser (`open <formUrl>` via [ProcessRunner], whose cloexec sweep keeps `open` from inheriting
-     * any daemon descriptor). The form has no credential in its URL: the code printed below it stays unused,
-     * so it can be typed into that browser or an installed home-screen app.
-     *
-     * `--print` deliberately prints the credentialed URL instead of opening it (a headless host, or pasting
-     * the one-shot link somewhere by hand). If `open` cannot launch a browser, the credential-free form URL
-     * is printed as a fallback so the code remains the one thing to type.
-     *
-     * The same ticket is ALSO printed as a typable code ([renderSignInCode]), because a link cannot reach an
-     * installed home-screen app: it launches at its own `start_url` with its own cookie jar, so the code
-     * typed into `/auth` is the only way to sign that app in. Under `--print` the code goes to stderr so
-     * stdout stays exactly the URL and `kotgent web --print | pbcopy` keeps working; the operator still sees
-     * it on the terminal.
+     * Normal mode opens only the credential-free form and prints a code usable by home-screen apps with
+     * separate cookie jars. `--print` intentionally exposes the ticket URL on stdout and keeps the code on
+     * stderr so URL pipelines remain exact.
      */
     fun web(print: Boolean): Int = withApi { api ->
         runWebCommand(
@@ -181,15 +152,9 @@ object Commands {
     }
 
     /**
-     * `token rotate` — ask the daemon to re-mint the master token and print the new value. By the time this
-     * returns the daemon has already rewritten `~/.kotgent/token` and both hook-header files, so live
-     * sessions keep delivering events; what changes is that the OLD key no longer authenticates NEW requests
-     * or NEW WebSocket handshakes. Sockets already open (an events stream, a terminal, a live `kotgent
-     * attach`) survive until they reconnect — authorization is evaluated once, at handshake time. Rotation is
-     * "revoke all browser credentials": every session cookie is signed with the master token, so all of them
-     * stop verifying at once, and an outstanding, unredeemed sign-in link is bound to the OLD token, so any
-     * cookie it could still exchange for is dead on arrival. The warning states that plainly rather than
-     * implying an instant, total cut-off.
+     * Rotation rejects the old key for new requests and handshakes and invalidates cookies and outstanding
+     * tickets. Already-open sockets remain authorized until reconnect because authentication occurs at the
+     * handshake.
      */
     fun tokenRotate(): Int = withApi { api ->
         val token = api.rotateToken()
@@ -203,7 +168,6 @@ object Commands {
         0
     }
 
-    /** `config get` — print the persisted config (currently just the public URL, or a clear "not set"). */
     fun configGet(): Int = try {
         println("public-url = ${readConfig().publicUrl ?: "(not set)"}")
         0
@@ -213,10 +177,7 @@ object Commands {
     }
 
     /**
-     * `config set <key> <value>` — persist a config value. Only `public-url` is understood today; the value
-     * is validated ([publicUrlProblem], via [writeConfig]) BEFORE anything is written, so a bad URL is
-     * rejected without disturbing the existing config. The value is read once at daemon startup, so a
-     * running daemon needs a restart to pick it up — the hint spells that out.
+     * Invalid values leave the current config untouched. The daemon reads configuration only at startup.
      */
     fun configSet(key: String, value: String): Int {
         if (key != "public-url") {
@@ -224,9 +185,7 @@ object Commands {
             return 2
         }
         val path = defaultConfigPath()
-        // Reading the existing config can fail if the file on disk is unparseable — that is a runtime error,
-        // not something the user typed wrong, so it exits 1 (the same code `config get` returns for the same
-        // corrupt file), NOT the usage code 2.
+        // Corrupt persisted state is a runtime failure; an invalid new value is a usage failure.
         val existing = try {
             readConfig(path)
         } catch (e: ConfigException) {
@@ -234,10 +193,8 @@ object Commands {
             return 1
         }
         val updated = existing.copy(publicUrl = value)
-        // Writing validates the user-supplied URL; a bad value IS a usage error (like an unknown key), so it
-        // exits 2.
         return try {
-            writeConfig(path, updated) // validates + canonicalises + writes 0600 atomically
+            writeConfig(path, updated)
             println("public-url = ${updated.normalized().publicUrl}")
             eprintln("restart the daemon to apply: launchctl kickstart -k gui/\$(id -u)/$DAEMON_LABEL")
             0
@@ -247,15 +204,7 @@ object Commands {
         }
     }
 
-    // --- launchd (Task 16) -----------------------------------------------------------------------
-
-    /**
-     * `install` — install (and start) the daemon as a per-user launchd LaunchAgent. Resolves the
-     * running binary's absolute path (so the plist's `ProgramArguments` points at THIS binary), writes
-     * `~/Library/LaunchAgents/io.kotgent.daemon.plist`, and bootstraps it via the real [ProcessRunner].
-     * Returns after bootstrapping — it does NOT run the daemon in-process (launchd starts `kotgent
-     * daemon` per the plist's `RunAtLoad`).
-     */
+    /** Installs the current absolute binary as a launchd-owned daemon rather than running it in-process. */
     fun install(): Int {
         val binaryPath = NativeExe.path() ?: run {
             eprintln("install: cannot resolve the kotgent binary path")
@@ -272,7 +221,7 @@ object Commands {
         }
     }
 
-    /** `uninstall` — boot out the LaunchAgent and remove its plist. Idempotent. */
+    /** Idempotent. */
     fun uninstall(): Int = try {
         val installer = LaunchdInstaller()
         installer.uninstall()
@@ -283,43 +232,23 @@ object Commands {
         1
     }
 
-    // --- daemon (the real control-plane server) --------------------------------------------------
-
     /**
-     * `daemon [--port N]` — assemble and run the production [KotgentServer]. This is the launchd entry
-     * point (`ProgramArguments = [<binary>, daemon]`). After wiring the store / tmux / session manager and
-     * reconciling on start, it starts the server and parks until SIGINT or SIGTERM ([installShutdownSignals]
-     * — which must be called AFTER the server starts, because Ktor's native `start()` hijacks both
-     * signals), then tears everything down and returns 0.
-     *
-     * ⚠️ Never invoke this from a test or a shell — it blocks for the daemon's whole lifetime by design.
+     * Runs for the daemon's lifetime. Shutdown handlers must be installed after Ktor starts because its
+     * native engine replaces SIGINT and SIGTERM handlers.
      */
     @OptIn(ExperimentalForeignApi::class)
     fun daemon(port: Int): Int = runBlocking {
         mkdir0700(kotgentHome())
-        // The public origin is load-bearing for authorization (it IS the extra entry in the Host/Origin
-        // allowlists), so a config that cannot be understood stops the daemon instead of silently starting
-        // one that refuses every request from the tunnel it was configured for.
+        // Invalid authorization configuration must stop startup rather than silently ignore public access.
         val config = try {
             readConfig()
         } catch (e: ConfigException) {
             eprintln("kotgent daemon: ${e.message}")
             return@runBlocking 1
         }
-        // The master token lives behind a holder, not in a captured `val`: every gate (all hook
-        // ingresses, the Bearer check) resolves it per request, so `kotgent token rotate` takes effect on
-        // the next request instead of the next restart. Rotation must also reach the two consumer groups
-        // that read the secret from DISK — the CLI (`~/.kotgent/token`) and every hook (its 0600 header
-        // file) — hence the persist callback rewrites every hook artifact before the token file.
-        //
-        // ORDER MATTERS: the hook-header files are written FIRST and `~/.kotgent/token` LAST. The token file
-        // is both the CLI's view of the secret and the value `TokenHolder.rotate` publishes into memory only
-        // AFTER this callback returns; if a hook-header write throws partway, `ref.store` is skipped and the
-        // daemon keeps authenticating the OLD token. Writing the token file last means such a failure leaves
-        // it holding the OLD value too, so the CLI stays consistent with the daemon and can re-run rotation
-        // (idempotent). Were the token file written first, a mid-persist failure would strand the NEW token
-        // on disk while memory kept the OLD one, and the CLI would 401 until a restart — a control-plane
-        // lockout. A partially-updated hook header is self-healing on the next successful rotate.
+        // Gates read the holder per request. Persist hook headers before the CLI token: TokenHolder publishes
+        // only after this callback succeeds, so a partial failure leaves both memory and the CLI on the old
+        // token instead of locking the control plane out. Hook headers heal on the next successful rotation.
         val tokenHolder = TokenHolder(readOrCreateToken()) { rotated ->
             writeClaudeHookSettings(port, rotated)
             writeCodexHookScript(port, rotated)
@@ -329,8 +258,7 @@ object Commands {
         }
         val token = tokenHolder.current()
 
-        // File-backed store (restart-safety = the whole point of the control plane). The driver is a local
-        // so the shutdown path can close it (WAL checkpoint) instead of relying on process death.
+        // Keep the driver for an explicit shutdown checkpoint.
         val driver = NativeSqliteDriver(
             schema = KotgentDatabase.Schema,
             name = DB_FILENAME,
@@ -341,11 +269,7 @@ object Commands {
             },
         )
         val store = SqliteEventStore.using(driver)
-        // The task/backlog layer, over the SAME driver. Constructed BEFORE the SessionManager because the
-        // manager takes it (a session start upserts the `projects` row for the cwd it resolves to), and
-        // its own init runs the `CREATE TABLE IF NOT EXISTS` migration for databases that predate it.
-        // It never writes `sessions`: that table has exactly one writer, and TaskService calls the two
-        // stores sequentially rather than nesting their locks.
+        // Task and session writes share a driver but remain sequential; sessions retain a single writer.
         val taskStore = SqliteTaskStore.using(driver)
         val projectFs = PosixProjectFs()
         val taskService = TaskService(taskStore, store, projectFs, PosixProjectFileWriter())
@@ -357,39 +281,23 @@ object Commands {
         val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val idCapture = ProviderIdCapture(store, bgScope)
 
-        // Generate + persist each provider's hook wiring, then a factory that builds the right adapter
-        // per session. adapter.events is emptyFlow(): the hook ingress appends straight into the store
-        // (the source of truth), so the adapter does not need to re-surface events (Task 12 decision).
+        // Hook ingress writes the source-of-truth store directly, so adapters must not re-emit those events.
         val settingsPath = writeClaudeHookSettings(port, token)
         val codexHookScriptPath = writeCodexHookScript(port, token)
         val junieHookConfigPath = writeJunieHookConfig(port, token)
         val claudeCli = ClaudeCli()
-        // Detect the version ONCE (one binary call) and reuse it for both the `--session-id` gate and the
-        // per-session `cliVersion` metadata surfaced in the UI.
         val claudeVersion = claudeCli.detectVersion()
         val sessionIdSupported = ClaudeCli.supportsSessionId(claudeVersion)
         val codexCli = CodexCli()
         val codexVersion = codexCli.detectVersion()
         val junieCli = JunieCli()
         val junieVersion = junieCli.detectVersion()
-        // Resolve each CLI to an absolute path (like tmux, which is already absolute) so the tmux launch
-        // does not depend on the child shell's PATH under launchd's minimal env. `locate()` returns null
-        // when the agent is NOT resolvable on the daemon's PATH; it can also return a NON-absolute path
-        // (a name resolved via a relative PATH dir, or a name with a slash). Both are unusable: tmux does
-        // `new-session -c <cwd>` (cd into the session cwd) before exec, so a relative path would exec a
-        // wrong cwd-local binary or die at exec (127) after a `running` row was persisted — a phantom
-        // session and the 1006 attach failure this path exists to prevent. So `requireAbsoluteBinary`
-        // fails fast with AgentBinaryNotFoundException (from the factory builder, BEFORE any tmux side
-        // effect) unless the path is absolute, pointing the user at `kotgent install` (which snapshots the
-        // shell PATH into the plist). The same located path is what we persist as `cliPath` metadata.
+        // Launchd has a minimal PATH, and tmux changes cwd before exec. Require absolute CLI paths before
+        // any tmux side effect so a relative lookup cannot launch a cwd-local binary or leave a phantom row.
         val claudePath: String? = claudeCli.locate()
         val codexPath: String? = codexCli.locate()
         val juniePath: String? = junieCli.locate()
-        // Only the kinds registered here are accepted for launch: an unknown kind is rejected with a clear error
-        // instead of silently building some other provider's adapter for it (which would launch the wrong
-        // agent while persisting the requested name). This ONE map is the single source of truth for the
-        // factory; the import gate is derived from its keys below and subtracts only kinds with no outside
-        // session to adopt (the shell).
+        // The builder keys are the launch allowlist and the source for the narrower import allowlist.
         val agentBuilders: Map<String, (cwd: String) -> AgentAdapter> =
             mapOf(
                 CLAUDE_AGENT_KIND to { cwd: String ->
@@ -424,21 +332,13 @@ object Commands {
                     )
                 },
                 SHELL_AGENT_KIND to { cwd: String ->
-                    // currentLoginShell already requires an absolute executable candidate, so this has
-                    // the same fail-fast property as requireAbsoluteBinary without locating a vendor CLI.
                     ShellAdapter(cwd = cwd, shell = currentLoginShell())
                 },
             )
         val agentFactory = agentFactoryOf(agentBuilders)
-        // Codex has no `--session-id`, so a fresh codex session's provider id is unknown at launch. The
-        // rollout scan is the discovery path that does not depend on hook delivery: it finds the rollout
-        // Codex wrote for this cwd after the launch began and reads the id out of its file name. Claude
-        // preallocates and needs none of this, so the scan is scoped to codex sessions.
+        // Codex cannot preallocate an id; discover it from the post-launch rollout without relying on hooks.
         val rolloutScan = CodexRolloutScan()
-        // Junie cannot preallocate an id either, and its documented SessionStart hook payload carries none,
-        // so the same shape applies: find the session junie created on disk for this launch. The scan walks
-        // session DIRECTORIES (they exist from the moment junie starts, unlike its index rows) — see
-        // JunieSessionScan's header.
+        // Junie's SessionStart payload also omits the id; its session directory exists before index rows do.
         val junieScan = JunieSessionScan()
         val manager = SessionManager(
             tmux,
@@ -446,47 +346,32 @@ object Commands {
             registry,
             agentFactory,
             idCapture,
-            // Import validates against the SAME probe instance the Reconciler below re-probes with, and
-            // discovers a cwd through the real production locators — see productionVendorStoreProbe /
-            // productionSessionLocator (both pinned by the import wiring test).
+            // Import and reconciliation must classify transcripts through the same probe.
             vendorProbe,
             productionSessionLocator(),
-            // The factory accepts every builder key, while import rejects shell: there is no external
-            // shell provider session or transcript for kotgent to adopt.
+            // Shell has no external provider session or transcript to import.
             importableAgentKinds(agentBuilders.keys),
             discoverProviderId = { meta ->
                 when (meta.agent) {
                     CODEX_AGENT_KIND -> rolloutScan.discoverSessionId(meta.cwd, meta.createdAt)
                     JUNIE_AGENT_KIND -> junieScan.discoverSessionId(meta.cwd, meta.createdAt)
-                    else -> null // claude and shell preallocate ids; nothing to discover
+                    else -> null
                 }
             },
-            // Codex records its model in the rollout's turn_context, and junie a `modelUsage` list in its
-            // own event stream — both written only once the session takes its first turn, so both poll a few
-            // times after launch and persist the first ID-KEYED hit. Claude captures its model via the hook
-            // path instead, so neither branch covers it.
+            // Codex and Junie expose models only after the first turn, so capture polls provider storage.
             captureModelInBackground = { meta ->
                 if (meta.agent == CODEX_AGENT_KIND) {
                     bgScope.launch {
                         repeat(MODEL_CAPTURE_ATTEMPTS) {
-                            // One ID-KEYED lookup per attempt, with the provider id re-read from the
-                            // ROW each time (captureCodexModelOnce): a fresh launch's background id
-                            // capture can land mid-poll, and only from that moment can any attempt
-                            // answer. While the id is unknown nothing is persisted at all — there is
-                            // deliberately no cwd+mtime heuristic (see captureCodexModelOnce's KDoc:
-                            // a FIRST SessionStart bind — null → id — can land even after the poll
-                            // ends and triggers no model correction, so an id-less guess could stick
-                            // forever). A bind that DISPLACES a scan-bound id is different: the hook
-                            // ingress' rebind seam clears the model and re-runs this very lambda.
+                            // Re-read the provider id each attempt: background discovery may land mid-poll.
+                            // Never guess by cwd+mtime because a late first bind would not correct it.
                             if (captureCodexModelOnce(store, rolloutScan, meta)) return@launch
                             delay(MODEL_CAPTURE_INTERVAL_MILLIS)
                         }
                     }
                 }
                 if (meta.agent == JUNIE_AGENT_KIND) {
-                    // Same poll, same two guarantees (id re-read from the ROW per attempt, conditional
-                    // write) — but the frequency-based extractor, because junie's `modelUsage` list mixes
-                    // the primary model with helper models (see captureJunieModelOnce).
+                    // Junie's modelUsage mixes primary and helper models; its extractor uses frequency.
                     bgScope.launch {
                         repeat(MODEL_CAPTURE_ATTEMPTS) {
                             if (captureJunieModelOnce(store, junieScan, meta)) return@launch
@@ -499,23 +384,14 @@ object Commands {
             projectFs = projectFs,
         )
 
-        // Restart-safe reconciliation: reclassify persisted sessions against tmux reality and rebuild
-        // the pane→session registry from live panes (Task 13). Terminal bridges stay lazy (Task 9).
-        // It also backfills `sessions.project_id` and clears a `task_ref` naming a task that is gone —
-        // and deliberately reconciles nothing else about tasks: an `in_progress` entry with no linked
-        // session is legitimate (a human dragged the card), so there is nothing to recover.
+        // Rebuild pane identity before reconciliation. An in-progress task without a linked session remains
+        // valid because a human may have moved it on the board.
         manager.rebuildRegistryFromStore()
         Reconciler(tmux, store, vendorProbe, registry, taskStore = taskStore, projectFs = projectFs)
             .reconcile()
 
-        // Web Push (optional). It needs a subscription table, `/usr/bin/openssl` for the VAPID keypair and
-        // its ES256 signatures, and outbound HTTPS — none of which the daemon's actual job depends on. So
-        // every part of it degrades instead of failing: an unusable table leaves `push` null (the `/push`
-        // routes are then not mounted at all, which the page reads as "this daemon cannot do push"), and a
-        // missing openssl or an unwritable `~/.kotgent/vapid.pem` surfaces later as a 503 on the key route
-        // and one stderr line per attempted notification. The keypair is NOT generated here: it is minted
-        // lazily on the first `GET /push/vapid-key`, so a daemon nobody enables notifications on never
-        // shells out at all.
+        // Push is optional. Table failure omits its routes; VAPID key and signer failures remain lazy so
+        // installations that never enable notifications do not pay for or depend on openssl.
         val runtime = try {
             startDaemonServer(
                 assemblePush = { startPush(driver, config.publicUrl, bgScope, store) },
@@ -548,11 +424,7 @@ object Commands {
         println("kotgent daemon listening on http://127.0.0.1:$port  (tmux -L $TMUX_SOCKET)")
         config.publicUrl?.let { println("  also reachable at $it  (Host + Origin allowlisted)") }
 
-        // ORDER MATTERS: this must come AFTER the server started. Ktor's native `EmbeddedServer.start()`
-        // installs its own SIGINT/SIGTERM handlers that only stop the engine and never exit the process —
-        // so before this line Ctrl+C silently killed the HTTP server and left the daemon running as a
-        // useless husk. `signal(2)` keeps the last handler, so installing ours here takes them back; see
-        // [installShutdownSignals].
+        // Ktor replaces SIGINT/SIGTERM handlers during start; install ours afterward to reclaim shutdown.
         installShutdownSignals()
         var signo = pendingShutdownSignal()
         while (signo == 0) {
@@ -560,35 +432,19 @@ object Commands {
             signo = pendingShutdownSignal()
         }
 
-        // Graceful teardown, in dependency order: stop accepting (and tear the terminal bridges down, so
-        // their `tmux attach` upstreams end instead of being orphaned), then stop the background jobs that
-        // can still write, then close the database so its WAL is checkpointed. The agents themselves live
-        // on inside tmux — that is the whole point of the design.
+        // Stop ingress and terminal bridges before writers, then checkpoint the database. Agent tmux
+        // sessions intentionally survive daemon shutdown.
         println("kotgent daemon: ${shutdownSignalName(signo)} — shutting down")
         server.stop()
         bgScope.cancel()
-        // The push client owns an NSURLSession with pooled connections to Apple/Google; releasing it after
-        // the collector that uses it is cancelled keeps the teardown in dependency order.
         runtime.push?.close?.invoke()
         driver.close()
         0
     }
 
     /**
-     * Assemble the Web Push stack over the daemon's existing [driver] and start its [PushNotifier] on
-     * [scope], returning what [KotgentServer] and the shutdown path need — or `null` when push cannot be
-     * wired at all.
-     *
-     * Push is an OPTIONAL capability, so an unusable subscription table degrades to "no `/push` routes, no
-     * notifier" plus one line on stderr. Lifecycle cancellation or a notifier-startup fault still
-     * propagates, but the already-created Darwin transport is compensated before it does. A missing
-     * `/usr/bin/openssl` or an unwritable
-     * `~/.kotgent/vapid.pem` cannot be detected without generating the key, which would make every daemon
-     * pay for a feature most never enable — so those surface at first use instead: a `503` from
-     * `GET /push/vapid-key` (the browser then simply cannot turn notifications on) and one
-     * [PushSender] diagnostic per attempted send.
-     *
-     * @param events the store the notifier watches — the same [EventStore] the rest of the daemon uses.
+     * Subscription storage failure disables push; later startup failures propagate after closing the
+     * already-created Darwin transport. VAPID key and signer errors remain deferred until first use.
      */
     private suspend fun startPush(
         driver: SqlDriver,
@@ -603,14 +459,10 @@ object Commands {
             return null
         }
         val key = VapidKey()
-        // The signer is pointed at the key's PATH, not at a loaded key: the PEM is written by the first
-        // `publicKeyBase64Url()` call, and PushSender always resolves the public key before it asks for a
-        // token, so the file exists by the time openssl is asked to sign with it.
+        // PushSender resolves the public key before signing, ensuring this path has been created.
         val signer = OpensslVapidSigner(keyPath = key.keyPath)
         val tokens = VapidTokenCache(subject = vapidSubject(publicUrl), sign = signer::sign)
         val transport = DarwinPushTransport()
-        // The Darwin client owns an NSURLSession immediately, so everything from here until a DaemonPush
-        // owner is returned lives inside one compensation boundary.
         return withStartupCompensation(
             compensate = { transport.close() },
         ) {
@@ -620,9 +472,7 @@ object Commands {
                 vapidToken = tokens::tokenFor,
                 transport = transport,
             )
-            // Started here — i.e. AFTER rebuildRegistryFromStore() + Reconciler.reconcile() — so the
-            // baseline already contains the startup reclassifications. start() is a readiness barrier: do
-            // not return until the flow is subscribed, because the server binds immediately afterwards.
+            // Seed after reconciliation and await subscription before exposing hook ingress.
             val notifier = PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
             DaemonPush(
                 subscriptions,
@@ -636,13 +486,8 @@ object Commands {
     }
 
     /**
-     * Print who is holding [port] after a failed bind. Usually the answer is an **orphaned `tmux`
-     * server**: a `tmux` spawned by an earlier daemon inherited its listening socket and, having
-     * daemonized, keeps the port bound after that daemon is gone (see [io.kotgent.sys.markOpenFdsCloexec] —
-     * newly spawned tmux servers no longer inherit it, but one started before that fix, or by an older
-     * binary, still holds it until killed). Naming the PID turns an opaque `EADDRINUSE` into an
-     * actionable message. Best-effort: `lsof` may be absent or blocked, in which case only the hint is
-     * printed.
+     * An older orphaned tmux may still hold an inherited listener. Diagnosis is best-effort because lsof
+     * may be unavailable; killing that tmux would also kill its agents.
      */
     private fun reportPortHolder(port: Int) {
         val holders = runCatching {
@@ -658,34 +503,22 @@ object Commands {
         eprintln("  killing it also kills the agents running in it — detach or finish them first.")
     }
 
-    /** The daemon's SQLite database file name (kept next to the token under `~/.kotgent`). */
     private const val DB_FILENAME: String = "kotgent.db"
 
-    /** How many times to poll a codex rollout for its model after launch (see the capture wiring). */
     private const val MODEL_CAPTURE_ATTEMPTS: Int = 10
 
-    /** Delay between codex model-capture polls (10 × 3s ≈ 30s covers a promptly-started first turn). */
     private const val MODEL_CAPTURE_INTERVAL_MILLIS: Long = 3_000
 
     /**
-     * How often the parked daemon checks the shutdown flag. A signal handler cannot resume a coroutine
-     * (nothing allocating is async-signal-safe), so the wait is a poll; 100ms is imperceptible to an
-     * operator pressing Ctrl+C and costs ten wakeups a second on an otherwise idle process.
+     * Signal handlers cannot resume coroutines safely, so shutdown is polled.
      */
     private const val SHUTDOWN_POLL_MILLIS: Long = 100
 
     /**
-     * The vendor-store transcript probe (Task 18), dispatched per provider: for a dead session it asks
-     * whether the conversation still exists, so it classifies as `resumable` rather than a dead-end
-     * `crashed`. Claude stats `~/.claude/projects/<encoded-cwd>/<id>.jsonl`; Codex looks for
-     * `~/.codex/sessions/<date>/rollout-<ts>-<id>.jsonl`; Junie for
-     * `~/.junie/sessions/<id>/events.jsonl`. The ONE instance serves both the Reconciler
-     * and `SessionManager.importSession`, so an import is validated with the exact question every later
-     * reconcile re-asks (see [productionVendorStoreProbe]).
+     * One provider transcript probe serves import and reconciliation so resumability cannot drift between
+     * the initial validation and later restarts.
      */
     private val vendorProbe: VendorStoreProbe = productionVendorStoreProbe()
-
-    // --- helpers ---------------------------------------------------------------------------------
 
     private fun withApi(block: suspend (ApiClient) -> Int): Int = runBlocking {
         try {
@@ -703,9 +536,7 @@ object Commands {
     }
 
     private fun writeClaudeHookSettings(port: Int, token: String): String {
-        // The secret token goes into a SEPARATE 0600 header file that the hook reads via `curl -H @<file>`,
-        // so it never appears on a hook command line (visible to other local users via `ps`). Both the
-        // header file and the settings are written 0600 atomically — never a brief 0644 window.
+        // Keep the token in an atomic 0600 curl header file, never in process-visible argv.
         val headerPath = "${kotgentHome()}/claude-hook-header"
         writePrivateFile(headerPath, ClaudeHookConfig.headerFileContent(token).encodeToByteArray())
         val path = "${kotgentHome()}/claude-hooks.json"
@@ -714,16 +545,8 @@ object Commands {
     }
 
     /**
-     * Write the Codex hook script and its header file, returning the script's path (what
-     * [CodexAdapter] renders into the launch argv).
-     *
-     * Same secret discipline as the Claude settings: the token goes into a SEPARATE `0600` header file
-     * the script reads via `curl -H @<file>`, never into an argv. The script itself is `0600` too — the
-     * hook command names `/bin/sh` explicitly, so it needs no execute bit (see [CodexHookConfig.hooksToml]).
-     *
-     * The header file is per-provider rather than shared: the two ingress routes validate the same token
-     * today, but a provider-scoped file keeps them independently rotatable and makes it obvious which
-     * hook reads which file.
+     * The token stays in a provider-specific atomic `0600` curl header file, never argv. `/bin/sh` reads
+     * the `0600` script directly, so it needs no execute bit.
      */
     private fun writeCodexHookScript(port: Int, token: String): String {
         val headerPath = "${kotgentHome()}/codex-hook-header"
@@ -734,13 +557,8 @@ object Commands {
     }
 
     /**
-     * Write the Junie hook config, its script and its header file, returning the CONFIG's path (what
-     * [JunieAdapter] passes as `junie --config-location <path>`).
-     *
-     * Three files, same secret discipline as the other two providers: the token lives only in the `0600`
-     * header file the script reads via `curl -H @<file>`, never in an argv. Junie's config layer is the
-     * only one scoped to a single launch, which is why the hooks ride in a file kotgent owns rather than in
-     * the user's `~/.junie/config.json` (see [JunieHookConfig]).
+     * Junie hooks use kotgent's per-launch config rather than mutating the user's config. The token stays
+     * in an atomic `0600` curl header file and never appears in argv.
      */
     private fun writeJunieHookConfig(port: Int, token: String): String {
         val headerPath = "${kotgentHome()}/junie-hook-header"
@@ -753,13 +571,8 @@ object Commands {
     }
 
     /**
-     * Write tmux's private `session-closed` script and token header, returning the script path passed
-     * to [Tmux]. [home] is injectable so tests can prove the artifact wiring and permissions inside a
-     * throwaway directory; production defaults to kotgent's real private home.
-     *
-     * Both files are written atomically as `0600`. The token lives only in the header file, which the
-     * generated script reads through `curl -H @<file>`; `/bin/sh` is named by the tmux hook command, so
-     * the script intentionally needs no execute bit.
+     * Both artifacts are atomic `0600` files. The token stays in the curl header rather than argv, and
+     * `/bin/sh` reads the non-executable script directly.
      */
     fun writeTmuxHookScript(port: Int, token: String, home: String = kotgentHome()): String {
         val headerPath = "$home/tmux-hook-header"
@@ -771,13 +584,8 @@ object Commands {
 }
 
 /**
- * The sign-in code block `kotgent web` prints after opening the form (or to stderr beside the `--print`
- * URL). Pure so it is unit-testable without a daemon.
- *
- * An installed home-screen app opens at its `start_url` with its own empty cookie jar and cannot be handed
- * a link fragment, so the credential must also be shown in a form a human can retype. The value is grouped
- * ([groupLoginCode]) for reading; the daemon strips whitespace before looking it up, so what is typed back
- * can carry the space or not.
+ * A home-screen app has its own cookie jar and cannot receive another browser's link fragment, so the
+ * ticket is also rendered as a code it can redeem directly.
  */
 fun renderSignInCode(ticket: TicketResponse): String =
     "sign-in code: ${groupLoginCode(ticket.ticket)}\n" +
@@ -786,9 +594,7 @@ fun renderSignInCode(ticket: TicketResponse): String =
         "  one-time, and good for ${TICKET_TTL_MILLIS / 60_000} minutes."
 
 /**
- * Split the fixed-width login code in the middle (`A1B2C3D4` → `A1B2 C3D4`), the way a human reads eight
- * symbols anyway. Display only: [io.kotgent.transport.normalizeTicketCode] drops whitespace before the
- * lookup, so the grouped form redeems exactly like the ungrouped one.
+ * Grouping is display-only; the daemon removes whitespace before redemption.
  */
 fun groupLoginCode(code: String): String {
     require(code.length == TICKET_CODE_LENGTH) { "login code must be $TICKET_CODE_LENGTH characters" }
@@ -797,9 +603,7 @@ fun groupLoginCode(code: String): String {
 }
 
 /**
- * Execute the `web` handler through explicit seams so all output/open branches are testable without a real
- * daemon or GUI process. Normal mode opens only the credential-free form; `--print` is the one mode that
- * emits the credentialed ticket URL for intentional hand-off.
+ * Normal mode opens only the credential-free form; [print] intentionally emits the credentialed URL.
  */
 suspend fun runWebCommand(
     print: Boolean,
@@ -828,26 +632,13 @@ suspend fun runWebCommand(
 }
 
 /**
- * The phrase in the import route's 409 body that carries the existing kotgent session id
- * (`DuplicateImportException`'s message behind the route's "cannot import session: " prefix).
- * [runImportCommand] parses the id back out of the text with this exact regex, so the cross-layer
- * contract is pinned on BOTH sides: TransportTest asserts the live 409 body matches this same regex,
- * and CliTest builds its stub bodies from the real exception message. Reword the exception and one of
- * them fails — never a silent degradation of the `kotgent resume <id>` hint to a placeholder.
+ * Cross-layer contract with the import route's 409 body, used to recover the existing session id.
  */
 val DUPLICATE_IMPORT_ID_IN_BODY: Regex = Regex("kotgent session '([^']+)'")
 
 /**
- * Execute the `import` handler through explicit seams (the [runWebCommand] pattern) so every branch is
- * testable without a daemon. Success registers the session and — unless [noStart] — immediately resumes
- * it via the ordinary resume endpoint, so a failed launch leaves the row honestly `resumable`; under
- * [noStart] the follow-up command is printed instead. The two import-specific HTTP answers are handled
- * here: a **409** duplicate prints the server's message (it names the existing kotgent session id) plus
- * the concrete next move — `kotgent resume <id>`, or Restore when the duplicate is archived — and a
- * **400** surfaces the server's message verbatim (unknown agent, malformed id, cwd/transcript problems
- * are already distinguishable there). A failure of the follow-up resume propagates to [Commands]'
- * generic `withApi` handler: the import itself succeeded, and the daemon's message (e.g. the
- * `kotgent install` hint for a missing binary) already says what to fix.
+ * Imports then resumes unless [noStart]. A resume failure leaves the row truthfully resumable; duplicate
+ * 409 responses produce a concrete resume or restore hint from the server's existing-session id.
  */
 suspend fun runImportCommand(
     noStart: Boolean,
@@ -861,9 +652,6 @@ suspend fun runImportCommand(
     } catch (e: ApiException) {
         stderr(e.body.trim().ifEmpty { e.message ?: "import failed" })
         if (e.status == 409) {
-            // The duplicate body is our own route's text (DuplicateImportException.message behind the
-            // "cannot import session: " prefix), so the existing id is extractable for a concrete hint.
-            // The phrase is a pinned contract — see DUPLICATE_IMPORT_ID_IN_BODY.
             val existing = DUPLICATE_IMPORT_ID_IN_BODY.find(e.body)?.groupValues?.get(1)
             stderr(
                 if ("archived" in e.body) {
@@ -886,13 +674,8 @@ suspend fun runImportCommand(
 }
 
 /**
- * Render sessions as a compact human table (the `list` output). Pure so it is unit-testable without a
- * daemon; a `needs_approval`/attention state is flagged so the queue is obvious at a glance.
- *
- * The `TASK` column is what a session's link looks like from the terminal — the CLI counterpart of the
- * sidebar's badge. It shows the bare ref rather than the task's title: `GET /sessions` answers rows and
- * knows nothing about the backlog, and resolving N titles would mean N requests for a table nobody reads
- * that closely. A session with no link renders `-`, not an empty gap, so the column is visibly a column.
+ * The task column uses refs because the session endpoint has no backlog titles; resolving them would add
+ * one request per row.
  */
 fun renderSessions(sessions: List<SessionDto>): String {
     if (sessions.isEmpty()) return "no sessions\n"
@@ -912,13 +695,7 @@ fun renderSessions(sessions: List<SessionDto>): String {
 }
 
 /**
- * One TASK cell: the ref, or `-`, elided with `…` when it does not fit [TASK_COLUMN_WIDTH].
- *
- * The marker is the whole point. A plain `take()` of a ref yields another WELL-FORMED ref — `local:1234567`
- * renders as `local:123456`, which may name a different task — so a reader copying the column into
- * `kotgent task show <ref>` would get a confident answer about the wrong task instead of an error.
- * `TaskRef.MAX_LENGTH` is 128, so no column width can make truncation impossible; only "obviously cut"
- * can be guaranteed.
+ * Truncation uses an ellipsis because a plain prefix can itself be a valid ref naming another task.
  */
 private fun taskColumn(ref: String?): String {
     val value = ref ?: "-"
@@ -926,5 +703,4 @@ private fun taskColumn(ref: String?): String {
     return cell.padEnd(TASK_COLUMN_WIDTH)
 }
 
-/** The TASK column's width, matching the header row's `TASK` + padding in [renderSessions]. */
 private const val TASK_COLUMN_WIDTH: Int = 12

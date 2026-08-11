@@ -23,41 +23,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.fail
 
-/*
- * The browser tier's one fixture: how a test gets a live kotgent Web UI, signed in, in a real browser.
- *
- * ```
- *   Harness("sessions")                 spawn webuicheck --scenario=… --webui-dir=…, read PORT/TICKET/READY
- *   touchChromium(pw)                   a Chromium that can be given touch contexts
- *   context.loginWithTicket(t, url)     type the code into the REAL /auth form, land on the SPA
- *   harness.send("restart")             a command down the harness's stdin
- *   harness.close()                     close stdin → graceful stop → exit 0 asserted
- * ```
- *
- * ## Why a spawned harness instead of a server started in-process
- * The harness is a native `macos/app` main binary because that is the only place this project's own
- * cinterop links (KT-78062), so the terminal scenarios sit on a REAL `Pty` under a REAL `TerminalBridge`.
- * A JVM test cannot host that at all. It also means each test gets its own process, its own port and its
- * own fresh scenario state, so no test can observe another's writes.
- *
- * ## Why every test builds a fresh [BrowserContext] and logs in again
- * A kotgent session cookie is `HMAC-SHA256(master-token, "v1|" + issuedAt)` and cookies are **not scoped
- * by port**. A saved storage state from one harness is therefore sent to the NEXT harness on the same
- * `127.0.0.1`, where it fails the HMAC against that process's own token; the SPA's first-load `401` then
- * does `location.replace("/auth")` and the test reads as a flaky login rather than as a reused credential.
- * There is deliberately no storage-state cache here — logging in costs one page load and removes the whole
- * class of failure.
- */
-
-/**
- * Every `--scenario=<name>` the harness registers, spelled once.
- *
- * The authority is `webuicheck/src/Scenarios.kt`'s map, which this cannot import (it is a constant of a
- * NATIVE module and this is a JVM one). A name that drifts fails loudly and immediately: the harness
- * exits non-zero with "unknown scenario" before a single page loads, so the duplication is safe — what it
- * is not is a reason to spell each name once per test FILE, which is how five of them ended up with two
- * or three private constants apiece and eighteen bare literals beside them.
- */
+// The JVM browser tests spawn a native harness because KT-78062 prevents linking its cinterop here.
+// Each login needs a fresh context: cookies are host-scoped, not port-scoped, but harness tokens differ.
 const val EMPTY_SCENARIO: String = "empty"
 const val SESSIONS_SCENARIO: String = "sessions"
 const val ATTENTION_SCENARIO: String = "attention"
@@ -70,37 +37,12 @@ const val TASK_DETAIL_SCENARIO: String = "task-detail"
 const val TASK_LINKED_SESSION_SCENARIO: String = "task-linked-session"
 const val DEEP_LINK_SCENARIO: String = "deep-link"
 
-/**
- * The command palette's opener, as macOS spells it.
- *
- * `webuicheck` is a `macos/app` binary, so this suite only ever runs where ⌘ is the modifier; the app's
- * second binding (`Control+Shift+KeyK`) exists for the platforms this harness cannot be built on. `KeyK`
- * and not `k`: `app.js` matches the physical `event.code`, and a test that spells the CHARACTER is
- * describing a US layout rather than the key an operator presses.
- */
-const val PALETTE_OPENER: String = "Meta+KeyK"
+const val PALETTE_OPENER: String = "Meta+KeyK" // The app matches macOS physical event codes.
 
-/**
- * The login page's path. Spelled here rather than imported: `AUTH_PAGE_PATH` is a constant of the NATIVE
- * root module, which this JVM module cannot see. If the two ever diverge, every test in this module fails
- * on the sign-in form, which is loud enough.
- */
 const val AUTH_PAGE_PATH: String = "/auth"
 
-/** Set this environment variable to any value to watch the browser instead of running it headless. */
 const val HEADED_ENV: String = "KOTGENT_WEBUITEST_HEADED"
 
-/**
- * One running `webuicheck` process, its handshake already read.
- *
- * The constructor spawns the binary, reads the three handshake lines with a deadline, and throws — loudly,
- * with the child's stderr attached — if anything about that is wrong. [close] closes the harness's stdin,
- * which is its documented graceful-shutdown signal, waits for the exit, and **asserts it was `0`**: the
- * harness answers malformed input with a non-zero exit precisely so a fixture cannot swallow it.
- *
- * Use it from a `use {}` block. Kotlin's `use` attaches a close failure as a suppressed exception when the
- * body already failed, so asserting the exit code here cannot mask the real assertion failure.
- */
 class Harness(scenario: String) : AutoCloseable {
     private val process: Process
     private val stdin: BufferedWriter
@@ -109,44 +51,33 @@ class Harness(scenario: String) : AutoCloseable {
     private val stderrBuffer = StringBuilder()
     private val readers: List<Thread>
 
-    /** The loopback port the harness bound, straight out of its `PORT=` line. */
     val port: Int
 
-    /** The single unspent sign-in code the harness minted, straight out of its `TICKET=` line. */
     val ticket: String
 
-    /** `http://127.0.0.1:<port>` — no trailing slash, so `baseUrl + "/auth"` reads correctly. */
     val baseUrl: String
 
     init {
         configurePlaywrightDefaults()
-        // BEFORE the spawn, and that order is the whole point — see `installBrowserBundleOnce`.
+        // A cold Playwright download can outlive the harness watchdog, so install before spawning it.
         installBrowserBundleOnce()
         val binary = harnessBinary()
         val webUiDir = repoRoot.resolve(WEB_UI_RELATIVE).toAbsolutePath().normalize()
         if (!Files.isDirectory(webUiDir)) {
             fail("the Web UI directory is missing: $webUiDir")
         }
-        // `--webui-dir` is absolute on purpose: this module's working directory is not guaranteed to be
-        // the checkout root, and the harness must not have to guess where the SPA lives.
         process = ProcessBuilder(
             binary.toString(),
             "--scenario=$scenario",
             "--webui-dir=$webUiDir",
-            // Belt for the case the JVM dies without running `close()`: a harness whose driver vanished
-            // still owns a bound port and, in the terminal scenarios, a pty child. The watchdog only ever
-            // fires on a hung run, so it costs a healthy test nothing.
             "--exit-after-ms=$WATCHDOG_MILLIS",
         )
             .directory(repoRoot.toFile())
-            // Never merge the streams. The handshake contract is "exactly three lines on stdout and
-            // nothing else ever"; folding stderr in would make the harness's own logging unparseable.
+            // Stdout is the handshake protocol; stderr must remain separate.
             .redirectErrorStream(false)
             .start()
         stdin = BufferedWriter(OutputStreamWriter(process.outputStream, StandardCharsets.UTF_8))
-        // Both pipes are drained continuously by their own daemon threads. A child that fills a pipe
-        // buffer nobody reads BLOCKS in `write(2)`, so an undrained stderr would deadlock the harness
-        // somewhere past the handshake and present as an inexplicable timeout.
+        // Drain both pipes continuously; a full child pipe blocks the native harness.
         val stdoutReader = drain("webuicheck-stdout", process.inputStream) { stdoutLines.put(it) }
         val stderrReader = drain("webuicheck-stderr", process.errorStream) { line ->
             synchronized(stderrBuffer) {
@@ -158,11 +89,10 @@ class Harness(scenario: String) : AutoCloseable {
         readers = listOf(stdoutReader, stderrReader)
         latchStdoutEof(stdoutReader)
 
-        // A handshake that fails leaves a process nobody will ever close (the constructor throws, so no
-        // `use {}` block exists yet), holding a bound port for the whole watchdog. Kill it first.
         val handshake = try {
             readHandshake()
         } catch (t: Throwable) {
+            // A constructor failure has no `use` scope available to close the process.
             runCatching { process.destroyForcibly() }
             throw t
         }
@@ -171,7 +101,6 @@ class Harness(scenario: String) : AutoCloseable {
         baseUrl = "http://127.0.0.1:$port"
     }
 
-    /** The three handshake lines, validated: `PORT=<n>`, `TICKET=<code>`, `READY`, in that order. */
     private fun readHandshake(): Pair<Int, String> {
         val portLine = nextStdoutLine("the PORT handshake line")
         val ticketLine = nextStdoutLine("the TICKET handshake line")
@@ -192,13 +121,6 @@ class Harness(scenario: String) : AutoCloseable {
         return parsedPort to parsedTicket
     }
 
-    /**
-     * Write one command line to the harness's stdin.
-     *
-     * `restart` is the one command with an observable answer — the harness re-listens on the same port and
-     * prints a second `READY` — so this call **waits for that line** before returning. Returning earlier
-     * would hand the test a window in which the server is down and every assertion is a coin flip.
-     */
     fun send(line: String) {
         require('\n' !in line && '\r' !in line) { "a harness command is exactly one line, got: $line" }
         if (!process.isAlive) {
@@ -220,8 +142,6 @@ class Harness(scenario: String) : AutoCloseable {
     }
 
     override fun close() {
-        // Closing stdin is the graceful-shutdown signal, not a kill: the harness sees EOF, stops the
-        // server, and exits 0. Anything else is a harness defect and this fixture says so.
         runCatching { stdin.close() }
         var killed = false
         if (!process.waitFor(SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
@@ -243,20 +163,14 @@ class Harness(scenario: String) : AutoCloseable {
         if (code != 0) harnessFailure("the webuicheck harness exited with code $code")
     }
 
-    /** Everything the child has said on stderr so far — the only diagnosis a failing harness offers. */
     private fun stderrSoFar(): String = synchronized(stderrBuffer) { stderrBuffer.toString() }
 
-    /** Fail the test, naming the harness state and quoting its stderr. Never returns. */
     private fun harnessFailure(message: String): Nothing {
         val status = if (process.isAlive) "still running" else "exited with ${process.exitValue()}"
         val stderr = stderrSoFar().ifBlank { "(nothing on stderr)" }
         fail("$message\n  harness: $status\n  harness stderr:\n$stderr")
     }
 
-    /**
-     * The next line the harness printed on stdout, or a failure. Polls rather than blocking forever so a
-     * harness that died mid-handshake is reported as a death rather than as a timeout.
-     */
     private fun nextStdoutLine(what: String, timeoutMillis: Long = HANDSHAKE_TIMEOUT_MILLIS): String {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
         while (true) {
@@ -270,7 +184,6 @@ class Harness(scenario: String) : AutoCloseable {
         }
     }
 
-    /** Latch "stdout reached EOF" once its reader thread finishes, so a waiter can stop waiting. */
     private fun latchStdoutEof(reader: Thread) {
         Thread {
             reader.join()
@@ -294,17 +207,7 @@ class Harness(scenario: String) : AutoCloseable {
         }
 }
 
-/**
- * Sign this context in by typing [ticket] into the REAL `/auth` form, exactly as an operator does.
- *
- * The form, not the `#ticket=` link: the typed code is the path an installed PWA takes (its cookie jar is
- * empty and it launches at `start_url`, so there is no fragment to hand it), and it is the path that
- * exercises the page's own script. The exchange sets the session cookie ON THIS CONTEXT, so every page
- * opened from it afterwards is signed in; the throwaway page used to submit the form is closed again.
- *
- * The success condition is the SPA shell replacing the login page at `/` — `#app` is `index.html`'s root
- * element, which the login page (a self-contained string constant served from Kotlin) does not have.
- */
+/** Uses the real form so installed-PWA login and its empty initial cookie jar stay covered. */
 fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String) {
     val root = baseUrl.trimEnd('/')
     val page = newPage()
@@ -313,8 +216,6 @@ fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String) {
         assertThat(page.locator("#code-form")).isVisible()
         page.locator("#code").fill(ticket)
         page.locator("#code-submit").click()
-        // The page's script does `location.replace("/")` on a successful exchange, and the SPA does not
-        // rewrite that path on load (a session route is only pushed by a selection), so this is exact.
         page.waitForURL("$root/")
         assertThat(page.locator("#app")).hasCount(1)
     } finally {
@@ -322,22 +223,7 @@ fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String) {
     }
 }
 
-/**
- * A Chromium suitable for the touch tests.
- *
- * **Touch is a CONTEXT property in Playwright, not a browser one**, so this launcher cannot supply it on
- * its own: a caller that wants taps, `pointerType === "touch"` or the `@media (any-pointer: coarse)` ink
- * must create its contexts with `hasTouch` set — [touchContext] is that one-liner. What the browser-level
- * flag here adds is the touch-capable device profile underneath the emulation, so the coarse-pointer
- * queries the dialog grabber and the palette's 44px × depend on resolve the way a phone resolves them.
- *
- * Chromium and not WebKit, measured: Chromium with `hasTouch` delivers the full
- * `pointerdown → touchstart → pointerup → touchend → click` chain with **one `pointerId` across down, up
- * and click** — which is exactly the invariant kotgent's light-dismiss gesture is built on. WebKit
- * delivered the element nothing at all for the same `touchscreen().tap()`. Synthetic
- * `dispatchEvent(new PointerEvent(...))` works in both and proves nothing: it tests our listeners against
- * invented events, not `touch-action`, not the compatibility mouse burst, not pointer capture.
- */
+// Chromium preserves the active pointer id across emulated touch events; synthetic DOM events do not.
 fun touchChromium(pw: Playwright): Browser =
     pw.chromium().launch(
         BrowserType.LaunchOptions()
@@ -345,26 +231,12 @@ fun touchChromium(pw: Playwright): Browser =
             .setArgs(listOf("--touch-events=enabled")),
     )
 
-/**
- * A driver and a [touchChromium], both closed when [block] returns — the two lines every test that
- * builds its own contexts opens with.
- *
- * It is deliberately NOT a whole runner: what a test does between the browser and its assertions (which
- * context shape, which init scripts, whether it navigates, which readiness gate it waits on) is that
- * file's own contract, and the nine per-file runners that follow this call each spell one. This is only
- * the part that was byte-identical in four of them.
- */
 fun onChromium(block: (Browser) -> Unit) {
     Playwright.create().use { pw ->
         touchChromium(pw).use { browser -> block(browser) }
     }
 }
 
-/**
- * A phone-shaped context with touch on, for the gesture tests. Defaults describe a modern iPhone-class
- * viewport; pass a wider one for the tablet cases (the grabber's `any-pointer: coarse` ink is scoped by
- * pointer accuracy, not by width, so a tablet must show it too).
- */
 fun Browser.touchContext(
     width: Int = 390,
     height: Int = 844,
@@ -378,15 +250,6 @@ fun Browser.touchContext(
         .setHasTouch(true),
 )
 
-/**
- * A desktop context with a FINE pointer — no touch at all.
- *
- * [touchContext] always sets `hasTouch`, and that is not merely about `touchscreen().tap()`: a touch
- * context resolves `@media (any-pointer: coarse)`, measured, at EVERY width including 1280px. So a test
- * that reasons about the desktop shape of a dialog while running in a touch context is measuring the
- * phone's ink — the 20px `.dialog-grabber`, its `padding-top` compensation and the palette's 44px × are
- * all drawn there. Use this whenever the subject is what a mouse-only machine renders.
- */
 fun Browser.fineContext(
     width: Int = 1280,
     height: Int = 900,
@@ -398,20 +261,8 @@ fun Browser.fineContext(
         .setHasTouch(false),
 )
 
-/**
- * Where a failing browser test must leave its evidence.
- *
- * CI uploads `test-results/` and `webuitest/test-results/` and nothing else, and only on `failure()`. A
- * screenshot or trace written anywhere else is written for nobody: the runner is gone by the time anyone
- * reads the log.
- */
 fun testResultsDir(): Path = repoRoot.resolve(TEST_RESULTS_RELATIVE).also { Files.createDirectories(it) }
 
-/**
- * Run [block] with a Playwright trace recording, and keep the trace **only if it fails** — together with a
- * screenshot of the context's last page. A passing run discards its trace, so the artifact directory holds
- * exactly the runs somebody needs to look at.
- */
 fun BrowserContext.traced(name: String, block: () -> Unit) {
     val slug = name.map { if (it.isLetterOrDigit() || it == '.' || it == '-' || it == '_') it else '-' }
         .joinToString("")
@@ -440,16 +291,7 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
     }
 }
 
-/**
- * [text] as one literal inside a regular expression — and deliberately NOT `Pattern.quote`.
- *
- * A `java.util.regex.Pattern` handed to a Playwright assertion is never evaluated in Java: the driver
- * ships its SOURCE TEXT to Node and matches it there with a JavaScript `RegExp`, which has no `\Q…\E`
- * quoting. `\Q` is simply an escaped `Q`, so `Pattern.quote("http://…")` compiles, on the far side, into
- * a pattern that must begin with a literal `Q` and can therefore never match anything. The failure it
- * produces is unusually cruel — it prints the Java spelling of the pattern next to a URL that plainly
- * satisfies it — so escape by hand and keep the pattern portable to both engines.
- */
+/** Playwright evaluates this in JavaScript, where Java's `Pattern.quote` (`\Q…\E`) is not quoting. */
 fun regexLiteral(text: String): String = buildString {
     for (ch in text) {
         if (ch in REGEX_METACHARACTERS) append('\\')
@@ -459,20 +301,7 @@ fun regexLiteral(text: String): String = buildString {
 
 private const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"
 
-/**
- * Bank every text message the `/api/v1/events` socket delivers into `window.__kotgentFrames`.
- *
- * Install it with `addInitScript` BEFORE the page loads. The wrapper returns a genuine `WebSocket` (a
- * constructor returning an object yields that object), shares its prototype so `instanceof` and every
- * property the app sets still behave, and copies the readyState constants. Its `message` listener is
- * registered before the application gets the socket back, so a frame the app has already applied is
- * necessarily banked — which is what makes "the page has seen frame X" a usable barrier rather than a
- * race.
- *
- * Shared because two files now need it for two different reasons: [TaskBadgeTest] reads the frames it
- * banked to tell a patch from a full row, and [BoardTest] waits on the arrival of one — the connect
- * baseline — because an EMPTY fixture has no rendered count that could rise.
- */
+// Install before page load: the listener must precede the app's socket listener to be a reliable barrier.
 val FRAME_RECORDER: String = """
     (() => {
       const frames = [];
@@ -496,21 +325,7 @@ val FRAME_RECORDER: String = """
     })();
 """.trimIndent()
 
-/**
- * Deliver one CDP touch event — the primitive under every touch DRAG in this module.
- *
- * Playwright's `Touchscreen` offers `tap` and nothing else, so a drag has to be dispatched through
- * `Input.dispatchTouchEvent` on a `context.newCDPSession(page)`. Chromium turns that into GENUINE
- * `pointerType: "touch"` events with an ACTIVE pointer, which is what `el.setPointerCapture(pointerId)`
- * needs — a made-up id throws `NotFoundError` and leaves the gesture inert before it can do anything.
- *
- * A null [x]/[y] means "no contact points", which is how a release is expressed: **Chromium refuses a
- * `touchEnd` that still names points** — their absence IS the lift, the same way Playwright's own
- * `touchscreen.tap()` ends a tap.
- *
- * The choreography around it — how many moves, how long between them, whether the contact rests before
- * lifting — belongs to each caller, because it is what separates a swipe from a throw.
- */
+/** Null coordinates deliberately send no contact points; Chromium requires that shape for `touchEnd`. */
 fun dispatchTouch(cdp: CDPSession, type: String, x: Double?, y: Double?) {
     val points = JsonArray()
     if (x != null && y != null) {
@@ -526,13 +341,7 @@ fun dispatchTouch(cdp: CDPSession, type: String, x: Double?, y: Double?) {
     cdp.send("Input.dispatchTouchEvent", params)
 }
 
-/**
- * Task-output paths of the harness binary, in the order `./kotlin build` is likely to have produced them.
- *
- * **The same two paths and the same `./kotlin build` sentence live in
- * `test/transport/WebUiCheckTest.kt` (`webuicheckBinary`).** No constant can span the native/JVM
- * boundary, so the duplication is structural — change one and change the other.
- */
+// Duplicated in native WebUiCheckTest because constants cannot cross the native/JVM module boundary.
 private val HARNESS_BINARIES = listOf(
     "build/tasks/_webuicheck_linkMacosArm64Debug/webuicheck.kexe",
     "build/tasks/_webuicheck_linkMacosArm64Release/webuicheck.kexe",
@@ -545,7 +354,6 @@ private const val TICKET_PREFIX = "TICKET="
 private const val READY_LINE = "READY"
 private const val RESTART_COMMAND = "restart"
 
-/** Generous enough for a cold macOS runner linking nothing but starting a Ktor server. */
 private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
 private const val RESTART_TIMEOUT_MILLIS = 30_000L
 private const val SHUTDOWN_TIMEOUT_MILLIS = 15_000L
@@ -555,7 +363,6 @@ private const val POLL_MILLIS = 100L
 private const val MAX_STDERR_CHARS = 64_000
 private const val WATCHDOG_MILLIS = 300_000L
 
-/** Playwright's own default assertion timeout is 5s; a cold first paint on a loaded CI runner can beat it. */
 private const val ASSERTION_TIMEOUT_MILLIS = 15_000.0
 
 private val playwrightConfigured = AtomicBoolean(false)
@@ -568,31 +375,12 @@ private fun configurePlaywrightDefaults() {
 
 private val browserBundleInstalled = AtomicBoolean(false)
 
-/**
- * Provision Playwright's browser bundle ONCE per JVM, **before the first harness is spawned**.
- *
- * `Playwright.create()` is what installs the ~1.1 GB bundle (`playwright-java` runs the driver's
- * `install` on first create), and on a cold cache that download takes minutes. Every test spawns its
- * harness first and creates Playwright inside the `use {}` block, so the harness's own
- * `--exit-after-ms` watchdog was already ticking through a download it knows nothing about: on a cold
- * machine it fired, the harness exited `4`, and [Harness.close] then failed the test with "the
- * webuicheck harness exited with code 4" — a message about the wrong subject entirely.
- *
- * Doing the install here moves the whole download outside every watchdog window. The cost on a warm
- * cache is one extra driver start/stop per JVM, once. The flag is set BEFORE the call so a failure is
- * not retried by each of a hundred tests — the test's own `Playwright.create()` reports the real error
- * a moment later, which is where it belongs.
- */
 private fun installBrowserBundleOnce() {
     if (!browserBundleInstalled.compareAndSet(false, true)) return
     Playwright.create().close()
 }
 
-/**
- * The checkout root, found by walking up from the JVM's working directory (and, as a fallback, from this
- * class's own code source — the toolchain does not promise which directory a JVM test module runs in).
- * The marker is a pair, not `project.yaml` alone, so a stray manifest cannot be mistaken for the root.
- */
+// JVM test working directories are not fixed by the toolchain.
 private val repoRoot: Path by lazy { locateRepoRoot() }
 
 private fun locateRepoRoot(): Path {
@@ -621,13 +409,6 @@ private fun codeSourceDirectory(): Path? = runCatching {
     if (Files.isDirectory(path)) path else path.parent
 }.getOrNull()
 
-/**
- * The harness binary, or a loud failure naming the command that builds it.
- *
- * Never a skip: this suite has zero skips by policy, and a "skipped because the binary was missing" browser
- * tier is a green run that tested nothing at all. `./kotlin test` does not link main binaries, so the
- * message has to say what `./kotlin build` is for — the same trap `PtyTest` names for `ptycheck`.
- */
 private fun harnessBinary(): Path {
     val candidates = HARNESS_BINARIES.map { repoRoot.resolve(it) }
     return candidates.firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) }

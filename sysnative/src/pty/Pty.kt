@@ -71,21 +71,11 @@ import platform.posix.close as posixClose
 import platform.posix.read as posixRead
 import platform.posix.write as posixWrite
 
-/** Thrown when a pty cannot be opened or its child process cannot be spawned. */
 class PtyException(message: String) : RuntimeException(message)
 
 /**
- * A pseudo-terminal with a child process attached to its slave side.
- *
- * The child is started with `openpty()` + `posix_spawn(POSIX_SPAWN_SETSID)` rather than
- * `forkpty()`: fork-without-exec is unsafe for the Kotlin/Native runtime (only
- * async-signal-safe work is allowed between fork and exec), and posix_spawn performs the
- * whole fork/exec atomically in one call. All argv/envp C strings are marshalled into
- * native memory *before* the spawn.
- *
- * The parent keeps the master fd. Output is pumped off the blocking master fd by a
- * dedicated reader thread (there is no `Dispatchers.IO` on Kotlin/Native) into an
- * unlimited [output] channel that coroutine consumers read from.
+ * Uses `posix_spawn`, never fork-without-exec, which is unsafe for the Kotlin/Native runtime.
+ * A dedicated OS thread is required because Kotlin/Native has no blocking-I/O dispatcher.
  */
 @OptIn(
     ExperimentalForeignApi::class,
@@ -94,41 +84,25 @@ class PtyException(message: String) : RuntimeException(message)
     ExperimentalAtomicApi::class,
 )
 class Pty private constructor(
-    /** The pty master file descriptor, owned by this process. */
     val masterFd: Int,
-    /** The child process id. */
     val pid: Int,
-    /** Read side of the private pipe that wakes the reader without releasing [masterFd]. */
     private val readerWakeReadFd: Int,
-    /** Write side of the private pipe that wakes the reader without releasing [masterFd]. */
     private val readerWakeWriteFd: Int,
-    /** Whether close-stage diagnostics should be written to stderr. */
     private val closeTraceEnabled: Boolean,
 ) {
-    /** Bytes read off the master fd, in arrival order. Closed when the child reaches EOF. */
     val output: Channel<ByteArray> = Channel(Channel.UNLIMITED)
 
-    // Dedicated single OS thread polling the master fd and a private teardown wake pipe.
     private val readerContext = newSingleThreadContext("kotgent-pty-reader-$pid")
     private val readerScope = CoroutineScope(readerContext)
     private lateinit var readerJob: Job
 
-    /** Exactly one [close] caller owns teardown; every later caller awaits [closeCompletion]. */
     private val closeClaimed = AtomicInt(0)
     private val closeCompletion = CompletableDeferred<Int>()
     private val closeTraceOrigin = TimeSource.Monotonic.markNow()
     private var reaped = false
     private var exitCode = -1
 
-    /**
-     * Whether the independent reader job had completed when [close] began releasing [masterFd].
-     *
-     * Public as a real-PTY integration seam because KT-78062 prevents the test binary from linking
-     * this cinterop-backed class. Unlike checking the descriptor immediately before closing it (which
-     * is tautologically true), [releaseMasterFd] snapshots the reader's actual completion state at the
-     * release operation: moving that operation above the wake/cancel/join protocol makes this false.
-     * Production teardown does not branch on this observation.
-     */
+    // Integration seam for KT-78062: production never branches on this teardown-order observation.
     public var readerCompletedBeforeMasterFdRelease: Boolean = false
         private set
 
@@ -152,21 +126,17 @@ class Pty private constructor(
                             if (errno == EINTR) continue
                             break
                         }
-                        // Teardown wins over simultaneously readable output: close means no consumer
-                        // should receive bytes after the reader's stop/join protocol has begun.
+                        // Teardown wins when output and the wake pipe become readable together.
                         if (pollFds[1].revents.toInt() != 0) break
                         if (!isActive || pollFds[0].revents.toInt() == 0) continue
 
-                        // This is the only reader of masterFd, so readiness cannot be consumed between
-                        // poll and read. The read therefore returns data, EOF, or an error without
-                        // stranding teardown in a fresh blocking syscall.
                         val n = posixRead(masterFd, buf, bufSize.convert())
                         when {
                             n < 0 -> {
                                 if (errno == EINTR) continue
-                                break // EIO (slave closed) or a real error -> treat as EOF
+                                break
                             }
-                            n == 0L -> break // clean EOF: the last slave fd was closed
+                            n == 0L -> break
                             else -> output.trySend(buf.readBytes(n.toInt()))
                         }
                     }
@@ -178,7 +148,6 @@ class Pty private constructor(
         }
     }
 
-    /** Wake the reader's blocking [poll] without closing or replacing [masterFd]. */
     private fun wakeReader() {
         traceClose("reader-wake-start", "completed=${readerJob.isCompleted}")
         memScoped {
@@ -202,12 +171,7 @@ class Pty private constructor(
         }
     }
 
-    /**
-     * Release the master descriptor while recording the reader state at that exact operation.
-     *
-     * Keeping the observation and [posixClose] in one helper is load-bearing for the integration
-     * check: reordering the release necessarily reorders its snapshot too.
-     */
+    // Keep the reader-state snapshot at the exact descriptor-release operation for ptycheck.
     private fun releaseMasterFd() {
         readerCompletedBeforeMasterFdRelease = readerJob.isCompleted
         val rc = posixClose(masterFd)
@@ -218,12 +182,7 @@ class Pty private constructor(
         )
     }
 
-    /**
-     * Emit one flush-on-write teardown marker when [CLOSE_TRACE_ENV] was set when this pty was opened.
-     *
-     * The trace is deliberately opt-in: normal daemon operation stays quiet, while `ptycheck` enables
-     * it so a CI timeout reports the last completed syscall/lifecycle stage after the helper exits.
-     */
+    // Opt-in, flush-on-write diagnostics let a timed-out ptycheck identify the last completed syscall.
     private fun traceClose(stage: String, detail: String = "") {
         if (!closeTraceEnabled) return
         val suffix = if (detail.isEmpty()) "" else " $detail"
@@ -235,13 +194,7 @@ class Pty private constructor(
         fflush(stderr)
     }
 
-    /**
-     * Write [bytes] to the master fd, looping over partial writes.
-     *
-     * Normal return means every byte was written. If a later syscall fails after one or more successful
-     * partial writes, this throws even though that prefix has already reached the pty; POSIX cannot roll
-     * it back, and the exception therefore must not be interpreted as proof of zero delivery.
-     */
+    /** A failure after a partial write means the written prefix was delivered and cannot be rolled back. */
     fun write(bytes: ByteArray) {
         if (bytes.isEmpty()) return
         bytes.usePinned { pinned ->
@@ -257,34 +210,13 @@ class Pty private constructor(
         }
     }
 
-    /**
-     * Set the terminal window size (`ioctl(TIOCSWINSZ)` on the master fd) and then hand the child the
-     * `SIGWINCH` that the kernel will NOT send for this pty.
-     *
-     * That signal is load-bearing, not belt-and-braces. `TIOCSWINSZ` raises `SIGWINCH` on the tty's
-     * **foreground process group**, and this pty has none: under `POSIX_SPAWN_SETSID` the child is a
-     * fresh session leader, but it acquires the pts through a posix_spawn **file action**, and the
-     * kernel's file-action open does not run `open(2)`'s implicit `TIOCSCTTY` — so the child never
-     * takes the pts as its controlling terminal (`ps` reports `TT ??`, and no process owns the pts)
-     * and there is no pgrp to signal. Verified on macOS 15: without this `kill`, a resize applied
-     * while `tmux attach` is already RUNNING is silently lost — only a size set *before* the child
-     * reads `TIOCGWINSZ` at startup ever took effect, which is why a freshly attached terminal used
-     * to sit at the pty's birth size until it was detached and re-attached.
-     *
-     * The signal goes to the child's process **group** (== its pid under `POSIX_SPAWN_SETSID`), which
-     * is what the kernel's foreground-pgrp delivery would have done. Failures are ignored: a child
-     * that already exited is `ESRCH`, and a duplicate `SIGWINCH` would be harmless anyway (readers
-     * respond by re-reading `TIOCGWINSZ`).
-     */
+    // The spawned child has no controlling tty/foreground pgrp, so TIOCSWINSZ cannot deliver SIGWINCH.
     fun resize(cols: Int, rows: Int) {
         val rc = kotgent_set_winsize(masterFd, rows.toUShort(), cols.toUShort())
         if (rc != 0) throw PtyException("resize (TIOCSWINSZ) failed: ${errnoMessage(errno)}")
-        // Guarded on the child still being ours to signal: once reaped, the pid (hence the pgid) can be
-        // recycled by an unrelated process group.
-        if (!reaped && pid > 1) kill(-pid, SIGWINCH)
+        if (!reaped && pid > 1) kill(-pid, SIGWINCH) // A reaped pid may already have been reused.
     }
 
-    /** Block until the child exits and return its exit code (128 + signal if killed). */
     fun waitFor(): Int {
         if (reaped) {
             traceClose("wait-reused", "exitCode=$exitCode")
@@ -298,7 +230,6 @@ class Pty private constructor(
                 if (r == -1) {
                     if (errno == EINTR) continue
                     val code = errno
-                    // ECHILD or similar: nothing to reap.
                     reaped = true
                     exitCode = -1
                     traceClose("wait-failed", "errno=$code (${errnoMessage(code)})")
@@ -313,12 +244,6 @@ class Pty private constructor(
         return exitCode
     }
 
-    /**
-     * Poll-wait up to [micros] microseconds for the child to exit without blocking indefinitely
-     * (`waitpid(WNOHANG)`). Returns `true` once the child is reaped (records its exit code), `false`
-     * if it is still alive after the deadline. Used by [prepareClose] to bound its wait so it can never
-     * deadlock a caller's lock (e.g. the Broadcaster's) on a child that ignores SIGTERM.
-     */
     private fun reapBounded(micros: Long): Boolean {
         val timeout = micros.microseconds
         val started = TimeSource.Monotonic.markNow()
@@ -339,7 +264,7 @@ class Pty private constructor(
                                 "reap-grace-no-child",
                                 "polls=$polls errno=$code (${errnoMessage(code)})",
                             )
-                            return true // ECHILD or similar: nothing to reap
+                            return true
                         }
                     }
                     r != 0 -> {
@@ -350,9 +275,7 @@ class Pty private constructor(
                     }
                 }
 
-                // `usleep(n)` may return much later than n on a loaded/virtualized macOS host.
-                // Compare against the monotonic wall clock after every poll; summing the requested
-                // sleeps made this nominal two-second grace take 7–10+ seconds and race CI's tripwire.
+                // usleep may overshoot badly under load; elapsed monotonic time defines the grace bound.
                 val remainingMicros = (timeout - started.elapsedNow()).inWholeMicroseconds
                 if (remainingMicros <= 0L) break
                 if (r == 0) usleep(minOf(REAP_POLL_MICROS, remainingMicros).convert())
@@ -365,19 +288,12 @@ class Pty private constructor(
         return false
     }
 
-    /**
-     * Terminate and reap the child without closing [masterFd]. This is the first half of [close], split
-     * out so a caller can make a blocking master write return before waiting for exclusive ownership of
-     * the fd. Termination is escalated and BOUNDED: SIGTERM first, then [reapBounded], then SIGKILL.
-     * The child closing its slave makes a blocked master write fail/finish, while the raw fd remains
-     * valid and cannot be reused until [close]. Idempotent.
-     */
+    /** Reaps the child without releasing the master, unblocking writers before their fd ownership ends. */
     fun prepareClose() {
         if (closeClaimed.load() != 0 || reaped) return
         terminateAndReapChild()
     }
 
-    /** The child-teardown half shared by [prepareClose] and the winning [close] caller. */
     private fun terminateAndReapChild() {
         if (!reaped) {
             val termRc = kill(pid, SIGTERM)
@@ -387,33 +303,15 @@ class Pty private constructor(
                 val killRc = kill(pid, SIGKILL)
                 val killErrno = if (killRc == 0) 0 else errno
                 traceClose("signal-kill", "rc=$killRc${errnoDetail(killRc, killErrno)}")
-                waitFor() // SIGKILL is uncatchable — this reaps promptly
+                waitFor()
             }
         } else {
             traceClose("child-already-reaped", "exitCode=$exitCode")
         }
     }
 
-    /**
-     * Terminate/reap the child, stop and JOIN the reader, then release [masterFd]. Returns the child's
-     * exit code. Idempotent.
-     *
-     * The order is load-bearing. Closing the master first does wake Darwin's blocked `read`, but it
-     * also frees the descriptor NUMBER before that reader exits; another session can reuse the number
-     * and the stale reader can consume its bytes. Moving `readerScope.cancel()` before that close is
-     * not a fix: coroutine cancellation cannot interrupt a thread parked in a C syscall, so teardown
-     * hangs. Atomically replacing the master with `dup2(/dev/null, masterFd)` looks tempting too, but
-     * on Darwin `dup2` itself blocks while another thread is reading the target pty (measured here).
-     *
-     * The reader therefore waits on the master plus a private wake pipe. Teardown signals that pipe,
-     * cancels and explicitly joins [readerJob] while [masterFd]'s number is still reserved, then closes
-     * the master. [prepareClose] remains separate for Broadcaster's close-vs-write gate; calling
-     * [close] directly still performs both phases for every other owner.
-     *
-     * A compare-and-set claims this whole sequence before child teardown starts. Concurrent and later
-     * callers await the winner's [closeCompletion], so they return the same post-reap exit code and can
-     * never repeat any descriptor close after the numbers have been recycled.
-     */
+    // Wake and join the reader before freeing the descriptor number; a stale reader could otherwise
+    // consume bytes from a new session that reused it. Concurrent callers await the single CAS winner.
     fun close(): Int {
         if (!closeClaimed.compareAndSet(0, 1)) {
             traceClose("close-waiter-start", "completion=${closeCompletion.isCompleted}")
@@ -451,34 +349,19 @@ class Pty private constructor(
         }
     }
 
-    /**
-     * Decode a macOS wait-status word: low 7 bits = terminating signal (0 if exited normally),
-     * bits 8..15 = exit code when exited normally. A killed child reports `128 + signal`.
-     */
     private fun decodeStatus(s: Int): Int =
         if (s and 0x7f == 0) (s shr 8) and 0xff else 128 + (s and 0x7f)
 
     companion object {
-        /** Set to `1` before [open] to emit close-stage diagnostics to stderr for that pty. */
         const val CLOSE_TRACE_ENV: String = "KOTGENT_PTY_CLOSE_TRACE"
 
-        /** Grace period (µs) after SIGTERM before [close] escalates to SIGKILL. */
         private const val CLOSE_GRACE_MICROS: Long = 2_000_000L
 
-        /** Maximum sleep between non-blocking child-state polls. */
         private const val REAP_POLL_MICROS: Long = 5_000L
 
-        /** Buffer size for the resolved pts path (well above macOS `PATH_MAX`/pts names). */
         private const val PTS_PATH_CAP: Int = 1024
 
-        /**
-         * Open a pty and spawn [command] on its slave side.
-         *
-         * @param command argv; command[0] is the executable path (resolved as-is, not via PATH).
-         * @param env    child environment (empty = an empty environment).
-         * @param cols   initial terminal columns.
-         * @param rows   initial terminal rows.
-         */
+        /** `command[0]` is used as an executable path; `env` defaults to a deliberately empty environment. */
         fun open(
             command: List<String>,
             env: Map<String, String> = emptyMap(),
@@ -498,11 +381,8 @@ class Pty private constructor(
                 val master = masterVar.value
                 val slave = slaveVar.value
 
-                // Initial window size on the master; the slave inherits it.
                 kotgent_set_winsize(master, rows.toUShort(), cols.toUShort())
 
-                // Resolve the slave's pts path so the CHILD opens the tty itself rather than inheriting
-                // a dup of our slave fd (see the file actions below).
                 val ptsBuf = allocArray<ByteVar>(PTS_PATH_CAP)
                 if (kotgent_ptsname(master, ptsBuf, PTS_PATH_CAP.convert()) != 0) {
                     posixClose(master)
@@ -511,19 +391,8 @@ class Pty private constructor(
                 }
                 val ptsPath = ptsBuf.toKString()
 
-                // File actions. The child OPENS the slave by its pts path as fd 0 and wires that same
-                // tty to stdout/stderr, rather than getting a dup2 of our *inherited* slave fd: with
-                // only dup2, `tmux attach` fails ("open terminal failed: not a terminal") and exits
-                // immediately. NOTE this does NOT give the child a controlling terminal — the kernel
-                // runs the file-action open without open(2)'s implicit TIOCSCTTY, so the pts ends up
-                // with no session and no foreground pgrp (`ps` shows `TT ??` for the child). Nothing
-                // here needs one, but it means TIOCSWINSZ raises no SIGWINCH, so [resize] sends the
-                // signal itself — see its KDoc.
-                // Finally drop the inherited master/slave fds so closing our master yields a clean EOF.
-                // Each posix_spawn_file_actions_* / posix_spawnattr_* call returns an errno on failure;
-                // ignoring them would feed a half-built structure to posix_spawn (fd leaks / a child with
-                // no controlling tty). Check each, and on failure destroy what was inited + close the fds
-                // + surface the error.
+                // The child must open the pts path itself for tmux attach; merely duping the inherited
+                // slave fails on macOS. The file-action open still does not acquire a controlling tty.
                 val fileActions = alloc<posix_spawn_file_actions_tVar>()
                 val faInit = posix_spawn_file_actions_init(fileActions.ptr)
                 if (faInit != 0) {
@@ -550,14 +419,7 @@ class Pty private constructor(
                     posixClose(master); posixClose(slave)
                     throw PtyException("posix_spawnattr_init failed: ${errnoMessage(attrInit)} (code=$attrInit)$cleanup")
                 }
-                // POSIX_SPAWN_SETSID: child calls setsid(), detaching from our session.
-                // POSIX_SPAWN_CLOEXEC_DEFAULT (Apple extension, <sys/spawn.h>): close EVERY inherited
-                // descriptor at exec except the ones named in the file actions above — i.e. the child
-                // gets exactly the pts wired to 0/1/2 and nothing else. Without it a `tmux attach`
-                // spawned here inherits the daemon's whole descriptor table, listening socket included;
-                // an agent living on inside tmux then keeps that socket open after the daemon dies,
-                // blocking rebinds and swallowing client connections (see io.kotgent.sys.markOpenFdsCloexec).
-                // Unlike the popen path's sweep this is race-free: the closing happens atomically at exec.
+                // CLOEXEC_DEFAULT atomically prevents daemon sockets and all unnamed fds leaking to agents.
                 val spawnFlags = POSIX_SPAWN_SETSID or POSIX_SPAWN_CLOEXEC_DEFAULT
                 val setFlags = posix_spawnattr_setflags(attr.ptr, spawnFlags.toShort())
                 if (setFlags != 0) {
@@ -569,12 +431,10 @@ class Pty private constructor(
                     )
                 }
 
-                // Marshal argv into native memory BEFORE the spawn.
                 val argv = allocArray<CPointerVar<ByteVar>>(command.size + 1)
                 command.forEachIndexed { i, arg -> argv[i] = arg.cstr.getPointer(scope) }
                 argv[command.size] = null
 
-                // Marshal envp likewise.
                 val envEntries = env.map { (k, v) -> "$k=$v" }
                 val envp = allocArray<CPointerVar<ByteVar>>(envEntries.size + 1)
                 envEntries.forEachIndexed { i, e -> envp[i] = e.cstr.getPointer(scope) }
@@ -583,38 +443,30 @@ class Pty private constructor(
                 val pidVar = alloc<IntVar>()
                 val rc = posix_spawn(
                     pidVar.ptr,
-                    command[0], // cinterop maps the const char* path param to String?
+                    command[0],
                     fileActions.ptr,
                     attr.ptr,
                     argv,
                     envp,
                 )
 
-                // The spawn is decided; release both spawn objects, keeping their results — a destroy
-                // failure means a spawn object leaked in THIS process and must not vanish.
+                // Preserve destroy failures without masking an earlier setup/spawn error.
                 val faDestroy = posix_spawn_file_actions_destroy(fileActions.ptr)
                 val attrDestroy = posix_spawnattr_destroy(attr.ptr)
-                // Parent has no use for the slave; the child holds its own dup'd copies.
                 posixClose(slave)
 
                 if (rc != 0) {
                     posixClose(master)
-                    // The spawn FAILED, so there is no child to protect: this path throws anyway, and the
-                    // cleanup notes ride along on the primary error exactly like the setup paths above.
                     val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, faDestroy) + cleanupNote(ATTR_DESTROY, attrDestroy)
-                    // posix_spawn returns the errno value directly (it does not set errno).
                     throw PtyException(
                         "posix_spawn failed for '${command[0]}': ${errnoMessage(rc)} (code=$rc)$cleanup",
                     )
                 }
 
-                // Success: the child is running and must not be leaked by an exception, so a destroy
-                // failure can only be reported — stderr, never swallowed.
                 warnCleanupFailure(FILE_ACTIONS_DESTROY, faDestroy)
                 warnCleanupFailure(ATTR_DESTROY, attrDestroy)
 
-                // The child is already spawned, so it cannot inherit this private wake pipe. Future
-                // kotgent spawn paths close all unnamed descriptors (CLOEXEC_DEFAULT / fd sweep).
+                // Created after spawn so the child cannot inherit this private teardown pipe.
                 val readerWakeFds = allocArray<IntVar>(2)
                 if (pipe(readerWakeFds) != 0) {
                     val pipeErrno = errno
@@ -632,26 +484,18 @@ class Pty private constructor(
             }
         }
 
-        /** Names of the spawn-object destructors, used in both the appended note and the stderr warning. */
         private const val FILE_ACTIONS_DESTROY: String = "posix_spawn_file_actions_destroy"
         private const val ATTR_DESTROY: String = "posix_spawnattr_destroy"
 
-        /**
-         * A suffix describing a failed cleanup call ([rc] != 0), or `""`. Appended to the PRIMARY error's
-         * message on the throwing paths: a destroy failure must not mask why the spawn setup failed, but
-         * it must not vanish either (it means a spawn object leaked).
-         */
         private fun cleanupNote(what: String, rc: Int): String =
             if (rc == 0) "" else " [cleanup: $what failed: ${errnoMessage(rc)} (code=$rc)]"
 
-        /** Report a failed cleanup call on stderr — the success path, where throwing is not an option. */
         private fun warnCleanupFailure(what: String, rc: Int) {
             if (rc == 0) return
             fputs("kotgent: $what failed: ${errnoMessage(rc)} (code=$rc)\n", stderr)
             fflush(stderr)
         }
 
-        /** Best-effort cleanup after a post-spawn reader setup failure; never leak the live child. */
         private fun terminateSpawnedChild(pid: Int) {
             kill(pid, SIGKILL)
             memScoped {
@@ -666,7 +510,6 @@ class Pty private constructor(
         private fun errnoMessage(code: Int): String =
             strerror(code)?.toKString() ?: "errno=$code"
 
-        /** Add errno only for a failed POSIX call; successful calls must not report stale thread errno. */
         private fun errnoDetail(rc: Int, code: Int): String =
             if (rc == 0) "" else " errno=$code (${errnoMessage(code)})"
     }

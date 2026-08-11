@@ -57,39 +57,14 @@ import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
-/**
- * The **task** half of the global `/events` socket (plan Task 16): the `tasks_snapshot` baseline, the
- * `task_row` / `task_update` / `task_removed` traffic after it, and the rules that decide which of the
- * three a change becomes.
- *
- * ## Why this is its own file and its own server
- * `TransportTest.kt` is a shared suite no wave-2 task may touch, so the four new discriminators would
- * otherwise ship **unasserted** — and an unasserted discriminator is exactly the regression the
- * [EventsFrame] invariant exists to catch: a send site reaching for a concrete `X.serializer()` emits a
- * frame with no `type`, which every client silently drops and no other test in the plan would notice.
- * [everyTaskFrameKindCarriesTheTypeDiscriminator] is therefore a deliberate copy of
- * `everyGlobalFrameKindCarriesTheTypeDiscriminator`'s shape, over the four task kinds.
- *
- * The harness mounts [eventsWs] alone, outside [authenticated]: who may open this socket is
- * `AuthorizeWiringTest`'s and `TransportTest`'s question, and re-answering it here would only buy a
- * second copy of the session-manager fixture. What is under test is the frame protocol.
- *
- * The store fake is [Mutex]-guarded because the CIO server runs its handlers on its own engine threads
- * while the test body mutates from `runBlocking`'s; every body is bounded by [withTimeout] as an
- * anti-hang tripwire, since a missing frame here is a hang rather than a wrong answer.
- */
 class TaskEventsTest {
 
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
     private val beta = ProjectId.of("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
 
-    // --- the discriminator invariant ---------------------------------------------------------------
 
     @Test
     fun everyTaskFrameKindCarriesTheTypeDiscriminator() {
-        // kotlinx emits `type` ONLY when encoding through the sealed base — sendEventsFrame's invariant.
-        // A send site regressed to a concrete `X.serializer()` produces a type-less frame every client
-        // silently drops, so each of the four kinds is checked the way the session kinds are.
         fun typeOf(frame: EventsFrame): String? {
             val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frame)
             return TRANSPORT_JSON.parseToJsonElement(encoded).jsonObject["type"]?.jsonPrimitive?.content
@@ -101,7 +76,6 @@ class TaskEventsTest {
         assertEquals("task_removed", typeOf(TaskRemovedDto("local:1")))
     }
 
-    // --- the baseline ------------------------------------------------------------------------------
 
     @Test
     fun theBaselineIsOneSnapshotOfEveryProjectsRowsJoinedWithTheirTrackerFields() = withTasksSocket(
@@ -130,8 +104,6 @@ class TaskEventsTest {
     @Test
     fun aDaemonWithoutATaskStoreSendsNoTaskFramesAtAll() = runBlocking {
         withTimeout(30_000) {
-            // The whole branch is skipped: an old client, and a daemon that never wired the task layer,
-            // see exactly today's protocol rather than an empty baseline they would have to interpret.
             withServer(tasks = null) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") {
                     assertEquals(
@@ -148,7 +120,6 @@ class TaskEventsTest {
         }
     }
 
-    // --- after the baseline ------------------------------------------------------------------------
 
     @Test
     fun aLinkArrivesAsAPatchForARefTheSnapshotAlreadyCarried() = withTasksSocket(
@@ -159,7 +130,6 @@ class TaskEventsTest {
     ) { ws ->
         val baselineRev = ws.expectSnapshot().tasks.single().rev
 
-        // `task claim` / `task next` advance the row through the one conditional write in the design.
         assertTrue(ws.tasks.startIfTodo(TaskRef("local:1")), "the todo → in_progress transition applied")
 
         val patch = ws.expectUpdate()
@@ -180,7 +150,6 @@ class TaskEventsTest {
         assertEquals("local:1", row.task.ref, "a ref new to this socket arrives as a full row")
         assertEquals("fresh", row.task.title, "…carrying everything the client needs to render a card")
 
-        // Only a DELIVERED row marks the ref as carried, so every later change is a light patch.
         ws.tasks.transition(TaskRef("local:1"), TaskState.review, author = "s-1", message = null)
         val patch = ws.expectUpdate()
         assertEquals("review", patch.task.state)
@@ -199,8 +168,6 @@ class TaskEventsTest {
         assertTrue(ws.tasks.delete(TaskRef("local:1")), "the task went away")
         assertEquals("local:1", ws.expectRemoved().ref, "a null-entry update becomes task_removed")
 
-        // The mark is cleared with it: a ref that comes back must arrive WHOLE, because the client
-        // dropped the row and would silently ignore a patch for a ref it no longer holds.
         ws.tasks.addTask(TaskRef("local:1"), alpha, "reborn", position = 1.0)
         assertEquals("reborn", ws.expectRow().task.title, "the ref is uncarried again, so it arrives whole")
     }
@@ -216,8 +183,6 @@ class TaskEventsTest {
     ) { ws ->
         val before = ws.expectSnapshot().tasks.associate { it.ref to it.rev }
 
-        // A collapsed gap rewrites the project's whole column, and every rewritten row stamps its own rev
-        // and emits — a bulk statement could not, which is why `Backlog.sq` has no `renormalize`.
         ws.tasks.renormalize(alpha)
 
         val seen = mutableMapOf<String, TaskUpdateDto>()
@@ -237,10 +202,6 @@ class TaskEventsTest {
     @Test
     fun aBurstEmittedWhileTheBaselineIsBeingReadIsDeliveredAfterIt() = runBlocking {
         withTimeout(30_000) {
-            // The window the design closes: `.onSubscription { }` only signals the sender, which READS
-            // the snapshot, so the collector is draining for the whole read instead of waiting on it.
-            // What is observable from out here is the other half of the same contract — nothing emitted
-            // during that window is lost, and the snapshot still goes out FIRST.
             val tasks = FakeTaskStore()
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
@@ -248,8 +209,6 @@ class TaskEventsTest {
 
             withServer(tasks) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") {
-                    // The store parks at the LAST read of the baseline, so everything emitted here is
-                    // genuinely absent from the snapshot and can only reach the client as live traffic.
                     tasks.baselineEntered.await()
                     burst.forEach { tasks.addTask(it, alpha, "burst ${it.key}", position = it.key.toDouble()) }
                     tasks.baselineGate.complete(Unit)
@@ -269,18 +228,6 @@ class TaskEventsTest {
     @Test
     fun theCollectorIsAlreadyDrainingWhileTheBaselineIsBeingRead() = runBlocking {
         withTimeout(30_000) {
-            // The sibling above shows that nothing emitted during the baseline window is LOST; this one
-            // shows WHY, and it is the half a 20-entry burst cannot demonstrate. The baseline read is
-            // three store calls per project, each taking and releasing the task store's writer mutex —
-            // so performing it inside `.onSubscription { }` leaves the collector parked for its whole
-            // duration and puts every emission at the mercy of the source flow's fixed buffer, which
-            // ONE renormalization of a large project overruns by itself.
-            //
-            // A 1025-update burst would be the literal reproduction and a flaky test (it would depend on
-            // the collector out-racing a tight emit loop). A RENDEZVOUS flow makes the same property
-            // exact at one update: `emit` completes only once the collector has received it, so a
-            // collector that has not started collecting deadlocks here instead of quietly dropping the
-            // 1025th frame.
             val tasks = FakeTaskStore(updatesBuffer = 0)
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
@@ -308,9 +255,7 @@ class TaskEventsTest {
         }
     }
 
-    // --- harness -----------------------------------------------------------------------------------
 
-    /** A connected socket plus the store behind it — what every socket test manipulates and asserts. */
     private class Env(
         val socket: DefaultClientWebSocketSession,
         val tasks: FakeTaskStore,
@@ -349,7 +294,6 @@ class TaskEventsTest {
         }
     }
 
-    // --- frame readers -----------------------------------------------------------------------------
 
     private suspend fun Env.expectSnapshot(): TasksSnapshotDto = socket.expectSnapshot()
 
@@ -371,20 +315,12 @@ class TaskEventsTest {
     private suspend fun DefaultClientWebSocketSession.expectRemoved(): TaskRemovedDto =
         TRANSPORT_JSON.decodeFromString(TaskRemovedDto.serializer(), expectTaskFrame("task_removed"))
 
-    /**
-     * The next TASK frame, asserted to be of [type].
-     *
-     * Deliberately an assertion rather than a skip-until-match: which kind the server chose IS the
-     * contract here (a full row where a patch was due, or the reverse, is the bug), so a wrong kind must
-     * fail loudly instead of being skipped past into a hang.
-     */
     private suspend fun DefaultClientWebSocketSession.expectTaskFrame(type: String): String {
         val (actual, text) = nextTaskFrame()
         assertEquals(type, actual, "expected a $type frame, got $actual: $text")
         return text
     }
 
-    /** The next task-kind frame, undecoded. Session and preferences frames share this socket. */
     private suspend fun DefaultClientWebSocketSession.nextTaskFrame(): Pair<String, String> {
         while (true) {
             val (type, text) = nextFrame()
@@ -429,25 +365,8 @@ class TaskEventsTest {
         rev = rev,
     )
 
-    // --- fakes -------------------------------------------------------------------------------------
 
-    /**
-     * An in-memory [TaskStore] covering exactly what the events socket reads, plus the mutators the tests
-     * drive it with. Every other member throws, so a socket that grew a read this fake never modelled
-     * fails loudly instead of reading an empty list as an answer.
-     *
-     * [baselineGate] is what makes the baseline window observable: [dependencyEdges] — the LAST thing the
-     * baseline read touches for a project — parks on it (OUTSIDE the store lock, so the test can keep
-     * writing) after completing [baselineEntered]. Parking at the last read rather than the first is what
-     * makes a burst emitted there genuinely absent from the snapshot, instead of being picked up by a
-     * `listBacklog` that has not run yet. Tests that do not care complete the gate before connecting.
-     */
     private class FakeTaskStore(
-        /**
-         * `taskUpdates`' spare capacity. The default mirrors the real store; `0` turns the flow into a
-         * RENDEZVOUS — see [theCollectorIsAlreadyDrainingWhileTheBaselineIsBeingRead], which needs "the
-         * collector is not draining" to be a deadlock rather than a 1025-deep race.
-         */
         updatesBuffer: Int = 1024,
     ) : TaskStore {
         private val lock = Mutex()
@@ -457,26 +376,19 @@ class TaskEventsTest {
         private val edges = LinkedHashMap<TaskRef, MutableList<TaskRef>>()
         private var rev = 0L
 
+        // Parks the baseline's final read outside the lock so live updates can enter the gap.
         val baselineEntered = CompletableDeferred<Unit>()
         val baselineGate = CompletableDeferred<Unit>()
 
         override val id: String = TaskRef.LOCAL_TRACKER
 
-        /**
-         * The `_sessionUpdates` shape the contract names: buffered and `DROP_OLDEST`, so a burst never
-         * suspends the writer — and so a burst emitted before the collector drains is retained rather
-         * than dropped, which is the property [aBurstEmittedWhileTheBaselineIsBeingReadIsDeliveredAfterIt]
-         * rests on.
-         */
         private val updates = MutableSharedFlow<TaskUpdate>(
             extraBufferCapacity = updatesBuffer,
-            // A zero-capacity SharedFlow may only SUSPEND, which is exactly what makes the rendezvous
-            // variant a deterministic probe of whether anybody is collecting.
+            // Zero capacity makes collector readiness a deterministic rendezvous rather than a burst race.
             onBufferOverflow = if (updatesBuffer == 0) BufferOverflow.SUSPEND else BufferOverflow.DROP_OLDEST,
         )
         override val taskUpdates: SharedFlow<TaskUpdate> = updates
 
-        // --- seeding (before the socket connects; no emission) ---------------------------------------
 
         fun seedProject(id: ProjectId, name: String, path: String) {
             projects[id] = ProjectRecord(id, name, path, updatedAt = 1_000L)
@@ -498,9 +410,7 @@ class TaskEventsTest {
             edges.getOrPut(ref) { mutableListOf() } += dependsOn
         }
 
-        // --- mutations that emit, i.e. what the socket is supposed to react to -----------------------
 
-        /** A create: the `tasks` row, its `backlog_entries` row and one emission, as the real store does. */
         suspend fun addTask(ref: TaskRef, project: ProjectId, title: String, position: Double) {
             val entry = lock.withLock {
                 val created = BacklogEntry(ref, project, position, TaskState.todo, false, 2_000L, 2_000L, ++rev)
@@ -511,10 +421,6 @@ class TaskEventsTest {
             updates.emit(TaskUpdate(ref, entry, entry.rev))
         }
 
-        /**
-         * The collapsed-gap branch of `BacklogOrdering`: the project's whole column rewritten to
-         * `1.0, 2.0, 3.0, …`, every row stamping its OWN rev and emitting its own update.
-         */
         suspend fun renormalize(project: ProjectId) {
             val rewritten = lock.withLock {
                 entries.values
@@ -529,7 +435,6 @@ class TaskEventsTest {
             rewritten.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
         }
 
-        // --- TaskStore reads the socket actually performs --------------------------------------------
 
         override suspend fun listProjects(): List<ProjectRecord> = lock.withLock { projects.values.toList() }
 
@@ -554,7 +459,6 @@ class TaskEventsTest {
         override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
             lock.withLock { edges[ref]?.toList().orEmpty() }
 
-        // --- TaskStore writes the tests drive --------------------------------------------------------
 
         override suspend fun startIfTodo(ref: TaskRef): Boolean {
             val started = lock.withLock {
@@ -593,7 +497,6 @@ class TaskEventsTest {
             return true
         }
 
-        // --- everything the socket must never reach --------------------------------------------------
 
         override suspend fun entry(ref: TaskRef): BacklogEntry? = unused("entry")
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
@@ -622,10 +525,6 @@ class TaskEventsTest {
             error("the events socket is not expected to call TaskStore.$name")
     }
 
-    /**
-     * A sessions store with nothing in it. The task branch is what this file tests; the session branch
-     * still has to run, so it needs an empty snapshot and a flow that never emits.
-     */
     private class EmptyEventStore : EventStore {
         override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
 
@@ -660,7 +559,6 @@ class TaskEventsTest {
             error("the events socket is not expected to call EventStore.$name")
     }
 
-    /** Preferences share the socket; the branch must run, so it needs one persisted value. */
     private class FixedPreferencesStore : PreferencesStore {
         override val preferences: StateFlow<UiPreferences> =
             MutableStateFlow(UiPreferences("/tmp", 1, 1))

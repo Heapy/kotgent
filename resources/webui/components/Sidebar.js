@@ -1,28 +1,4 @@
-/*
- * The app's one sidebar, on every screen.
- *
- * Its head is fixed — the brand row, then the two links that ARE the app's navigation — and its body is
- * whichever list belongs to the screen the router has put on:
- *
- *   sessions   needs-attention triage on top, then every session — flat, or arranged as a nested
- *              working-directory tree once a base path is configured.
- *   tasks      the projects the board can be pointed at, one of which is always selected.
- *
- * Rows are keyed by session id, so a live update from /events patches the existing row instead of
- * rebuilding the list. That is what keeps focus and scroll position while sessions change state.
- *
- * ## Why the sidebar is shell furniture rather than the session view's own panel
- * It used to be rendered inside the session branch, which cost three things. The board had to grow a
- * link of its own to get back (an installed PWA draws no Back button); it had no way to reach the
- * project list except a `<select>` in its header, i.e. a second navigation idiom on the one screen that
- * needed it least; and the mobile drawer could be left open over a screen that no longer contained it.
- * One sidebar answers all three: the two links are reachable from anywhere, the project list is a list
- * of rows exactly like the session list, and the drawer can never be orphaned because it never unmounts.
- *
- * The body is BRANCHED, not merely filtered: every session-only control below reads the session list or
- * the selection, and the board's selection is a leftover the operator cannot see — the same reason
- * `lib/commands.js` builds the whole `session` command group away on the board rather than disabling it.
- */
+/* One persistent shell sidebar; its body branches between session and project navigation. */
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
@@ -47,19 +23,9 @@ import {
 
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
-/** The board, spelled by the router rather than as a literal — the same rule every in-app path follows. */
 const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
 
-/**
- * The app's navigation: two links, always in the head, so neither screen is reachable only from the
- * other. They are real `<a href>` elements, which is what makes ⌘-click, middle-click and "copy link"
- * behave; only the plain left click is stolen and handed to the router.
- *
- * The Sessions link names the selected session when there is one, rather than always going to `/`. The
- * two are the same screen, but the URL is what a reload, a bookmark and a shared link resolve, so the
- * address bar should describe the terminal that is actually on it. With no selection `/` is exactly
- * right, and that is what `routePath` answers for a null id.
- */
+/** Preserve real links; route only plain clicks in-app. */
 function NavSwitch({ screen, sessionsPath }) {
   const links = [
     { screen: SCREEN_SESSIONS, path: sessionsPath, label: "Sessions" },
@@ -84,56 +50,23 @@ function NavSwitch({ screen, sessionsPath }) {
     </nav>`;
 }
 
-/**
- * The diagonal a muted symbol is struck with, spelled once: the stroke and the gap it is cut from must
- * be the same line. It runs top-left to bottom-right, the direction the platform's own `.slash` symbols
- * take — measured against `bell.slash.fill` rather than guessed, because the mirrored one reads as a
- * different mark to anyone who uses the phone this shell is meant to be operated from.
- */
 const NOTIFY_MUTE_SLASH = "M4.7 4.7L19.7 19.7";
 
-/**
- * The bell, filled: a small crown, a dome flaring into a skirt that ends on a flat lip, and a clapper
- * detached beneath it. The proportions are drawn to sit beside the platform's own bell rather than to be
- * a second interpretation of one — the operator meets this button on a phone, where every other bell
- * they see is that one.
- */
 const NOTIFY_BELL_BODY =
   "M12 2.65a1.35 1.35 0 0 0-1.35 1.35C7.6 4.75 6.15 7 6.15 10.1c0 3.4-.65 5.5-1.9 6.7-.75.7-.25 1.8.75 " +
   "1.8h14c1 0 1.5-1.1.75-1.8-1.25-1.2-1.9-3.3-1.9-6.7 0-3.1-1.45-5.35-4.5-6.1A1.35 1.35 0 0 0 12 2.65z";
 const NOTIFY_BELL_CLAPPER = "M9.75 19.9a2.25 2.25 0 0 0 4.5 0z";
 
-/** The bell in both states — the same two paths, cut by the slash's mask in the muted one. */
 const notifyBell = (mask) => html`
   <g mask=${mask}>
     <path d=${NOTIFY_BELL_BODY} />
     <path d=${NOTIFY_BELL_CLAPPER} />
   </g>`;
 
-/**
- * The notifications toggle's mark, drawn rather than typed.
- *
- * A system emoji is the one glyph in this shell that cannot be told to match it: it arrives in the
- * vendor's palette at the vendor's weight, so the bell read as a yellow sticker beside a purple accent
- * while the struck-through bell differed from it mostly in hue. (Neither is SPELLED here: the guard that
- * keeps them out of this file is a plain text search, so it reads comments too — the same rule the phone
- * drawer's blur note follows.) Drawn, it takes `currentColor`, so the stylesheet says the state instead:
- * the accent while notifications are on, the attention red while they are off.
- *
- * Off strikes the bell through with a diagonal, and the diagonal is CUT OUT of what it crosses rather
- * than laid over it — the platform draws its own muted symbols that way, and on a solid shape a slash
- * without the gap reads as a crease in the fill rather than as a line across it.
- *
- * The mask's id is a constant because `app.js` renders exactly one `Sidebar`, so this svg is unique in
- * the document; a second copy would only point at an identical mask anyway.
- */
 function NotifyIcon({ on }) {
   return html`
     <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true" fill="currentColor">
       ${on ? notifyBell(null) : html`
-        ${/* The region is spelled out because the default one is the masked box grown by 10%, which the
-              bell very nearly fills on its own: a later change to its geometry would push part of the
-              mark outside the region and silently clip it rather than fail. */ ""}
         <mask id="notify-mute-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
           <rect x="0" y="0" width="24" height="24" fill="#fff" />
           <path d=${NOTIFY_MUTE_SLASH} fill="none" stroke="#000" stroke-width="4.4" stroke-linecap="round" />
@@ -149,13 +82,7 @@ function NotifyIcon({ on }) {
     </svg>`;
 }
 
-/**
- * One project, in the session row's shape: name, its directory beneath, and a count on the right.
- *
- * The count is OPEN tasks, not every task — `done` grows forever and would quickly say nothing. It is
- * computed from the live task list rather than fetched, which is why a stale project row (the list is
- * re-read on entry to the board, never polled) still carries a fresh number.
- */
+/** Project counts include only open tasks and derive from the live task list. */
 function ProjectRow({ project, open, active, onSelect }) {
   const select = () => onSelect(project.id);
   const onKeyDown = (event) => {
@@ -187,11 +114,7 @@ function ProjectRow({ project, open, active, onSelect }) {
   `;
 }
 
-/**
- * Bound how long one push transition occupies the serialized queue. A deadline releases the next choice,
- * but ONLY a newer generation makes the operation stale. A later user choice aborts cancelable reads;
- * non-cancelable browser mutations may settle later and repair the newest desired state.
- */
+/** Time out serialized push work without making it stale; only a newer generation does that. */
 function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onController) {
   const controller = new AbortController();
   let timeout = null;
@@ -218,18 +141,7 @@ function boundedPushTransition(operation, isGenerationCurrent, repairLatest, onC
   });
 }
 
-/**
- * The row's task badge, or nothing when the session is linked to no task.
- *
- * It is a real `<a href>` so ⌘-click, middle-click and "copy link" all behave: a plain left click is the
- * only one this steals, handing it to the router instead of a reload. `stopPropagation` is load-bearing —
- * the whole row is a click target that selects the session, and without it opening a task would select
- * the session underneath at the same time.
- *
- * The markup is duplicated in TerminalPane's header rather than extracted: a shared component would be a
- * fourth file, and the two badges differ in what surrounds them. What they must NOT differ in is the
- * text, which is why [taskBadge] and not a local string is the source of it.
- */
+/** Stop task-badge clicks from also selecting the containing session row. */
 function TaskBadge({ session, tasks }) {
   const task = taskBadge(session, tasks);
   if (!task) return null;
@@ -304,8 +216,6 @@ function groupNeedsAttention(group) {
 function SessionGroup({
   group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession,
 }) {
-  // The head is a toggle BUTTON with the group's "+" as its sibling, not a child — a button inside a
-  // button is invalid, and the "+" must not double as an expand.
   const collapsed = collapsedGroups.has(group.path);
   const hidingAttention = collapsed && groupNeedsAttention(group);
 
@@ -376,8 +286,7 @@ export function Sidebar({
   const repairPushRef = useRef(() => {});
   useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
   const queuePushTransition = useCallback((transition, desired, operation, warning) => {
-    // The local generation orders this tab; the stored preference orders every tab. Same-target operations
-    // may overlap safely because subscribe/unsubscribe and the daemon writes are all idempotent.
+    // Local generations order this tab; the stored preference orders tabs.
     const isGenerationCurrent = () =>
       transition === pushTransitionIdRef.current && notifyEnabled() === desired;
     pushTransitionRef.current = pushTransitionRef.current
@@ -395,8 +304,7 @@ export function Sidebar({
       })
       .catch((e) => console.warn(warning, e));
   }, []);
-  // Clicks, storage events, and mount reconciliation publish intent, then enter this one decision path.
-  // In particular, observing current state on mount must not mint newer intent than a click already did.
+  // Mount reconciliation must not mint newer intent than a click or storage event.
   repairPushRef.current = () => {
     const transition = pushTransitionIdRef.current;
     const desired = notifyEnabled();
@@ -429,13 +337,10 @@ export function Sidebar({
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (!next.delete(path)) next.add(path);
-      return next;   // a new Set every time: Preact compares state by identity
+      return next;
     });
   }, []);
-  // A subscription can vanish without this page being told (the browser drops it, site data is cleared),
-  // and a stale "push is on" belief would silence the in-tab notifications too. Put this reconciliation
-  // through the same queue as clicks so it cannot overwrite a newer subscribe/unsubscribe transition.
-  // The preference is origin-wide localStorage, so another open client must supersede this one's work too.
+  // Reconcile dropped subscriptions through the same queue as clicks and cross-tab storage changes.
   useEffect(() => {
     const syncNotificationPreference = (event = null) => {
       const next = notifyEnabled();
@@ -449,8 +354,7 @@ export function Sidebar({
       }
       const permission = pushPermissionRef.current;
       const syncedTransition = ++pushTransitionIdRef.current;
-      // A stale-mutation signal can interrupt this tab's own ON prompt without changing the preference.
-      // Keep that already-claimed user gesture attached to the replacement generation.
+      // Preserve an already-claimed permission gesture across a repair-only generation change.
       pushPermissionRef.current = {
         transition: syncedTransition,
         request: next && !preferenceChanged ? permission.request : null,
@@ -461,8 +365,7 @@ export function Sidebar({
       return true;
     };
     window.addEventListener("storage", syncNotificationPreference);
-    // Close the render→effect listener gap before the initial reconciliation: if storage changed there,
-    // the sync publishes that newer intent; otherwise reconcile without superseding an earlier click.
+    // Close the render-to-effect storage-listener gap before reconciling.
     if (!syncNotificationPreference()) {
       repairPushRef.current();
     }
@@ -476,32 +379,25 @@ export function Sidebar({
   const toggleNotifications = () => {
     const next = !notifyOnRef.current;
     notifyOnRef.current = next;
-    // Flip the stored preference first: the toggle is the per-device in-tab setting and must land whatever
-    // the push handshake does. Push is the upgrade on top of it, not a precondition.
+    // The per-device in-tab preference must survive push-handshake failure.
     setNotifyEnabled(next);
     setNotifyOn(next);
-    // Claim the iOS permission prompt synchronously in THIS click, before queueing behind an older network
-    // transition. Awaiting the queue first would lose the user gesture and Safari would refuse to prompt.
+    // Claim iOS permission synchronously before queued work loses the user gesture.
     const permission = next ? ensurePermission() : null;
     syncWorkerPushPreference();
     const transition = ++pushTransitionIdRef.current;
     pushPermissionRef.current = { transition: transition, request: permission };
     pushRepairGenerationRef.current = null;
-    // A fetch can be cancelled; a PushManager mutation cannot, and will repair the newest generation later.
+    // PushManager mutations cannot abort; late completion repairs the newest generation.
     Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
     repairPushRef.current();
   };
-  // Archived ("done") sessions are hidden from the working set — the attention queue, the session list,
-  // and every count — and only surfaced under an explicit "Show done" toggle.
   const visible = sessions.filter((s) => !s.archived);
   const doneSessions = sessions.filter((s) => s.archived);
   const attention = visible.filter((s) => isNeedsAttention(s.state));
   const grouped = groupingEnabled(prefs);
   const onTasks = screen === SCREEN_TASKS;
-  // The attention count is the one head element that is NOT fixed: on the board it would report on a
-  // list this sidebar is not showing, next to a link that already carries the same news nowhere.
   const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
-  // One walk of the task list for every project row, rather than a filter per row.
   const openPerProject = new Map();
   if (onTasks) {
     for (const task of tasks) {
@@ -510,8 +406,6 @@ export function Sidebar({
     }
   }
 
-  // `open` only means anything under the mobile media query, where this aside is a fixed overlay drawer;
-  // above the breakpoint it is the same flex column it has always been.
   return html`
     <aside id="sidebar"
            class=${[drawerOpen ? "open" : "", collapsed ? "collapsed" : ""].filter(Boolean).join(" ")}>
@@ -529,8 +423,6 @@ export function Sidebar({
                 : "Notifications off — click to turn on for this device"}
               onClick=${toggleNotifications}
             ><${NotifyIcon} on=${notifyOn} /></button>
-            ${/* Shown only under the mobile media query: the drawer's scrim covers the hamburger that
-                  opened it, so without this the only way back is a tap outside. */ ""}
             <button
               id="drawer-close"
               class="icon-button icon-button-small drawer-close"
@@ -674,10 +566,6 @@ export function Sidebar({
       `}
 
       <footer id="sidebar-footer">
-        ${/* The session view's renderer for `status`. The board has its own — the `.board-status` toast
-              in `app.js` — and keeps it now that both are mounted at once: on a phone this footer is
-              inside a CLOSED drawer, so a refused drag announced only here would be announced nowhere.
-              Rendering it on one screen each is what stops the two from doubling up. */ ""}
         ${!onTasks && html`
           <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
              role="status" aria-live="polite">${status.text}</p>`}

@@ -6,25 +6,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * Tests for [derToRawSignature].
- *
- * The happy-path fixtures are REAL signatures produced by the same `/usr/bin/openssl dgst -sha256 -sign`
- * the signer will run, over one throwaway P-256 key, and their expected `r || s` was extracted by
- * `openssl asn1parse` — an outside producer and an outside parser, so this file cannot be our own DER
- * reasoning agreeing with itself. They are pinned as constants rather than generated at test time: a
- * signature is randomised (a fresh `k` per call), and a test that signs something new on every run would
- * only exercise whichever shape chance handed it — which is exactly how the rare forms below stay broken
- * until production hits them.
- *
- * The set covers every shape the DER encoding can take for P-256, with the frequency each occurs at:
- * both coordinates 32 bytes (~1 in 2 signatures), either one gaining a `0x00` sign byte because its top
- * bit is set (~1 in 2), and either one LOSING its top byte because the value is below `2^248` (~1 in 128).
- * That last case is the one that silently produces a wrong 64 bytes without the left-padding.
- */
 class EcdsaDerTest {
 
-    /** `SEQUENCE { INTEGER 32, INTEGER 32 }` — 70 bytes, the form roughly half of all signatures take. */
     private val der3232 =
         "304402206bdfc37cfe15377f1d60f6a43af698c943e09e71049f2f6d8905f46ce8e11819" +
             "022008b7df673fb6fd8aafaf9b9289aeee4278124ff74898e16e97265695225f3e9d"
@@ -32,7 +15,6 @@ class EcdsaDerTest {
         "6bdfc37cfe15377f1d60f6a43af698c943e09e71049f2f6d8905f46ce8e11819" +
             "08b7df673fb6fd8aafaf9b9289aeee4278124ff74898e16e97265695225f3e9d"
 
-    /** 71 bytes: `r` has its top bit set (`0xc8…`) so DER prepends a `0x00` sign byte that must come off. */
     private val der3332 =
         "3045022100c8e7f5fcd07698820ea350b6480b4f307361ffaebef7b7d657e711d0ae57777d" +
             "022072e26a0743e34dad0d0ae754dc55039a194d17f19c27873684077f01524ed069"
@@ -40,7 +22,6 @@ class EcdsaDerTest {
         "c8e7f5fcd07698820ea350b6480b4f307361ffaebef7b7d657e711d0ae57777d" +
             "72e26a0743e34dad0d0ae754dc55039a194d17f19c27873684077f01524ed069"
 
-    /** 71 bytes, mirror image: the sign byte is on `s` (`0xe2…`), so the stripping cannot be positional. */
     private val der3233 =
         "3045022024e83791f03db46f7c1edf4684ed550d97e6b25588d7807cea294e0ef5fa59d8" +
             "022100e2379fc646f9b73560928744ee8e187e7465bc755dce4e39b3ee46e6e85419d6"
@@ -48,7 +29,6 @@ class EcdsaDerTest {
         "24e83791f03db46f7c1edf4684ed550d97e6b25588d7807cea294e0ef5fa59d8" +
             "e2379fc646f9b73560928744ee8e187e7465bc755dce4e39b3ee46e6e85419d6"
 
-    /** 72 bytes: both coordinates carry a sign byte — the longest a P-256 signature ever gets. */
     private val der3333 =
         "30460221009c95c31f2db96fade421f021e3109c4d57e53b740423cdacf867d310b1436ed6" +
             "022100e203901ca1b797425c23dbcb535d00a756cabefd7784ab51bf9545bd5e070797"
@@ -56,7 +36,6 @@ class EcdsaDerTest {
         "9c95c31f2db96fade421f021e3109c4d57e53b740423cdacf867d310b1436ed6" +
             "e203901ca1b797425c23dbcb535d00a756cabefd7784ab51bf9545bd5e070797"
 
-    /** 69 bytes: `r < 2^248`, so DER drops its leading zero and we must put exactly one back. */
     private val der3132 =
         "3043021f39dac52d7ec57d438b2ee10ed45527414fbad905ba3e7d68e8d5f78235ed59" +
             "02203fc3c90528257af87eaadc972d3b7c8e9ba8032728b73aab8821d64186e96a4f"
@@ -64,7 +43,6 @@ class EcdsaDerTest {
         "0039dac52d7ec57d438b2ee10ed45527414fbad905ba3e7d68e8d5f78235ed59" +
             "3fc3c90528257af87eaadc972d3b7c8e9ba8032728b73aab8821d64186e96a4f"
 
-    /** 69 bytes, mirror image: the short coordinate is `s`, which must be padded in its own half. */
     private val der3231 =
         "3043022065110fe2a9060a743d78483d9f0988cbc3c9a4ea8c800b6bca8808104af4b20f" +
             "021f405e37fc68115fdf72f04a8d719c103a6381a29bf8344ba44ced6533e97786"
@@ -77,7 +55,6 @@ class EcdsaDerTest {
         return ByteArray(hexText.length / 2) { hexText.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
     }
 
-    /** A hand-built `SEQUENCE { INTEGER r, INTEGER s }` — for the shapes openssl will never produce. */
     private fun derOf(r: ByteArray, s: ByteArray): ByteArray {
         val content = byteArrayOf(0x02, r.size.toByte()) + r + byteArrayOf(0x02, s.size.toByte()) + s
         return byteArrayOf(0x30, content.size.toByte()) + content
@@ -111,8 +88,6 @@ class EcdsaDerTest {
         assertEquals(69, bytes(der3132).size, "fixture precondition")
         assertEquals(69, bytes(der3231).size, "fixture precondition")
 
-        // The failure mode this guards: without padding, a 31-byte r would shift s left by one byte and
-        // the push service would reject the whole JWT with no diagnostic.
         assertDecodes(der3132, raw3132, "a 31-byte r")
         assertDecodes(der3231, raw3231, "a 31-byte s")
 
@@ -125,8 +100,6 @@ class EcdsaDerTest {
 
     @Test
     fun padsCoordinatesOfAnyLengthIntoTheirOwnHalf() {
-        // Degenerate widths openssl will not emit for a real key, but the padding rule has to hold for
-        // them too — this is the rule stated as small numbers rather than as 64 hex characters.
         val raw = derToRawSignature(derOf(byteArrayOf(0x01), byteArrayOf(0x00, 0xff.toByte())))
 
         assertEquals(P256_RAW_SIGNATURE_LENGTH, raw.size, "the output width never depends on the input")
@@ -136,8 +109,6 @@ class EcdsaDerTest {
 
     @Test
     fun keepsAZeroCoordinateAsThirtyTwoZeroBytes() {
-        // A zero r is cryptographically invalid, but it is structurally a valid DER INTEGER; stripping
-        // its leading zeros must not leave an EMPTY magnitude and shift the output.
         val raw = derToRawSignature(derOf(byteArrayOf(0x00), ByteArray(32) { 0x11 }))
 
         assertEquals("00".repeat(32) + "11".repeat(32), hex(raw), "a zero coordinate still fills its half")
@@ -156,8 +127,6 @@ class EcdsaDerTest {
         assertFailsWith<EcdsaDerException>("empty input is not a signature") {
             derToRawSignature(ByteArray(0))
         }
-        // An openssl that failed but still exited 0 would hand us something like this; slicing it would
-        // produce 64 bytes of zeros that look like a signature all the way to the push service.
         assertFailsWith<EcdsaDerException>("a stub is not a signature") {
             derToRawSignature(byteArrayOf(0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x01))
         }
@@ -191,7 +160,6 @@ class EcdsaDerTest {
 
     @Test
     fun rejectsACoordinateLengthThatRunsOffTheEnd() {
-        // The outer length is consistent, so only the per-INTEGER bounds check catches this.
         val overrun = byteArrayOf(0x30, 0x08, 0x02, 0x20) + ByteArray(6)
         val failure = assertFailsWith<EcdsaDerException> { derToRawSignature(overrun) }
         assertTrue(failure.message!!.contains("remain"), "the overrun is named: ${failure.message}")
@@ -208,8 +176,6 @@ class EcdsaDerTest {
         }
         assertTrue(tooLong.message!!.contains("at most 33"), "the limit is stated: ${tooLong.message}")
 
-        // 33 bytes is legal ONLY as a sign byte plus 32 magnitude bytes; 33 significant bytes is not a
-        // P-256 coordinate and must not be truncated into one.
         val notASignByte = assertFailsWith<EcdsaDerException> {
             derToRawSignature(derOf(ByteArray(33) { 0x11 }, ByteArray(32) { 0x11 }))
         }

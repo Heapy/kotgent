@@ -24,17 +24,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 
-/**
- * Wiring coverage for the pure/injectable half of tmux close detection: [Commands.writeTmuxHookScript]
- * materializes the exact [TmuxHookConfig] contract consumed by
- * [io.kotgent.transport.tmuxHookRoutes], without touching the operator's real `~/.kotgent`.
- *
- * Reach, recorded honestly: this proves the artifact contents, paths, and modes. The
- * [Commands.daemon] call site that passes the returned path to production [io.kotgent.tmux.Tmux] and
- * forwards [SessionManager.onTmuxSessionClosed] into the server remains outside automation because the
- * repository rule forbids starting the long-lived daemon in tests; Task 11 verifies that call site by
- * inspection.
- */
 @OptIn(ExperimentalForeignApi::class)
 class TmuxHookWiringTest {
 
@@ -82,7 +71,6 @@ class TmuxHookWiringTest {
         }
     }
 
-    /** A fresh user-only directory under `$TMPDIR`; never the operator's home. */
     private fun makeTempHome(): String {
         val root = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
         repeat(20) {
@@ -93,7 +81,6 @@ class TmuxHookWiringTest {
         error("could not create a throwaway tmux-hook home under $root")
     }
 
-    /** Permission bits only, via stock `platform.posix` (safe in the native test binary). */
     private fun fileMode(path: String): Int = memScoped {
         val st = alloc<platform.posix.stat>()
         assertEquals(0, platform.posix.stat(path, st.ptr), "stat failed for $path")

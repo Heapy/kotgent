@@ -1,31 +1,5 @@
-/*
- * The modal screens: New session, Upload files, Preferences, Phone access, Help.
- *
- * Each one is a native `<dialog>`, so Esc, focus trapping and the backdrop's paint come from the
- * platform. The [Dialog] wrapper below is the only place that talks to the imperative dialog API:
- * mounting the component opens it, and the native `close` event reports back so the parent can unmount
- * it. Open/closed is therefore ordinary Preact state — there is no second source of truth.
- *
- * What the platform does NOT give is a light dismiss: `showModal()` paints a backdrop but a press on it
- * closes nothing, so the wrapper adds the two gestures a pointer-only device has — a press outside the
- * panel, and a downward swipe of a TOUCH pointer off the panel's GRABBER. The grabber is the only handle
- * because it is the one strip of a dialog that never scrolls anything: `dialog:modal` makes an overflowing
- * `<dialog>` its own scroller, and `touch-action: none` on the head would turn the natural "pan the sheet
- * by its title" gesture into a dead zone. The two have different reaches, deliberately: a press outside
- * works for any pointer that can click, while the swipe needs `pointerType === "touch"` and a drawn
- * handle — and that handle is drawn wherever a COARSE pointer exists, not merely below the phone
- * breakpoint, because a tablet is wider than it and has no Esc either.
- *
- * Every rule below fails toward KEEPING the dialog, because what it holds is unsaved and local:
- * a swipe is claimed only once it is dominantly downward, a `pointercancel` — a gesture the platform took
- * away — springs back instead of committing, a flick counts only while its speed sample is fresh, and a
- * screen with work in flight opts out entirely (`lightDismiss`). Esc, the ×, and Cancel are unchanged.
- * Esc is not a uniform escape hatch to compare against: New session deliberately spends the first one on
- * its open cwd-completion list (`cwdKeyDown`), so the keyboard has a layer these gestures do not.
- *
- * htm is not an HTML parser and does not decode entities, so any literal `<` in the copy below is
- * interpolated as a JS string (`${"kt-<id>"}`) rather than written as `&lt;`.
- */
+/* Dialog is the sole owner of the native imperative API. Light-dismiss gestures use the backdrop or
+ * touch grabber and fail toward preserving drafts. htm copy interpolates literal `<` characters. */
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
@@ -36,27 +10,14 @@ import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
 import { apiRequest, errorMessage } from "../lib/api.js";
 import { qrSvg } from "../lib/qr.js";
 
-/** A drag this short is still a tap, so the press stays with the button or field underneath it. */
 const SWIPE_SLOP_PX = 8;
-/** Travel that dismisses on release — about a third of a phone dialog's height. */
 const SWIPE_DISMISS_PX = 96;
-/** A flick dismisses earlier: this much travel at this speed (px/ms) beats the distance rule. */
 const SWIPE_FLICK_PX = 32;
 const SWIPE_FLICK_VELOCITY = 0.5;
-/**
- * How fresh a speed sample has to be to count as motion, matching `installSwipeScroll`'s measured
- * handoff. A stationary contact emits no `pointermove` at all, so without this the LAST sample stands
- * for however long the finger then rested: a quick 40px pull, two seconds of second-guessing, and a
- * lift would still read as a flick and throw the draft away. It cuts both ways — a sample that spans
- * a dwell is not a measurement of the flick that ended it either, so it counts as zero rather than as
- * a slow drag. Both directions therefore fail toward keeping the dialog.
- */
+/** Ignore stale velocity samples so a dwell after a short pull cannot dismiss a draft. */
 const SWIPE_FLICK_HANDOFF_MS = 90;
 
-/**
- * The spring-back is set as an inline style, which outranks the stylesheet, so the motion preference
- * cannot be honoured from a media query the way `#sidebar`'s is — it is asked here instead.
- */
+/** Inline animation must consult reduced-motion here because it outranks stylesheet rules. */
 function prefersReducedMotion() {
   return typeof window !== "undefined" && typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -64,18 +25,7 @@ function prefersReducedMotion() {
 
 export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
   const ref = useRef(null);
-  // The one press that may authorize a light dismiss: `{ pointerId, released }`, or null.
-  //
-  // A dismiss is a POSITIVELY COMPLETED down → up → click transaction by ONE pointer, and each part
-  // of that is load-bearing. A set of votes is worse than a flag: a press that answers with no
-  // `click` at all (a secondary button reports `contextmenu`/`auxclick`) stays armed until a later
-  // drag OUT of the panel spends it — the very false close this pairing exists to prevent. Hence
-  // `event.button === 0` — the primary BUTTON, which a touch contact and a pen TIP both report while a
-  // barrel button or an eraser does not — plus `event.isPrimary`, because on a touchscreen a SECOND
-  // finger also reports button 0 and only the primary pointer produces a click at all. Then one slot
-  // that each later press replaces, and `released`, which is what stops a pointer that is still down
-  // from authorizing a DIFFERENT pointer's click. The cost is a false negative worth one tap: a second
-  // contact landing inside disarms a pending backdrop press.
+  // Only one primary pointer's completed outside down-up-click may authorize dismissal.
   const outsidePress = useRef(null);
   const dragRef = useRef(null);
 
@@ -92,10 +42,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     return () => el.removeEventListener("close", handler);
   }, [onClose]);
 
-  // A press on the backdrop is reported on the <dialog> itself, so the target alone is nearly enough —
-  // but a drag that STARTED on the panel (selecting a path, releasing a slider) also ends as a click on
-  // the dialog, and so does a click that a native <select> popup let through. The geometry is therefore
-  // checked against the panel's own box, and both halves of the press must land outside it.
+  // Target alone is insufficient: panel drags and native select popups can end on the dialog.
   const outside = (event) => {
     const el = ref.current;
     if (!el || event.target !== el) return false;
@@ -104,7 +51,6 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
       event.clientY < rect.top || event.clientY > rect.bottom;
   };
 
-  /** Give the panel back to the layout, animated unless the operator asked for less motion. */
   const springBack = (el, pointerId) => {
     if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId);
     el.style.transition = prefersReducedMotion() ? "none" : "transform 160ms ease-out";
@@ -112,25 +58,16 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const pointerDown = (event) => {
-    // A press made while the screen is busy arms NOTHING. Gating only the closing was not enough: a
-    // batch can finish between a backdrop press and its click, and the arm would then be spent on the
-    // freshly rendered result. The slot is cleared by the click that follows a press, so nothing armed
-    // before a busy period can outlive it either.
+    // Never arm dismissal while busy; work may finish between press and click.
     if (!lightDismiss) return;
     const isOutside = outside(event);
-    // `isPrimary` as well as the primary BUTTON: on a touchscreen every contact reports `button === 0`,
-    // but only the primary one produces a `click` at all — so a second finger could otherwise arm a
-    // press that the FIRST finger's click then spent, closing from a gesture that began on the panel.
     if (event.isPrimary && event.button === 0) {
       outsidePress.current = isOutside ? { pointerId: event.pointerId, released: false } : null;
     }
     if (isOutside || event.pointerType !== "touch") return;
-    // One finger owns the swipe. A second contact must not restart it under a new id, or the release
-    // of the first would find a drag it does not own and leave the panel translated.
+    // A second contact must not replace the swipe owner.
     if (dragRef.current) return;
-    // Only the grabber starts a swipe. Not the head: an overflowing `<dialog>` is its own scroller, so
-    // the head is a scroll surface, and the `touch-action: none` this gesture needs would kill the pan.
-    // Not the body either — it scrolls (help, the palette's list) or holds fields a finger must reach.
+    // Only the grabber reserves touch; the head and body must remain scrollable/interactable.
     const from = event.target && event.target.closest ? event.target : null;
     if (!from || !from.closest(".dialog-grabber")) return;
     dragRef.current = {
@@ -149,9 +86,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     const drag = dragRef.current;
     const el = ref.current;
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
-    // The screen can turn busy under a gesture that is already owned. Hand the panel back at once
-    // instead of letting a finger drag the one screen that must stay visible off its own progress —
-    // a contact that then rests without lifting would park it there with no release to spring it.
+    // Work may become busy after gesture claim; restore the panel immediately.
     if (!lightDismiss) {
       dragRef.current = null;
       if (drag.dragging) springBack(el, event.pointerId);
@@ -159,13 +94,9 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     }
     const travel = event.clientY - drag.startY;
     if (!drag.dragging) {
-      // Claimed only once the finger has clearly moved DOWN and moved down MORE than sideways, and only
-      // then captured: an uncaptured pointer keeps a tap underneath working as an ordinary click, and a
-      // sweep across the sheet is not a dismissal just because it drifted 8px down. The axis test is a
-      // LOCK, not a running condition — a claimed gesture stays claimed, the way a native sheet does.
+      // Capture only after a dominant downward movement, preserving taps and horizontal sweeps.
       if (travel < SWIPE_SLOP_PX || travel <= Math.abs(event.clientX - drag.startX)) {
-        // Keep the speed baseline current even while the gesture is unclaimed: leaving it at the press
-        // would divide the first sample after the claim by the whole press, dwell included.
+        // Keep dwell time out of the first claimed velocity sample.
         drag.lastY = event.clientY;
         drag.lastAt = event.timeStamp;
         return;
@@ -185,9 +116,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   const pointerUp = (event) => {
-    // Only the pointer that armed the press can complete or withdraw it: a release outside completes
-    // it, a release INSIDE is a drag onto the panel and withdraws it, and another pointer's release
-    // is neither. Without this, a finger merely HOLDING the backdrop authorized a mouse's click.
+    // Only the arming pointer can complete or withdraw the backdrop press.
     const press = outsidePress.current;
     if (press && press.pointerId === event.pointerId) {
       if (outside(event)) press.released = true;
@@ -195,21 +124,15 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     }
     const drag = dragRef.current;
     const el = ref.current;
-    // Identity is checked BEFORE the ref is cleared: another finger's release is not this drag's end,
-    // and clearing first would abandon a live swipe with the panel stuck under its transform.
     if (!drag || !el || event.pointerId !== drag.pointerId) return;
     dragRef.current = null;
     if (!drag.dragging) return;
-    // A screen can become busy under a gesture that is already owned (a second pointer pressing
-    // Upload), so the opt-out is re-read HERE, where the dismissal is actually decided.
+    // Re-check busy state at the point dismissal is decided.
     if (!lightDismiss) {
       springBack(el, event.pointerId);
       return;
     }
-    // The release carries a position of its own and a browser need not precede it with a
-    // `pointermove`, so it is folded in as the final sample: a swipe that reverses and lifts must not
-    // dismiss on the reading from before the reversal. A release that moved nowhere leaves the last
-    // sample standing, aged; anything else is measured from the release itself.
+    // Fold pointerup into the final sample; browsers need not emit a preceding move.
     const travel = Math.max(0, event.clientY - drag.startY);
     const elapsed = event.timeStamp - drag.lastAt;
     const velocity = event.clientY === drag.lastY
@@ -226,9 +149,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     springBack(el, event.pointerId);
   };
 
-  // A cancel is the platform TAKING the gesture away (a system edge pull, palm rejection, an incoming
-  // call), never a release. It shares nothing with `pointerUp` but the cleanup: evaluating distance
-  // here would close a dialog on an interruption the operator did not perform.
+  // Platform cancellation restores rather than dismisses the draft.
   const pointerCancel = (event) => {
     const press = outsidePress.current;
     if (press && press.pointerId === event.pointerId) outsidePress.current = null;
@@ -244,9 +165,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     const press = outsidePress.current;
     outsidePress.current = null;
     if (!press || !press.released || !lightDismiss || !outside(event)) return;
-    // Pointer Events makes `click` a PointerEvent, so where the platform names the pointer that
-    // produced it, it has to be the one that pressed. Where it does not, `released` above is the
-    // whole guarantee — hence that flag rather than this check being the load-bearing half.
+    // When click exposes pointer identity, require it to match the press.
     if (typeof event.pointerId === "number" && event.pointerId !== press.pointerId) return;
     if (ref.current) ref.current.close();
   };
@@ -255,37 +174,16 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
     <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}
             onPointerDown=${pointerDown} onPointerMove=${pointerMove}
             onPointerUp=${pointerUp} onPointerCancel=${pointerCancel} onClick=${click}>
-      ${/* The swipe affordance and its only handle — including for the palette, which draws no
-            `.dialog-head`. It exists wherever a coarse pointer does, which is where the gesture is. */ ""}
       <div class="dialog-grabber" aria-hidden="true"></div>
       ${children}
     </dialog>
   `;
 }
 
-// --- New session -----------------------------------------------------------------------------------
-
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
-/**
- * One form, two modes. "Start new" launches an agent (`onStart`); "Import existing" registers a
- * conversation started OUTSIDE kotgent by its provider session id (`onImport(body, registerOnly)` →
- * `POST /sessions/import`). Import needs no working directory — the daemon discovers it from the
- * provider's own transcript — so the cwd field is `required` only in start mode. Import errors
- * (400/409) are shown verbatim in the form's error line: the daemon's text already names the fix
- * (a duplicate names the existing kotgent session, a claude cwd mismatch names the workaround).
- *
- * [initialTaskRef] is the task-detail view's "Start session": THIS dialog is the one launch path, so a
- * task-launched session differs from any other only by the `taskRef` its start body carries — the
- * session row and its link are then written by the same `POST /sessions`, and a failed launch leaves no
- * link behind. Three details are deliberate. The field is added to the body only when it is set, so an
- * ordinary launch sends the same shape it always did (a daemon with no task layer must REFUSE a request
- * carrying a `taskRef`, not silently drop the link, and it should never see one it did not ask for).
- * Import mode omits it, because there is no `taskRef` on the import body at all — the ref survives a
- * round trip through import mode and back, exactly like `initialCwd`. And the link is stated in the
- * form rather than left implicit: this dialog is also opened from the sidebar and the palette, where a
- * silent link would be a surprise.
- */
+/* Start and import share one form. taskRef belongs only to start requests; import discovers cwd from
+ * the provider transcript unless the operator explicitly overrides it. */
 export function NewSessionDialog({
   initialCwd, initialMode = "start", initialAgent = "", initialTaskRef = null,
   basePath, onStart, onImport, onClose,
@@ -306,15 +204,11 @@ export function NewSessionDialog({
   const cwdRef = useRef(null);
   const agentRef = useRef(null);
   const sessionIdRef = useRef(null);
-  // Read straight off the prop rather than seeded into state: this dialog is mounted fresh for each
-  // open (app.js swaps the `dialog` object), so there is no draft here to keep and nothing to drift.
   const taskRef = typeof initialTaskRef === "string" && initialTaskRef.trim().length > 0
     ? initialTaskRef.trim()
     : null;
 
-  // There is deliberately no general default agent, so the picker — not the prefilled path — is the
-  // first answer this dialog normally needs. The free-terminal command is the one explicit preselection;
-  // for it, the working directory is the first unanswered field and receives focus instead.
+  // Focus the first unanswered field; only the free-terminal command preselects an agent.
   useEffect(() => {
     const target = agent ? cwdRef.current : agentRef.current;
     if (target) target.focus();
@@ -356,7 +250,7 @@ export function NewSessionDialog({
 
   const chooseSuggestion = (path) => {
     setCwd(path);
-    setCompletionQuery(null); // selecting is not another typing event: keep the just-closed list closed
+    setCompletionQuery(null);
     setSuggestions([]);
     setActiveSuggestion(-1);
     if (cwdRef.current) cwdRef.current.focus();
@@ -398,11 +292,7 @@ export function NewSessionDialog({
     if (next === "import" && AGENT_CHOICES.some(
       (choice) => choice.value === agent && choice.importable === false,
     )) setAgent("");
-    // Each mode re-enters with its own cwd default. A prefilled start-mode cwd (a group's "+") must
-    // not ride into import mode: import sends any non-empty cwd as an explicit override of the
-    // daemon's transcript discovery, and the codex probe ignores cwd entirely — the group's
-    // directory, not the rollout's recorded one, would be stored as the session's project dir for
-    // good. A cwd meant to override discovery is typed in import mode itself.
+    // Never carry a start-mode cwd into import as an accidental transcript-discovery override.
     setCwd(next === "import" ? "" : (initialCwd || ""));
     setCompletionQuery(null);
     setSuggestions([]);
@@ -412,10 +302,7 @@ export function NewSessionDialog({
   const submit = async (event) => {
     event.preventDefault();
     if (!agent) {
-      // The one requirement the browser cannot report here. A `disabled` submit would swallow both the
-      // click and Enter with no feedback at all, and native `required` would anchor its bubble on a
-      // radio that is `opacity: 0` — so the missing choice is reported through the dialog's own
-      // `role="alert"` line, and focus goes back to the picker.
+      // Report through the visible alert; native validation targets an invisible radio.
       setError(mode === "import"
         ? "Pick the agent that owns the session you are importing."
         : "Pick an agent to start a session.");
@@ -423,7 +310,7 @@ export function NewSessionDialog({
       return;
     }
     if (mode === "import" && !sessionId.trim()) {
-      // Native `required` catches an empty field but not a whitespace-only one.
+      // Native required accepts whitespace-only input.
       setError("Enter the provider session id to import.");
       if (sessionIdRef.current) sessionIdRef.current.focus();
       return;
@@ -446,26 +333,17 @@ export function NewSessionDialog({
         }, registerOnly);
       } else {
         const body = { agent: agent, cwd: cwd.trim(), name: name.trim() || null, tags: tagList };
-        // Present only when there is one: `app.js` POSTs this object verbatim, and a daemon with no
-        // task layer owes a 400 for a request that carries a taskRef at all.
         if (taskRef) body.taskRef = taskRef;
         await onStart(body);
       }
     } catch (e) {
-      // The import route's own 400/409 text is already user-facing ("cannot import session: …" plus
-      // the fix), so it is shown verbatim; the start path keeps its established prefix. Reached only
-      // while THIS form is still the mounted one: app.js rethrows a completion's failure into the
-      // form only when the submitted dialog is still current, and routes it to the status line
-      // otherwise — a setError after unmount would be a silent no-op and the error would vanish.
+      // Import errors are already user-facing; start failures retain their contextual prefix.
       setError(mode === "import" ? errorMessage(e) : "Could not start session: " + errorMessage(e));
       setBusy(false);
     }
   };
 
   return html`
-    ${/* Every button is already disabled while the launch is in flight, for the same reason the light
-          dismiss is: a close here unmounts a fully typed draft — agent, cwd, name, tags — while the
-          request completes invisibly. Esc, the ×, and Cancel still work; those are deliberate. */ ""}
     <${Dialog} id="new-session-dialog" labelledBy="new-session-title" lightDismiss=${!busy}
                onClose=${onClose}>
       <form id="new-session-form" onSubmit=${submit}>
@@ -622,13 +500,6 @@ export function NewSessionDialog({
   `;
 }
 
-// --- File upload -----------------------------------------------------------------------------------
-
-/**
- * Pick one or more files from this browser/device and upload them directly into the selected session's
- * working directory. The destination path is display-only: the request carries only the session id and a
- * leaf filename, and the daemon resolves the row's current cwd itself.
- */
 export function UploadFilesDialog({ session, onClose }) {
   const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -688,8 +559,7 @@ export function UploadFilesDialog({ session, onClose }) {
       if (failures.length > 0) {
         setError(failures.join("\n"));
       }
-      // A second press with the same selection would hit conflicts for every successful file. Clear the
-      // native FileList and require an explicit new pick; the result above remains visible.
+      // Require a fresh selection so a second submit cannot replay successful files into conflicts.
       setFiles([]);
       if (inputRef.current) inputRef.current.value = "";
     } finally {
@@ -699,10 +569,6 @@ export function UploadFilesDialog({ session, onClose }) {
   };
 
   return html`
-    ${/* The one screen that opts out of light dismiss, and only while it is working: unmounting aborts
-          the in-flight request, and the loop then returns before it can name which files landed and
-          which did not. A backdrop press or a swipe is exactly the accident that costs that report;
-          Esc, the ×, and Cancel stay, because those are the operator saying it on purpose. */ ""}
     <${Dialog} id="upload-dialog" labelledBy="upload-title" lightDismiss=${!busy} onClose=${onClose}>
       <form id="upload-form" onSubmit=${submit}>
         <div class="dialog-head">
@@ -744,9 +610,6 @@ export function UploadFilesDialog({ session, onClose }) {
   `;
 }
 
-// --- Preferences -----------------------------------------------------------------------------------
-
-/** Describe what the draft settings would do, using a real session cwd when one is available. */
 function groupingPreview(draft, sessions) {
   if (!draft.basePath) return "No base path — sessions are listed flat.";
   const base = normalizePath(draft.basePath);
@@ -865,9 +728,6 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
           </small>
         </label>
 
-        ${/* Off by default, and off means nothing is downloaded: the width tables live in addons this
-              browser fetches only once a mode selects one. Their table has to agree with the one tmux
-              laid the pane out with, so the choice is deliberately the operator's. */ ""}
         <label class="field">
           <span>Terminal unicode <small>how wide a character is measured</small></span>
           <select id="prefs-terminal-unicode" value=${unicode}
@@ -896,18 +756,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
   `;
 }
 
-// --- Phone access ----------------------------------------------------------------------------------
-
-/**
- * Sign in on a second device. Minting a ticket here is the same `POST /auth/ticket` the CLI's
- * `kotgent web` uses; the difference is the QR, drawn over the returned `publicUrl` WITHOUT its credential
- * fragment so Safari can install the PWA without spending the code that PWA needs. When no public URL is
- * configured the daemon returns `publicUrl: null` — there is nothing a phone could reach, so the dialog
- * explains how to set the tunnel up instead of drawing a dead QR.
- *
- * The ticket is a full-access, one-time credential with a short life. That is stated plainly under the
- * code, and "Refresh" mints a new one (each minting leaves the previous ticket to expire on its own).
- */
+/* The QR contains the credential-free install URL so Safari cannot spend the installed PWA's ticket. */
 export function PhoneDialog({ onClose }) {
   const [state, setState] = useState({ status: "loading" });
 
@@ -940,11 +789,7 @@ export function PhoneDialog({ onClose }) {
   `;
 }
 
-/**
- * Split a login code in the middle (`A1B2C3D4` → `A1B2 C3D4`) — the way a human reads eight symbols off a
- * screen anyway. The daemon strips whitespace before it looks the code up (`normalizeTicketCode`), so the
- * space is display-only and typing it back changes nothing.
- */
+/** Display-only grouping is safe because normalizeTicketCode strips whitespace. */
 function groupCode(code) {
   const value = String(code || "");
   if (value.length < 6 || value.length % 2 !== 0) return value;
@@ -952,15 +797,11 @@ function groupCode(code) {
   return value.slice(0, half) + " " + value.slice(half);
 }
 
-/**
- * The public `/auth` page is the install surface; its fragment is the one-shot credential. The QR must stop
- * before `#` so opening it in Safari cannot spend the code the newly installed PWA still needs.
- */
+/** Strip the one-shot credential fragment from the public install URL. */
 function installUrl(ticketUrl) {
   return String(ticketUrl || "").split("#", 1)[0];
 }
 
-/** Render the changing part of [PhoneDialog] for the current fetch state. */
 function phoneBody(state, issue, onClose) {
   if (state.status === "loading") {
     return html`<p id="phone-status" class="phone-status">Minting a one-time sign-in code…</p>`;
@@ -1003,9 +844,7 @@ function phoneBody(state, issue, onClose) {
   `;
 }
 
-/** No public URL configured: explain the one-time tunnel setup rather than draw an unreachable QR. */
 function phoneSetup(onClose) {
-  // The daemon always serves this page on its own explicit port, so window.location.port is always set.
   const port = window.location.port;
   const ingress = "  - hostname: <your-tunnel-host>\n    service: http://127.0.0.1:" + port;
   return html`
@@ -1034,8 +873,6 @@ function phoneSetup(onClose) {
     </div>
   `;
 }
-
-// --- Help ------------------------------------------------------------------------------------------
 
 const CLI_HELP = `kotgent list                  list sessions
 kotgent start <agent> [cwd]   start a session (claude | codex | junie | shell)

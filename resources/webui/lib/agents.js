@@ -1,22 +1,11 @@
 /*
- * The agents the New session dialog offers, in display order.
- *
- * `available: false` renders an announced but unselectable card: the kind is shown as planned and its
- * radio is `disabled`, so it leaves the tab order and the arrow-key group entirely. That flag has to
- * agree with the daemon's `agentFactoryOf`, which is the real gate — it rejects an unknown kind with a
- * 400 before any tmux side effect, so a card enabled here ahead of its adapter only produces a failed
- * start.
- *
- * Each vendor `icon` is its own mark, taken verbatim as a single filled path on its native `viewBox`
- * so nothing is redrawn by hand — hence the per-row viewBox rather than one shared 24x24. Shell is the
- * sole non-vendor choice and uses a generic terminal glyph:
+ * Vendor marks retain their native viewBox and identify the agent only:
  *   claude  simple-icons (CC0), icons/claude.svg
  *   codex   OpenAI, developers.openai.com/favicon.svg — the blossom path only; the favicon's blue disc
  *           is dropped so the glyph takes its chip's colour like the other three
  *   junie   JetBrains, resources.jetbrains.com/storage/logos/web/junie/junie.svg
  *   cursor  simple-icons (CC0), icons/cursor.svg
- * The marks are their owners' trademarks and appear here only to identify the agent a card starts.
- * They are filled, not stroked: `.agent-icon svg` sets `fill: currentColor` for exactly this reason.
+ * The marks remain their owners' trademarks.
  */
 
 export const AGENT_CHOICES = [
@@ -42,5 +31,4 @@ export const AGENT_CHOICES = [
   },
 ];
 
-/** The card that takes the New session dialog's initial focus while no agent is chosen. */
 export const FIRST_AVAILABLE_AGENT = AGENT_CHOICES.find((choice) => choice.available).value;

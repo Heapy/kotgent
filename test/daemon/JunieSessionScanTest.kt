@@ -32,16 +32,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Unit tests for [JunieSessionScan] — provider-id discovery, the Junie resumability probe, import cwd
- * discovery and the dominant-model read.
- *
- * NEVER reads the real `~/.junie`: every filesystem test injects a throwaway `$TMPDIR` tree laid out
- * exactly like Junie's (`sessions/index.jsonl` + `sessions/<id>/events.jsonl`), so the scan runs for real
- * against a fake home. The pure part (one index line → a record) is tested directly, including on the
- * truncated input a bounded tail read actually produces.
- */
 @OptIn(ExperimentalForeignApi::class)
+// Filesystem fixtures use unique TMPDIR trees and never read the developer's ~/.junie.
 class JunieSessionScanTest {
 
     private val files = mutableListOf<String>()
@@ -55,11 +47,9 @@ class JunieSessionScanTest {
 
     private fun id(suffix: String) = ProviderSessionId("session-260730-0155$suffix")
 
-    // ---- pure: one index.jsonl line ----
 
     @Test
     fun anIndexLineYieldsItsIdProjectDirAndCreatedAt() {
-        // The real record shape, copied from junie 26.8.3's ~/.junie/sessions/index.jsonl.
         val line = """{"sessionId":"session-260730-015553-1j1h","createdAt":1785365753000,""" +
             """"updatedAt":1785407489000,"projectDir":"/Users/yoda/dev/pet/kotgent","taskName":"Add Junie"}"""
         val record = junieIndexRecord(line)!!
@@ -70,7 +60,6 @@ class JunieSessionScanTest {
 
     @Test
     fun anUnusableIndexLineIsSkippedRatherThanFatal() {
-        // A bounded TAIL read cuts the FIRST line, so an unparseable line is the normal case, not an error.
         assertNull(junieIndexRecord("""sionId":"session-260730-015553-1j1h","createdAt":178536575300"""))
         assertNull(junieIndexRecord(""), "the blank line every JSONL file ends with")
         assertNull(junieIndexRecord("""{"createdAt":1785365753000}"""), "no sessionId -> no record")
@@ -82,7 +71,6 @@ class JunieSessionScanTest {
 
     @Test
     fun anIndexLineWithoutAProjectDirIsStillARecord() {
-        // "Unknown cwd" is a real state (see discoverSessionId's filter), so it must not lose the id.
         val record = junieIndexRecord("""{"sessionId":"session-260730-015553-1j1h","createdAt":1}""")!!
         assertNull(record.projectDir)
         assertEquals(1L, record.createdAtMillis)
@@ -96,7 +84,6 @@ class JunieSessionScanTest {
         assertEquals("""/work/we"ird\path""", record.projectDir)
     }
 
-    // ---- the probe: the DISK is the authority ----
 
     @Test
     fun aSurvivingSessionDirectoryIsResumable() {
@@ -108,8 +95,6 @@ class JunieSessionScanTest {
 
     @Test
     fun aStaleIndexRowForAPrunedSessionIsNotResumable() {
-        // Junie keeps only its most recent sessions' context, so an index row outlives the directory.
-        // The probe must answer from disk, or a resume would be offered for a session junie cannot revive.
         val junieDir = makeJunieDir()
         val pruned = id("53-1j1h")
         placeIndex(junieDir, indexLine(pruned, "/work/repo"))
@@ -121,7 +106,7 @@ class JunieSessionScanTest {
         val junieDir = makeJunieDir()
         val empty = id("53-1j1h")
         makeDir("$junieDir/sessions")
-        makeDir("$junieDir/sessions/${empty.value}") // created, but no events.jsonl
+        makeDir("$junieDir/sessions/${empty.value}")
         assertFalse(JunieSessionScan(junieDir).hasSession(empty))
     }
 
@@ -134,23 +119,17 @@ class JunieSessionScanTest {
         assertNull(scan.discoverSessionId("/work/repo", 0L))
     }
 
-    // ---- discovery ----
 
     @Test
     fun discoveryFindsASessionWithNoIndexRowYet() {
-        // THE load-bearing case: junie writes a session's index row only once it has run a task, so a
-        // freshly launched session (the operator has not typed a prompt) has a directory and no row. An
-        // index-only discovery would leave every such session "id pending", i.e. unresumable.
         val junieDir = makeJunieDir()
         val mine = id("53-1j1h")
-        placeSession(junieDir, mine) // no index row at all
+        placeSession(junieDir, mine)
         assertEquals(mine, JunieSessionScan(junieDir).discoverSessionId("/work/repo", pastThreshold()))
     }
 
     @Test
     fun discoveryIgnoresSessionsCreatedBeforeTheLaunch() {
-        // The threshold is what keeps a junie the operator started by hand out of scope — including one
-        // still writing events, which is why the scan thresholds on the directory's BIRTH time.
         val junieDir = makeJunieDir()
         placeSession(junieDir, id("53-1j1h"))
         assertNull(
@@ -186,20 +165,19 @@ class JunieSessionScanTest {
         val older = id("30-1uhf")
         val newer = id("53-1j1h")
         placeSession(junieDir, older)
-        usleep(50_000u) // distinct birth times (APFS records nanoseconds)
+        usleep(50_000u)
         placeSession(junieDir, newer)
         assertEquals(newer, JunieSessionScan(junieDir).discoverSessionId("/work/repo", pastThreshold()))
     }
 
     @Test
     fun discoverySkipsANeighbourAndStillFindsMine() {
-        // Both were created inside this launch's window; only the neighbour is attributable elsewhere.
         val junieDir = makeJunieDir()
         val mine = id("30-1uhf")
         val neighbour = id("53-1j1h")
         placeSession(junieDir, mine)
         usleep(50_000u)
-        placeSession(junieDir, neighbour) // newer, so it is examined FIRST
+        placeSession(junieDir, neighbour)
         placeIndex(junieDir, indexLine(neighbour, "/work/OTHER"))
         assertEquals(mine, JunieSessionScan(junieDir).discoverSessionId("/work/repo", pastThreshold()))
     }
@@ -208,12 +186,11 @@ class JunieSessionScanTest {
     fun discoveryIgnoresANonSessionDirectory() {
         val junieDir = makeJunieDir()
         makeDir("$junieDir/sessions")
-        makeDir("$junieDir/sessions/logs") // not a `session-…` directory
+        makeDir("$junieDir/sessions/logs")
         writeFile("$junieDir/sessions/logs/events.jsonl", "{}\n")
         assertNull(JunieSessionScan(junieDir).discoverSessionId("/work/repo", pastThreshold()))
     }
 
-    // ---- import discovery ----
 
     @Test
     fun cwdOfReadsTheRecordedProjectDir() {
@@ -229,8 +206,8 @@ class JunieSessionScanTest {
         val junieDir = makeJunieDir()
         val noRow = id("30-1uhf")
         val pruned = id("53-1j1h")
-        placeSession(junieDir, noRow) // on disk, never ran a task -> no row -> no discoverable cwd
-        placeIndex(junieDir, indexLine(pruned, "/work/gone")) // a row whose directory is gone
+        placeSession(junieDir, noRow)
+        placeIndex(junieDir, indexLine(pruned, "/work/gone"))
         val scan = JunieSessionScan(junieDir)
         assertNull(scan.cwdOf(noRow), "only the index records a project dir")
         assertNull(scan.cwdOf(pruned), "a pruned session must not be importable")
@@ -238,8 +215,6 @@ class JunieSessionScanTest {
 
     @Test
     fun theNewestIndexRowForAnIdWins() {
-        // The tail read walks rows in file order, so a later row for the same id supersedes its
-        // predecessor — an append-style index update must not be shadowed by the stale row above it.
         val junieDir = makeJunieDir()
         val mine = id("53-1j1h")
         placeSession(junieDir, mine)
@@ -247,12 +222,9 @@ class JunieSessionScanTest {
         assertEquals("/work/NEW", JunieSessionScan(junieDir).cwdOf(mine))
     }
 
-    // ---- the model ----
 
     @Test
     fun modelOfPicksTheDominantModelOverTheHelperModels() {
-        // The real shape: junie records a `modelUsage` list per turn that mixes the primary model with
-        // helper models — and the FIRST model in the file is a helper, so only frequency answers.
         val junieDir = makeJunieDir()
         val mine = id("53-1j1h")
         placeSession(
@@ -272,7 +244,7 @@ class JunieSessionScanTest {
     fun modelOfIsNullBeforeTheSessionTakesATurn() {
         val junieDir = makeJunieDir()
         val mine = id("53-1j1h")
-        placeSession(junieDir, mine) // only the default no-model event line
+        placeSession(junieDir, mine)
         assertNull(JunieSessionScan(junieDir).modelOf(mine))
     }
 
@@ -281,7 +253,7 @@ class JunieSessionScanTest {
         val junieDir = makeJunieDir()
         val mine = id("30-1uhf")
         val neighbour = id("53-1j1h")
-        placeSession(junieDir, mine) // no model yet
+        placeSession(junieDir, mine)
         placeSession(junieDir, neighbour, events = modelUsageLine("gpt-6").repeat(5))
         assertNull(
             JunieSessionScan(junieDir).modelOf(mine),
@@ -289,7 +261,6 @@ class JunieSessionScanTest {
         )
     }
 
-    // ---- the background capture ----
 
     @Test
     fun captureJunieModelOncePersistsTheIdKeyedModel() = runBlocking {
@@ -309,8 +280,6 @@ class JunieSessionScanTest {
     @Test
     fun captureJunieModelOncePersistsNothingWhileTheIdIsUnknown() = runBlocking {
         withTimeout(20_000) {
-            // A fresh junie launch has no id yet. An attempt must persist NOTHING rather than guess from
-            // the cwd: a first bind (null -> id) fires no model correction, so a guess could stick forever.
             val junieDir = makeJunieDir()
             placeSession(junieDir, id("53-1j1h"), events = modelUsageLine("gpt-6").repeat(3))
             val store = SqliteEventStore.inMemory(now = { 42L })
@@ -321,8 +290,6 @@ class JunieSessionScanTest {
             assertFalse(captureJunieModelOnce(store, scan, meta, now = { 43L }))
             assertNull(store.getSession(meta.id)!!.model, "an id-less attempt persists nothing")
 
-            // The background discovery binds the id mid-poll: only from that moment can an attempt answer,
-            // and it re-reads the id from the ROW (the launch-time snapshot still says null).
             store.upsertSession(meta.copy(providerSessionId = id("53-1j1h")))
             assertTrue(captureJunieModelOnce(store, scan, meta, now = { 44L }))
             assertEquals("gpt-6", store.getSession(meta.id)!!.model)
@@ -332,9 +299,6 @@ class JunieSessionScanTest {
     @Test
     fun captureJunieModelOnceCannotRacePastARebindClear() = runBlocking {
         withTimeout(20_000) {
-            // The write is atomically conditional on the row still holding the id the lookup was keyed by:
-            // an in-flight attempt whose id was displaced by an authoritative hook SessionBound must write
-            // ZERO rows instead of restoring the (possibly wrong) old id's model.
             val junieDir = makeJunieDir()
             val displaced = id("30-1uhf")
             val authoritative = id("53-1j1h")
@@ -342,7 +306,6 @@ class JunieSessionScanTest {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val meta = launchMeta(providerSessionId = displaced)
             store.upsertSession(meta)
-            // The rebind already happened: the row now holds the authoritative id.
             store.upsertSession(meta.copy(providerSessionId = authoritative))
 
             assertFalse(
@@ -353,12 +316,9 @@ class JunieSessionScanTest {
         }
     }
 
-    // ---- the default home ----
 
     @Test
     fun theDefaultHomeIsTheJunieHomeConvention() {
-        // `$JUNIE_HOME` wins when set; this suite does not mutate the environment, so the assertion is on
-        // the shape either answer must have.
         val dir = defaultJunieDir()
         assertTrue(dir.isNotEmpty())
         assertFalse(dir.endsWith("/"), "trailing slashes are trimmed so path joins stay single-slashed")
@@ -367,11 +327,9 @@ class JunieSessionScanTest {
         }
     }
 
-    // --- harness (throwaway $TMPDIR fake ~/.junie; NEVER the real one) --------------------------------
 
     private val mode0700: Int get() = S_IRUSR or S_IWUSR or S_IXUSR
 
-    /** A fresh throwaway `<tmp>/…/.junie` base directory (created + tracked for teardown). */
     private fun makeJunieDir(): String {
         val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
         val base = makeDir("$tmp/kotgent-junie-scan-${getpid()}-${counter++}")
@@ -384,7 +342,6 @@ class JunieSessionScanTest {
         return path
     }
 
-    /** Lay a session directory where junie would, holding the event stream that defines it. */
     private fun placeSession(
         junieDir: String,
         id: ProviderSessionId,
@@ -400,20 +357,16 @@ class JunieSessionScanTest {
         writeFile("$junieDir/sessions/index.jsonl", content)
     }
 
-    /** The real index record shape (verified against junie 26.8.3). */
     private fun indexLine(id: ProviderSessionId, projectDir: String): String =
         """{"sessionId":"${id.value}","createdAt":1785000000000,"updatedAt":1785000009999,""" +
             """"projectDir":"$projectDir","taskName":"Do the thing"}""" + "\n"
 
-    /** One `modelUsage` record, the shape junie writes per turn. */
     private fun modelUsageLine(model: String): String =
         """{"kind":"SessionA2uxEvent","event":{"agentEvent":{"kind":"TaskUsageEvent",""" +
             """"modelUsage":[{"model":"$model","inputTokens":10,"outputTokens":20}]}}}""" + "\n"
 
-    /** A threshold every fixture created by this test is newer than. */
     private fun pastThreshold(): Long = 0L
 
-    /** A threshold no fixture can satisfy — the launch happens a minute from now. */
     private fun futureThreshold(): Long =
         kotlin.time.Clock.System.now().toEpochMilliseconds() + 60_000
 

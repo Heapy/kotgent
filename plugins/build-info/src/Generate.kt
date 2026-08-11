@@ -7,13 +7,7 @@ import org.jetbrains.amper.plugins.TaskAction
 import java.io.IOException
 import java.nio.file.Path
 
-/**
- * Generates the immutable version metadata compiled into the native application.
- *
- * Execution avoidance is intentionally disabled. In a linked Git worktree, `.git` is a stable text
- * file while the branch ref that changes on every commit lives in the common Git directory outside
- * this project tree. No honest finite `@Input` path inside the worktree therefore tracks HEAD.
- */
+// Linked worktrees keep the changing HEAD ref outside the project tree, so no finite @Input tracks it.
 @TaskAction(executionAvoidance = ExecutionAvoidance.Disabled)
 fun generateBuildInfo(
     @Input versionFile: Path,
@@ -46,7 +40,6 @@ internal fun readVersion(versionFile: Path): String {
     return version
 }
 
-/** Unset means an ordinary source build; a set flag must be explicit to avoid a hashed release. */
 fun releaseBuildFrom(raw: String?): Boolean = when (raw) {
     null -> false
     "true" -> true
@@ -95,12 +88,7 @@ fun generatedBuildInfoSource(
     internal const val BUILD_IS_RELEASE: Boolean = $releaseBuild
     """.trimIndent() + "\n"
 
-/**
- * Quotes arbitrary text as a regular Kotlin string literal.
- *
- * Version/hash validation already limits production values, but escaping at the code-generation
- * boundary prevents a future input expansion from producing invalid or injectable Kotlin source.
- */
+/** Escapes at the generation boundary so future input expansion cannot inject Kotlin source. */
 fun kotlinStringLiteral(value: String): String = buildString(value.length + 2) {
     append('"')
     for (char in value) {

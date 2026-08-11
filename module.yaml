@@ -3,51 +3,22 @@ product:
   platforms: [macosArm64]
 
 plugins:
-  # Generates VERSION + embedded build metadata from version.txt and Git HEAD.
   build-info: enabled
-  # Custom Kotlin Toolchain plugin (plugins/sqldelight-gen) that runs SQLDelight codegen from
-  # sqldelight/*.sq into this module's compilation. See plugins/sqldelight-gen/plugin.yaml.
   sqldelight-gen: enabled
 
 dependencies:
-  # sysnative owns the PTY cinterop (and future POSIX/tmux/sqlite bindings). Depending on
-  # it links sysnative's auto-discovered cinterop klib into this app's MAIN binary as a
-  # normal module dependency — the old machine-specific absolute -library test workaround
-  # is gone. KNOWN BLOCKER: the Kotlin Toolchain does NOT link cinterop into any TEST binary
-  # (KT-78062), so the real-PTY assertions run from the `ptycheck` app module's MAIN binary,
-  # which PtyTest execs. See CLAUDE.md.
   - ./sysnative
   - $libs.kotlinx.coroutines.core
-  # Ktor CIO server + WebSockets — transport foundation (Task 3 spike, real Server in Task 14).
-  # Versions come from the project catalog so Dependabot can keep the whole Ktor family aligned.
   - $libs.ktor.server.cio
   - $libs.ktor.server.websockets
-  # Ktor CIO client (+ client WebSockets) — the CLI's ApiClient (control REST) and AttachClient
-  # (terminal WS raw passthrough) are MAIN code now (Task 15), so these moved out of
-  # test-dependencies into the main dependencies (still visible to the test compilation).
   - $libs.ktor.client.cio
   - $libs.ktor.client.websockets
-  # Ktor Darwin (NSURLSession) client engine — the ONLY way the daemon can speak HTTPS. Ktor's CIO
-  # client cannot do TLS on Kotlin/Native at all (`openTLSSession` for non-JVM is a hard
-  # `error("TLS sessions are not supported on Native platform.")`), and every Web Push endpoint is
-  # https, so the push sender runs on NSURLSession and inherits the system trust store. Third-party
-  # klib with its own cinterop, so it links into the test binary fine (the Ktor/sqliter precedent).
+  # Native CIO has no TLS support; Web Push uses Darwin/NSURLSession.
   - $libs.ktor.client.darwin
-  # SQLDelight runtime native SQLite driver (Task 4 storage spike). The toolchain resolves the
-  # macosArm64 variant (native-driver-macosarm64.klib) via Gradle Module Metadata, exactly like
-  # Ktor's native artifacts. It is a THIRD-PARTY klib (its own sqliter-driver cinterop to sqlite3),
-  # so — unlike our own raw pty.def cinterop (KT-78062) — it links into the TEST binary fine
-  # (proven by the Ktor precedent in Task 3). Version matches the compiler used by the codegen
-  # plugin (2.3.2, built with Kotlin 2.3.10 — klib-compatible with our 2.4.10).
   - $libs.sqldelight.native.driver
 
 test-dependencies:
-  # The shared test doubles. They live in their own module rather than in this test source set
-  # because the `webuicheck` MAIN binary drives a real KotgentServer over the SAME doubles the suite
-  # uses; a `private class` in a test file has no second consumer. The direction is
-  # root(test) -> fakes -> root(main), which the toolchain resolves per FRAGMENT, so it is a DAG.
   - ./fakes
-  # No-network verification of DarwinPushTransport's exact request method, headers, body, and status.
   - $libs.ktor.client.mock
 
 settings:
@@ -56,12 +27,7 @@ settings:
     serialization:
       format: json
       version: 1.11.0
-    # SQLDelight's native-driver depends on co.touchlab:sqliter-driver, whose cinterop calls
-    # the system SQLite (sqlite3_* symbols). Sqliter's own `linkerOpts = -lsqlite3` is NOT
-    # propagated to the final Kotlin/Native link by toolchain 0.11.x, so both the main and test
-    # binaries fail with `ld: symbol(s) not found` for _sqlite3_*. We pass the flag ourselves.
-    # This is PORTABLE (unlike the removed Task-2 absolute -library path hack): -lsqlite3 is a
-    # standard system library present in every macOS SDK; the linker finds it with no -L path.
+    # Toolchain 0.11.x does not propagate sqliter's -lsqlite3 linker option to the final native link.
     freeCompilerArgs: [-linker-option, -lsqlite3]
   native:
     entryPoint: io.kotgent.main

@@ -3,66 +3,28 @@ package io.kotgent.push
 import io.kotgent.crypto.hex
 
 /**
- * ECDSA signature transcoding: openssl's DER `SEQUENCE { INTEGER r, INTEGER s }` into the fixed-width
- * `r || s` that JWS ES256 — and therefore the VAPID `Authorization` header — requires.
- *
- * ## Why this exists
- * The two ends disagree about the encoding. `openssl dgst -sha256 -sign` emits an ASN.1 DER structure
- * whose length VARIES (69–72 bytes for P-256): each coordinate is a signed big-endian integer, so a
- * value with its top bit set gains a leading `0x00` sign byte, and a value below `2^248` loses its
- * leading zero byte instead. RFC 7515 §3.4 wants the opposite — exactly 64 bytes, each coordinate
- * left-padded to the curve's 32-byte field size, no tags and no sign bytes. Handing a push service the
- * DER verbatim yields an opaque `401 Unauthorized` from Apple or Google with no hint as to why, so the
- * conversion is done here, once, and tested against real openssl output of every shape.
- *
- * ## Why it is pure
- * No I/O, no openssl, no key material — just bytes in, bytes out, so the whole variable-length parsing
- * rule (the part that actually breaks, roughly once in every 128 signatures) is unit-testable without
- * spawning anything. The signing edge that produces the DER is [OpensslVapidSigner]'s problem.
- *
- * ## Strictness
- * Structure only: tags, lengths and bounds. Values are NOT range-checked against the curve order — a
- * mathematically invalid signature is the signer's or the key's fault and the push service will reject
- * it anyway, whereas a mis-parse here would silently ship a wrong 64 bytes. What IS rejected is
- * anything that could make the slicing ambiguous: a wrong tag, a length that runs off the end, an
- * integer too long to be a P-256 coordinate, and trailing bytes after the sequence. Non-minimal
- * encodings (a redundant leading `0x00`) are accepted rather than refused: stripping them is
- * unambiguous, and openssl never emits them, so refusing would only add a way for production signing to
- * fail without adding any safety.
+ * OpenSSL emits variable-width signed DER integers, while JWS ES256 requires fixed 32-byte unsigned
+ * `r || s`. Parsing is structurally strict but accepts unambiguous redundant leading zeros; curve-order
+ * validation remains the signer's responsibility.
  */
-
-/** Bytes in a P-256 coordinate — the field size, and the width each of `r` and `s` is padded to. */
 const val P256_COORDINATE_LENGTH: Int = 32
 
-/** The JWS ES256 signature width: `r || s`, both left-padded. Exactly what [derToRawSignature] returns. */
 const val P256_RAW_SIGNATURE_LENGTH: Int = 2 * P256_COORDINATE_LENGTH
 
-/** A DER INTEGER holding a P-256 coordinate: 32 magnitude bytes plus at most one `0x00` sign byte. */
 private const val MAX_COORDINATE_DER_LENGTH: Int = P256_COORDINATE_LENGTH + 1
 
-/** `SEQUENCE`, constructed — the outer wrapper of an ECDSA-Sig-Value. */
 private const val DER_SEQUENCE_TAG: Int = 0x30
 
-/** `INTEGER`, primitive — the tag on both `r` and `s`. */
 private const val DER_INTEGER_TAG: Int = 0x02
 
-/** Set in a length byte means "long form": the byte counts further length bytes rather than content. */
 private const val DER_LONG_FORM_LENGTH_FLAG: Int = 0x80
 
-/** The smallest structurally possible ECDSA-Sig-Value: two headers, two headers, one byte each. */
 private const val MIN_DER_SIGNATURE_LENGTH: Int = 8
 
-/** Every structural problem in a DER signature. Distinct so the signing edge can attribute it to openssl. */
 class EcdsaDerException(message: String) : IllegalArgumentException(message)
 
 /**
- * The [P256_RAW_SIGNATURE_LENGTH]-byte `r || s` inside the DER ECDSA signature [der].
- *
- * Both coordinates come back left-padded with zeros to [P256_COORDINATE_LENGTH], which is the whole
- * point: the DER integers are variable-width and the JWS field is not.
- *
- * @throws EcdsaDerException if [der] is not a well-formed `SEQUENCE { INTEGER, INTEGER }` whose
- *   integers fit a P-256 coordinate.
+ * Returns fixed-width `r || s`, or throws [EcdsaDerException] for malformed structure.
  */
 fun derToRawSignature(der: ByteArray): ByteArray {
     if (der.size < MIN_DER_SIGNATURE_LENGTH) {
@@ -96,14 +58,7 @@ fun derToRawSignature(der: ByteArray): ByteArray {
     return r + s
 }
 
-/**
- * The coordinate whose DER INTEGER starts at [offset], left-padded to [P256_COORDINATE_LENGTH], paired
- * with the offset just past it. [name] (`r` or `s`) only shapes the error messages.
- *
- * The sign byte is handled by stripping leading zeros down to the last byte — that covers both the
- * 33-byte "top bit set" form and the ordinary 32-byte one, and leaves a genuine zero coordinate as a
- * single `0x00` rather than an empty magnitude.
- */
+/** Leading zeros are stripped down to one byte so a genuine zero remains representable. */
 private fun readCoordinate(der: ByteArray, offset: Int, name: String): Pair<ByteArray, Int> {
     if (offset + 2 > der.size) {
         throw EcdsaDerException("the ECDSA signature ends before the DER INTEGER header of $name")
@@ -156,5 +111,4 @@ private fun readCoordinate(der: ByteArray, offset: Int, name: String): Pair<Byte
 
 private const val ZERO_BYTE: Byte = 0
 
-/** One byte as two lowercase hex digits, through the codebase's single hex encoder. */
 private fun byteHex(b: Byte): String = hex(byteArrayOf(b))

@@ -1,22 +1,12 @@
-# ptycheck — a test fixture, not a product. Its MAIN binary runs the real-PTY integration checks
-# that CANNOT live in a test binary: Kotlin Toolchain 0.11.x registers the cinterop-klib task with
-# `isTest=false` while the test link selects cinterop artifacts with `isTest=true`, so a custom
-# cinterop klib is never linked into ANY test binary and every call to it throws IrLinkageError
-# (KT-78062). MAIN binaries link it fine — hence this module.
-#
-# The checks are driven from the normal suite: `PtyTest` (root module) execs the binary this module
-# produces and asserts it exits 0. That requires `./kotlin build` to have run — `./kotlin test` alone
-# never links a main binary (verified), and PtyTest says so explicitly when the binary is missing.
+# Main-binary fixture for real-PTY checks: Toolchain 0.11 omits custom cinterop from test binaries
+# (KT-78062). `PtyTest` therefore execs this artifact, which `./kotlin build` must link first.
 product:
   type: macos/app
   platforms: [macosArm64]
 
 dependencies:
-  # The PTY primitive under check, plus its exported kotlinx-coroutines (Pty.output is a Channel).
   - ../sysnative
-  # The app module, for the ONE check that needs the layer above Pty: TerminalBridge's fan-out over a
-  # real `tmux attach` (TerminalBridge / Tmux / terminalBridgeForSession live there). Depending on an
-  # app module is allowed and links fine; the dependency is one-way, so there is no cycle.
+  # One check crosses Pty into TerminalBridge's fan-out over a real tmux attach.
   - ..
 
 settings:

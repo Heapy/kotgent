@@ -43,40 +43,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Tests for [SqliteTaskStore] — the tracker CRUD, the activity feed, the project registry, the
- * conditional `startIfTodo`, `transition`, and the `taskUpdates` emission every one of them owes.
- *
- * ## What they are built around
- * Three properties run through nearly every test here, because they are what a board connected to this
- * store depends on:
- *
- *  1. **A write that a client can see owes a fresh `rev` AND an emission.** `taskUpdates` is the only
- *     signal the board gets between reloads, so a title edit, a state change and a delete are each
- *     asserted through the flow, not only through a read-back.
- *  2. **A write that changes nothing emits nothing.** An update or a delete of an unknown ref, and a
- *     `startIfTodo` on a task that has already started, must leave the flow silent — an idempotent retry
- *     must not become a board update storm.
- *  3. **`blocked` is derived, so a change to one row moves other rows.** Closing or deleting a dependency
- *     re-stamps and re-emits its reverse dependents; nothing else would get a connected board off a
- *     blocked marker on a ready card.
- *
- * ## How an emission is observed
- * `taskUpdates` is hot with `replay = 0`, so a subscriber must exist before the write. [recording]
- * launches an `UNDISPATCHED` collector for exactly the expected number of frames and joins it after the
- * block — the join is also what lets the collector run at all, since a store call under an uncontended
- * `Mutex` need never suspend on `runBlocking`'s single-threaded event loop. A "nothing was emitted" test
- * therefore records ONE frame, performs the silent action and then a known-loud one, and asserts the
- * single frame is the loud one; a bare "the list is empty" assertion could pass simply because the
- * collector never got a turn.
- *
- * [move] is deliberately absent: it is a one-line delegation to [BacklogOrdering], which is being
- * implemented in parallel and whose body this file must not depend on.
- */
 @OptIn(ExperimentalForeignApi::class)
 class TaskStoreTest {
 
-    // --- the vocabulary ---------------------------------------------------------------------------
 
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
     private val beta = ProjectId.of("7b1d5e90-4a2c-4c11-8e77-2d3f6a8b9c01")
@@ -85,7 +54,6 @@ class TaskStoreTest {
     private val second = TaskRef("local:2")
     private val absent = TaskRef("local:404")
 
-    /** A store with a hand-cranked clock, so every timestamp in an assertion is a chosen number. */
     private inner class Fixture(val driver: SqlDriver = inMemoryDriver(KotgentDatabase.Schema)) {
         var clock: Long = 1_000L
         val store: SqliteTaskStore = SqliteTaskStore.using(driver) { clock }
@@ -95,12 +63,6 @@ class TaskStoreTest {
         withTimeout(20_000) { block(Fixture()) }
     }
 
-    /**
-     * Run [block] while collecting exactly [count] frames off [SqliteTaskStore.taskUpdates].
-     *
-     * `UNDISPATCHED` makes the collector subscribe before [block] runs (the flow does not replay), and
-     * the `join` after it is what gives the collector a turn on the single-threaded event loop.
-     */
     private suspend fun CoroutineScope.recording(
         store: SqliteTaskStore,
         count: Int,
@@ -113,7 +75,6 @@ class TaskStoreTest {
         return seen
     }
 
-    // --- tracker CRUD -----------------------------------------------------------------------------
 
     @Test
     fun aCreatedTaskReadsBackThroughGetAndList() = test { f ->
@@ -136,7 +97,6 @@ class TaskStoreTest {
         f.store.create(alpha, "one", "")
         f.store.create(alpha, "two", "")
         f.store.create(alpha, "three", "")
-        // A different project's column is ranked independently — `maxPosition` is per project.
         val other = f.store.create(beta, "elsewhere", "")
 
         assertEquals(listOf("local:1", "local:2", "local:3"), f.store.listBacklog(alpha).map { it.ref.value })
@@ -171,10 +131,6 @@ class TaskStoreTest {
 
     @Test
     fun aCreateRecordsItsAuthorAndFallsBackToTheBoardOnlyWhenThereIsNone() = test { f ->
-        // The whole point of the feed is telling the operator who did what, so a card an agent filed from
-        // inside its own pane must carry that session id. Before `create` took an author the store wrote
-        // the symbolic "board" for every create, including this one — an answer that is not merely
-        // missing but wrong, and wrong confidently enough that nobody would go looking.
         val filedByAnAgent = f.store.create(alpha, "an agent's own card", "", author = "s-7")
         val filedByTheBoard = f.store.create(alpha, "the board's card", "")
 
@@ -228,8 +184,6 @@ class TaskStoreTest {
     fun updatingAnUnknownRefIsNullAndSilent() = test { f ->
         f.store.create(alpha, "present", "")
 
-        // One frame for two actions: the silent one first, then a known-loud one. If the update emitted,
-        // the single frame collected would be its ref rather than the comment-free rename below.
         val seen = recording(f.store, 1) {
             assertNull(f.store.update(absent, title = "nope", body = null))
             f.store.update(first, title = "renamed", body = null)
@@ -238,7 +192,6 @@ class TaskStoreTest {
         assertEquals(first, seen.single().ref, "the unknown-ref update emitted nothing")
     }
 
-    // --- delete -----------------------------------------------------------------------------------
 
     @Test
     fun deleteRemovesTheTaskItsEntryItsFeedAndBothDirectionsOfItsEdges() = test { f ->
@@ -278,25 +231,14 @@ class TaskStoreTest {
 
     @Test
     fun aMutatorWhoseTransactionRollsBackPublishesNothingItStaged() = test { f ->
-        // The rule the whole [TaskUpdateOutbox] exists for: a subscriber must never see a change a
-        // rollback then takes back. `delete` is where it is REACHABLE — it stages the null-entry removal
-        // and only then re-stamps the dependents it unblocked, so a throw in that tail rolls the delete
-        // back with an update already staged. (Publishing from inside the transaction, as every mutator
-        // but `renormalize` used to, put a `task_removed` on every connected board for a task that is
-        // still there — and unlike a state change nothing later corrects it: no row changed, so no
-        // further update and no second `task_removed` ever names that ref again.)
         f.store.create(alpha, "one", "")
         f.store.create(alpha, "two", "")
         f.store.addDependency(second, first)
 
-        // A value no production write can produce, and the one read on the delete's tail that refuses
-        // it: `entryLocked` parses `backlog_entries.project` with `ProjectId.of`, which throws loudly on
-        // a corrupted column rather than making a card vanish.
         f.driver.execute(null, "UPDATE backlog_entries SET project = 'not-a-uuid' WHERE task_ref = '${second.value}'", 0)
 
         val seen = recording(f.store, 1) {
             assertFailsWith<IllegalArgumentException> { f.store.delete(first) }
-            // The known-loud action: a single frame recorded means the rolled-back delete produced none.
             f.store.update(first, title = "still here", body = null)
         }
 
@@ -323,7 +265,6 @@ class TaskStoreTest {
         assertNotNull(f.store.get(first), "and removed nothing")
     }
 
-    // --- activity ---------------------------------------------------------------------------------
 
     @Test
     fun theFeedIsOrderedAppendOnlyAndCarriesNonZeroIds() = test { f ->
@@ -349,14 +290,6 @@ class TaskStoreTest {
     @Test
     fun onAFileBackedDatabaseTheActivityIdStillComesFromTheInsertsOwnConnection() = runBlocking {
         withTimeout(20_000) {
-            // The ONE test in the suite that is not over `inMemoryDriver`, and it has to be.
-            // `Tasks.sq`'s `lastActivityId` carries a contract that holding the writer mutex is NOT
-            // enough for: the read must be inside the same `db.transaction { }` as its insert, because
-            // the native driver routes a transaction-less SELECT to its `query_only` READER POOL, whose
-            // connections have never inserted anything. For an EPHEMERAL database the driver makes
-            // `readerPool = transactionPool`, so every other test here would pass with the rule broken —
-            // a future fourth call site of `appendActivityLocked` placed outside a transaction would
-            // ship `id = 0` on every activity row in production with the whole suite green.
             withTempDbDir { dir ->
                 val driver = NativeSqliteDriver(
                     schema = KotgentDatabase.Schema,
@@ -375,10 +308,6 @@ class TaskStoreTest {
                         "…and it is the id the feed reads back, so the detail view can key on it",
                     )
 
-                    // The other half, and what gives the assertion above its teeth: the SAME query run
-                    // WITHOUT a transaction answers 0 on this database. Should a future driver stop
-                    // doing that, this line fails and `Tasks.sq`'s contract can be relaxed — which is
-                    // the signal worth having, rather than a comment nothing checks.
                     assertEquals(
                         0L,
                         KotgentDatabase(driver).tasksQueries.lastActivityId().executeAsOne(),
@@ -398,7 +327,6 @@ class TaskStoreTest {
         assertEquals(emptyList(), f.store.activity(absent))
     }
 
-    // --- startIfTodo ------------------------------------------------------------------------------
 
     @Test
     fun startIfTodoAdvancesExactlyOnceAndOnlyFromTodo() = test { f ->
@@ -415,19 +343,11 @@ class TaskStoreTest {
 
     @Test
     fun startIfTodoReStampsItsReverseDependentsTheWayEveryOtherTransitionDoes() = test { f ->
-        // `todo → in_progress` reaches the same state `transition(ref, in_progress)` does, and used to
-        // emit a different set: the moved row alone. Nothing about a dependent's `blocked` moves today
-        // (it asks whether the dependency is `done`), so this is conservative — but the asymmetry is the
-        // hazard. `transition` re-stamps for EVERY transition rather than reasoning about which ones can
-        // matter, so leaving this one door out makes its safety rest on exactly the per-transition
-        // reasoning the other door declined to trust.
         f.store.create(alpha, "dependency", "")
         f.store.create(alpha, "dependent", "")
         f.store.addDependency(second, first)
         val before = assertNotNull(f.store.entry(second))
 
-        // Two frames, then a known-loud third action: a store that skips the re-stamp collects the
-        // rename as its second frame and fails here rather than waiting out the timeout.
         val seen = recording(f.store, 2) {
             assertTrue(f.store.startIfTodo(first))
             f.store.update(first, title = "the loud one", body = null)
@@ -450,7 +370,6 @@ class TaskStoreTest {
 
         val seen = recording(f.store, 2) {
             assertTrue(f.store.startIfTodo(first))
-            // Silent: already started. If it emitted, the second frame would be `first` again.
             assertFalse(f.store.startIfTodo(first))
             assertTrue(f.store.startIfTodo(second))
         }
@@ -460,7 +379,6 @@ class TaskStoreTest {
         assertFalse(assertNotNull(seen[0].entry).blocked, "an entry that is not `todo` is never blocked")
     }
 
-    // --- transition -------------------------------------------------------------------------------
 
     @Test
     fun transitionWritesTheStateAndExactlyOneActivityRowCarryingItsMessage() = test { f ->
@@ -544,7 +462,6 @@ class TaskStoreTest {
         assertEquals(emptyList(), f.store.activity(absent), "and wrote no orphan activity row")
     }
 
-    // --- the delegating members ---------------------------------------------------------------------
 
     @Test
     fun theBacklogAndDependencyMembersAnswerThroughTheCollaborator() = test { f ->
@@ -564,7 +481,6 @@ class TaskStoreTest {
         assertNull(f.store.nextCandidate(beta), "an empty backlog is the only 'nothing eligible' signal")
     }
 
-    // --- projects ---------------------------------------------------------------------------------
 
     @Test
     fun aProjectUpsertRefreshesTheNameAndKeepsTheLastSeenPathWhenNoneIsGiven() = test { f ->
@@ -604,17 +520,12 @@ class TaskStoreTest {
     @Test
     fun aProjectRowWhoseIdIsNotAUuidIsDroppedRatherThanThrownOutOfARead() = test { f ->
         f.store.upsertProject(alpha, "alfa", "/a")
-        // Only a hand edit can produce this row — `upsertProject` takes a ProjectId — so it is written
-        // through the generated query directly. The read must degrade instead of failing: `parseOrNull`
-        // is the declared read-back rule, and a board that lists nothing because ONE row is corrupt is
-        // worse than one that cannot list that row.
         KotgentDatabase(f.driver).projectsQueries.upsertProject("not-a-uuid", "corrupt", "/c", 1L)
 
         assertEquals(listOf("alfa"), f.store.listProjects().map { it.name })
         assertEquals(listOf(alpha), f.store.listProjects().map { it.id })
     }
 
-    // --- opening and re-opening ---------------------------------------------------------------------
 
     @Test
     fun aReOpenedStoreResumesTheRevisionAndTheLocalKeyCounter() = test { _ ->
@@ -637,14 +548,6 @@ class TaskStoreTest {
 
     @Test
     fun aRefFreedByADeleteIsNeverMintedAgainAfterARestart() = test { _ ->
-        // The high-water mark is PERSISTED, because `MAX(...)` over the surviving rows is not one: a
-        // delete removes the row that carries the maximum, so a store reopened after it used to hand out
-        // `local:2` a second time. A ref reaches URLs, a notification, a bookmark, a script,
-        // `sessions.task_ref` and an agent's own earlier output, so the reissued one does not read as a
-        // fresh card anywhere — it re-points all of those at unrelated work.
-        //
-        // `aReOpenedStoreResumesTheRevisionAndTheLocalKeyCounter` is why this survived: it reopens
-        // without ever deleting the highest row, which is the only case the old seed got right.
         val driver = inMemoryDriver(KotgentDatabase.Schema)
         val store = SqliteTaskStore.using(driver) { 1L }
         store.create(alpha, "one", "")
@@ -656,7 +559,6 @@ class TaskStoreTest {
 
         assertEquals(TaskRef("local:3"), next.ref, "a freed key is spent, not recycled")
         assertEquals("three", assertNotNull(reopened.get(next.ref)).title)
-        // And it keeps rising across further deletes and reopens, which is what "never decreasing" means.
         assertTrue(reopened.delete(next.ref))
         assertEquals(
             TaskRef("local:4"),
@@ -667,11 +569,6 @@ class TaskStoreTest {
 
     @Test
     fun aDatabaseWhoseKeysPredateTheAllocatorIsSeededFromThem() = test { _ ->
-        // The migration half. A database written before `task_local_keys` existed holds `tasks` rows and
-        // no mark, so `init` raises the mark to the highest key those rows still show — the answer
-        // `maxLocalTaskKey` used to give directly, now used once instead of on every open. Without the
-        // seed the allocator would start at 0 and collide on its very first create; the rows are inserted
-        // through the generated query because a store that could write them is the thing under test.
         val driver = inMemoryDriver(KotgentDatabase.Schema)
         val tasks = KotgentDatabase(driver).tasksQueries
         tasks.insertTask("local:1", "one", "", 1L, 1L)
@@ -687,10 +584,6 @@ class TaskStoreTest {
 
     @Test
     fun openingOverADatabaseThatPredatesTheTaskTablesCreatesThem() = test { _ ->
-        // The sqldelight-gen plugin drops `.sqm` files and leaves Schema.migrate() empty, so a database
-        // created before the task layer existed has none of these five tables. `CREATE TABLE IF NOT
-        // EXISTS` in init is the whole migration, and unlike an additive column's ALTER it neither fails
-        // nor logs when the tables are already there — which the second open below is what pins.
         val driver = inMemoryDriver(preTaskSchema)
         val store = SqliteTaskStore.using(driver) { 1L }
         val created = store.create(alpha, "one", "")
@@ -703,28 +596,14 @@ class TaskStoreTest {
         assertEquals(listOf("kotgent"), reopened.listProjects().map { it.name })
     }
 
-    // --- the one copied string ------------------------------------------------------------------------
 
     @Test
     fun theTrackersFallbackAuthorIsTheSameSymbolicActorTheServiceUses() {
-        // `TaskTracker.create`'s default has to be visible at the interface that declares it, and the
-        // layering runs daemon -> task, so the string is spelled twice. This is the assertion that keeps
-        // the copy from drifting: a route attributing a board write to `TaskService.BOARD_AUTHOR` and a
-        // store defaulting to something else would split one actor into two rows in the same feed.
         assertEquals(TaskService.BOARD_AUTHOR, TaskTracker.BOARD_AUTHOR)
     }
 
-    /**
-     * A throwaway directory for the one file-backed database this suite opens, deleted with everything
-     * SQLite left in it (the `.db`, and the `-wal` / `-shm` a WAL journal adds).
-     */
     private inline fun withTempDbDir(block: (String) -> Unit) {
         val dir = memScoped {
-            // `$TMPDIR`, not a hardcoded `/tmp` — the rule every other temp-dir user in this repo follows
-            // (`ProcessRunner`, `VapidSigner`, `AuthTest`). On macOS the per-user temp directory is where
-            // a sandboxed or CI run is actually permitted to write, and `mkdtemp` reports failure by
-            // returning null, so hardcoding `/tmp` turns an environment kotgent supports into an
-            // "could not create the task-store test directory" error with nothing to do with the test.
             val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
             val template = "$tmp/kotgent-taskstore-test-XXXXXX"
             val encoded = template.encodeToByteArray()
@@ -752,7 +631,6 @@ class TaskStoreTest {
         }
     }
 
-    /** A database whose schema predates the whole task layer — no `tasks`, `backlog_*` or `projects`. */
     private val preTaskSchema = object : SqlSchema<QueryResult.Value<Unit>> {
         override val version: Long = 1
 

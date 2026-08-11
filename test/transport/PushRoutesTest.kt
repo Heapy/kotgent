@@ -28,19 +28,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.cio.CIO as ServerCIO
 
-/**
- * The `/push` registration routes (plan Task 3): who may reach them, what a valid subscription looks like,
- * and that the row actually lands in (and leaves) the store.
- *
- * A bare server mounting [authRoutes] — so a real session cookie can be minted the way a browser gets one —
- * plus [pushRoutes] inside the same [authenticated] gate [KotgentServer] uses. That is the whole point of
- * the auth cases here: not to re-test [authorize] (which [AuthorizeWiringTest] pins), but to prove these
- * three routes are mounted INSIDE the gate and therefore inherit it.
- *
- * The store is an in-memory [Mutex]-guarded fake, because the CIO server runs handlers on its own engine
- * threads: the test thread reads state the handler wrote, so it needs the happens-before a coroutine lock
- * gives. Every body is bounded by [withTimeout] (anti-hang).
- */
 class PushRoutesTest {
 
     private val token = "push-routes-master-token-0123456789ab"
@@ -48,7 +35,6 @@ class PushRoutesTest {
     private val vapidKey = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"
     private val fixedNow = 1_753_280_000_000L
 
-    // --- vapid key ---------------------------------------------------------------------------------
 
     @Test
     fun theVapidKeyRouteReturnsTheInjectedKey() = withPushServer { env ->
@@ -73,7 +59,6 @@ class PushRoutesTest {
         )
         assertTrue(resp.bodyAsText().contains("openssl"), "the diagnostic names the real cause")
 
-        // And the daemon is fine: the rest of the surface still answers.
         assertEquals(
             HttpStatusCode.OK,
             env.client.req(
@@ -84,7 +69,6 @@ class PushRoutesTest {
         )
     }
 
-    // --- subscribe / unsubscribe ------------------------------------------------------------------
 
     @Test
     fun subscribeWithABearerStoresTheRowAndUnsubscribeRemovesIt() = withPushServer { env ->
@@ -110,7 +94,6 @@ class PushRoutesTest {
 
     @Test
     fun subscribeWithASessionCookieAlsoSucceeds() = withPushServer { env ->
-        // The path that actually matters: the browser has no Bearer, only the cookie the login flow set.
         val cookie = env.signIn()
         val origin = "http://127.0.0.1:${env.port}"
         val resp = env.client.req(
@@ -130,8 +113,6 @@ class PushRoutesTest {
 
     @Test
     fun unsubscribingAnUnknownEndpointIsStillOk() = withPushServer { env ->
-        // Both callers (a toggle going off, a browser whose endpoint rotated) can name a row that is
-        // already gone; the store's remove is idempotent, so the route must not invent a 404.
         val resp = env.client.req(
             env.port, PUSH_UNSUBSCRIBE_PATH, HttpMethod.Post, bearer = token,
             jsonBody = """{"endpoint":"https://web.push.apple.com/never-stored"}""",
@@ -153,7 +134,6 @@ class PushRoutesTest {
         assertEquals("k1", env.store.list().single().p256dh, "the latest keys win")
     }
 
-    // --- refusals ----------------------------------------------------------------------------------
 
     @Test
     fun noCredentialIs401OnEveryPushRoute() = withPushServer { env ->
@@ -181,8 +161,6 @@ class PushRoutesTest {
 
     @Test
     fun aPostWithoutAnOriginIsRefusedByTheExistingRule() = withPushServer { env ->
-        // The cookie is ambient, so the Origin requirement on non-GET is what stops a third-party page
-        // from registering ITS push endpoint against this daemon. No Origin → the gate refuses.
         val cookie = env.signIn()
         val resp = env.client.req(
             env.port, PUSH_SUBSCRIBE_PATH, HttpMethod.Post, cookie = cookie,
@@ -252,7 +230,6 @@ class PushRoutesTest {
         assertEquals(emptyList(), env.store.list())
     }
 
-    // --- the pure validator -----------------------------------------------------------------------
 
     @Test
     fun theValidatorAcceptsRealPushServiceEndpointsAndRejectsInjection() {
@@ -297,9 +274,7 @@ class PushRoutesTest {
         )
     }
 
-    // --- harness ----------------------------------------------------------------------------------
 
-    /** Thread-safe in-memory [PushStore] — the handler thread writes, the test thread reads. */
     private class FakePushStore : PushStore {
         private val mutex = Mutex()
         private val rows = mutableMapOf<String, PushSubscription>()
@@ -314,7 +289,6 @@ class PushRoutesTest {
     }
 
     private inner class Env(val port: Int, val client: HttpClient, val store: FakePushStore) {
-        /** Get a session cookie the way a browser does: mint a ticket on loopback, then exchange it. */
         suspend fun signIn(): String {
             val ticket = TRANSPORT_JSON.decodeFromString(
                 TicketResponse.serializer(),

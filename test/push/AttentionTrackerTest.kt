@@ -9,11 +9,6 @@ import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * [AttentionTracker] is pure edge-detection over the level signal `sessionUpdates` carries, so these
- * tests need no store, no clock and no coroutines: they feed updates in and assert exactly when a
- * `false → true` transition is reported.
- */
 class AttentionTrackerTest {
 
     private fun meta(
@@ -47,7 +42,6 @@ class AttentionTrackerTest {
         tracker.seed(listOf(meta("s1", SessionState.running)))
 
         assertTrue(tracker.isNewAttention(update("s1", SessionState.needs_approval)), "the transition fires")
-        // The resync tick and any further cache write re-emit the same level; only the edge counts.
         assertFalse(tracker.isNewAttention(update("s1", SessionState.needs_approval)), "the same level is silent")
         assertFalse(
             tracker.isNewAttention(update("s1", SessionState.needs_answer)),
@@ -67,8 +61,6 @@ class AttentionTrackerTest {
 
     @Test
     fun seedingFromAnAlreadyWaitingSessionSuppressesTheNextIdenticalUpdate() {
-        // The daemon-restart case: the reconciler re-writes a session that was ALREADY waiting before
-        // the restart. Without the seed that first update would look like a fresh transition.
         val tracker = AttentionTracker()
         tracker.seed(listOf(meta("s1", SessionState.needs_approval)))
 
@@ -79,8 +71,6 @@ class AttentionTrackerTest {
 
     @Test
     fun anUnknownSessionAlreadyInAttentionFiresExactlyOnce() {
-        // A session created by a hook and seen for the first time already blocked: absent means "not
-        // waiting", so this is a transition — but only the first time.
         val tracker = AttentionTracker()
         tracker.seed(listOf(meta("other", SessionState.running)))
 
@@ -99,9 +89,6 @@ class AttentionTrackerTest {
 
     @Test
     fun anArchivedSessionNeverCountsAsWaiting() {
-        // The service worker filters /sessions by `needsAttention && !archived`, so a push for an
-        // archived row would wake the phone only to show the generic filler. Seed the archived level
-        // explicitly: this guards the SessionMeta half of the rule as well as the live-update half.
         val tracker = AttentionTracker()
         tracker.seed(listOf(meta("s1", SessionState.needs_approval, archived = true)))
 
@@ -121,7 +108,6 @@ class AttentionTrackerTest {
         tracker.seed(emptyList())
         assertTrue(tracker.isNewAttention(update("s1", SessionState.needs_approval)), "learned: s1 is waiting")
 
-        // A fresh baseline that says "s1 is not waiting" must make the next identical update an edge again.
         tracker.seed(listOf(meta("s1", SessionState.running)))
         assertTrue(tracker.isNewAttention(update("s1", SessionState.needs_approval)), "the new baseline wins")
     }

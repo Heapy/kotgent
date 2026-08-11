@@ -56,20 +56,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.cio.CIO as ServerCIO
 
-/**
- * The task layer's READ surface (plan Task 13): `GET /whoami`, `GET /tasks?project=`, `GET /tasks/{ref}`
- * and `GET /projects`.
- *
- * The harness is [PushRoutesTest]'s: a bare CIO server mounting [authRoutes] — so a real session cookie
- * can be minted the way a browser gets one — plus [taskReadRoutes] inside the same [authenticated] gate
- * and the same `route(API_PREFIX)` block [KotgentServer] uses. Mounting the prefix matters: these tests
- * address `/api/v1/tasks`, which is the URL the SPA's own `/tasks` route depends on being distinct from.
- *
- * The stores are in-memory fakes populated **before the server starts**, so the engine threads that run
- * the handlers see the setup through the thread-start edge; the one piece of mutable state (the call
- * journal that pins "one query per project, not one per card") is guarded by a [Mutex]. Every body is
- * bounded by [withTimeout] (anti-hang).
- */
 class TaskReadRoutesTest {
 
     private val token = "task-read-routes-master-token-0123456789"
@@ -87,7 +73,6 @@ class TaskReadRoutesTest {
     private val deadHolder = SessionId("4b8ff4b8-4d50-4e75-9f51-3b2b7f4c99cc")
     private val pane = PaneId("%7")
 
-    // --- GET /whoami -------------------------------------------------------------------------------
 
     @Test
     fun whoamiAnswersTheCallingPanesSessionProjectAndTask() = withReadServer { env ->
@@ -149,7 +134,6 @@ class TaskReadRoutesTest {
         assertNull(who.taskRef)
     }
 
-    // --- GET /tasks --------------------------------------------------------------------------------
 
     @Test
     fun theListIsOrderedByPositionAndCarriesBlockedAndTrackerFields() = withReadServer { env ->
@@ -264,7 +248,6 @@ class TaskReadRoutesTest {
         )
     }
 
-    // --- GET /tasks/{ref} --------------------------------------------------------------------------
 
     @Test
     fun theDetailCarriesDepsBothWaysSessionsActivityAndTheProjectPath() = withReadServer { env ->
@@ -305,8 +288,6 @@ class TaskReadRoutesTest {
 
     @Test
     fun theDetailOfATaskWithNoTrackerRowRendersTheBareRef() = withReadServer { env ->
-        // The microsecond window `sessions.task_ref`'s "reference, not a foreign key" rule already
-        // documents. A 500 for it would be worse than showing the ref.
         val detail = TRANSPORT_JSON.decodeFromString(
             TaskDetailDto.serializer(),
             env.get("/tasks/local:9", bearer = token).bodyAsText(),
@@ -324,9 +305,6 @@ class TaskReadRoutesTest {
 
     @Test
     fun aMalformedRefIs400AndNoBareWordCanEverParseAsOne() = withReadServer { env ->
-        // The mandatory ':' is what keeps `POST /tasks/next` from ever being shadowed by
-        // `/tasks/{ref}/…`. This is that invariant seen from the read side: a bare word is a 400, not a
-        // 404, because it addresses no resource at all.
         for (bad in listOf("next", "claim", "local", "local:", ":42", "local:4:2", "local:-42", "_x:1")) {
             val resp = env.get("/tasks/$bad", bearer = token)
             assertEquals(
@@ -338,7 +316,6 @@ class TaskReadRoutesTest {
         assertEquals(emptyList(), env.journal(), "no malformed ref reached the store")
     }
 
-    // --- GET /projects -----------------------------------------------------------------------------
 
     @Test
     fun projectsListsEveryKnownProject() = withReadServer { env ->
@@ -355,7 +332,6 @@ class TaskReadRoutesTest {
         )
     }
 
-    // --- authentication ----------------------------------------------------------------------------
 
     @Test
     fun everyReadRouteRequiresACredential() = withReadServer { env ->
@@ -382,7 +358,6 @@ class TaskReadRoutesTest {
         }
     }
 
-    // --- harness -----------------------------------------------------------------------------------
 
     private fun backlog(): Map<TaskRef, BacklogEntry> = mapOf(
         first to entry(first, project, 1.0, TaskState.in_progress, blocked = false, rev = 7),
@@ -413,14 +388,8 @@ class TaskReadRoutesTest {
         first to Task(first, "write the parser", "the ref grammar", null, fixedNow),
         second to Task(second, "wire the routes", "", null, fixedNow),
         third to Task(third, "ship it", "", null, fixedNow),
-        // `local:9` deliberately has NO tracker row — the bare-ref degradation case.
     )
 
-    /**
-     * The calling pane's session is deliberately linked to a DIFFERENT task than the two holders the
-     * detail fixture uses, so a `/whoami` that answered "the project's first task" instead of "this
-     * session's link" would fail rather than coincide.
-     */
     private fun sessionRows(): Map<SessionId, SessionMeta> = mapOf(
         paneSession to session(paneSession, "the caller", SessionState.ready, second, createdAt = 1),
         liveHolder to session(liveHolder, "worker", SessionState.needs_approval, first, createdAt = 2),
@@ -447,8 +416,6 @@ class TaskReadRoutesTest {
         updatedAt = createdAt,
         archived = archived,
         taskRef = taskRef,
-        // `whoami`'s answer: the pane's session carries a project and a DIFFERENT task than the detail
-        // fixture's holders, so a route that confused the two would be caught.
         projectId = project,
     )
 
@@ -473,7 +440,6 @@ class TaskReadRoutesTest {
             if (pane != null) header(TASK_PANE_HEADER, pane)
         }
 
-        /** Get a session cookie the way a browser does: mint a ticket on loopback, then exchange it. */
         suspend fun signIn(): String {
             val ticket = TRANSPORT_JSON.decodeFromString(
                 TicketResponse.serializer(),
@@ -501,7 +467,6 @@ class TaskReadRoutesTest {
             val tasks = FakeTaskStore(
                 entries = backlog(),
                 tracked = tracked(),
-                // `local:3` depends on both of its predecessors — which is what makes it `blocked`.
                 edges = mapOf(third to listOf(first, second)),
                 activity = mapOf(
                     first to listOf(
@@ -545,14 +510,6 @@ class TaskReadRoutesTest {
     private fun activityRow(id: Long, ref: TaskRef, kind: ActivityKind, author: String, text: String?) =
         TaskActivityEntry(id, ref, fixedNow, kind, author, text, null, null)
 
-    /**
-     * A read-only in-memory [TaskStore]. Its content is fixed at construction — set up before the server
-     * starts, so the engine threads see it through the thread-start edge — and the only mutable state is
-     * the [Mutex]-guarded call journal that pins "one query per project, not one per card".
-     *
-     * Every write refuses rather than silently succeeding: a read route that mutated anything would fail
-     * here instead of passing.
-     */
     private class FakeTaskStore(
         private val entries: Map<TaskRef, BacklogEntry>,
         private val tracked: Map<TaskRef, Task>,
@@ -640,7 +597,6 @@ class TaskReadRoutesTest {
             error("the read routes must not call TaskStore.$name")
     }
 
-    /** An in-memory [EventStore] answering only the three reads the detail view and `/whoami` make. */
     private class FakeEventStore(private val rows: Map<SessionId, SessionMeta>) : EventStore {
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = rows[sessionId]
 
@@ -688,7 +644,6 @@ class TaskReadRoutesTest {
             error("the read routes must not call EventStore.$name")
     }
 
-    /** [TaskService] carries these for the WRITE routes and never touches them itself. */
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("the read routes must not touch the filesystem")
         override fun readFile(path: String, maxBytes: Int): String? =

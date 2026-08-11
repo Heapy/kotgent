@@ -5,111 +5,47 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.X_OK
 import platform.posix.access
 
-/** A tmux pane as parsed from `list-panes -a -F`. */
 data class TmuxPane(
-    /** Owning session name (`kt-<id>`). */
     val session: String,
-    /** Runtime pane correlation handle (`#{pane_id}`, e.g. `%3`). */
     val paneId: PaneId,
-    /** Pid of the process running in the pane (`#{pane_pid}`). */
     val pid: Int,
-    /** Whether the pane's process has exited (`#{pane_dead}` == 1). */
     val dead: Boolean,
-    /** Pane/window width in columns (`#{window_width}`). */
     val width: Int,
-    /** Pane/window height in rows (`#{window_height}`). */
     val height: Int,
 )
 
 /**
- * Thrown when a tmux operation cannot satisfy its contract. Observational operations may normalize an
- * expected "not found"/"no server"; delivery-bearing [Tmux.sendKeys] throws because absence proves the
- * bytes reached no process.
+ * Observational operations may normalize absence; delivery-bearing operations must fail because no
+ * process received the input.
  */
 open class TmuxException(message: String) : RuntimeException(message)
 
 /**
- * The one tmux failure that is **transient and retryable**: the pane was in copy-mode, so tmux routed
- * the keys to the copy-mode key table instead of to the process ([Tmux.sendKeys]'s read-back caught it).
- *
- * A subtype rather than a message convention because the wire contract differs: a plain [TmuxException]
- * keeps the action route's generic `400` operation-failure response, while this one is a `409` carrying
- * the same operator hint `POST /sessions/{id}/input` gives ("scroll the pane back to the bottom").
- * Nothing about the request was wrong — a viewer's wheel scroll was, and scrolling back down fixes it.
+ * Retryable copy-mode delivery failure. Its subtype drives the transport's distinct 409 response and
+ * recovery hint.
  */
 class TmuxCopyModeException(message: String) : TmuxException(message)
 
 /**
- * A thin, typed wrapper over `tmux -f /dev/null -L <socket> <sub …>`, built on
- * [ProcessRunner] (stock `platform.posix`, so it also runs from the test binary against a throwaway
- * server). Every argv is assembled by [tmuxCommand]; see [TMUX_CONFIG_ISOLATION] for why `-L` alone
- * is not enough isolation.
- *
- * ## Session identity
- * Callers address sessions by the **logical short id** (`id`); the wrapper maps it to the tmux
- * session name `kt-<id>` ([sessionName]). The runtime correlation handle is the [PaneId]
- * (`#{pane_id}`) that [newSession] returns and [listPanes] reports — that is what hooks send as
- * `$TMUX_PANE` and what the reconciler keys liveness on.
- *
- * ## Robustness
- * Argument construction goes through [ProcessRunner]'s strict quoting, so cwd paths, commands,
- * and env labels cannot be re-split by the shell. Observational/idempotent operations normalize
- * "soft" tmux failures: a missing session/pane or a torn-down server reads as an empty list /
- * `false` / `null` (an empty tmux server does not persist, so a fresh socket legitimately reports
- * "no server running"). A delivery operation cannot make that substitution: non-empty [sendKeys]
- * throws when its target is absent, because no process received the bytes. Genuinely unexpected
- * non-zero exits also raise [TmuxException] with tmux's stderr.
+ * Wrapper for kotgent's isolated tmux server. Observations normalize a missing server/session, while
+ * delivery operations fail on absence. Runtime identity is the pane id, not the inherited debug label.
  */
 class Tmux(
-    /** The `-L` socket label, e.g. `kotgent` (prod) or `kotgent-test` (throwaway in tests). */
     val socket: String,
-    /** Path to the tmux binary; resolved from common locations by default. */
     val tmuxPath: String = defaultTmuxPath(),
-    /**
-     * The options forced onto this socket's server, chained ahead of every [newSession].
-     *
-     * A constructor parameter rather than a direct read of [TMUX_SERVER_OPTIONS] because it is the
-     * only seam that makes the design's central claim falsifiable: the integration test builds a
-     * `Tmux` whose `default-terminal` is a NON-default value and reads `$TERM` back out of the pane,
-     * proving the chain took effect *before the pane existed*. With the production list every value
-     * that a pane can report also happens to be tmux's own built-in, so the same assertion would
-     * pass with the whole option chain deleted. Do not "tidy" this into a direct read.
-     * Deliberately **not** on [TmuxControl] — no caller of the daemon-facing seam has any business
-     * choosing tmux options.
-     */
     val serverOptions: List<TmuxOption> = TMUX_SERVER_OPTIONS,
-    /**
-     * Private script installed as the global `session-closed` hook by [newSession], or `null` to omit
-     * the hook. A constructor seam like [serverOptions] so pure/integration tests can drive a harmless
-     * script; deliberately absent from [TmuxControl] because daemon-facing callers never choose hooks.
-     */
     val hookScriptPath: String? = null,
 ) : TmuxControl {
-    /** The tmux session name for a logical [id]. */
     override fun sessionName(id: String): String = "kt-$id"
 
     /**
-     * True if the configured tmux binary is runnable (`tmux -V` succeeds) — the tests' skip-guard.
-     *
-     * Deliberately bypasses [tmux] and therefore carries no `-f /dev/null`: `tmux -V` prints the
-     * version and exits without starting a server or parsing any config, so there is nothing for the
-     * isolation flag to isolate. It is the one argv here that is not a control-plane call.
+     * `tmux -V` starts no server and parses no config, so isolation flags are unnecessary here.
      */
     fun isAvailable(): Boolean = ProcessRunner.run(listOf(tmuxPath, "-V")).isSuccess
 
-    /**
-     * Run `tmux -f /dev/null -L <socket> <args…>` — the single argv assembly point for every
-     * control-plane call, so [TMUX_CONFIG_ISOLATION] cannot be forgotten at a new call site.
-     *
-     * Assembly lives in the pure [tmuxCommand], which is where the isolation is asserted: the
-     * integration probe in `TmuxTest` can only measure raw tmux under a fake `$HOME` ([ProcessRunner]
-     * takes no env map), so the link from that measurement to production is this delegation plus
-     * [tmuxCommand]'s unit test, not an end-to-end run of [newSession].
-     */
     private fun tmux(vararg args: String): ProcessResult =
         ProcessRunner.run(tmuxCommand(tmuxPath, socket, args.toList()))
 
-    /** True when a soft "there is nothing there" failure (no server / unknown target). */
     private fun ProcessResult.isAbsence(): Boolean {
         val e = stderr
         return !isSuccess && (
@@ -121,14 +57,7 @@ class Tmux(
     }
 
     /**
-     * Start the tmux server for this socket (`start-server`). Best-effort: a server with no
-     * sessions does not stay resident, so this mainly proves the socket is reachable; the real
-     * server comes up when [newSession] creates the first session.
-     *
-     * This is the production first-start (called once from `Commands.kt`), and it goes through
-     * [tmux], so it carries `-f /dev/null` transitively — no separate test or call site. The
-     * forced-option chain is deliberately NOT applied here: it rides with `new-session` precisely
-     * because a session-less server does not persist, so options set on this one would die with it.
+     * A sessionless server does not persist, so forced options are applied by [newSession], not here.
      */
     fun ensureServer() {
         val r = tmux("start-server")
@@ -136,31 +65,9 @@ class Tmux(
     }
 
     /**
-     * Create a detached session named `kt-<id>` running [cmd] in [cwd] at [cols]x[rows], and
-     * return its pane id (`new-session -P -F '#{pane_id}'`). `KOTGENT_SESSION_ID=<id>` is set as
-     * a **debug label only** via `-e` (env-poisoning is never trusted for identity).
-     *
-     * ## Why [hookScriptPath] and [serverOptions] ride in this one invocation
-     * Standalone `set-hook` / `set-option` commands do **not** start a server (measured: `error
-     * connecting to …`, exit 1, nothing applied), so neither can be installed before `new-session` in
-     * a call of its own — and `default-terminal` is read when the pane is CREATED, so applying the
-     * options afterwards would already be too late. Chaining is not an optimisation, it is the only
-     * ordering that works. Re-applying the hook and options on every session is intended: both are
-     * idempotent, and a server that came up some other way converges to kotgent's configuration.
-     *
-     * ## Failure is loud, not degraded
-     * Every command in a tmux chain must succeed or the whole invocation fails, so an option name a
-     * different tmux build rejected would take `new-session` down with it. That is deliberate: it
-     * raises [TmuxException] carrying tmux's own stderr, which already names the culprit
-     * (`invalid option: …`), the same fail-fast shape as `AgentBinaryNotFoundException`. A bare
-     * retry plus best-effort re-application was tried and removed — it fired on *every* failure
-     * (duplicate session name, bad `-c` cwd, dead socket), doubling the spawn count and
-     * misattributing the real error to the option chain, and it lost `history-limit` and
-     * `default-terminal` for the pane anyway (both are read at pane creation) while reporting
-     * nothing. Every forced option predates tmux 2.1 (2015) and macOS ships no tmux at all, so the
-     * binary is a current Homebrew/MacPorts build; the one plausible failure — a typo in
-     * [TMUX_SERVER_OPTIONS] — is caught by `newSessionForcesEveryServerOption` at build time.
-     * A rejected chain aborts *before* `new-session` runs, so a failure leaves nothing half-created.
+     * Standalone set-hook/set-option cannot start a server, and `default-terminal` is read at pane
+     * creation. Hooks, options, and new-session therefore share one fail-fast chain. The inherited
+     * `KOTGENT_SESSION_ID` is only a debug label and is never trusted as identity.
      */
     override fun newSession(id: String, cwd: String, cmd: String, cols: Int, rows: Int): PaneId {
         val argv = newSessionArgv(serverOptions, hookScriptPath, id, cwd, cmd, cols, rows)
@@ -171,7 +78,6 @@ class Tmux(
         return PaneId(paneId)
     }
 
-    /** List all panes across all sessions on this socket. A torn-down socket reads as empty. */
     override fun listPanes(): List<TmuxPane> {
         val r = tmux(
             "list-panes", "-a", "-F",
@@ -199,11 +105,7 @@ class Tmux(
             .toList()
     }
 
-    /**
-     * Capture the visible content of session `kt-<id>`'s active pane (`capture-pane -p -e`,
-     * `-e` preserving escape sequences so the terminal seed is faithful). Returns the raw
-     * captured text; an unknown session/torn-down server yields an empty string.
-     */
+    /** `-e` preserves escape sequences needed by a faithful terminal seed. */
     fun capturePane(id: String): String {
         val r = tmux("capture-pane", "-p", "-e", "-t", sessionName(id))
         if (r.isAbsence()) return ""
@@ -211,11 +113,6 @@ class Tmux(
         return r.stdout
     }
 
-    /**
-     * Kill session `kt-<id>`. Returns `true` if a session was actually removed, `false` if there
-     * was nothing to kill (unknown session or no server) — so double-kill and killing a
-     * nonexistent session are both graceful, not errors.
-     */
     override fun killSession(id: String): Boolean {
         val r = tmux("kill-session", "-t", sessionName(id))
         if (r.isSuccess) return true
@@ -224,13 +121,7 @@ class Tmux(
     }
 
     /**
-     * The `#{pane_in_mode}` a verified chain printed as its LAST stdout line: `true` = the pane is in
-     * copy-mode (or any other mode), `false` = it is delivering keys to its process, `null` = the
-     * question was not answered (no server, unknown pane, unparseable output).
-     *
-     * `null` is deliberately distinct from `false`: it is not evidence either way. Callers may treat a
-     * separately classified soft absence as moot for a clearance-only question, but an otherwise
-     * unanswered verification fails closed. Absence is never delivery proof; [sendKeys] throws for it.
+     * Null means the pane did not answer and must not be treated as delivery proof.
      */
     private fun paneModeFrom(r: ProcessResult): Boolean? =
         when (r.stdout.trim().lineSequence().lastOrNull()?.trim()) {
@@ -240,82 +131,25 @@ class Tmux(
         }
 
     /**
-     * Leave copy-mode on `kt-<id>`'s active pane and **verify it**: `true` only when the pane afterwards
-     * *answered* "not in a mode", or when the question is moot (a soft absence — no server / unknown
-     * session, [isAbsence]); `false` for everything else, including a failure that never answered.
-     *
-     * "Provably clear or a soft absence" is the whole contract, and the asymmetry is deliberate: the one
-     * caller ([io.kotgent.transport.TerminalInputSink]) turns `false` into a refusal, so guessing `true`
-     * would report success for bytes tmux might discard — the exact silent swallow this method exists to
-     * prevent. A wrong `tmuxPath`, a permission error, a half-dead server or an unparseable
-     * `display-message` are therefore all `false`: none of them proves the pane is delivering keys.
-     *
-     * This clearance predicate and [sendKeys]' delivery contract intentionally answer a genuine absence
-     * differently. Here it means there is no pane left in copy-mode to block a later pty write, so `true`
-     * is accurate (the caller still has to prove an upstream write completed). For [sendKeys] it proves
-     * the opposite of delivery — no process existed to receive the bytes — so the same absence throws.
-     *
-     * A pane in copy-mode routes every keystroke — whether it arrives via `send-keys` or by being
-     * written into an attached client's pty — to the **copy-mode key table** instead of the process.
-     * kotgent forces `mouse on` ([TMUX_SERVER_OPTIONS]), so one wheel scroll by *any* subscriber puts
-     * the *shared* pane there for everyone, and the tmux prefix does the same. Every **programmatic**
-     * input path must therefore cancel first: [sendKeys] and the `POST /sessions/{id}/input` REST seam
-     * ([io.kotgent.transport.TerminalInputSink]). The interactive terminal WebSocket deliberately does
-     * **not** — a human who scrolled back and then typed expects tmux's own behaviour, and yanking
-     * them out of their scrollback would be the surprise.
-     *
-     * The cancel is `copy-mode -q`, not `send-keys -X … cancel`: `-q` exits copy mode *and any other
-     * mode* and is a silent no-op on a pane that is in none, whereas `send-keys -X cancel` fails with
-     * "not in a mode" — which, chained, aborts the whole invocation and takes the real command with it
-     * (measured). That is what lets the cancel and its read-back ride ONE tmux invocation, so no client
-     * event can land in between.
-     *
-     * The residual gap here is the caller's, not this method's: `/input` writes its bytes into the
-     * upstream *pty* afterwards (the single-upstream invariant forbids routing them through tmux), so
-     * a wheel scroll in that window can still re-enter copy-mode. [sendKeys], which does go through
-     * tmux, closes even that.
+     * Programmatic pty input must leave shared copy-mode or tmux silently routes bytes to its mode key
+     * table. `copy-mode -q` is chainable even when no mode is active. True requires an answered clear
+     * state or soft absence; other failures are not proof. The interactive WebSocket deliberately keeps
+     * native tmux behavior. A wheel can still re-enter copy-mode after this check and before a later pty
+     * write; only [sendKeys]' single tmux chain closes that gap.
      */
     override fun leaveCopyMode(id: String): Boolean {
         val target = sessionName(id)
         val r = tmux("copy-mode", "-q", "-t", target, ";", "display-message", "-p", "-t", target, PANE_IN_MODE)
-        if (r.isAbsence()) return true // no server / unknown pane: there is nothing left to refuse over
-        if (!r.isSuccess) return false // a real failure proves nothing about the pane — do not claim clear
-        return paneModeFrom(r) == false // only an ANSWERED "0" counts as clear; `null` is unanswered
+        if (r.isAbsence()) return true
+        if (!r.isSuccess) return false
+        return paneModeFrom(r) == false
     }
 
     /**
-     * Send raw [bytes] to session `kt-<id>`'s active pane, byte-exact, via `send-keys -H` (hex).
-     * `-H` avoids any key-name interpretation, so arbitrary terminal input (control chars, UTF-8)
-     * round-trips unchanged. Empty input is a no-op.
-     *
-     * ## Cancel, send and PROOF ride one invocation
-     * A pane in copy-mode routes `send-keys` to the **copy-mode key table**, not to the process —
-     * measured: the bytes vanish, the pane is unchanged, and tmux still exits **0**. So the exit
-     * status proves nothing. kotgent forces `mouse on` ([TMUX_SERVER_OPTIONS]), so any subscriber's
-     * wheel scroll parks the *shared* pane there; the one production caller is
-     * `SessionManager.interrupt`, which sends `0x03` and then reduces the session to `ready`, so an
-     * unproven send would record an interrupt in the projection that never happened.
-     *
-     * A cancel in its own invocation cannot fix that on its own — a wheel event landing between the
-     * two calls re-enters copy-mode and the send is eaten anyway. So all three commands are chained
-     * into a SINGLE tmux invocation, which tmux runs as one command list without returning to its
-     * event loop:
-     *
-     *  1. `copy-mode -q` — leave any mode (silent no-op when there is none; see [leaveCopyMode] for
-     *     why `send-keys -X cancel` cannot be chained);
-     *  2. `send-keys -H …` — the real send;
-     *  3. `display-message -p '#{pane_in_mode}'` — the proof, read with nothing able to intervene.
-     *
-     * Only an answered trailing `0` proves delivery. A trailing `1` means the keys went to the copy-mode
-     * key table, and this **fails loudly** with a [TmuxCopyModeException] — its own subtype, because that
-     * condition is transient and retryable and the transport answers it with a `409` + hint rather than
-     * a `400` — instead of letting the caller reduce to `ready`. A missing server/session/pane is also a
-     * failure here, unlike the clearance-only [leaveCopyMode]: it positively proves there was no process
-     * to receive the bytes and throws a plain [TmuxException]. An empty or unparseable read-back and any
-     * OTHER non-zero exit stay plain [TmuxException] failures. There is no retry:
-     * a duplicated `0x03` is not harmless (a second Ctrl-C quits some agent TUIs outright), and with
-     * the chain atomic a retry would only be papering over a tmux that no longer behaves as measured.
-     * This is what makes `mouse on` safe; do not weaken it while that option is set.
+     * Hex mode preserves arbitrary bytes. Copy-mode cancel, send, and `pane_in_mode` read-back share one
+     * invocation so a wheel event cannot reopen the mode between them. Only an answered 0 proves
+     * delivery; 1 raises [TmuxCopyModeException], and absence or malformed output raises [TmuxException].
+     * Never retry automatically: duplicating Ctrl-C can terminate an agent TUI.
      */
     override fun sendKeys(id: String, bytes: ByteArray) {
         if (bytes.isEmpty()) return
@@ -331,8 +165,7 @@ class Tmux(
             )
         }
         val paneMode = paneModeFrom(r)
-        // Checked BEFORE the exit status: a swallowed send can also fail the invocation for an unrelated
-        // reason (a copy-mode binding reporting "no current client"), and copy-mode is the real diagnosis.
+        // Copy-mode is the useful diagnosis even if its key binding also made the chain fail.
         if (paneMode == true) {
             throw TmuxCopyModeException(
                 "tmux send-keys for '$id' was not delivered: $target is in copy-mode, so the keys went " +
@@ -351,23 +184,13 @@ class Tmux(
     private fun fields(vararg specs: String): String = specs.joinToString(FS)
 
     companion object {
-        /** Field separator embedded in `-F` formats: a raw TAB, absent from names/pids/dims. */
         private const val FS = "\t"
 
-        /**
-         * The format both verified chains end with. `1` means the pane is in copy-mode (or another
-         * mode) and is routing keys to the mode's key table instead of to its process.
-         */
         private const val PANE_IN_MODE = "#{pane_in_mode}"
 
         /**
-         * An ABSOLUTE path to the tmux binary. Tries the common install locations first, then resolves
-         * via the shell PATH (`command -v tmux`, run through `/bin/sh` by [ProcessRunner], which honors
-         * PATH). An absolute path is REQUIRED for the terminal-attach upstream: it opens tmux via
-         * [io.kotgent.pty.Pty.open] → `posix_spawn`, which does NOT search PATH, so a bare `tmux` there
-         * ENOENTs under launchd's minimal env even though shell-based tmux CONTROL (`popen`) still works.
-         * Only if resolution fails does it fall back to the bare name (control-plane keeps functioning;
-         * terminal attach may not).
+         * The PTY attach path uses `posix_spawn`, which does not search PATH, so it needs an absolute
+         * tmux executable. A bare-name fallback preserves shell-based control calls only.
          */
         @OptIn(ExperimentalForeignApi::class)
         fun defaultTmuxPath(): String {

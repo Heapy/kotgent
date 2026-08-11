@@ -72,40 +72,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/**
- * **What the daemon serves, and at which address** — plus a short, closed list of source-guards that no
- * running page could make about itself.
- *
- * ## What this file is
- * The assembled [KotgentServer] really serves the SPA out of `resources/webui`: `GET /` is `index.html`,
- * every ES module and vendored bundle answers 200 with a sensible content type and a non-empty body, the
- * PWA install surface (manifest, icons, apple tags) is complete and internally consistent, the content
- * revision addresses the whole import graph and drives the one caching rule, the service worker is served
- * from the ROOT so its scope covers the app, the static catch-all is mounted UNauthenticated (the browser
- * fetches the bootstrap before it has any credential) and does NOT shadow the token-gated API. The module
- * list in [daemonServesTheComponentAndLibModules] is a **registry**: every served module is entered there
- * once, the moment the file exists.
- *
- * ## What this file is no longer
- * It used to hold 49 tests, most of them reading the served JavaScript and CSS as TEXT — because the
- * macosArm64 test binary has no JavaScript engine and this repository had no browser harness. It has one
- * now (`webuitest/`, Playwright against a real Chromium driving the `webuicheck` harness), so the palette,
- * the dialogs, the drawer, the swipe bridge, the reattach, the key bar, the uploads, the unicode gate and
- * the layout are exercised as BEHAVIOUR and their greps are gone rather than kept as a second, weaker
- * statement of the same thing. The last to go was the session-list protocol itself — the unread badge and
- * its retry loop, the "Loading sessions…" first paint and the two latched announcements, which had held
- * out in [daemonServesTheAppEntryModule] because nothing else could see them.
- *
- * The clearest artefact of why they had to go is `webUiExposesThePreferencesScreen`, deleted with the
- * rest: it asserted that `app.js` contains the literal `if (sameForm) closeDialogFrom(submittedDialog)` —
- * the exact source line that WAS the Preferences bug the browser tier found. This tier had not merely
- * failed to catch that defect; it had pinned it as a contract, and it broke when the bug was fixed. A test
- * that spells out an implementation line cannot tell a fix from a regression.
- *
- * So the rule for anything added here: if a Chromium could answer it, it belongs in `webuitest/`. Only
- * three kinds of claim stay — an address (what the daemon serves and with which headers), an agreement
- * between two files that never read each other, and a negative claim about the shape of the source.
- */
 class WebUiServingTest {
 
     private val token = "webui-serving-token-abc123"
@@ -127,45 +93,12 @@ class WebUiServingTest {
         assertContentTypeContains(resp, "html")
     }
 
-    /**
-     * The entry module's serving contract, and deliberately nothing else.
-     *
-     * `app.js` is the one module `index.html` names directly (through its revisioned URL — see
-     * [daemonServesIndexHtmlAtRoot]), so it is not in [daemonServesTheComponentAndLibModules]' registry
-     * and owns its address here. It is also the biggest file in the SPA, which is how this test grew to
-     * 114 lines and 35 greps: identifier names (`sessionsFrameRef.current(msg)`, `pruneReadPosters`,
-     * `READ_RETRY_DELAY_MS`), the relative order of four substrings inside one callback body, and two
-     * regex occurrence counts. Its own comment explained why — "there is no JS harness, so these greps are
-     * what stops the whole feature from being deleted". There is a harness now, and every one of those
-     * claims is made by a Chromium that RUNS the file:
-     *
-     * - the unread badge, its mark-read POST and the retry loop's three answers, the "Loading sessions…"
-     *   first paint, the two latched announcements and the absence of any wholesale `GET /sessions` —
-     *   `webuitest/test/SidebarTest.kt`;
-     * - the events socket's reconnect and who may spend a reattach candidate — `TerminalReattachTest`;
-     * - the notify edge — `TaskBadgeTest`; the deep link — `RouterTest`; the footer's version —
-     *   `SidebarTest`; starting and controlling sessions — `SessionDialogsTest` and `CommandPaletteTest`.
-     *
-     * The last claim to move was the one this KDoc used to record as dropped: that no null-guard filters
-     * `msg.model` out of an incoming patch, so a model the daemon CLEARED clears on screen. The reason
-     * given for dropping it — "the `webuicheck` harness has no command that clears a model" — was a
-     * missing FIXTURE, not a missing observable, and the compensation named here was wrong besides
-     * ([daemonServesTheComponentAndLibModules] asserts two export NAMES and says nothing about which
-     * fields the appliers copy). The harness grew a `model <id> <name|->` verb and the claim is now
-     * `SidebarTest.aClearedModelDisappearsFromTheRowThePatchNames`, over a real socket frame. The
-     * daemon's own half — that the patch carries the null at all — stays `TransportTest`'s.
-     */
     @Test
     fun daemonServesTheAppEntryModule() = withServer { ctx ->
         val resp = ctx.get("/app.js")
         assertEquals(HttpStatusCode.OK, resp.status, "GET /app.js is served")
         assertContentTypeContains(resp, "javascript")
-        // An empty file is served with a perfectly good 200 and a perfectly good content type.
         assertTrue(resp.bodyAsText().isNotEmpty(), "GET /app.js is not an empty file")
-        // Stated here as well as in [revisionedAssetsAreImmutableAndEverythingElseRevalidates] for the
-        // same reason [daemonServesTheServiceWorkerAtTheRootScope] states its own: this address is the
-        // one an old shell's cached URL would use, and pinning the entry module is how a deploy stops
-        // arriving at all.
         assertEquals(
             "no-cache",
             resp.headers[HttpHeaders.CacheControl],
@@ -173,18 +106,10 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * The no-build-step contract: bare specifiers (`preact`, `htm/preact`) are resolved by the browser
-     * through the import map in `index.html`, so a typo there — or a vendored file that was never
-     * committed — breaks the whole page with nothing to catch it. Assert every mapped target is really
-     * served, and that the modules' own bare imports are covered by the map.
-     */
     @Test
     fun theImportMapResolvesToVendoredModulesThatAreActuallyServed() = withServer { ctx ->
         val index = ctx.get("/").bodyAsText()
         assertTrue(index.contains("type=\"importmap\""), "index.html declares an import map")
-        // Unlike a relative import inside app.js, an import-map target resolves against the DOCUMENT, so
-        // it does not inherit app.js's revision prefix and has to carry one of its own.
         val rev = revisionOf(index)
 
         val mapped = mapOf(
@@ -205,7 +130,6 @@ class WebUiServingTest {
             assertTrue(resp.bodyAsText().isNotEmpty(), "$path is not empty")
         }
 
-        // htm's Preact binding re-exports from both bare specifiers; the hooks build imports 'preact'.
         val htmPreact = ctx.get("/_v/$rev/vendor/htm-preact.module.js").bodyAsText()
         assertTrue(htmPreact.contains("\"preact\""), "htm/preact imports the bare 'preact' specifier")
         assertTrue(htmPreact.contains("\"htm\""), "htm/preact imports the bare 'htm' specifier")
@@ -215,25 +139,12 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * **The registry of served modules.** Every ES module under `resources/webui` is listed here exactly
-     * once, and the loop is the whole point: a browser test that loads the SPA proves a module is served
-     * only transitively and silently (an unresolvable import just breaks the page it happens to be on),
-     * and a module nothing imports yet — one a later task will fill in — has nothing to prove it at all.
-     * A registry entry that exists only as a side effect of some other suite passing is not an entry.
-     *
-     * Add a new module to the list the moment the file exists. The assertions after the loop are the
-     * handful of export names another module imports BY NAME, where a rename breaks the whole SPA at load
-     * time in a way the 200 + content-type loop cannot see.
-     */
     @Test
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/lib/clipboard.js", "/lib/unicode.js",
-            // The task layer's modules. Registered here from the moment they exist, so a wave-2 task
-            // that fills one in never has to touch this shared suite to prove it is served.
             "/lib/router.js", "/lib/tasks.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js",
@@ -242,7 +153,6 @@ class WebUiServingTest {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
             assertContentTypeContains(resp, "javascript")
-            // An empty file is served with a perfectly good 200 and a perfectly good content type.
             assertTrue(resp.bodyAsText().isNotEmpty(), "GET $path is not an empty file")
         }
         assertTrue(
@@ -253,14 +163,6 @@ class WebUiServingTest {
             ctx.get("/lib/prefs.js").bodyAsText().contains("export function loadPrefs"),
             "the stored preferences are exported",
         )
-        // app.js imports these by name — a rename (or an empty file) would break the entire SPA at load
-        // time, which the 200 + content-type loop above cannot see. That is an EXPORT-NAME check and
-        // nothing more: what the two appliers DO (compare revs, keep the fresher row, stamp the applied
-        // rev onto it) is behaviour, and it is measured against a live page and a real socket in
-        // `webuitest/test/SessionRevMergeTest.kt`. The greps that used to stand in for it here pinned
-        // three expressions verbatim, so a renamed local broke the test while an applier that stopped
-        // comparing revs did not. The Sidebar's loading state went the same way
-        // (`SidebarTest.theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecidesTheListIsEmpty`).
         val sessionHelpers = ctx.get("/lib/sessions.js").bodyAsText()
         assertTrue(
             sessionHelpers.contains("export function upsertIfNewer") &&
@@ -269,19 +171,12 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * The PWA install surface (plan Task 11). On iOS this is not decoration: Web Push exists only inside
-     * an *installed* PWA, so a manifest Chrome/Safari refuses (wrong media type, an icon that 404s) costs
-     * the whole notification half of the feature — and nothing else in the suite would notice.
-     */
     @Test
     fun daemonServesTheWebManifestWithItsOwnMediaType() = withServer { ctx ->
         val resp = ctx.get("/manifest.webmanifest")
         assertEquals(HttpStatusCode.OK, resp.status, "GET /manifest.webmanifest is served")
         assertContentTypeContains(resp, "application/manifest+json")
 
-        // Parse rather than substring-match: a manifest that is not valid JSON is silently ignored by
-        // every browser, which looks exactly like "install prompt never appears".
         val manifest = Json.parseToJsonElement(resp.bodyAsText()).jsonObject
         assertEquals("Kotgent", manifest["name"]?.jsonPrimitive?.content, "manifest name")
         assertEquals("Kotgent", manifest["short_name"]?.jsonPrimitive?.content, "manifest short_name")
@@ -297,8 +192,6 @@ class WebUiServingTest {
             assertTrue(colour != null && colour.startsWith("#"), "$key is a concrete colour, was $colour")
         }
 
-        // Every declared icon must actually be served, at the declared size, as a real PNG: the
-        // no-build-step contract means a typo'd or uncommitted icon fails only in a browser otherwise.
         val icons = manifest["icons"]?.jsonArray.orEmpty()
         assertEquals(2, icons.size, "the manifest declares the 192 and 512 icons")
         val declaredSizes = mutableSetOf<String>()
@@ -327,10 +220,8 @@ class WebUiServingTest {
         val apple = ctx.get("/icons/apple-touch-icon.png")
         assertEquals(HttpStatusCode.OK, apple.status, "GET /icons/apple-touch-icon.png is served")
         assertContentTypeContains(apple, "image/png")
-        // 180x180 is what iOS asks for; anything else gets rescaled and looks soft on the home screen.
         assertPngOfSize(apple.readRawBytes(), 180, "/icons/apple-touch-icon.png")
 
-        // The PNGs are rendered from this file and committed (there is no build step), so it has to stay.
         val svg = ctx.get("/icons/logo.svg")
         assertEquals(HttpStatusCode.OK, svg.status, "GET /icons/logo.svg (the icon source) is served")
         assertContentTypeContains(svg, "svg")
@@ -362,11 +253,6 @@ class WebUiServingTest {
                 body.contains("src=\"/_v/$rev/app.js\""),
             "the installed iOS app declares dark system UI and fetches content-revisioned assets",
         )
-        // The manifest and the home-screen icon deliberately keep stable URLs: an installed PWA refers to
-        // them by a fixed address, so a revision in their path would be churn, not invalidation.
-        // ROOT-absolute, not document-relative: the SPA owns deep paths now, and at `/tasks/local:42` a
-        // relative `manifest.webmanifest` would resolve to `/tasks/manifest.webmanifest` and 404 — taking
-        // the iOS install path, and therefore push, with it for anyone who arrived by a deep link.
         assertTrue(
             body.contains("href=\"/manifest.webmanifest\"") &&
                 body.contains("href=\"/icons/apple-touch-icon.png\"") &&
@@ -375,15 +261,6 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * The one caching rule. An asset reached through a valid `/_v/<rev>/` prefix is content-addressed, so
-     * its bytes can never change under that URL and it is cached forever. Everything else revalidates:
-     * the shell (which carries the revision, so caching it would pin every asset URL with it), the worker
-     * (browsers cap a worker script at 24h of freshness), the manifest and icons — and any asset reached
-     * WITHOUT the prefix, e.g. from a stale bookmark. That last group used to be served with no caching
-     * header at all, i.e. under the browser's own heuristic freshness, which is precisely what the
-     * hand-bumped `?v=` token existed to escape.
-     */
     @Test
     fun revisionedAssetsAreImmutableAndEverythingElseRevalidates() = withServer { ctx ->
         val rev = revisionOf(ctx.get("/").bodyAsText())
@@ -407,8 +284,6 @@ class WebUiServingTest {
                 "GET $path revalidates so a deploy is never pinned behind a cached copy",
             )
         }
-        // Neither entry point may become immutable however it was addressed: the shell hands out every
-        // other asset URL, and the worker's root scope depends on its own path.
         for (path in listOf("/_v/$rev/index.html", "/_v/$rev/sw.js")) {
             assertEquals(
                 "no-cache",
@@ -418,12 +293,6 @@ class WebUiServingTest {
         }
     }
 
-    /**
-     * The substitution itself, and the proof that the hand-maintained scheme is gone. A surviving `?v=`
-     * would mean someone re-introduced a token that has to be bumped by hand — and it would be bumped for
-     * three files out of thirty-four, which is what made the old scheme silently miss changes. A surviving
-     * `__REV__` would mean the daemon served a URL that never changes.
-     */
     @Test
     fun theServedShellCarriesARealRevisionAndNoHandBumpedToken() = withServer { ctx ->
         val index = ctx.get("/").bodyAsText()
@@ -431,17 +300,9 @@ class WebUiServingTest {
         assertFalse(index.contains("?v="), "no asset is fetched with a hand-bumped cache-busting query")
         assertTrue(isRevToken(revisionOf(index)), "the substituted revision is a real content hash")
 
-        // The rest of the graph inherits the prefix from app.js's own URL, so no import may spell a
-        // version of its own — one that did would also be a second module instance of the same file.
         assertFalse(ctx.get("/app.js").bodyAsText().contains("?v="), "app.js imports carry no query version")
     }
 
-    /**
-     * The prefix is an address, not a filter: the same bytes sit behind it, and an unrecognised revision is
-     * still served. Refusing one would break the single real race — a shell fetched just before a daemon
-     * update asking for its assets just after it — for no gain, since a client can only hold an old
-     * revision's URL from an old shell, which it cannot have (the shell is `no-cache`).
-     */
     @Test
     fun theRevisionPrefixOnlyChangesTheAddress() = withServer { ctx ->
         val rev = revisionOf(ctx.get("/").bodyAsText())
@@ -453,8 +314,6 @@ class WebUiServingTest {
         val stale = ctx.get("/_v/0123456789ab/app.js")
         assertEquals(HttpStatusCode.OK, stale.status, "an older revision's URL still serves its asset")
 
-        // A revision this server never minted is the one dangerous case: `immutable` on a URL that cannot
-        // change — a failed substitution — would pin the file in every cache forever.
         val bogus = ctx.get("/_v/${WEBUI_REV_PLACEHOLDER}/app.js")
         assertEquals(HttpStatusCode.OK, bogus.status, "a malformed revision still serves the asset")
         assertEquals(
@@ -464,11 +323,6 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * The prefix is stripped BEFORE the traversal guard runs, so a `..` underneath it still reaches that
-     * guard instead of being hidden by the prefix. Asserted on the pure split rather than over HTTP,
-     * because a client normalises `..` out of a URL before it is ever sent.
-     */
     @Test
     fun strippingTheRevisionPrefixLeavesTraversalVisibleToTheGuard() {
         val (rev, path) = stripRevPrefix("_v/0123456789ab/../../etc/passwd")
@@ -485,11 +339,6 @@ class WebUiServingTest {
         assertFalse(isRevToken("0123456789abc"), "a revision is exactly $WEBUI_REV_LENGTH characters")
     }
 
-    /**
-     * The guarantee itself: a changed byte anywhere under the web UI directory changes the revision, and
-     * with it every asset URL the shell hands out — which is what replaces remembering to bump a token.
-     * Checked over a throwaway tree, since the served one cannot be mutated from a test.
-     */
     @OptIn(ExperimentalForeignApi::class)
     @Test
     fun anyChangedByteChangesTheRevision() {
@@ -507,7 +356,6 @@ class WebUiServingTest {
             val afterEdit = webUiRevision(dir)
             assertTrue(afterEdit != before, "editing a nested module changes the revision")
 
-            // The path is hashed alongside the content, so a rename counts even though no byte moved.
             writeFile("$dir/lib/renamed.js", "export const a = 2;\n")
             unlink("$dir/lib/api.js")
             assertTrue(webUiRevision(dir) != afterEdit, "renaming a module changes the revision")
@@ -520,30 +368,6 @@ class WebUiServingTest {
         }
     }
 
-    /**
-     * The service worker — the half of the notification path that runs when no tab does. Three things
-     * about it are addresses, and all three are here: that it is served at all (a 404 makes
-     * `register("/sw.js")` reject and push silently never works), that it is served from the ROOT so its
-     * scope covers `/` (a worker under `/lib/` could never control the app), and that it revalidates (a
-     * cached worker keeps an old push handler alive for up to 24h after a deploy).
-     *
-     * What the worker DOES is not read here any more. Its event handlers, its payload-less `/sessions`
-     * fetch, the abort deadline, the rotation ordering and the preference queue used to be asserted as
-     * source text; a delivered push is the only thing that can actually exercise them, and that needs a
-     * real push service no headless browser has — so they belong to the plan's manual checklist, not to a
-     * grep that passes whether or not the handler works. Two exceptions stay, both of them the kinds of
-     * claim this file keeps: the deep-link parameter, whose two spellings live in two files that cannot
-     * import each other ([theDeepLinkParameterIsTheOneTheServiceWorkerBuilds]), and the negative below.
-     *
-     * ## The import guard is a NEGATIVE about the source, and nothing else can make it
-     * `/sw.js` is registered as a CLASSIC script (`register("/sw.js")` with no `{ type: "module" }`), so a
-     * bare-specifier `import` — the reflex every other file in `resources/webui` teaches — is a
-     * SyntaxError at worker parse time. The registration then rejects, the worker never installs, and the
-     * whole server-sent push path is dead while every tab keeps working perfectly. No browser test can
-     * observe it either: a headless Chromium has no push service, so nothing here would ever wake the
-     * worker to notice it is missing. The guard therefore lives where it can be made — over the bytes the
-     * daemon serves — and it is the one thing this test reads out of the body.
-     */
     @Test
     fun daemonServesTheServiceWorkerAtTheRootScope() = withServer { ctx ->
         val resp = ctx.get("/sw.js")
@@ -562,23 +386,6 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * The one thing about Web Push that is a SERVING statement: the browser module the daemon serves
-     * addresses exactly the routes the daemon mounts.
-     *
-     * `lib/push.js` writes three bare paths (the `/api/v1` prefix is added once, in `lib/api.js`) and the
-     * worker's own `/sw.js`; `PushRoutes.kt` declares the same three as constants. Nothing else ties the
-     * two files together, so a route renamed on the server leaves a page that fetches a 404 and silently
-     * never becomes a push target. Comparing the served text against the Kotlin constants is what fails
-     * here instead of in a browser nobody is watching.
-     *
-     * Everything else this test used to assert now lives where it belongs. That the routes are mounted,
-     * sit inside `authenticated`, answer `401` without a credential, refuse a foreign `Origin` and
-     * validate their bodies is `PushRoutesTest` — repeating it here would be a second, weaker copy. And
-     * the browser half — permission from the click, `pushManager.subscribe`, delivery, unsubscribe — is
-     * not automatable at all: it needs a real push service, which no headless browser has, so it stays in
-     * the plan's Post-Completion manual checklist.
-     */
     @Test
     fun theBrowserPushModuleCallsTheDaemonsOwnPushRoutes() = withServer { ctx ->
         val push = ctx.get("/lib/push.js")
@@ -604,18 +411,6 @@ class WebUiServingTest {
         assertContentTypeContains(resp, "javascript")
     }
 
-    /**
-     * The two Unicode addons are really vendored, really served, and really export the names
-     * `lib/unicode.js` constructs.
-     *
-     * This is the serving half of the opt-in arrangement, and it has to be stated here because the
-     * behavioural half proves the opposite: `webuitest/test/MobileFeaturesTest.kt` shows that NOTHING
-     * fetches an addon until Preferences selects one, watches the single revisioned request that the
-     * choice produces, and reads the live terminal's `unicode.activeVersion` going 6 → 11. A gate that
-     * never opens looks identical to a gate over an addon that was never committed — so the file on disk,
-     * its real width tables and its export name are what this test answers for, and the browser answers
-     * for the gate.
-     */
     @Test
     fun theUnicodeAddonsAreVendoredAndServed() = withServer { ctx ->
         for (path in listOf(
@@ -660,14 +455,10 @@ class WebUiServingTest {
 
     @Test
     fun theStaticCatchAllDoesNotShadowTheTokenGatedApi() = withServer { ctx ->
-        // With the static catch-all mounted, an authenticated GET /api/v1/sessions must still route to the
-        // API (200 + JSON list), NOT be swallowed by the `/{path...}` file route (which would 404).
         val resp = ctx.get("$API_PREFIX/sessions") { header(HttpHeaders.Authorization, "Bearer $token") }
         assertEquals(HttpStatusCode.OK, resp.status, "the literal API route outranks the static catch-all")
         assertEquals("[]", resp.bodyAsText().trim(), "the API (empty session list), not a static file, answered")
 
-        // The other half of the same property, and the one Task 17's SPA fallback is built on: the bare
-        // path is now the SPA's, so it reaches the catch-all — which has no such file and says so.
         val bare = ctx.get("/sessions") { header(HttpHeaders.Authorization, "Bearer $token") }
         assertEquals(HttpStatusCode.NotFound, bare.status, "the bare /sessions now falls through to the SPA route")
         assertEquals("not found", bare.bodyAsText().trim(), "the static catch-all answered it, not the API")
@@ -675,8 +466,6 @@ class WebUiServingTest {
 
     @Test
     fun versionApiIsAuthenticatedAndOutranksTheStaticCatchAll() = withServer { ctx ->
-        // No credential reaches the literal, authenticated API route and is rejected there. If the open
-        // static catch-all had won instead, this missing file would answer 404.
         assertEquals(HttpStatusCode.Unauthorized, ctx.get("$API_PREFIX/version").status)
 
         val resp = ctx.get("$API_PREFIX/version") { header(HttpHeaders.Authorization, "Bearer $token") }
@@ -690,37 +479,10 @@ class WebUiServingTest {
             "the response is the public VersionDto wire shape",
         )
 
-        // Bare `/version` is open static ground now: no credential, and the catch-all — not the gate —
-        // answers. A 401 here would mean the API is still mounted at the SPA's path.
         assertEquals(HttpStatusCode.NotFound, ctx.get("/version").status, "the bare path is the SPA's, and 404s")
     }
 
-    // --- deliberate source-guards --------------------------------------------------------------------
-    //
-    // Six statements that a running page cannot make about itself, each for one of three reasons: it is
-    // an agreement between two FILES that never read each other (the API prefix, the deep-link parameter,
-    // the board's CSS vocabulary), it is a comparison against a Kotlin constant a JVM browser-test module
-    // cannot import (the project-name cap, the tmux socket label), or it is a NEGATIVE claim about the
-    // shape of the source — "no second owner of history exists" has no moment at which a browser could
-    // observe it. Everything that is not one of those three now lives in `webuitest/`; do not grow this
-    // section with anything a Chromium could answer.
 
-    /**
-     * A comparison against a Kotlin constant: the command the sidebar offers to copy joins the daemon's
-     * OWN tmux server, in UTF-8.
-     *
-     * `tmuxAttachCommand` (`lib/sessions.js`) hand-writes `tmux -u -L kotgent attach -t <name>`, and both
-     * halves of that are cross-file agreements the browser cannot check. The socket label is
-     * [TMUX_SOCKET], the value `Commands.daemon` builds its one `Tmux` with — spell it differently and
-     * the operator's terminal starts an EMPTY second tmux server and reports "no sessions", which reads
-     * as a dead agent. And `-u` is what stops the client from being read as non-UTF-8: tmux then rewrites
-     * every non-ASCII cell as `_` (`tty_check_codeset`), turning an agent's box-drawing TUI into a wall of
-     * underscores — the same reason `attachUpstreamCommand` passes the flag for the daemon's own upstream.
-     *
-     * A Chromium can (and does) assert what the button puts on the clipboard —
-     * `webuitest/test/SidebarTest.kt` reads the exact string — but it has no access to the Kotlin
-     * constant, which is the half that rots silently.
-     */
     @Test
     fun theCopyableTmuxCommandNamesTheDaemonsOwnSocketInUtf8() = withServer { ctx ->
         val sessions = ctx.get("/lib/sessions.js").bodyAsText()
@@ -731,21 +493,6 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * An agreement between two FILES about one prefix (was the whole of the old prefix test).
-     *
-     * `lib/api.js` declares `API_PREFIX` once and `apiPath` puts it on every URL the page builds — but
-     * `sw.js` is a classic script with no module graph, so it cannot import that constant and hand-writes
-     * `/api/v1/…` into three URL literals of its own. Nothing but this keeps the two spellings in step,
-     * and a browser cannot see the disagreement at all: the worker's fetches happen inside a push handler
-     * a headless browser has no push service to trigger.
-     *
-     * The rest of the old assertion — "every request the page makes carries the prefix, except the
-     * `/auth` bootstrap" — is a claim about running code and moved to
-     * `webuitest/test/ApiPrefixTest.kt`, which collects every request a live page issues. The grep it
-     * replaced pinned the literal expression inside `apiPath`, so a rename broke it while a route that
-     * skipped `apiPath` entirely did not.
-     */
     @Test
     fun theServiceWorkerHandWritesTheSameApiPrefixTheModuleDeclares() = withServer { ctx ->
         val api = ctx.get("/lib/api.js").bodyAsText()
@@ -762,15 +509,6 @@ class WebUiServingTest {
         }
     }
 
-    /**
-     * An agreement between two FILES about one constant (was `WebUiRouterTest`).
-     *
-     * `sw.js` is a classic script with no module graph: it cannot import the router, so it hand-writes
-     * `/?session=<id>` in `openWindow`, and nothing but this test keeps that spelling and the router's
-     * `DEEP_LINK_PARAM` in step. A browser could only observe the pair through a DELIVERED push
-     * notification, which needs a real push service no headless browser has — the routing half that a
-     * browser can see (a deep link reaching its screen) is `webuitest/test/RouterTest.kt`.
-     */
     @Test
     fun theDeepLinkParameterIsTheOneTheServiceWorkerBuilds() = withServer { ctx ->
         val router = ctx.get("/lib/router.js").bodyAsText()
@@ -785,40 +523,12 @@ class WebUiServingTest {
         )
     }
 
-    /**
-     * A NEGATIVE constraint on the shape of the source (was `WebUiRouterTest`): no `pushState` outside
-     * `lib/router.js`.
-     *
-     * `replaceState` survives on purpose — `clearDeepLink` rewrites the address bar without changing
-     * screens. A `pushState` would be a second owner of navigation, which is exactly what this forbids.
-     * The browser tests prove that navigating THROUGH the router works; they can never prove that nothing
-     * else navigates, because absence has no moment at which it can be observed.
-     */
     @Test
     fun theAppReachesHistoryOnlyThroughTheRouter() = withServer { ctx ->
         val app = ctx.get("/app.js").bodyAsText()
         assertFalse(app.contains("pushState"), "no screen change is hand-rolled outside the router")
     }
 
-    /**
-     * The board's frozen CSS vocabulary (was `WebUiBoardTest` + `WebUiBoardStyleTest`).
-     *
-     * `style.css` and the three board components were written by different hands from one frozen class
-     * list, and neither side can read the other's file. A class invented on either side is a rule that
-     * matches nothing, or an element that draws nothing — and the browser's answer to both is a page that
-     * renders, just wrong, which is why `webuitest/test/BoardStyleTest.kt` (which measures real paint)
-     * cannot see it. All THREE ends of the contract are asserted here, because all three are agreements
-     * between files:
-     *  1. every class the components emit is on the list;
-     *  2. every class the components own is really emitted;
-     *  3. every class on the list has a rule in `style.css` — the end that was lost with
-     *     `WebUiBoardStyleTest.everyClassInTheBoardVocabularyIsStyled` and is restored here.
-     *
-     * `TaskDetail.js` is in the scan because the vocabulary carries its `task-detail*` / `task-activity*`
-     * classes; without it those entries had no emitter-side owner at all after `WebUiTaskDetailTest` was
-     * deleted. Adding it is what forced [vocabularyTokensIn] to read CLASS ATTRIBUTES rather than the
-     * whole file — that component addresses most of its own elements by `id`.
-     */
     @Test
     fun theBoardComponentsEmitOnlyTheSharedVocabularyAndTheStylesheetDressesAllOfIt() = withServer { ctx ->
         val sources = mapOf(
@@ -838,16 +548,12 @@ class WebUiServingTest {
                 )
             }
         }
-        // The second end: the classes these three files OWN are all really emitted.
         for (owned in BOARD_OWNED_CLASSES) {
             assertTrue(
                 emitted.contains(owned),
                 "the board emits the '$owned' class the stylesheet is dressing",
             )
         }
-        // The third: the stylesheet answers for every word of the vocabulary. A selector, not a bare
-        // mention — `.task-blocked` must appear as a class selector, so a class named only inside a
-        // comment does not count as dressed.
         val css = ctx.get("/style.css").bodyAsText()
         for (className in BOARD_VOCABULARY) {
             assertTrue(
@@ -857,16 +563,6 @@ class WebUiServingTest {
         }
     }
 
-    /**
-     * The project-name field must accept every name `POST /projects` does (was `WebUiBoardTest`).
-     *
-     * An `<input maxlength>` shorter than the API's cap is not a stricter client-side rule — it silently
-     * refuses the keystroke, so the 81st character of a perfectly legal 100-character name could not be
-     * typed at all, with no message anywhere. The number is imported from the daemon rather than repeated
-     * here, so this fails if either side moves — and [PROJECT_NAME_MAX_LENGTH] is a constant of this
-     * native root module that the JVM `webuitest` module cannot import at all, which is precisely why the
-     * check stays in Kotlin.
-     */
     @Test
     fun theProjectNameFieldAcceptsEveryNameTheApiDoes() = withServer { ctx ->
         val board = ctx.get("/components/Board.js").bodyAsText()
@@ -885,7 +581,6 @@ class WebUiServingTest {
         )
     }
 
-    // --- harness -------------------------------------------------------------------------------------
 
     private inner class Ctx(val port: Int, val client: HttpClient) {
         suspend fun get(path: String, block: io.ktor.client.request.HttpRequestBuilder.() -> Unit = {}): HttpResponse =
@@ -918,7 +613,6 @@ class WebUiServingTest {
                 store = store,
                 preferencesStore = store,
                 tokens = TokenHolder(token),
-                // Never invoked in a serving test (no terminal WS connects); throwing makes that explicit.
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the serving test") },
                 currentVersion = currentVersion,
                 webUiDir = locateWebUiDir(),
@@ -940,10 +634,6 @@ class WebUiServingTest {
         assertTrue(ct.contains(needle, ignoreCase = true), "content-type '$ct' should mention '$needle'")
     }
 
-    /**
-     * The revision the served shell is carrying, read out of a `src="…"` attribute rather than the first
-     * `/_v/` in the file — the comment above those tags describes the shape too, and would be matched.
-     */
     private fun revisionOf(index: String): String {
         val marker = "src=\"/_v/"
         val at = index.indexOf(marker)
@@ -975,13 +665,8 @@ class WebUiServingTest {
         }
     }
 
-    /**
-     * Assert [bytes] really are a square PNG of [size] pixels, read out of the file's own IHDR rather than
-     * trusted from the manifest or the filename. The icons are rendered by hand (`qlmanage` + `sips`) and
-     * committed, so "the 192 slot holds a 512 render" is a mistake nothing else in the repo would catch.
-     */
     private fun assertPngOfSize(bytes: ByteArray, size: Int, what: String) {
-        val signature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10) // \x89 P N G \r \n \x1a \n
+        val signature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
         assertTrue(bytes.size > 24, "$what is too short to be a PNG (${bytes.size} bytes)")
         assertTrue(
             bytes.copyOfRange(0, 8).contentEquals(signature),
@@ -993,22 +678,6 @@ class WebUiServingTest {
         assertEquals(size, beInt(20), "$what pixel height")
     }
 
-    /**
-     * The board vocabulary this [source] emits AS A CLASS — read out of `class=` attribute values only.
-     *
-     * Scanning the whole file was enough while the scan covered `Board.js` and `TaskCard.js`, which name
-     * almost nothing by `id`. It is not enough for `TaskDetail.js`, which addresses most of its own
-     * elements that way (`id="task-detail-loading"`, `aria-labelledby="task-detail-title"`, …): those are
-     * element identities, not stylesheet words, and a whole-file scan reports twenty of them as classes
-     * the vocabulary has never heard of.
-     *
-     * A value is either a quoted literal or a `${…}` expression, and a quoted one may itself contain
-     * interpolations (`class="task-card ${blocked ? "task-blocked" : ""}"`), so the reader tracks `${…}`
-     * nesting rather than stopping at the first quote. Out of each value it takes the hyphenated
-     * lowercase words and keeps the ones shaped like this vocabulary — `board` itself, or a `board-` /
-     * `task-` prefix. Everything else a class list carries (`button`, `field-hint`, `icon-button`) is
-     * shared UI vocabulary these components only borrow.
-     */
     private fun vocabularyTokensIn(source: String): Set<String> {
         val found = mutableSetOf<String>()
         for (value in classAttributeValues(source)) {
@@ -1021,7 +690,6 @@ class WebUiServingTest {
         return found
     }
 
-    /** Every `class=` attribute value in [source], quoted literals and `${…}` expressions alike. */
     private fun classAttributeValues(source: String): List<String> {
         val values = mutableListOf<String>()
         var at = source.indexOf(CLASS_ATTRIBUTE)
@@ -1037,7 +705,6 @@ class WebUiServingTest {
         return values
     }
 
-    /** From [from] to the closing quote, skipping over any `${…}` whose own quotes must not end it. */
     private fun readQuotedValue(source: String, from: Int): String {
         var depth = 0
         var at = from
@@ -1052,7 +719,6 @@ class WebUiServingTest {
         return source.substring(from)
     }
 
-    /** From [from] (just past a `${`) to its matching `}`. */
     private fun readInterpolation(source: String, from: Int): String {
         var depth = 1
         var at = from
@@ -1069,11 +735,6 @@ class WebUiServingTest {
         return source.substring(from)
     }
 
-    /**
-     * A no-op [EventStore] good enough to construct the server: the static-serving path never touches it,
-     * and the one API call the shadowing test makes ([listSessions]) returns an empty list. Everything
-     * else is unused, so it returns empties / throws.
-     */
     private class NoopEventStore : EventStore, PreferencesStore {
         override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow<SessionUpdate>()
         private val preferenceState = MutableStateFlow(UiPreferences("", 1, 0))
@@ -1108,7 +769,6 @@ class WebUiServingTest {
     }
 }
 
-/** The current working directory (via `getcwd`), for locating `resources/webui` at test time. */
 @OptIn(ExperimentalForeignApi::class)
 private fun currentDir(): String = memScoped {
     val size = 4096
@@ -1120,16 +780,12 @@ private fun currentDir(): String = memScoped {
 @OptIn(ExperimentalForeignApi::class)
 private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 
-/** `rwx------` for the throwaway directory the revision test builds its tree in. */
 private const val MODE_0700: Int = 0b111_000_000
 
-/** The attribute whose value carries a class list; the only place a class name is looked for. */
 private const val CLASS_ATTRIBUTE: String = "class="
 
-/** One hyphenated lowercase word out of a class list — `task-card-handle`, `field-hint`, `button`. */
 private val CLASS_TOKEN = Regex("[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 
-/** Every class name in the plan's frozen "Board CSS vocabulary" — the contract `style.css` is written from. */
 private val BOARD_VOCABULARY: Set<String> = setOf(
     "board", "board-head", "board-identity", "board-project", "board-project-path",
     "board-new-task",
@@ -1142,26 +798,10 @@ private val BOARD_VOCABULARY: Set<String> = setOf(
     "task-badge", "task-badge-unknown",
 )
 
-/**
- * The two words of [BOARD_VOCABULARY] the three board components do NOT own.
- *
- * `taskBadge` lives in `lib/sessions.js` and is rendered by the sidebar and the terminal header, so a
- * board component that emitted one would be reaching outside its own screen.
- */
 private val BOARD_BADGE_CLASSES: Set<String> = setOf("task-badge", "task-badge-unknown")
 
-/**
- * The subset of [BOARD_VOCABULARY] that `Board.js`, `TaskCard.js` and `TaskDetail.js` own and must emit
- * — derived rather than restated, so a word added to the vocabulary is immediately owed an emitter and
- * cannot sit on the list unclaimed.
- */
 private val BOARD_OWNED_CLASSES: Set<String> = BOARD_VOCABULARY - BOARD_BADGE_CLASSES
 
-/**
- * Locate the `resources/webui` directory robustly: `./kotlin test` runs from the module root (so the
- * relative default resolves), but we also walk up from the cwd looking for `resources/webui/index.html`
- * so the test is not fragile to where the runner starts.
- */
 private fun locateWebUiDir(): String {
     var dir = currentDir()
     repeat(6) {

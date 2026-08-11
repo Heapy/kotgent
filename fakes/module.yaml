@@ -1,68 +1,14 @@
-# fakes — the shared test doubles, promoted out of the test source set into a real module because the
-# `webuicheck` MAIN binary needs them: it drives a real `KotgentServer` over these doubles from a
-# browser, and a double written as a `private class` inside a test file is unreachable from another
-# module. Two of them (`FakeTmux`, `FakeEventStore`) additionally serve the root module's test fragment
-# (`test-dependencies: - ./fakes`); copying either into the harness would fork the behaviour the two
-# tiers exist to agree on.
-#
-# ## What this module does NOT claim
-# It is emphatically not "every double in the repo lives here". The suite still holds narrower nested
-# prototypes of the same interfaces — `FakeTaskStore` in `test/daemon/TaskServiceTest.kt`,
-# `test/daemon/TaskProjectWiringTest.kt`, `test/transport/Task{Events,Link,Read,Write}*Test.kt`;
-# `FakeProjectFs` in `test/daemon/TaskProjectWiringTest.kt`, `test/task/ProjectFileTest.kt`,
-# `test/transport/TaskIntegrationTest.kt`, `test/transport/TaskWriteRoutesTest.kt`; `FakeEventStore` in
-# `test/daemon/TaskServiceTest.kt` and three transport route tests; `FakeProjectFileWriter` in
-# `test/transport/TaskWriteRoutesTest.kt` — and they stay. They are a DIFFERENT tool, not an
-# un-migrated backlog:
-#   * they model exactly the members their own subject reaches and THROW on the rest, so a route that
-#     grows an unmodelled call fails loudly instead of reading an empty answer as a result. The doubles
-#     here must do the opposite — a throwing member becomes a 500 on whatever board gesture reaches it;
-#   * several carry an interleaving hook that only their own test can express (`beforeConditionalClear`,
-#     `afterNextCandidate`, a `LockWitness`, a recorded `reads` log, a `failOn` set). Hoisting those
-#     into a shared double would put one test's race knobs on every other consumer's API surface.
-# So the rule this module encodes is narrow and checkable: **a double a module OUTSIDE the root test
-# fragment has to reach lives here** — in practice, everything `webuicheck` stands its server on. A
-# double only a test file needs stays beside its subject, where it is free to throw on the members that
-# subject never calls and to carry the interleaving knobs above. If a nested prototype ever grows a
-# consumer outside the test fragment, that is the moment it moves — and the move is then a deletion plus
-# an import, not a behaviour merge.
-#
-# The corollary runs the other way too: nothing here may keep a knob NO consumer turns. A recorded read
-# log or a call spy that only a test could ever assert on is a nested prototype's tool, and leaving one
-# here makes the paragraph above false while costing every consumer the allocation.
-#
-# ## FIDELITY is the contract, and every member must cite what it mirrors
-# Both tiers assert against these classes, so a rule that differs from production is not a simplification —
-# it is a second product, and the browser assertions written against it are measurements of the wrong
-# thing. The divergences are latent by nature (no green test trips one; the next test written does), which
-# is why each member here carries a `file:line` citation of the statement it mirrors: `Sessions.sq`'s
-# `upsert` coalesce, `Backlog.sq`'s `restamp` (rev WITHOUT `updated_at`) and its `ORDER BY`s,
-# `BacklogDependencies.restampDependentsLocked`'s unconditional re-stamp and `addLocked`'s
-# return-before-the-write, `TaskUpdateOutbox.publishing`'s emit-inside-the-lock, `Tmux.sendKeys`' throw on
-# an absent pane. When production changes, the citation is the thing that makes the fake findable.
-#
-# ## The dependency direction LOOKS circular and is not
-# It runs root(test) -> fakes -> root(main). The toolchain resolves FRAGMENTS, not modules, so those
-# line up as a proper task-level DAG:
-#   :kotgent:compileMacosArm64TestDebug -> :fakes:compileMacosArm64Debug -> :kotgent:compileMacosArm64Debug
-# Verified by a spike before this module was written: the model loads with no cycle error, the root
-# test fragment compiles, links and its tests pass. Do not "fix" it by copying interfaces down here.
-#
-# ## Everything in `src/` is public
-# Toolchain 0.11 has no friend-module relationship between a module and any other module's test
-# fragment, so `internal` here would be invisible to both consumers.
+# Shared doubles live in a main module because both `webuicheck` and root tests consume them;
+# test-specific doubles keep their race hooks beside the subject.
+# Toolchain 0.11 resolves root(test) -> fakes -> root(main) as a fragment DAG, not a module cycle.
+# It also has no cross-module test friends, so declarations in `src/` must be public.
 product:
   type: kmp/lib
   platforms: [macosArm64]
 
 dependencies:
-  # The interfaces being doubled (EventStore, PreferencesStore, TaskStore, TaskTracker, ProjectFs,
-  # ProjectFileWriter, TmuxControl) and the host-free domain they speak all live in the root module.
   - ..
-  # Declared explicitly rather than inherited: the root module depends on coroutines WITHOUT
-  # `exported: true`, so a consumer of `..` does not see Mutex / SharedFlow / Channel — which every
-  # double here is built from. This is the same reason `ptycheck` names `../sysnative` directly for
-  # the exported coroutines behind `Pty.output`'s Channel.
+  # Root does not export coroutines, while these public fake APIs expose its types.
   - $libs.kotlinx.coroutines.core
 
 settings:

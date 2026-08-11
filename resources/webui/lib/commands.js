@@ -1,28 +1,4 @@
-/*
- * The Web UI's one command registry and its pure search ordering.
- *
- * Components render these descriptors; they do not carry a second list of actions or mnemonics. The
- * closures keep routes and session-id handling in app.js, while this browser-free module owns which
- * commands exist, when they apply, and how they are found.
- *
- * **The registry is SCREEN-AWARE, because the app has two screens and only one of them shows a
- * session.** `/tasks` replaces the session view entirely, so while the board is up the palette used to
- * offer nine commands aimed at a session nobody could see: ⌘K a set `attachedId` with no `TerminalPane`
- * mounted (nothing happened at all), ⌘K e announced a detach from a terminal that was not on screen, and
- * Interrupt/Stop/Done acted on whatever row happened to be selected before the operator went to groom
- * the backlog. `onBoard` therefore drops the whole `session` group and the sidebar-only "show done"
- * toggle, and turns the one board mnemonic around: `o` opens the board from the session view and leads
- * back out of it from the board, where "Open the task board" was a command that did nothing.
- *
- * Session ROWS stay on both screens. Selecting one is navigation — app.js's `showSession` navigates to
- * `/s/{id}` — so on the board the search view is also the way back to a particular session.
- *
- * That division is why the three task commands call `actions.openBoard` / `actions.newTask` /
- * `actions.openSessionTask` rather than building a route or looking a session up here: navigation and the
- * session list are app state, and reaching for either would make this file a second holder of it as well
- * as the registry. The one session fact this file reads is the `taskRef` already on the descriptor's
- * `activeSession`, and it reads it only to decide whether the command applies.
- */
+// The sole command and mnemonic registry; session actions are omitted on the task-board screen.
 
 import { displayName, isAliveState, isNeedsAttention, stateBadge } from "./sessions.js";
 
@@ -40,41 +16,21 @@ function disabledWhenAlive(session) {
   return isAliveState(session.state) ? "the selected session is already running" : null;
 }
 
-/**
- * "Open this session's task" is a no-op for a session that carries no `taskRef`, so it is refused on
- * exactly that condition rather than offered as a chord that does nothing. Liveness is deliberately not
- * part of it: a stopped or archived session still points at the task it was working on, and reading that
- * task is precisely what an operator does after the agent finished.
- */
 function disabledWhenNoSessionTask(session) {
   if (!session) return "no session is selected";
   return session.taskRef ? null : "the selected session is not linked to a task";
 }
 
-// app.js holds ONE pendingAction across every request it serialises, so there are two different
-// questions here and the commit that introduced only the first got the second wrong.
-//
-// `disabledWhilePending` is for the four commands that go through `controlSession`, which refuses a
-// second call outright whatever session it names — so offering one spends a chord on a request the app
-// drops. (Restore reaches the same refusal from a sidebar row, but it is not a palette command.)
+// Control requests serialize globally; local attach/detach conflicts only with actions that rewrite attachment.
 function disabledWhilePending(pendingAction) {
   return pendingAction ? "another action is still in progress" : null;
 }
 
-/**
- * Whether the in-flight action will write `attachedId` when it settles: stop and done detach, resume
- * attaches, and the import flow ends in a selection that does both. Interrupt and Restore never touch
- * the attachment, so blocking Attach/Detach during those refuses an operation that cannot conflict —
- * the operator is left unable to detach a live terminal because an unrelated archived row is being
- * restored. app.js guards the two handlers with this same rule, so the button and the handler agree.
- */
 export function affectsAttachment(pendingAction) {
   return pendingAction === "stop" || pendingAction === "done" ||
     pendingAction === "resume" || pendingAction === "import";
 }
 
-// Attach and Detach are local state writes, NOT controlSession calls — the app cannot drop them, so
-// their reason is the narrower one: only an action that will itself rewrite the attachment conflicts.
 function disabledWhileAttachmentPending(pendingAction) {
   return affectsAttachment(pendingAction) ? "another action is still in progress" : null;
 }
@@ -99,15 +55,6 @@ function sessionRows(sessions, actions) {
   }));
 }
 
-/**
- * The commands that act on the session the operator is LOOKING at, in the order the leader grid draws
- * them. They are built only for the session view: every one of them reads `activeSession`, and on the
- * board that row is a leftover selection behind a screen that shows a backlog (see the module header).
- *
- * `pendingAction` is a first-class disabled reason here, and always the FIRST one — an in-flight request
- * outranks every per-session condition — but in two strengths, because two different things are being
- * protected: see the pair of helpers above.
- */
 function sessionCommands(activeSession, attachedId, pendingAction, actions) {
   const alive = !!activeSession && isAliveState(activeSession.state);
   const attached = !!activeSession && activeSession.id === attachedId;
@@ -198,20 +145,7 @@ function sessionCommands(activeSession, attachedId, pendingAction, actions) {
   ];
 }
 
-/**
- * The commands that belong to the shell rather than to either screen — creating work, navigating between
- * the two screens, and the device-level dialogs.
- *
- * Two of them read [onBoard], and for opposite reasons. `general.task-board` is ONE mnemonic for "the
- * other screen": leaving `o` pointing at the board while the board is on screen spends the letter on a
- * navigation that is already done, and the board's own "Sessions" link is then the only way out — which
- * on a phone means finding a text link instead of the palette every other action lives in. Reusing the
- * letter rather than adding a second one is not only economy: `leaderKeyDown` resolves a letter
- * first-match-wins over the whole list, so two descriptors claiming `o` would make one of them a visible
- * grid row its own key can never reach, and the registry's chord uniqueness is asserted from the Kotlin
- * side as a property of this source text. `general.show-done` is dropped outright on the board because
- * the sidebar it toggles is precisely what the board screen unmounts.
- */
+// `o` means “the other screen”; leader mnemonics are first-match-wins and must remain unique.
 function generalCommands(onBoard, actions) {
   const commands = [
     {
@@ -257,9 +191,6 @@ function generalCommands(onBoard, actions) {
       run: () => actions.newTask(),
     },
     {
-      // Chordless on purpose: the board draws its own "New project" button, so this is the palette's
-      // copy of an action the operator performs once per repository — the search list is where a rare
-      // command belongs, and the leader grid is the small set worth memorising.
       id: "general.new-project", group: "general", chord: null,
       title: "New project",
       subtitle: "goes to the board and opens its new-project form",
@@ -308,23 +239,9 @@ function generalCommands(onBoard, actions) {
       run: () => actions.preferences(),
     },
   ];
-  // Filtered rather than conditionally spread so every descriptor above keeps one shape and one
-  // indentation: the Kotlin-side contracts read this file as TEXT, and a descriptor that moves under an
-  // `onBoard ? [] : [...]` arm changes where its slice ends without changing anything about the command.
   return onBoard ? commands.filter((command) => command.id !== "general.show-done") : commands;
 }
 
-/**
- * Build every command from app-owned actions. Keep this as the only command/mnemonic registry.
- *
- * `actions` contains closures rather than route names: the app remains responsible for confirmation,
- * status reporting, dialog state, and the active session changing between renders. [onBoard] is which
- * screen the router has put on, and it is the app's answer rather than this module's, for the same
- * reason: the route is app state (see the module header for what it decides here).
- *
- * Session rows deliberately take no pending reason: selecting a session is navigation, and `showSession`
- * writes the attachment coherently with the selection it just made.
- */
 export function buildCommands({
   sessions = [], activeSession = null, attachedId = null, pendingAction = null,
   onBoard = false, actions,
@@ -356,10 +273,6 @@ function rankedMatches(items, query) {
     .map((entry) => entry.item);
 }
 
-/**
- * Search by case-insensitive substring. Available matches always precede the disabled tail; with no
- * query, disabled commands disappear and attention sessions lead the deduplicated session list.
- */
 export function filterCommands(items, query) {
   const normalized = (query || "").trim().toLocaleLowerCase();
   if (normalized.length > 0) {

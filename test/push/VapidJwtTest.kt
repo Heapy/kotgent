@@ -8,43 +8,26 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-/**
- * The VAPID token format and its per-origin cache — pure, so these tests inject a clock and a signing
- * lambda and never go near `openssl` (that is `OpensslVapidSignerTest`'s job).
- *
- * The expected base64url segments are pinned as constants produced by an INDEPENDENT encoder
- * (`python3 base64.urlsafe_b64encode`), not by calling [base64Url] in the test — a round-trip against our
- * own encoder would agree with itself even if the claim shape were wrong. The header segment is the
- * well-known `eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9` that every ES256 JWT in the world carries, which is
- * about as external a fixture as exists.
- */
 class VapidJwtTest {
 
-    /** base64url of `{"typ":"JWT","alg":"ES256"}` — the canonical ES256 JWS header segment. */
     private val headerSegment = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9"
 
-    /** Epoch millis for every deterministic case; `+ 12h` lands on the round `exp` below. */
     private val fixedNow = 1_753_329_600_000L
 
-    /** `(fixedNow + VAPID_TOKEN_TTL_MILLIS) / 1000` — the NumericDate the claims must carry. */
     private val expectedExp = 1_753_372_800L
 
-    /** base64url of `{"aud":"https://api.push.apple.com","exp":1753372800,"sub":"https://kotgent.example.com"}` */
     private val appleClaimsSegment =
         "eyJhdWQiOiJodHRwczovL2FwaS5wdXNoLmFwcGxlLmNvbSIsImV4cCI6MTc1MzM3MjgwMCwic3ViIjoi" +
             "aHR0cHM6Ly9rb3RnZW50LmV4YW1wbGUuY29tIn0"
 
-    /** base64url of `{"aud":"https://api.push.apple.com","exp":1753372800,"sub":"mailto:kotgent@localhost"}` */
     private val appleClaimsSegmentFallbackSub =
         "eyJhdWQiOiJodHRwczovL2FwaS5wdXNoLmFwcGxlLmNvbSIsImV4cCI6MTc1MzM3MjgwMCwic3ViIjoi" +
             "bWFpbHRvOmtvdGdlbnRAbG9jYWxob3N0In0"
 
-    /** base64url of `{"aud":"https://fcm.googleapis.com","exp":1753372800,"sub":"mailto:kotgent@localhost"}` */
     private val googleClaimsSegment =
         "eyJhdWQiOiJodHRwczovL2ZjbS5nb29nbGVhcGlzLmNvbSIsImV4cCI6MTc1MzM3MjgwMCwic3ViIjoi" +
             "bWFpbHRvOmtvdGdlbnRAbG9jYWxob3N0In0"
 
-    /** base64url of the bytes `0x01 .. 0x40` — the fake 64-byte ES256 signature the tests sign with. */
     private val fakeSignatureSegment = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_QA"
 
     private fun fakeSignature(): ByteArray = ByteArray(P256_RAW_SIGNATURE_LENGTH) { (it + 1).toByte() }
@@ -52,12 +35,9 @@ class VapidJwtTest {
     private val appleEndpoint = "https://api.push.apple.com/3/device/abc123def456"
     private val googleEndpoint = "https://fcm.googleapis.com/fcm/send/cV9x:APA91bH-token"
 
-    // ---- pushServiceOrigin -------------------------------------------------------------------------
 
     @Test
     fun appleAndGoogleEndpointsProduceDifferentAudiences() {
-        // A VAPID token names its audience, so these must never collapse onto one cache key: a token
-        // minted for Apple is rejected outright by Google.
         val apple = pushServiceOrigin(appleEndpoint)
         val google = pushServiceOrigin(googleEndpoint)
 
@@ -68,8 +48,6 @@ class VapidJwtTest {
 
     @Test
     fun theSubscriptionPathIsStrippedFromTheAudience() {
-        // The path of a push endpoint IS the device's subscription identity — leaking it into every JWT
-        // would be both wrong for `aud` and a needless disclosure.
         assertEquals(
             "https://updates.push.services.mozilla.com",
             pushServiceOrigin("https://updates.push.services.mozilla.com/wpush/v2/gAAAAA?x=1#f"),
@@ -84,7 +62,6 @@ class VapidJwtTest {
 
     @Test
     fun aDefaultPortIsDroppedSoBothSpellingsShareOneToken() {
-        // RFC 6454 serializes an origin without its default port and the push service compares strings.
         assertEquals("https://push.example.com", pushServiceOrigin("https://push.example.com:443/send"))
         assertEquals("https://push.example.com:8443", pushServiceOrigin("https://push.example.com:8443"))
     }
@@ -156,7 +133,6 @@ class VapidJwtTest {
         }
     }
 
-    // ---- vapidSubject ------------------------------------------------------------------------------
 
     @Test
     fun theSubjectIsThePublicOriginWhenTheDaemonIsPublished() {
@@ -169,14 +145,11 @@ class VapidJwtTest {
     fun theSubjectFallsBackToTheMailtoWhenThereIsNoUsablePublicUrl() {
         assertEquals(VAPID_FALLBACK_SUBJECT, vapidSubject(null), "loopback-only daemon")
         assertEquals(VAPID_FALLBACK_SUBJECT, vapidSubject("   "), "a blank config value")
-        // http:// is only ever loopback here (no TLS on native) — a subject the service cannot reach.
         assertEquals(VAPID_FALLBACK_SUBJECT, vapidSubject("http://127.0.0.1:8765"))
-        // A bad publicUrl must not be able to disable push, so it degrades instead of throwing.
         assertEquals(VAPID_FALLBACK_SUBJECT, vapidSubject("not a url"))
         assertEquals("mailto:kotgent@localhost", VAPID_FALLBACK_SUBJECT)
     }
 
-    // ---- vapidSigningInput -------------------------------------------------------------------------
 
     @Test
     fun theSigningInputIsDeterministicAndCarriesTheExpectedClaims() {
@@ -204,8 +177,6 @@ class VapidJwtTest {
 
     @Test
     fun aClaimValueThatWouldNeedJsonEscapingIsRefused() {
-        // Both callers are constrained by construction; if one is bypassed, a JWT whose claims do not
-        // parse at the push service is far worse than a loud failure here.
         assertFailsWith<VapidJwtException> {
             vapidSigningInput("""https://evil"," "x":"y""", expectedExp, VAPID_FALLBACK_SUBJECT)
         }
@@ -217,7 +188,6 @@ class VapidJwtTest {
         }
     }
 
-    // ---- vapidAuthorizationHeader ------------------------------------------------------------------
 
     @Test
     fun theAuthorizationHeaderMatchesTheVapidShapeExactly() {
@@ -228,7 +198,6 @@ class VapidJwtTest {
         assertTrue(header.contains(", k="), "one comma-space before k, as in RFC 8292 §3")
     }
 
-    // ---- VapidTokenCache ---------------------------------------------------------------------------
 
     @Test
     fun aMintedTokenIsTheSigningInputPlusTheBase64UrlSignature() = runBlocking {
@@ -259,7 +228,6 @@ class VapidJwtTest {
             )
 
             val first = cache.tokenFor(appleEndpoint)
-            // 10h in: two hours of life left is still more than the one-hour refresh window.
             clock += 10L * 60 * 60 * 1000
             val second = cache.tokenFor("https://api.push.apple.com/3/device/a-different-device")
 
@@ -281,8 +249,6 @@ class VapidJwtTest {
             )
 
             val first = cache.tokenFor(googleEndpoint)
-            // 11h01m in: under an hour of life remains, so the next call must mint a fresh token rather
-            // than hand out one that could expire in flight (an opaque 401 from the push service).
             clock += 11L * 60 * 60 * 1000 + 60_000
             val refreshed = cache.tokenFor(googleEndpoint)
             val reused = cache.tokenFor(googleEndpoint)
@@ -327,7 +293,6 @@ class VapidJwtTest {
             assertFailsWith<VapidKeyException> { cache.tokenFor(appleEndpoint) }
             assertEquals(0, cache.cachedOriginCount(), "a half-built token is never stored")
 
-            // A missing openssl degrades to "no push", not to a poisoned cache: once it works, so does this.
             fail = false
             assertEquals("$headerSegment.$googleClaimsSegment.$fakeSignatureSegment", cache.tokenFor(googleEndpoint))
             assertEquals(1, cache.cachedOriginCount())
@@ -351,7 +316,6 @@ class VapidJwtTest {
 
     @Test
     fun aRefreshWindowThatSwallowsTheTtlIsRejectedAtConstruction() {
-        // Otherwise every token would be stale the moment it was minted — openssl once per notification.
         assertFailsWith<IllegalArgumentException> {
             VapidTokenCache(VAPID_FALLBACK_SUBJECT, { fakeSignature() }, { fixedNow }, ttlMillis = 1000, refreshBeforeMillis = 1000)
         }
@@ -370,5 +334,4 @@ class VapidJwtTest {
     }
 }
 
-/** Anti-hang bound on every coroutine case, the convention across this suite. Nothing here blocks. */
 private const val TEST_TIMEOUT_MILLIS: Long = 20_000

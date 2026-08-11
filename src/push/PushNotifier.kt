@@ -17,54 +17,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The push feature's one long-lived job: watch every session's state and fire a Web Push the moment one
- * starts waiting on the human.
- *
- * It is the thin edge between two things that are already tested on their own — [AttentionTracker] (pure
- * `false → true` edge detection) and [PushSender] (the wire format and the store pruning) — so all it owns
- * is the *plumbing*: subscribe, seed, and never let a failure escape.
- *
- * ## Startup is a barrier, not a fire-and-forget launch
- * [EventStore.reliableSessionUpdates] is a hot `SharedFlow` with **`replay = 0`**: nothing emitted before
- * this collector subscribed is ever delivered. Conversely, taking the [EventStore.listSessions] baseline
- * from inside `onSubscription` lets a write land before the snapshot read; that write is then already
- * reflected by the snapshot and its genuine `false → true` edge is suppressed when the buffered level is
- * collected.
- *
- * [start] closes both windows by being a suspending readiness barrier: it seeds first, subscribes second,
- * and returns only once the subscription is installed. The daemon awaits it before binding the HTTP
- * server, so no hook can write in the seed-to-subscribe interval and every hook accepted after the bind
- * has a live collector waiting for it.
- *
- * The ordinary [EventStore.sessionUpdates] signal is intentionally lossy because the browser periodically
- * resynchronizes its full snapshot. Edge detection cannot tolerate that: losing a leave/re-entry pair can
- * leave the tracker stuck at `true` forever. The reliable companion applies bounded backpressure only
- * until this constant-time collector records each transition; network delivery never runs on that path.
- *
- * Without any seed at all the failure is the daemon-restart one: the reconciler's startup writes about a
- * session that was ALREADY blocked before the restart would each look like a new approval.
- *
- * ## Nothing here may take the daemon down
- * This runs on the daemon's background scope. An exception escaping a `launch` on Kotlin/Native reaches
- * the unhandled-exception hook, so a push failure could kill the process — the exact opposite of what an
- * optional convenience feature is allowed to do. Hence three nested guards: a failing send is reported and
- * the collection continues, a failing seed is reported and collection continues with an empty baseline
- * (worth at most one spurious notification per waiting session — far better than no notifications at all),
- * and the whole collection is wrapped so even a store-level failure ends this job quietly instead of the
- * daemon. [CancellationException] is always re-thrown: swallowing it would detach this from the scope that
- * owns it.
- *
- * @param store the source of both the baseline ([EventStore.listSessions]) and the ordered live signal
- *   ([EventStore.reliableSessionUpdates]).
- * @param send delivers the notification for one session — `PushSender::send` in production. A function
- *   seam rather than the [PushSender] type itself, matching how the rest of this package injects its
- *   edges (`VapidTokenCache(sign = signer::sign)`,
- *   `PushSender(vapidToken = cache::tokenFor)`): it keeps the wire format out of these tests, and it is the
- *   only way to exercise "a throwing sender does not stop the collector" — a real [PushSender] swallows
- *   everything by design.
- * @param tracker the edge detector. Injectable but never shared: it is deliberately unsynchronized and is
- *   confined to the single collector coroutine started here.
- * @param onError where a swallowed failure is reported; stderr in production, a collector in tests.
+ * Watches the reliable, replay-free session update flow for attention edges. [start] is a readiness
+ * barrier: it seeds the restart baseline, subscribes, then returns before the daemon accepts hooks. The
+ * lossy UI flow cannot be used because dropping a leave/re-entry pair would suppress later edges.
+ * Optional push failures are reported but never escape this background job; cancellation still propagates.
  */
 class PushNotifier(
     private val store: EventStore,
@@ -74,13 +30,8 @@ class PushNotifier(
 ) {
 
     /**
-     * Launch the collector on [scope], await its seeded-and-subscribed readiness point, and return its
-     * [Job] (the daemon cancels it by cancelling the scope).
-     *
-     * Start this AFTER the daemon's startup reconciliation has finished writing: those writes are evaluated
-     * against the world as it was found, and the baseline this takes must already include them. The server
-     * must be bound only AFTER this function returns: that ordering is what makes the seed-before-subscribe
-     * handoff lossless for hook updates.
+     * Call after reconciliation and before binding the server; those boundaries make the seed-to-subscribe
+     * handoff lossless.
      */
     suspend fun start(scope: CoroutineScope): Job {
         val subscribed = CompletableDeferred<Unit>()
@@ -95,27 +46,17 @@ class PushNotifier(
         try {
             subscribed.await()
         } catch (e: Throwable) {
-            // The caller can be cancelled independently of [scope]. Finish this child before startup
-            // compensation closes the transport it may otherwise still be using.
+            // The caller and owning scope can cancel independently; do not leave a startup child behind.
             withContext(NonCancellable) { job.cancelAndJoin() }
             throw e
         }
         return job
     }
 
-    /**
-     * Seed, then collect until the flow ends or the coroutine is cancelled.
-     *
-     * [onSubscribed] is the readiness edge used by [start]. Keeping this collector private prevents callers
-     * from bypassing that method's seeded-and-subscribed readiness barrier.
-     */
     private suspend fun run(onSubscribed: () -> Unit) = coroutineScope {
         seed()
 
-        // Edge detection must never wait for an endpoint. One delivery can spend 20 seconds per device,
-        // but queued edge ids become stale and redundant: every payload-less push wakes the service worker,
-        // which fetches the complete current /sessions list. Keep at most the latest follow-up wake while
-        // one send is in flight, bounding memory without hiding any currently-waiting session.
+        // Payload-less pushes fetch current state, so one conflated follow-up wake preserves information.
         val deliveries = Channel<SessionId>(Channel.CONFLATED)
         launch {
             for (sessionId in deliveries) deliver(sessionId)
@@ -130,14 +71,12 @@ class PushNotifier(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            // The store's own signal broke. Push stops until the next daemon start; everything else lives on.
             onError("push: the notification watcher stopped, no further notifications will be sent: ${e.describe()}")
         } finally {
             deliveries.close()
         }
     }
 
-    /** The baseline: what was already waiting before this collector existed. See the class KDoc. */
     private suspend fun seed() {
         val sessions = try {
             store.listSessions()
@@ -150,7 +89,6 @@ class PushNotifier(
         tracker.seed(sessions)
     }
 
-    /** One queued edge: deliver it without ever letting a notification failure end the worker. */
     private suspend fun deliver(sessionId: SessionId) {
         try {
             send(sessionId)

@@ -19,8 +19,8 @@ import platform.posix.getenv
 import platform.posix.read
 import platform.posix.stderr
 
-/** The default local daemon port. `0x6b74` = ASCII "kt" (kotgent) — a stable, mnemonic high port. */
-const val DEFAULT_PORT: Int = 0x6b74 // 27508
+/** `0x6b74` is the mnemonic ASCII spelling "kt". */
+const val DEFAULT_PORT: Int = 0x6b74
 
 /** The tmux `-L` socket label the daemon and its sessions live on. */
 const val TMUX_SOCKET: String = "kotgent"
@@ -35,25 +35,16 @@ fun defaultBaseUrl(): String {
     return "http://127.0.0.1:$port"
 }
 
-/**
- * A parsed CLI invocation (plan Task 15). Parsing is a pure `argv -> CliCommand` mapping ([parseArgs])
- * with no I/O, so the whole surface is unit-testable; [runCli] then performs the side effects.
- */
+/** A parsed CLI invocation. */
 sealed interface CliCommand {
-    /** `--version` / `version` — print the version line. */
     data object Version : CliCommand
 
-    /** `--help` / `help` / no args — print usage. */
     data object Help : CliCommand
 
-    /** `daemon [--port N]` — run the control-plane server (the launchd entry point). */
     data class Daemon(val port: Int) : CliCommand
 
     /**
-     * `start <agent> [cwd] [--name N] [--tag T]... [--task R]` — start a session ([cwd] null = current
-     * dir). A non-null [task] links the new session to that task in the SAME `POST /sessions`, so a
-     * failed launch leaves no link behind; [runStart] routes it to [TaskCommands.startWithTask], which
-     * also owns the "which cwd" rule when the task's project lives elsewhere.
+     * A null [cwd] means the current directory. [task] is linked in the same request as session creation.
      */
     data class Start(
         val agent: String,
@@ -64,10 +55,7 @@ sealed interface CliCommand {
     ) : CliCommand
 
     /**
-     * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]` — register a provider
-     * session started OUTSIDE kotgent as a `resumable` row, then (unless [noStart]) resume it. Unlike
-     * [Start], a null [cwd] does NOT mean the current dir: it stays absent so the daemon discovers the
-     * project directory from the provider's on-disk store (see [runImportResolving]).
+     * Unlike [Start], a null [cwd] stays absent so the daemon discovers it from the provider's store.
      */
     data class Import(
         val agent: String,
@@ -78,44 +66,32 @@ sealed interface CliCommand {
         val noStart: Boolean,
     ) : CliCommand
 
-    /** `list` / `ls` — list sessions. */
     data object ListSessions : CliCommand
 
-    /** `stop <id>`. */
     data class Stop(val id: String) : CliCommand
 
-    /** `resume <id>`. */
     data class Resume(val id: String) : CliCommand
 
-    /** `interrupt <id>`. */
     data class Interrupt(val id: String) : CliCommand
 
-    /** `attach <id>` — raw terminal passthrough. */
     data class Attach(val id: String) : CliCommand
 
-    /** `install` — install the launchd LaunchAgent (Task 16). */
     data object Install : CliCommand
 
-    /** `uninstall` — remove the launchd LaunchAgent (Task 16). */
     data object Uninstall : CliCommand
 
-    /** `web [--print]` — open the Web UI in a browser; [print] prints the one-shot login URL instead. */
     data class Web(val print: Boolean) : CliCommand
 
-    /** `token rotate` — re-mint the master token; the old key stops authenticating new requests. */
     data object TokenRotate : CliCommand
 
-    /** `config get` — print the persisted config (currently just the public URL). */
     data object ConfigGet : CliCommand
 
-    /** `config set <key> <value>` — persist a config value (currently only `public-url`). */
     data class ConfigSet(val key: String, val value: String) : CliCommand
 
     /** A usage error (unknown command / missing argument) — printed to stderr with [message], exit 2. */
     data class Invalid(val message: String) : CliCommand
 }
 
-/** Usage help. */
 val USAGE: String = """
     kotgent — local-first dispatcher for coding-agent sessions
 
@@ -161,14 +137,7 @@ val USAGE: String = """
 """.trimIndent()
 
 /**
- * `argv -> CliCommand`. Pure apart from ONE deliberate seam: [readMessageStdin], which is consulted only
- * for the `-m -` convention (`task comment`/`review`/`done`, see [parseMessage]). Everything else —
- * resolving the default cwd, every network call, the daemon — happens in [runCli].
- *
- * The seam is a parameter rather than a read inside [runCli] because `-m -` can *fail* (an empty pipe is a
- * usage error, exactly like a missing `-m` value), and a usage error has to become a [CliCommand.Invalid]
- * here — there is nowhere later to turn one into an exit code 2. Defaulted, so every existing call site
- * and every test that does not pipe anything stays a one-argument call.
+ * Parsing reads stdin only for `-m -`; doing so here lets an empty pipe become [CliCommand.Invalid].
  */
 fun parseArgs(args: List<String>, readMessageStdin: () -> String = ::readStdinText): CliCommand {
     if (args.isEmpty()) return CliCommand.Help
@@ -195,21 +164,18 @@ fun parseArgs(args: List<String>, readMessageStdin: () -> String = ::readStdinTe
     }
 }
 
-/** `web [--print]` — the only flag is `--print`; anything else is a usage error. */
 private fun parseWeb(rest: List<String>): CliCommand {
     val unknown = rest.firstOrNull { it != "--print" }
     if (unknown != null) return CliCommand.Invalid("web: unexpected argument '$unknown' (usage: kotgent web [--print])")
     return CliCommand.Web(print = rest.contains("--print"))
 }
 
-/** `token <sub>` — only `rotate` today; a bare `token` is NOT `cat ~/.kotgent/token`, so it is an error. */
 private fun parseToken(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
     "rotate" -> CliCommand.TokenRotate
     null -> CliCommand.Invalid("token requires a subcommand: kotgent token rotate")
     else -> CliCommand.Invalid("token: unknown subcommand '$sub' (did you mean: kotgent token rotate?)")
 }
 
-/** `config get` / `config set <key> <value>`. */
 private fun parseConfig(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
     "get" -> CliCommand.ConfigGet
     "set" -> parseConfigSet(rest.drop(1))
@@ -238,14 +204,8 @@ private fun parsePortFlag(rest: List<String>): Int? {
 }
 
 /**
- * `start <agent> [cwd] [--name N] [--tag T]... [--task R]`.
- *
- * `--task` is strict where `--name`/`--tag` are lenient, and the asymmetry is deliberate rather than
- * inherited: a swallowed `--name` value costs a label, while a swallowed `--task` value would start a
- * session that is silently NOT linked to the task the operator named — the launch succeeds, the link the
- * whole command was for is simply absent, and nothing says so. So a missing/`--`-prefixed value and a
- * value that is not a well-formed [TaskRef] are both usage errors here. The existing flags are left
- * exactly as they were: tightening them is a separate, behaviour-changing decision.
+ * `--task` is stricter than the legacy `--name` and `--tag` parsing: losing its value would silently
+ * launch an unlinked session. The lenient legacy flags remain unchanged for compatibility.
  */
 private fun parseStart(rest: List<String>): CliCommand {
     val positionals = mutableListOf<String>()
@@ -272,23 +232,13 @@ private fun parseStart(rest: List<String>): CliCommand {
     }
     val agent = positionals.getOrNull(0)
     if (agent.isNullOrBlank()) return CliCommand.Invalid("start requires an agent: kotgent start <agent> [cwd]")
-    val cwd = positionals.getOrNull(1) // null → current dir, resolved in runCli
+    val cwd = positionals.getOrNull(1)
     return CliCommand.Start(agent, cwd, name, tags, task)
 }
 
 /**
- * `import <agent> <session-id> [--cwd D] [--name N] [--tag T]... [--no-start]`. Stricter than
- * [parseStart] on purpose, because every silently-tolerated slip changes what gets imported:
- *  - every value flag REQUIRES a real (non-blank, non-`--`) value. A forgotten `--cwd` value read as
- *    "discover" would contradict the operator's explicit override intent; a swallowed flag is worse —
- *    `--name --no-start` would name the session "--no-start" AND auto-resume it against the
- *    operator's stated intent; and an EMPTY value (`--cwd "$UNSET_VAR"` with the variable unset)
- *    would silently resolve to the CLI's own cwd and be sent as an explicit override of discovery —
- *    with the codex probe ignoring cwd, the session would be registered (and resumed) under the
- *    wrong project;
- *  - a third positional is rejected. `start <agent> [cwd]` trains `import claude <id> ~/proj`, and
- *    silently dropping the path would fall back to discovery — potentially registering a different
- *    cwd than the one the operator typed.
+ * Import value flags require non-blank values and extra positionals are rejected. Otherwise a swallowed
+ * flag or mistaken start-style cwd could change discovery, resumption, or the imported project.
  */
 private fun parseImport(rest: List<String>): CliCommand {
     val positionals = mutableListOf<String>()
@@ -296,7 +246,6 @@ private fun parseImport(rest: List<String>): CliCommand {
     var cwd: String? = null
     var name: String? = null
     var noStart = false
-    // The flag's value at [i + 1], or null when it is missing, blank, or itself a `--` flag (see the KDoc).
     fun flagValue(i: Int): String? = rest.getOrNull(i + 1)?.takeUnless { it.isBlank() || it.startsWith("--") }
     var i = 0
     while (i < rest.size) {
@@ -336,21 +285,10 @@ private fun parseImport(rest: List<String>): CliCommand {
     return CliCommand.Import(agent, id, cwd, name, tags, noStart)
 }
 
-// --- the `task` / `project` families ---------------------------------------------------------------
-//
-// One scanner ([scanFlags]) plus one small parser per subcommand. The family is parsed as strictly as
-// `import` and for the same reason: every one of these commands is run by an AGENT, unattended, so a
-// silently-tolerated slip becomes a comment on the wrong task or a session linked to nothing at all.
-// Refs and project ids are therefore validated HERE, against the very types the daemon will rebuild them
-// with, rather than travelling to the daemon to come back as a 400 an agent has to interpret.
-
-/** `--session <id>`: names the session explicitly, and is what lets the CLI skip `/whoami` entirely. */
 private const val SESSION_FLAG = "--session"
 
-/** `--project <uuid>`: names the project for the subcommands that are not about one task. */
 private const val PROJECT_FLAG = "--project"
 
-/** `-m` / `--message <text>`, canonicalized to this spelling by [scanFlags]. */
 private const val MESSAGE_FLAG = "--message"
 
 private const val BODY_FLAG = "--body"
@@ -361,10 +299,8 @@ private const val AFTER_FLAG = "--after"
 private const val TOP_FLAG = "--top"
 private const val BOTTOM_FLAG = "--bottom"
 
-/** The `-m` value that means "read the message from stdin" instead of from argv. */
 private const val STDIN_MESSAGE = "-"
 
-/** Everything after this marker is a positional, however it is spelled (so a title may start with `-`). */
 private const val END_OF_FLAGS = "--"
 
 private const val TASK_SUBCOMMANDS =
@@ -372,7 +308,6 @@ private const val TASK_SUBCOMMANDS =
 
 private const val PROJECT_SUBCOMMANDS = "list | init"
 
-/** [scanFlags]'s answer: the argv split into positionals + flags, or the usage error that stopped it. */
 private sealed interface Scan {
     data class Ok(
         val positionals: List<String>,
@@ -384,20 +319,8 @@ private sealed interface Scan {
 }
 
 /**
- * Split [rest] into positionals and flags for [command].
- *
- * [valueFlags] maps each accepted SPELLING to its canonical name, which is how `-m` and `--message` fold
- * into one key; [switchFlags] are the valueless ones (`--top`, `--bottom`). Three rules, each of them a
- * failure mode this family cannot afford:
- *  - **a value flag REQUIRES a real value** — present, non-blank and not itself `--`-prefixed. The
- *    [parseImport] argument applies unchanged: `--message --session` would otherwise post the literal
- *    text "--session" as a comment AND drop the session the operator named;
- *  - **a repeated value flag is an error**, not last-wins. Nothing in this family is repeatable (unlike
- *    `start --tag`), so a second one is a mistake — usually a shell loop that appended twice — and
- *    silently keeping one of the two values is the worst possible answer;
- *  - **an unknown `-`-prefixed argument is an error**, single-dash included, so a typo'd `-s` can never
- *    be filed as a task title. A bare `-` is not a flag (it is [STDIN_MESSAGE]), and [END_OF_FLAGS] stops
- *    flag parsing for the one real case that needs it — a title that starts with `-`.
+ * Value flags require real values, repeats and unknown flags are rejected, and [END_OF_FLAGS] permits
+ * dash-prefixed positionals. Strict parsing prevents unattended agents from mutating the wrong task.
  */
 private fun scanFlags(
     command: String,
@@ -431,28 +354,21 @@ private fun scanFlags(
     return Scan.Ok(positionals, values, switches)
 }
 
-/** The one wording for a ref that does not satisfy [TaskRef]'s invariant. */
 private fun malformedRef(command: String, value: String): String =
     "$command: '$value' is not a task ref — a ref is '<tracker>:<key>', e.g. 'local:42'"
 
-/** The one wording for a `--project` value that is not a canonical uuid. */
 private fun malformedProject(command: String, value: String): String =
     "$command: '$value' is not a project id — a project id is the uuid in its .kotgent.json " +
         "(see: kotgent project list)"
 
-/** Carries a usage message out of [parseMessage], which has three outcomes and no [CliCommand] to return. */
 private class UsageError(override val message: String) : IllegalArgumentException(message)
 
-/** The failure in [this] as a [CliCommand.Invalid] — every failure here is a [UsageError]. */
 private fun Result<*>.asInvalid(): CliCommand =
     CliCommand.Invalid(exceptionOrNull()?.message ?: "invalid arguments")
 
 /**
- * `-m/--message`: the argv value, `null` when the flag was absent, or the text piped on stdin when it was
- * the bare [STDIN_MESSAGE]. Only TRAILING whitespace is stripped from a piped message — that is the
- * newline a pipe or a heredoc adds, whereas the leading bytes are the operator's own content. An empty
- * pipe is a usage error for the same reason a missing `-m` value is: the operator asked to send a message
- * and there is none, and posting an empty comment would be a silent, permanent lie in the feed.
+ * Piped messages lose only trailing whitespace; leading content is preserved. An empty pipe is a usage
+ * error rather than a permanent empty activity entry.
  */
 private fun parseMessage(command: String, scan: Scan.Ok, readStdin: () -> String): Result<String?> {
     val raw = scan.values[MESSAGE_FLAG] ?: return Result.success(null)
@@ -462,7 +378,6 @@ private fun parseMessage(command: String, scan: Scan.Ok, readStdin: () -> String
     return Result.success(piped)
 }
 
-/** `task <sub> …`. */
 private fun parseTask(rest: List<String>, readStdin: () -> String): CliCommand {
     val sub = rest.firstOrNull()
         ?: return CliCommand.Invalid("task requires a subcommand: kotgent task $TASK_SUBCOMMANDS")
@@ -484,7 +399,6 @@ private fun parseTask(rest: List<String>, readStdin: () -> String): CliCommand {
     }
 }
 
-/** `task add <title> [--body B] [--project P] [--session S]`. */
 private fun parseTaskAdd(rest: List<String>): CliCommand {
     val command = "task add"
     val scan = when (val s = scanFlags(command, rest, valueFlags(BODY_FLAG, PROJECT_FLAG, SESSION_FLAG))) {
@@ -505,15 +419,12 @@ private fun parseTaskAdd(rest: List<String>): CliCommand {
     return TaskAdd(title, scan.values[BODY_FLAG], project, scan.values[SESSION_FLAG])
 }
 
-/** `task list [--project P] [--session S]`. */
 private fun parseTaskList(rest: List<String>): CliCommand =
     parseProjectScoped("task list", rest) { project, session -> TaskList(project, session) }
 
-/** `task next [--project P] [--session S]`. */
 private fun parseTaskNext(rest: List<String>): CliCommand =
     parseProjectScoped("task next", rest) { project, session -> TaskNext(project, session) }
 
-/** The shape `task list` and `task next` share: no positionals, `--project` and `--session`. */
 private fun parseProjectScoped(
     command: String,
     rest: List<String>,
@@ -534,8 +445,7 @@ private fun parseProjectScoped(
 }
 
 /**
- * The shape `task show` and `task unlink` share: an OPTIONAL ref plus `--session`. A missing ref is not an
- * error — an agent inside a pane knows only its pane, so the subject is resolved through `GET /whoami`.
+ * A missing ref resolves through the current pane rather than being a usage error.
  */
 private fun parseOptionalRef(
     command: String,
@@ -552,7 +462,6 @@ private fun parseOptionalRef(
     return make(ref, scan.values[SESSION_FLAG])
 }
 
-/** The shape `task claim` and `task delete` share: a REQUIRED ref plus `--session`. */
 private fun parseRequiredRef(
     command: String,
     rest: List<String>,
@@ -569,7 +478,6 @@ private fun parseRequiredRef(
     return make(ref, scan.values[SESSION_FLAG])
 }
 
-/** `task comment [<ref>] -m <text> [--session S]` — the one subcommand whose message is REQUIRED. */
 private fun parseTaskComment(rest: List<String>, readStdin: () -> String): CliCommand {
     val command = "task comment"
     val scan = when (val s = scanFlags(command, rest, valueFlags(SESSION_FLAG) + messageSpellings())) {
@@ -587,7 +495,6 @@ private fun parseTaskComment(rest: List<String>, readStdin: () -> String): CliCo
     return TaskComment(ref, text, scan.values[SESSION_FLAG])
 }
 
-/** The shape `task review` and `task done` share: an optional ref, an optional `-m`, and `--session`. */
 private fun parseTransition(
     command: String,
     rest: List<String>,
@@ -605,7 +512,6 @@ private fun parseTransition(
     return make(ref, message.getOrElse { return message.asInvalid() }, scan.values[SESSION_FLAG])
 }
 
-/** `task move <ref> (--top | --bottom | --before R | --after R) [--session S]`. */
 private fun parseTaskMove(rest: List<String>): CliCommand {
     val command = "task move"
     val targets = "--top | --bottom | --before <ref> | --after <ref>"
@@ -625,8 +531,6 @@ private fun parseTaskMove(rest: List<String>): CliCommand {
     scan.positionals.getOrNull(1)?.let { return CliCommand.Invalid("$command: unexpected argument '$it'") }
     if (TaskRef.parseOrNull(ref) == null) return CliCommand.Invalid(malformedRef(command, ref))
 
-    // Exactly one target. Zero is a no-op the daemon would have to invent a meaning for; two is a
-    // contradiction, and picking one of them silently re-ranks the backlog somewhere nobody asked for.
     val given = scan.switches.toList() + scan.values.keys.filter { it == BEFORE_FLAG || it == AFTER_FLAG }
     if (given.isEmpty()) return CliCommand.Invalid("$command requires a target: $targets")
     if (given.size > 1) {
@@ -636,7 +540,6 @@ private fun parseTaskMove(rest: List<String>): CliCommand {
         TOP_FLAG in scan.switches -> MoveTarget.Top
         BOTTOM_FLAG in scan.switches -> MoveTarget.Bottom
         else -> {
-            // Exactly one of the two is present (the count above settled that), so the elvis cannot miss.
             val before = scan.values[BEFORE_FLAG]
             val neighbour = before ?: scan.values.getValue(AFTER_FLAG)
             val parsed = TaskRef.parseOrNull(neighbour)
@@ -647,7 +550,6 @@ private fun parseTaskMove(rest: List<String>): CliCommand {
     return TaskMove(ref, target, scan.values[SESSION_FLAG])
 }
 
-/** `task dep add|rm <ref> --on <other> [--session S]`. */
 private fun parseTaskDep(rest: List<String>): CliCommand {
     val command = "task dep"
     val usage = "kotgent task dep add|rm <ref> --on <other>"
@@ -672,7 +574,6 @@ private fun parseTaskDep(rest: List<String>): CliCommand {
     return TaskDep(ref, on, remove, scan.values[SESSION_FLAG])
 }
 
-/** `project list` / `project init [<path>] [--name N]`. */
 private fun parseProject(rest: List<String>): CliCommand {
     val sub = rest.firstOrNull()
         ?: return CliCommand.Invalid("project requires a subcommand: kotgent project $PROJECT_SUBCOMMANDS")
@@ -684,7 +585,6 @@ private fun parseProject(rest: List<String>): CliCommand {
     }
 }
 
-/** `project list` — the daemon knows every project; there is nothing to scope it by. */
 private fun parseProjectList(rest: List<String>): CliCommand {
     val scan = when (val s = scanFlags("project list", rest)) {
         is Scan.Bad -> return CliCommand.Invalid(s.message)
@@ -696,7 +596,6 @@ private fun parseProjectList(rest: List<String>): CliCommand {
     return ProjectList
 }
 
-/** `project init [<path>] [--name N]` — a missing path means the caller's cwd, resolved by `TaskCommands`. */
 private fun parseProjectInit(rest: List<String>): CliCommand {
     val command = "project init"
     val scan = when (val s = scanFlags(command, rest, valueFlags(NAME_FLAG))) {
@@ -707,16 +606,10 @@ private fun parseProjectInit(rest: List<String>): CliCommand {
     return ProjectInit(scan.positionals.getOrNull(0), scan.values[NAME_FLAG])
 }
 
-/** Flags whose spelling IS their canonical name (everything but `-m`). */
 private fun valueFlags(vararg names: String): Map<String, String> = names.associateWith { it }
 
-/** The two spellings of the message flag, both folding onto [MESSAGE_FLAG]. */
 private fun messageSpellings(): Map<String, String> = mapOf("-m" to MESSAGE_FLAG, MESSAGE_FLAG to MESSAGE_FLAG)
 
-/**
- * Parse [args] and run the resulting command, returning the process exit code. This is the one place
- * that performs I/O (network calls, the daemon, the interactive attach); [parseArgs] stays pure.
- */
 fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList())) {
     is CliCommand.Version -> { println(versionLine()); 0 }
     is CliCommand.Help -> { println(USAGE); 0 }
@@ -735,8 +628,6 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.TokenRotate -> Commands.tokenRotate()
     is CliCommand.ConfigGet -> Commands.configGet()
     is CliCommand.ConfigSet -> Commands.configSet(command.key, command.value)
-    // The task/backlog families. Parsing is Task 19's (in this file); execution is Task 21's, in
-    // TaskCommands — so the dispatch is here and nothing else about these commands is.
     is TaskAdd -> TaskCommands.add(command.title, command.body, command.project, command.session)
     is TaskList -> TaskCommands.list(command.project, command.session)
     is TaskShow -> TaskCommands.show(command.ref, command.session)
@@ -753,7 +644,6 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is ProjectInit -> TaskCommands.projectInit(command.path, command.name)
 }
 
-/** `start` — the [runCli] dispatch wrapper: [runStartResolving] over the real cwd and the real commands. */
 private fun runStart(command: CliCommand.Start): Int = runStartResolving(
     command,
     currentWorkingDir(),
@@ -762,17 +652,8 @@ private fun runStart(command: CliCommand.Start): Int = runStartResolving(
 )
 
 /**
- * `start` — resolve the requested cwd to an ABSOLUTE path against [base] (the CLI's own working
- * directory), then dispatch. If that cannot be done (the CLI cannot determine its own working directory
- * and the caller gave a relative path), it fails LOUDLY with exit code 2 instead of sending the daemon a
- * relative path it would resolve against its own launchd cwd `/` — i.e. the wrong directory. The two
- * commands arrive as parameters, the [runImportResolving] shape, so the rule is unit-testable with no
- * daemon and no tmux.
- *
- * Two things travel to [startWithTask], not one. The resolved cwd is always absolute, so it cannot say
- * whether the operator TYPED a directory or it was defaulted to the CLI's own — and `--task`'s cwd rule
- * may override only the default. `command.cwd != null` is that whole distinction; collapsing the two here
- * is what let a stale `projects.path` win over a positional argument the operator had spelled out.
+ * Resolves cwd before sending it to a daemon launched from `/`. [startWithTask] also receives whether cwd
+ * was explicit, because a task's project may override only the default—not an operator-supplied path.
  */
 fun runStartResolving(
     command: CliCommand.Start,
@@ -789,7 +670,6 @@ fun runStartResolving(
 ): Int = try {
     val cwd = resolveCwdAgainst(base, command.cwd)
     val task = command.task
-    // `--task` is one POST carrying the ref, not a start followed by a link — see TaskCommands.
     if (task != null) startWithTask(command.agent, cwd, command.cwd != null, task, command.name, command.tags)
     else start(command.agent, cwd, command.name, command.tags)
 } catch (e: UnresolvableCwdException) {
@@ -797,20 +677,14 @@ fun runStartResolving(
     2
 }
 
-/** `import` — the [runCli] dispatch wrapper (the [runStart] shape): [runImportResolving] over the real cwd + command. */
 private fun runImport(command: CliCommand.Import): Int =
     runImportResolving(command, currentWorkingDir()) { cwd ->
         Commands.importSession(command.agent, command.providerSessionId, cwd, command.name, command.tags, command.noStart)
     }
 
 /**
- * `import` — resolve the optional `--cwd` exactly the way [runStart] resolves its cwd (a relative path is
- * anchored at [base], the CLI's own working directory; an unresolvable one prints the error and exits 2 —
- * the daemon lives under launchd with cwd `/`, so a relative path must never reach it), with ONE
- * deliberate difference: an ABSENT `--cwd` stays absent, because the daemon then discovers the project
- * directory from the provider's on-disk store — defaulting it to the CLI's cwd would silently defeat
- * discovery. [importCommand] receives the resolved (or absent) cwd; it is a seam so this rule is
- * unit-testable without a daemon (see `CliTest`).
+ * Resolves an explicit import cwd against [base], but preserves absence so provider-store discovery is
+ * not silently replaced by the caller's cwd.
  */
 fun runImportResolving(command: CliCommand.Import, base: String, importCommand: (resolvedCwd: String?) -> Int): Int = try {
     importCommand(command.cwd?.let { resolveCwdAgainst(base, it) })
@@ -819,15 +693,8 @@ fun runImportResolving(command: CliCommand.Import, base: String, importCommand: 
     2
 }
 
-// --- small native helpers ------------------------------------------------------------------------
-
 /**
- * Read stdin to EOF and decode it as UTF-8 — the `-m -` convention's other half ([parseMessage]).
- *
- * It exists so an agent can pipe a long summary (`kotgent task review -m - <<'EOF'`) without quoting it
- * into argv, which is also why it reads to EOF rather than one line. Chunks are collected and joined
- * ONCE: appending to a growing `ByteArray` would copy the whole accumulated message per 4 KiB read, and
- * "a long summary" is exactly the input this is for. Blocking is the point — the caller asked for stdin.
+ * Reads stdin to EOF for `-m -`; joining chunks once avoids quadratic copying for long messages.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun readStdinText(): String {
@@ -837,7 +704,7 @@ fun readStdinText(): String {
         val buf = allocArray<ByteVar>(bufSize)
         while (true) {
             val n = read(STDIN_FILENO, buf, bufSize.convert())
-            if (n <= 0) break // EOF, or an unreadable stdin — either way there is no more message
+            if (n <= 0) break
             chunks.add(buf.readBytes(n.toInt()))
         }
     }
@@ -850,7 +717,6 @@ fun readStdinText(): String {
     return all.decodeToString()
 }
 
-/** Print [line] to stderr (usage errors / diagnostics — keeps stdout clean for command output). */
 @OptIn(ExperimentalForeignApi::class)
 fun eprintln(line: String) {
     fputs(line + "\n", stderr)
@@ -858,36 +724,16 @@ fun eprintln(line: String) {
 }
 
 /**
- * Raised when a relative cwd cannot be made absolute because [base] — the CLI's own working directory —
- * is not itself absolute. Fatal on purpose: sending the daemon a relative path would have it resolved
- * against launchd's cwd `/`, silently launching the agent in the wrong directory.
+ * Refuses a relative cwd that cannot be anchored safely; launchd would otherwise resolve it from `/`.
  */
 class UnresolvableCwdException(message: String) : IllegalStateException(message)
 
 /**
- * Resolve a possibly-relative [cwd] against [base] (the CLI's own working directory) to an ABSOLUTE,
- * lexically NORMALIZED path. The daemon runs under launchd with cwd `/`, so a relative `cwd` sent
- * verbatim (e.g. `kotgent start claude .` or `… start claude sub/dir`) would be resolved by the daemon
- * against `/` — the wrong directory. The CLI resolves it here, against its own cwd, before sending.
- * Pure (no IO), so it is unit-tested directly.
- *
- * `.` segments and duplicate/trailing slashes are collapsed HERE (pure spelling — the same directory
- * either way); `..` segments deliberately pass through UNRESOLVED, because collapsing `..` lexically
- * changes meaning across symlinks (macOS: `/tmp/../Users` is lexically `/Users`, but /tmp is a symlink
- * into /private, so the filesystem's answer is `/private/Users`). Downstream owns them with the real
- * tree in hand: `start` hands the path to `tmux new-session -c` (the kernel resolves it at launch), and
- * `import` is canonicalized by the DAEMON with `realpath(3)` before the vendor-store probe runs (see
- * SessionManager.importSession). See [normalizeAbsolutePath].
- *
- * The result is ABSOLUTE in every branch, or it throws:
- * - an absolute [cwd] passes through (normalized) and never consults [base];
- * - otherwise [base] must itself be absolute — a relative one (`"sub"`), the `"."` [currentWorkingDir]
- *   falls back to when `getcwd` fails, or an empty string raise [UnresolvableCwdException]. Joining them
- *   would produce `"./sub"` / `"sub"` (still relative, the exact bug this function exists to prevent), and
- *   reading `""` as root would launch the agent in `/` — both silently wrong, so neither is guessed at.
+ * Returns an absolute cwd or throws. Dot segments and duplicate slashes are lexical spelling only, but
+ * `..` is preserved because resolving it across symlinks requires the filesystem; tmux or the daemon's
+ * `realpath(3)` handles it later.
  */
 fun resolveCwdAgainst(base: String, cwd: String?): String {
-    // An absolute target needs no base at all — resolve it even if the CLI cannot name its own cwd.
     if (cwd != null && cwd.startsWith("/")) return normalizeAbsolutePath(cwd)
     if (!base.startsWith("/")) {
         throw UnresolvableCwdException(
@@ -899,24 +745,14 @@ fun resolveCwdAgainst(base: String, cwd: String?): String {
 }
 
 /**
- * Collapse `.` segments, duplicate slashes and any trailing slash in an ABSOLUTE [path] — spelling-only
- * cleanup that can never change which directory is named (it is also what keeps the degenerate joins,
- * `"//sub"` / `"/base/./"`, from ever emitting `""` or a doubled slash). `..` segments are deliberately
- * KEPT, not collapsed: `..` crosses a directory boundary, and a lexical collapse resolves it against the
- * path's SPELLING while the kernel resolves it against the real (symlink-traversed) tree — the two
- * disagree whenever a prefix is a symlink (`/tmp/../Users` really names `/private/Users`). Only code
- * with the filesystem in hand may resolve `..`: tmux at launch for `start`, the daemon's `realpath(3)`
- * for `import`.
+ * Collapses spelling-only `.` and duplicate slashes but preserves `..`, whose meaning can change across
+ * symlinked prefixes such as macOS `/tmp`.
  */
 private fun normalizeAbsolutePath(path: String): String =
     "/" + path.split('/').filter { it.isNotEmpty() && it != "." }.joinToString("/")
 
 /**
- * The process's current working directory (`start`'s default cwd): `getcwd`, else `$PWD`, else `"."`.
- * Only an ABSOLUTE answer is accepted from either source — a relative `$PWD` (or a relative `getcwd`,
- * which POSIX does not produce but a stub could) is no more usable than none at all. The `"."` fallback
- * is deliberately not a path: it makes [resolveCwdAgainst] fail loudly rather than quietly resolving a
- * relative cwd into another relative one.
+ * Accepts only an absolute `getcwd` or `$PWD`; `"."` deliberately makes later resolution fail closed.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun currentWorkingDir(): String = memScoped {

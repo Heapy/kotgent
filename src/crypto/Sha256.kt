@@ -1,31 +1,11 @@
 package io.kotgent.crypto
 
-/**
- * SHA-256 (FIPS 180-4) in **pure Kotlin** — no cinterop, no platform library.
- *
- * ## Why not CommonCrypto
- * macOS ships `CC_SHA256` in `<CommonCrypto/CommonDigest.h>`, but that header is not part of the stock
- * `platform.posix` binding set, so reaching it would mean a new `.def` in `sysnative/` — and a custom
- * cinterop klib does NOT link into the TEST binary (KT-78062, see CLAUDE.md). The session cookie's HMAC
- * has to be verifiable from unit tests (that is the whole point of keeping it a pure function), so the
- * digest is implemented here instead. It hashes a few dozen bytes per request; the cost is irrelevant.
- *
- * The implementation is the textbook one: message padding to a multiple of [SHA256_BLOCK_BYTES], then the
- * 64-round compression function over a 16-word schedule extended to 64 words.
- */
-
-/** SHA-256 operates on 512-bit (64-byte) blocks — also the HMAC block size (RFC 2104). */
+/** Pure Kotlin because CommonCrypto requires a custom cinterop klib unavailable to this module. */
 const val SHA256_BLOCK_BYTES: Int = 64
 
-/** SHA-256 produces a 256-bit (32-byte) digest. */
 const val SHA256_DIGEST_BYTES: Int = 32
 
-/**
- * The 32-bit round constants: the first 32 bits of the fractional parts of the cube roots of the first 64
- * primes. Spelled as the standard's unsigned hex and narrowed with [Long.toInt] — a hand-converted signed
- * literal (`-0x4a3f0431`) would be transcribed straight from the spec exactly once and be unreviewable
- * afterwards.
- */
+/** Standard unsigned constants are narrowed to preserve their recognizable FIPS spelling. */
 private val ROUND_CONSTANTS: IntArray = longArrayOf(
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -37,12 +17,10 @@ private val ROUND_CONSTANTS: IntArray = longArrayOf(
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ).let { longs -> IntArray(longs.size) { longs[it].toInt() } }
 
-/** The eight initial hash words: the first 32 bits of the fractional parts of the square roots of the first 8 primes. */
 private val INITIAL_STATE: IntArray = longArrayOf(
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ).let { longs -> IntArray(longs.size) { longs[it].toInt() } }
 
-/** The SHA-256 digest of [message] — [SHA256_DIGEST_BYTES] bytes, big-endian, as the standard defines it. */
 fun sha256(message: ByteArray): ByteArray {
     val state = INITIAL_STATE.copyOf()
     val padded = padded(message)
@@ -62,15 +40,9 @@ fun sha256(message: ByteArray): ByteArray {
     return digest
 }
 
-/**
- * [message] padded per FIPS 180-4 §5.1.1: a `0x80` byte, then zeros, then the message length in BITS as a
- * big-endian 64-bit integer — sized so the result is a whole number of [SHA256_BLOCK_BYTES] blocks. A
- * 55-byte message therefore still fits one block while a 56-byte one needs two; those boundaries are the
- * classic off-by-one in this routine and are asserted in `Sha256Test`.
- */
+/** FIPS 180-4 §5.1.1 padding. */
 private fun padded(message: ByteArray): ByteArray {
     val bitLength = message.size.toLong() * 8L
-    // 1 byte for the 0x80 terminator + 8 bytes for the length; round the total up to a whole block.
     val minimum = message.size + 9
     val total = ((minimum + SHA256_BLOCK_BYTES - 1) / SHA256_BLOCK_BYTES) * SHA256_BLOCK_BYTES
     val out = ByteArray(total)
@@ -82,8 +54,7 @@ private fun padded(message: ByteArray): ByteArray {
     return out
 }
 
-/** One 64-round compression of the block at [offset] into [state]; [schedule] is a reused 64-word scratch buffer. */
-@Suppress("LongMethod") // the round loop is the algorithm; splitting it would only hide it
+@Suppress("LongMethod") // Splitting the standard's round loop would obscure the algorithm.
 private fun compress(state: IntArray, block: ByteArray, offset: Int, schedule: IntArray) {
     for (i in 0 until 16) {
         val p = offset + i * 4

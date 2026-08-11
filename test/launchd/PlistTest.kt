@@ -5,14 +5,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Unit tests for the PURE LaunchAgent plist generator (plan Task 16). [launchAgentPlist] takes no I/O
- * and is fully deterministic in its arguments, so every field is asserted directly against the emitted
- * XML: `Label`, `ProgramArguments = [<binary>, "daemon"]`, `RunAtLoad`, `KeepAlive`, `ThrottleInterval`,
- * `EnvironmentVariables.PATH` (must carry `/opt/homebrew/bin` so the daemon finds tmux/claude),
- * `EnvironmentVariables.LANG` (a UTF-8 locale, else tmux renders non-ASCII as `_`), and the
- * `StandardOutPath` / `StandardErrorPath` under the log directory.
- */
 class PlistTest {
 
     private val binary = "/Users/tester/dev/kotgent/build/kotgent"
@@ -59,7 +51,6 @@ class PlistTest {
     fun environmentPathIncludesHomebrewAndSystemBins() {
         val path = environmentPath(xml())
         assertTrue("/opt/homebrew/bin" in path, "PATH carries /opt/homebrew/bin (Apple-silicon brew)")
-        // The system bins the daemon needs so tmux/claude resolve under launchd's minimal env.
         for (dir in listOf("/usr/bin", "/bin", "/usr/sbin", "/sbin")) {
             assertTrue(dir in path, "PATH carries $dir")
         }
@@ -67,8 +58,6 @@ class PlistTest {
 
     @Test
     fun environmentCarriesAUtf8LangAlongsidePath() {
-        // launchd supplies no locale; without an explicit UTF-8 LANG every tmux client the daemon
-        // opens renders non-ASCII cells as `_`.
         val lang = environmentValue(xml(), "LANG")
         assertEquals(DEFAULT_UTF8_LOCALE, lang, "LANG defaults to the UTF-8 default")
         assertTrue(lang.endsWith("UTF-8"), "the emitted locale is a UTF-8 one")
@@ -105,11 +94,9 @@ class PlistTest {
         val x = launchAgentPlist(binaryPath = "/opt/a & b/kotgent", logDir = "/logs/<x>")
         assertTrue("&amp;" in x, "an ampersand in the binary path is escaped")
         assertTrue("&lt;x&gt;" in x, "angle brackets in the log dir are escaped")
-        // …and the raw, unescaped forms must NOT appear inside the value (would break the XML).
         assertTrue("/opt/a & b/kotgent" !in x, "the raw ampersand is not left unescaped")
     }
 
-    // --- mergedDaemonPath: snapshot the caller's PATH, keep the defaults as the fallback minimum ------
 
     @Test
     fun mergedDaemonPathNullCapturedReturnsTheDefaultExactly() {
@@ -118,7 +105,6 @@ class PlistTest {
 
     @Test
     fun mergedDaemonPathBlankOnlyCapturedReturnsTheDefault() {
-        // Nothing usable in the captured PATH → fall back to the default minimum, unchanged.
         assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath(""), "empty string → default")
         assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath(":::"), "only empty segments → default")
         assertEquals(DAEMON_DEFAULT_PATH, mergedDaemonPath("   "), "only a blank segment → default")
@@ -130,7 +116,6 @@ class PlistTest {
         val merged = mergedDaemonPath("/Users/x/.local/bin:$nvm")
         val entries = merged.split(':')
         val defaults = DAEMON_DEFAULT_PATH.split(':')
-        // captured entries come first, in their captured order; every default is appended after them.
         assertEquals(listOf("/Users/x/.local/bin", nvm) + defaults, entries, "captured first, defaults appended")
         assertTrue("/Users/x/.local/bin" in entries && nvm in entries, "the new dirs are present")
         for (dir in defaults) assertTrue(dir in entries, "default $dir retained")
@@ -138,18 +123,15 @@ class PlistTest {
 
     @Test
     fun mergedDaemonPathDedupsDefaultsAlreadyPresentInCaptured() {
-        // A captured PATH that already lists some defaults must not yield duplicates.
         val merged = mergedDaemonPath("/opt/homebrew/bin:/Users/x/.local/bin:/usr/bin")
         val entries = merged.split(':')
         assertEquals(entries.distinct(), entries, "no duplicate PATH entries")
-        // first-seen wins position: the shared entries keep their captured slot.
         assertEquals(listOf("/opt/homebrew/bin", "/Users/x/.local/bin", "/usr/bin"), entries.take(3))
         for (dir in listOf("/bin", "/usr/sbin", "/sbin")) assertTrue(dir in entries, "$dir still retained")
     }
 
     @Test
     fun mergedDaemonPathDropsEmptySegmentsInCaptured() {
-        // a::b and leading/trailing ':' → the empty segments are dropped.
         val merged = mergedDaemonPath(":/Users/x/.local/bin::/some/dir:")
         val entries = merged.split(':')
         assertTrue("" !in entries, "no empty segment survives the merge")
@@ -158,7 +140,6 @@ class PlistTest {
 
     @Test
     fun mergedDaemonPathDedupsRepeatsWithinTheCapturedPath() {
-        // A captured PATH that lists the same dir twice (`/a:/b:/a`) yields it once, at its first-seen slot.
         val merged = mergedDaemonPath("/Users/x/.local/bin:/some/dir:/Users/x/.local/bin")
         val entries = merged.split(':')
         assertEquals(entries.distinct(), entries, "no duplicate PATH entries")
@@ -168,7 +149,6 @@ class PlistTest {
 
     @Test
     fun mergedDaemonPathDropsNonAbsoluteSegmentsInCaptured() {
-        // Relative entries (a bare `.`, a relative dir) are never useful in a daemon's PATH — drop them.
         val merged = mergedDaemonPath(".:/Users/x/.local/bin:relative/dir")
         val entries = merged.split(':')
         assertTrue("." !in entries, "a bare `.` is dropped")
@@ -177,7 +157,6 @@ class PlistTest {
         assertEquals("/Users/x/.local/bin", entries.first(), "the absolute captured dir survives, first")
     }
 
-    // --- tiny XML field extractors (test-only, tolerant of the emitter's whitespace) ----------------
 
     private fun labelValue(x: String) = stringAfterKey(x, "Label")
 

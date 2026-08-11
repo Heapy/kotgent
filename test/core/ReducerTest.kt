@@ -7,32 +7,15 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Reducer TDD (Task 6): the pure `log -> state` projection. Covers every v1 transition, the
- * critical "entering running clears pendingApprovals" rule (Claude has no permission-answered
- * event), the [ControlSignal] user-initiated transitions (Interrupt / Stop-intent / Resume /
- * Detach), and a determinism/associativity property for [replay] (restart-safety = replay).
- *
- * Design under test (see Reducer.kt / Projection.kt KDoc):
- * - running-producing AgentEvents are [AgentEvent.TurnStarted] and [AgentEvent.ToolCall]; both
- *   set `running` AND reset `pendingApprovals = 0`.
- * - the projection invariant `pendingApprovals > 0  <=>  state == needs_approval` holds after
- *   every transition (asserted as a meta-property below).
- * - control signals are a SEPARATE reducer input that does NOT advance `lastSeq` (they are not
- *   part of the 7 persisted AgentEvent types).
- */
 class ReducerTest {
 
     private val uuid = "11111111-2222-3333-4444-555555555555"
     private val providerId = ProviderSessionId(uuid)
 
-    /** A running session reached the normal way (start event). Used as the "stuck running" base. */
     private val running: Projection = reduce(Projection.EMPTY, AgentEvent.TurnStarted)
 
-    /** A blocked session with one pending approval. */
     private val blocked: Projection = reduce(running, AgentEvent.ApprovalRequested("appr-1"))
 
-    // ---- empty / initial projection ----
 
     @Test
     fun emptyProjectionIsRunningAliveWithNoApprovals() {
@@ -44,7 +27,6 @@ class ReducerTest {
         assertFalse(p.stopRequested, "no clean-stop intent armed")
     }
 
-    // ---- v1 AgentEvent transitions ----
 
     @Test
     fun startEventProducesRunning() {
@@ -55,7 +37,6 @@ class ReducerTest {
 
     @Test
     fun toolCallIsAlsoARunningProducer() {
-        // From ready, a PostToolUse (ToolCall) re-enters running.
         val ready = reduce(running, AgentEvent.TurnCompleted)
         assertEquals(SessionState.ready, ready.state)
         val p = reduce(ready, AgentEvent.ToolCall("Bash"))
@@ -69,7 +50,6 @@ class ReducerTest {
         assertEquals(1, p1.pendingApprovals)
         assertTrue(p1.needsAttention, "needs_approval surfaces as needs-attention")
 
-        // A second concurrent approval accumulates.
         val p2 = reduce(p1, AgentEvent.ApprovalRequested("appr-2"))
         assertEquals(SessionState.needs_approval, p2.state)
         assertEquals(2, p2.pendingApprovals)
@@ -87,7 +67,6 @@ class ReducerTest {
         assertEquals(SessionState.stopped, reduce(running, AgentEvent.Exited(0)).state)
         assertEquals(SessionState.crashed, reduce(running, AgentEvent.Exited(1)).state)
         assertEquals(SessionState.crashed, reduce(running, AgentEvent.Exited(137)).state)
-        // dead states are dead
         assertTrue(reduce(running, AgentEvent.Exited(0)).state.isDead)
         assertTrue(reduce(running, AgentEvent.Exited(1)).state.isDead)
     }
@@ -99,18 +78,15 @@ class ReducerTest {
         assertEquals(providerId, p.providerSessionId)
         assertEquals(running.lastSeq.next(), p.lastSeq, "SessionBound still advances the event seq")
 
-        // it also does not disturb a blocked session's approval count/state
         val boundWhileBlocked = reduce(blocked, AgentEvent.SessionBound(providerId))
         assertEquals(SessionState.needs_approval, boundWhileBlocked.state)
         assertEquals(1, boundWhileBlocked.pendingApprovals)
         assertEquals(providerId, boundWhileBlocked.providerSessionId)
     }
 
-    // ---- the critical pendingApprovals rule (no "permission answered" event) ----
 
     @Test
     fun enteringRunningViaToolCallClearsPendingApprovals() {
-        // Claude chain: Notification (ApprovalRequested) -> PostToolUse (ToolCall) -> running.
         assertEquals(SessionState.needs_approval, blocked.state)
         assertEquals(1, blocked.pendingApprovals)
 
@@ -121,7 +97,6 @@ class ReducerTest {
 
     @Test
     fun enteringRunningViaTurnStartedClearsPendingApprovals() {
-        // Same rule via UserPromptSubmit (TurnStarted), even with multiple pending approvals.
         val doubleBlocked = reduce(blocked, AgentEvent.ApprovalRequested("appr-2"))
         assertEquals(2, doubleBlocked.pendingApprovals)
 
@@ -130,11 +105,6 @@ class ReducerTest {
         assertEquals(0, resumed.pendingApprovals, "all pending approvals cleared on running-entry")
     }
 
-    /**
-     * Forward-modeled seam: the v1 Claude adapter never emits [AgentEvent.ApprovalResolved], but the
-     * reducer must stay total AND model the richer-adapter semantics — decrement, and return to
-     * running once the last approval clears.
-     */
     @Test
     fun approvalResolvedDecrementsAndReturnsToRunningWhenLastCleared() {
         val doubleBlocked = reduce(blocked, AgentEvent.ApprovalRequested("appr-2"))
@@ -148,16 +118,13 @@ class ReducerTest {
         assertEquals(SessionState.running, cleared.state, "last approval resolved -> back to running")
         assertEquals(0, cleared.pendingApprovals)
 
-        // never underflows below zero
         val underflow = reduce(cleared, AgentEvent.ApprovalResolved("stray", approved = true))
         assertEquals(0, underflow.pendingApprovals, "pendingApprovals floors at 0")
     }
 
-    // ---- ControlSignal: user-initiated transitions (not AgentEvents) ----
 
     @Test
     fun interruptResetsAStuckRunning() {
-        // Claude sends no hook on Esc/Ctrl-C; Interrupt un-sticks a hung running session.
         assertEquals(SessionState.running, running.state)
         val interrupted = reduce(running, ControlSignal.Interrupt)
         assertEquals(SessionState.ready, interrupted.state, "interrupt un-sticks running -> ready")
@@ -179,7 +146,6 @@ class ReducerTest {
 
     @Test
     fun detachIsANoOpAcrossAllStates() {
-        // Detach is a client disconnect: the session lives, state is unchanged (identity).
         for (p in listOf(Projection.EMPTY, running, blocked,
                 reduce(running, AgentEvent.TurnCompleted), reduce(running, AgentEvent.Exited(2)))) {
             assertEquals(p, reduce(p, ControlSignal.Detach), "detach must not change state for $p")
@@ -188,7 +154,6 @@ class ReducerTest {
 
     @Test
     fun controlSignalsDoNotAdvanceLastSeq() {
-        // Control signals are not part of the persisted AgentEvent log, so they leave lastSeq alone.
         assertEquals(running.lastSeq, reduce(running, ControlSignal.Interrupt).lastSeq)
         assertEquals(running.lastSeq, reduce(running, ControlSignal.Stop).lastSeq)
         assertEquals(running.lastSeq, reduce(running, ControlSignal.Detach).lastSeq)
@@ -198,10 +163,8 @@ class ReducerTest {
 
     @Test
     fun stopIntentReclassifiesANonZeroExitAsStopped() {
-        // Without intent, a non-zero exit is a crash (the simple heuristic).
         assertEquals(SessionState.crashed, reduce(running, AgentEvent.Exited(143)).state)
 
-        // With a clean-stop intent armed by the daemon, the SAME exit is an intended stop.
         val stopping = reduce(running, ControlSignal.Stop)
         assertTrue(stopping.stopRequested, "Stop arms the clean-termination intent")
         assertEquals(SessionState.running, stopping.state, "Stop only records intent; state waits for Exited")
@@ -219,11 +182,9 @@ class ReducerTest {
             assertEquals(SessionState.ready, revived.state, "resume revives a dead session -> ready")
             assertEquals(0, revived.pendingApprovals)
         }
-        // resume on an already-alive session is a no-op
         assertEquals(running, reduce(running, ControlSignal.Resume))
     }
 
-    // ---- unread derivation ----
 
     @Test
     fun unreadIsDerivedFromLastSeqAgainstAReadCursor() {
@@ -237,37 +198,33 @@ class ReducerTest {
         assertFalse(p.hasUnread(Seq(3)))
     }
 
-    // ---- replay / determinism (restart-safety = replay) ----
 
-    /** A representative sequence exercising all 7 AgentEvent subtypes and the interesting paths. */
     private val representative: List<AgentEvent> = listOf(
-        AgentEvent.SessionBound(providerId),          // record provider id (no state change)
-        AgentEvent.TurnStarted,                        // running
-        AgentEvent.ToolCall("Read"),                   // running
-        AgentEvent.ApprovalRequested("a1"),            // needs_approval, pending 1
-        AgentEvent.ApprovalRequested("a2"),            // needs_approval, pending 2
-        AgentEvent.ToolCall("Bash"),                   // running, pending 0 (critical clear)
-        AgentEvent.TurnCompleted,                      // ready
-        AgentEvent.TurnStarted,                        // running again
-        AgentEvent.ApprovalResolved("stray", true),    // forward-modeled floor at 0, stays running
-        AgentEvent.Exited(0),                          // stopped
+        AgentEvent.SessionBound(providerId),
+        AgentEvent.TurnStarted,
+        AgentEvent.ToolCall("Read"),
+        AgentEvent.ApprovalRequested("a1"),
+        AgentEvent.ApprovalRequested("a2"),
+        AgentEvent.ToolCall("Bash"),
+        AgentEvent.TurnCompleted,
+        AgentEvent.TurnStarted,
+        AgentEvent.ApprovalResolved("stray", true),
+        AgentEvent.Exited(0),
     )
 
     @Test
     fun replayReconstructsTheConcreteTrajectoryAndFinalProjection() {
-        // Pin the REAL reducer behaviour: the exact (state, pendingApprovals, lastSeq) after every event
-        // of the representative sequence — not merely that replay == kotlin.fold (a language guarantee).
         val expected = listOf(
-            Triple(SessionState.running, 0, 1L),        // SessionBound: provider bound, no lifecycle change
-            Triple(SessionState.running, 0, 2L),        // TurnStarted
-            Triple(SessionState.running, 0, 3L),        // ToolCall(Read)
-            Triple(SessionState.needs_approval, 1, 4L), // ApprovalRequested(a1)
-            Triple(SessionState.needs_approval, 2, 5L), // ApprovalRequested(a2)
-            Triple(SessionState.running, 0, 6L),        // ToolCall(Bash) CLEARS pending approvals (critical rule)
-            Triple(SessionState.ready, 0, 7L),          // TurnCompleted
-            Triple(SessionState.running, 0, 8L),        // TurnStarted
-            Triple(SessionState.running, 0, 9L),        // ApprovalResolved floors at 0, stays running
-            Triple(SessionState.stopped, 0, 10L),       // Exited(0)
+            Triple(SessionState.running, 0, 1L),
+            Triple(SessionState.running, 0, 2L),
+            Triple(SessionState.running, 0, 3L),
+            Triple(SessionState.needs_approval, 1, 4L),
+            Triple(SessionState.needs_approval, 2, 5L),
+            Triple(SessionState.running, 0, 6L),
+            Triple(SessionState.ready, 0, 7L),
+            Triple(SessionState.running, 0, 8L),
+            Triple(SessionState.running, 0, 9L),
+            Triple(SessionState.stopped, 0, 10L),
         )
         var acc = Projection.EMPTY
         representative.forEachIndexed { i, event ->
@@ -280,8 +237,6 @@ class ReducerTest {
         assertEquals(providerId, acc.providerSessionId, "SessionBound's provider id is carried to the end")
         assertFalse(acc.stopRequested)
 
-        // replay() over the whole log yields that SAME concrete final projection (restart-safety) and is
-        // deterministic (no hidden clock/state).
         val batch = replay(representative)
         assertEquals(SessionState.stopped, batch.state)
         assertEquals(0, batch.pendingApprovals)
@@ -290,11 +245,6 @@ class ReducerTest {
         assertEquals(batch, replay(representative), "replay is deterministic")
     }
 
-    /**
-     * Meta-property: after EVERY prefix of the representative sequence, the projection invariant
-     * `pendingApprovals > 0  <=>  state == needs_approval` holds, and pendingApprovals is never
-     * negative. This ties the whole state machine together.
-     */
     @Test
     fun pendingApprovalsInvariantHoldsAfterEveryEvent() {
         var acc = Projection.EMPTY
@@ -303,7 +253,6 @@ class ReducerTest {
             acc = reduce(acc, e)
             assertInvariant(acc)
         }
-        // also holds after each control signal applied to a blocked session
         assertInvariant(reduce(blocked, ControlSignal.Interrupt))
         assertInvariant(reduce(blocked, ControlSignal.Detach))
         assertInvariant(reduce(blocked, ControlSignal.Stop))
@@ -316,7 +265,6 @@ class ReducerTest {
             p.state == SessionState.needs_approval,
             "invariant pendingApprovals>0 <=> needs_approval violated by $p",
         )
-        // The v1 reducer never produces the forward-modeled needs_answer.
         assertNotNull(p.state)
         assertTrue(p.state != SessionState.needs_answer, "needs_answer is forward-modeled, never reduced in v1")
     }

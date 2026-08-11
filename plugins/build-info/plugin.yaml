@@ -1,13 +1,10 @@
 tasks:
   generate:
     action: !io.kotgent.buildinfo.generateBuildInfo
-      # A narrow, real file input. The action derives the repository root from its parent; declaring
-      # the whole project root would overlap taskOutputDir and snapshot every build artifact.
+      # A project-root input would overlap taskOutputDir and snapshot build artifacts.
       versionFile: ${project.rootDir}/version.txt
       generatedSourceDir: ${taskOutputDir}
-  # Neither the build root nor a native linked executable is a plugin reference, so both are derived
-  # from the task's own output directory (`<build root>/tasks/<task>`). The parameter cannot be named
-  # `taskOutputDir`: a name matching its own reference is rejected as a reference loop.
+  # Derive the build root from this task output; naming the parameter taskOutputDir creates a reference loop.
   printDebugKexePath:
     action: !io.kotgent.buildinfo.printKexePath
       outputDir: ${taskOutputDir}

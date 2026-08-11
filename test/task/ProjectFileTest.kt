@@ -25,21 +25,6 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Tests for the project resolution rules — [parseProjectFile], [mainCheckoutRoot], [resolveProject] and
- * [PosixProjectFs].
- *
- * Almost everything runs against [FakeProjectFs], a lexical in-memory tree with declared symlink
- * prefixes: the whole point of putting the three filesystem questions behind [ProjectFs] is that a
- * layout git would take a subprocess and a real checkout to produce — a worktree of a bare repository,
- * a `--separate-git-dir` metadata directory, a submodule — is four lines of fixture here. The recorded
- * UNSUPPORTED layouts get the same coverage as the supported one, because "degrades to the current
- * directory" is a promise, not an accident.
- *
- * One test drives the REAL [PosixProjectFs] over a throwaway `$TMPDIR` tree holding a real `.git`
- * directory and a real `.git` worktree file. It never touches a repository the operator owns and never
- * runs `git`.
- */
 class ProjectFileTest {
 
     private val uuid = "0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34"
@@ -54,7 +39,6 @@ class ProjectFileTest {
         }
         """.trimIndent()
 
-    // ---- parseProjectFile ----------------------------------------------------------------------
 
     @Test
     fun aWellFormedFileParsesAndItsSchemaKeyIsIgnored() {
@@ -112,8 +96,6 @@ class ProjectFileTest {
 
     @Test
     fun aHugeFileFailsBecauseTheReadIsCappedAndTheTruncatedTextIsNotJson() {
-        // What a 1 MiB `.kotgent.json` actually produces: readFile hands over the first 8 KiB, which
-        // cannot close its own JSON, so the parse fails — the intended outcome, not a special case.
         val huge = """{"id": "$uuid", "name": "kotgent", "padding": "${"p".repeat(1024 * 1024)}"}"""
         val fs = FakeProjectFs(files = mapOf("/repo/$PROJECT_FILE_NAME" to huge))
         val capped = assertNotNull(fs.readFile("/repo/$PROJECT_FILE_NAME", PROJECT_FILE_MAX_BYTES))
@@ -122,7 +104,6 @@ class ProjectFileTest {
         assertNull(resolveProject(fs, "/repo"), "and the resolver reads it as 'no project'")
     }
 
-    // ---- resolveProject: the walk --------------------------------------------------------------
 
     @Test
     fun theFileInTheCurrentDirectoryWins() {
@@ -187,7 +168,6 @@ class ProjectFileTest {
         assertEquals("mono", resolved.name)
     }
 
-    // ---- mainCheckoutRoot: the supported layouts -----------------------------------------------
 
     @Test
     fun aGitDirectoryMakesItsHolderTheRoot() {
@@ -214,9 +194,6 @@ class ProjectFileTest {
 
     @Test
     fun aSymlinkedCommonDirIsCanonicalizedBeforeItsSegmentsAreExamined() {
-        // The `.git` file names the checkout through a symlink; the project file lives at the REAL
-        // root. Matching segments on the uncanonicalized string would answer "/link", which holds no
-        // project file at all.
         val fs = FakeProjectFs(
             dirs = listOf("/real/repo/.git/worktrees/feature", "/wt/feature"),
             files = mapOf(
@@ -236,7 +213,6 @@ class ProjectFileTest {
         assertEquals("/outer", mainCheckoutRoot(fs, "/outer"))
     }
 
-    // ---- mainCheckoutRoot: every recorded UNSUPPORTED layout degrades to the current directory ---
 
     @Test
     fun separateGitDirDegradesToTheCheckoutInsteadOfTheMetadataDirectorysParent() {
@@ -244,7 +220,6 @@ class ProjectFileTest {
             dirs = listOf("/meta/checkout-git/objects"),
             files = mapOf(
                 "/checkout/.git" to "gitdir: /meta/checkout-git\n",
-                // The wrong answer, planted where "the common dir's parent" would find it.
                 "/meta/$PROJECT_FILE_NAME" to projectJson(name = "not this one"),
             ),
         )
@@ -254,8 +229,6 @@ class ProjectFileTest {
 
     @Test
     fun aWorktreeOfASeparateGitDirCheckoutDegradesToTheWorktree() {
-        // This one DOES carry a `/worktrees/<name>` segment, so only the "the common dir is named
-        // `.git`" rule keeps it from adopting `/meta` as a checkout root.
         val fs = FakeProjectFs(
             dirs = listOf("/meta/checkout-git/worktrees/feature", "/wt/feature"),
             files = mapOf(
@@ -283,8 +256,6 @@ class ProjectFileTest {
             dirs = listOf("/srv/repo.git/worktrees/feature", "/wt/feature"),
             files = mapOf(
                 "/wt/feature/.git" to "gitdir: /srv/repo.git/worktrees/feature\n",
-                // A bare repo's neighbour is not a checkout; adopting it would give every worktree of
-                // every bare repo on the machine one arbitrary project.
                 "/srv/$PROJECT_FILE_NAME" to projectJson(name = "not this one"),
             ),
         )
@@ -294,7 +265,6 @@ class ProjectFileTest {
 
     @Test
     fun aBareRepositoryItselfLooksLikeNoRepositoryAtAll() {
-        // `git init --bare` writes HEAD/objects/refs directly, with no `.git` entry anywhere.
         val fs = FakeProjectFs(
             dirs = listOf("/srv/repo.git/objects", "/srv/repo.git/refs"),
             files = mapOf("/srv/repo.git/HEAD" to "ref: refs/heads/main\n"),
@@ -344,7 +314,6 @@ class ProjectFileTest {
         assertNull(resolveProject(fs, "/wt/feature"))
     }
 
-    // ---- the real POSIX implementation ---------------------------------------------------------
 
     @Test
     fun theRealPosixFsResolvesARealWorktreeInTmpdir() {
@@ -358,7 +327,6 @@ class ProjectFileTest {
         val src = makeDir("$repo/src")
         val wt = makeDir("$base/wt")
         val feature = makeDir("$wt/feature")
-        // Exactly what `git worktree add` writes: one line, an absolute target, a trailing newline.
         writeFile("$feature/.git", "gitdir: $worktreeMeta\n")
 
         assertTrue(fs.isDirectory(repo))
@@ -381,9 +349,7 @@ class ProjectFileTest {
         assertEquals(repo, fromWorktree.root)
     }
 
-    // ---- harness --------------------------------------------------------------------------------
 
-    /** An ordinary `git worktree add` tree: `/repo` with the project file, `/wt/feature` linked to it. */
     private fun worktreeFs(gitdir: String) = FakeProjectFs(
         dirs = listOf("/repo/.git/worktrees/feature", "/wt/feature/src"),
         files = mapOf(
@@ -405,9 +371,6 @@ class ProjectFileTest {
     private fun makeBase(): String {
         val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
         val made = makeDir("$tmp/kotgent-project-file-${getpid()}-${counter++}")
-        // $TMPDIR sits behind the /var -> /private/var symlink, and the resolver canonicalizes its cwd,
-        // so the expectations have to be built from the canonical spelling or every path comparison in
-        // this test compares two different names for one directory.
         return PosixProjectFs().canonicalize(made) ?: made
     }
 
@@ -435,12 +398,6 @@ class ProjectFileTest {
     }
 }
 
-/**
- * A lexical in-memory [ProjectFs]: every ancestor of a declared directory or file is itself a directory,
- * [symlinks] replace a path PREFIX (the shape `/tmp -> /private/tmp` and a symlinked checkout both
- * take), and [canonicalize] collapses `.`/`..` and then answers `null` for anything the tree does not
- * hold — the existence gate `realpath(3)` really applies.
- */
 private class FakeProjectFs(
     dirs: List<String> = emptyList(),
     private val files: Map<String, String> = emptyMap(),
@@ -484,7 +441,6 @@ private class FakeProjectFs(
         }
     }
 
-    /** Collapse `.`, `..` and duplicate slashes; the result is absolute and has no trailing slash. */
     private fun normalize(path: String): String {
         val stack = ArrayList<String>()
         for (segment in path.split('/')) {

@@ -19,66 +19,7 @@ import io.ktor.server.routing.post
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.SerializationException
 
-/**
- * The three endpoints that tie a session to a task: `POST /tasks/{ref}/link`, `POST /tasks/{ref}/unlink`
- * and `POST /tasks/next`.
- *
- * What the implementation owes (task-backlog plan, Task 15):
- *  - **All three REQUIRE session identity** ([resolveCallerSession]) — each writes `sessions.task_ref`
- *    or attributes an activity row, and none means anything without a session. A pane the registry does
- *    not know is REFUSED (`400` naming `--session`) rather than silently attributed to something else.
- *  - `link` is unconditional and may target a task already `in_progress`: kotgent enforces no
- *    exclusivity, so a second session simply appears on the card.
- *  - `unlink` leaves the task's state alone. Whether the work is finished is not inferable from a
- *    session detaching, and other sessions may still be linked.
- *  - `next` answers **"nothing eligible" distinguishably from every error** — a `200` with a null task
- *    (see [NextTaskResponse]) — so the CLI can map it to exit `3` without guessing.
- *
- * `ControlRoutes.kt`'s optional `taskRef` on `POST /sessions` belongs to the same task: the session row
- * and its link are written by ONE request, so `start --task` has nothing to roll back if the launch
- * fails. The link itself cannot fail (it is unconditional), which is a direct dividend of dropping
- * exclusivity.
- *
- * ## The four decisions this file makes that the plan left open
- *
- *  1. **A resolved session must EXIST.** [resolveCallerSession] deliberately does not check (its KDoc
- *     says so: "a route that writes on the caller's behalf checks it, because a silent no-op on a
- *     missing row is exactly what `link` must not do"), so [taskLinkCallerSession] re-reads the row and
- *     refuses `400` when it is not there. An explicit `--session <id>` naming nothing is the same client
- *     error as an unresolvable pane, and gets the same answer.
- *  2. **`link` 404s an unknown ref, `unlink` does not.** A link to a task that does not exist would
- *     write a `sessions.task_ref` pointing at nothing — the dangling badge the "reference, not a foreign
- *     key" rule tolerates as a race but must not CREATE deliberately. `unlink` is the opposite case: a
- *     session left holding a ref whose task was deleted is exactly who needs to clear it, so the task's
- *     existence is never consulted there.
- *  3. **`unlink` refuses a MISMATCHED ref out loud (`409`), and a ref-less session quietly (`200`).**
- *     [io.kotgent.daemon.TaskService.unlink] takes no ref — it clears whatever the session holds — so
- *     the path segment would otherwise be decorative and `task unlink local:5` would silently clear a
- *     link to `local:7`. A session that holds nothing is already in the requested state, so that is an
- *     idempotent `ok`; a session that holds a DIFFERENT task is a conflicting action, answered the way
- *     the control plane answers those, with a `409` that names what it actually holds and writes nothing.
- *     The same `409` answers the RACE of that case: [io.kotgent.daemon.TaskService.unlink]'s clear is
- *     conditional on the ref its own read answered, so a `claim` or a `next` landing mid-request makes it
- *     return `false`, and reporting that as `ok` would tell an agent it released a task while the session
- *     is in fact working on another one. The Boolean exists so this route can tell the two apart.
- *  4. **`next` DOES verify that the project exists, and a uuid the daemon has never seen is a `404`.**
- *     This was decided the other way once — "an unknown project has nothing eligible in it" — and that is
- *     the one answer this endpoint must never give for it. `null` is not a neutral report here: it is the
- *     single value the CLI maps to exit `3` (`TASK_NEXT_NOTHING_ELIGIBLE`), and the agent loop the whole
- *     backlog exists to drive STOPS on that code. So a mistyped or stale `--project` would make an agent
- *     report "the backlog is empty" and go idle forever, with no error anywhere — while
- *     `kotgent task list --project <the same typo>` prints a clean `404` from `GET /tasks`
- *     ([io.kotgent.transport.taskReadRoutes], same question, same table). One read per pickup is a small
- *     price for not silently ending a work loop, and every path that reads or creates a `.kotgent.json`
- *     upserts the `projects` row, so a missing row really does mean "never seen".
- */
 fun Route.taskLinkRoutes(routing: TaskRouting) {
-    /**
-     * Link the calling session to this task. Unconditional: a task already `in_progress` simply gains
-     * another session, and a session already linked elsewhere is re-pointed (it works one task at a
-     * time). The two writes behind this are independent and neither is conditional on the other — see
-     * [io.kotgent.daemon.TaskService.link].
-     */
     post("/tasks/{ref}/link") {
         val ref = taskLinkRefParam() ?: return@post
         val req = taskLinkBody(routing, LinkRequest.serializer(), LinkRequest()) ?: return@post
@@ -91,24 +32,13 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
         call.respondText("ok")
     }
 
-    /**
-     * Drop this session's link to this task. The task's STATE is untouched — several sessions may still
-     * hold it, and a session detaching says nothing about whether the work is done.
-     */
     post("/tasks/{ref}/unlink") {
         val ref = taskLinkRefParam() ?: return@post
         val req = taskLinkBody(routing, LinkRequest.serializer(), LinkRequest()) ?: return@post
         val session = taskLinkCallerSession(routing, req.sessionId) ?: return@post
         val held = session.taskRef
         when {
-            // Already in the requested state: idempotent, and deliberately not a 404 — the caller asked
-            // for "not linked to this", which is true.
             held == null -> call.respondText("ok")
-            // The ref matched when it was read, so the clear is attempted — but the clear is conditional
-            // on that same ref, and a `claim` / `next` landing in between has re-pointed this session at
-            // a newer task. `false` therefore means "nothing was cleared and the session holds something
-            // else now", which is decision 3's conflict discovered one step later, so it gets decision
-            // 3's answer rather than an `ok` that would tell an agent it released a task it did not.
             held == ref -> if (routing.service.unlink(session.id)) {
                 call.respondText("ok")
             } else {
@@ -119,7 +49,6 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
                     status = HttpStatusCode.Conflict,
                 )
             }
-            // A conflicting action, refused out loud rather than clearing a link nobody asked about.
             else -> call.respondText(
                 "session '${session.id.value}' is linked to '${held.value}', not '${ref.value}' — " +
                     "unlink that one, or pass its ref",
@@ -128,17 +57,6 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
         }
     }
 
-    /**
-     * Take the next eligible task in a project and link it to the calling session.
-     *
-     * The project comes from the body or, failing that, from the calling session's own `project_id`, and
-     * either way it must be one the daemon knows — a `404` otherwise (decision 4 above).
-     * A null `task` in the answer is **"nothing eligible"**, not a failure: it is a `200`, precisely so
-     * the CLI can tell it apart from an error and map it to exit `3`.
-     *
-     * This literal can never be shadowed by `/tasks/{ref}/…`: a [TaskRef] must contain a `:`, so a bare
-     * word cannot parse as one — and the two patterns do not even have the same segment count.
-     */
     post("/tasks/next") {
         val req = taskLinkBody(routing, NextTaskRequest.serializer(), NextTaskRequest()) ?: return@post
         val session = taskLinkCallerSession(routing, req.sessionId) ?: return@post
@@ -162,10 +80,8 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
                 return@post
             }
         }
-        // Checked for BOTH the explicit and the session-derived project, exactly as `GET /tasks` does: a
-        // session whose stored `project_id` has no `projects` row behind it is as broken as a typo, and
-        // answering "nothing eligible" would retire the agent instead of reporting it.
         if (routing.tasks.project(project) == null) {
+            // Null task means "known project, nothing eligible" to clients; an unknown project must be an error.
             refuseTaskLink(UnknownProjectException(project), HttpStatusCode.NotFound)
             return@post
         }
@@ -180,11 +96,6 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
     }
 }
 
-/**
- * The `{ref}` path segment as a [TaskRef], or `null` after answering `400` — the malformed-ref mapping
- * `TaskErrors.kt` records. Parsed rather than constructed: [TaskRef]'s constructor throws
- * [IllegalArgumentException], which no route catch is looking for.
- */
 private suspend fun RoutingContext.taskLinkRefParam(): TaskRef? {
     val raw = call.parameters["ref"].orEmpty()
     val ref = TaskRef.parseOrNull(raw)
@@ -192,14 +103,6 @@ private suspend fun RoutingContext.taskLinkRefParam(): TaskRef? {
     return ref
 }
 
-/**
- * Decode a request body, treating an ABSENT one as [whenEmpty]. Returns `null` after answering `400`
- * for a body that is present and unparseable.
- *
- * All three routes here carry only optional fields, and the CLI sends no body at all when it has none
- * to send, so an empty body must not be an error — but a body that IS there and is malformed is a
- * client bug worth naming, exactly as `POST /sessions` treats one.
- */
 private suspend fun <T> RoutingContext.taskLinkBody(
     routing: TaskRouting,
     serializer: DeserializationStrategy<T>,
@@ -215,15 +118,6 @@ private suspend fun <T> RoutingContext.taskLinkBody(
     }
 }
 
-/**
- * The calling session's row, or `null` after answering `400` naming `--session`.
- *
- * Two failures collapse into one answer on purpose: a pane the registry does not know and an explicit
- * `sessionId` naming no row are the same thing from the caller's side — kotgent has nobody to attribute
- * this write to — and both must be refused rather than written somewhere else or silently dropped. The
- * row itself is returned because every caller needs a field off it (`taskRef` for `unlink`, `projectId`
- * for `next`), so this read is not an extra one.
- */
 private suspend fun RoutingContext.taskLinkCallerSession(
     routing: TaskRouting,
     explicitSessionId: String?,
@@ -242,21 +136,10 @@ private suspend fun RoutingContext.taskLinkCallerSession(
     return row
 }
 
-/**
- * One backlog entry as the wire shape, joined with its tracker row and its dependency edges.
- *
- * The edges are read even though nothing in `next`'s own output needs a count: every observation of a
- * row is merged newest-rev-wins, so answering with an empty `dependsOn` at a FRESH rev would make a
- * connected board drop a dependency list it already had until the next update touched that task.
- */
 private suspend fun taskLinkEntryDto(routing: TaskRouting, entry: BacklogEntry): BacklogEntryDto =
+    // A fresh-rev response must carry real edges or newest-wins clients would erase their dependency view.
     entry.toDto(routing.tasks.get(entry.ref), routing.tasks.dependenciesOf(entry.ref))
 
-/**
- * Answer one of `TaskErrors.kt`'s typed failures with the status that file's table assigns it. The
- * exception carries the wording so a message is written once; nothing here throws, because this
- * transport has no `StatusPages` and every other route file answers by hand too.
- */
 private suspend fun RoutingContext.refuseTaskLink(failure: RuntimeException, status: HttpStatusCode) {
     call.respondText(failure.message ?: "request refused", status = status)
 }

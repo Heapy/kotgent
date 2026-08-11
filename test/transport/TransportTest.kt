@@ -82,31 +82,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * End-to-end transport tests (plan Task 14) — a real embedded [KotgentServer] on an ephemeral port,
- * driven by a Ktor CIO client, wired to a host-free stack: a thread-safe in-memory [FakeEventStore], a
- * [SessionManager] over a [FakeTmux] + a canned agent, and a [WsFakePtyFactory] behind the terminal
- * bridges. Every body is bounded by [withTimeout] (anti-hang).
- *
- * ## Why fakes instead of SqliteEventStore / the Task-9 FakePtyHandle
- * The CIO server runs handlers on its OWN engine threads, distinct from the test thread. So (a) shared
- * state observed across that boundary must synchronize — the [WsFakePty] records input/resize/output on
- * [Channel]s (which give a cross-thread happens-before), unlike the Task-9 single-threaded FakePtyHandle;
- * and (b) the store is touched from both threads, so it is a coroutine-[Mutex]-guarded in-memory fake
- * rather than the native sqliter driver (whose thread-affinity HookRoutesTest already sidesteps the same
- * way). The fake honors the real [EventStore] contract, including the restart-safe stale-cursor error.
- */
 class TransportTest {
 
     private val token = "transport-secret-token-xyz789"
     private val providerId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     private val seed = "SEED-SCREEN\r\n".encodeToByteArray()
 
-    /**
-     * A published origin (as `~/.kotgent/config.json`'s `publicUrl`) for the through-the-tunnel cases, and
-     * the bare host a request arriving through the tunnel carries. Derived, so renaming the fixture origin
-     * cannot desynchronize the two and turn a gate test into an `Origin`-mismatch failure.
-     */
     private val publicHost = "kotgent.example.com"
     private val publicUrl = "https://$publicHost"
 
@@ -218,8 +199,6 @@ class TransportTest {
                             throw closeFailure
                         },
                     ) {
-                        // Model PushNotifier.start failing after DarwinPushTransport has been allocated but
-                        // before startPush can return the DaemonPush that normally owns its cleanup.
                         currentCoroutineContext()[Job]!!.cancel(primary)
                         throw primary
                     }
@@ -240,7 +219,6 @@ class TransportTest {
         }
     }
 
-    // ---- 0. SessionDto mapping: cli version/path are carried through ----
 
     @Test
     fun sessionDtoCarriesTheCliVersionAndPath() {
@@ -276,9 +254,6 @@ class TransportTest {
 
     @Test
     fun thePatchCarriesTheModelAndRevAndItsNullModelIsAuthoritative() {
-        // Every patch field is re-read from the committed row (SessionUpdate's contract), so the wire
-        // needs no snapshot/live discriminator any more: a patch's null model genuinely means "no model" —
-        // including one the provider-id rebind correction just CLEARED — and the client takes it verbatim.
         val live = SessionUpdate(
             SessionId("mdl01"), SessionState.running, Seq(1), 0L,
             model = "gpt-6", rev = 7,
@@ -293,9 +268,6 @@ class TransportTest {
 
     @Test
     fun everyGlobalFrameKindCarriesTheTypeDiscriminator() {
-        // The client dispatches on `type`, and kotlinx emits it ONLY when encoding through the sealed
-        // base serializer — sendEventsFrame's invariant. A send site regressed to a concrete
-        // `X.serializer()` produces a type-less frame every client silently drops.
         fun typeOf(frame: EventsFrame): String? {
             val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frame)
             return TRANSPORT_JSON.parseToJsonElement(encoded).jsonObject["type"]?.jsonPrimitive?.content
@@ -329,7 +301,6 @@ class TransportTest {
         assertEquals(false, undoneDto.archived, "undone restored the session")
     }
 
-    // ---- 1. POST /sessions → the session appears in GET /sessions ----
 
     @Test
     fun postSessionsCreatesASessionThatAppearsInTheList() = withServer { ctx ->
@@ -347,7 +318,6 @@ class TransportTest {
         assertEquals("running", one.state)
     }
 
-    // ---- 2. events-WS receives a state-change notification ----
 
     @Test
     fun eventsWsPushesAStateChangeWhenASessionStartsNeedingAttention() = withServer { ctx ->
@@ -358,11 +328,9 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            // Draining the baseline snapshot proves we are subscribed — so the append below is not raced.
             val snapshot = receiveSnapshot()
             assertTrue(snapshot.sessions.any { it.id == created.id }, "the snapshot covers the started session")
 
-            // A hook-style approval append flips the session to needs_approval; the WS must deliver it live.
             ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
 
             val update = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
@@ -380,8 +348,6 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            // The FIRST session-kind frame must be the one snapshot — a per-session baseline would
-            // arrive as session_update/session_row frames and fail the type assertion here.
             val (type, text) = receiveFirstSessionFrameJson()
             assertEquals("sessions_snapshot", type, "the baseline is ONE snapshot frame")
             val snapshot = TRANSPORT_JSON.decodeFromString(SessionsSnapshotDto.serializer(), text)
@@ -409,7 +375,6 @@ class TransportTest {
             assertEquals(created.id, row.session.id, "a session new to this socket arrives as a full row")
             assertEquals("/tmp/late", row.session.cwd, "…carrying full metadata the client can render")
 
-            // Every later change for the now-carried session ships as a light patch with a newer rev.
             ctx.store.append(SessionId(created.id), AgentEvent.ApprovalRequested("p1"), EventSource.hook)
             val patch = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
             assertTrue(patch.rev > row.session.rev, "the patch's rev is newer than the row it follows")
@@ -430,7 +395,6 @@ class TransportTest {
             ctx.store.setModel(sid, "gpt-6", 2L)
             val captured = awaitUpdate { it.sessionId == created.id && it.model == "gpt-6" }
 
-            // The rebind correction's clear must propagate too: a strictly newer patch with a null model.
             ctx.store.setModel(sid, null, 3L)
             val cleared = awaitUpdate { it.sessionId == created.id && it.rev > captured.rev }
             assertNull(cleared.model, "the clear rides the patch as an authoritative null")
@@ -445,9 +409,6 @@ class TransportTest {
         ) {
             receiveSnapshot()
 
-            // An append can outrun the row's creation (the transport analog of the store's
-            // row-less-append exemption): nothing may reach the socket for it, and — critically — the id
-            // must NOT be marked as carried, or the row would later arrive as a patch the client ignores.
             val sid = SessionId("ghost01")
             ctx.store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
             ctx.store.upsertSession(
@@ -468,7 +429,7 @@ class TransportTest {
 
     @Test
     fun aBurstConflatesPerSocketButTheFinalStateAlwaysArrives() = withServer { ctx ->
-        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val created = ctx.startSession()
         val sid = SessionId(created.id)
 
         ctx.client.webSocket(
@@ -477,16 +438,12 @@ class TransportTest {
         ) {
             receiveSnapshot()
 
-            // Fire a burst without reading a single frame: the per-socket conflation may collapse the
-            // intermediate states, but the LAST one must always be delivered — that is the guarantee that
-            // replaced the 15 s resync.
             repeat(40) { ctx.store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
             val final = awaitUpdate { it.sessionId == created.id && it.lastSeq == 41L }
             assertEquals("running", final.state, "the final conflated state matches the last append")
         }
     }
 
-    // ---- 3. terminal-WS: seed first, then streamed bytes, forwarded input, and a resize frame ----
 
     @Test
     fun terminalWsDeliversSeedStreamsBytesForwardsInputAndHandlesResize() = withServer { ctx ->
@@ -496,21 +453,16 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            // The first subscriber lazily opened the single upstream (recorded by the fake factory).
             val upstream = ctx.ptyFactory.opened.receive()
 
-            // (a) capture-pane seed arrives first, as a binary frame.
             assertContentEquals(seed, receiveBinary(), "the capture-pane seed is delivered before live deltas")
 
-            // (b) a live delta from the upstream streams through to the client.
             upstream.emit("hello-terminal".encodeToByteArray())
             assertContentEquals("hello-terminal".encodeToByteArray(), receiveBinary(), "live bytes stream through")
 
-            // (c) client input (binary frame) is forwarded to the shared upstream.
             send(Frame.Binary(fin = true, data = "typed-input".encodeToByteArray()))
             assertContentEquals("typed-input".encodeToByteArray(), upstream.writes.receive(), "input reaches the upstream")
 
-            // (d) a resize control frame reaches the upstream as a TIOCSWINSZ resize.
             send(Frame.Text("""{"type":"resize","cols":123,"rows":45}"""))
             assertEquals(123 to 45, upstream.resizes.receive(), "the resize frame reaches the upstream")
         }
@@ -520,9 +472,6 @@ class TransportTest {
     fun terminalWsOpensTheUpstreamAtTheGeometryTheClientDeclaresInItsQuery() = withServer { ctx ->
         val created = ctx.startSession()
 
-        // The browser/CLI knows its size before it can send a frame, and `tmux attach` only reads its
-        // geometry once, at startup — so the size must reach the upstream at OPEN. Regression guard for
-        // "a freshly attached terminal renders 80x24 until you detach and re-attach".
         ctx.client.webSocket(
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal?cols=143&rows=53",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
@@ -533,19 +482,17 @@ class TransportTest {
         }
     }
 
-    // ---- 3b. POST /sessions/{id}/input reaches the shared upstream via the Broadcaster ----
 
     @Test
     fun postInputReachesTheSharedTerminalUpstream() = withServer { ctx ->
         val created = ctx.startSession()
 
-        // Attach a terminal so the lazy upstream is open, then POST /input to the SAME session.
         ctx.client.webSocket(
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/terminal",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
-            receiveBinary() // consume the seed
+            receiveBinary()
 
             val resp = ctx.postBody("/sessions/${created.id}/input", "rest-typed")
             assertEquals(HttpStatusCode.OK, resp.status)
@@ -553,7 +500,6 @@ class TransportTest {
         }
     }
 
-    // ---- 3c. POST /sessions/{id}/files uploads into that session's stored cwd -------------------
 
     @Test
     fun postFilesUsesTheSessionsStoredCwdAndStreamsTheBody() {
@@ -609,21 +555,17 @@ class TransportTest {
 
             assertEquals(HttpStatusCode.Conflict, response.status)
             assertTrue(response.bodyAsText().contains("already exists"))
-            uploader.uploads.receive() // the body was consumed before the no-clobber publish answered
+            uploader.uploads.receive()
         }
     }
 
-    // ---- 3d. POST /sessions/{id}/read advances the unread cursor ----
 
     @Test
     fun postReadAdvancesTheCursorAndClearsUnread() = withServer { ctx ->
-        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val created = ctx.startSession()
         assertEquals(1L, created.unread, "a fresh session starts with its whole log unread")
 
         val resp = ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
-        // This also pins the route ORDERING: `read` must be handled by the literal route, not swallowed by
-        // `post("/sessions/{id}/{action}")` below it — which would answer 400 "unknown action" instead of
-        // this 200 "ok" (the same guarantee `/input` relies on).
         assertEquals(HttpStatusCode.OK, resp.status, "marking read returns 200")
         assertEquals("ok", resp.bodyAsText())
 
@@ -650,8 +592,6 @@ class TransportTest {
             ctx.postBody("/sessions/${created.id}/read", "").status,
             "an empty body is a 400 too",
         )
-        // `seq` is deliberately NOT defaulted in MarkReadRequest: a body that omits it must fail rather
-        // than silently mark seq 0 read (which the SQL would then treat as a no-op, hiding the bug).
         assertEquals(
             HttpStatusCode.BadRequest,
             ctx.postBody("/sessions/${created.id}/read", "{}").status,
@@ -661,9 +601,6 @@ class TransportTest {
 
     @Test
     fun postReadIsReachableThroughTheTunnelNotJustFromLoopback() = withServer(publicUrl = publicUrl) { ctx ->
-        // The phone case: /read is mounted inside `authenticated`, NOT `loopbackOnly`. Moving it under the
-        // local-only gate would 403 every request arriving under the published host — with the rest of the
-        // suite still green, since every other test drives it over 127.0.0.1.
         val created = ctx.startSession()
         val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/read") {
             header(HttpHeaders.Authorization, "Bearer $token")
@@ -688,15 +625,12 @@ class TransportTest {
 
     @Test
     fun postReadClearsTheBadgeInEveryOtherConnectedClientWithoutAReload() = withServer { ctx ->
-        // The second-device case: one browser marks the session read, and every OTHER client learns the new
-        // `unread` from the ordinary /events session_update — no reload, no new channel.
-        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val created = ctx.startSession()
 
         ctx.client.webSocket(
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            // Draining the baseline snapshot proves this "second client" is subscribed before the POST.
             val snapshot = receiveSnapshot()
             val row = snapshot.sessions.single { it.id == created.id }
             assertEquals(1L, row.unread, "the second client starts out showing the badge")
@@ -711,9 +645,6 @@ class TransportTest {
 
     @Test
     fun markingAnArchivedSessionReadDoesNotUnHideItInOtherClients() = withServer { ctx ->
-        // An archived ("done") session can still be the selected one, so the mark-read POST is reachable for
-        // it. SessionUpdateDto.archived defaults to false, and the client assigns it unconditionally — a
-        // signal that dropped the flag would make the row reappear in every sidebar until the next resync.
         val created = ctx.startSession()
         ctx.store.setArchived(SessionId(created.id), true, 2L)
 
@@ -721,7 +652,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot() // the baseline snapshot
+            receiveSnapshot()
             ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
 
             val update = awaitUpdate { it.sessionId == created.id && it.unread == 0L }
@@ -731,13 +662,7 @@ class TransportTest {
 
     @Test
     fun anEventOrAControlStateWriteOnAnArchivedSessionAlsoKeepsItHidden() = withServer { ctx ->
-        // Mark-read is not the only emitter: a late hook append and a control-state write both broadcast for
-        // a done session too. What this test pins is the TRANSPORT half of that — SessionUpdate.toDto and
-        // the /events WS carry `archived` through for those two emitters as well, not just for mark-read.
-        // The store half (that SqliteEventStore's `append` and `emitFromRow` actually put the stored row's
-        // flag on the signal) cannot be observed here — withServer runs on FakeEventStore — so it is pinned
-        // against the real store by EventStoreTest.anAppendAndAControlStateWriteOnAnArchivedSessionAlsoCarryArchived.
-        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val created = ctx.startSession()
         val sid = SessionId(created.id)
         ctx.store.setArchived(sid, true, 2L)
 
@@ -745,7 +670,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot() // the baseline snapshot
+            receiveSnapshot()
 
             ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
             val appended = awaitUpdate { it.sessionId == created.id && it.lastSeq == 2L }
@@ -758,16 +683,6 @@ class TransportTest {
         }
     }
 
-    /**
-     * `mouse on` is forced, so a single wheel scroll by ANY viewer parks the SHARED pane in tmux
-     * copy-mode, where every keystroke — including bytes written into the attached client's pty — is
-     * routed to the copy-mode key table and dropped while tmux reports success. A REST caller has no
-     * terminal to look at, so this endpoint must leave copy-mode first and, when it provably cannot,
-     * **refuse** rather than answer `ok` for input that was thrown away.
-     *
-     * The interactive terminal WebSocket deliberately does NOT cancel: a human who scrolled back and
-     * then typed expects tmux's own behaviour. This is the programmatic path only.
-     */
     @Test
     fun postInputLeavesCopyModeAndRefusesWhenItCannot() = withServer { ctx ->
         val created = ctx.startSession()
@@ -777,7 +692,7 @@ class TransportTest {
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
-            receiveBinary() // consume the seed
+            receiveBinary()
 
             val ok = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
                 header(HttpHeaders.Authorization, "Bearer $token")
@@ -791,7 +706,6 @@ class TransportTest {
                 "the REST input path leaves copy-mode before writing into the shared upstream",
             )
 
-            // Now the cancel does not take (a viewer's wheel keeps dragging the pane back).
             ctx.tmux.copyModeStuck = true
             val refused = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
                 header(HttpHeaders.Authorization, "Bearer $token")
@@ -811,12 +725,6 @@ class TransportTest {
         }
     }
 
-    /**
-     * The OTHER way this endpoint drops input, and the more common one: the terminal bridge is lazy, so
-     * with no subscriber attached there is no `tmux attach` upstream and the bytes go nowhere. The sink
-     * used to hardcode `ok` after the write, so a `POST /input` at a session nobody is watching was
-     * answered `200` and silently discarded.
-     */
     @Test
     fun postInputRefusesWhenNoTerminalIsAttachedToTheSession() = withServer { ctx ->
         val created = ctx.startSession()
@@ -835,17 +743,9 @@ class TransportTest {
         )
     }
 
-    /**
-     * An empty body has nothing to deliver, so it must not reach the sink at all: the copy-mode cancel
-     * is a SHARED-pane side effect that yanks every viewer of that pane out of their scrollback, and
-     * running it for a write that is a guaranteed no-op is pure collateral damage. (`Tmux.sendKeys`
-     * guards the same way; this is the REST seam's half of that rule.)
-     */
     @Test
     fun postInputWithAnEmptyBodyNeverTouchesTheSharedPane() = withServer { ctx ->
         val created = ctx.startSession()
-        // Both failure modes armed: no terminal attached AND a pane that cannot be cleared. An empty
-        // body must still answer ok, because neither one can lose anything that was never sent.
         ctx.tmux.copyModeStuck = true
 
         val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
@@ -860,12 +760,6 @@ class TransportTest {
         )
     }
 
-    /**
-     * One tmux condition, one wire contract. A swallowed `send-keys` reaching `interrupt` used to be a
-     * plain `TmuxException` → generic **400**, while the identical condition on `/input` answered
-     * retryable **409** with an operator hint. The copy-mode case now has its own exception type and gets
-     * the 409 + hint on both routes; every other tmux failure stays a 400.
-     */
     @Test
     fun interruptAnswers409ForCopyModeAnd400ForAnyOtherTmuxFailure() = withServer { ctx ->
         val created = ctx.startSession()
@@ -896,42 +790,34 @@ class TransportTest {
         assertEquals("ready", ctx.getSession(created.id).state, "which is when the projection may record it")
     }
 
-    // ---- 4. missing / wrong token → 401 on a control call AND on a WS handshake ----
 
     @Test
     fun missingOrWrongTokenIsRejectedOnRestAndOnWsHandshake() = withServer { ctx ->
-        // REST: no token at all.
         assertEquals(
             HttpStatusCode.Unauthorized,
             ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions").status,
             "a control call with no token is 401",
         )
-        // REST: wrong token.
         val wrong = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Authorization, "Bearer not-the-token")
         }
         assertEquals(HttpStatusCode.Unauthorized, wrong.status, "a control call with a wrong token is 401")
 
-        // WS: a bad Bearer must be rejected at the handshake (401, no upgrade) → the client connect throws.
         var wsRejected = false
         try {
             ctx.client.webSocket(
                 "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
                 request = { header(HttpHeaders.Authorization, "Bearer not-the-token") },
             ) {
-                // Unreachable if the handshake is correctly rejected.
             }
         } catch (_: Throwable) {
             wsRejected = true
         }
         assertTrue(wsRejected, "a WS handshake with a bad Bearer must be rejected")
 
-        // WS: the legacy `?token=` query form no longer authenticates anything — even the CORRECT token in
-        // the query must be rejected, so the secret can never live in a URL again (Task 9).
         var queryTokenRejected = false
         try {
             ctx.client.webSocket("ws://127.0.0.1:${ctx.port}$API_PREFIX/events?token=$token") {
-                // Unreachable if the query token is correctly ignored and the handshake refused.
             }
         } catch (_: Throwable) {
             queryTokenRejected = true
@@ -939,12 +825,9 @@ class TransportTest {
         assertTrue(queryTokenRejected, "a WS handshake carrying the token as ?token= must be rejected")
     }
 
-    // ---- 4b. the browser's key: a session cookie authenticates the same control plane ----
 
     @Test
     fun aSessionCookieAuthenticatesTheControlPlaneJustLikeABearer() = withServer { ctx ->
-        // The real server, not a bare route: this is what proves KotgentServer actually mounts the gate
-        // that knows about cookies. No Origin is sent, exactly as a browser does on a same-origin GET.
         val cookie = issueSessionCookie(token, issuedAt = 1_700_000_000_000)
         val resp = ctx.client.get("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Cookie, "$SESSION_COOKIE_NAME=$cookie")
@@ -957,14 +840,11 @@ class TransportTest {
         assertEquals(HttpStatusCode.Unauthorized, forged.status, "a forged one is not")
     }
 
-    // ---- 5. a stale per-session cursor → error (restart-safe cursor is a hard error) ----
 
     @Test
     fun aStalePerSessionCursorErrorsTheEventsWs() = withServer { ctx ->
-        val created = ctx.startSession() // lastSeq == 1 (the preallocated SessionBound)
+        val created = ctx.startSession()
 
-        // Subscribe per-session with a cursor far beyond lastSeq+1 → StaleCursorException → the server
-        // closes the socket with VIOLATED_POLICY (the client must resync, not silently skip).
         ctx.client.webSocket(
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events?session=${created.id}&from=999",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
@@ -974,7 +854,6 @@ class TransportTest {
         }
     }
 
-    // ---- 6. control ops: stop transitions; unknown session 404; unknown action 400; resume-blocked 409 ----
 
     @Test
     fun controlStopTransitionsTheSessionToStopped() = withServer { ctx ->
@@ -999,7 +878,6 @@ class TransportTest {
 
     @Test
     fun resumeWhileTheProviderIdIsPendingIs409() = withServer { ctx ->
-        // A dead session whose provider id was never captured → resume is blocked (409 ResumeBlocked).
         ctx.store.upsertSession(
             SessionMeta(
                 id = SessionId("pend01"), name = "pend01", agent = "claude", cwd = "/tmp",
@@ -1011,7 +889,6 @@ class TransportTest {
 
     @Test
     fun startingAnUnsupportedAgentIs400() = withServer { ctx ->
-        // The factory only builds the kinds it was registered with, so an unknown one is a client error.
         val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody("""{"agent":"aider","cwd":"/tmp"}""")
@@ -1021,9 +898,6 @@ class TransportTest {
 
     @Test
     fun resumingASessionWhoseAgentIsUnsupportedIs400NotA500() = withServer { ctx ->
-        // A legacy row persisted with an agent this daemon cannot build. `resume` rebuilds the adapter
-        // from the STORED agent kind, so it throws the very exception the start route maps to 400 — the
-        // action route must map it the same way instead of surfacing a 500.
         ctx.store.upsertSession(
             SessionMeta(
                 id = SessionId("lgcy01"), name = "lgcy01", agent = "aider", providerSessionId = providerId,
@@ -1038,9 +912,6 @@ class TransportTest {
 
     @Test
     fun startingAnAgentWhoseBinaryIsMissingIs400WithInstallHint() = withServer(
-        // The kind IS supported, but its binary did not resolve on the daemon's PATH (launchd's minimal
-        // env), so the factory builder throws AgentBinaryNotFoundException — a client-fixable
-        // misconfiguration, not a 500, carrying the actionable `kotgent install` hint.
         factory = agentFactoryOf(mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") })),
     ) { ctx ->
         val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions") {
@@ -1056,9 +927,6 @@ class TransportTest {
 
     @Test
     fun resumingASessionWhoseAgentBinaryIsMissingIs400WithInstallHint() = withServer(
-        // `resume` rebuilds the adapter from the STORED kind; if that binary is no longer on the daemon's
-        // PATH the builder throws AgentBinaryNotFoundException. The action route must map it to the same
-        // 400 + install hint as the start route, not surface a 500.
         factory = agentFactoryOf(mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") })),
     ) { ctx ->
         ctx.store.upsertSession(
@@ -1076,7 +944,6 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched for it")
     }
 
-    // ---- 6b. POST /sessions/import — registering an outside session as resumable ----------------
 
     @Test
     fun importRegistersAResumableSessionWithNoLaunchAndReturns201() = withServer(
@@ -1108,8 +975,6 @@ class TransportTest {
 
     @Test
     fun importFailuresAreDistinguishable400sNotServerErrors() = withServer { ctx ->
-        // The withServer defaults ARE this test's fixture: the probe misses every transcript and the
-        // locator discovers no cwd, so each ladder step below fails at its own gate.
 
         val unparseable = ctx.postBody("/sessions/import", "not-json-at-all")
         assertEquals(HttpStatusCode.BadRequest, unparseable.status, "an undecodable body is a 400")
@@ -1123,11 +988,6 @@ class TransportTest {
         assertTrue("unknown agent kind" in unknownBody, "the body names the failure: $unknownBody")
         assertTrue("claude" in unknownBody && "codex" in unknownBody, "…and the supported kinds: $unknownBody")
 
-        // A malformed provider id must be the handler's OWN clean 400: the DTO carries the id as a
-        // String precisely because ProviderSessionId's value-class serializer would throw
-        // IllegalArgumentException PAST the route's SerializationException catch — a 500. "Malformed"
-        // is a CHARSET question, not a UUID one: junie's ids are not UUIDs, so what must be refused
-        // here is an id kotgent could not put in a path/argv/URL unquoted.
         val malformed = ctx.postBody(
             "/sessions/import",
             """{"agent":"claude","providerSessionId":"not a uuid","cwd":"/tmp"}""",
@@ -1186,10 +1046,6 @@ class TransportTest {
         assertEquals(HttpStatusCode.Conflict, dup.status, "a second import of the same provider id is a 409")
         val dupBody = dup.bodyAsText()
         assertTrue(dto.id in dupBody, "the 409 names the existing kotgent session: $dupBody")
-        // The server half of the DUPLICATE_IMPORT_ID_IN_BODY contract: the live body must carry the
-        // id in the EXACT phrase the CLI's runImportCommand parses back out — asserted with the very
-        // regex the CLI uses, so a reworded DuplicateImportException fails here instead of silently
-        // degrading the `kotgent resume <id>` hint to a placeholder.
         assertEquals(
             dto.id,
             DUPLICATE_IMPORT_ID_IN_BODY.find(dupBody)?.groupValues?.get(1),
@@ -1197,7 +1053,6 @@ class TransportTest {
         )
         assertTrue("archived" !in dupBody, "a live duplicate carries no archived marker: $dupBody")
 
-        // An archived duplicate must say so — the right move there is Restore, not a second import.
         ctx.store.setArchived(SessionId(dto.id), true, 2L)
         val dupArchived = ctx.postBody("/sessions/import", body)
         assertEquals(HttpStatusCode.Conflict, dupArchived.status)
@@ -1245,8 +1100,6 @@ class TransportTest {
         publicUrl = publicUrl,
         probe = VendorStoreProbe { _, _, _ -> true },
     ) { ctx ->
-        // The phone case: /sessions/import is mounted inside `authenticated`, NOT `loopbackOnly` —
-        // exactly like /sessions/{id}/resume, whose flow it feeds.
         val resp = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/import") {
             header(HttpHeaders.Authorization, "Bearer $token")
             header(HttpHeaders.Host, publicHost)
@@ -1256,16 +1109,10 @@ class TransportTest {
         assertEquals(HttpStatusCode.Created, resp.status, "the published host reaches /sessions/import: ${resp.bodyAsText()}")
     }
 
-    // ---- 6c. the harness fake honors the real store's contract (anti-drift) ---------------------
 
     @Test
     fun fakeEventStoreMirrorsTheRealStoresCacheStateAuthority() = runBlocking {
         withTimeout(15_000) {
-            // FakeEventStore.append is hand-mirrored from SqliteEventStore and has already drifted
-            // once (it resurrected an imported `resumable` row to `running` on the SessionBound
-            // append until the import 201 test exposed it). Run the same scenario over BOTH stores
-            // and require identical answers, so the next divergence fails here first — a targeted
-            // contract test for the drift-prone cache-state authority, not a second EventStoreTest.
             suspend fun cacheAuthorityAnswers(store: EventStore): List<Any?> {
                 val dead = SessionId("contrct1")
                 store.upsertSession(contractMeta(dead, SessionState.resumable))
@@ -1296,7 +1143,6 @@ class TransportTest {
         tmuxSession = "kt-${id.value}", state = state, createdAt = 1L, updatedAt = 1L,
     )
 
-    // ---- 7. daemon-wide UI preferences -----------------------------------------------------------
 
     @Test
     fun preferencesGetDefaultsAndPutReturnsCanonicalPersistedValue() = withServer { ctx ->
@@ -1357,7 +1203,6 @@ class TransportTest {
 
     @Test
     fun globalEventsWsSendsTheCurrentPreferencesThenLiveSavesToAnotherClient() = withServer { ctx ->
-        // Persist before connecting to prove the first frame is a current snapshot, not a hard-coded default.
         val firstSave = ctx.putPreferences("""{"basePath":"/before-connect","groupingLevel":1}""")
         assertEquals(HttpStatusCode.OK, firstSave.status)
 
@@ -1375,8 +1220,6 @@ class TransportTest {
                 "a global subscriber immediately receives the persisted snapshot",
             )
 
-            // The HTTP writer and WS reader are distinct clients/channels. The committed revision is the
-            // ordering authority whichever response reaches a browser first.
             val secondSave = ctx.putPreferences("""{"basePath":"/live","groupingLevel":3}""")
             assertEquals(HttpStatusCode.OK, secondSave.status)
             assertEquals(
@@ -1387,7 +1230,6 @@ class TransportTest {
         }
     }
 
-    // ---- 8. working-directory completion --------------------------------------------------------
 
     @Test
     fun directoryCompletionReturnsServerPathsAndRejectsARelativeInputWithoutBasePath() {
@@ -1440,13 +1282,6 @@ class TransportTest {
         }
     }
 
-    // ---- the /api/v1 namespace (Task 1) ---------------------------------------------------------
-    //
-    // Two URL spaces: everything cookie/Bearer-gated lives under API_PREFIX so the SPA can own the bare
-    // paths. These tests state the split from both sides — the moved surface answers ONLY prefixed, and
-    // the two deliberately unmoved surfaces answer ONLY bare. `webUiDir = null` in this harness, so an
-    // unrouted path is a clean 404 with no static catch-all in the way (the catch-all's own side of the
-    // property is WebUiServingTest's two API-vs-static canaries).
 
     @Test
     fun theGatedSurfaceAnswersUnderTheApiPrefixAndNoLongerOnTheBarePaths() = withServer { ctx ->
@@ -1469,8 +1304,6 @@ class TransportTest {
 
     @Test
     fun theHookIngressDidNotMoveBecauseRunningSessionsHaveItsUrlOnDisk() = withServer { ctx ->
-        // Every adapter baked ingressUrl(port) into a per-session shell script on disk before this change.
-        // Unauthenticated is the cheapest proof the route is still THERE: a 404 would mean it moved.
         val bare = ctx.client.post("http://127.0.0.1:${ctx.port}${ClaudeHookConfig.INGRESS_PATH}?event=Stop")
         assertEquals(HttpStatusCode.Unauthorized, bare.status, "the hook ingress still answers at its baked-in path")
 
@@ -1482,7 +1315,6 @@ class TransportTest {
 
     @Test
     fun theWholeAuthBootstrapSurfaceStayedWhereEveryClientAlreadyPointsAtIt() = withServer { ctx ->
-        // The page the QR code and the PWA's location.replace(AUTH_PATH) address.
         assertEquals(
             HttpStatusCode.OK,
             ctx.client.get("http://127.0.0.1:${ctx.port}$AUTH_PAGE_PATH").status,
@@ -1494,8 +1326,6 @@ class TransportTest {
             "and did not move under the prefix",
         )
 
-        // The phone ticket: minted by the CLI (`kotgent web`) AND by the browser's phone dialog, through
-        // the /auth exemption both apiRequest and ApiClient.daemonPath carry.
         val ticket = ctx.client.post("http://127.0.0.1:${ctx.port}$AUTH_TICKET_PATH") {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
@@ -1531,8 +1361,6 @@ class TransportTest {
             assertContentEquals(seed, receiveBinary(), "the prefixed terminal socket delivers its seed")
         }
 
-        // Compatibility break #2, asserted rather than described: an already-open tab's bare upgrade no
-        // longer reaches the gate, so it 404s instead of 401ing and the sign-out recovery never fires.
         for (bare in listOf("/events", "/sessions/${created.id}/terminal")) {
             val failure = runCatching {
                 ctx.client.webSocket(
@@ -1544,9 +1372,7 @@ class TransportTest {
         }
     }
 
-    // --- harness -------------------------------------------------------------------------------------
 
-    /** The wired-up server + client + fakes handed to each test body. */
     private inner class Ctx(
         val port: Int,
         val client: HttpClient,
@@ -1592,12 +1418,10 @@ class TransportTest {
             setBody(body)
         }
 
-        /** An authenticated `POST` with no body — for the control ops (stop/resume/interrupt/…). */
         suspend fun post(path: String) = client.post("http://127.0.0.1:$port$API_PREFIX$path") {
             header(HttpHeaders.Authorization, "Bearer $token")
         }
 
-        /** An authenticated `POST` carrying a body — the no-body [post] helper cannot drive `/read`. */
         suspend fun postBody(path: String, body: String) = client.post("http://127.0.0.1:$port$API_PREFIX$path") {
             header(HttpHeaders.Authorization, "Bearer $token")
             setBody(body)
@@ -1618,24 +1442,14 @@ class TransportTest {
     }
 
     private fun withServer(
-        // Wired as the daemon does (Commands.daemon), narrowed to one kind: an agent kind the factory
-        // does not know — on start OR on resume of a stored row — surfaces as the UnsupportedAgentException
-        // both routes must map to 400. Overridable so a test can inject a builder that throws (e.g.
-        // AgentBinaryNotFoundException for the missing-binary paths).
         factory: AgentFactory = agentFactoryOf(
             mapOf("claude" to { cwd: String -> CannedAgentFactory(listOf("cat"), providerId).create("claude", cwd) }),
         ),
-        // The published origin the daemon is reachable at through the cloudflared tunnel; `null` (the
-        // default) is the loopback-only daemon every other test drives.
         publicUrl: String? = null,
         directoryCompleter: DirectoryCompleter = DirectoryCompleter { _, _ -> emptyList() },
         fileUploader: FileUploader = FileUploader { directory, fileName, body, expectedBytes ->
             saveUploadedFile(directory, fileName, body, expectedBytes)
         },
-        // The import seams (probe/locator), overridable so /sessions/import tests can make the vendor
-        // store answer. The defaults mirror "nothing on disk": every transcript probe misses and
-        // discovery finds no cwd — which is also what keeps every non-import test honest, since a
-        // default that answered `true` could hide a route that forgot to consult the probe at all.
         probe: VendorStoreProbe = VendorStoreProbe { _, _, _ -> false },
         locator: VendorSessionLocator = VendorSessionLocator { _, _ -> null },
         productionFactory: Boolean = false,
@@ -1662,8 +1476,6 @@ class TransportTest {
             }
             var push: DaemonPush? = null
             val server = if (productionFactory) {
-                // No daemon and no tmux process: the production factory only captures this edge until a
-                // terminal is actually attached, which this push-route test never does.
                 startDaemonServer(
                     assemblePush = { pushAssembler?.invoke(store, idScope) },
                     createServer = { assembled ->
@@ -1761,7 +1573,6 @@ class TransportTest {
         }
     }
 
-    // --- WS receive helpers (skip control frames) ----------------------------------------------------
 
     private suspend fun DefaultClientWebSocketSession.receiveBinary(): ByteArray {
         while (true) {
@@ -1791,10 +1602,6 @@ class TransportTest {
         )
     }
 
-    /**
-     * The first session-kind frame (anything but `preferences_update`), undecoded. For asserting WHICH
-     * frame kind the server chose — [receiveTextPayload] would silently skip a wrong kind and hang.
-     */
     private suspend fun DefaultClientWebSocketSession.receiveFirstSessionFrameJson(): Pair<String, String> {
         while (true) {
             val frame = incoming.receive()
@@ -1814,10 +1621,6 @@ class TransportTest {
         )
     }
 
-    /**
-     * The global socket carries multiple message kinds. Dispatch on the discriminator before decoding so
-     * a preferences snapshot cannot break an existing session-update waiter (and vice versa).
-     */
     private suspend fun DefaultClientWebSocketSession.receiveTextPayload(type: String): String {
         while (true) {
             val frame = incoming.receive()
@@ -1837,7 +1640,6 @@ class TransportTest {
         }
     }
 
-    /** An [AgentFactory] yielding a canned launch spec (a harmless `cat` + a preallocated provider id). */
     private class CannedAgentFactory(
         private val command: List<String>,
         private val preallocated: ProviderSessionId?,
@@ -1852,19 +1654,13 @@ class TransportTest {
         }
     }
 
-    /**
-     * A thread-safe fake [PtyHandle]: output/input/resize all cross the CIO-server↔test thread boundary
-     * on [Channel]s (happens-before), so the terminal test can observe them race-free (unlike the Task-9
-     * FakePtyHandle, which assumes a single dispatcher). [emit] plays a byte chunk as if the pty produced it.
-     */
+    // Channels provide happens-before across the CIO engine and test threads.
     private class WsFakePty(val command: List<String>) : PtyHandle {
         private val out = Channel<ByteArray>(Channel.UNLIMITED)
         override val output: ReceiveChannel<ByteArray> get() = out
 
-        /** Input the fan-out routed to this upstream. */
         val writes = Channel<ByteArray>(Channel.UNLIMITED)
 
-        /** Resizes applied to this upstream (cols to rows). */
         val resizes = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
 
         fun emit(bytes: ByteArray) { out.trySend(bytes) }
@@ -1874,7 +1670,6 @@ class TransportTest {
         override fun close() { out.close() }
     }
 
-    /** A [PtyFactory] minting [WsFakePty]s and publishing each on [opened] so the test can grab the upstream. */
     private class WsFakePtyFactory : PtyFactory {
         val opened = Channel<WsFakePty>(Channel.UNLIMITED)
         override fun invoke(command: List<String>, env: Map<String, String>): PtyHandle =

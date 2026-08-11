@@ -1,9 +1,6 @@
-# Registers the codegen task and declares its output as generated Kotlin sources so the
-# toolchain compiles them into the enabling module (the macosArm64 app).
 tasks:
   generate:
     action: !io.kotgent.sqldelight.generateDatabase
-      # Conventional location of the `.sq` files in the module the plugin is enabled in.
       sqDir: ${module.rootDir}/sqldelight
       generatedSourceDir: ${taskOutputDir}
 

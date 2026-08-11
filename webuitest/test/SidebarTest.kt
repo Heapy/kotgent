@@ -13,67 +13,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/**
- * The sidebar the whole app is navigated from, and the address bar it is coupled to.
- *
- * Every assertion here reads the DOM a real Chromium built from `resources/webui` against a real daemon,
- * which is the point: the tests these replace read `components/Sidebar.js` and `lib/paths.js` as TEXT and
- * asserted that a particular expression appeared in them. That could prove `sessionCount` was written as
- * `node.sessions.length + children.reduce(...)`; it could never prove a folder actually reports the size
- * of its own subtree, and it went green for any refactor that spelled the same rule differently.
- *
- * ## What the sidebar is, and why the tree is not the default
- * The body is a flat list of every session until a BASE PATH is configured — `groupingEnabled` is exactly
- * `prefs.basePath.length > 0`, so a daemon nobody has configured shows one list and no folder chrome at
- * all. The base path then decides the shape of the tree and the tree depth decides how deep it folds;
- * neither hides anything, because a cwd outside the base path stays a standalone group of its own.
- *
- * ## The design record these tests carry over from the grep tier
- * - Folders are RECURSIVE and their counts are AGGREGATE: a folder reports the sessions of its whole
- *   subtree, not the ones parked directly in it. `/a` says 3 while holding none of them itself.
- * - A cwd outside the base path becomes a standalone group AFTER the in-base tree, labelled by its full
- *   path where an in-base folder is labelled by its segment.
- * - Each folder's `+` carries that folder's exact full path, not the base path and not its label — that
- *   is what makes "new session here" mean here.
- * - Collapse state is keyed by the folder's full path and each folder toggles independently; a collapsed
- *   folder that is hiding a session which needs attention says so with its own dot, because the whole
- *   point of the triage dot is that it survives being folded away.
- * - The footer carries the running daemon's version, which is how an operator on a phone knows which
- *   build they are talking to.
- * - "Done" (`archived`) is a THIRD list, not a deletion: the row leaves the main list, a `#done-section`
- *   appears with its own count, and only a row inside it is given Restore — which takes the state badge's
- *   place. No scenario can seed an archived session, so the browser makes one the way an operator does.
- *
- * Two rules of the same grouping helper are recorded here but NOT observable from this scenario, because
- * no seeded session sits directly in a directory that also has a subdirectory: direct sessions render
- * before nested child folders, and a session at the base path itself gets a base-labelled node of its own
- * ahead of the tree. Both would need a fifth session (one at `/a`) to become visible in the DOM.
- *
- * ## Why the routing assertions live here
- * Selecting a row and the address bar are ONE thing: `showSession` navigates to `/s/{id}`, and the route
- * effect selects the session a route names. Before that coupling existed the two were independent owners
- * and a selection made from the board changed state nobody could see. A test that clicks a row therefore
- * owes an assertion about `location.pathname`, and the operator's Back is the other half of it.
- *
- * ## The three list-protocol states that are also sidebar chrome
- * A row's unread pill, the body's "Loading sessions…" note and the footer's `#status-line` are drawn by
- * this component, so the three behaviours behind them are exercised here — the last of the claims that
- * `WebUiServingTest.daemonServesTheAppEntryModule` used to make by grepping `app.js` for identifiers
- * (`markReadIfViewing`, `READ_RETRY_DELAY_MS`, `sessionsReady`, `disconnectAnnouncedRef.current`), with a
- * comment explaining that "there is no JS harness, so these greps are what stops the whole feature from
- * being deleted". There is a harness now:
- * - the unread badge is the DAEMON's number and the mark-read POST is what moves it, with a retry loop
- *   that heals a lost POST and gives up on an answer that can never change;
- * - "Loading sessions…" is what an unanswered daemon looks like, and it is deliberately not the same
- *   thing as "No sessions yet" — the list has exactly one source, and it is the socket's snapshot;
- * - both status-line announcements are latched: the routine "N session(s)." fires only on the FIRST
- *   snapshot, and the outage line once per outage rather than once per 2 s reconnect attempt.
- *
- * Scenario data is the frozen wave-1/2 contract: `s-alpha` claude `/a/b` running, `s-beta` codex `/a/b`
- * ready, `s-gamma` junie `/a/c` needs_approval, `s-delta` shell `/d` resumable, in that seed order (the
- * daemon lists sessions `ORDER BY created_at, id` and the browser never re-sorts). The `attention`
- * scenario's `s-unread` is `running` with `lastSeq` 5 and a read cursor of 2, i.e. an unread count of 3.
- */
 class SidebarTest {
 
     @Test
@@ -81,9 +20,6 @@ class SidebarTest {
         signedIn(SESSIONS_SCENARIO, "sidebar-flat") { _, _, page ->
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
 
-            // No base path is configured, so there is no folder chrome anywhere: no `grouped` class on
-            // the list, no folder rows inside it, and no base-path note in the section heading (the note
-            // is the affordance that only exists once there is a base path to name).
             assertThat(page.locator("#session-list.grouped")).hasCount(0)
             assertThat(page.locator("#session-list .session-group")).hasCount(0)
             assertThat(page.locator("#base-path-note")).hasCount(0)
@@ -99,8 +35,6 @@ class SidebarTest {
                 "the flat list is every session, in the order the daemon lists them",
             )
 
-            // The one row that needs attention is ALSO in the triage list above — the flat list is every
-            // session, not everything-except-the-urgent-ones — and the head's counter agrees with it.
             assertThat(page.locator("#attention-list .session-row")).hasCount(1)
             assertThat(page.locator("#attention-list .session-row[data-id='s-gamma']")).hasCount(1)
             assertThat(page.locator("#attention-num")).hasText("1")
@@ -129,25 +63,15 @@ class SidebarTest {
                 "two levels below the base path, with every folder counting its whole subtree",
             )
 
-            // The aggregate is the claim worth naming on its own: the tree above shows `/a` holding no
-            // session of its own, and its head still reports 3 — the sum of `/a/b` and `/a/c`.
             assertThat(folderHead(page, "/a").locator(".group-count")).hasText("3")
 
-            // Each folder's `+` starts a session in THAT folder. Its label is the observable form of the
-            // full path being passed through, which is what a label of "b" or of the base path would lose.
             assertThat(folderHead(page, "/a/b").locator(".group-new"))
                 .hasAttribute("aria-label", "New session in /a/b")
             assertThat(folderHead(page, "/d").locator(".group-new"))
                 .hasAttribute("aria-label", "New session in /d")
 
-            // The section heading now names the base path, and that button is how Preferences stays
-            // reachable without the command palette.
             assertThat(page.locator("#base-path-note")).hasText("/")
 
-            // A second base path, because the base path decides the SHAPE of the tree and hides nothing.
-            // Under `/a` its two directories become the roots — and `/d`, outside the base entirely,
-            // stays a group of its own AFTER them, labelled by its full path where an in-base folder is
-            // labelled by a segment. A base path that dropped it would quietly lose a live session.
             page.locator("#base-path-note").click()
             assertThat(page.locator("#prefs-dialog")).isVisible()
             savePreferences(page, basePath = "/a", level = 1)
@@ -178,17 +102,12 @@ class SidebarTest {
             configureGrouping(page, basePath = "/", level = 2)
             awaitFoldedTree(page, deepestFolder = "/a/b")
 
-            // Expanded, `/a` shows no dot of its own: nothing is being hidden, and the row that needs
-            // attention carries its own dot where it is.
             assertThat(folderHead(page, "/a").locator(".attn-dot")).hasCount(0)
 
             folderHead(page, "/a").locator(".group-toggle").click()
 
             assertThat(folderHead(page, "/a").locator(".group-toggle"))
                 .hasAttribute("aria-expanded", "false")
-            // `/a`'s subtree is GONE from the DOM rather than hidden by CSS, and `/d` — a sibling folder
-            // whose collapse state is its own — is untouched. The count still speaks for the whole
-            // subtree, because a folded folder that stopped counting would be a folder that lied.
             assertSidebarTree(
                 page,
                 """
@@ -198,9 +117,6 @@ class SidebarTest {
                 """.trimIndent(),
                 "a collapsed folder keeps its aggregate count and drops only its own contents",
             )
-            // s-gamma needs approval and is now two levels inside a folded folder, so the folder says so.
-            // Without this the one signal the sidebar exists to surface would be one click away from
-            // invisible.
             assertThat(folderHead(page, "/a").locator(".attn-dot")).hasCount(1)
 
             folderHead(page, "/a").locator(".group-toggle").click()
@@ -231,16 +147,11 @@ class SidebarTest {
             configureGrouping(page, basePath = "/", level = 2)
             awaitFoldedTree(page, deepestFolder = "/a/b")
 
-            // Reopened from the base-path note this time: with a base path configured that button is the
-            // operator's route back into Preferences, and it must reach the same dialog the palette does.
             page.locator("#base-path-note").click()
             assertThat(page.locator("#prefs-dialog")).isVisible()
             assertThat(page.locator("#prefs-base-path")).hasValue("/")
             savePreferences(page, basePath = null, level = 1)
 
-            // One level below the base path: `/a/b` and `/a/c` fold into `/a`, which now holds all three
-            // of their sessions directly. Nothing moved out of the sidebar and nothing was hidden — the
-            // depth changes how far the tree is drawn, not which sessions it contains.
             assertThat(page.locator("#session-list .group-title[title='/a/b']")).hasCount(0)
             assertSidebarTree(
                 page,
@@ -261,10 +172,6 @@ class SidebarTest {
     @Test
     fun theSidebarFooterCarriesTheVersionTheDaemonItselfReports() {
         signedIn(SESSIONS_SCENARIO, "sidebar-version") { harness, context, page ->
-            // Compared against the daemon's own answer rather than a literal: the harness serves whatever
-            // this build's `currentUiVersion()` produces (`VERSION` plus a short git hash on a source
-            // build, `VERSION` alone on a release one), so a hard-coded string would either pin the
-            // release rule or need editing on every bump. What the footer owes is agreement with the API.
             val reported = versionReportedByTheDaemon(context, harness.baseUrl)
 
             assertThat(page.locator("#sidebar-footer #current-version")).hasText(reported)
@@ -283,7 +190,6 @@ class SidebarTest {
             assertThat(page.locator(".session-row[data-id='s-alpha']").first())
                 .hasAttribute("aria-current", "true")
 
-            // A second selection is a second history entry, not a replacement.
             page.locator("#session-list .session-row[data-id='s-delta']").click()
             assertThat(page).hasURL("${harness.baseUrl}/s/s-delta")
             assertThat(page.locator(".session-row[data-id='s-delta']").first())
@@ -291,17 +197,11 @@ class SidebarTest {
             assertThat(page.locator("#session-list .session-row[data-id='s-alpha']"))
                 .not().hasAttribute("aria-current", "true")
 
-            // Back is the other half of the coupling: the route names a session, so the sidebar selects
-            // it. Without that, Back out of a session (or a pasted link, or a reload) used to land on the
-            // session view with nothing selected at all.
             page.goBack()
             assertThat(page).hasURL("${harness.baseUrl}/s/s-alpha")
             assertThat(page.locator(".session-row[data-id='s-alpha']").first())
                 .hasAttribute("aria-current", "true")
 
-            // And back to where the page started. The coupling is deliberately ONE-directional here: `/`
-            // names no session, and clearing the selection there would tear down a live terminal for a
-            // navigation the operator made to reach exactly that terminal.
             page.goBack()
             assertThat(page).hasURL("${harness.baseUrl}/")
             assertThat(page.locator(".session-row[data-id='s-alpha']").first())
@@ -312,52 +212,23 @@ class SidebarTest {
     @Test
     fun anEmptyFirstRunOffersItsOwnStartASessionAction() {
         signedIn(EMPTY_SCENARIO, "sidebar-empty") { _, _, page ->
-            // The empty panel renders only once the first snapshot has landed — an empty list and an
-            // unanswered daemon are different things, and the loading note is what says so. Asserting the
-            // panel first is therefore also the wait that makes the count below mean anything.
             assertThat(page.locator("#empty-sessions")).isVisible()
             assertThat(page.locator("#sessions-loading")).hasCount(0)
             assertThat(page.locator("#session-list .session-row")).hasCount(0)
             assertThat(page.locator("#attention-section")).hasCount(0)
 
-            // The command palette is where rare actions live, but a first run has nothing to select and
-            // no reason to know the palette exists yet, so this one action stays direct on the screen.
             assertThat(page.locator("#empty-new-session-button")).hasText("Start a session")
             page.locator("#empty-new-session-button").click()
             assertThat(page.locator("#new-session-dialog")).isVisible()
         }
     }
 
-    /**
-     * "Done" hides a row without losing it, and Restore brings it back — the sidebar's third list.
-     *
-     * `archived` is one of the three fields written OUTSIDE the reducer, and it is the only one with a
-     * body of sidebar chrome of its own: a `#done-section` that exists only while something is archived, a
-     * disclosure that keeps its own count, a `#done-list` the rows move into, and a Restore control that
-     * only a row in that list is given. None of that was reachable from any fixture — no scenario seeds an
-     * archived session — so the whole branch shipped unexercised once the grep tier that pinned
-     * `general.show-done` went away.
-     *
-     * The browser can produce the state itself, which is the point: `⌘K d` runs the same
-     * `POST /sessions/{id}/done` an operator runs, so what is set up here is exactly what is asserted
-     * about. `s-delta` is the `resumable` shell — selecting it attaches no terminal, and "Done" on it is a
-     * pure archive with no pane to kill.
-     *
-     * The disclosure is asserted CLOSED first. That is not ceremony: the row is out of `#session-list` the
-     * moment it is archived, so without the closed state being observed the test could not tell "hidden
-     * behind a collapsed section" from "gone".
-     */
     @Test
     fun aDoneSessionMovesIntoItsOwnCollapsedListAndRestoreBringsItBack() {
         signedIn(SESSIONS_SCENARIO, "sidebar-done") { _, _, page ->
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
-            // Nothing is archived yet, so the section does not exist at all — an empty disclosure would be
-            // furniture on every first run.
             assertThat(page.locator("#done-section")).hasCount(0)
 
-            // "Done" is one of the two destructive verbs that ask first, and Playwright DISMISSES a native
-            // dialog unless something answers it — which would silently make this test about a cancelled
-            // confirm. Accepting is what an operator does; the prompt itself is the palette's subject.
             page.onDialog { dialog -> dialog.accept() }
 
             page.locator("#session-list .session-row[data-id='$DONE_SESSION']").click()
@@ -374,45 +245,18 @@ class SidebarTest {
             assertThat(toggle).hasAttribute("aria-expanded", "true")
             val doneRow = page.locator("#done-list .session-row[data-id='$DONE_SESSION']")
             assertThat(doneRow).hasCount(1)
-            // The control only this list gives a row — `onRestore` is passed here and nowhere else — and
-            // it takes the state badge's PLACE, which is the visible difference between an archived row
-            // and a live one.
             val restore = doneRow.locator(".session-restore")
             assertThat(restore).hasCount(1)
             assertThat(doneRow.locator(".badge")).hasCount(0)
 
             restore.click()
 
-            // Un-archived: back in the main list, and the section is gone again because it is empty.
             assertThat(page.locator("#session-list .session-row[data-id='$DONE_SESSION']")).hasCount(1)
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
             assertThat(page.locator("#done-section")).hasCount(0)
         }
     }
 
-    /**
-     * The unread pill is the DAEMON's number, and `POST /sessions/{id}/read` is the only thing that moves
-     * it: nothing is zeroed locally, because the cursor is server state that every other client (a phone,
-     * a second tab) reads the same badge out of.
-     *
-     * The POST is driven from imperative triggers rather than from a `useEffect` on `[id, lastSeq,
-     * unread]`, and this test exercises two of them — a selection and a `session_update` frame for the
-     * session on screen. That shape is exactly why the retry loop below has to exist: when a POST fails,
-     * none of those three primitives changes, so an effect's `Object.is` dep check would skip the retry
-     * precisely when it matters most (a `needs_approval` session may emit no further frame at all).
-     *
-     * The three answers the daemon can give are all produced here, because the rule that separates them is
-     * the whole design. A `4xx` is the daemon's own answer about this session (a 401 after a rotation, a
-     * 404 for a session that is gone) and can never succeed, so the loop stops — a page that stays open
-     * for days must not hammer an unwinnable route. A network failure carries no status at all and is
-     * therefore transient, so the loop keeps going. And a 200 is what actually clears the badge, over the
-     * ordinary `session_update` the daemon broadcasts after writing the cursor.
-     *
-     * The two phases are measured over the SAME six seconds — three of the loop's own 2 s delays — and the
-     * transient one is what makes the definitive one falsifiable: the window that produced no second
-     * attempt after the 404 fills with retries once the failure carries no status, so the quiet window was
-     * a decision and not merely a short wait.
-     */
     @Test
     fun theUnreadBadgeIsTheDaemonsNumberAndALostMarkReadHealsItself() {
         signedIn(ATTENTION_SCENARIO, "sidebar-unread") { harness, _, page ->
@@ -425,9 +269,6 @@ class SidebarTest {
             val pill = row.locator(".unread-pill")
             assertThat(pill).hasText("3")
 
-            // TRIGGER ONE: the selection. `showSession` marks the row it was handed, because
-            // `sessionsRef` need not list it yet (a session the operator just started is selected before
-            // any frame carries it).
             row.click()
             page.waitForCondition { attempts.get() >= 1 }
             assertEquals(
@@ -436,8 +277,6 @@ class SidebarTest {
                 "the POST carries the seq the row DISPLAYS (lastSeq 5) — not its read cursor, and not a count",
             )
 
-            // The daemon refused, so the badge stands. A client that zeroed its own pill would show a
-            // cleared badge on this tab and the old count on the phone beside it.
             assertThat(pill).hasText("3")
             page.waitForTimeout(RETRY_WINDOW_MILLIS)
             assertEquals(
@@ -446,9 +285,6 @@ class SidebarTest {
                 "a 404 is the daemon's own answer about this session and cannot change — the loop stopped",
             )
 
-            // TRIGGER TWO: a `session_update` for the session on screen. `emit` moves only the state, so
-            // the row still carries lastSeq 5 against a cursor of 2 and the frame's own numbers warrant
-            // another mark — which is what re-arms a poster the definitive answer had put down.
             answer.set(READ_UNREACHABLE)
             harness.send("emit $UNREAD_SESSION ready")
             page.waitForCondition { attempts.get() >= 2 }
@@ -467,12 +303,6 @@ class SidebarTest {
                 "every retry re-sends the newest seq",
             )
 
-            // COALESCED, and this is the only assertion that can say so. Every trigger here carries the
-            // same seq, so a `distinct()` over the bodies answers one element whether the poster keeps one
-            // request per session or fires one per trigger — what separates the two is the COUNT. A burst
-            // of frames lands while a retry timer is already pending; `deliverRead`'s guard must turn each
-            // of them into nothing at all, so the only request that may appear inside a window shorter
-            // than one retry delay is that pending retry itself.
             val beforeBurst = attempts.get()
             repeat(TRIGGER_BURST) { i ->
                 harness.send("emit $UNREAD_SESSION ${if (i % 2 == 0) "running" else "ready"}")
@@ -485,41 +315,12 @@ class SidebarTest {
                     "$burst requests — one per trigger rather than one in flight per session",
             )
 
-            // And the badge clears only now, on the daemon's own broadcast: the retry that finally lands
-            // writes the cursor, and the recomputed `unread` comes back as an ordinary session_update.
             answer.set(READ_ACCEPTED)
             assertThat(pill).hasCount(0)
             assertThat(row).hasCount(1)
         }
     }
 
-    /**
-     * The board on screen SUSPENDS the read cursor: a frame for the selected session may not clear a badge
-     * the operator is not looking at.
-     *
-     * `activeId` outlives the screen that shows it — the board replaces the session view entirely, and the
-     * sidebar keeps drawing the same list beside it — so without a second question every `/events` frame
-     * for the leftover selection would still be answered with a `POST …/read`. The symptom is silent and
-     * unrecoverable: the badge of a session hidden behind the board is cleared on the server, for every
-     * client, by a tab whose operator never saw the output. `app.js` therefore keeps `sessionViewOnScreen`
-     * as a render-time flag and `markReadIfViewing` asks it alongside `document.visibilityState`.
-     *
-     * The shape here is control → negative → control, because "no request was made" has no moment at which
-     * it can be observed. The selection on the session view is the first control (the recorder must be able
-     * to count a mark at all); two `append`s then raise the count while the board is up; and coming back is
-     * the second control, exercising the trigger that exists BECAUSE of the guard — the badge the board
-     * refused to clear would otherwise sit there until the session's next frame, so leaving the board is
-     * itself a mark-read trigger (`app.js`'s effect on `onBoard`).
-     *
-     * ## Why the barrier is the SECOND frame, and why there is no pill to look at
-     * The board replaces the sidebar's body with the project list, so while it is up there is no session
-     * row on screen at all — the very reason the guard is needed is the reason its effect is invisible.
-     * The barrier is therefore frame ORDER. `FRAME_RECORDER`'s listener is registered before the app's on
-     * the same socket, so the recorder sees message N+1 only after every listener of message N has run:
-     * banking the second `append`'s frame is proof the app finished handling the first, and
-     * `markReadIfViewing` runs inside that very handler. A wait on the first frame alone could return a
-     * tick before the decision it is supposed to be observing.
-     */
     @Test
     fun theBoardOnScreenStopsAFrameFromClearingTheHiddenRowsBadge() {
         signedIn(
@@ -532,28 +333,19 @@ class SidebarTest {
             val answer = AtomicReference(READ_ACCEPTED)
             interceptMarkRead(page, BOARD_GUARD_SESSION, answer, attempts, bodies)
 
-            // This scenario's rows are seeded with an EMPTY event log, so every seq here is produced by
-            // an `append` rather than asserted against a fixture number — which is what keeps the two
-            // halves comparable (`attention`'s row carries a seeded `lastSeq` its log knows nothing
-            // about, so an append there would move the count DOWN).
             val row = page.locator("#session-list .session-row[data-id='$BOARD_GUARD_SESSION']")
             val pill = row.locator(".unread-pill")
             harness.send("append $BOARD_GUARD_SESSION")
             assertThat(pill).hasText("1")
 
-            // CONTROL ONE: on the session view, selecting the row marks it read and the daemon's own
-            // recomputed count clears the pill.
             row.click()
             assertThat(pill).hasCount(0)
             assertEquals(1, attempts.get(), "the selection posted exactly one mark-read")
 
-            // THE BOARD. `activeId` is untouched by the navigation — that is precisely the leftover the
-            // guard exists for.
             page.locator(".nav-switch a[href='/tasks']").click()
             assertThat(page.locator(".board-columns")).isVisible()
             assertThat(page.locator("#session-list")).hasCount(0)
 
-            // Two more real events, so `last_seq` really advances and each frame really warrants a mark.
             harness.send("append $BOARD_GUARD_SESSION")
             harness.send("append $BOARD_GUARD_SESSION")
             page.waitForFunction(sawUnreadFrame(3))
@@ -564,8 +356,6 @@ class SidebarTest {
                     "screen this tab is showing — the badge belongs to output nobody has looked at",
             )
 
-            // CONTROL TWO: back on the session view, the same session and the same recorder, and the mark
-            // now goes out — which is what makes the zero above a decision rather than a dead route.
             page.locator(".nav-switch a[href='/s/$BOARD_GUARD_SESSION']").click()
             page.waitForCondition { attempts.get() >= 2 }
             assertThat(pill).hasCount(0)
@@ -577,27 +367,6 @@ class SidebarTest {
         }
     }
 
-    /**
-     * Before the first snapshot the sidebar says it is LOADING, because an empty list and an unanswered
-     * daemon are different facts and only one of them is knowable yet.
-     *
-     * The `empty` scenario is the sharp form of that claim: the list is genuinely empty in both states, so
-     * the only difference between "Loading sessions…" and "No sessions yet. Start one to attach it here."
-     * is whether the snapshot has arrived. Answering the second one early is not a cosmetic slip — it is
-     * the daemon-is-down screen telling an operator that the work they left running does not exist.
-     *
-     * The fault is injected at the WebSocket CONSTRUCTOR, which is also the failure path with the longest
-     * history: it used to give up for the life of the page, leaving a permanently empty UI, and it is now
-     * one of the two places that reschedule on the same 2 s cadence (the other is `onclose`, which
-     * [theOutageIsAnnouncedOncePerOutageAndTheRoutineLineOnlyOnce] drives). Healing the fault and watching
-     * the app come back on its own is what proves the retry, where the deleted grep counted the two
-     * `setTimeout(connect, 2000)` occurrences in the source.
-     *
-     * The last assertion is the negative pin this whole protocol was written for: the list has exactly ONE
-     * source. There is no `GET /sessions` on load — a reload used to issue 206 of them — and the loading
-     * state above is the same statement made visible, since a daemon answering HTTP perfectly well (the
-     * footer's version came over it) still left the list unknown.
-     */
     @Test
     fun theSidebarSaysItIsLoadingUntilTheFirstSnapshotDecidesTheListIsEmpty() {
         signedIn(
@@ -605,8 +374,6 @@ class SidebarTest {
             "sidebar-loading",
             initScripts = listOf(SOCKET_FAULT_SCRIPT, eventsFaultScript(EVENTS_THROWN), FETCH_RECORDER_SCRIPT),
         ) { _, _, page ->
-            // The daemon is UP and this page is talking to it — the footer's version arrived over plain
-            // HTTP — so what is missing is the list alone, which is the state under test.
             assertThat(page.locator("#current-version")).isVisible()
             assertThat(page.locator("#status-line")).containsText("events WS error")
 
@@ -616,14 +383,10 @@ class SidebarTest {
 
             setEventsFault(page, EVENTS_HEALTHY)
 
-            // The reschedule that used to not exist: nothing in this test reloads or reconnects by hand.
             assertThat(page.locator("#empty-sessions")).isVisible()
             assertThat(page.locator("#sessions-loading")).hasCount(0)
             assertThat(page.locator("#status-line")).hasText("0 session(s).")
 
-            // The recorder is proven live against a request this page certainly makes before the absence
-            // below is read: `__kotgentFetches` is installed by an init script, and if that ever stopped
-            // wrapping `window.fetch` the count would be zero for the wrong reason.
             assertTrue(
                 recordedFetches(page).any { it.contains("/api/v1/preferences") },
                 "the fetch recorder saw nothing at all, so the zero below would be its own silence: " +
@@ -637,27 +400,6 @@ class SidebarTest {
         }
     }
 
-    /**
-     * Both status-line announcements are latched, and the latches are about a screen reader: the footer's
-     * `#status-line` is an `aria-live` region, so every text it takes is read out loud to somebody.
-     *
-     * The routine "N session(s)." belongs to the first snapshot only. A reconnect delivers the same
-     * snapshot, and repeating the line there would announce a number nobody asked for on top of whatever
-     * the operator was doing.
-     *
-     * "Daemon connection lost — reconnecting…" belongs to the outage, not to the retry: `onclose` fires
-     * every 2 s while the daemon is down. **The cost of an unlatched version is exactly the assertion this
-     * test makes**, and it is worth spelling out why the obvious form would prove nothing: two identical
-     * `say` calls produce no DOM mutation at all (preact writes a text node only when the text differs),
-     * so a second announcement of the same string is not observable — what IS observable is that it
-     * clobbers a DIFFERENT message. So the test interposes one: Copy tmux command is the operator action
-     * that needs no daemon at all, its answer lands in this very region, and it must survive every later
-     * reconnect attempt. The attempts themselves are the barrier — each one really opens a socket — so the
-     * waiting window cannot be accidentally too short.
-     *
-     * The second outage is the other half: the announcement must be re-ARMED by a snapshot rather than
-     * spent for the life of the page.
-     */
     @Test
     fun theOutageIsAnnouncedOncePerOutageAndTheRoutineLineOnlyOnce() {
         signedIn(
@@ -668,11 +410,8 @@ class SidebarTest {
             val status = page.locator("#status-line")
             assertThat(status).hasText("4 session(s).")
 
-            // A live session is selected purely so the interposed message below is available: without one
-            // the palette draws Copy tmux command disabled ("no session is selected") and it cannot run.
             page.locator("#session-list .session-row[data-id='s-alpha']").click()
 
-            // FIRST OUTAGE. The fault is set before the close, so the reconnect finds the broken address.
             setEventsFault(page, EVENTS_REJECTED)
             val socketsBefore = eventsSocketCount(page)
             closeNewestEventsSocket(page)
@@ -688,9 +427,6 @@ class SidebarTest {
                 "three more failed reconnects announced nothing: the outage was announced once, not per retry",
             )
 
-            // HEALED. The emit is the barrier that frames are really flowing again — it rides the same
-            // socket AFTER the snapshot, so seeing it means the snapshot was applied, which is the moment
-            // the routine line would have been repeated.
             setEventsFault(page, EVENTS_HEALTHY)
             harness.send("emit s-beta needs_approval")
             assertThat(page.locator("#attention-list .session-row[data-id='s-beta']")).hasCount(1)
@@ -700,32 +436,12 @@ class SidebarTest {
                 "the reconnect snapshot re-announced nothing: 'N session(s).' belongs to the first one only",
             )
 
-            // SECOND OUTAGE: the snapshot re-armed the announcement, so this one is heard.
             setEventsFault(page, EVENTS_REJECTED)
             closeNewestEventsSocket(page)
             assertThat(status).hasText(DISCONNECT_LINE)
         }
     }
 
-    /**
-     * What Copy tmux command actually puts on the clipboard, character for character.
-     *
-     * The action is otherwise used here only as a DOM-mutation interposer (a message that must survive a
-     * reconnect), which asserts nothing about the string — and the string is the whole feature: it is
-     * pasted into a terminal that has never spoken to the daemon, so every token of it has to be right
-     * with no feedback loop to correct it. Two tokens are cross-file agreements the browser cannot check
-     * on its own, and `WebUiServingTest.theCopyableTmuxCommandNamesTheDaemonsOwnSocketInUtf8` holds that
-     * half against the Kotlin constants: `-L kotgent` must be the socket the daemon's own `Tmux` uses (a
-     * different label starts an EMPTY second tmux server that reports "no sessions", which reads as a dead
-     * agent) and `-u` is what keeps the client from being read as non-UTF-8, which makes tmux rewrite
-     * every non-ASCII cell as `_`. What only a browser can add is that the button reaches the clipboard
-     * with THAT string and this session's own `kt-<id>` target.
-     *
-     * The clipboard is interposed rather than read back through `clipboard-read`: the claim is the text
-     * the app hands the platform, and a permission prompt is a second thing to go wrong. The interposer
-     * resolves instead of delegating, because a rejected native write sends `writeClipboard` down its
-     * `execCommand` fallback and the outcome would then depend on what headless Chromium allows.
-     */
     @Test
     fun theCopiedTmuxCommandJoinsTheDaemonsOwnServerInUtf8() {
         signedIn(
@@ -744,21 +460,6 @@ class SidebarTest {
         }
     }
 
-    /**
-     * A model the daemon CLEARED clears on screen — the one `session_update` field whose null is a value.
-     *
-     * `model` is written outside the reducer by its own setter, and every `SessionUpdate` re-reads it from
-     * the committed row, so `model: null` is a real frame the daemon really sends: the provider-id rebind
-     * correction calls `setModel(null)` when a hook displaces a scanned id, precisely so a neighbour
-     * rollout's model does not stick to this session forever. A browser that treated the null as "field
-     * absent" — the reflex a patch applier invites — would leave the wrong model in the sidebar until a
-     * reload, and there is no snapshot/live discriminator left to heal it.
-     *
-     * The first half is the control and it is not decoration: it proves the harness's `model` verb reaches
-     * this row through the socket at all, so the disappearance below is the null being APPLIED rather than
-     * the fixture having done nothing. (This is what `WebUiServingTest.daemonServesTheAppEntryModule` used
-     * to record as a claim dropped for want of a fixture; the fixture is the verb.)
-     */
     @Test
     fun aClearedModelDisappearsFromTheRowThePatchNames() {
         signedIn(SESSIONS_SCENARIO, "sidebar-model-clear") { harness, _, page ->
@@ -774,13 +475,6 @@ class SidebarTest {
     }
 }
 
-/**
- * Record every string the page hands `navigator.clipboard.writeText`, into `window.__kotgentClipboard`.
- *
- * An own property on the `Clipboard` instance shadows the prototype method, and it RESOLVES rather than
- * delegating — see [SidebarTest.theCopiedTmuxCommandJoinsTheDaemonsOwnServerInUtf8] for why the real
- * write is deliberately not attempted.
- */
 private val CLIPBOARD_RECORDER: String = """
     (() => {
       window.__kotgentClipboard = [];
@@ -794,16 +488,10 @@ private val CLIPBOARD_RECORDER: String = """
     })();
 """.trimIndent()
 
-/** The `attention` row that carries an unread count. Its sibling `s-quiet` has none, and is untouched. */
 private const val UNREAD_SESSION: String = "s-unread"
 
-/**
- * The `sessions` row the board-guard test drives: `running`, and — unlike `attention`'s `s-unread` — with
- * an event log that starts genuinely empty, so an `append` moves its unread count UP.
- */
 private const val BOARD_GUARD_SESSION: String = "s-alpha"
 
-/** `FRAME_RECORDER` has banked a `session_update` for [BOARD_GUARD_SESSION] carrying `lastSeq` [seq]. */
 private fun sawUnreadFrame(seq: Int): String = """
     () => (window.__kotgentFrames || []).some((f) =>
       f.indexOf("\"type\":\"session_update\"") >= 0 &&
@@ -811,55 +499,24 @@ private fun sawUnreadFrame(seq: Int): String = """
       f.indexOf("\"lastSeq\":$seq") >= 0)
 """.trimIndent()
 
-/** The `sessions` scenario's `resumable` shell: selecting it attaches no pty, so Done has none to kill. */
 private const val DONE_SESSION: String = "s-delta"
 
-/** What `onclose` says, once per outage. Spelled exactly as `app.js` says it, ellipsis included. */
 private const val DISCONNECT_LINE: String = "Daemon connection lost — reconnecting…"
 
-/**
- * How the intercepted mark-read POST is answered, and each name is a rule rather than a status code:
- * a `4xx` is the daemon's own answer ABOUT this session and stops the loop, a network failure carries no
- * status and keeps it, and a real answer is what clears the badge.
- */
 private const val READ_DEFINITE: String = "definite"
 private const val READ_UNREACHABLE: String = "unreachable"
 private const val READ_ACCEPTED: String = "accepted"
 
-/**
- * Three of the retry loop's own 2 s delays. Mirrored from `READ_RETRY_DELAY_MS` in `app.js` — a timing
- * dependency, not a grep: what the tests need from that constant is a window long enough for retries to
- * be due, and the transient phase proves the window really is long enough by filling it with them.
- */
 private const val RETRY_WINDOW_MILLIS: Double = 6_000.0
 
-/**
- * A burst of triggers, and a window shorter than ONE `READ_RETRY_DELAY_MS` to watch it in. Both halves
- * are load-bearing: the burst has to be big enough that "one request per trigger" is unmistakable, and the
- * window short enough that at most one scheduled retry can fall inside it.
- */
 private const val TRIGGER_BURST: Int = 6
 private const val BURST_WINDOW_MILLIS: Double = 900.0
 
-/** Fault modes for [SOCKET_FAULT_SCRIPT]; the empty one is a healthy socket. */
 private const val EVENTS_HEALTHY: String = ""
 private const val EVENTS_THROWN: String = "throw"
 private const val EVENTS_REJECTED: String = "reject"
 
-/**
- * Record every WebSocket the page opens, and let a test break the EVENTS socket in either of the two ways
- * the app has to survive.
- *
- * Nothing in the app exposes its sockets, and the harness deliberately has no "drop the sockets but keep
- * the port" command, so the page is the only place an outage can be produced without taking the daemon
- * down — which is exactly what these tests need, since the daemon must stay reachable over HTTP while the
- * list is unknown.
- *
- * `throw` fails the CONSTRUCTOR, which is the path that used to give up for the life of the page.
- * `reject` sends the handshake to an address the daemon does not serve, so the socket really is opened
- * and really fails: the browser's own failure, delivered through `onclose`, on the app's own cadence. The
- * rewritten URL still contains `/events`, so it is still counted as an events socket by [eventsSocketCount].
- */
+// A page-side socket subclass faults events while leaving daemon HTTP reachable.
 private val SOCKET_FAULT_SCRIPT: String = """
     (() => {
       const Native = window.WebSocket;
@@ -881,15 +538,9 @@ private val SOCKET_FAULT_SCRIPT: String = """
     })()
 """.trimIndent()
 
-/** An init script that arms a fault before the app's very first connect attempt. */
 private fun eventsFaultScript(fault: String): String = """window.__kotgentEventsFault = "$fault";"""
 
-/**
- * Record every URL the page fetches, so a request made during the first paint can still be counted.
- *
- * A `page.onRequest` listener cannot answer this: the block runs after the SPA has loaded, and the request
- * this is looking for would be the very first one it made.
- */
+// Must wrap fetch before the app's first paint; a later request listener can miss that call.
 private val FETCH_RECORDER_SCRIPT: String = """
     (() => {
       window.__kotgentFetches = [];
@@ -903,17 +554,6 @@ private val FETCH_RECORDER_SCRIPT: String = """
     })()
 """.trimIndent()
 
-/**
- * Sign a fresh context in, open the app, and hand the test its harness, context and page.
- *
- * A fresh [BrowserContext] per test is mandatory (a kotgent cookie is not scoped by port, so a reused one
- * is sent to the next harness and fails its HMAC), and [BrowserContext.traced] keeps a trace and a
- * screenshot only when the body fails.
- *
- * [initScripts] are installed on the context BEFORE any page exists, which is the only way to reach the
- * app's first connect and its first fetch; they run in the order given, so a fault script may override a
- * default set by an earlier one.
- */
 private fun signedIn(
     scenario: String,
     trace: String,
@@ -923,6 +563,7 @@ private fun signedIn(
     Harness(scenario).use { harness ->
         onChromium { browser ->
             browser.newContext().use { context ->
+                // Install before any page exists so first-connect and first-fetch paths are observable.
                 initScripts.forEach(context::addInitScript)
                 context.traced(trace) {
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
@@ -936,26 +577,12 @@ private fun signedIn(
     }
 }
 
-/**
- * Configure grouping the way an operator with no base path has to: through the command palette.
- *
- * With `basePath` empty the sidebar draws no base-path note, so the palette really is the only route to
- * Preferences at that moment — which is why this helper opens it from there and the depth test opens it
- * from the note instead.
- */
 private fun configureGrouping(page: Page, basePath: String, level: Int) {
     runLeaderCommand(page, "Preferences")
     assertThat(page.locator("#prefs-dialog")).isVisible()
     savePreferences(page, basePath, level)
 }
 
-/**
- * Run one command from the palette's leader grid, by its title.
- *
- * The header's ⋯ rather than ⌘K: the button is the palette's guaranteed path on every surface (the chord
- * and its mnemonics are the command-palette tests' own subject), and it opens the same leader grid the
- * chord does.
- */
 private fun runLeaderCommand(page: Page, title: String) {
     page.locator("#palette-button").click()
     assertThat(page.locator("#command-palette")).isVisible()
@@ -964,13 +591,6 @@ private fun runLeaderCommand(page: Page, title: String) {
         .click()
 }
 
-/**
- * Fill and submit the open Preferences dialog, then wait for it to be gone.
- *
- * The dialog UNMOUNTS on a successful save, so its absence is the honest signal that the write landed and
- * the daemon's answer has been applied — a `PUT /preferences` that failed leaves the dialog up with its
- * error line, and every assertion after this one would then be measuring the old preference.
- */
 private fun savePreferences(page: Page, basePath: String?, level: Int) {
     if (basePath != null) page.locator("#prefs-base-path").fill(basePath)
     page.locator("#prefs-grouping-level").selectOption(level.toString())
@@ -978,29 +598,15 @@ private fun savePreferences(page: Page, basePath: String?, level: Int) {
     assertThat(page.locator("#prefs-dialog")).hasCount(0)
 }
 
-/**
- * Wait until the folded sidebar has settled, so the one-shot DOM read below cannot race the render.
- *
- * [Page.evaluate] does not retry, unlike a Playwright assertion, so every reconstruction of the tree is
- * preceded by auto-waiting assertions that pin the shape it is about to read. The row count is the
- * `sessions` scenario's four, which is what every caller here folds.
- */
 private fun awaitFoldedTree(page: Page, deepestFolder: String) {
     assertThat(page.locator("#session-list.grouped")).hasCount(1)
     assertThat(page.locator("#session-list .group-title[title='$deepestFolder']")).hasCount(1)
     assertThat(page.locator("#session-list .session-row")).hasCount(4)
 }
 
-/** One folder's head row, addressed by the full path its title carries. */
 private fun folderHead(page: Page, path: String): Locator =
     page.locator("#session-list .group-head:has(.group-title[title='$path'])")
 
-/**
- * Intercept the ONE route the unread badge depends on, counting every attempt and keeping its body.
- *
- * The suffix match is exact, so `GET /sessions/{id}` (the reattach liveness read) and every other route
- * pass through untouched; a non-POST on this very path is resumed rather than counted.
- */
 private fun interceptMarkRead(
     page: Page,
     id: String,
@@ -1013,8 +619,7 @@ private fun interceptMarkRead(
         if (!intercepted.request().method().equals("POST", ignoreCase = true)) {
             intercepted.resume()
         } else {
-            // The body is banked BEFORE the counter is bumped: a waiter on `attempts` would otherwise be
-            // free to run between the two and read a list that is one entry short of the count it saw.
+            // Bank the body before waking a waiter that observes the incremented count.
             bodies.add(intercepted.request().postData().orEmpty())
             attempts.incrementAndGet()
             when (answer.get()) {
@@ -1024,7 +629,6 @@ private fun interceptMarkRead(
                         .setContentType("text/plain")
                         .setBody("no such session $id"),
                 )
-                // No status at all — the daemon was not reached, which is the transient case.
                 READ_UNREACHABLE -> intercepted.abort()
                 else -> intercepted.resume()
             }
@@ -1036,7 +640,6 @@ private fun setEventsFault(page: Page, fault: String) {
     page.evaluate("(fault) => { window.__kotgentEventsFault = fault; }", fault)
 }
 
-/** How many events sockets this page has ever built, failed ones included — the outage's own barrier. */
 private fun eventsSocketCount(page: Page): Int {
     val count = page.evaluate(
         """() => window.__kotgentSockets.filter((s) => s.url.indexOf("/events") >= 0).length""",
@@ -1057,13 +660,11 @@ private fun closeNewestEventsSocket(page: Page) {
     )
 }
 
-/** Every URL the page has fetched since the recorder was installed. */
 private fun recordedFetches(page: Page): List<String> {
     val raw = page.evaluate("() => window.__kotgentFetches || []") as List<*>
     return raw.map { it.toString() }
 }
 
-/** How many times the page fetched the WHOLE session list. The answer must always be zero. */
 private fun wholesaleSessionFetches(page: Page): Int {
     val count = page.evaluate(
         """
@@ -1074,23 +675,13 @@ private fun wholesaleSessionFetches(page: Page): Int {
     return (count as Number).toInt()
 }
 
-/** The sidebar footer's aria-live region, as text. */
 private fun statusText(page: Page): String = page.locator("#status-line").textContent().trim()
 
-/** Wait until the status line says something of its own, and answer with whatever that turned out to be. */
 private fun awaitStatusOtherThan(page: Page, previous: String): String {
     page.waitForCondition { statusText(page).let { it.isNotEmpty() && it != previous } }
     return statusText(page)
 }
 
-/**
- * The sidebar's session list, rebuilt from the live DOM as indented text.
- *
- * A folder is rendered `label [path] (count)` and a session as its `data-id`; nesting is two spaces per
- * level. Reconstructing the whole shape in one value — rather than asserting a handful of independent
- * counts — is what makes the expectation readable AS the tree and makes a wrong parent, a missing level
- * or a session filed under the wrong folder fail with a diff of the actual hierarchy.
- */
 private fun sidebarTree(page: Page): String {
     val tree = page.evaluate(SIDEBAR_TREE_SCRIPT)
     return tree as? String ?: fail("the sidebar tree script answered ${tree ?: "null"}")
@@ -1128,12 +719,9 @@ private val SIDEBAR_TREE_SCRIPT: String = """
     }
 """.trimIndent()
 
-/** `{"version":"…"}` — matched rather than parsed, so this module needs no JSON library of its own. */
 private val VERSION_FIELD = Regex("\"version\"\\s*:\\s*\"([^\"]*)\"")
 
-/** What `GET /api/v1/version` answers this signed-in context — the value the footer must agree with. */
 private fun versionReportedByTheDaemon(context: BrowserContext, baseUrl: String): String {
-    // The context's own request client, so the session cookie rides along: /version is authenticated.
     val response = context.request().get("$baseUrl/api/v1/version")
     val body = response.text()
     assertEquals(200, response.status(), "GET /api/v1/version answered ${response.status()}: $body")

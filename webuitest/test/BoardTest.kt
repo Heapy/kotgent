@@ -17,51 +17,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
-/**
- * The kanban board in a real browser: what the four columns draw, and the pointer drag that moves a
- * card between them.
- *
- * This replaces the deleted `test/transport/WebUiBoardTest.kt`, which asserted the same subjects by
- * GETting `Board.js` / `TaskCard.js` off the daemon and grepping the source it was handed — the only thing
- * a `macosArm64` test binary can do about a screen. Everything that file could only spell is a behaviour
- * here: `DRAG_SLOP_PX = 8` is a press that travels four pixels and stays a press, `setPointerCapture` is
- * a highlight that keeps following a pointer which has left the card it started on, and "the PATCH is
- * issued before the move" is the two requests the daemon actually received, in the order it received
- * them. Two of its tests live on in `test/transport/WebUiServingTest.kt` because they are not
- * browser-observable at all: the frozen CSS class vocabulary shared with `style.css`, and the
- * `<input maxlength>` bound to the daemon's own `PROJECT_NAME_MAX_LENGTH` (a native root-module constant
- * this JVM module cannot see).
- *
- * **Chromium only**, for the reason the light-dismiss tests are (plan fact 4): WebKit delivered nothing
- * whatsoever to a touched element, and every gesture below is pointer-driven.
- *
- * The seeded `board` scenario is the fixture's: `local:1..10` over todo `1,2,3,4,10` · in_progress
- * `5,6` · review `7` · done `8,9`, with `local:10` blocked on `local:5`.
- */
 class BoardTest {
 
-    // --- what the board draws --------------------------------------------------------------------
 
-    /**
-     * Four columns over ONE project, each holding exactly the seeded refs in their position order.
-     *
-     * There is deliberately no "all projects" mode to test for: `position` is a project-wide gap rank,
-     * so a combined view could not be reordered by any move the API can express. The board filters the
-     * one list `app.js` holds by the selected project and never fetches a task itself, so what is on
-     * screen here arrived over the `/events` socket's `tasks_snapshot` — the head naming the project is
-     * the only part that came from `GET /projects`.
-     *
-     * The column head counts EVERY entry, not the slice a capped `done` renders; with two done cards the
-     * two numbers coincide, which is why the count is asserted against the seeded totals rather than
-     * against the rendered cards.
-     *
-     * What this test pins is the mapping from the daemon's list to the four columns, and NOT the board's
-     * own `position`-then-`createdAt`-then-`ref` sort: the snapshot already arrives in that order
-     * (`FakeTaskStore.listBacklog` sorts by position, exactly as `selectEntriesByProject`'s
-     * `ORDER BY position, task_ref` does), so a board that never sorted at all would render this
-     * identically. The sort is falsified separately, by
-     * [aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList].
-     */
     @Test
     fun theBoardRendersEverySeededColumnInItsPositionOrder() =
         onTheBoard("theBoardRendersEverySeededColumnInItsPositionOrder") { _, page ->
@@ -79,22 +37,6 @@ class BoardTest {
             }
         }
 
-    /**
-     * A card that arrives as a LIVE frame is placed by its rank, not by the moment it arrived.
-     *
-     * This is the half of the board's ordering that the seeded snapshot cannot test. The snapshot is
-     * already in position order when it lands, so the client sort is invisible there; a `task_row` frame
-     * is the opposite — it is appended to a list that is otherwise settled, and only the sort decides
-     * where the card is drawn. `task-add local:11 2.5` files a card whose rank falls BETWEEN the seeded
-     * `local:2` (2.0) and `local:3` (3.0), so:
-     *  - a board that sorts renders it third in `todo`;
-     *  - a board that appends renders it last, which is also where the DEFAULT `task-add` would have put
-     *    it — which is precisely why the command grew an optional rank rather than being used bare.
-     *
-     * `todo` is the right column for it because it holds five seeded cards, so "third" is unambiguously
-     * neither the head nor the tail. A new task is always `todo` (`FakeTaskStore.addTask`, and
-     * `TaskService` has no create at all), so no state has to be named.
-     */
     @Test
     fun aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList() =
         onTheBoard("aFrameForANewCardLandsAtItsRankRatherThanAtTheEndOfTheList") { harness, page ->
@@ -110,12 +52,6 @@ class BoardTest {
             )
         }
 
-    /**
-     * `blocked` is the daemon's derivation, never the board's: the card renders the flag the
-     * `BacklogEntryDto` carries, and the dependency count comes off the same row. `local:10` is the one
-     * seeded task waiting on another (`local:5`), so it is the one card that may carry the marker — a
-     * second one would mean the browser had started deriving blockedness of its own.
-     */
     @Test
     fun theBlockedCardCarriesTheMarkerAndItsDependencyCount() =
         onTheBoard("theBlockedCardCarriesTheMarkerAndItsDependencyCount") { _, page ->
@@ -126,23 +62,6 @@ class BoardTest {
             assertThat(page.locator(".task-dep-count")).hasCount(1)
         }
 
-    /**
-     * An adopted directory with no backlog yet is still a board: four empty columns, its name and path in
-     * the head, and a "New task" button that is enabled because a project IS selected (the button is
-     * disabled only while `projectId` is null, which is what a daemon with no projects at all produces).
-     *
-     * ## Why this one navigates itself
-     * Every OTHER scenario's readiness gate is its seeded card count, and a count that must RISE from
-     * zero is a real barrier. Here the count is zero to begin with, so [onTheBoard]'s gates — the columns
-     * being visible, the project name (which arrives over HTTP, from `GET /projects`, and says nothing
-     * about the task channel) and `.task-card` at zero — are all satisfied by the board's very first
-     * render off its empty local list, before any `tasks_snapshot` could have been applied. Every
-     * assertion below would then hold against a page whose task socket never delivered anything at all.
-     *
-     * So the barrier is the frame itself: the socket is wrapped before the page loads and the test waits
-     * for the `tasks_snapshot` the daemon sends on connect. Only after that baseline has been applied is
-     * "there are no cards" a statement about the PROJECT rather than about the clock.
-     */
     @Test
     fun aProjectWithNoTasksStillRendersItsFourEmptyColumns() =
         onTheBoard(
@@ -165,22 +84,7 @@ class BoardTest {
             assertThat(page.locator(".board-new-task")).isEnabled()
         }
 
-    // --- the drag ----------------------------------------------------------------------------------
 
-    /**
-     * Three presses on the handle, one claim between them.
-     *
-     * A press that travels less than the slop in BOTH axes is still a press — without that, a click on
-     * the handle would become a drag and drop the card wherever the pointer happened to twitch to. A
-     * press on any button but the primary one is not a drag either: a right-button press is a context
-     * menu the browser owns, and the gesture must not start under it.
-     *
-     * The observable is a counter rather than an assertion per arm, because "no drag was claimed" has no
-     * moment at which it can be observed: the third arm is what proves the counter can move at all, and
-     * reading it only after that claim is visible is what makes the first two arms' zero meaningful. It
-     * counts `false → true` transitions of `.task-card.is-dragging` through a `MutationObserver`, so a
-     * claim that appeared and was undone within one frame is still counted.
-     */
     @Test
     fun aPressUnderTheSlopOrOnTheWrongButtonNeverBecomesADrag() =
         onTheBoard("aPressUnderTheSlopOrOnTheWrongButtonNeverBecomesADrag") { _, page ->
@@ -189,19 +93,16 @@ class BoardTest {
             val handle = page.handleOf("local:1")
             val start = handle.centre()
 
-            // Four pixels across and two down: under `DRAG_SLOP_PX` in both axes.
             page.mouse().move(start.first, start.second)
             page.mouse().down()
             page.mouse().move(start.first + 4, start.second + 2)
             page.mouse().up()
 
-            // Far past the slop, but on the secondary button.
             page.mouse().move(start.first, start.second)
             page.mouse().down(Mouse.DownOptions().setButton(MouseButton.RIGHT))
             page.mouse().move(start.first + 60, start.second + 30, Mouse.MoveOptions().setSteps(6))
             page.mouse().up(Mouse.UpOptions().setButton(MouseButton.RIGHT))
 
-            // The control: the same travel on the primary button IS a drag.
             page.mouse().move(start.first, start.second)
             page.mouse().down()
             page.mouse().move(start.first + 60, start.second + 30, Mouse.MoveOptions().setSteps(6))
@@ -214,19 +115,6 @@ class BoardTest {
             page.proveTheWriteRecorderWasLive(writes, "local:1", "in_progress")
         }
 
-    /**
-     * A claimed drag keeps tracking the pointer after it has left the card — and after the re-render its
-     * own highlight causes.
-     *
-     * Both halves are `setPointerCapture`. Without it the `pointermove`s over another column would be
-     * delivered to THAT column, which is not an ancestor of the handle, so the handle's handler would
-     * simply stop hearing about the gesture and the highlight would freeze on the column the press
-     * started in. And every move sets a new drop target, which re-renders the board — the same hazard
-     * the light-dismiss gesture documents: a captured pointer has to survive the repaint it causes.
-     *
-     * Crossing TWO foreign columns is what separates the two failures: a highlight that reached
-     * `in_progress` and stuck there is a capture that was taken and then lost.
-     */
     @Test
     fun aClaimedDragKeepsTrackingWhileThePointerIsOverAnotherColumn() =
         onTheBoard("aClaimedDragKeepsTrackingWhileThePointerIsOverAnotherColumn") { _, page ->
@@ -246,7 +134,6 @@ class BoardTest {
             assertThat(page.column("done")).hasClass(DROP_TARGET_CLASS)
             assertThat(page.column("review")).hasClass(COLUMN_CLASS)
 
-            // Released where no column is: the release position is the drop, and there is none here.
             page.releaseOverNothing()
             assertThat(page.locator(".board-drop-target")).hasCount(0)
             assertThat(page.locator(".task-card.is-dragging")).hasCount(0)
@@ -255,23 +142,6 @@ class BoardTest {
             page.proveTheWriteRecorderWasLive(writes, "local:1", "in_progress")
         }
 
-    /**
-     * A gesture the platform took away is not a drop: `pointercancel` ends the drag and writes nothing.
-     *
-     * The absence of a request cannot be observed at a moment either, so the drop that follows is the
-     * barrier: it issues two requests that MUST arrive, and the assertion is that they are the first two
-     * — anything the cancelled gesture had sent would sit in front of them. Both gestures are the same
-     * card, so a request from the cancelled one would be indistinguishable from the drop's own except by
-     * its position in the list, which is exactly what is being asserted.
-     *
-     * The cancel itself is injected with `dispatchEvent`, because no automation API produces a genuine
-     * one: a browser fires it when it takes a gesture away (an incoming call, a system gesture), which
-     * is not something Playwright can stage. What the injection therefore proves is this handler's own
-     * contract — that the cancel branch does not reach `applyDrop` — while the press, the travel, the
-     * claim and the capture around it are all real input. The pointer id is read off the real
-     * `pointerdown` rather than assumed, so the handler's `event.pointerId !== gesture.pointerId` guard
-     * is answered with the id the browser actually used.
-     */
     @Test
     fun aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite() =
         onTheBoard("aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite") { _, page ->
@@ -300,17 +170,6 @@ class BoardTest {
             )
         }
 
-    /**
-     * A drop that changes both the column and the rank is two requests, in one order.
-     *
-     * `/move` takes no state and `PATCH` takes no position, so the state has to land before the rank is
-     * resolved against the column the card is joining. Each answer is merged as it arrives, which is why
-     * a failing second request still leaves the first one's committed row on the board.
-     *
-     * The landing is asserted too, not just the calls: dropped below every card in `in_progress`, the
-     * card names the last of them (`{ after: local:6 }`) rather than falling back to the backlog's end,
-     * and the column's rendered order is what proves the rank the daemon committed.
-     */
     @Test
     fun aCrossColumnDropPatchesTheStateThenMovesTheRank() =
         onTheBoard("aCrossColumnDropPatchesTheStateThenMovesTheRank") { _, page ->
@@ -324,9 +183,6 @@ class BoardTest {
                 writes.snapshot(),
                 "the PATCH carries the state, the move carries the rank, and the PATCH goes first",
             )
-            // The PATCH alone already puts the card in the column, at whatever rank its untouched
-            // `position` gives it — so the settled read has to wait for the MOVE, and the last card
-            // being the dragged one is that. Only then is the order below a reading of both requests.
             assertThat(page.column("in_progress").locator(".task-card").last())
                 .hasAttribute("data-ref", "local:1")
             assertThat(page.column("in_progress").locator(".task-card")).hasCount(3)
@@ -335,17 +191,6 @@ class BoardTest {
             assertThat(page.column("todo").locator(".board-column-head span")).hasText("4")
         }
 
-    /**
-     * A modified click on a card title belongs to the browser — new tab, new window, download — and the
-     * router must keep its hands off it. The title is a real `<a href="/tasks/{ref}">` precisely so that
-     * those gestures work against a path the daemon really serves, and `isPlainClick` is what leaves
-     * them alone.
-     *
-     * `location.pathname` is read out of the renderer rather than from `page.url()`: the router's
-     * `pushState` runs synchronously inside the click handler, so a read the renderer answers after the
-     * click was processed cannot miss a navigation that happened. The plain click that follows is the
-     * control — it proves the same title, in the same state, does navigate.
-     */
     @Test
     fun aModifiedClickOnACardTitleIsLeftToTheBrowser() =
         onTheBoard("aModifiedClickOnACardTitleIsLeftToTheBrowser") { _, page ->
@@ -358,9 +203,6 @@ class BoardTest {
                 "the SPA did not navigate: the modified click is the browser's",
             )
 
-            // The browser really does open a background tab for it. Closed rather than merely ignored: it
-            // holds a second signed-in session against this harness, and `Harness.close()` asserts a clean
-            // exit — a page still fetching while the daemon stops is exactly what that would catch.
             for (other in page.context().pages()) {
                 if (other != page) other.close()
             }
@@ -370,13 +212,7 @@ class BoardTest {
             assertThat(title).hasAttribute("aria-current", "true")
         }
 
-    // --- the phone ---------------------------------------------------------------------------------
 
-    /**
-     * At 390 px the four tracks collapse to one, so the board renders exactly one column and the
-     * switcher is the only way to the other three. Rendering all four and letting them stack was the
-     * degraded fallback; this is the branch that avoids it.
-     */
     @Test
     fun thePhoneRendersOneColumnAndReachesTheOthersThroughItsSwitcher() =
         onTheBoard("thePhoneRendersOneColumnAndReachesTheOthersThroughItsSwitcher", phone = true) { _, page ->
@@ -398,25 +234,6 @@ class BoardTest {
             assertThat(page.locator(".task-card")).hasCount(1)
         }
 
-    /**
-     * Dragging between columns cannot exist when only one is on screen, so the card menu carries the
-     * moves there — and only there. It is the phone's whole answer to the drag, so it is asserted the
-     * same way: the request the daemon receives, and the card arriving in the column that was named.
-     *
-     * ## The barrier, and why the obvious wait is not one
-     * The interesting half of the claim is a NEGATIVE — that a menu move sends the `PATCH` and **no**
-     * `/move`. Waiting for the log to be non-empty cannot establish that: the recorder banks a request
-     * when it is ISSUED, and `Board.js` only reaches its `/move` after the `PATCH`'s response resolves, so
-     * a regression that added one would post it strictly after the snapshot this test had already read.
-     * The wait would return on the `PATCH` and the exact-list assertion would pass against the very code
-     * it exists to catch.
-     *
-     * So the barrier is a SECOND write that can only be issued after the first one's answer came back and
-     * was applied — the card has to be rendered in `in_progress` before its menu can be opened there — and
-     * it is deliberately a `/move` (the menu's own "Move down"), which doubles as the positive control:
-     * the log's second entry proves this recorder can see a `/move` at all, and a `/move` the first
-     * gesture had sent would sit between the two, in the same list, in order.
-     */
     @Test
     fun thePhoneMovesACardThroughTheCardMenuInsteadOfADrag() =
         onTheBoard("thePhoneMovesACardThroughTheCardMenuInsteadOfADrag", phone = true) { _, page ->
@@ -427,13 +244,9 @@ class BoardTest {
 
             page.locator(".board-column-switch button[data-state=\"in_progress\"]").click()
             assertThat(page.column("in_progress").locator(".task-card[data-ref=\"local:1\"]")).hasCount(1)
-            // Its rank is untouched by the PATCH, so it sorts ahead of the two cards already here — which
-            // is what makes "Move down" the enabled one.
             assertEquals(listOf("local:1", "local:5", "local:6"), page.refsIn("in_progress"))
 
             page.moveFromCardMenu("local:1", "Move down")
-            // The committed rank, not merely the request: the move's frame is what re-orders the column,
-            // and `refsIn` is a synchronous read with no retry of its own.
             page.waitForCondition { page.refsIn("in_progress") == listOf("local:5", "local:1", "local:6") }
             assertEquals(
                 listOf("PATCH /tasks/local%3A1", "POST /tasks/local%3A1/move"),
@@ -443,19 +256,6 @@ class BoardTest {
             )
         }
 
-    /**
-     * The gesture reservation is the HANDLE's alone.
-     *
-     * `touch-action: none` is what makes the drag possible at all — a vertical drag the browser has
-     * already claimed for scrolling never reaches `pointermove` — but reserving it on the card, or on
-     * the column, would cost a phone the scroll of the one column it can see. So the property is
-     * asserted in both directions, on the device where it decides anything.
-     *
-     * What is read is the RESOLVED value, which is the only thing the gesture depends on: the handle
-     * carries the reservation twice, in `style.css` and inline in `TaskCard.js`, and which of the two
-     * supplies it is neither observable here nor interesting. (`BoardStyleTest` reads the same pair on
-     * both sides of the phone breakpoint; this one is the 390px device itself.)
-     */
     @Test
     fun theGestureReservationIsScopedToTheCardHandleAlone() =
         onTheBoard("theGestureReservationIsScopedToTheCardHandleAlone", phone = true) { _, page ->
@@ -464,26 +264,7 @@ class BoardTest {
             assertEquals("auto", page.column("todo").touchAction(), "and so does the column itself")
         }
 
-    // --- newest-rev-wins ---------------------------------------------------------------------------
 
-    /**
-     * A stale REST body cannot roll back a card a fresher frame already moved.
-     *
-     * Every observation of a task — the detail's `GET` answer and the socket's `task_update` alike —
-     * carries the store's global `rev`, and both go into the ONE list through the same rev-aware upsert.
-     * That is what makes them mergeable in any arrival order, and this is the order that used to lose:
-     * the response was in flight while the change happened, so it describes a task that has since moved.
-     *
-     * The detail `GET` for `local:3` is intercepted and its real answer fetched but not delivered, which
-     * freezes it at the pre-race revision. `task-race` then moves the card over the socket. Only then is
-     * the held body handed to the browser — and the card must not follow it back. `local:3` is the
-     * fixture's edge-free task precisely so nothing else can move it.
-     *
-     * The barrier for the "did not move back" half is the detail panel itself: it renders from the very
-     * body being released (`#task-detail-loading` is replaced only when `setDetail` runs), and the row is
-     * published to the shared list in the same tick, so a panel that has stopped loading is proof the
-     * stale row was already offered to the board and refused.
-     */
     @Test
     fun aStaleDetailResponseCannotRollBackACardTheFrameAlreadyMoved() =
         onTheBoard(
@@ -510,15 +291,12 @@ class BoardTest {
             assertNotEquals(before, moved, "the frame moved the card")
 
             held.get()!!.fulfill(Route.FulfillOptions().setResponse(stale))
-            // `#task-detail-project` belongs to the loaded arm alone: "loading is over" would also be
-            // true of the deleted and the failed arms, neither of which publishes a row at all.
             assertThat(page.locator("#task-detail-project")).isVisible()
             assertThat(page.locator("#task-detail-loading")).hasCount(0)
 
             assertEquals(moved, page.slotOf("local:3"), "the stale response lost to the newer frame")
         }
 
-    // --- the board's own vocabulary ----------------------------------------------------------------
 
     private fun Page.card(ref: String): Locator = locator(".task-card[data-ref=\"$ref\"]")
 
@@ -526,24 +304,20 @@ class BoardTest {
 
     private fun Page.handleOf(ref: String): Locator = card(ref).locator(".task-card-handle")
 
-    /** The `data-ref` of every card [state]'s column renders, in the order it renders them. */
     private fun Page.refsIn(state: String): List<String> {
         val refs = column(state).locator(".task-card")
             .evaluateAll("cards => cards.map((card) => card.getAttribute('data-ref'))")
         return (refs as List<*>).map { it as String }
     }
 
-    /** `<column state>#<index among that column's cards>` — where a card is, in one comparable string. */
     private fun Page.slotOf(ref: String): String = evaluate(CARD_SLOT_JS, ref) as String
 
     private fun Locator.touchAction(): String = evaluate("el => getComputedStyle(el).touchAction") as String
 
-    // --- driving the pointer -----------------------------------------------------------------------
 
     private fun Locator.centre(): Pair<Double, Double> =
         boundingBox().let { it.x + it.width / 2 to it.y + it.height / 2 }
 
-    /** A point inside [this] element but below everything in it — where a drop lands at the end. */
     private fun Locator.bottomInside(): Pair<Double, Double> =
         boundingBox().let { it.x + it.width / 2 to it.y + it.height - 16 }
 
@@ -551,14 +325,12 @@ class BoardTest {
         val start = handleOf(ref).centre()
         mouse().move(start.first, start.second)
         mouse().down()
-        // Past the slop in one step, so the gesture is claimed and captured before it goes anywhere.
         mouse().move(start.first, start.second + 20, Mouse.MoveOptions().setSteps(4))
     }
 
     private fun Page.travelTo(point: Pair<Double, Double>) =
         mouse().move(point.first, point.second, Mouse.MoveOptions().setSteps(8))
 
-    /** Release over the board's head, which no column contains: a claimed drag that drops nothing. */
     private fun Page.releaseOverNothing() {
         travelTo(locator(".board-identity").centre())
         mouse().up()
@@ -572,9 +344,7 @@ class BoardTest {
         mouse().up()
     }
 
-    // --- observing the page ------------------------------------------------------------------------
 
-    /** Every task mutation the page issues, newest last, as `"<METHOD> <path under /api/v1>"`. */
     private fun Page.recordTaskWrites(): MutableList<String> {
         val calls = Collections.synchronizedList(mutableListOf<String>())
         onRequest { request ->
@@ -586,17 +356,8 @@ class BoardTest {
         return calls
     }
 
-    /** A copy taken under the list's own lock — the recorder is written from the Playwright thread. */
     private fun MutableList<String>.snapshot(): List<String> = synchronized(this) { toList() }
 
-    /**
-     * Settle an "and it wrote nothing" claim by making the recorder write.
-     *
-     * An empty log is not evidence on its own: a filter that matched no URL at all answers the same
-     * emptiness for every gesture, and absence has no moment at which it can be observed. So a real drop
-     * is performed afterwards and the WHOLE log is asserted to be exactly that drop's two calls — anything
-     * the earlier gestures had sent would sit in front of them, in the same list, in order.
-     */
     private fun Page.proveTheWriteRecorderWasLive(writes: MutableList<String>, ref: String, into: String) {
         dragToBottomOf(ref, into)
         waitForCondition { writes.snapshot().size >= 2 }
@@ -609,7 +370,6 @@ class BoardTest {
         )
     }
 
-    /** Open [ref]'s `<details>` menu and click the button whose label is [action]. */
     private fun Page.moveFromCardMenu(ref: String, action: String) {
         card(ref).locator(".task-card-menu summary").click()
         card(ref).locator(".task-card-menu button")
@@ -626,23 +386,12 @@ class BoardTest {
     private fun Page.lastPointerDownId(): Int =
         (evaluate("() => window.__kotgentPointerId") as Number).toInt()
 
-    // --- harness -------------------------------------------------------------------------------------
 
-    /**
-     * One harness, one Chromium, one fresh context (the session cookie is not bound to a port, so a
-     * reused context would carry the previous harness's), logged in through the real `/auth` form.
-     *
-     * The board is opened and SETTLED before the block runs. Settling is not the project name: that
-     * comes from `GET /projects` over HTTP and can land before the socket's `tasks_snapshot`, which is
-     * where every card comes from. So the barrier is the seeded card count — every card of one snapshot
-     * renders in one pass, and below the breakpoint only the active column's are drawn.
-     *
-     * [open] is false for the one test that must install a route before the SPA's first request.
-     */
     private fun onTheBoard(
         name: String,
         scenario: String = BOARD_SCENARIO,
         phone: Boolean = false,
+        // False lets a caller install interception before the SPA's first request.
         open: Boolean = true,
         block: (Harness, Page) -> Unit,
     ) {
@@ -677,53 +426,31 @@ class BoardTest {
         }
     }
 
-    /**
-     * The fixture's seeded facts and this file's own geometry, in a companion rather than at the
-     * top level: every wave-3 test class shares the `io.kotgent.webuitest` package, and a name as
-     * ordinary as `API_PREFIX` has no business competing for it.
-     */
     private companion object {
         private const val BOARD_PROJECT = "Board Fixture"
         private const val EMPTY_PROJECT = "Empty Fixture"
         private const val API_PREFIX = "/api/v1"
 
-        /** Wide enough for four real columns beside the sidebar; the phone half runs in `touchContext()`. */
         private const val DESKTOP_WIDTH = 1400
         private const val DESKTOP_HEIGHT = 900
 
-        /** `touchContext()`'s width, which the plan's single-column checkbox names. */
         private const val PHONE_WIDTH = 390
 
-        /** The `board` scenario's ten tasks, and the five of them the phone's first column holds. */
         private const val SEEDED_CARDS = 10
         private const val SEEDED_TODO_CARDS = 5
 
-        /**
-         * The card the ordering test files, and the rank it files it at.
-         *
-         * `2.5` sits in the gap the seeds leave between `local:2` (2.0) and `local:3` (3.0) — the same
-         * `x.5` a real drag lands on — so the card is third in `todo` and neither first nor last.
-         */
         private const val INSERTED_REF = "local:11"
         private const val INSERTED_POSITION = "2.5"
 
         private val COLUMN_STATES = listOf("todo", "in_progress", "review", "done")
 
-        /**
-         * The connect baseline has arrived and been handed to the app — the barrier an EMPTY board has
-         * no rendered count to give it. `tasks_snapshot` is the frame `EventsWs` sends once per socket
-         * with the whole task list in it, and `FRAME_RECORDER`'s listener runs before the app's own.
-         */
         private const val SAW_TASKS_SNAPSHOT_JS = """
           () => (window.__kotgentFrames || []).some((f) => f.indexOf("\"type\":\"tasks_snapshot\"") >= 0)
         """
 
-        /** The class attribute of a column, with and without the drag highlight — exact, because it is built as
-         *  `"board-column" + (over ? " board-drop-target" : "")` and nothing else contributes to it. */
         private const val COLUMN_CLASS = "board-column"
         private const val DROP_TARGET_CLASS = "board-column board-drop-target"
 
-        /** Where a card is: its column's state and its index among that column's cards. */
         private const val CARD_SLOT_JS = """
           (ref) => {
             const card = document.querySelector('.task-card[data-ref="' + ref + '"]');
@@ -735,7 +462,6 @@ class BoardTest {
           }
         """
 
-        /** The same reading, as a predicate: has the card left the slot it was in? */
         private const val CARD_MOVED_JS = """
           (args) => {
             const card = document.querySelector('.task-card[data-ref="' + args.ref + '"]');
@@ -748,13 +474,6 @@ class BoardTest {
           }
         """
 
-        /**
-         * Count `false → true` transitions of "some card is being dragged".
-         *
-         * A `MutationObserver` rather than a poll, because a claim that is made and undone inside one frame is
-         * still a claim, and a poll would miss it — which is precisely the failure the slop test is written to
-         * catch. It observes the whole document so it survives every re-render the board does under a drag.
-         */
         private const val DRAG_CLAIM_WATCHER_JS = """
           () => {
             window.__kotgentDragClaims = 0;
@@ -771,7 +490,6 @@ class BoardTest {
           }
         """
 
-        /** The pointer id of the last real `pointerdown`, so an injected cancel can name the same pointer. */
         private const val POINTER_ID_WATCHER_JS = """
           () => {
             window.__kotgentPointerId = null;

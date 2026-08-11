@@ -11,22 +11,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
-/**
- * Host-free domain tests (Task 5, TDD): @Serializable round-trip for every v1 [AgentEvent]
- * subtype, value-class id invariants (enforced on construction AND on decode), and the
- * [SessionState] groupings / [SessionState.needsAttention] predicate.
- */
 class DomainTest {
 
     private val json = Json
 
-    // A valid preallocated UUID reused across cases.
     private val uuid = "11111111-2222-3333-4444-555555555555"
 
-    /**
-     * One instance of EACH v1 subtype. The size guard makes forgetting a subtype (or slipping a
-     * backlog `Question*` in) a test failure, and the distinct-class check keeps the list honest.
-     */
     private val allEvents: List<AgentEvent> = listOf(
         AgentEvent.TurnStarted,
         AgentEvent.TurnCompleted,
@@ -37,7 +27,6 @@ class DomainTest {
         AgentEvent.SessionBound(ProviderSessionId(uuid)),
     )
 
-    // ---- AgentEvent @Serializable round-trip (every v1 subtype) ----
 
     @Test
     fun everyAgentEventSubtypeRoundTripsThroughJson() {
@@ -57,7 +46,6 @@ class DomainTest {
 
     @Test
     fun agentEventDiscriminatorsAndValueIdsUseStableWireShape() {
-        // The polymorphic `type` discriminator is the `events.type` column value.
         assertTrue(
             json.encodeToString<AgentEvent>(AgentEvent.TurnStarted).contains("\"turn_started\""),
             "TurnStarted must carry the snake_case discriminator",
@@ -67,7 +55,6 @@ class DomainTest {
                 .contains("\"session_bound\""),
             "SessionBound must carry the snake_case discriminator",
         )
-        // A value-class id serializes as its bare underlying primitive (no wrapper object).
         val bound = json.encodeToString<AgentEvent>(AgentEvent.SessionBound(ProviderSessionId(uuid)))
         assertTrue(bound.contains("\"providerSessionId\":\"$uuid\""), "provider id must be a bare string, was $bound")
         val exited = json.encodeToString<AgentEvent>(AgentEvent.Exited(3))
@@ -91,13 +78,11 @@ class DomainTest {
         assertEquals("\"appserver\"", json.encodeToString<EventSource>(EventSource.appserver))
     }
 
-    /** Invalid ids must be rejected on the wire too: the value-class init runs on decode. */
     @Test
     fun decodingAMalformedProviderIdIsRejected() {
         assertFailsWith<IllegalArgumentException> {
             json.decodeFromString<AgentEvent>("""{"type":"session_bound","providerSessionId":"has spaces"}""")
         }
-        // A non-UUID id is NOT malformed — junie's ids look like this, and the wire must carry them.
         val junie = json.decodeFromString<AgentEvent>(
             """{"type":"session_bound","providerSessionId":"session-260730-015553-1j1h"}""",
         )
@@ -105,7 +90,6 @@ class DomainTest {
         assertEquals("session-260730-015553-1j1h", junie.providerSessionId.value)
     }
 
-    // ---- value-class id invariants ----
 
     @Test
     fun sessionIdRejectsBlank() {
@@ -125,7 +109,6 @@ class DomainTest {
 
     @Test
     fun providerSessionIdAcceptsEveryProvidersIdShape() {
-        // claude/codex mint UUIDs; junie mints `session-<ts>-<suffix>`. Both must construct.
         assertEquals(uuid, ProviderSessionId(uuid).value)
         assertEquals("session-260730-015553-1j1h", ProviderSessionId("session-260730-015553-1j1h").value)
         assertEquals("a.b_c-1", ProviderSessionId("a.b_c-1").value)
@@ -139,7 +122,6 @@ class DomainTest {
         assertFailsWith<IllegalArgumentException> { ProviderSessionId("slash/es") }
         assertFailsWith<IllegalArgumentException> { ProviderSessionId("quote'y") }
         assertFailsWith<IllegalArgumentException> { ProviderSessionId("pipe|d") }
-        // `..` is a path component that escapes its parent, and a leading `-` reads as a CLI flag.
         assertFailsWith<IllegalArgumentException> { ProviderSessionId("..") }
         assertFailsWith<IllegalArgumentException> { ProviderSessionId(".hidden") }
         assertFailsWith<IllegalArgumentException> { ProviderSessionId("--resume") }
@@ -153,9 +135,7 @@ class DomainTest {
         assertTrue(isCanonicalUuid(uuid.uppercase()), "hex case is insignificant in a UUID")
         assertFalse(isCanonicalUuid("session-260730-015553-1j1h"))
         assertFalse(isCanonicalUuid("not-a-uuid"))
-        // wrong length in the final group
         assertFalse(isCanonicalUuid("11111111-2222-3333-4444-55555555555"))
-        // non-hex character
         assertFalse(isCanonicalUuid("g1111111-2222-3333-4444-555555555555"))
         assertFalse(isCanonicalUuid(""))
     }
@@ -170,7 +150,6 @@ class DomainTest {
         assertEquals("%42", PaneId("%42").value)
     }
 
-    // ---- SessionState groupings / needsAttention ----
 
     @Test
     fun sessionStatesPartitionIntoAliveAndDead() {
@@ -183,7 +162,6 @@ class DomainTest {
             setOf(SessionState.stopped, SessionState.crashed, SessionState.resumable),
             SessionState.DEAD,
         )
-        // exhaustive and disjoint
         assertEquals(SessionState.entries.toSet(), SessionState.ALIVE + SessionState.DEAD)
         assertTrue((SessionState.ALIVE intersect SessionState.DEAD).isEmpty(), "alive/dead must be disjoint")
         for (s in SessionState.entries) {
@@ -203,7 +181,6 @@ class DomainTest {
         assertTrue(SessionState.NEEDS_ATTENTION.all { it.isAlive }, "needs-attention states are all alive")
     }
 
-    // ---- SessionMeta shape ----
 
     @Test
     fun sessionMetaDefaultsUnknownFieldsAndCopiesCleanly() {
@@ -235,15 +212,11 @@ class DomainTest {
         assertEquals(PaneId("%1"), bound.paneId)
         assertTrue(bound.state.needsAttention)
         assertEquals(Seq(4), bound.lastSeq)
-        // copy must not mutate the original
         assertEquals(null, meta.providerSessionId)
     }
 
     @Test
     fun projectIdMintsACanonicalLowercaseUuidFromAnInjectableRandom() {
-        // The ONE minter reachable from `src/task/` — `newUuidV4` used to live in
-        // `io.kotgent.adapter.claude`, which a project-file writer cannot import without inverting the
-        // `task -> core` layering. Determinism is what makes Task 4's writer test assertable.
         val minted = ProjectId.mint(Random(7))
         assertEquals(minted, ProjectId.mint(Random(7)), "same seed -> same project id")
         assertTrue(isCanonicalUuid(minted.value), "a minted id must satisfy the boundary check")

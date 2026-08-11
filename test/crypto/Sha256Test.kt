@@ -3,16 +3,6 @@ package io.kotgent.crypto
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * SHA-256 against published vectors. The digest is hand-written pure Kotlin (KT-78062 keeps CommonCrypto
- * out of the test binary), so it gets checked the only way a hash can be: byte-for-byte against values
- * produced by an independent implementation.
- *
- * Beyond the two FIPS 180-4 examples the padding boundaries are the real targets — 55/56 bytes (the last
- * message that still fits one block vs. the first that needs two) and 63/64/65 — because that arithmetic
- * is where a from-scratch SHA-256 goes wrong, and it goes wrong silently: every digest is still 32
- * plausible-looking bytes.
- */
 class Sha256Test {
 
     @Test
@@ -43,8 +33,6 @@ class Sha256Test {
 
     @Test
     fun handlesThePaddingBoundaries() {
-        // 55 is the largest message that still fits in one block (1 terminator byte + 8 length bytes);
-        // 56 is the first that spills into a second. 63/64/65 straddle the block size itself.
         assertEquals("ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb", hexOf(repeated(1)))
         assertEquals("9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318", hexOf(repeated(55)))
         assertEquals("b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a", hexOf(repeated(56)))
@@ -67,8 +55,6 @@ class Sha256Test {
 
     @Test
     fun handlesEveryByteValue() {
-        // Text-only vectors would never exercise the high bit; bytes 0x80..0xff are exactly where a
-        // missing `and 0xff` on a signed Kotlin Byte corrupts the word schedule.
         val allBytes = ByteArray(256) { it.toByte() }
         assertEquals(
             "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880",

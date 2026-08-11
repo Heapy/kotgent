@@ -1,19 +1,7 @@
 /*
- * QR Code generator — vendored, dependency-free ES module.
- *
- * A faithful, trimmed port of Project Nayuki's "QR Code generator library"
- * (https://www.nayuki.io/page/qr-code-generator-library), MIT License. Kept to what the phone-login
- * QR needs: byte-mode encoding of UTF-8 text, automatic version/mask selection, and a boolean module
- * grid. No build step and no external request — it lives beside preact/htm/xterm under vendor/ and is
- * reached through the import map (`"qrcode"`), exactly like the other vendored modules.
- *
- * The browser test binary (macosArm64) cannot run this JS, so its correctness rides on being a
- * line-for-line port of a widely used reference rather than on a local unit test.
- *
- * Exports: `QrCode` (with `QrCode.Ecc`). `QrCode.encodeText(text, ecl)` returns a symbol whose `size`
- * and `getModule(x, y)` describe the grid; `lib/qr.js` turns that into SVG.
- *
- * Copyright (c) Project Nayuki. (MIT License)
+ * Trimmed port of Project Nayuki's QR Code generator library.
+ * https://www.nayuki.io/page/qr-code-generator-library
+ * Copyright (c) Project Nayuki. MIT License.
  */
 
 /*---- helpers ----*/

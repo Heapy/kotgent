@@ -8,20 +8,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/**
- * The authorization table (plan Task 3), exercised as the table it is.
- *
- * The verifiers are the REAL ones — [constantTimeEquals] for the bearer and [verifySessionCookie] for the
- * cookie — so a cookie in these tests is a genuinely signed `v1.<issuedAt>.<hmac>` value rather than a
- * stand-in string. That keeps the Task-2 format and the Task-3 rule honest about each other.
- *
- * The two cases worth naming up front, because everything else is a variation on them:
- *  - **GET + valid cookie + NO Origin → allow.** Browsers do not send `Origin` on a same-origin GET;
- *    requiring it on reads would refuse every page load of our own UI.
- *  - **any-method + cookie + a same-SITE but foreign Origin → 403.** `SameSite=Strict` reasons about the
- *    site (eTLD+1), so `qa.heapyhop.com` is same-site with `kotgent.heapyhop.com` and its fetch would carry
- *    our cookie. The `Origin` check is the only thing that separates them.
- */
 class AuthorizationTest {
 
     private val publicUrl = "https://kotgent.heapyhop.com"
@@ -29,7 +15,6 @@ class AuthorizationTest {
     private val cookie = issueSessionCookie(token, 1_753_280_000_000L)
     private val bearer = "Bearer $token"
 
-    /** How many times the bearer verifier ran — the host/origin gates must decide without consulting it. */
     private var tokenChecks = 0
 
     private fun decide(
@@ -44,7 +29,6 @@ class AuthorizationTest {
         verifyCookie = { value -> verifySessionCookie(token, value) },
     )
 
-    // --- the Host allowlist -------------------------------------------------------------------------
 
     @Test
     fun aRequestUnderAForeignHostIsRefusedBeforeAnySecretIsExamined() {
@@ -86,7 +70,6 @@ class AuthorizationTest {
         assertDenied(HttpStatusCode.Forbidden, decide(RequestFacts(host = null, authHeader = bearer)), "no Host")
     }
 
-    // --- loopback-only routes -----------------------------------------------------------------------
 
     @Test
     fun aLoopbackOnlyRouteRefusesTheOtherwiseAllowedPublicHost() {
@@ -103,7 +86,6 @@ class AuthorizationTest {
         )
     }
 
-    // --- the Origin rule ----------------------------------------------------------------------------
 
     @Test
     fun aGetWithAValidCookieAndNoOriginIsAllowed() {
@@ -169,13 +151,13 @@ class AuthorizationTest {
     @Test
     fun anUnparseableOriginIsNeverTrusted() {
         val malformed = listOf(
-            "null", // what a sandboxed iframe / file:// page sends
+            "null",
             "",
-            "kotgent.heapyhop.com", // no scheme
+            "kotgent.heapyhop.com",
             "file://",
             "https://",
             "ftp://kotgent.heapyhop.com",
-            "https://kotgent.heapyhop.com/auth", // an origin has no path
+            "https://kotgent.heapyhop.com/auth",
             "https://kotgent.heapyhop.com?x=1",
             "https://user@kotgent.heapyhop.com",
         )
@@ -208,9 +190,6 @@ class AuthorizationTest {
 
     @Test
     fun anExplicitDefaultPortAndAPortlessOriginMatchEitherWayRound() {
-        // A browser DROPS the default port when it serializes an Origin, so a publicUrl typed WITH the
-        // explicit default port must still match the port-less Origin the browser actually sends — and
-        // symmetrically. Both directions flow through canonicalOrigin, so both must agree.
         assertTrue(
             isAllowedOrigin("https://host", "https://host:443"),
             "config keeps :443, the browser drops it — they must still be the same origin",
@@ -221,10 +200,8 @@ class AuthorizationTest {
         )
         assertTrue(isAllowedHost("host", "https://host:443"), "the Host allowlist is likewise unbothered by :443")
         assertTrue("https://host" in allowedOrigins("https://host:443"), "the stored allowlist entry is port-less")
-        // Loopback http:80 already normalises through the loopback branch, but lock it in.
         assertTrue(isAllowedOrigin("http://127.0.0.1", "http://127.0.0.1:80"), "http default port :80 is dropped too")
 
-        // A genuinely non-default port is still part of the origin's identity and must be matched exactly.
         assertFalse(
             isAllowedOrigin("https://host", "https://host:8443"),
             "a bare Origin does NOT match a config that demands an explicit non-default :8443",
@@ -235,7 +212,6 @@ class AuthorizationTest {
             "and :443 is not :8443 — normalising the default port never collapses a non-default one",
         )
 
-        // The whole request path, not just the predicate: a cookie POST from the browser is served.
         assertAllowed(
             decide(
                 RequestFacts(host = "host", origin = "https://host", cookie = cookie, method = HttpMethod.Post),
@@ -253,7 +229,6 @@ class AuthorizationTest {
         )
     }
 
-    // --- the credentials themselves -----------------------------------------------------------------
 
     @Test
     fun aValidBearerNeedsNoOriginOnAnyMethod() {
@@ -331,7 +306,6 @@ class AuthorizationTest {
         )
     }
 
-    // --- helpers ------------------------------------------------------------------------------------
 
     private fun assertAllowed(decision: AuthDecision, message: String) {
         if (decision is AuthDecision.Deny) {

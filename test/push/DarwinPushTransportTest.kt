@@ -16,12 +16,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 
-/**
- * The NSURLSession adapter's request contract, exercised without a socket through Ktor's [MockEngine].
- *
- * [PushSenderTest] owns status policy; this pins the thin edge that could otherwise silently change the
- * verb, drop VAPID headers, add a payload, or fail to propagate the push service's status.
- */
 class DarwinPushTransportTest {
 
     @Test

@@ -40,16 +40,12 @@ import platform.posix.strerror
 import platform.posix.unlink
 import platform.posix.write
 
-/** One uploaded file is bounded independently; the Web UI sends multiple selections one at a time. */
 const val MAX_UPLOAD_FILE_BYTES: Long = 100L * 1024L * 1024L
 
-/** Ten minutes permits a 100 MiB file over a slow mobile uplink without allowing a stalled body forever. */
 const val UPLOAD_BODY_TIMEOUT_MILLIS: Long = 10L * 60L * 1_000L
 
-/** The portable POSIX `NAME_MAX` used by the filename gate before any filesystem side effect. */
 private const val MAX_UPLOAD_FILE_NAME_BYTES: Int = 255
 
-/** Result of staging and atomically publishing one upload into a session's working directory. */
 sealed interface FileUploadResult {
     data class Stored(val bytes: Long) : FileUploadResult
     data object AlreadyExists : FileUploadResult
@@ -59,11 +55,6 @@ sealed interface FileUploadResult {
     data class Failed(val reason: String) : FileUploadResult
 }
 
-/**
- * Filesystem edge for the upload route. The route supplies the session row's cwd — never a client-provided
- * directory — plus the raw request channel. Injected so transport tests can prove routing and validation
- * without touching the developer's filesystem.
- */
 fun interface FileUploader {
     suspend fun upload(
         directory: String,
@@ -73,7 +64,6 @@ fun interface FileUploader {
     ): FileUploadResult
 }
 
-/** Production uploader: bounded streaming into a private sibling temp, then an atomic no-clobber publish. */
 internal val posixFileUploader: FileUploader = FileUploader { directory, fileName, body, expectedBytes ->
     saveUploadedFile(directory, fileName, body, expectedBytes)
 }
@@ -85,10 +75,6 @@ data class FileUploadResponse(
     val directory: String,
 )
 
-/**
- * Validate one leaf filename. Uploads always land directly in the selected session's cwd: path separators,
- * dot entries, NUL/control characters and names beyond POSIX's portable component limit are refused.
- */
 fun uploadFileNameProblem(fileName: String?): String? = when {
     fileName == null -> "missing file name"
     fileName.isBlank() -> "file name must not be blank"
@@ -101,19 +87,13 @@ fun uploadFileNameProblem(fileName: String?): String? = when {
     else -> null
 }
 
-/**
- * Authenticated upload endpoint used by the mobile PWA.
- *
- * The URL identifies a session, not a directory. Its current stored cwd is looked up for every request,
- * which prevents a browser from turning this into an arbitrary-path write API. Only a leaf `name` travels
- * in the query; [uploadFileNameProblem] rejects traversal. Existing targets are never overwritten.
- */
 internal fun Route.fileUploadRoutes(
     store: EventStore,
     uploader: FileUploader,
     json: Json = TRANSPORT_JSON,
 ) {
     post("/sessions/{id}/files") {
+        // Destination directory always comes from the stored session; the client supplies only a leaf name.
         val body = call.receiveChannel()
         val id = call.parameters["id"]?.let { raw -> runCatching { SessionId(raw) }.getOrNull() }
         if (id == null) {
@@ -181,14 +161,6 @@ internal fun Route.fileUploadRoutes(
     }
 }
 
-/**
- * Stream one request body to a unique temp in [directory], then publish it with `link(2)`.
- *
- * `mkstemp` creates the staging file atomically as `0600`; the agent runs as the same user, so it can read
- * it without making a phone-supplied file visible to other local users. The final hard-link is atomic and
- * returns `EEXIST` instead of replacing a target (including a symlink). Every non-success path unlinks the
- * temp, so a disconnect, timeout, oversized body or filesystem error never leaves a partial project file.
- */
 @OptIn(ExperimentalForeignApi::class)
 suspend fun saveUploadedFile(
     directory: String,
@@ -217,6 +189,7 @@ private suspend fun saveUploadedFileBeforeDeadline(
     expectedBytes: Long?,
     maxBytes: Long,
 ): FileUploadResult {
+    // mkstemp creates a private sibling; every exit unlinks it, so partial bodies are never published.
     val temp = createUploadTemp(directory)
         ?: return FileUploadResult.Failed("cannot create a temporary file (${errnoText(errno)})")
     var fd = temp.fd
@@ -241,13 +214,13 @@ private suspend fun saveUploadedFileBeforeDeadline(
         if (expectedBytes != null && received != expectedBytes) return FileUploadResult.LengthMismatch
         if (fsync(fd) != 0) return FileUploadResult.Failed("fsync failed: ${errnoText(errno)}")
 
-        // Do not retry close on EINTR: on macOS the descriptor has already been released and could be
-        // reused by another coroutine. Mark it unavailable before checking the return for the same reason.
         val closing = fd
+        // On macOS close(EINTR) has already released the descriptor; mark it unavailable and never retry.
         fd = -1
         if (close(closing) != 0) return FileUploadResult.Failed("close failed: ${errnoText(errno)}")
 
         val target = childPath(directory, fileName)
+        // link(2) publishes atomically without following or overwriting an existing target/symlink.
         if (link(temp.path, target) == 0) return FileUploadResult.Stored(received)
         val linkError = errno
         return if (linkError == EEXIST) {
@@ -296,12 +269,12 @@ private fun childPath(directory: String, name: String): String =
 @OptIn(ExperimentalForeignApi::class)
 private fun errnoText(code: Int): String = strerror(code)?.toKString() ?: "errno=$code"
 
-/** Reject an unread tail and release CIO's raw socket parser, using the same pinned close as auth intake. */
 private suspend fun ApplicationCall.rejectUnconsumedUploadAndClose(
     body: ByteReadChannel,
     text: String,
     status: HttpStatusCode,
 ) {
+    // CIO can otherwise retain the raw parser/socket after an early response with unread body bytes.
     response.headers.append(HttpHeaders.Connection, "close")
     try {
         respondText(text, status = status)

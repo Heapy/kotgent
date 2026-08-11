@@ -13,47 +13,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * The dependency half of [SqliteTaskStore]: the graph, the derived `blocked` read path, the candidate
- * query, and the reverse-dependent re-stamp every state change owes.
- *
- * Split out of the store **for parallel execution** — it lets a second agent implement this while a
- * third implements [BacklogOrdering] and a fourth the store core, without two of them touching one file.
- * See [SqliteTaskStore]'s KDoc.
- *
- * ## The rule that makes this class necessary
- * [BacklogEntry.blocked] is DERIVED (`state == todo` and some dependency is not `done`) and computed
- * here, in the read path, so the board does not recompute it per card. That makes it stale by
- * construction: closing or deleting task A changes the blocked-ness of everything depending on A without
- * touching those rows. So every dependency edit and every state transition calls
- * [restampDependentsLocked], which stamps each reverse dependent a fresh `rev` and emits it. Without
- * that the board shows a blocked marker on a ready task until a reload.
- *
- * ## One `blocked` rule, three statements — and a dangling edge reads as SATISFIED
- * [entryLocked] asks `unfinishedDependencyCount`, [listBacklogLocked] folds `selectDependencyEdges`
- * against the project's own rows, and [nextCandidateLocked] gets the answer as a `NOT EXISTS` filter
- * inside `nextCandidate`. All three must agree, and the two SQL forms JOIN `backlog_deps` to
- * `backlog_entries`, so an edge naming a ref with no row contributes NOTHING — it reads as already
- * satisfied. [listBacklogLocked] therefore ignores an unknown `depends_on` too, deliberately, rather
- * than failing safe in the other direction: a detail view and a board card disagreeing about one card is
- * worse than either answer, and the state is unreachable anyway (this class refuses an edge naming a
- * missing ref, and `delete` cascades both directions of `backlog_deps`).
- *
- * ## Locking
- * The `…Locked` members are **non-suspending and assume the caller already holds [mutex]** (a Kotlin
- * `Mutex` is not reentrant, and the store core calls them from inside its own transactions). The
- * suspending entry points take [mutex] themselves. Never suspend inside a `db.transaction { }`.
- *
- * @param queries the generated `Backlog.sq` accessor. Deliberately NOT the whole database: nothing here
- *   may touch `sessions` (see [TaskStore]).
- * @param nextRev the store's revision allocator — one owner for the counter, callers hold [mutex].
- * @param outbox the store's staged-emission buffer. The `…Locked` members STAGE, never publish: they run
- *   inside a `db.transaction { }` and a subscriber must not see an edge a rollback takes back. Each
- *   suspending entry point below wraps its locked body in [TaskUpdateOutbox.publishing].
- * @param now the store's injected clock. **Unused, and that is not an oversight**: the constructor shape
- *   is the contract [SqliteTaskStore] constructs against, and nothing this class writes is timestamped —
- *   `backlog_deps` has no timestamp column, and `restamp` deliberately leaves `updated_at` alone (a
- *   dependent's derived `blocked` moved, but nothing about it was edited). Dropping the parameter would
- *   change a declared signature to save a field.
+ * Owns dependency validation and the derived [BacklogEntry.blocked] value. Edges are validated before
+ * insertion because the candidate joins intentionally treat a missing dependency row as satisfied.
  */
 class BacklogDependencies(
     private val queries: BacklogQueries,
@@ -63,21 +24,15 @@ class BacklogDependencies(
     @Suppress("unused") private val now: () -> Long,
 ) {
 
-    // --- read path (caller holds the store mutex) --------------------------------------------------
 
-    /** One entry with its derived `blocked`, or `null` for an unknown ref. */
     fun entryLocked(ref: TaskRef): BacklogEntry? {
         val row = queries.selectEntry(ref.value).executeAsOneOrNull() ?: return null
         val state = TaskState.valueOf(row.state)
         return BacklogEntry(
             ref = ref,
-            // `backlog_entries.project` is only ever written from a ProjectId, so a value that fails
-            // here is a corrupted database and says so loudly, rather than making one card vanish.
             project = ProjectId.of(row.project),
             position = row.position,
             state = state,
-            // The `state == todo` half short-circuits the count query, and it is the definition rather
-            // than an optimisation: an in_progress / review / done entry is never `blocked`.
             blocked = state == TaskState.todo &&
                 queries.unfinishedDependencyCount(ref.value).executeAsOne() > 0L,
             createdAt = row.created_at,
@@ -86,15 +41,9 @@ class BacklogDependencies(
         )
     }
 
-    /**
-     * A project's entries in rank order with their derived `blocked`, computed from ONE edge read and
-     * ONE entry read rather than a query per card.
-     */
     fun listBacklogLocked(project: ProjectId): List<BacklogEntry> {
         val rows = queries.selectEntriesByProject(project.value).executeAsList()
         if (rows.isEmpty()) return emptyList()
-        // The two sets are the in-memory form of `unfinishedDependencyCount`'s JOIN: a `depends_on`
-        // outside `present` has no row to be un-`done`, exactly as the SQL sees it.
         val present = HashSet<String>(rows.size)
         val done = HashSet<String>()
         for (row in rows) {
@@ -109,7 +58,6 @@ class BacklogDependencies(
             val state = TaskState.valueOf(row.state)
             BacklogEntry(
                 ref = TaskRef(row.task_ref),
-                // Every row came back from a `WHERE project = ?`, so the caller's value IS the row's.
                 project = project,
                 position = row.position,
                 state = state,
@@ -123,7 +71,6 @@ class BacklogDependencies(
         }
     }
 
-    /** The first eligible `todo` entry, or `null` — the only "nothing eligible" signal. */
     fun nextCandidateLocked(project: ProjectId): BacklogEntry? {
         val row = queries.nextCandidate(project.value).executeAsOneOrNull() ?: return null
         return BacklogEntry(
@@ -131,8 +78,6 @@ class BacklogDependencies(
             project = project,
             position = row.position,
             state = TaskState.valueOf(row.state),
-            // `nextCandidate`'s NOT EXISTS is the `blocked` rule as a filter, so an answered row is by
-            // construction unblocked. Re-asking it with a second query could only disagree.
             blocked = false,
             createdAt = row.created_at,
             updatedAt = row.updated_at,
@@ -140,56 +85,23 @@ class BacklogDependencies(
         )
     }
 
-    /** What [ref] depends on. */
     fun dependenciesOfLocked(ref: TaskRef): List<TaskRef> =
         queries.selectDependencies(ref.value).executeAsList().map(::TaskRef)
 
-    /** What depends on [ref]. */
     fun dependentsOfLocked(ref: TaskRef): List<TaskRef> =
         queries.selectDependents(ref.value).executeAsList().map(::TaskRef)
 
-    /** The project's whole edge set, `ref → what it depends on`. */
     fun edgesLocked(project: ProjectId): Map<TaskRef, List<TaskRef>> = edgesOfProjectLocked(project.value)
 
-    /**
-     * Re-stamp every reverse dependent of [ref] with a fresh revision and STAGE each for `taskUpdates`
-     * (the surrounding [TaskUpdateOutbox.publishing] publishes them once the transaction has committed).
-     * Called after every dependency edit and every state transition — including a DELETE, where the
-     * dependents must be read BEFORE the `backlog_deps` rows go away.
-     *
-     * Exactly one level deep, and that is the whole rule rather than a shortcut: a dependent's `blocked`
-     * asks about its dependencies' STATE, and re-stamping moves a rev, not a state. So the grand-parents
-     * of a closed task see nothing change and are deliberately not walked.
-     *
-     * Deliberately does not touch `updated_at`: the dependents' derived `blocked` moved, but nothing
-     * about them was edited, and `updated_at` is activity (the reason `setReadCursor` leaves it alone).
-     */
     fun restampDependentsLocked(ref: TaskRef) {
         for (dependent in dependentsOfLocked(ref)) restampLocked(dependent)
     }
 
-    // --- suspending entry points (take the store mutex) --------------------------------------------
 
-    /**
-     * Add "[ref] depends on [dependsOn]" after validating all four refusals, then re-stamp [ref] and its
-     * reverse dependents. Re-adding an existing edge is a no-op.
-     *
-     * The duplicate check comes from the edge map the cycle walk needs anyway, and it returns BEFORE the
-     * write: `INSERT OR IGNORE` would make the statement a no-op regardless, but the emissions after it
-     * would not be, and "no-op" has to mean the board hears nothing.
-     *
-     * @throws io.kotgent.task.DependencyRefusedException self / unknown ref / cross-project / cycle.
-     */
     suspend fun add(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
         outbox.publishing { addLocked(ref, dependsOn) }
     }
 
-    /**
-     * [add]'s body. Extracted so the duplicate-edge no-op exits with a plain `return` rather than a
-     * non-local one out of [TaskUpdateOutbox.publishing], which would skip the publish. (The four
-     * refusals leave by throwing, which [TaskUpdateOutbox.publishing] handles as it must: nothing was
-     * staged, and anything that had been is discarded.)
-     */
     private fun addLocked(ref: TaskRef, dependsOn: TaskRef) {
         if (ref == dependsOn) {
             refuse(DependencyRefusal.self, ref, dependsOn, "a task cannot depend on itself: '${ref.value}'")
@@ -220,12 +132,10 @@ class BacklogDependencies(
         }
     }
 
-    /** Remove the edge and re-stamp as [add] does. Removing a missing edge is a no-op. */
     suspend fun remove(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
         outbox.publishing { removeLocked(ref, dependsOn) }
     }
 
-    /** [remove]'s body — extracted for the same reason [addLocked] is. */
     private fun removeLocked(ref: TaskRef, dependsOn: TaskRef) {
         if (dependsOn !in dependenciesOfLocked(ref)) return
         queries.transaction {
@@ -234,29 +144,13 @@ class BacklogDependencies(
         }
     }
 
-    // --- internals ---------------------------------------------------------------------------------
 
-    /**
-     * What an accepted edit to [ref]'s own edge set owes the board: [ref] itself, whose `blocked` and
-     * whose `dependsOn` list both just moved, and then its reverse dependents.
-     *
-     * The second half is CONSERVATIVE and known to be so. A dependent's `blocked` asks whether [ref] is
-     * `done`, and an edge edit changes no state, so nothing about those rows can actually have changed.
-     * It is done because [TaskStore.addDependency] declares it ("re-stamp and re-emit [ref] itself and
-     * every reverse dependent") and because a redundant emission is invisible under the client's
-     * newest-rev-wins rule, whereas a missing one shows a stale blocked marker until a reload.
-     */
     private fun restampAfterEditLocked(ref: TaskRef) {
+        // The edited row and its reverse dependents can change without their stored backlog fields changing.
         restampLocked(ref)
         restampDependentsLocked(ref)
     }
 
-    /**
-     * Stamp one row a fresh rev and stage it. The entry is read BEFORE the write and re-staged with the
-     * new rev rather than re-read after it: `restamp` touches no other column, so the copy is exactly
-     * what a second `selectEntry` would answer, at one query instead of two. A ref with no row consumes
-     * no revision and stages nothing — a null-entry [TaskUpdate] means DELETED, which this is not.
-     */
     private fun restampLocked(ref: TaskRef) {
         val entry = entryLocked(ref) ?: return
         val rev = nextRev()
@@ -264,7 +158,6 @@ class BacklogDependencies(
         outbox.stage(TaskUpdate(ref, entry.copy(rev = rev), rev))
     }
 
-    /** [edgesLocked] over the raw column value, so an edit path need not re-parse a [ProjectId]. */
     private fun edgesOfProjectLocked(project: String): Map<TaskRef, List<TaskRef>> {
         val edges = LinkedHashMap<TaskRef, MutableList<TaskRef>>()
         for (edge in queries.selectDependencyEdges(project).executeAsList()) {
@@ -285,7 +178,6 @@ class BacklogDependencies(
             "in the backlog, or it would read as already satisfied and silently unblock a task"
 
     private companion object {
-        /** The one storage spelling of [TaskState.done], for the string-level fold in [listBacklogLocked]. */
         val DONE_STATE: String = TaskState.done.name
     }
 }

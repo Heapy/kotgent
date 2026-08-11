@@ -5,13 +5,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/**
- * Unit tests for [TmuxSelf] (plan Task 18): the socket-path gate that decides whether this process may
- * report its `$TMUX_PANE` to the daemon at all.
- *
- * Everything runs against an injected environment map and an injected uid — no tmux server, no real
- * `getenv`, no filesystem. The gate itself is a pure string comparison for exactly that reason.
- */
 class TmuxSelfTest {
 
     private val uid = 501
@@ -21,7 +14,6 @@ class TmuxSelfTest {
         return { name -> map[name] }
     }
 
-    // --- kotgentSocketPath ------------------------------------------------------------------------
 
     @Test
     fun theSocketPathDefaultsToTmpWhenTmuxTmpdirIsUnset() {
@@ -30,8 +22,6 @@ class TmuxSelfTest {
 
     @Test
     fun theSocketPathCarriesTheLabelNotSomeHardCodedName() {
-        // The `-L` label is the one thing the path shares with the rest of the CLI; if TMUX_SOCKET is ever
-        // renamed, this path must follow it rather than keeping a stale literal.
         assertEquals("/tmp/tmux-501/$TMUX_SOCKET", TmuxSelf.kotgentSocketPath(env(), uid))
     }
 
@@ -53,7 +43,6 @@ class TmuxSelfTest {
 
     @Test
     fun anEmptyTmuxTmpdirReadsAsUnset() {
-        // tmux's own guard is `*s != '\0'`, and the shell form `${TMUX_TMPDIR:-/tmp}` agrees.
         assertEquals("/tmp/tmux-501/kotgent", TmuxSelf.kotgentSocketPath(env("TMUX_TMPDIR" to ""), uid))
     }
 
@@ -63,7 +52,6 @@ class TmuxSelfTest {
         assertEquals("/tmp/tmux-1234/kotgent", TmuxSelf.kotgentSocketPath(env(), 1234))
     }
 
-    // --- currentPane: accepted --------------------------------------------------------------------
 
     @Test
     fun aPaneOnKotgentsSocketIsReported() {
@@ -76,8 +64,6 @@ class TmuxSelfTest {
 
     @Test
     fun theRealpathedPrivateSpellingOfTheSameSocketIsReported() {
-        // Measured on tmux 3.7b: tmux realpath(3)s its socket DIRECTORY, and macOS's /tmp is a symlink to
-        // /private/tmp, so this is the spelling a real kotgent pane actually carries.
         val pane = TmuxSelf.currentPane(
             env("TMUX" to "/private/tmp/tmux-501/kotgent,4242,0", "TMUX_PANE" to "%2"),
             uid,
@@ -111,12 +97,9 @@ class TmuxSelfTest {
         assertEquals(PaneId("%0"), pane)
     }
 
-    // --- currentPane: refused ---------------------------------------------------------------------
 
     @Test
     fun aPaneOnTheOperatorsOwnTmuxIsNotReported() {
-        // The whole point: `%2` here belongs to the default server, and resolving it against kotgent's
-        // server would attribute the link to an unrelated session.
         assertNull(
             TmuxSelf.currentPane(
                 env("TMUX" to "/private/tmp/tmux-501/default,999,0", "TMUX_PANE" to "%2"),
@@ -151,7 +134,6 @@ class TmuxSelfTest {
 
     @Test
     fun anOrdinaryPrivateDirectoryIsNotFoldedIntoARootPath() {
-        // `/private/tmp` is a second spelling of `/tmp`; `/private/opt` is not a second spelling of `/opt`.
         assertNull(
             TmuxSelf.currentPane(
                 env(
@@ -201,7 +183,6 @@ class TmuxSelfTest {
 
     @Test
     fun aMalformedPaneIsNotReported() {
-        // PaneId's own rule: `%` then digits, nothing else. A throw here would take the CLI down.
         for (raw in listOf("2", "%", "%%2", "pane-2", "%2a", " %2", "%2 ", "%-1")) {
             assertNull(
                 TmuxSelf.currentPane(
@@ -220,9 +201,7 @@ class TmuxSelfTest {
 
     @Test
     fun aTmuxWithoutTheServerSuffixStillGatesOnTheSocketPath() {
-        // No comma at all: the value is compared whole, so a foreign path is still refused...
         assertNull(TmuxSelf.currentPane(env("TMUX" to "/tmp/tmux-501/default", "TMUX_PANE" to "%1"), uid))
-        // ...and kotgent's own path is still recognised rather than rejected on a formatting technicality.
         assertEquals(
             PaneId("%1"),
             TmuxSelf.currentPane(env("TMUX" to "/tmp/tmux-501/kotgent", "TMUX_PANE" to "%1"), uid),

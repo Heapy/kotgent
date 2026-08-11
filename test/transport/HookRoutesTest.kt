@@ -39,16 +39,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * Route tests for all four hook ingresses ([claudeHookRoutes] / [codexHookRoutes] /
- * [junieHookRoutes] / [tmuxHookRoutes]). Each stands up an embedded Ktor CIO server, drives it with a
- * Ktor CIO client, and asserts behaviour via a recording seam and the HTTP status. Everything is
- * wrapped in a bounded [withTimeout] so a broken round-trip fails fast.
- *
- * These are NOT @Ignore'd: Task 3 proved the Ktor CIO server + client run for real in the macosArm64
- * test binary, so the `401` / `404` / append paths are exercised end-to-end now, without waiting on the
- * Task 14 transport harness.
- */
 class HookRoutesTest {
 
     private val token = "hook-secret-token-abc123"
@@ -56,13 +46,6 @@ class HookRoutesTest {
     private val session = SessionId("kt-abc123")
     private val seededPanes: Map<PaneId, SessionId> = mapOf(pane to session)
 
-    /**
-     * Boots the ingress on an ephemeral port with [store] + [paneLookup], hands the caller its bound
-     * port and a CIO client, and guarantees teardown of both — all under a single [withTimeout].
-     *
-     * [tokenProvider] is what the route validates against, resolved per request (Task 5); it defaults to
-     * the fixed test token, and the rotation test passes a live [TokenHolder] instead.
-     */
     private fun withIngress(
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
@@ -71,9 +54,8 @@ class HookRoutesTest {
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
-            // grace = 0: these tests do not exercise the launch/register race, so an unknown pane must
-            // 404 immediately rather than waiting out the production grace window.
             routing {
+                // These tests exclude the launch/register race, so unknown panes must fail immediately.
                 claudeHookRoutes(
                     tokenProvider, paneLookup, store, paneLookupGraceMillis = 0,
                     modelCapture = modelCapture ?: ClaudeModelCapture(store),
@@ -111,7 +93,6 @@ class HookRoutesTest {
         setBody(body)
     }
 
-    /** Boots the pane-free tmux close ingress with a recording callback. */
     private fun withTmuxIngress(
         tokenProvider: () -> String = { token },
         onSessionClosed: suspend (SessionId) -> Unit = {},
@@ -148,7 +129,6 @@ class HookRoutesTest {
         setBody("")
     }
 
-    // ---- happy path: a valid POST appends the normalized event ----
 
     @Test
     fun aValidPostAppendsTheNormalizedEventToTheStore() {
@@ -164,7 +144,6 @@ class HookRoutesTest {
         }
     }
 
-    // ---- model capture is wired into the claude ingress (catches a missing wire) ----
 
     @Test
     fun aClaudeHookWithATranscriptPathCapturesTheModel() {
@@ -183,7 +162,6 @@ class HookRoutesTest {
             )
             val response = client.postHook(port, ClaudeHookConfig.STOP, body = """{"transcript_path":"/t.jsonl"}""")
             assertEquals(HttpStatusCode.OK, response.status)
-            // onHookPayload is awaited in the handler, so the model is persisted by the time the POST returns.
             assertEquals("claude-opus-4-8", store.getSession(session)!!.model, "the ingress wired the model capture")
         }
     }
@@ -222,7 +200,6 @@ class HookRoutesTest {
         }
     }
 
-    // ---- auth: invalid / missing token → 401, nothing appended ----
 
     @Test
     fun anInvalidTokenIs401AndAppendsNothing() {
@@ -244,20 +221,17 @@ class HookRoutesTest {
         }
     }
 
-    // ---- unknown pane → 404, nothing appended ----
 
     @Test
     fun anUnknownPaneIs404AndAppendsNothing() {
         val store = RecordingEventStore()
         withIngress(store) { port, client ->
-            // %999 is well-formed but not in the seeded pane→session map.
             val response = client.postHook(port, ClaudeHookConfig.STOP, pane = "%999")
             assertEquals(HttpStatusCode.NotFound, response.status)
             assertTrue(store.appended.tryReceive().isFailure, "an unresolved pane must append nothing")
         }
     }
 
-    // ---- an ignored hook is accepted (200) but stores nothing ----
 
     @Test
     fun anUnmappedHookIs200AndAppendsNothing() {
@@ -269,7 +243,6 @@ class HookRoutesTest {
         }
     }
 
-    // ---- the token is read per request, so a rotation reaches the ingress live (Task 5) ----
 
     @Test
     fun rotatingTheTokenFlipsTheIngressToTheNewValueWithoutARestart() {
@@ -285,8 +258,6 @@ class HookRoutesTest {
 
             val rotated = holder.rotate(token)!!
 
-            // The hooks re-read their 0600 header file per invocation, so the very next hook already
-            // carries the new value — and the one still carrying the old value must be refused.
             assertEquals(
                 HttpStatusCode.Unauthorized,
                 client.postHook(port, ClaudeHookConfig.STOP, token = token).status,
@@ -303,15 +274,11 @@ class HookRoutesTest {
         }
     }
 
-    // ---- the ingress is local-only: a request through the tunnel is refused before the token ----
 
     @Test
     fun aHookArrivingUnderAForeignHostIs403AndAppendsNothing() {
         val store = RecordingEventStore()
         withIngress(store) { port, client ->
-            // A hook is a `curl` from a process on THIS machine, so the only legitimate Host is loopback.
-            // Publishing the daemon through cloudflared must not publish its ingress: this refusal happens
-            // before the token is even looked at, so a leaked hook-header file is still not remotely usable.
             val response = client.post(url(port, ClaudeHookConfig.STOP)) {
                 header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
                 header(ClaudeHookConfig.TMUX_PANE_HEADER, pane.value)
@@ -338,7 +305,6 @@ class HookRoutesTest {
         }
     }
 
-    // ---- tmux session-close ingress: authenticated trigger, no pane/payload/event ----
 
     @Test
     fun tmuxCloseIngressRejectsAWrongOrMissingToken() {
@@ -407,9 +373,7 @@ class HookRoutesTest {
         }
     }
 
-    // ---- the Codex ingress: same contract, its own path and vocabulary ----
 
-    /** Boots [codexHookRoutes] the same way [withIngress] boots the Claude one. */
     private fun withCodexIngress(
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
@@ -484,9 +448,7 @@ class HookRoutesTest {
         }
     }
 
-    // ---- the rebind seam: a hook SessionBound that displaces a scan-bound id ----
 
-    /** A session row as the rebind tests need it: bound (or not) to [providerId]. */
     private fun boundMeta(providerId: ProviderSessionId?, agent: String = "codex"): SessionMeta = SessionMeta(
         id = session, name = "kt-abc123", agent = agent,
         providerSessionId = providerId, cwd = "/work", tmuxSession = "kt-abc123", paneId = pane,
@@ -496,11 +458,6 @@ class HookRoutesTest {
 
     @Test
     fun codexSessionStartThatDisplacesADifferentBoundIdFiresTheRebindSeam() {
-        // The fallback rollout scan (cwd+mtime) can provisionally bind a same-cwd NEIGHBOUR's id, and
-        // the id-keyed model capture then persists that neighbour's model and stops polling. The hook
-        // is authoritative and its SessionBound overwrites the id — but the model correction only
-        // happens if the ingress notices the displacement and fires this seam (the daemon wires it to
-        // SessionManager.onProviderIdRebound: clear the suspect model, re-run the id-keyed capture).
         val store = RecordingEventStore()
         store.sessionMeta = boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
@@ -522,9 +479,6 @@ class HookRoutesTest {
 
     @Test
     fun aThrowingRebindCorrectionNeverFailsTheHook() {
-        // The correction runs after the SessionBound append committed the new id, so a SAME-id retry of
-        // the hook would read no displacement and could never re-fire the seam — the ingress must absorb
-        // (and log) a correction failure rather than fail the hook for a retry that cannot help.
         val store = RecordingEventStore()
         store.sessionMeta = boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
         withCodexIngress(
@@ -547,17 +501,14 @@ class HookRoutesTest {
 
     @Test
     fun codexSessionStartFiresNoRebindOnAFirstBindOrARepeatOfTheSameId() {
-        val store = RecordingEventStore() // getSession answers null: no prior id on the row
+        val store = RecordingEventStore()
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
         withCodexIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
             val id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-            // A FIRST bind (null -> id) displaces nothing: protecting this case is the job of the
-            // no-id-less-persist rule in captureCodexModelOnce, not of a correction.
             client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
             store.appended.receive()
             assertTrue(rebounds.tryReceive().isFailure, "a first bind is not a displacement")
 
-            // Re-binding the SAME id (a duplicate/retried hook) displaces nothing either.
             store.sessionMeta = boundMeta(ProviderSessionId(id))
             client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
             store.appended.receive()
@@ -586,10 +537,6 @@ class HookRoutesTest {
 
     @Test
     fun eachIngressSpeaksOnlyItsOwnProvidersVocabulary() {
-        // The reason the three providers get separate PATHS rather than one route with a `?provider=`:
-        // `PermissionRequest` is not a Claude hook, `Notification` is Claude-only and `StopFailure` is
-        // Junie-only, and routing by path makes "which normalizer applies" unambiguous. Cross-posting is
-        // accepted but maps to nothing.
         val claudeStore = RecordingEventStore()
         withIngress(claudeStore) { port, client ->
             assertEquals(HttpStatusCode.OK, client.postHook(port, CodexHookConfig.PERMISSION_REQUEST).status)
@@ -615,9 +562,7 @@ class HookRoutesTest {
         }
     }
 
-    // ---- the Junie ingress: same contract, its own path and vocabulary ----
 
-    /** Boots [junieHookRoutes] the same way [withIngress] boots the Claude one. */
     private fun withJunieIngress(
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
@@ -693,8 +638,6 @@ class HookRoutesTest {
 
     @Test
     fun junieStopFailureCompletesTheTurnSoASessionCannotStickAtRunning() {
-        // A turn that dies in an LLM error leaves junie's TUI idle and fires StopFailure INSTEAD of Stop.
-        // Without this mapping nothing would ever move the session out of `running`.
         val store = RecordingEventStore()
         withJunieIngress(store) { port, client ->
             val response = client.postJunieHook(
@@ -723,8 +666,6 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionStartCarriesNoIdSoNothingIsBound() {
-        // Junie's documented SessionStart payload has only `hook_event_name` + `source`: the id comes from
-        // JunieSessionScan instead. The hook is still accepted (200 "ignored"), it just stores nothing.
         val store = RecordingEventStore()
         withJunieIngress(store) { port, client ->
             val response = client.postJunieHook(
@@ -739,8 +680,6 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionStartBindsANonUuidIdWhenOneIsPresent() {
-        // Future-proofing: if the payload ever carries junie's own id, the hook is authoritative for the
-        // session it fires in and must bind it — and junie's ids are NOT UUIDs.
         val store = RecordingEventStore()
         withJunieIngress(store) { port, client ->
             val response = client.postJunieHook(
@@ -758,9 +697,6 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionStartThatDisplacesADifferentBoundIdFiresTheRebindSeam() {
-        // Junie cannot preallocate an id either, so JunieSessionScan can provisionally bind a same-cwd
-        // NEIGHBOUR's id and the model capture then persists that neighbour's model. A hook that carries
-        // the real id must therefore be able to trigger the same correction the codex ingress does.
         val store = RecordingEventStore()
         store.sessionMeta = boundMeta(ProviderSessionId("session-260730-010101-aaaa"), agent = "junie")
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
@@ -815,11 +751,6 @@ class HookRoutesTest {
         }
     }
 
-    /**
-     * A minimal in-memory [EventStore] for route isolation: it only records what the route [append]s,
-     * onto a thread-safe [Channel] the test drains (Channels give a happens-before across the CIO
-     * server thread and the test thread). All other members are unused by the route and stubbed.
-     */
     private class RecordingEventStore : EventStore {
         data class Appended(val sessionId: SessionId, val event: AgentEvent, val source: EventSource)
 
@@ -850,7 +781,6 @@ class HookRoutesTest {
         ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = Unit
 
-        /** What [getSession] answers — rebind tests seed it to simulate an already-bound session row. */
         var sessionMeta: SessionMeta? = null
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = sessionMeta
         override suspend fun listSessions(): List<SessionMeta> = emptyList()

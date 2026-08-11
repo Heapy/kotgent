@@ -1,9 +1,3 @@
--- The sessions read-model cache (Task 7) — one row per session, mirroring io.kotgent.core.SessionMeta
--- in `sessions`-column order. Identity + launch/tmux/repo context is owned by the daemon (upsert),
--- while the reducer-derived cache fields (state, state_source, last_seq, provider_session_id,
--- updated_at) are advanced by EventStore.append IN THE SAME transaction as the event insert, so the
--- cache is always consistent with the log. `tags` is a JSON array of strings; nullable columns stay
--- null until discovered (provider_session_id after SessionBound, pane_id after tmux new-session, ...).
 CREATE TABLE sessions (
   id                  TEXT NOT NULL PRIMARY KEY,
   name                TEXT NOT NULL,
@@ -25,41 +19,14 @@ CREATE TABLE sessions (
   read_cursor         INTEGER NOT NULL,
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL,
-  -- Orthogonal "hidden from the working set" flag (a "Done" session). Never touched by the reducer or
-  -- the control-state writes; set only via setArchived. Declared LAST so create() matches the additive
-  -- `ALTER TABLE ... ADD COLUMN archived` migration SqliteEventStore.init runs for pre-existing DBs.
   archived            INTEGER NOT NULL DEFAULT 0,
-  -- Global monotonic revision — the single-master replication cursor. Stamped by EVERY statement that
-  -- touches this row (the store's writer mutex owns the counter), so any two observations of a row are
-  -- ordered by comparing revs and a stale HTTP response can never overwrite a newer WS frame client-side.
-  -- Orthogonal to updated_at (revision ≠ activity: setReadCursor bumps rev but not updated_at). Declared
-  -- after `archived` for the same additive-ALTER reason as above.
   rev                 INTEGER NOT NULL DEFAULT 0,
-  -- The task this session is working on — a REFERENCE, not a foreign key. The task layer lives in its
-  -- own store (SqliteTaskStore) over the same driver, and NOTHING but SqliteEventStore may write this
-  -- table: `rev` is stamped from an in-memory counter owned by that one class, so a second writer would
-  -- fork it into duplicate and regressing revisions the client's newest-rev-wins rule then silently
-  -- drops, and would emit no SessionUpdate at all, so the sidebar badge would never move. A task deleted
-  -- while a link write is in flight therefore leaves a dangling ref; the UI renders the bare ref and
-  -- startup reconciliation clears it. Declared LAST, after `rev`, for the same additive-ALTER reason.
+  -- A reference, not a foreign key. SqliteEventStore is the sole writer because it owns rev and emissions.
   task_ref            TEXT,
-  -- The project the session's cwd resolves to (`.kotgent.json`'s uuid), or null outside one.
   project_id          TEXT
 );
 
--- Full-row upsert (daemon-owned session metadata). On conflict, every field is refreshed from the
--- new row EXCEPT created_at, which is preserved from the existing row, and read_cursor, which is
--- max-merged: the cursor is UI-owned (setReadCursor) and advances outside any SessionMeta the daemon
--- holds, so a caller writing a stale snapshot must never regress it and resurrect a cleared badge.
--- DEFENCE IN DEPTH, not a live race — this is the record of that, for the code that points here: neither
--- caller can carry a stale cursor today (SessionManager.start inserts a fresh row; Reconciler.reconcile
--- runs ONCE at daemon start, before the server binds, over metas it read moments earlier), so the MAX
--- always selects sessions.read_cursor. It guards a future periodic or concurrent reconciler.
---
--- `task_ref` and `project_id` follow the same defensive shape for a different reason: they are set by
--- their own targeted setters, and a caller writing a SessionMeta snapshot it read BEFORE a link landed
--- would otherwise clear the link. COALESCE(excluded.x, sessions.x) keeps the stored value whenever the
--- incoming one is null, so only setTaskRef/clearTaskRefIf/setProjectId can ever clear a column.
+-- Preserve UI-owned cursors and targeted task/project writes when a stale SessionMeta snapshot is upserted.
 upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
@@ -92,98 +59,55 @@ ON CONFLICT(id) DO UPDATE SET
   task_ref            = coalesce(excluded.task_ref, sessions.task_ref),
   project_id          = coalesce(excluded.project_id, sessions.project_id);
 
--- Advance ONLY the reducer-derived cache fields; called inside EventStore.append's transaction
--- (leaves identity/launch context and read_cursor untouched).
 updateCache:
 UPDATE sessions
 SET state = ?, state_source = ?, last_seq = ?, provider_session_id = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
--- Update ONLY the daemon-owned control fields (state, state_source, pane_id, updated_at) for a
--- control op (stop/interrupt/resume) or a reconciler reclassification. Critically it does NOT touch
--- last_seq or provider_session_id, which are advanced by EventStore.append under its own lock — a
--- full-row upsert here would clobber a concurrent hook append's last_seq / provider_session_id.
 updateControlState:
 UPDATE sessions
 SET state = ?, state_source = ?, pane_id = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
--- Set ONLY the orthogonal archived flag (and updated_at). Never touches state/last_seq/provider id.
 setArchived:
 UPDATE sessions
 SET archived = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
--- Advance ONLY the read cursor; never touches state/last_seq/provider id or updated_at (viewing is not
--- activity, and `kotgent list` sorts by updated_at). The monotonic + clamped contract EventStore.markRead
--- states is implemented here, so any caller gets it: MAX(read_cursor, …) never regresses, MIN(?, last_seq)
--- never overshoots the log. Both are SQLite's 2-argument SCALAR functions and both read pre-update values.
--- NOTE: SQLDelight infers a MIN() operand as nullable, so the signature is setReadCursor(value: Long?, id:
--- String) — and binding null would evaluate the SET to NULL and violate NOT NULL at runtime. Keep every
--- caller on a non-null Long (markRead's Seq is). The named-parameter form infers the same, so it is no fix.
+-- Monotonic and clamped. SQLDelight infers the MIN operand as nullable, so callers must never bind null.
 setReadCursor:
 UPDATE sessions
 SET read_cursor = MAX(read_cursor, MIN(?, last_seq)), rev = ?
 WHERE id = ?;
 
--- Set ONLY the discovered model (and updated_at); never touches state. Best-effort and REPEATABLE, not
--- once-per-session: the hook ingress' provider-id rebind correction clears it (NULL) and re-runs the
--- capture, which writes again (see EventStore.setModel).
 setModel:
 UPDATE sessions
 SET model = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
--- Set the model ONLY IF the row still holds the provider id the capture's lookup was keyed by. The check
--- and the write are ONE statement, so under the store's single-writer lock a capture that read the row's
--- id, scanned the rollout tree, and then raced a hook rebind (which displaced the id and cleared the
--- model) writes ZERO rows instead of restoring the displaced id's — possibly a same-cwd neighbour's —
--- model past the rebind's clear. A NULL provider_session_id never matches (SQL NULL comparison), which is
--- right: an id-less row has nothing to condition on.
+-- Atomic id check prevents a slow model scan from writing past a provider-id rebind.
 setModelForProvider:
 UPDATE sessions
 SET model = ?, updated_at = ?, rev = ?
 WHERE id = ? AND provider_session_id = ?;
 
--- Point this session at a task, or clear the link (a null argument CLEARS — that is what makes it the
--- only way a link goes away, and what startup reconciliation uses on a ref no longer in
--- backlog_entries). Touches ONLY its column plus updated_at and rev, the setArchived/setModel shape:
--- never state / last_seq / provider_session_id, which append advances under the same lock.
---
--- Unconditional on purpose. Linking is TWO INDEPENDENT WRITES — Backlog.sq's conditional `startIfTodo`
--- and this one — with neither conditional on the other and no compensation between them. A crash in
--- between leaves either a task `in_progress` with no session (indistinguishable from, and as legitimate
--- as, a card a human dragged into that column) or a session pointing at a task still marked `todo`
--- (fixed by the next link or a board drag). Neither is an inconsistency worth code.
+-- Unconditional: multiple sessions may legitimately link to the same task.
 setTaskRef:
 UPDATE sessions
 SET task_ref = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
--- CLEAR the link, but ONLY IF the row still holds the ref the caller read. The check and the write are
--- ONE statement — setModelForProvider's shape, and for the same reason: every clear path (an explicit
--- unlink, a board close, a delete, a session's "Done") reads the ref first and clears second, and a link
--- made to a DIFFERENT task inside that window must survive. Unconditionally clearing there would leave the
--- newer task in_progress with no terminal and make the feed claim an unlink that erased something else.
--- Zero rows is the honest answer to "did my clear apply", which is what gates the `unlinked` activity row.
---
--- LINKING stays unconditional (setTaskRef above) — this is not exclusivity creeping back in. A conditional
--- clear refuses to erase a link it did not read; it never refuses to MAKE one, and any number of sessions
--- may still hold one task.
+-- Lost-update guard: a clear must not erase a newer link that replaced the one the caller observed.
 clearTaskRefIf:
 UPDATE sessions
 SET task_ref = NULL, updated_at = ?, rev = ?
 WHERE id = ? AND task_ref = ?;
 
--- Set (or clear) the resolved project. Same targeted shape as setTaskRef.
 setProjectId:
 UPDATE sessions
 SET project_id = ?, updated_at = ?, rev = ?
 WHERE id = ?;
 
--- Every session currently linked to one task. A task may be linked from ANY NUMBER of sessions — kotgent
--- deliberately enforces no exclusivity — so this is a list, and it is what `done` and `delete` iterate to
--- unlink every holder.
 sessionsHoldingTask:
 SELECT *
 FROM sessions
@@ -200,9 +124,6 @@ SELECT *
 FROM sessions
 ORDER BY created_at, id;
 
--- Seed for the in-memory revision counter at store open (same shape as Events.sq's nextSeq). Values
--- consumed but never persisted (a rejected conditional write, a mutator on a missing row) may be
--- re-issued after a restart — harmless, they were never observable.
 maxRev:
 SELECT coalesce(MAX(rev), 0)
 FROM sessions;

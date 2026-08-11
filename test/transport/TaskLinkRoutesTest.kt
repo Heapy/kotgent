@@ -72,28 +72,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import io.ktor.server.cio.CIO as ServerCIO
 
-/**
- * The three link endpoints ([taskLinkRoutes]) and `POST /sessions`' optional `taskRef` — plan Task 15.
- *
- * ## What these tests are built around
- * The design's headline property is that **there is no exclusivity**, so most of the interesting
- * assertions are about what does NOT happen: a second session linking the same task is not refused, a
- * link to a task already `in_progress` does not change its state, an `unlink` does not close the task,
- * and "nothing eligible" is not an error. A test that only checked "the link was made" would pass
- * against an implementation that also enforced a claim, which is why every link case asserts the OTHER
- * session's link is still there afterwards.
- *
- * The one conditional write in the whole design is [TaskStore.startIfTodo], and
- * [nextUnderContentionHandsTwoSessionsTwoDifferentTasks] is what makes it meaningful:
- * [TaskRouting.service] is the concrete [TaskService], not an interface, so the service under test is
- * the real one and the contention it resolves is its own loop, not a stub's.
- *
- * ## Why the fakes have a [Mutex]
- * The CIO server runs handlers on its own engine threads while the test thread reads the state they
- * wrote, so every fake store is guarded by a coroutine lock — the happens-before, not the exclusion, is
- * the point. Every body is bounded by [withTimeout] as an anti-hang tripwire; the contention case needs
- * it most, because a lost race there is a hang rather than a wrong answer.
- */
 class TaskLinkRoutesTest {
 
     private val token = "task-link-routes-master-token-0123456789"
@@ -113,7 +91,6 @@ class TaskLinkRoutesTest {
 
     private val fixedNow = 1_770_000_000_000L
 
-    // --- link ---------------------------------------------------------------------------------------
 
     @Test
     fun twoSessionsLinkOneTaskAndBothStillHoldIt() = withLinkServer { env ->
@@ -204,7 +181,6 @@ class TaskLinkRoutesTest {
         assertNull(env.sessions.linkOf(s1))
     }
 
-    // --- unlink -------------------------------------------------------------------------------------
 
     @Test
     fun unlinkDropsOnlyTheCallersLinkAndLeavesTheTaskAlone() = withLinkServer { env ->
@@ -255,16 +231,6 @@ class TaskLinkRoutesTest {
         assertNull(env.sessions.linkOf(s1))
     }
 
-    /**
-     * The route reports what the conditional clear actually did, not what the caller asked for.
-     *
-     * `TaskService.unlink` reads the ref and clears second, and the clear is conditional on that ref — so
-     * a `claim` or a `task next` landing in the window leaves the newer link alone and writes nothing.
-     * Answering `ok` there is arguably true of the world ("you no longer hold `local:1`") and false of
-     * the request: an agent is told it released a task while its session is working on another one, and
-     * the whole reason the clear is conditional is so the caller can tell. Falsifiable — with
-     * `service.unlink`'s Boolean ignored and a bare `respondText("ok")`, this is the only failing test.
-     */
     @Test
     fun aReleaseThatRacedANewerClaimIsRefusedRatherThanReportedAsAnUnlink() = withLinkServer { env ->
         env.seedTask(t1, alpha)
@@ -304,7 +270,6 @@ class TaskLinkRoutesTest {
         assertNull(env.sessions.linkOf(s1))
     }
 
-    // --- next ---------------------------------------------------------------------------------------
 
     @Test
     fun nextTakesTheFirstEligibleTaskInTheSessionsOwnProject() = withLinkServer { env ->
@@ -387,14 +352,6 @@ class TaskLinkRoutesTest {
         assertEquals(t3, env.sessions.linkOf(s1))
     }
 
-    /**
-     * A project the daemon has never seen is a `404`, NOT "nothing eligible".
-     *
-     * This is the one answer `next` must never get wrong: a null task is the single value the CLI maps to
-     * exit `3`, and the agent loop stops on that code. Reporting an empty backlog for a mistyped or stale
-     * `--project` would retire an agent silently and forever, while `kotgent task list` on the same uuid
-     * prints a clean `404`. The assertion is the STATUS, because a body nobody parses cannot stop a loop.
-     */
     @Test
     fun nextForAProjectTheDaemonHasNeverSeenIs404RatherThanNothingEligible() = withLinkServer { env ->
         env.seedSession(s1, pane1, alpha)
@@ -407,11 +364,6 @@ class TaskLinkRoutesTest {
         assertNull(env.sessions.linkOf(s1), "a refused pickup links nothing")
     }
 
-    /**
-     * The same check on the session-derived project, which is the shape an agent inside a pane actually
-     * sends (`kotgent task next` with no argument). `GET /tasks` validates both spellings of the question;
-     * validating only the explicit one would leave the ref-less loop — the common case — unguarded.
-     */
     @Test
     fun nextIs404WhenTheSessionsOwnProjectHasNoRow() = withLinkServer { env ->
         env.seedTask(t1, alpha)
@@ -446,7 +398,6 @@ class TaskLinkRoutesTest {
         assertEquals(ContentType.Application.Json, resp.contentType()?.withoutParameters())
     }
 
-    // --- POST /sessions with a taskRef ---------------------------------------------------------------
 
     @Test
     fun startingASessionWithATaskRefAnswersARowAlreadyCarryingIt() = withLinkServer { env ->
@@ -493,17 +444,6 @@ class TaskLinkRoutesTest {
         assertEquals(emptyList(), env.tmux.newSessionCommands, "refused before any tmux side effect")
     }
 
-    /**
-     * A `taskRef` naming no task is refused BEFORE the launch, exactly as `POST /tasks/{ref}/link` refuses
-     * it — the two halves of one feature used to disagree.
-     *
-     * `sessions.task_ref` being "a reference, not a foreign key" tolerates a delete that races an
-     * in-flight link, a window microseconds wide; it does not license manufacturing one from a request
-     * that could have looked. Without the check `kotgent start --task local:99` (a typo, or a task closed a
-     * second earlier) really launches an agent and pins an unknown-task badge on it until the next daemon
-     * restart. The tmux assertion is the load-bearing half: a refusal AFTER `start()` would be the very
-     * outcome "one request" exists to prevent.
-     */
     @Test
     fun startingASessionWithATaskRefNamingNoTaskIs400BeforeTheLaunch() = withLinkServer { env ->
         env.seedTask(t1, alpha)
@@ -525,7 +465,6 @@ class TaskLinkRoutesTest {
         assertEquals(1, env.tmux.newSessionCommands.size)
     }
 
-    // --- the gate -----------------------------------------------------------------------------------
 
     @Test
     fun everyLinkRouteIsInsideTheAuthenticatedGate() = withLinkServer { env ->
@@ -541,7 +480,6 @@ class TaskLinkRoutesTest {
         assertNull(env.sessions.linkOf(s1), "an unauthenticated request wrote nothing")
     }
 
-    // --- harness ------------------------------------------------------------------------------------
 
     private inner class Env(
         val port: Int,
@@ -629,8 +567,6 @@ class TaskLinkRoutesTest {
                 setOf("claude"),
                 now = { fixedNow },
             )
-            // The concrete TaskService over the two fake stores: TaskRouting.service is not an interface,
-            // so the contention this test drives is resolved by the real loop, not by a stub.
             val service = TaskService(
                 tasks = tasks,
                 sessions = store,
@@ -676,7 +612,6 @@ class TaskLinkRoutesTest {
         }
     }
 
-    /** A launch spec with a preallocated provider id — the claude shape, so no background capture runs. */
     private class CannedAdapter(private val cwd: String) : AgentAdapter {
         override val events: Flow<AgentEvent> = emptyFlow()
         override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec = when (mode) {
@@ -690,11 +625,6 @@ class TaskLinkRoutesTest {
         }
     }
 
-    /**
-     * An in-memory [TaskStore] covering the members these routes and [TaskService] reach; every other
-     * one throws, so a route that grew a call this test never modelled fails loudly instead of reading
-     * an empty answer as a result.
-     */
     private class FakeTaskStore : TaskStore {
         private val mutex = Mutex()
         private val entries = LinkedHashMap<TaskRef, BacklogEntry>()
@@ -709,23 +639,17 @@ class TaskLinkRoutesTest {
         suspend fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double) =
             mutex.withLock {
                 entries[ref] = BacklogEntry(ref, project, position, state, false, 1_000L, 1_000L, ++rev)
-                // Every path that reads or creates a `.kotgent.json` upserts the row, so a project with a
-                // backlog always has one; a test that wants the opposite seeds the task and forgets the
-                // project deliberately.
                 projects.getOrPut(project) { ProjectRecord(project, project.value.take(8), "/repo", 0L) }
                 Unit
             }
 
-        /** Register a project that has no backlog yet — what `GET /projects` would list. */
         suspend fun seedProject(project: ProjectId) = mutex.withLock {
             projects[project] = ProjectRecord(project, project.value.take(8), "/repo", 0L)
             Unit
         }
 
-        /** Drop the `projects` row while leaving the backlog — the stale/mistyped uuid case. */
         suspend fun forgetProject(project: ProjectId) = mutex.withLock { projects.remove(project); Unit }
 
-        /** Delete a task behind the routes' back — the dangling-ref case `unlink` must still clear. */
         suspend fun forget(ref: TaskRef) = mutex.withLock { entries.remove(ref); Unit }
 
         suspend fun stateOf(ref: TaskRef): TaskState? = mutex.withLock { entries[ref]?.state }
@@ -801,12 +725,6 @@ class TaskLinkRoutesTest {
         private fun unused(name: String): Nothing = error("the link routes must not call TaskStore.$name")
     }
 
-    /**
-     * An in-memory [EventStore] modelling the session row, its task link and just enough of the log for
-     * [SessionManager.start] to run. It overrides both task-link members the routes reach — the
-     * interface's defaults throw precisely so a fake that forgot one cannot make a green test out of a
-     * link that persisted nothing.
-     */
     private class FakeEventStore : EventStore {
         private val mutex = Mutex()
         private val rows = LinkedHashMap<SessionId, SessionMeta>()
@@ -822,18 +740,13 @@ class TaskLinkRoutesTest {
         override suspend fun upsertSession(meta: SessionMeta) = mutex.withLock {
             val existing = rows[meta.id]
             rows[meta.id] = meta.copy(
-                // The real store's ON CONFLICT COALESCE: a snapshot read before a link must not clear it.
                 taskRef = meta.taskRef ?: existing?.taskRef,
                 projectId = meta.projectId ?: existing?.projectId,
                 rev = ++rev,
             )
         }
 
-        /**
-         * Runs ONCE immediately before [clearTaskRefIf] performs its check — the lost-update window
-         * `TaskService.unlink` opens by reading the ref and writing second. A hook is the only way to
-         * drive that interleaving deterministically; a timed race would be a flake.
-         */
+        // One-shot gate inserts a newer link immediately before the atomic conditional clear.
         var beforeConditionalClear: (suspend () -> Unit)? = null
 
         override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
@@ -842,11 +755,6 @@ class TaskLinkRoutesTest {
                 rows[sessionId] = row.copy(taskRef = taskRef, updatedAt = updatedAt, rev = ++rev)
             }
 
-        /**
-         * Overridden rather than left on [EventStore]'s two-step default: this fake serves a real CIO
-         * server whose handlers run concurrently, and the interface says such a store owes an atomic
-         * check-and-write. The semantics are the default's; only the indivisibility is added.
-         */
         override suspend fun clearTaskRefIf(
             sessionId: SessionId,
             expectedRef: TaskRef,
@@ -919,7 +827,6 @@ class TaskLinkRoutesTest {
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
         override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) =
             unused("setProjectId")
-        /** [SessionManager]'s id allocator asks whether a candidate id already owns a log. None does. */
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
 
         override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = unused("subscribe")
@@ -928,7 +835,6 @@ class TaskLinkRoutesTest {
         private fun unused(name: String): Nothing = error("this test must not call EventStore.$name")
     }
 
-    /** [TaskService] carries these for the WRITE routes and never calls either itself. */
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("the link routes must not touch the filesystem")
         override fun readFile(path: String, maxBytes: Int): String? =

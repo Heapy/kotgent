@@ -40,50 +40,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/**
- * Session "Done" closes the task (plan Task 29) — [SessionManager.markDone] and nothing else.
- *
- * ## What these tests are built around
- *
- *  1. **"Done" on the session is what closes the task.** One session, one task, end to end: the human
- *     reviews *this* session's terminal, so pressing Done kills the agent, moves the task to `done`,
- *     unlinks every session holding it and archives this one. Closing the same task from the BOARD is
- *     the mirror image — [TaskService.transition] unlinks the holders and leaves them **alive** — and
- *     [closingFromTheBoardUnlinksTheSessionAndLeavesItAlive] asserts that contrast from the same
- *     fixture, because "the task is done and the sessions are unlinked" is true of both paths and only
- *     the session's fate tells them apart.
- *  2. **The ORDER of the two stores' writes is the contract**, so both stores journal into one shared
- *     list: the task must be closed BEFORE the session is archived (the residual the design accepts is a
- *     task `done` whose session is still visible, never an archived session whose task is still open and
- *     therefore unreachable from the sidebar), and no [EventStore] call may be made from inside a
- *     [TaskStore] one.
- *  3. **[NonCancellable] is a claim about cancellation only**, and
- *     [cancellationBetweenTheTwoWritesCannotHalfApplyDone] is what pins it. Its journaling store yields
- *     before archiving, which is what makes the assertion falsifiable: with the wrapper removed, the
- *     cancelled coroutine throws there and the row stays unarchived. Nothing here claims atomicity —
- *     a throw or a process death between the writes still leaves the documented residual, which no test
- *     can rule out and the KDoc says so.
- *  4. **A daemon without the task layer, and a session without a link, must behave exactly as before.**
- *     Both cases run against a [TaskStore] whose every member throws, so a `markDone` that consulted it
- *     speculatively fails loudly instead of passing on an empty answer.
- *  5. **The two implementations of "close this task" may not drift apart in silence.**
- *     `SessionManager.closeLinkedTask` re-spells [TaskService.transition]`(done)` rather than delegating
- *     to it, so [theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer] drives both over
- *     identical fixtures and compares everything they say to the task layer. That test is what makes the
- *     second copy safe to keep; the mechanism's rationale lives on `closeLinkedTask`'s KDoc.
- *  6. **The holder loop clears CONDITIONALLY**, on the ref this close decided to close: the holder list
- *     is a snapshot and a session re-pointed inside the walk is newer than anything the close read
- *     ([doneCannotEraseAHoldersNewerLinkToADifferentTask]). That refusal is a lost-update rule and not
- *     exclusivity — Done makes no link and refuses none.
- *  7. **The published agent loop composes badly, and that is documented rather than "fixed".**
- *     [reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne] runs `claim → review →
- *     next → Done` through the real verbs and pins where three individually-correct behaviours land: the
- *     reviewed task silently loses its session and Done closes the one just started. The remedy lives in
- *     `docs/agent-task-skill.md` (take `next` only when the session is free), never in a busy-session
- *     refusal.
- *
- * Every body is bounded by [withTimeout] as an anti-hang tripwire.
- */
 class SessionDoneTaskTest {
 
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
@@ -92,7 +48,6 @@ class SessionDoneTaskTest {
     private val neighbour = SessionId("other1")
     private val provider = ProviderSessionId("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 
-    /** The session the manager starts, plus a second holder of the same task, over one journal. */
     private class Fixture {
         val journal: MutableList<String> = mutableListOf()
         val tmux = FakeTmux()
@@ -117,7 +72,6 @@ class SessionDoneTaskTest {
         taskStore = tasks,
     )
 
-    /** A second, independent session pointing at the same task — the "every holder" in the contract. */
     private suspend fun Fixture.seedNeighbour(id: SessionId, ref: TaskRef) {
         store.upsertSession(
             SessionMeta(
@@ -135,7 +89,6 @@ class SessionDoneTaskTest {
         store.setTaskRef(id, ref, 500L)
     }
 
-    // ---- Done on a linked session -----------------------------------------------------------------
 
     @Test
     fun doneOnALinkedSessionClosesTheTaskUnlinksEveryHolderAndArchivesIt() = runBlocking {
@@ -150,8 +103,6 @@ class SessionDoneTaskTest {
             f.journal.clear()
 
             mgr.markDone(worker)
-            // Snapshotted before the assertions below read rows of their own. The row READS are dropped:
-            // `terminate` and the task close each take one, and neither is part of the write ordering.
             val trace = f.journal.filterNot { it.startsWith("sessions.getSession(") }
 
             assertEquals(listOf("done01"), f.tmux.killed, "Done still kills the agent")
@@ -168,9 +119,6 @@ class SessionDoneTaskTest {
             assertEquals(SessionState.running, other.state, "nor kills it")
 
             assertEquals(
-                // Holders come back oldest-first (`created_at, id`): the worker was created at 1, the
-                // neighbour seeded at 500. Both are cleared by the same generic loop, and each
-                // EventStore call returns before the TaskStore call that follows it.
                 listOf(
                     "tasks.transition(local:1 -> done)",
                     "sessions.clearTaskRefIf(done01, local:1)",
@@ -218,21 +166,6 @@ class SessionDoneTaskTest {
         }
     }
 
-    /**
-     * The guard that makes two implementations of "close this task" safe to keep.
-     *
-     * [SessionManager.closeLinkedTask] re-spells [TaskService.transition]`(done)` rather than delegating
-     * to it (see its KDoc: injecting the service would hand the session lifecycle a `ProjectFileWriter`
-     * it must never touch). The hazard that carries is not the copy, it is SILENT divergence — a
-     * `message`, an extra activity kind, a different unlink order or a conditional clear landing in one
-     * path only. So both are driven over identical fixtures and everything they say to the task layer is
-     * compared: the ordered call trace across BOTH stores, the whole activity feed, and every holder's
-     * cleared link. The one deliberate difference stays outside the comparison — Done also kills and
-     * archives ITS session, which is what [closingFromTheBoardUnlinksTheSessionAndLeavesItAlive] pins.
-     *
-     * The board close is given the worker's id as its author precisely so the traces are comparable: the
-     * author is the caller's, not the mechanism's.
-     */
     @Test
     fun theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer() = runBlocking {
         withTimeout(20_000) {
@@ -251,9 +184,6 @@ class SessionDoneTaskTest {
 
                 close(mgr, service)
 
-                // Row reads are each path's own business (Done reads to learn the ref, terminate reads to
-                // classify); the archive is the deliberate difference. What is compared is what the two
-                // paths WRITE to the task layer and to `sessions.task_ref`.
                 val trace = f.journal
                     .filterNot { it.startsWith("sessions.getSession(") }
                     .filterNot { it.startsWith("sessions.setArchived(") }
@@ -290,18 +220,6 @@ class SessionDoneTaskTest {
         }
     }
 
-    /**
-     * Done's holder loop clears each session **conditionally on the ref it decided to close**.
-     *
-     * `sessionsHoldingTask` is a snapshot and the clears follow it one at a time, so a holder re-pointed
-     * inside that walk is newer than everything this close read: erasing it would leave `local:2`
-     * `in_progress` with no terminal behind it and write an `unlinked` row naming `local:1` for a write
-     * that destroyed a different link. The interleaving is deterministic —
-     * [JournalingEventStore.afterSessionsHoldingTask] runs once the list has been read.
-     *
-     * Falsifiable: with the unconditional `setTaskRef(holder.id, null, …)` the neighbour's link to
-     * `local:2` is gone and the feed carries two releases instead of one.
-     */
     @Test
     fun doneCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
         withTimeout(20_000) {
@@ -343,30 +261,7 @@ class SessionDoneTaskTest {
         }
     }
 
-    // ---- the published agent loop, composed ---------------------------------------------------------
 
-    /**
-     * `review` then `next` then Done — the composition `docs/agent-task-skill.md` describes, and the one
-     * place two individually-correct behaviours are jointly wrong.
-     *
-     * Each verb alone is right and separately tested. `review` deliberately keeps the link
-     * (`TaskServiceTest.transitionToReviewKeepsEveryLink`: one session, one task, end to end, because the
-     * human reviews *that* terminal). `next` deliberately overwrites it (a session works one task at a
-     * time; there is no error case). Done deliberately acts on whatever the row points at NOW. Run in the
-     * doc's order they compose into this: the reviewed task is silently left with no session, and the
-     * human pressing Done on that terminal closes the task the agent had only just STARTED — possibly
-     * unfinished — and archives the session that was carrying it.
-     *
-     * This is why the doc's loop carries a qualifier rather than four unconditional steps, and it is the
-     * plan's rule read forwards: "a session stays linked through `review`", so `task next` belongs only to
-     * a session that is free. **The fix is the contract, not a refusal** — nothing here asserts that
-     * `next` was rejected, and nothing may grow into a busy-session check: the human closing `local:1`
-     * from the board is what unlinks the session and hands it back to `next`.
-     *
-     * It is a characterization test, so it does not fail against the code as it stands — it fails against
-     * the two "fixes" that look obvious and are wrong: a Done that closed the REVIEWED task instead of
-     * the linked one, and a `next` that refused a session already holding something.
-     */
     @Test
     fun reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne() = runBlocking {
         withTimeout(20_000) {
@@ -382,8 +277,6 @@ class SessionDoneTaskTest {
 
             mgr.start("claude", "/tmp")
 
-            // The published loop, verbatim: claim, hand back for review, take the next one, and only then
-            // does the human reach the terminal and press Done.
             service.link(worker, reviewed)
             service.transition(reviewed, TaskState.review, author = worker.value, message = "summary")
             assertEquals(
@@ -427,7 +320,6 @@ class SessionDoneTaskTest {
         }
     }
 
-    // ---- Done with no task to close ---------------------------------------------------------------
 
     @Test
     fun doneOnAnUnlinkedSessionNeverConsultsTheTaskStore() = runBlocking {
@@ -450,8 +342,6 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks = null)
 
             mgr.start("claude", "/tmp")
-            // A link that a daemon built without the task layer cannot possibly close: the row still
-            // archives, and the ref is left alone rather than half-cleared.
             f.store.setTaskRef(worker, ref, 1L)
 
             mgr.markDone(worker)
@@ -462,15 +352,12 @@ class SessionDoneTaskTest {
         }
     }
 
-    // ---- The NonCancellable claim, and only that claim ---------------------------------------------
 
     @Test
     fun cancellationBetweenTheTwoWritesCannotHalfApplyDone() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture()
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
-            // The archive suspends before it writes — the shape a contended store mutex takes, and what
-            // makes this test falsifiable: without NonCancellable the cancelled coroutine throws there.
             f.store.yieldBeforeArchive = true
             val mgr = managerOver(f, tasks)
 
@@ -497,18 +384,11 @@ class SessionDoneTaskTest {
         }
     }
 
-    // ---- fakes -------------------------------------------------------------------------------------
 
-    /**
-     * The real [SqliteEventStore], journalling the three calls whose ORDER relative to the task store is
-     * the contract. Everything else is delegated: the point of using the real store here is that
-     * `sessionsHoldingTask` really is a query over the rows the manager wrote.
-     */
     private class JournalingEventStore(
         private val delegate: EventStore,
         private val journal: MutableList<String>,
     ) : EventStore by delegate {
-        /** See [cancellationBetweenTheTwoWritesCannotHalfApplyDone]. */
         var yieldBeforeArchive: Boolean = false
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? {
@@ -521,7 +401,7 @@ class SessionDoneTaskTest {
             delegate.setTaskRef(sessionId, taskRef, updatedAt)
         }
 
-        /** See [doneCannotEraseAHoldersNewerLinkToADifferentTask]; runs after the list, before the clears. */
+        // Runs after the holder snapshot so a newer link can race the following conditional clear.
         var afterSessionsHoldingTask: (suspend () -> Unit)? = null
 
         override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
@@ -546,17 +426,10 @@ class SessionDoneTaskTest {
         }
     }
 
-    /**
-     * An in-memory [TaskStore] covering exactly the two methods the Done path calls, plus the three
-     * [TaskService.transition] needs for the board contrast. Every other member throws: a `markDone`
-     * that grew a call this fixture never modelled must fail loudly rather than read an empty list as an
-     * answer — the same reasoning as [EventStore]'s three throwing defaults.
-     */
     private class RecordingTaskStore(private val journal: MutableList<String>) : TaskStore {
         val entries: MutableMap<TaskRef, BacklogEntry> = mutableMapOf()
         val activity: MutableList<TaskActivityEntry> = mutableListOf()
 
-        /** Runs INSIDE [transition], after the write — the window a cancellation is delivered in. */
         var duringTransition: (suspend () -> Unit)? = null
 
         private var rev = 0L
@@ -617,11 +490,6 @@ class SessionDoneTaskTest {
             return row
         }
 
-        // ---- the three the COMPOSED loop needs, and only it ----
-        // `markDone` never reaches any of them; they are here so
-        // [reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne] can drive the real
-        // `claim → review → next` verbs through TaskService instead of hand-writing rows, which is the
-        // whole point of that test — the defect is in how the real verbs COMPOSE.
 
         override suspend fun entry(ref: TaskRef): BacklogEntry? {
             journal += "tasks.entry(${ref.value})"
@@ -667,7 +535,6 @@ class SessionDoneTaskTest {
         private fun unused(name: String): Nothing = error("Done is not expected to call TaskStore.$name")
     }
 
-    /** A task layer that refuses every question — the tripwire for a Done that consults it speculatively. */
     private object RefusingTaskStore : TaskStore {
         override val id: String = TaskRef.LOCAL_TRACKER
         override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
@@ -714,7 +581,6 @@ class SessionDoneTaskTest {
             error("an unlinked Done must not reach TaskStore.$name")
     }
 
-    /** [TaskService] carries these for the write routes and never calls either from [TaskService.transition]. */
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("Done must not touch the filesystem")
         override fun readFile(path: String, maxBytes: Int): String? = error("Done must not touch the filesystem")
@@ -726,7 +592,6 @@ class SessionDoneTaskTest {
             error("Done must not write a project file")
     }
 
-    /** An [AgentFactory] yielding a canned `cat` pane with a preallocated provider id. */
     private class StubAgentFactory(
         private val command: List<String>,
         private val preallocated: ProviderSessionId,

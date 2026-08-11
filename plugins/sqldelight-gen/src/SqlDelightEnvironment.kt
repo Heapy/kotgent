@@ -15,15 +15,8 @@
  */
 package app.cash.sqldelight.core
 
-// ---------------------------------------------------------------------------------------------
-// VENDORED (Apache-2.0) from SQLDelight 2.3.2:
-//   sqldelight-gradle-plugin/src/main/kotlin/app/cash/sqldelight/core/SqlDelightEnvironment.kt
-// SQLDelight ships this class only inside its GRADLE plugin (which drags in kotlin-gradle-plugin),
-// but the class itself is Gradle-free: it mocks a headless IntelliJ environment to parse `.sq`
-// PSI and drives SqlDelightCompiler. We vendor it so our jvm/amper-plugin can invoke SQLDelight's
-// code generation without Gradle. Only change vs upstream: the optimistic-lock annotator (which
-// lives in the gradle-plugin artifact, not `core`) is dropped -> annotate(emptyList()).
-// ---------------------------------------------------------------------------------------------
+// Vendored from SQLDelight 2.3.2's Gradle plugin. The optimistic-lock annotator is omitted because
+// it is not available in the Gradle-free core artifact used here.
 
 import app.cash.sqldelight.core.compiler.SqlDelightCompiler
 import app.cash.sqldelight.core.lang.DatabaseFileType
@@ -64,10 +57,6 @@ import kotlin.math.log10
 import kotlin.reflect.KClass
 import kotlin.system.measureTimeMillis
 
-/**
- * Mocks an intellij environment for compiling sqldelight files without an instance of intellij
- * running.
- */
 class SqlDelightEnvironment(
   private val properties: SqlDelightDatabaseProperties,
   private val compilationUnit: SqlDelightCompilationUnit,
@@ -139,9 +128,6 @@ class SqlDelightEnvironment(
     }
   }
 
-  /**
-   * Run the SQLDelight compiler and return the error or success status.
-   */
   fun generateSqlDelightFiles(logger: (String) -> Unit): CompilationStatus {
     val errors = sortedMapOf<Long, MutableList<String>>()
     annotate(
@@ -226,8 +212,6 @@ class SqlDelightEnvironment(
         PsiTreeUtil.processElements(it) { element ->
           when (element) {
             is PsiErrorElement -> errorElements.add(element)
-            // Uncomment when sqm files understand their state of the world.
-            // is SqlAnnotatedElement -> element.annotate(annotationHolder)
           }
           return@processElements true
         }
@@ -254,9 +238,7 @@ class SqlDelightEnvironment(
       val lineValue = tokenizer.nextToken()
       result.append(("%0${maxDigits}d    %s\n").format(line, lineValue))
       if (element.lineStart == element.lineEnd && element.lineStart == line) {
-        // If it's an error on a single line highlight where on the line.
         result.append(("%${maxDigits}s    ").format(""))
-        // Print tabs when you see it, spaces for everything else.
         lineValue.subSequence(0 until element.charPositionInLine)
           .map { char -> if (char != '\t') " " else char }
           .forEach(result::append)
@@ -266,8 +248,6 @@ class SqlDelightEnvironment(
 
     result.toString()
   } catch (e: Exception) {
-    // If there is an exception while trying to print an error, just give back the unformatted error
-    // and print the stack trace for more debugging.
     e.printStackTrace()
     element.text
   }

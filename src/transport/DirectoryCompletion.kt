@@ -22,7 +22,6 @@ import platform.posix.opendir
 import platform.posix.readdir
 import platform.posix.stat
 
-/** Completes only the final path segment; implementations never recursively scan the filesystem. */
 fun interface DirectoryCompleter {
     fun complete(basePath: String?, input: String): List<String>
 }
@@ -40,10 +39,6 @@ internal val posixDirectoryCompleter: DirectoryCompleter = DirectoryCompleter { 
     completeDirectoryPaths(basePath, input, ::posixChildDirectoryNames)
 }
 
-/**
- * Authenticated completion endpoint. It is deliberately part of the published control plane: a phone
- * should complete paths on the daemon's Mac, not on the phone's filesystem.
- */
 internal fun Route.directoryCompletionRoutes(
     completer: DirectoryCompleter,
     json: Json = TRANSPORT_JSON,
@@ -76,7 +71,6 @@ internal fun Route.directoryCompletionRoutes(
     }
 }
 
-/** Pure completion policy over an injected one-level directory listing. */
 fun completeDirectoryPaths(
     basePath: String?,
     input: String,
@@ -118,7 +112,6 @@ private fun completionTarget(basePath: String?, input: String): CompletionTarget
 private fun joinPath(parent: String, child: String): String =
     if (parent == "/") "/$child" else "${parent.trimEnd('/')}/$child"
 
-/** Immediate child directory names, following symlinks through `stat`; unreadable paths yield no matches. */
 @OptIn(ExperimentalForeignApi::class)
 fun posixChildDirectoryNames(path: String): List<String> {
     val directory = opendir(path) ?: return emptyList()
