@@ -708,7 +708,7 @@ class SessionDoneTaskTest {
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun listProjects(): List<ProjectRecord> = unused("listProjects")
-        override suspend fun project(ref: ProjectId): ProjectRecord? = unused("project")
+        override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing =
             error("an unlinked Done must not reach TaskStore.$name")
