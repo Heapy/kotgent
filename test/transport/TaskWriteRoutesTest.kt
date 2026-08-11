@@ -27,6 +27,7 @@ import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
 import io.kotgent.task.ProjectPathException
 import io.kotgent.task.ProjectRecord
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
@@ -1096,13 +1097,24 @@ class TaskWriteRoutesTest {
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> =
             mutex.withLock { activity.filter { it.ref == ref } }
 
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Unit = mutex.withLock {
-            val existing = projects[id]
-            projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L)
+        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
+            mutex.withLock {
+                val existing = projects[id]
+                if (existing != null && existing.archived) {
+                    return@withLock ProjectRegistration.refusedArchived
+                }
+                projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L)
+                ProjectRegistration.registered
+            }
+
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
+            val existing = projects[id] ?: return@withLock false
+            projects[id] = existing.copy(archived = archived)
+            true
         }
 
-        override suspend fun listProjects(): List<ProjectRecord> =
-            mutex.withLock { projects.values.sortedBy { it.name } }
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
+            mutex.withLock { projects.values.filter { it.archived == archived }.sortedBy { it.name } }
 
         override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
     }

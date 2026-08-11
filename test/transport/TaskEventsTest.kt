@@ -436,7 +436,8 @@ class TaskEventsTest {
         }
 
 
-        override suspend fun listProjects(): List<ProjectRecord> = lock.withLock { projects.values.toList() }
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
+            lock.withLock { projects.values.filter { it.archived == archived } }
 
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = lock.withLock {
             entries.values.filter { it.project == project }.sortedBy { it.position }
@@ -519,6 +520,7 @@ class TaskEventsTest {
             unused("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing =

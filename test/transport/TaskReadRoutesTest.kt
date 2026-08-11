@@ -557,8 +557,8 @@ class TaskReadRoutesTest {
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> =
             record("activity", activity[ref].orEmpty())
 
-        override suspend fun listProjects(): List<ProjectRecord> =
-            record("listProjects", projects.values.sortedBy { it.name })
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
+            record("listProjects", projects.values.filter { it.archived == archived }.sortedBy { it.name })
 
         override suspend fun project(id: ProjectId): ProjectRecord? = record("project", projects[id])
 
@@ -592,6 +592,9 @@ class TaskReadRoutesTest {
 
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) =
             readOnly("upsertProject")
+
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) =
+            readOnly("setProjectArchived")
 
         private fun readOnly(name: String): Nothing =
             error("the read routes must not call TaskStore.$name")

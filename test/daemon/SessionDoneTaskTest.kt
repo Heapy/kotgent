@@ -529,7 +529,8 @@ class SessionDoneTaskTest {
             unused("comment")
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
-        override suspend fun listProjects(): List<ProjectRecord> = unused("listProjects")
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing = error("Done is not expected to call TaskStore.$name")
@@ -574,7 +575,8 @@ class SessionDoneTaskTest {
         ): TaskActivityEntry? = unused("appendActivity")
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
-        override suspend fun listProjects(): List<ProjectRecord> = unused("listProjects")
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing =

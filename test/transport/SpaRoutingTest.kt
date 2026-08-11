@@ -308,8 +308,9 @@ class SpaRoutingTest {
             toState: TaskState?,
         ): TaskActivityEntry? = unused()
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused()
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Unit = unused()
-        override suspend fun listProjects(): List<ProjectRecord> = unused()
+        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Nothing = unused()
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Nothing = unused()
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused()
         override suspend fun project(id: ProjectId): ProjectRecord? = unused()
     }
 

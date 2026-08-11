@@ -8,6 +8,7 @@ import io.kotgent.task.DependencyRefusal
 import io.kotgent.task.DependencyRefusedException
 import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectRecord
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
@@ -66,8 +67,8 @@ class FakeTaskStore(
 
 
     // Seed helpers are used only before the server starts; runtime methods take the mutex.
-    fun seedProject(id: ProjectId, name: String, path: String? = null) {
-        projects[id] = ProjectRecord(id, name, path, now())
+    fun seedProject(id: ProjectId, name: String, path: String? = null, archived: Boolean = false) {
+        projects[id] = ProjectRecord(id, name, path, now(), archived)
     }
 
     fun seedTask(
@@ -315,13 +316,22 @@ class FakeTaskStore(
         mutex.withLock { activityRows.filter { it.ref == ref } }
 
 
-    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Unit = mutex.withLock {
-        val existing = projects[id]
-        projects[id] = ProjectRecord(id, name, path ?: existing?.path, now())
+    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
+        mutex.withLock {
+            val existing = projects[id]
+            if (existing != null && existing.archived) return@withLock ProjectRegistration.refusedArchived
+            projects[id] = ProjectRecord(id, name, path ?: existing?.path, now())
+            ProjectRegistration.registered
+        }
+
+    override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
+        val existing = projects[id] ?: return@withLock false
+        projects[id] = existing.copy(archived = archived)
+        true
     }
 
-    override suspend fun listProjects(): List<ProjectRecord> =
-        mutex.withLock { projects.values.sortedBy { it.name } }
+    override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
+        mutex.withLock { projects.values.filter { it.archived == archived }.sortedBy { it.name } }
 
     override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
 

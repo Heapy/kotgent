@@ -180,20 +180,20 @@ would land in a deleted project.
   `src/transport/TaskWriteRoutes.kt`, `src/transport/TaskReadRoutes.kt`
 - Modify: `test/store/TaskStoreTest.kt`
 
-- [ ] add `archived INTEGER NOT NULL DEFAULT 0` to `Projects.sq`; keep it out of `upsertProject`'s
+- [x] add `archived INTEGER NOT NULL DEFAULT 0` to `Projects.sq`; keep it out of `upsertProject`'s
       `ON CONFLICT DO UPDATE SET`, and document in the file header why
-- [ ] add `setProjectArchived` and an archived-scoped selection to `Projects.sq`
-- [ ] move `hasColumn` from `SqliteEventStore.kt` into a public `src/store/Migrations.kt`; both stores use it
-- [ ] add the guarded `ALTER TABLE` to `SqliteTaskStore.init` and the column to its
+- [x] add `setProjectArchived` and an archived-scoped selection to `Projects.sq`
+- [x] move `hasColumn` from `SqliteEventStore.kt` into a public `src/store/Migrations.kt`; both stores use it
+- [x] add the guarded `ALTER TABLE` to `SqliteTaskStore.init` and the column to its
       `CREATE TABLE IF NOT EXISTS projects`
-- [ ] add `archived` to `ProjectRecord`; change `TaskStore.upsertProject` to return registered/refused and
+- [x] add `archived` to `ProjectRecord`; change `TaskStore.upsertProject` to return registered/refused and
       add `setProjectArchived`; mirror both in `FakeTaskStore`
-- [ ] update all five call sites mechanically — they ignore the new result for now, behaviour unchanged,
+- [x] update all five call sites mechanically — they ignore the new result for now, behaviour unchanged,
       tree compiles
-- [ ] write a file-backed test that a database created before the column opens, migrates and works
-- [ ] write tests that `upsertProject` on an archived project writes nothing and reports refusal, that
+- [x] write a file-backed test that a database created before the column opens, migrates and works
+- [x] write tests that `upsertProject` on an archived project writes nothing and reports refusal, that
       `setProjectArchived` round-trips, and that the two selections split the list
-- [ ] run tests — must pass before task 2
+- [x] run tests — must pass before task 2
 
 ### Task 2: Resolution respects the tombstone
 

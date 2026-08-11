@@ -19,6 +19,7 @@ import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectFs
 import io.kotgent.task.ProjectRecord
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
@@ -70,7 +71,7 @@ class TaskProjectWiringTest {
                 "and so does the committed row — the id is written by the insert itself",
             )
             assertEquals(
-                listOf(ProjectRegistration(alpha, "kotgent", "/repo")),
+                listOf(RegisteredProject(alpha, "kotgent", "/repo")),
                 f.tasks.registrations,
                 "the projects row names the CHECKOUT ROOT, not the session's cwd",
             )
@@ -105,7 +106,7 @@ class TaskProjectWiringTest {
             assertEquals(alpha, imported.projectId)
             assertEquals(alpha, f.store.getSession(imported.id)!!.projectId)
             assertEquals(
-                listOf(ProjectRegistration(alpha, "kotgent", real)),
+                listOf(RegisteredProject(alpha, "kotgent", real)),
                 f.tasks.registrations,
                 "the import registers the project it resolved, exactly as a start does",
             )
@@ -129,8 +130,8 @@ class TaskProjectWiringTest {
             )
             assertEquals(
                 listOf(
-                    ProjectRegistration(alpha, "kotgent", "/repo"),
-                    ProjectRegistration(alpha, "kotgent", "/repo"),
+                    RegisteredProject(alpha, "kotgent", "/repo"),
+                    RegisteredProject(alpha, "kotgent", "/repo"),
                 ),
                 f.tasks.registrations,
                 "both resolve to the main checkout root, so the one projects row is refreshed with it",
@@ -154,7 +155,7 @@ class TaskProjectWiringTest {
             f.reconciler().reconcile()
 
             assertEquals(alpha, f.store.getSession(started.id)!!.projectId)
-            assertEquals(listOf(ProjectRegistration(alpha, "kotgent", "/repo")), f.tasks.registrations)
+            assertEquals(listOf(RegisteredProject(alpha, "kotgent", "/repo")), f.tasks.registrations)
         }
     }
 
@@ -397,7 +398,7 @@ class TaskProjectWiringTest {
         )
     }
 
-    private data class ProjectRegistration(val id: ProjectId, val name: String, val path: String?)
+    private data class RegisteredProject(val id: ProjectId, val name: String, val path: String?)
 
     private class FakeProjectFs(
         private val dirs: Set<String>,
@@ -428,7 +429,7 @@ class TaskProjectWiringTest {
     }
 
     private class FakeTaskStore : TaskStore {
-        val registrations = mutableListOf<ProjectRegistration>()
+        val registrations = mutableListOf<RegisteredProject>()
         val entries = HashMap<TaskRef, BacklogEntry>()
 
         var upsertProjectFailure: Throwable? = null
@@ -439,9 +440,18 @@ class TaskProjectWiringTest {
 
         override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
 
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?) {
+        val archivedProjects = mutableSetOf<ProjectId>()
+
+        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration {
             upsertProjectFailure?.let { throw it }
-            registrations += ProjectRegistration(id, name, path)
+            if (id in archivedProjects) return ProjectRegistration.refusedArchived
+            registrations += RegisteredProject(id, name, path)
+            return ProjectRegistration.registered
+        }
+
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean {
+            if (archived) archivedProjects += id else archivedProjects -= id
+            return true
         }
 
         override suspend fun entry(ref: TaskRef): BacklogEntry? {
@@ -449,7 +459,7 @@ class TaskProjectWiringTest {
             return entries[ref]
         }
 
-        override suspend fun listProjects(): List<ProjectRecord> = unused("listProjects")
+        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
 
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 

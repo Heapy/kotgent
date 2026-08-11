@@ -9,6 +9,7 @@ import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectRecord
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
@@ -55,6 +56,11 @@ class SqliteTaskStore private constructor(
 
     init {
         for (statement in CREATE_TABLES_IF_NOT_EXISTS) driver.execute(null, statement, 0)
+        // A table created before the tombstone existed needs the column added; the guard keeps SQLiter
+        // from logging a duplicate-column stack trace on every open. See Migrations.kt.
+        if (!driver.hasColumn("projects", "archived")) {
+            driver.execute(null, "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
+        }
         revCounter = backlog.maxRev().executeAsOne()
         // The native driver sends transaction-less reads to a different connection; seed and read together.
         db.transaction {
@@ -261,19 +267,37 @@ class SqliteTaskStore private constructor(
     }
 
 
-    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Unit = mutex.withLock {
-        projects.upsertProject(id.value, name, path, now())
+    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
+        mutex.withLock {
+            var outcome = ProjectRegistration.registered
+            // One transaction, so the tombstone read is answered by the writer's own connection and no
+            // restore can land between the check and the write.
+            db.transaction {
+                val archived = projects.selectProjectArchived(id.value).executeAsOneOrNull()
+                if (archived != null && archived != 0L) {
+                    outcome = ProjectRegistration.refusedArchived
+                    return@transaction
+                }
+                projects.upsertProject(id.value, name, path, now())
+            }
+            outcome
+        }
+
+    override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
+        projects.setProjectArchived(if (archived) 1L else 0L, id.value).value > 0L
     }
 
-    override suspend fun listProjects(): List<ProjectRecord> = mutex.withLock {
-        projects.selectAllProjects().executeAsList().mapNotNull { row ->
-            ProjectId.parseOrNull(row.id)?.let { ProjectRecord(it, row.name, row.path, row.updated_at) }
+    override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = mutex.withLock {
+        projects.selectProjectsByArchived(if (archived) 1L else 0L).executeAsList().mapNotNull { row ->
+            ProjectId.parseOrNull(row.id)?.let {
+                ProjectRecord(it, row.name, row.path, row.updated_at, row.archived != 0L)
+            }
         }
     }
 
     override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock {
-        projects.selectProject(id.value) { _, name, path, updatedAt ->
-            ProjectRecord(id = id, name = name, path = path, updatedAt = updatedAt)
+        projects.selectProject(id.value) { _, name, path, updatedAt, archived ->
+            ProjectRecord(id = id, name = name, path = path, updatedAt = updatedAt, archived = archived != 0L)
         }.executeAsOneOrNull()
     }
 
@@ -356,7 +380,8 @@ class SqliteTaskStore private constructor(
                 "id TEXT NOT NULL PRIMARY KEY, " +
                 "name TEXT NOT NULL, " +
                 "path TEXT, " +
-                "updated_at INTEGER NOT NULL)",
+                "updated_at INTEGER NOT NULL, " +
+                "archived INTEGER NOT NULL DEFAULT 0)",
         )
 
         fun inMemory(now: () -> Long = ::taskStoreEpochMillis): SqliteTaskStore =

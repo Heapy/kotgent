@@ -11,6 +11,7 @@ import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.task.ActivityKind
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskTracker
 import io.kotgent.task.TaskUpdate
@@ -526,6 +527,108 @@ class TaskStoreTest {
         assertEquals(listOf(alpha), f.store.listProjects().map { it.id })
     }
 
+    @Test
+    fun anArchivedProjectRefusesRegistrationAndKeepsTheRowItAlreadyHad() = test { f ->
+        assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
+        assertTrue(f.store.setProjectArchived(alpha, true))
+
+        f.clock = 2_000L
+        assertEquals(
+            ProjectRegistration.refusedArchived,
+            f.store.upsertProject(alpha, "resurrected", "/elsewhere"),
+            ".kotgent.json outlives the row, so finding the file may not bring a deleted project back",
+        )
+
+        val row = assertNotNull(f.store.project(alpha))
+        assertEquals("kotgent", row.name, "a refused registration writes nothing at all")
+        assertEquals("/repo", row.path)
+        assertEquals(1_000L, row.updatedAt, "not even the timestamp moves")
+        assertTrue(row.archived, "and the mark it refused for is still there")
+    }
+
+    @Test
+    fun theProjectTombstoneRoundTripsAndAnUnknownUuidIsRefusedRatherThanInvented() = test { f ->
+        f.store.upsertProject(alpha, "kotgent", "/repo")
+        assertFalse(assertNotNull(f.store.project(alpha)).archived, "a fresh project is live")
+
+        assertTrue(f.store.setProjectArchived(alpha, true))
+        assertTrue(assertNotNull(f.store.project(alpha)).archived)
+
+        assertTrue(f.store.setProjectArchived(alpha, false))
+        assertFalse(assertNotNull(f.store.project(alpha)).archived)
+        assertEquals(
+            ProjectRegistration.registered,
+            f.store.upsertProject(alpha, "kotgent", "/repo"),
+            "clearing the mark is what makes the project registrable again",
+        )
+
+        assertFalse(f.store.setProjectArchived(beta, true), "no row, no write")
+        assertNull(f.store.project(beta))
+    }
+
+    @Test
+    fun theTwoProjectSelectionsSplitTheListAndNeitherSideSeesTheOther() = test { f ->
+        f.store.upsertProject(alpha, "alfa", "/a")
+        f.store.upsertProject(beta, "zulu", "/z")
+        assertEquals(listOf(alpha, beta), f.store.listProjects().map { it.id })
+        assertEquals(emptyList(), f.store.listProjects(archived = true).map { it.id })
+
+        f.store.setProjectArchived(alpha, true)
+
+        assertEquals(listOf(beta), f.store.listProjects().map { it.id }, "the board reads the live ones")
+        assertEquals(
+            listOf(alpha),
+            f.store.listProjects(archived = true).map { it.id },
+            "and the restore dialog reads exactly the other side",
+        )
+        assertTrue(f.store.listProjects(archived = true).single().archived, "each record carries its mark")
+    }
+
+    @Test
+    fun aDatabaseWrittenBeforeTheArchivedColumnOpensMigratesAndAnswers() = runBlocking {
+        withTimeout(20_000) {
+            withTempDbDir { dir ->
+                val driver = NativeSqliteDriver(
+                    schema = preProjectArchiveSchema,
+                    name = "tasks-project-archive-test.db",
+                    onConfiguration = { it.copy(extendedConfig = it.extendedConfig.copy(basePath = dir)) },
+                )
+                try {
+                    // Written by a daemon that predates the column: the ALTER, not the CREATE, must add it.
+                    driver.execute(
+                        null,
+                        "INSERT INTO projects(id, name, path, updated_at) " +
+                            "VALUES ('${alpha.value}', 'kotgent', '/repo', 1)",
+                        0,
+                    )
+
+                    val store = SqliteTaskStore.using(driver) { 2_000L }
+                    val migrated = assertNotNull(store.project(alpha))
+                    assertEquals("kotgent", migrated.name, "the pre-migration row survives untouched")
+                    assertEquals("/repo", migrated.path)
+                    assertFalse(migrated.archived, "the added column defaults to live")
+                    assertEquals(listOf(alpha), store.listProjects().map { it.id })
+
+                    assertTrue(store.setProjectArchived(alpha, true), "and is writable after the migration")
+                    assertEquals(
+                        ProjectRegistration.refusedArchived,
+                        store.upsertProject(alpha, "kotgent", "/repo"),
+                    )
+
+                    val reopened = SqliteTaskStore.using(driver) { 3_000L }
+                    assertTrue(
+                        assertNotNull(reopened.project(alpha)).archived,
+                        "a second open runs no ALTER and still reads the mark",
+                    )
+                    assertEquals(listOf(alpha), reopened.listProjects(archived = true).map { it.id })
+                    assertEquals(emptyList(), reopened.listProjects().map { it.id })
+                } finally {
+                    driver.close()
+                }
+            }
+        }
+    }
+
 
     @Test
     fun aReOpenedStoreResumesTheRevisionAndTheLocalKeyCounter() = test { _ ->
@@ -629,6 +732,28 @@ class TaskStoreTest {
             }
             rmdir(dir)
         }
+    }
+
+    /** A `projects` table as it was written before the delete tombstone existed. */
+    private val preProjectArchiveSchema = object : SqlSchema<QueryResult.Value<Unit>> {
+        override val version: Long = 1
+
+        override fun create(driver: SqlDriver): QueryResult.Value<Unit> {
+            driver.execute(
+                null,
+                "CREATE TABLE projects (id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, path TEXT, " +
+                    "updated_at INTEGER NOT NULL)",
+                0,
+            )
+            return QueryResult.Unit
+        }
+
+        override fun migrate(
+            driver: SqlDriver,
+            oldVersion: Long,
+            newVersion: Long,
+            vararg callbacks: AfterVersion,
+        ): QueryResult.Value<Unit> = QueryResult.Unit
     }
 
     private val preTaskSchema = object : SqlSchema<QueryResult.Value<Unit>> {

@@ -5,6 +5,7 @@ import io.kotgent.core.TaskRef
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectRecord
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskTracker
@@ -57,9 +58,17 @@ interface TaskStore : TaskTracker {
     suspend fun activity(ref: TaskRef): List<TaskActivityEntry>
 
 
-    suspend fun upsertProject(id: ProjectId, name: String, path: String?)
+    /**
+     * Registers the project, or refuses because it carries the delete tombstone. The decision is made
+     * under the implementation's own lock so no call site has to read before it writes.
+     */
+    suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration
 
-    suspend fun listProjects(): List<ProjectRecord>
+    /** Sets or clears the tombstone; false when no such project row exists. */
+    suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean
+
+    /** One side of the split: the board wants the live projects, the restore dialog the archived ones. */
+    suspend fun listProjects(archived: Boolean = false): List<ProjectRecord>
 
     suspend fun project(id: ProjectId): ProjectRecord?
 }
