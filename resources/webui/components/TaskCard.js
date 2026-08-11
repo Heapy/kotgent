@@ -13,15 +13,8 @@ export function TaskCard({
   sessions = [],
   active = false,
   dragging = false,
-  moveTargets = [],
-  canMoveUp = false,
-  canMoveDown = false,
   onOpen,
   onOpenSession,
-  onDelete,
-  onMoveState,
-  onMoveUp,
-  onMoveDown,
   onDragPointerDown,
   onDragPointerMove,
   onDragPointerUp,
@@ -87,24 +80,6 @@ export function TaskCard({
             })}
           </ul>`}
       </div>
-
-      <details class="task-card-menu">
-        <summary aria-label=${"Actions for " + (entry.title || entry.ref)}>⋯</summary>
-        <div>
-          ${moveTargets.length > 0 && html`
-            <button type="button" class="button button-quiet" disabled=${!canMoveUp}
-                    onClick=${() => onMoveUp(entry)}>Move up</button>
-            <button type="button" class="button button-quiet" disabled=${!canMoveDown}
-                    onClick=${() => onMoveDown(entry)}>Move down</button>
-            ${moveTargets.map((target) => html`
-              <button key=${target.state} type="button" class="button button-quiet"
-                      onClick=${() => onMoveState(entry, target.state)}>
-                Move to ${target.label}
-              </button>`)}`}
-          <button type="button" class="button button-quiet"
-                  onClick=${() => onDelete(entry)}>Delete task</button>
-        </div>
-      </details>
     </article>
   `;
 }

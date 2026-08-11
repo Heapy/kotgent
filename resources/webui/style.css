@@ -1538,34 +1538,6 @@ button.task-card-title:hover,
 .task-sessions li a .task-session-dot {
   margin-right: 6px;
 }
-.task-card-menu {
-  background: none;
-  border: 0;
-  border-radius: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1;
-  margin-left: auto;
-  min-height: 22px;
-  opacity: 0;
-  padding: 0 4px;
-  transition: opacity 120ms ease-in-out;
-}
-.task-card:hover .task-card-menu,
-.task-card:focus-within .task-card-menu { opacity: 1; }
-.task-card-menu:hover { color: var(--text); }
-.task-card-menu:focus-visible {
-  opacity: 1;
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-@media (hover: none) {
-  .task-card-menu { opacity: 1; }
-}
-
 .task-detail {
   --detail-gutter: 14px;
   background: var(--panel);
@@ -2028,10 +2000,6 @@ button.task-card-title:hover,
     color: var(--text);
   }
   .task-card { padding: 11px 12px; }
-  .task-card-menu {
-    min-height: 34px;
-    padding: 0 8px;
-  }
   .task-detail { --detail-gutter: 10px; }
   .task-detail-head { padding: 10px; }
 }

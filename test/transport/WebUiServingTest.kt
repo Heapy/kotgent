@@ -543,7 +543,7 @@ class WebUiServingTest {
             for (className in tokens) {
                 assertTrue(
                     BOARD_VOCABULARY.contains(className),
-                    "$name emits '$className', which is not in the plan's Board CSS vocabulary — " +
+                    "$name emits '$className', which BOARD_VOCABULARY does not declare — " +
                         "style.css is written from that list and would never style it",
                 )
             }
@@ -792,7 +792,7 @@ private val BOARD_VOCABULARY: Set<String> = setOf(
     "board-columns", "board-column", "board-column-head", "board-column-switch",
     "board-show-all-done", "board-drop-target",
     "task-card", "task-card-handle", "task-card-title", "task-card-meta",
-    "task-blocked", "task-dep-count", "task-sessions", "task-session-dot", "task-card-menu",
+    "task-blocked", "task-dep-count", "task-sessions", "task-session-dot",
     "task-detail", "task-detail-head", "task-detail-body", "task-deps",
     "task-activity", "task-activity-row",
     "task-badge", "task-badge-unknown",

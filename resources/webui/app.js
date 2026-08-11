@@ -1048,7 +1048,6 @@ function App() {
         drawerOpen=${drawerOpen}
         sidebarCollapsed=${sidebarCollapsed}
         onTaskRow=${applyTaskRow}
-        onTaskRemoved=${applyTaskRemoved}
         onProjectCreated=${projectCreated}
         onToggleDrawer=${toggleDrawer}
         onToggleSidebar=${toggleSidebar}

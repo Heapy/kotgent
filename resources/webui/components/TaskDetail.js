@@ -240,6 +240,7 @@ export function TaskDetail({
     run("Could not delete " + taskRef, async () => {
       await deleteTask(taskRef);
       onAnnounce("Deleted " + taskRef + ".");
+      // Delete answers with no row to merge, so drop the card here instead of awaiting its frame.
       if (onTaskRemovedRef.current) onTaskRemovedRef.current(taskRef);
       backToBoard();
     }, false);

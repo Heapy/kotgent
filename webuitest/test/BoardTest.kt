@@ -6,6 +6,7 @@ import com.microsoft.playwright.Mouse
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
+import com.microsoft.playwright.options.AriaRole
 import com.microsoft.playwright.options.KeyboardModifier
 import com.microsoft.playwright.options.MouseButton
 import java.util.Collections
@@ -235,25 +236,17 @@ class BoardTest {
         }
 
     @Test
-    fun thePhoneMovesACardThroughTheCardMenuInsteadOfADrag() =
-        onTheBoard("thePhoneMovesACardThroughTheCardMenuInsteadOfADrag", phone = true) { _, page ->
-            val writes = page.recordTaskWrites()
-
-            page.moveFromCardMenu("local:1", "Move to In progress")
-            assertThat(page.card("local:1")).hasCount(0)
-
-            page.locator(".board-column-switch button[data-state=\"in_progress\"]").click()
-            assertThat(page.column("in_progress").locator(".task-card[data-ref=\"local:1\"]")).hasCount(1)
-            assertEquals(listOf("local:1", "local:5", "local:6"), page.refsIn("in_progress"))
-
-            page.moveFromCardMenu("local:1", "Move down")
-            page.waitForCondition { page.refsIn("in_progress") == listOf("local:5", "local:1", "local:6") }
-            assertEquals(
-                listOf("PATCH /tasks/local%3A1", "POST /tasks/local%3A1/move"),
-                writes.snapshot(),
-                "a menu state-move is the state ALONE — there is no rank to resolve against a column off " +
-                    "screen — and the whole log is that PATCH plus the deliberate Move down after it",
-            )
+    fun noCardCarriesActionControlsBecauseTaskActionsLiveInTheDetailPane() =
+        // The card's markup no longer varies by viewport, so the desktop board stands for the phone
+        // too — and it renders every seeded card, including the blocked and session-linked shapes.
+        onTheBoard("noCardCarriesActionControlsBecauseTaskActionsLiveInTheDetailPane") { _, page ->
+            val cards = page.locator(".task-card")
+            assertThat(cards).hasCount(SEEDED_CARDS)
+            // Count hidden matches as well: the menu this replaces kept its buttons, and its own
+            // group role, inside a closed <details> that an accessibility-tree query would miss.
+            val alsoHidden = Locator.GetByRoleOptions().setIncludeHidden(true)
+            assertThat(cards.getByRole(AriaRole.BUTTON, alsoHidden)).hasCount(0)
+            assertThat(cards.getByRole(AriaRole.GROUP, alsoHidden)).hasCount(0)
         }
 
     @Test
@@ -368,13 +361,6 @@ class BoardTest {
             "the recorder's whole log must be this drop's two calls — which says both that it CAN see a " +
                 "task write and that the gestures above added none",
         )
-    }
-
-    private fun Page.moveFromCardMenu(ref: String, action: String) {
-        card(ref).locator(".task-card-menu summary").click()
-        card(ref).locator(".task-card-menu button")
-            .filter(Locator.FilterOptions().setHasText(action))
-            .click()
     }
 
     private fun Page.watchDragClaims() = evaluate(DRAG_CLAIM_WATCHER_JS)

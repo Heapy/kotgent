@@ -9,7 +9,6 @@ import { navigate, sessionPath, taskPath } from "../lib/router.js";
 import {
   createProject,
   createTask,
-  deleteTask,
   moveTask,
   patchTask,
 } from "../lib/tasks.js";
@@ -105,7 +104,6 @@ export function Board({
   drawerOpen = false,
   sidebarCollapsed = false,
   onTaskRow,
-  onTaskRemoved,
   onProjectCreated,
   onToggleDrawer,
   onToggleSidebar,
@@ -200,44 +198,6 @@ export function Board({
     }
   }, [publishRow, say]);
 
-  const moveToState = useCallback(async (entry, state) => {
-    try {
-      publishRow(await patchTask(entry.ref, { state: state }));
-    } catch (e) {
-      say("Could not move " + entry.ref + ": " + errorMessage(e), true);
-    }
-  }, [publishRow, say]);
-
-  const moveWithinColumn = useCallback(async (entry, offset) => {
-    const column = entriesRef.current.filter((row) => row.state === entry.state);
-    const index = column.findIndex((row) => row.ref === entry.ref);
-    const neighbour = column[index + offset];
-    if (index < 0 || !neighbour) return;
-    const target = offset < 0 ? { before: neighbour.ref } : { after: neighbour.ref };
-    try {
-      publishRow(await moveTask(entry.ref, target));
-    } catch (e) {
-      say("Could not move " + entry.ref + ": " + errorMessage(e), true);
-    }
-  }, [publishRow, say]);
-
-  const moveUp = useCallback((entry) => moveWithinColumn(entry, -1), [moveWithinColumn]);
-  const moveDown = useCallback((entry) => moveWithinColumn(entry, 1), [moveWithinColumn]);
-
-  const removeTaskCard = useCallback(async (entry) => {
-    const label = entry.title ? entry.title + " (" + entry.ref + ")" : entry.ref;
-    if (typeof window !== "undefined" && typeof window.confirm === "function" &&
-      !window.confirm("Delete " + label + "? Its dependencies and activity go with it.")) return;
-    try {
-      await deleteTask(entry.ref);
-      // Delete returns no row, so remove it locally without waiting for an event.
-      if (onTaskRemoved) onTaskRemoved(entry.ref);
-      say("Deleted " + entry.ref + ".");
-    } catch (e) {
-      say("Could not delete " + entry.ref + ": " + errorMessage(e), true);
-    }
-  }, [onTaskRemoved, say]);
-
   const submitTask = useCallback(async (title, body) => {
     const created = await createTask(projectId, title, body);
     publishRow(created);
@@ -312,9 +272,6 @@ export function Board({
   const shownColumns = phone
     ? columns.filter((column) => column.state === activeColumn)
     : columns;
-  const moveTargets = phone
-    ? BOARD_COLUMNS.filter((column) => column.state !== activeColumn)
-    : [];
 
   const renderColumn = (column) => {
     const capped = column.state === "done" && !showAllDone &&
@@ -322,8 +279,6 @@ export function Board({
     const visible = capped
       ? column.entries.slice(column.entries.length - DONE_VISIBLE_LIMIT)
       : column.entries;
-    // Judge moves against the full done column, including hidden cards.
-    const hidden = column.entries.length - visible.length;
     const over = Boolean(draggingRef && dropTarget && dropTarget.state === column.state);
     return html`
       <section key=${column.state} class=${"board-column" + (over ? " board-drop-target" : "")}
@@ -332,22 +287,15 @@ export function Board({
           <h2>${column.label}</h2>
           <span>${column.entries.length}</span>
         </header>
-        ${visible.map((entry, index) => html`
+        ${visible.map((entry) => html`
             <${TaskCard}
               key=${entry.ref}
               entry=${entry}
               sessions=${sessionsByTask.get(entry.ref) || []}
               active=${routeId === entry.ref}
               dragging=${draggingRef === entry.ref}
-              moveTargets=${moveTargets}
-              canMoveUp=${hidden + index > 0}
-              canMoveDown=${hidden + index < column.entries.length - 1}
               onOpen=${openTask}
               onOpenSession=${openSession}
-              onDelete=${removeTaskCard}
-              onMoveState=${moveToState}
-              onMoveUp=${moveUp}
-              onMoveDown=${moveDown}
               onDragPointerDown=${dragPointerDown}
               onDragPointerMove=${dragPointerMove}
               onDragPointerUp=${dragPointerUp}
