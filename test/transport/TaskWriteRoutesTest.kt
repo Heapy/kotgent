@@ -101,6 +101,22 @@ class TaskWriteRoutesTest {
     }
 
     @Test
+    fun createNamingADeletedProjectIs404LikeAnUnknownOne() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+
+        val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"x"}""")
+
+        assertEquals(
+            HttpStatusCode.NotFound,
+            resp.status,
+            "a tombstoned project is not addressable — a caller naming it gets what an unknown uuid gets",
+        )
+        assertTrue(resp.bodyAsText().contains(alpha.value), "the body names the project it refused")
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "nothing was created")
+    }
+
+    @Test
     fun createWithAMalformedExplicitProjectIs400() = withTaskServer { env ->
         val resp = env.post("/tasks", """{"project":"not-a-uuid","title":"x"}""")
 
@@ -176,6 +192,54 @@ class TaskWriteRoutesTest {
 
         assertEquals(HttpStatusCode.Created, resp.status)
         assertEquals(listOf("/scratch/notes" to "notes"), env.writer.calls)
+    }
+
+    @Test
+    fun createFromAPaneWhoseProjectWasDeletedIsRefusedBeforeAnythingIsWritten() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/sub")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "kotgent", "/repo")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        val resp = env.post("/tasks", """{"title":"into a deleted project"}""", pane = paneOne)
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        val body = resp.bodyAsText()
+        assertTrue(body.contains("kotgent") && body.contains(alpha.value), "the refusal names the project: $body")
+        assertTrue(body.contains("kotgent project restore ${alpha.value}"), "and the way back: $body")
+        assertTrue(body.contains("--project"), "and the way past it: $body")
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "no card was filed into a deleted project")
+        assertTrue(
+            env.writer.calls.isEmpty(),
+            "the refusal came before the fallback — that file is still on disk and would mint the same uuid",
+        )
+        assertNull(
+            assertNotNull(env.sessions.snapshot()[sessionOne]).projectId,
+            "and the deleted project was not bound onto the calling session either",
+        )
+    }
+
+    @Test
+    fun createFromAPaneWhoseDeletedProjectWasRestoredFilesTheTaskAsBefore() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/sub")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "kotgent", "/repo")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        assertTrue(env.tasks.setProjectArchived(alpha, false), "the operator restores the project")
+
+        val resp = env.post("/tasks", """{"title":"back in business"}""", pane = paneOne)
+
+        assertEquals(HttpStatusCode.Created, resp.status, "the guard keys on the mark, not on the file or the row")
+        assertEquals(
+            alpha.value,
+            TRANSPORT_JSON.decodeFromString(BacklogEntryDto.serializer(), resp.bodyAsText()).project,
+        )
+        assertEquals(alpha, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
     }
 
     @Test

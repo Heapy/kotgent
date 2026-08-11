@@ -13,6 +13,7 @@ import io.kotgent.task.NoProjectException
 import io.kotgent.task.NoSessionException
 import io.kotgent.task.PROJECT_NAME_MAX_LENGTH
 import io.kotgent.task.ProjectPathException
+import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.TaskState
 import io.kotgent.task.UnknownProjectException
 import io.kotgent.task.UnknownTaskException
@@ -332,7 +333,10 @@ private suspend fun RoutingContext.resolveProjectForCreate(
             )
             return null
         }
-        if (routing.tasks.project(id) == null) {
+        // A tombstoned project is not addressable: the row survives so a restore can return the backlog,
+        // but nothing may file INTO it, so a caller naming one gets what an unknown uuid gets.
+        val record = routing.tasks.project(id)
+        if (record == null || record.archived) {
             fail(HttpStatusCode.NotFound, UnknownProjectException(id))
             return null
         }
@@ -355,10 +359,28 @@ private suspend fun RoutingContext.resolveProjectForCreate(
     session.projectId?.let { return it }
 
     val fs = routing.service.projectFs
-    resolveProject(fs, session.cwd)?.let { resolved ->
-        routing.tasks.upsertProject(resolved.id, resolved.name, resolved.root)
-        bindSessionProject(routing, session, resolved.id)
-        return resolved.id
+    val resolved = resolveProject(fs, session.cwd)
+    if (resolved != null) {
+        return when (routing.tasks.upsertProject(resolved.id, resolved.name, resolved.root)) {
+            ProjectRegistration.registered -> {
+                bindSessionProject(routing, session, resolved.id)
+                resolved.id
+            }
+            // Refusal has to answer HERE, and it is not the same as the projectless case the fallback
+            // below serves: the .kotgent.json that named this project is still on disk, so
+            // ensureProjectFile would adopt it and hand back the very uuid the operator deleted.
+            ProjectRegistration.refusedArchived -> {
+                fail(
+                    HttpStatusCode.BadRequest,
+                    NoProjectException(
+                        "project '${resolved.name}' (${resolved.id.value}) was deleted — bring it back with " +
+                            "`kotgent project restore ${resolved.id.value}`, or file this task in another " +
+                            "project with --project",
+                    ),
+                )
+                null
+            }
+        }
     }
 
     val canonical = fs.canonicalize(session.cwd) ?: session.cwd

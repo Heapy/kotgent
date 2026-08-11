@@ -217,13 +217,13 @@ would land in a deleted project.
 - Modify: `src/transport/TaskWriteRoutes.kt`
 - Modify: `test/transport/TaskWriteRoutesTest.kt`
 
-- [ ] write the failing test: a session whose cwd resolves to an archived project posting `/tasks` with no
+- [x] write the failing test: a session whose cwd resolves to an archived project posting `/tasks` with no
       explicit project gets a refusal, and `MemoryProjectFileWriter` recorded nothing
-- [ ] make `resolveProjectForCreate` refuse before the `ensureProjectFile` fallback, with a message naming
+- [x] make `resolveProjectForCreate` refuse before the `ensureProjectFile` fallback, with a message naming
       the project and `kotgent project restore <uuid>` / `--project`
-- [ ] keep the explicit-`project` branch answering `404` for an archived uuid, as it does for an unknown one
-- [ ] add a test that a live project in the same position still creates the task
-- [ ] run tests — must pass before task 4
+- [x] keep the explicit-`project` branch answering `404` for an archived uuid, as it does for an unknown one
+- [x] add a test that a live project in the same position still creates the task
+- [x] run tests — must pass before task 4
 
 ### Task 4: Adopt clears the tombstone
 
