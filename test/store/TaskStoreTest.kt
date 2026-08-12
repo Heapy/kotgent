@@ -599,11 +599,6 @@ class TaskStoreTest {
 
     @Test
     fun aSelectedCardIsStillRefusedByTheStartItselfWhenTheDeleteOvertookTheSelection() = test { f ->
-        // The second half of the same rule. `linkNext` selects and starts as two calls holding no lock in
-        // between, so guarding only the candidate query would still let a delete landing in that gap have
-        // the daemon CHOOSE work out of a project the board no longer lists — the outcome the refusal
-        // exists to prevent. Selecting the card while the project is live and archiving before the start
-        // is exactly that interleaving.
         assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
         f.store.create(alpha, "selected an instant before the delete", "")
         assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref, "live, it is offered")
@@ -628,8 +623,6 @@ class TaskStoreTest {
 
     @Test
     fun aNamedRefStartsInADeletedProjectBecauseDeferenceIsNotSelection() = test { f ->
-        // `POST /tasks/{ref}/link`'s half of the same method: the tombstone withdraws a project as a
-        // SOURCE of work, not the cards an agent already holds, so the default form carries no clause.
         assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
         f.store.create(alpha, "held by an agent when the project was deleted", "")
         assertTrue(f.store.setProjectArchived(alpha, true))
@@ -643,8 +636,6 @@ class TaskStoreTest {
 
     @Test
     fun aStartInAProjectWithNoRowAtAllIsNotRefusedEitherWay() = test { f ->
-        // Absence is not a tombstone — the same clause `nextCandidate` carries, so an entry whose project
-        // was never registered behaves exactly as it did before the column.
         f.store.create(alpha, "no project row anywhere", "")
 
         assertNull(f.store.project(alpha), "nothing registered this project")
@@ -653,8 +644,6 @@ class TaskStoreTest {
 
     @Test
     fun aBacklogWhoseProjectHasNoRowAtAllIsStillOffered() = test { f ->
-        // Absence is not a tombstone. The candidate query excludes only an `archived <> 0` row, so an
-        // entry whose project was never registered keeps behaving exactly as it did before the column.
         f.store.create(alpha, "no project row anywhere", "")
 
         assertNull(f.store.project(alpha), "nothing registered this project")
@@ -741,7 +730,6 @@ class TaskStoreTest {
                     onConfiguration = { it.copy(extendedConfig = it.extendedConfig.copy(basePath = dir)) },
                 )
                 try {
-                    // Written by a daemon that predates the column: the ALTER, not the CREATE, must add it.
                     driver.execute(
                         null,
                         "INSERT INTO projects(id, name, path, updated_at) " +
@@ -881,7 +869,6 @@ class TaskStoreTest {
         }
     }
 
-    /** A `projects` table as it was written before the delete tombstone existed. */
     private val preProjectArchiveSchema = object : SqlSchema<QueryResult.Value<Unit>> {
         override val version: Long = 1
 

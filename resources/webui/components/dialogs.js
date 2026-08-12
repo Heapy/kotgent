@@ -611,7 +611,7 @@ export function UploadFilesDialog({ session, onClose }) {
   `;
 }
 
-// A null count means the task list has not arrived yet; only a read list may be counted out loud.
+// Null means the task snapshot has not loaded; do not claim the backlog is empty.
 function taskKeptSentence(count) {
   if (count === null || count === undefined) {
     return "Its tasks are kept, with their order, dependencies, comments and the sessions linked " +
@@ -625,15 +625,12 @@ function taskKeptSentence(count) {
     "sessions linked to them.";
 }
 
-/* Deleting a project is a tombstone, not a cascade, and the dialog has to say so: an operator who
- * believes they are erasing a backlog will not press the button, and one who believes the directory
- * is being cleaned up would press it wrongly. */
 export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const cancelRef = useRef(null);
 
-  // A destructive confirmation opens on its safe control.
+  // Default focus stays on the non-destructive action.
   useEffect(() => { if (cancelRef.current) cancelRef.current.focus(); }, []);
 
   const submit = async (event) => {
@@ -693,14 +690,11 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
   `;
 }
 
-/* The browser cannot know whether anything was ever deleted without asking, which is why the command
- * that opens this is never disabled and why the empty answer is a sentence rather than an empty box. */
 export function RestoreProjectDialog({ onRestore, onClose }) {
   const [state, setState] = useState({ status: "loading" });
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState(null);
-  // Dismissing the dialog unmounts it while the read may still be in flight, so this one guards its own
-  // lifetime rather than setting state on a component that is gone.
+  // Avoid state updates after the dismissible dialog unmounts.
   const aliveRef = useRef(true);
   useEffect(() => () => { aliveRef.current = false; }, []);
 

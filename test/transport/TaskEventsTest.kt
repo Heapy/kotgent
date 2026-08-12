@@ -464,7 +464,6 @@ class TaskEventsTest {
         }
 
 
-        // The baseline is the ONLY caller of either here, and it must take the single-read one.
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
             error("the /events baseline owes TaskStore.listAllProjects' single-observation contract")
 

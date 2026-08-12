@@ -505,12 +505,7 @@ class TaskProjectWiringTest {
             return ProjectRegistration.registered
         }
 
-        /**
-         * Seeding, not the store method: this fake has no project rows to answer `false` for, and the
-         * real store answers `false` for a missing one. A double that reported a different boolean than
-         * production would be the "fake that proves a fictional system" `docs/TESTING.md` warns about,
-         * so the override below refuses instead — nothing on the daemon's project-wiring path calls it.
-         */
+        // Seed tombstone state; this wiring path never calls the production mutator.
         fun archiveProject(id: ProjectId, archived: Boolean) {
             if (archived) archivedProjects += id else archivedProjects -= id
         }

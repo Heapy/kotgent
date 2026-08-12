@@ -293,10 +293,7 @@ class TaskWriteRoutesTest {
         env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
-        // The window the route cannot close: resolution registers a LIVE project and this route then
-        // holds no lock at all before the insert. Archiving from inside the store seam interleaves the
-        // delete exactly there — calling the two in sequence proves nothing, because in sequence
-        // resolution's own check already refuses.
+        // Interleave deletion after resolution and before the atomic insert check.
         env.tasks.beforeCreate = {
             assertTrue(env.tasks.setProjectArchived(alpha, true))
             env.tasks.beforeCreate = null
@@ -352,9 +349,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun createFromAPaneWhoseCwdIsGoneCannotAdoptItsWayIntoADeletedProject() = withTaskServer { env ->
-        // The cwd no longer canonicalizes, so `resolveProject` gives up before reading anything and the
-        // fallback runs. Its `ensureProjectFile` ADOPTS the checkout root's existing file, which is how
-        // a deleted project's uuid reaches an upsert that never minted it.
+        // Force the fallback that adopts the checkout root's existing project file.
         env.fs.dirs += setOf("/repo", "/repo/.git")
         env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
         env.tasks.seedProject(alpha, "kotgent", "/repo")
@@ -1172,7 +1167,6 @@ class TaskWriteRoutesTest {
                 resp.status,
                 "a uuid that cannot parse addresses no resource at all: ${resp.bodyAsText()}",
             )
-            // Not merely "uuid": the request path carries that word itself, so an echo would satisfy it.
             assertTrue(
                 resp.bodyAsText().contains("malformed project id 'not-a-uuid'"),
                 resp.bodyAsText(),
@@ -1324,11 +1318,7 @@ class TaskWriteRoutesTest {
 
         override suspend fun get(ref: TaskRef): Task? = mutex.withLock { tasks[ref] }
 
-        /**
-         * Runs before the lock is taken, which is the whole point: it is the place a concurrent
-         * `DELETE /projects/{id}` lands — after resolution read the project row and before the insert
-         * reads it again.
-         */
+        /** Runs outside the lock to expose the resolution/insert race. */
         var beforeCreate: (suspend () -> Unit)? = null
 
         override suspend fun create(
@@ -1347,8 +1337,6 @@ class TaskWriteRoutesTest {
             body: String,
             author: String,
         ): Task = mutex.withLock {
-            // Under the insert's own lock, as the production transaction decides it: a fake checking
-            // outside would let this suite pass against a race the daemon has closed.
             if (projects[project]?.archived == true) throw ArchivedProjectException(project)
             val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
             val task = Task(ref, title, body, url = null, updatedAt = 0L)
@@ -1499,8 +1487,6 @@ class TaskWriteRoutesTest {
                 if (existing != null && existing.archived) {
                     return@withLock ProjectRegistration.refusedArchived
                 }
-                // Carried, not defaulted — the production statement leaves `archived` out of its
-                // `ON CONFLICT DO UPDATE SET`, so an upsert can never clear a mark.
                 projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L, existing?.archived ?: false)
                 ProjectRegistration.registered
             }

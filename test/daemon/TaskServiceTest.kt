@@ -215,8 +215,7 @@ class TaskServiceTest {
                 f.seedSession(s1, createdAt = 1_000L)
                 f.seedTask(t1)
 
-                // linkNext holds no lock between selecting a card and starting it, so the delete lands
-                // here. The store refuses the start; nothing in this loop knows why, and nothing needs to.
+                // Interleave deletion after selection and before start.
                 f.tasks.afterNextCandidate = { call ->
                     if (call == 0) f.tasks.archivedProjects += alpha
                 }
@@ -526,11 +525,9 @@ class TaskServiceTest {
 
         var nextCandidateCalls: Int = 0
 
-        /** The delete tombstone, which both the selection and the selection's start must observe. */
         val archivedProjects: MutableSet<ProjectId> = mutableSetOf()
 
-        // Runs after the read and outside the witness so two callers can hold the same candidate — which
-        // makes it the gap a `DELETE /projects/{id}` lands in, between selecting a card and starting it.
+        // Runs after the read and outside the witness so claims or deletion can interleave.
         var afterNextCandidate: (suspend (Int) -> Unit)? = null
 
         private var rev = 0L
@@ -570,7 +567,6 @@ class TaskServiceTest {
 
         private fun startLocked(ref: TaskRef, requireLiveProject: Boolean): Boolean {
             val existing = entries[ref]
-            // One observation, tombstone included — production decides both halves in the one UPDATE.
             return if (existing == null || existing.state != TaskState.todo) {
                 false
             } else if (requireLiveProject && existing.project in archivedProjects) {

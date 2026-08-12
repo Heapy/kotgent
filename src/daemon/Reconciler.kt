@@ -126,12 +126,7 @@ class Reconciler(
         store.setTaskRef(meta.id, null, sortKeyOf(meta))
     }
 
-    /**
-     * Only rows with no [SessionMeta.projectId] are looked at, which is how a registration that THREW on an
-     * earlier start is retried here. A registration refused because the project is archived is not that: the
-     * project file is still on disk and will resolve on every restart, so the refusal is skipped as quietly
-     * as an unresolvable cwd rather than retried until an operator restores the project.
-     */
+    /** Leaves archived projects unbound; failed registrations remain eligible for later reconciliation. */
     private suspend fun backfillProjectId(tasks: TaskStore, meta: SessionMeta) {
         if (meta.projectId != null) return
         val fs = projectFs ?: return

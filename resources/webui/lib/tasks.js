@@ -81,7 +81,6 @@ export async function deleteTask(ref) {
   return apiRequest(taskPath(ref), { method: "DELETE" });
 }
 
-// `archived` asks for the deleted projects instead of the live ones; only the restore dialog passes it.
 export async function fetchProjects(archived = false) {
   return (await apiRequest("/projects" + (archived ? "?archived=true" : ""))) || [];
 }
@@ -94,8 +93,7 @@ function projectPath(id, suffix) {
   return "/projects/" + encodeURIComponent(id) + (suffix || "");
 }
 
-// A tombstone, not a cascade: the tasks, the sessions' links and the project's `.kotgent.json` all
-// survive it. Both calls are idempotent, so a repeated click answers the same row rather than a 404.
+// Deletion only tombstones the project; tasks, links, and filesystem state survive.
 export async function deleteProject(id) {
   return apiRequest(projectPath(id), { method: "DELETE" });
 }

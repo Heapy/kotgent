@@ -83,8 +83,7 @@ class SqliteEventStore private constructor(
             },
             parameters = 0,
         )
-        // SQLDelight migrations are disabled by the codegen plugin, so an additive column is added by
-        // hand here. The guard is not tidiness — see `hasColumn` in Migrations.kt.
+        // SQLDelight migrations are disabled; the guard avoids SQLiter logging duplicate-column errors.
         if (!driver.hasColumn("sessions", "archived")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }

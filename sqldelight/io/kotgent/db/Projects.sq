@@ -1,9 +1,6 @@
 -- The committed UUID is stable across worktrees; path is only the most recently observed checkout.
 -- Existing databases create this table in SqliteTaskStore.init; keep the DDL synchronized.
--- `archived` is the delete tombstone. `.kotgent.json` outlives any row, so the next resolution in that
--- directory would otherwise re-register the project with the same uuid. It is therefore deliberately
--- ABSENT from upsertProject's ON CONFLICT DO UPDATE SET: registration may never clear the mark, and only
--- an explicit operator action (adopt, or restore) may.
+-- `archived` is a tombstone and is deliberately absent from the upsert; only adopt or restore clears it.
 CREATE TABLE projects (
   id         TEXT NOT NULL PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -30,7 +27,6 @@ SELECT id, name, path, updated_at, archived
 FROM projects
 WHERE id = ?;
 
--- Read inside upsertProject's own transaction, so the tombstone check cannot race a restore.
 selectProjectArchived:
 SELECT archived
 FROM projects
@@ -42,8 +38,6 @@ FROM projects
 WHERE archived = ?
 ORDER BY name, id;
 
--- BOTH sides of the tombstone in ONE statement; `TaskStore.listAllProjects` states why running the two
--- selections above back to back is not the same observation and cannot substitute.
 selectAllProjects:
 SELECT id, name, path, updated_at, archived
 FROM projects

@@ -57,8 +57,7 @@ class SqliteTaskStore private constructor(
 
     init {
         for (statement in CREATE_TABLES_IF_NOT_EXISTS) driver.execute(null, statement, 0)
-        // A table created before the tombstone existed needs the column added; the guard is `hasColumn`'s,
-        // and Migrations.kt says why it is not tidiness.
+        // SQLDelight migrations are disabled; the guard avoids SQLiter logging duplicate-column errors.
         if (!driver.hasColumn("projects", "archived")) {
             driver.execute(null, "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }
@@ -93,10 +92,7 @@ class SqliteTaskStore private constructor(
             val ts = now()
             var refused = false
             db.transaction {
-                // The tombstone is read by the INSERT's own transaction, exactly as upsertProject reads
-                // it: the caller resolved this project in an earlier call and holds no lock in between,
-                // so a delete landing in that gap would otherwise file a card into a project the board
-                // no longer lists. Refusing here is what makes the check and the write one decision.
+                // Keep the tombstone check atomic with insertion so project deletion cannot race creation.
                 val archived = projects.selectProjectArchived(project.value).executeAsOneOrNull()
                 if (archived != null && archived != 0L) {
                     refused = true
@@ -125,9 +121,7 @@ class SqliteTaskStore private constructor(
                     ),
                 )
             }
-            // Thrown outside the transaction, so the rollback is SQLite's ordinary empty commit rather
-            // than an exception unwinding through it, and `publishing` clears its staging without ever
-            // emitting — nothing was staged, because the check runs before the first write.
+            // Throw after the empty transaction so the publishing outbox cannot retain staged updates.
             if (refused) throw ArchivedProjectException(project)
             localKeyCounter = key
             Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
@@ -185,8 +179,6 @@ class SqliteTaskStore private constructor(
         val rev = nextRev()
         var changed = false
         db.transaction {
-            // The tombstone rides in the WHERE rather than being read first: a selection that checked the
-            // project and then wrote would be the same race with more steps.
             changed = if (requireLiveProject) {
                 backlog.startIfTodoInLiveProject(ts, rev, ref.value).value > 0L
             } else {
@@ -291,8 +283,7 @@ class SqliteTaskStore private constructor(
     override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
         mutex.withLock {
             var outcome = ProjectRegistration.registered
-            // One transaction, so the tombstone read is answered by the writer's own connection and no
-            // restore can land between the check and the write.
+            // Keep the tombstone check and registration atomic with restore.
             db.transaction {
                 val archived = projects.selectProjectArchived(id.value).executeAsOneOrNull()
                 if (archived != null && archived != 0L) {
@@ -316,8 +307,6 @@ class SqliteTaskStore private constructor(
         }
     }
 
-    // ONE statement under ONE lock, which is how `TaskStore.listAllProjects`' single-observation
-    // contract is met here.
     override suspend fun listAllProjects(): List<ProjectRecord> = mutex.withLock {
         projects.selectAllProjects().executeAsList().mapNotNull { row ->
             ProjectId.parseOrNull(row.id)?.let {

@@ -56,14 +56,7 @@ private fun boardEmptyScenario(): Scenario = Scenario(
     },
 )
 
-/* Three projects because deleting one has to be observed leaving a list that still has members: a
- * lone project would only ever prove the selection falling to null. The archived one is what a
- * delete leaves behind, so the restore dialog has something to answer with before any test acts.
- *
- * Each carries a different NUMBER of cards on purpose. Gamma's are what makes restore falsifiable —
- * "the backlog comes back with it" is unprovable against an empty project, and the tasks_snapshot a
- * page builds its whole list from has to carry a deleted project's rows for it to be true. Beta's
- * single card is the delete confirmation's singular sentence, which has its own grammar. */
+/* Distinct card counts cover delete selection, singular copy, and restoring a non-empty backlog. */
 private fun boardProjectsScenario(): Scenario = Scenario(
     name = "board-projects",
     seed = { fakes ->
@@ -81,8 +74,7 @@ private fun boardProjectsScenario(): Scenario = Scenario(
     },
 )
 
-// An archived project keeps its `.kotgent.json`: the tombstone is a row, and the file it does not
-// touch is the whole reason the row exists.
+// Archived fixtures keep their project file because deletion tombstones only the database row.
 internal fun fixtureProject(
     fakes: HarnessFakes,
     uuid: String,

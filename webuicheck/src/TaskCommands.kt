@@ -69,13 +69,7 @@ private suspend fun raceTask(ctx: HarnessContext, words: List<String>): Boolean 
         reject("task-race: '${ref.value}' refused the step to ${next.name}")
 }
 
-/**
- * /events carries no project frame by design, so a page learns of this only by re-reading `/projects` —
- * which is exactly what a test drives this command to observe. That makes the ONE observable a
- * browser-initiated GET the driver has to beat, and a Playwright assertion on a rendered empty dialog
- * can never recover from having asked too early. So this answers on stdout, the way `restart` answers
- * with its second `READY`: the write has landed by the time the fixture sees the line.
- */
+/** Acknowledges persistence because clients learn project changes only through a later GET. */
 private suspend fun archiveProject(ctx: HarnessContext, words: List<String>, archived: Boolean): Boolean {
     val verb = words[0]
     if (words.size != 2) return reject("usage: $verb <project-uuid>")

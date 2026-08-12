@@ -126,9 +126,6 @@ export function Board({
   }, [onTaskRow]);
 
   const routeId = route && route.id;
-  // Every gate on this screen reads the resolved ROW, never the bare id: an id the live list cannot
-  // name is a deleted project, whose cards must not be painted under a header with no name for them
-  // and whose New task can only 404. The parent already resolves it, so this is the second lock.
   const project = projects.find((row) => row.id === projectId) || null;
 
   useEffect(() => {

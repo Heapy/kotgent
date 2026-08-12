@@ -302,22 +302,12 @@ class SessionManager(
         idAllocationGuard.withLock { reservedIds.remove(sessionId) }
     }
 
-    /**
-     * Null for two unrelated reasons, and only one of them is worth repairing later.
-     *
-     * A registration that FAILED leaves the row unstamped so startup reconciliation retries it — that is
-     * what the warning below is for. A registration REFUSED because the project carries the delete
-     * tombstone is the operator's own decision: `.kotgent.json` outlives the row, so resolution keeps
-     * finding the file forever, and binding the id would resurrect a deleted project on the next start.
-     * That case is quiet and final for as long as the mark stands; it is cleared by adopt or restore,
-     * never by a retry.
-     */
+    /** Returns null quietly for archived projects; failed registrations remain unstamped for retry. */
     private suspend fun resolveAndRegisterProject(cwd: String): ProjectId? {
         val fs = projectFs ?: return null
         val tasks = taskStore ?: return null
         val resolved = resolveProject(fs, cwd) ?: return null
         return try {
-            // An id is returned only once its project row exists; write both or neither.
             when (tasks.upsertProject(resolved.id, resolved.name, resolved.root)) {
                 ProjectRegistration.registered -> resolved.id
                 ProjectRegistration.refusedArchived -> null

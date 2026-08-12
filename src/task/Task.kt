@@ -42,11 +42,7 @@ data class TaskActivityEntry(
 /** A null [entry] means that [ref] was deleted. */
 data class TaskUpdate(val ref: TaskRef, val entry: BacklogEntry?, val rev: Long)
 
-/**
- * [path] is the most recently seen checkout, not a stable project identity.
- *
- * [archived] is the delete tombstone: nothing cascades, so restoring the row returns the whole backlog.
- */
+/** [path] is the most recently seen checkout; [archived] is a non-cascading delete tombstone. */
 data class ProjectRecord(
     val id: ProjectId,
     val name: String,
@@ -55,18 +51,9 @@ data class ProjectRecord(
     val archived: Boolean = false,
 )
 
-/**
- * What [io.kotgent.store.TaskStore.upsertProject] answers, decided under the store's own lock.
- *
- * `.kotgent.json` outlives the row it registered, so a resolution that merely found the file must not
- * resurrect a deleted project. The check has to be atomic with the write: a read-then-write at each of
- * the five call sites would leave a window for a concurrent restore and spread one rule across five files.
- */
+/** Result of atomic registration, which never resurrects an archived project implicitly. */
 enum class ProjectRegistration {
-    /** The row was written. */
     registered,
-
-    /** The project carries the tombstone; nothing was written. */
     refusedArchived,
 }
 

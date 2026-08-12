@@ -28,8 +28,6 @@ fun Route.taskRoutes(routing: TaskRouting) {
     taskLinkRoutes(routing)
 }
 
-// One spelling, so every route that takes a project uuid refuses a mistyped one the same way. Callers
-// that read the uuid off a flag append their own "pass --project <uuid>".
 fun malformedProjectIdMessage(raw: String): String =
     "malformed project id '$raw' — expected a canonical uuid, the `id` field of the project's " +
         PROJECT_FILE_NAME

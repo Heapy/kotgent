@@ -192,8 +192,7 @@ function App() {
 
   const applyTasksBaseline = useCallback((rows) => {
     setTasks((current) => applyTasksSnapshot(current, rows));
-    // The snapshot is the whole task list; before it lands an empty `tasks` means "not read yet", and
-    // a confirmation must not read that as "this project has no tasks".
+    // A destructive confirmation must distinguish an unloaded snapshot from an empty backlog.
     setTasksReady(true);
   }, []);
   const applyTaskRow = useCallback((row) => {
@@ -384,28 +383,21 @@ function App() {
     setDialog((current) => (current === submitted ? null : current));
   }, []);
 
-  // Delete and restore only move a mark on the project row — no cascade, no file write — so each is
-  // one request plus a re-read. /events carries no project frame by design, which is exactly why the
-  // tab that made the change re-reads the list itself.
+  // Project mutations have no event frame, so refresh the live list explicitly.
   const applyProjectArchive = useCallback(async (id, archived) => {
     const submittedDialog = dialogRef.current;
     let changed;
     try {
       changed = archived ? await deleteProject(id) : await restoreProject(id);
     } catch (e) {
-      // Late failures surface globally if the submitting dialog has unmounted: neither dialog disables
-      // its × while busy and Esc is never gated, so the operator can close a "Deleting…" form and then
-      // have the request fail. Rethrowing there would set state on a component Preact has dropped,
-      // leaving a destructive action with no error anywhere.
+      // A dismissed dialog cannot own errors from its still-running request.
       if (dialogRef.current === submittedDialog) throw e;
       say((archived ? "Could not delete the project: " : "Could not restore the project: ") +
         errorMessage(e), true);
       return;
     }
     const rows = await reloadProjects();
-    // A restore is the operator naming that project, so it selects it; a delete only has to leave a
-    // valid selection, and the effect above already replaces one the new list no longer holds. The
-    // empty list is the one case that effect returns early on, so it is the one case handled here.
+    // Restore selects its row; delete only repairs a selection that is no longer live.
     if (rows && rows.length === 0) setProjectId(null);
     if (rows && !archived && rows.some((project) => project.id === id)) setProjectId(id);
     closeDialogFrom(submittedDialog);
@@ -413,17 +405,14 @@ function App() {
     const done = archived
       ? "Deleted " + label + ". Restore brings it back with its backlog."
       : "Restored " + label + ".";
-    // reloadProjects already said why it failed; overwriting that with a bare success would leave the
-    // operator reading "Deleted …" beside a sidebar that still lists the project.
+    // Preserve the reload failure instead of reporting unqualified success.
     say(rows ? done : done + " The project list could not be re-read — reload the page.", !rows);
   }, [closeDialogFrom, reloadProjects, say]);
 
   const removeProject = useCallback((id) => applyProjectArchive(id, true), [applyProjectArchive]);
   const bringBackProject = useCallback((id) => applyProjectArchive(id, false), [applyProjectArchive]);
 
-  // The row, not the id: a selection the list no longer holds must disable the commands that read it,
-  // and it is what the board is handed too — a raw id the live list cannot resolve would paint that
-  // project's cards under a header with no name for them.
+  // Treat stale IDs absent from the live project list as no selection.
   const selectedProject = projects.find((project) => project.id === projectId) || null;
   const selectedProjectId = selectedProject ? selectedProject.id : null;
 
@@ -476,13 +465,8 @@ function App() {
     if (appliedTaskProjectRef.current === openTaskRef) return;
     const entry = tasks.find((task) => task.ref === openTaskRef);
     if (!entry) return;
-    // The /events baseline carries a DELETED project's cards too — that is what keeps a deep link to
-    // one readable — so a card's project may be one the live list does not hold. Selecting it would
-    // paint a tombstoned backlog under a header that can only say "No project", with New task enabled
-    // into a guaranteed 404 and drag-and-drop reordering a backlog the board denies it is showing. So
-    // the deep link opens the card and leaves the selection alone. The one-shot is spent only on an
-    // adoption, which is also what makes the ordinary case race-free: the /projects fetch may simply
-    // not have answered when the snapshot lands, and a later restore adopts it the same way.
+    // Archived cards remain deep-linkable but cannot select a missing sidebar row. Leave this retryable
+    // so a later project refresh can adopt a restored row or resolve an initial fetch race.
     if (!projects.some((project) => project.id === entry.project)) return;
     appliedTaskProjectRef.current = openTaskRef;
     setProjectId(entry.project);
@@ -1015,7 +999,6 @@ function App() {
     const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
     if (selected) setDialog({ kind: "upload", session: selected });
   }, []);
-  // Snapshot the row: the reload that follows a delete is what removes it from `projects`.
   const openDeleteProject = useCallback(() => {
     if (selectedProject) setDialog({ kind: "delete-project", project: selectedProject });
   }, [selectedProject]);
@@ -1155,8 +1138,6 @@ function App() {
     ${dialog && dialog.kind === "prefs" && html`
       <${PreferencesDialog} key=${prefs.revision} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}
-    ${/* The count is read off the live task list, so the confirmation costs no request — and it is
-          null until that list exists, because a destructive confirmation may not guess. */ ""}
     ${dialog && dialog.kind === "delete-project" && html`
       <${DeleteProjectDialog} project=${dialog.project}
                               taskCount=${tasksReady

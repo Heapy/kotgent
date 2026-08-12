@@ -168,10 +168,5 @@ private val EMPTY_SEED = ByteArray(0)
 
 const val READY_LINE: String = "READY"
 
-/**
- * A scenario command whose effect reaches the page only through a request the PAGE decides to make has
- * no daemon-pushed frame to act as the driver's barrier, so it answers `OK <verb>` on the handshake
- * stdout instead. Every other command's effect arrives as an `/events` frame, which Playwright's
- * auto-retrying assertions already wait for; those stay silent.
- */
+/** Prefix for commands whose browser-visible effects have no event-frame synchronization. */
 const val COMMAND_ACK_PREFIX: String = "OK "

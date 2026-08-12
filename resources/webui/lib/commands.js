@@ -149,9 +149,6 @@ function sessionCommands(activeSession, attachedId, pendingAction, actions) {
   ];
 }
 
-// The board is the only screen with a project selection, so the two commands that read one exist
-// there alone. "New project" deliberately stays on both screens: it navigates to the board itself.
-// The sidebar-only done toggle is the mirror case — one id, so a comparison rather than a set.
 const BOARD_ONLY = new Set([
   "general.delete-project",
   "general.restore-project",
@@ -224,8 +221,6 @@ function generalCommands(onBoard, projectId, actions) {
       title: "Restore a deleted project…",
       subtitle: "lists the deleted projects and brings one back with its backlog",
       hint: null,
-      // Never disabled: only the daemon knows whether any project was ever deleted, and the dialog
-      // asking it is what says so honestly.
       disabled: null,
       run: () => actions.restoreProject(),
     },

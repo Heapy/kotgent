@@ -524,21 +524,10 @@ suspend fun runProjectListCommand(
     TaskOutput(TRANSPORT_JSON.encodeToString(ListSerializer(ProjectDto.serializer()), listProjects()))
 }
 
-/**
- * The one place the parsed verb becomes an HTTP verb, and a named function rather than an `if` inside
- * [TaskCommands.projectArchive] purely so a test can hold it: [runProjectArchiveCommand] takes the call
- * as a lambda and can never see which direction it was handed, so an inverted branch would make
- * `kotgent project delete` restore and `kotgent project restore` delete with the whole suite green.
- * `ApiClientTaskTest` drives this against the stub daemon and reads the method and path back.
- */
 fun projectArchiveCall(api: ApiClient, archived: Boolean): suspend (String) -> ProjectDto =
     if (archived) api::deleteProject else api::restoreProject
 
-/**
- * Both sides of the tombstone print the project row itself rather than an acknowledgement, because
- * `archived` is the answer a script wants and the daemon is idempotent — a repeat says the same thing
- * instead of failing. A uuid the daemon never saw is a 404, and that reaches stderr as exit 1.
- */
+/** Prints the returned row so scripts can inspect the committed archive state. */
 suspend fun runProjectArchiveCommand(
     id: String,
     setArchived: suspend (String) -> ProjectDto,

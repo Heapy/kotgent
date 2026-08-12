@@ -692,13 +692,6 @@ class TaskCommandsTest {
         assertEquals(false, out.onlyJsonObject()["archived"]?.jsonPrimitive?.content?.toBoolean())
     }
 
-    /**
-     * One case, not a loop over both verbs: this renderer takes the call as a lambda, so it cannot tell
-     * a delete from a restore and a second identical pass would only look like coverage. The verb that
-     * the parsed direction actually picks is `ApiClientTaskTest`'s
-     * `theParsedVerbPicksTheCallAndNothingBelowItCanSeeWhichDirectionItWas`, where a stub daemon reads
-     * the HTTP method and path back.
-     */
     @Test
     fun aProjectTheDaemonNeverSawIsOneErrorObjectCarryingIts404() = runCommandTest {
         val out = Sinks()

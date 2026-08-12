@@ -267,7 +267,6 @@ class ApiClient(
         return json.decodeFromString(NextTaskResponse.serializer(), taskPost("/tasks/next", request)).task
     }
 
-    /** [archived] asks for the deleted projects instead of the live ones. */
     suspend fun listProjects(archived: Boolean = false): List<ProjectDto> =
         json.decodeFromString(
             ListSerializer(ProjectDto.serializer()),
@@ -282,20 +281,11 @@ class ApiClient(
         return json.decodeFromString(ProjectDto.serializer(), taskPost("/projects", request))
     }
 
-    /**
-     * Sets the delete tombstone and answers the row it marked, so a caller reads `archived` back rather
-     * than trusting the verb. Idempotent at the daemon; only a uuid it has never seen is a 404.
-     */
     suspend fun deleteProject(id: String): ProjectDto = json.decodeFromString(
         ProjectDto.serializer(),
         taskDelete("/projects/${id.encodeURLPathPart()}"),
     )
 
-    /**
-     * Clears that tombstone. The uuid in the path is the whole subject, so the body carries nothing —
-     * it is `{}` only because [taskPost] is the one place bearer, pane header and content type are
-     * applied, and a bespoke `post` here would be a second spelling of that.
-     */
     suspend fun restoreProject(id: String): ProjectDto = json.decodeFromString(
         ProjectDto.serializer(),
         taskPost("/projects/${id.encodeURLPathPart()}/restore", "{}"),

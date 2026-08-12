@@ -303,11 +303,6 @@ class ApiClientTaskTest {
         )
     }
 
-    /**
-     * The join the two tests above cannot make: `runProjectArchiveCommand` is handed the call as a
-     * lambda, so nothing below [projectArchiveCall] can see which direction the CLI parsed. Inverting
-     * that one branch would leave `kotgent project delete` restoring, and every other test green.
-     */
     @Test
     fun theParsedVerbPicksTheCallAndNothingBelowItCanSeeWhichDirectionItWas() = withStub { stub, api ->
         assertEquals(ARCHIVED_PROJECT_DTO, projectArchiveCall(api, archived = true)(PROJECT))

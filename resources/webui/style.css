@@ -153,7 +153,6 @@ textarea:focus-visible {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
-/* A destructive confirmation should not read as the same button as Save. */
 .button-danger {
   background: var(--attn);
   border-color: var(--attn);
@@ -1067,7 +1066,6 @@ dialog::backdrop {
   line-height: 1.45;
   margin: 0 0 14px;
 }
-/* The one path a dialog quotes back at the operator: an upload's destination, a delete's subject. */
 .upload-destination code,
 .dialog-subject code {
   background: var(--row-hover);
@@ -1114,7 +1112,6 @@ dialog::backdrop {
   gap: 8px;
   margin-top: 20px;
 }
-/* The subject of a confirmation: what is about to change, named before the consequences. */
 .dialog-subject {
   font-size: 14px;
   margin: 0;

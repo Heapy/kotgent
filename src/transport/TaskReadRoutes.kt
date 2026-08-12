@@ -82,10 +82,6 @@ fun Route.taskReadRoutes(routing: TaskRouting) {
         )
     }
 
-    // The two sides of the delete tombstone are one list each, never a flag on a merged one: the board
-    // wants the live projects and the restore dialog wants exactly the deleted ones, so `?archived=true`
-    // is that dialog's single request. The default stays live-only, which is what keeps a deleted
-    // project out of every selector without a caller opting in.
     get("/projects") {
         val archived = call.request.queryParameters["archived"] == "true"
         val dtos = routing.tasks.listProjects(archived).map { it.toDto() }

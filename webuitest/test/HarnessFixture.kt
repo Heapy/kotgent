@@ -143,9 +143,7 @@ class Harness(scenario: String) : AutoCloseable {
                 harnessFailure("expected a second '$READY_LINE' after `restart`, got '$ready'")
             }
         }
-        // A command whose effect reaches the page only through a request the PAGE makes has no frame to
-        // wait on, so the harness acknowledges it and this is the barrier. Without it the very next
-        // assertion can read a dialog that asked before the write landed, and no retry recovers that.
+        // Await mutations that have no event frame before the page issues its next GET.
         val verb = line.trim().substringBefore(' ')
         if (verb in ACKNOWLEDGED_COMMANDS) {
             val ack = nextStdoutLine("the '$COMMAND_ACK_PREFIX$verb' acknowledgement")
@@ -237,15 +235,7 @@ fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String) {
     }
 }
 
-/*
- * Driving the command palette is fixture work, not a subject: these four gestures each encode something
- * the platform taught this tier — that a dialog must be seen to unmount before the opener is pressed
- * again, that Chromium spends the first Escape of a non-empty search input on its own clear, and that a
- * wait must be on a state that measurably changes. Reach a command through here so a fifth lesson lands
- * in one place; a few older classes still press their own keys privately and predate this.
- */
 fun Page.openPalette(): Locator {
-    // Wait for the previous dialog node to unmount before toggling its state again.
     assertThat(locator("#command-palette")).hasCount(0)
     keyboard().press(PALETTE_OPENER)
     val shell = locator(".command-palette-shell.leader")
@@ -446,7 +436,7 @@ private const val TICKET_PREFIX = "TICKET="
 private const val READY_LINE = "READY"
 private const val RESTART_COMMAND = "restart"
 
-// Duplicated from webuicheck's COMMAND_ACK_PREFIX: constants cannot cross the native/JVM boundary.
+// Duplicated from webuicheck because constants cannot cross the native/JVM boundary.
 private const val COMMAND_ACK_PREFIX = "OK "
 private val ACKNOWLEDGED_COMMANDS = setOf("project-del", "project-restore")
 

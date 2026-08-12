@@ -416,10 +416,7 @@ class TaskLinkRoutesTest {
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
 
-        // The window the route cannot close: it reads the project row, finds it live, and then holds no
-        // lock at all while `linkNext` runs. Archiving from inside the store seam interleaves the delete
-        // exactly there — calling the two in sequence would prove nothing, because in sequence the
-        // route's own check already answers.
+        // Interleave deletion after the route check and before candidate selection.
         env.tasks.beforeNextCandidate = {
             env.tasks.archiveProject(alpha)
             env.tasks.beforeNextCandidate = null
@@ -451,11 +448,7 @@ class TaskLinkRoutesTest {
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
 
-        // The second window, and the one a tombstone-aware candidate query alone does not close: the card
-        // is selected out of a live project and the delete lands before the start. Guarding only the
-        // selection would leave the daemon CHOOSING work out of a deleted project and starting it —
-        // exactly what this route's refusal exists to prevent, and what `/tasks/{ref}/link` accepts only
-        // because its caller NAMED the card.
+        // Interleave deletion after candidate selection and before its transition.
         env.tasks.beforeStartIfTodo = {
             env.tasks.archiveProject(alpha)
             env.tasks.beforeStartIfTodo = null
@@ -491,10 +484,6 @@ class TaskLinkRoutesTest {
                 "reachable exactly as `task show` and `task done` still are",
         )
         assertEquals(t1, env.sessions.linkOf(s1))
-        // The whole of what `link` does, stated rather than left to the 200: these are the SAME three
-        // writes `POST /tasks/next` makes and is refused for, so writing is not what the line divides.
-        // Selecting is: `next` picks the operator's next piece of work out of a project they deleted,
-        // while this one can only reach the card its caller already named.
         assertEquals(
             TaskState.in_progress,
             env.tasks.stateOf(t1),
@@ -772,9 +761,7 @@ class TaskLinkRoutesTest {
 
         suspend fun forgetProject(project: ProjectId) = mutex.withLock { projects.remove(project); Unit }
 
-        // Seeding, not the store method: `setProjectArchived` is refused above because these routes
-        // must never write a project row, and a fake answering a boolean production computes from a
-        // matched row would be a semantic the daemon does not have.
+        // Seed archive state without exercising a route-external store mutation.
         suspend fun archiveProject(project: ProjectId) = mutex.withLock {
             val row = projects[project] ?: error("seed the project before archiving it")
             projects[project] = row.copy(archived = true)
@@ -794,25 +781,15 @@ class TaskLinkRoutesTest {
             entries[ref]?.let { Task(ref, "title of ${ref.value}", "", null, it.updatedAt) }
         }
 
-        /**
-         * Runs before the lock is taken, which is the whole point: it is the place a concurrent
-         * `DELETE /projects/{id}` lands — after the route read the project row and before selection
-         * reads it again.
-         */
+        /** Runs outside the lock to expose the route-check/candidate-selection race. */
         var beforeNextCandidate: (suspend () -> Unit)? = null
 
-        /**
-         * The second gap, and the reason the tombstone is repeated in the writing statement: `linkNext`
-         * releases the store lock between selecting a card and starting it, so a delete lands here just
-         * as readily as it lands at [beforeNextCandidate].
-         */
+        /** Runs outside the lock to expose the candidate-selection/start race. */
         var beforeStartIfTodo: (suspend () -> Unit)? = null
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
             beforeNextCandidate?.invoke()
             return mutex.withLock {
-                // One observation, tombstone included — the production statement decides both halves at
-                // once, and a fake that skipped it would prove a race the daemon has closed.
                 if (projects[project]?.archived == true) return@withLock null
                 entries.values
                     .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
@@ -824,9 +801,6 @@ class TaskLinkRoutesTest {
             beforeStartIfTodo?.invoke()
             return mutex.withLock {
                 val existing = entries[ref]
-                // One observation, tombstone included, exactly as nextCandidate above: production decides
-                // both halves in the one UPDATE, and a fake that read the project separately would prove
-                // a race the daemon has closed.
                 if (existing == null || existing.state != TaskState.todo) {
                     false
                 } else if (requireLiveProject && projects[existing.project]?.archived == true) {

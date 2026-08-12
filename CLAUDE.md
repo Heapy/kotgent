@@ -16,8 +16,6 @@ testing strategy. Implementation plans belong in `docs/plans/`; move completed p
   socket label `kotgent-test`.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
   automation. They start long-lived processes. `ptycheck` and `webuicheck --self-check` terminate safely.
-- Delete comments that merely narrate the code; keep only concise explanations of non-obvious intent,
-  external constraints, or why an apparently reasonable change would be unsafe.
 
 ## Architecture boundaries
 
@@ -54,17 +52,3 @@ testing strategy. Implementation plans belong in `docs/plans/`; move completed p
   not an ordering guarantee.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
-
-## Module map
-
-- `src/core`, `src/task`: host-free domain logic.
-- `src/adapter`: provider and shell adapters.
-- `src/daemon`, `src/store`: lifecycle orchestration and persistence.
-- `src/pty`, `src/tmux`, `src/sys`, `sysnative`: terminal and platform edges.
-- `src/transport`, `src/cli`, `src/push`: HTTP/WS, CLI, and Web Push edges.
-- `sqldelight`: schema and typed queries.
-- `resources/webui`: no-build Preact PWA.
-- `fakes`: shared test doubles.
-- `ptycheck`, `webuicheck`: executable native fixtures.
-- `test`, `webuitest`: native/unit and Playwright browser tests.
-- `plugins`: local Kotlin Toolchain build plugins.

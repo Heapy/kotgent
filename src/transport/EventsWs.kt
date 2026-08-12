@@ -176,15 +176,7 @@ private class QueuedTasksBaseline(val refs: Set<TaskRef>, val rows: List<Backlog
 private suspend fun readTasksBaseline(tasks: TaskStore): QueuedTasksBaseline {
     val refs = LinkedHashSet<TaskRef>()
     val rows = mutableListOf<BacklogEntryDto>()
-    // BOTH sides of the delete tombstone, and in ONE read. `listProjects()` defaults to the live ones —
-    // right for a selector and wrong here: this snapshot is the ONLY thing the page builds its task list
-    // from, so a deleted project's cards would be unreachable by deep link and a restore would show an
-    // empty backlog until a reload, contradicting the rule that reads stay open for a deleted project.
-    // Asking the selector twice would not do either, and `TaskStore.listAllProjects` says why — this is
-    // the caller its single-observation contract is written for, being one-shot per socket.
-    // Residual, recorded not fixed: the archived side is unbounded. Every deleted project's backlog is
-    // shipped to every browser on every connect, and nothing prunes it. Narrowing it to the cards a
-    // client can actually reach would need the socket to know which deep link the page is on.
+    // Archived backlogs remain in the one-shot baseline so deep links and later restores have their rows.
     for (project in tasks.listAllProjects()) {
         val entries = tasks.listBacklog(project.id)
         if (entries.isEmpty()) continue

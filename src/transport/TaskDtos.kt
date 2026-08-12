@@ -69,7 +69,6 @@ data class TaskDetailDto(
     val activity: List<ActivityEntryDto> = emptyList(),
 )
 
-/** [archived] is the delete tombstone; the board lists live projects and the restore dialog the rest. */
 @Serializable
 data class ProjectDto(
     val id: String,

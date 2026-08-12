@@ -6,12 +6,6 @@ import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.WaitUntilState
 import kotlin.test.Test
 
-/**
- * Deleting a project is a tombstone the operator drives from the palette, so what a browser can prove
- * about it is which screen offers the two commands, what the sidebar and the selection do when one
- * runs, that the restore list is the daemon's answer rather than something the page remembered, and
- * that a restored project's backlog is on screen without a reload.
- */
 class ProjectArchiveTest {
 
     @Test
@@ -42,7 +36,6 @@ class ProjectArchiveTest {
             assertThat(delete.locator(".command-palette-disabled-reason"))
                 .hasText("no project is selected")
 
-            // Never disabled: only the daemon knows whether anything was ever deleted.
             val restore = page.paletteOption(RESTORE_PROJECT)
             assertThat(restore).hasCount(1)
             assertThat(restore).not().hasAttribute("aria-disabled", "true")
@@ -63,7 +56,6 @@ class ProjectArchiveTest {
             assertThat(dialog).isVisible()
             assertThat(page.locator("#delete-project-name")).hasText("Alpha Fixture")
             assertThat(page.locator("#delete-project-path")).hasText("/repo/alpha")
-            // The count is read off the live task list, so it is the board's own three cards.
             assertThat(page.locator("#delete-project-facts")).containsText("Its 3 tasks are kept")
 
             page.locator("#delete-project-submit").click()
@@ -77,7 +69,6 @@ class ProjectArchiveTest {
             assertThat(page.locator("#board-status")).containsText("Deleted Alpha Fixture")
             assertThat(page.locator(".task-card")).hasCount(SPARE_CARDS)
 
-            // A one-task project has its own grammar, and the sentence is read before a destructive act.
             page.openPalette()
             page.runFirstMatch(DELETE_QUERY, DELETE_PROJECT)
             assertThat(page.locator("#delete-project-facts")).containsText("Its 1 task is kept")
@@ -103,7 +94,6 @@ class ProjectArchiveTest {
             assertThat(page.projectRows()).hasCount(0)
             assertThat(page.locator(".board-project")).hasText("No project")
 
-            // The selection is null now, and the command that reads one says so rather than doing nothing.
             page.openPalette()
             page.searchFor(DELETE_QUERY)
             val delete = page.paletteOption(DELETE_PROJECT)
@@ -134,12 +124,8 @@ class ProjectArchiveTest {
             assertThat(page.projectRow(DELETED_PROJECT)).hasClass(ACTIVE_PROJECT_ROW)
             assertThat(page.locator(".board-project")).hasText("Gamma Fixture")
             assertThat(page.locator("#board-status")).containsText("Restored Gamma Fixture")
-            // "The backlog comes back with it" is what the dialog promises, and no reload happened: the
-            // opening tasks_snapshot has to have carried a deleted project's rows for these to be here.
             assertThat(page.locator(".task-card")).hasCount(DELETED_CARDS)
 
-            // A second opening must read `?archived=true` again: the daemon has archived another
-            // project since, and a dialog replaying its first answer would offer the wrong row.
             harness.send("project-del $SELECTED_PROJECT")
             page.openPalette()
             page.runFirstMatch(RESTORE_QUERY, RESTORE_PROJECT)
@@ -150,23 +136,12 @@ class ProjectArchiveTest {
             assertThat(reread.first()).containsText("Alpha Fixture")
         }
 
-    /**
-     * The baseline ships a deleted project's cards so this link keeps working — and that is exactly what
-     * lets a card name a project the sidebar does not list. The board must not adopt it: selecting a
-     * tombstoned uuid paints its backlog under a header that can only say "No project", with New task
-     * enabled into a guaranteed 404 and every card draggable on a board that denies showing them.
-     *
-     * The assertions are made after leaving the card and coming back through history, because only then
-     * is the route change the ONLY thing that can move the selection. On the cold load the two
-     * `/projects` reads race the task baseline, and one landing last walks a wrong selection back by
-     * accident — which would make this pass against the defect.
-     */
+    /** Revisit through history so route change, not initial fetch ordering, is the only selection trigger. */
     @Test
     fun aDeepLinkToADeletedProjectsCardOpensItWithoutPaintingABacklogTheHeaderCannotName() =
         onProjects(BOARD_PROJECTS_SCENARIO, "project-deleted-deep-link") { harness, page ->
             page.navigate(harness.baseUrl + "/tasks/" + DELETED_CARD)
             page.awaitBoard()
-            // The read stays open: the card is on screen and names the project it belongs to.
             assertThat(page.locator("#task-detail-title")).hasText(DELETED_CARD)
 
             page.locator("#task-detail-close").click()
@@ -176,14 +151,12 @@ class ProjectArchiveTest {
 
             assertThat(page.locator("#task-detail-title")).hasText(DELETED_CARD)
             assertThat(page.locator("#task-detail-project")).containsText("Gamma Fixture")
-            // The board behind it names the project whose cards it paints, and they are that project's.
             assertThat(page.locator(".board-project")).hasText("Alpha Fixture")
             assertThat(page.locator(".task-card")).hasCount(SELECTED_CARDS)
             assertThat(page.projectRow(SELECTED_PROJECT)).hasClass(ACTIVE_PROJECT_ROW)
             assertThat(page.locator(".board-new-task")).isEnabled()
         }
 
-    /** The other half of that rule: a LIVE project is still adopted, or the deep link selects nothing. */
     @Test
     fun aDeepLinkToALiveProjectsCardStillSelectsThatProject() =
         onProjects(BOARD_PROJECTS_SCENARIO, "project-live-deep-link") { harness, page ->
@@ -200,7 +173,6 @@ class ProjectArchiveTest {
     fun theRestoreDialogSaysSoWhenNothingWasEverDeleted() =
         onProjects(BOARD_PROJECTS_SCENARIO, "project-restore-empty") { harness, page ->
             page.openBoard(harness, "Alpha Fixture")
-            // The command is never disabled, so the empty answer is a state the operator meets first.
             harness.send("project-restore $DELETED_PROJECT")
 
             page.openPalette()
@@ -239,14 +211,11 @@ class ProjectArchiveTest {
     private fun Page.restoreRows(): Locator = locator("#restore-project-list .dialog-list-row")
 
     private companion object {
-        // Duplicated from webuicheck's BOARD_PROJECTS_*_ID, as COMMAND_ACK_PREFIX is: constants cannot
-        // cross the native/JVM boundary. A sidebar row and a restore row are addressed by them.
+        // Duplicated from webuicheck because constants cannot cross the native/JVM boundary.
         const val SELECTED_PROJECT = "33333333-3333-4333-8333-333333333333"
         const val SPARE_PROJECT = "44444444-4444-4444-8444-444444444444"
         const val DELETED_PROJECT = "55555555-5555-4555-8555-555555555555"
 
-        // A card of the scenario's deleted project — the deep link the tombstone deliberately leaves
-        // open — and one of the live project that is not the board's default selection.
         const val DELETED_CARD = "local:5"
         const val SPARE_CARD = "local:4"
 

@@ -142,10 +142,7 @@ class FakeTaskStore(
 
     override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
         mutex.withLock {
-            // Under the same lock as the insert, because that is what the real store's transaction does:
-            // a fake that checked outside it would let a component test pass against a race production
-            // has closed. `seedTask` deliberately bypasses this — a fixture stands for rows that already
-            // existed when the project was deleted, which is the state restore has to bring back.
+            // Match production's atomic archive check; seeded rows may predate the tombstone.
             if (projects[project]?.archived == true) throw ArchivedProjectException(project)
             publishing {
                 val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
@@ -199,8 +196,6 @@ class FakeTaskStore(
     }
 
     override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = mutex.withLock {
-        // One observation, tombstone included — see TaskStore.nextCandidate for why the two halves may
-        // not be separate reads.
         if (projects[project]?.archived == true) return@withLock null
         entries.values
             .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
@@ -212,8 +207,6 @@ class FakeTaskStore(
         publishing {
             val existing = entries[ref] ?: return@publishing false
             if (existing.state != TaskState.todo) return@publishing false
-            // One observation, tombstone included — see TaskStore.startIfTodo for why the selection path
-            // may not read the project first.
             if (requireLiveProject && projects[existing.project]?.archived == true) return@publishing false
             writeStateLocked(existing, TaskState.in_progress)
             true
@@ -332,10 +325,6 @@ class FakeTaskStore(
         mutex.withLock {
             val existing = projects[id]
             if (existing != null && existing.archived) return@withLock ProjectRegistration.refusedArchived
-            // `archived` is carried, never defaulted: the production statement keeps it out of its
-            // `ON CONFLICT DO UPDATE SET`, so an upsert can never clear a mark. The refusal above means
-            // no live upsert meets a marked row today, and a fake that encoded "cleared" instead of
-            // "untouched" would hide the day one does.
             projects[id] = ProjectRecord(id, name, path ?: existing?.path, now(), existing?.archived ?: false)
             ProjectRegistration.registered
         }
@@ -346,14 +335,12 @@ class FakeTaskStore(
         true
     }
 
-    // `name, id` is the SQL store's order; sorting by name alone would place same-named rows differently.
+    // Match the SQL store's deterministic `name, id` ordering.
     override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = mutex.withLock {
         projects.values.filter { it.archived == archived }
             .sortedWith(compareBy({ it.name }, { it.id.value }))
     }
 
-    // One acquisition of the same lock every write takes, which is how the single-observation contract
-    // `TaskStore.listAllProjects` states is met here.
     override suspend fun listAllProjects(): List<ProjectRecord> = mutex.withLock {
         projects.values.sortedWith(compareBy({ it.name }, { it.id.value }))
     }
