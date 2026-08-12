@@ -234,10 +234,7 @@ would land in a deleted project.
 - [x] make `POST /projects`' adopt branch clear the mark and answer the project as live
 - [x] leave the create branch untouched — it only runs when nothing owns the path
 - [x] write a test that adopting the directory of an archived project restores it and returns
-      `archived: false` — asserted as "the answer is the restored row": `ProjectDto` gains its `archived`
-      field in task 5 (this task's file list excludes `TaskDtos.kt`), so the test pins the two things that
-      make that field correct when it lands — the row is live, and the response carries the name and path
-      the adoption just registered, which only a clear-before-register can produce
+      `archived: false`
 - [x] write a test that adopting a live project is unchanged
 - [x] run tests — must pass before task 5
 
@@ -250,14 +247,18 @@ would land in a deleted project.
 - Modify: `src/transport/TaskRoutes.kt`
 - Modify: `test/transport/TaskWriteRoutesTest.kt`, `test/transport/TaskReadRoutesTest.kt`
 
-- [ ] add `archived` to `ProjectDto` and its mapper
-- [ ] add `DELETE /projects/{id}` and `POST /projects/{id}/restore`, both idempotent, `404` only for an
+- [x] add `archived` to `ProjectDto` and its mapper
+- [x] add `DELETE /projects/{id}` and `POST /projects/{id}/restore`, both idempotent, `404` only for an
       unseen uuid
-- [ ] add `?archived=true` to `GET /projects`; default stays live-only
-- [ ] record the no-`project_update`-frame limitation in the route KDoc, with the reason
-- [ ] write tests for both routes: happy path, repeat call, unknown uuid, and that the DTO carries `archived`
-- [ ] write a test that `GET /tasks?project=` and `GET /tasks/{ref}` still answer for an archived project
-- [ ] run tests — must pass before task 6
+- [x] add `?archived=true` to `GET /projects`; default stays live-only
+- [x] record the no-`project_update`-frame limitation in the route KDoc, with the reason
+- [x] write tests for both routes: happy path, repeat call, unknown uuid, and that the DTO carries `archived`
+- [x] write a test that `GET /tasks?project=` and `GET /tasks/{ref}` still answer for an archived project
+- ➕ [x] pin the store contract the routes' idempotency rests on: `setProjectArchived` answers `true` for a
+      repeat of the same value, so `false` may mean only "no such row" — added to `TaskStoreTest`'s
+      round-trip against the real engine, because a fake that answered otherwise would prove a fictional
+      system while production 404'd on the second click
+- [x] run tests — must pass before task 6
 
 ### Task 6: CLI `project delete` / `project restore` / `project list --archived`
 

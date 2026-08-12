@@ -11,6 +11,7 @@ import io.kotgent.task.MalformedTaskRefException
 import io.kotgent.task.MoveTarget
 import io.kotgent.task.NoProjectException
 import io.kotgent.task.NoSessionException
+import io.kotgent.task.PROJECT_FILE_NAME
 import io.kotgent.task.PROJECT_NAME_MAX_LENGTH
 import io.kotgent.task.ProjectPathException
 import io.kotgent.task.ProjectRegistration
@@ -262,6 +263,45 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
         routing.tasks.upsertProject(file.id, file.name, dir)
         respondProject(routing, file.id, dir)
     }
+
+    /**
+     * Deleting a project sets a tombstone; it never removes the row and never touches the filesystem.
+     * `.kotgent.json` is what BINDS a directory to a project and outlives any row, so a deleted row
+     * would be back the next time anything resolved that directory. Nothing cascades either — tasks,
+     * dependencies, activity, `sessions.project_id` and `sessions.task_ref` are left exactly as they
+     * are — which is what makes restore return the whole backlog and what removes the need for a
+     * `--force` or a confirmation that counts tasks defensively.
+     *
+     * Idempotent: a repeat on an already-deleted project is a 200 carrying the same DTO, because the
+     * caller's intent is already satisfied and an error would name nothing they can fix. A `404` is
+     * reserved for a uuid the daemon has never seen.
+     *
+     * **Deliberate limitation:** this adds NO `project_update` frame to `/api/v1/events`. The project
+     * list is the one thing the task side fetches on every entry to `/tasks` and never polls, so the
+     * tab that deleted a project re-reads it and a second tab sees the change on its next visit to the
+     * board. A frame kind exists to keep an already-connected client honest about a row it is showing
+     * live; projects have no such stream, so growing the sealed hierarchy for one screen that
+     * re-fetches anyway would buy nothing. Recorded here rather than fixed.
+     */
+    delete("/projects/{id}") {
+        val id = projectIdParam() ?: return@delete
+        setProjectArchivedAndRespond(routing, id, archived = true)
+    }
+
+    /**
+     * Clears the tombstone `DELETE /projects/{id}` set, and is likewise idempotent with `404` only for
+     * an unseen uuid.
+     *
+     * It exists SEPARATELY from `POST /projects` (adopt), which clears the mark too, because an
+     * orphan — the project whose directory was deleted, one of the four scenarios this feature is for —
+     * cannot be adopted at all: there is no path left to canonicalize. Restore addresses the uuid the
+     * row already carries and needs no filesystem. The same no-`project_update`-frame limitation
+     * recorded on the delete route applies here.
+     */
+    post("/projects/{id}/restore") {
+        val id = projectIdParam() ?: return@post
+        setProjectArchivedAndRespond(routing, id, archived = false)
+    }
 }
 
 
@@ -282,6 +322,47 @@ private suspend fun RoutingContext.taskRefParam(): TaskRef? {
     val ref = TaskRef.parseOrNull(raw)
     if (ref == null) fail(HttpStatusCode.BadRequest, MalformedTaskRefException(raw))
     return ref
+}
+
+private suspend fun RoutingContext.projectIdParam(): ProjectId? {
+    val raw = call.parameters["id"].orEmpty()
+    val id = ProjectId.parseOrNull(raw)
+    if (id == null) {
+        // A uuid that cannot parse addresses no resource at all, so it is a bad request rather than a
+        // 404 — the same split `GET /tasks?project=` and `POST /tasks` already make.
+        call.respondText(
+            "malformed project id '$raw' — expected a canonical uuid, the `id` field of the project's " +
+                "$PROJECT_FILE_NAME",
+            status = HttpStatusCode.BadRequest,
+        )
+    }
+    return id
+}
+
+/** One write, then a re-read: the answer is the committed row, never the arguments that produced it. */
+private suspend fun RoutingContext.setProjectArchivedAndRespond(
+    routing: TaskRouting,
+    id: ProjectId,
+    archived: Boolean,
+) {
+    // The store answers false only for a row that is not there; an already-marked row is written again
+    // and reports true, which is exactly the idempotency both routes promise.
+    if (!routing.tasks.setProjectArchived(id, archived)) {
+        fail(HttpStatusCode.NotFound, UnknownProjectException(id))
+        return
+    }
+    val record = routing.tasks.project(id)
+    if (record == null) {
+        call.respondText(
+            "project '${id.value}' was updated but cannot be read back",
+            status = HttpStatusCode.InternalServerError,
+        )
+        return
+    }
+    call.respondText(
+        routing.json.encodeToString(ProjectDto.serializer(), record.toDto()),
+        ContentType.Application.Json,
+    )
 }
 
 private suspend fun RoutingContext.fail(status: HttpStatusCode, e: RuntimeException) {

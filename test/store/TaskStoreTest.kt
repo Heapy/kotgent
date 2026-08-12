@@ -554,6 +554,14 @@ class TaskStoreTest {
         assertTrue(f.store.setProjectArchived(alpha, true))
         assertTrue(assertNotNull(f.store.project(alpha)).archived)
 
+        assertTrue(
+            f.store.setProjectArchived(alpha, true),
+            "asking again for the state the row is already in is still an answered write — that is what " +
+                "makes DELETE /projects/{id} and its restore idempotent, and it is why false may mean " +
+                "only 'no such row' and never 'no change'",
+        )
+        assertTrue(assertNotNull(f.store.project(alpha)).archived)
+
         assertTrue(f.store.setProjectArchived(alpha, false))
         assertFalse(assertNotNull(f.store.project(alpha)).archived)
         assertEquals(

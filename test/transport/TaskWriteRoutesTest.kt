@@ -815,6 +815,12 @@ class TaskWriteRoutesTest {
         val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
         assertEquals(alpha.value, dto.id, "adoption answers the project that owns the path, deleted or not")
         assertEquals(
+            false,
+            dto.archived,
+            "and answers it as LIVE — a client merges this DTO into the list it just re-read, so a " +
+                "stale `true` would hide the project the operator has only now asked for again",
+        )
+        assertEquals(
             ProjectRecord(alpha, "kotgent", "/repo", 0L, archived = false),
             env.tasks.snapshotProjects()[alpha],
             "the mark is cleared BEFORE registration, so the row also takes the file's name and this checkout",
@@ -927,6 +933,120 @@ class TaskWriteRoutesTest {
 
 
     @Test
+    fun deletingAProjectMarksTheRowAndRemovesNothingItOwns() = withTaskServer { env ->
+        val ref = env.seedTask(alpha, "still here afterwards")
+
+        val resp = env.request(HttpMethod.Delete, "/projects/${alpha.value}")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+        assertEquals(alpha.value, dto.id)
+        assertTrue(dto.archived, "the answer is the committed row, and the row now carries the tombstone")
+        assertEquals(
+            listOf(ref),
+            env.tasks.snapshotEntries().keys.toList(),
+            "nothing cascades — the backlog is exactly what a restore has to return",
+        )
+        assertTrue(env.tasks.listProjects().isEmpty(), "the board's list no longer carries it")
+        assertEquals(listOf(alpha), env.tasks.listProjects(archived = true).map { it.id })
+        assertTrue(env.writer.calls.isEmpty(), "and the .kotgent.json that named it is never touched")
+        assertTrue(env.fs.reads.isEmpty(), "nor read: the uuid on the row is the whole address")
+    }
+
+    @Test
+    fun deletingAnAlreadyDeletedProjectIs200BecauseTheIntentIsAlreadySatisfied() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+
+        val first = env.request(HttpMethod.Delete, "/projects/${alpha.value}")
+        val second = env.request(HttpMethod.Delete, "/projects/${alpha.value}")
+
+        assertEquals(HttpStatusCode.OK, first.status)
+        assertEquals(
+            HttpStatusCode.OK,
+            second.status,
+            "a repeat asks for a state the project is already in — an error would name nothing the " +
+                "caller could fix",
+        )
+        assertEquals(first.bodyAsText(), second.bodyAsText(), "and answers the same row both times")
+    }
+
+    @Test
+    fun restoringClearsTheMarkAndReturnsTheWholeBacklogWithIt() = withTaskServer { env ->
+        val ref = env.seedTask(alpha, "waited through the tombstone")
+        assertEquals(HttpStatusCode.OK, env.request(HttpMethod.Delete, "/projects/${alpha.value}").status)
+
+        val resp = env.request(HttpMethod.Post, "/projects/${alpha.value}/restore")
+
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val dto = TRANSPORT_JSON.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+        assertEquals(alpha.value, dto.id)
+        assertEquals(false, dto.archived, "restore answers the live row a client will merge into its list")
+        assertEquals(listOf(alpha), env.tasks.listProjects().map { it.id }, "the board lists it again")
+        assertTrue(env.tasks.listProjects(archived = true).isEmpty())
+        assertEquals(
+            listOf(ref),
+            env.tasks.snapshotEntries().keys.toList(),
+            "and its backlog was never anywhere else — restore is one column, not a recovery",
+        )
+    }
+
+    @Test
+    fun restoringALiveProjectIs200AndChangesNothing() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+
+        val first = env.request(HttpMethod.Post, "/projects/${alpha.value}/restore")
+        val second = env.request(HttpMethod.Post, "/projects/${alpha.value}/restore")
+
+        assertEquals(HttpStatusCode.OK, first.status)
+        assertEquals(HttpStatusCode.OK, second.status, "restore is idempotent from either starting state")
+        assertEquals(first.bodyAsText(), second.bodyAsText())
+        assertEquals(
+            ProjectRecord(alpha, "alpha", "/repo", 0L, archived = false),
+            env.tasks.snapshotProjects()[alpha],
+        )
+    }
+
+    @Test
+    fun deletingOrRestoringAUuidTheDaemonHasNeverSeenIs404() = withTaskServer { env ->
+        val unseen = "99999999-8888-4777-8666-555555555555"
+
+        val answers = listOf(
+            env.request(HttpMethod.Delete, "/projects/$unseen"),
+            env.request(HttpMethod.Post, "/projects/$unseen/restore"),
+        )
+
+        for (resp in answers) {
+            assertEquals(
+                HttpStatusCode.NotFound,
+                resp.status,
+                "404 is reserved for the one case a caller can act on: a uuid that names no row at all",
+            )
+            assertTrue(resp.bodyAsText().contains(unseen), "the message names it: ${resp.bodyAsText()}")
+        }
+        assertTrue(env.tasks.snapshotProjects().isEmpty(), "and nothing was created on the way")
+    }
+
+    @Test
+    fun aMalformedProjectIdIs400OnBothRoutesAndMovesNothing() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "alpha", "/repo")
+
+        val answers = listOf(
+            env.request(HttpMethod.Delete, "/projects/not-a-uuid"),
+            env.request(HttpMethod.Post, "/projects/not-a-uuid/restore"),
+        )
+
+        for (resp in answers) {
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                resp.status,
+                "a uuid that cannot parse addresses no resource at all: ${resp.bodyAsText()}",
+            )
+            assertTrue(resp.bodyAsText().contains("uuid"), resp.bodyAsText())
+        }
+        assertEquals(listOf(alpha), env.tasks.listProjects().map { it.id }, "and no row moved")
+    }
+
+    @Test
     fun everyWriteRouteRequiresACredential() = withTaskServer { env ->
         val calls = listOf(
             HttpMethod.Post to "/tasks",
@@ -936,6 +1056,8 @@ class TaskWriteRoutesTest {
             HttpMethod.Post to "/tasks/local:1/deps",
             HttpMethod.Post to "/tasks/local:1/comment",
             HttpMethod.Post to "/projects",
+            HttpMethod.Delete to "/projects/${alpha.value}",
+            HttpMethod.Post to "/projects/${alpha.value}/restore",
         )
         for ((method, path) in calls) {
             assertEquals(

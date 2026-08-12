@@ -63,10 +63,12 @@ class TaskReadRoutesTest {
 
     private val project = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
     private val otherProject = ProjectId.of("11111111-2222-4333-8444-555555555555")
+    private val deletedProject = ProjectId.of("22222222-3333-4444-8555-666666666666")
 
     private val first = TaskRef("local:1")
     private val second = TaskRef("local:2")
     private val third = TaskRef("local:3")
+    private val orphaned = TaskRef("local:5")
 
     private val paneSession = SessionId("2f6dd2f6-2b3f-4c53-9d3f-1f0f5d2a77aa")
     private val liveHolder = SessionId("3a7ee3a7-3c4f-4d64-8e40-2a1a6e3b88bb")
@@ -318,18 +320,82 @@ class TaskReadRoutesTest {
 
 
     @Test
-    fun projectsListsEveryKnownProject() = withReadServer { env ->
+    fun projectsListsEveryLiveProjectAndNeverADeletedOne() = withReadServer { env ->
         val rows = TRANSPORT_JSON.decodeFromString(
             ListSerializer(ProjectDto.serializer()),
             env.get("/projects", bearer = token).bodyAsText(),
         )
-        assertEquals(listOf(project.value, otherProject.value), rows.map { it.id })
+        assertEquals(
+            listOf(project.value, otherProject.value),
+            rows.map { it.id },
+            "the default is live-only, which is what keeps a deleted project out of every selector " +
+                "without a caller opting in",
+        )
         assertEquals(listOf("kotgent", "sidecar"), rows.map { it.name })
         assertEquals(
             listOf("/Users/dev/kotgent", null),
             rows.map { it.path },
             "a project the daemon has only ever seen through an import carries no path",
         )
+        assertEquals(listOf(false, false), rows.map { it.archived }, "and every row carries the flag itself")
+    }
+
+    @Test
+    fun projectsWithArchivedTrueAnswersTheDeletedOnesAndNothingElse() = withReadServer { env ->
+        val rows = TRANSPORT_JSON.decodeFromString(
+            ListSerializer(ProjectDto.serializer()),
+            env.get("/projects?archived=true", bearer = token).bodyAsText(),
+        )
+        assertEquals(
+            listOf(deletedProject.value),
+            rows.map { it.id },
+            "the restore dialog's single request: one side of the tombstone, not a flag on a merged list",
+        )
+        assertEquals(listOf("abandoned"), rows.map { it.name })
+        assertEquals(
+            listOf("/Users/dev/abandoned"),
+            rows.map { it.path },
+            "the last-seen checkout is what makes a row identifiable in the restore dialog",
+        )
+        assertEquals(listOf(true), rows.map { it.archived })
+
+        for (spelling in listOf("/projects?archived=false", "/projects?archived=1", "/projects?archived=")) {
+            val live = TRANSPORT_JSON.decodeFromString(
+                ListSerializer(ProjectDto.serializer()),
+                env.get(spelling, bearer = token).bodyAsText(),
+            )
+            assertEquals(
+                listOf(project.value, otherProject.value),
+                live.map { it.id },
+                "$spelling is not the opt-in, so it answers the live list — a selector must never " +
+                    "show a deleted project by accident",
+            )
+        }
+    }
+
+    @Test
+    fun aDeletedProjectsBacklogAndItsCardsStillAnswer() = withReadServer { env ->
+        val rows = TRANSPORT_JSON.decodeFromString(
+            ListSerializer(BacklogEntryDto.serializer()),
+            env.get("/tasks?project=${deletedProject.value}", bearer = token).bodyAsText(),
+        )
+        assertEquals(
+            listOf(orphaned.value),
+            rows.map { it.ref },
+            "the tombstone hides the project from the selectors; it does not take the tasks away, " +
+                "because restore has to return them",
+        )
+
+        val resp = env.get("/tasks/${orphaned.value}", bearer = token)
+        assertEquals(
+            HttpStatusCode.OK,
+            resp.status,
+            "and a deep link to a card must not break — a bookmark, a notification and an agent's own " +
+                "earlier output all address it",
+        )
+        val detail = TRANSPORT_JSON.decodeFromString(TaskDetailDto.serializer(), resp.bodyAsText())
+        assertEquals("the idea that outlived its project", detail.task.title)
+        assertEquals("abandoned", detail.projectName, "named by the row the tombstone left in place")
     }
 
 
@@ -364,6 +430,7 @@ class TaskReadRoutesTest {
         second to entry(second, project, 2.0, TaskState.review, blocked = false, rev = 8),
         third to entry(third, project, 3.0, TaskState.todo, blocked = true, rev = 9),
         TaskRef("local:9") to entry(TaskRef("local:9"), otherProject, 1.0, TaskState.todo, false, rev = 10),
+        orphaned to entry(orphaned, deletedProject, 1.0, TaskState.todo, blocked = false, rev = 11),
     )
 
     private fun entry(
@@ -388,6 +455,7 @@ class TaskReadRoutesTest {
         first to Task(first, "write the parser", "the ref grammar", null, fixedNow),
         second to Task(second, "wire the routes", "", null, fixedNow),
         third to Task(third, "ship it", "", null, fixedNow),
+        orphaned to Task(orphaned, "the idea that outlived its project", "", null, fixedNow),
     )
 
     private fun sessionRows(): Map<SessionId, SessionMeta> = mapOf(
@@ -477,6 +545,9 @@ class TaskReadRoutesTest {
                 projects = mapOf(
                     project to ProjectRecord(project, "kotgent", "/Users/dev/kotgent", fixedNow),
                     otherProject to ProjectRecord(otherProject, "sidecar", null, fixedNow),
+                    deletedProject to ProjectRecord(
+                        deletedProject, "abandoned", "/Users/dev/abandoned", fixedNow, archived = true,
+                    ),
                 ),
             )
             val store = FakeEventStore(sessions)
