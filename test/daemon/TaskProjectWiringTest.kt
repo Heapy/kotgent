@@ -163,7 +163,7 @@ class TaskProjectWiringTest {
     fun aStartInsideAnArchivedProjectIsNotStampedAndResurrectsNothing() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture(this)
-            f.tasks.setProjectArchived(alpha, true)
+            f.tasks.archiveProject(alpha, archived = true)
 
             val started = f.manager().start("claude", "/repo/sub")
 
@@ -178,12 +178,12 @@ class TaskProjectWiringTest {
     fun restoringTheProjectMakesTheNextStartBindItAgain() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture(this)
-            f.tasks.setProjectArchived(alpha, true)
+            f.tasks.archiveProject(alpha, archived = true)
             val manager = f.manager(newIds = listOf(SessionId("while001"), SessionId("after001")))
 
             assertNull(manager.start("claude", "/repo/sub").projectId)
 
-            f.tasks.setProjectArchived(alpha, false)
+            f.tasks.archiveProject(alpha, archived = false)
 
             assertEquals(
                 alpha,
@@ -238,7 +238,7 @@ class TaskProjectWiringTest {
     fun theBackfillSkipsASessionWhoseProjectIsArchivedInsteadOfRetryingIt() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture(this)
-            f.tasks.setProjectArchived(alpha, true)
+            f.tasks.archiveProject(alpha, archived = true)
             f.seedSession("tombed01", cwd = "/repo/sub")
 
             f.reconciler().reconcile()
@@ -505,10 +505,18 @@ class TaskProjectWiringTest {
             return ProjectRegistration.registered
         }
 
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean {
+        /**
+         * Seeding, not the store method: this fake has no project rows to answer `false` for, and the
+         * real store answers `false` for a missing one. A double that reported a different boolean than
+         * production would be the "fake that proves a fictional system" `docs/TESTING.md` warns about,
+         * so the override below refuses instead — nothing on the daemon's project-wiring path calls it.
+         */
+        fun archiveProject(id: ProjectId, archived: Boolean) {
             if (archived) archivedProjects += id else archivedProjects -= id
-            return true
         }
+
+        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) =
+            unused("setProjectArchived")
 
         override suspend fun entry(ref: TaskRef): BacklogEntry? {
             entryFailure?.let { throw it }
@@ -517,13 +525,16 @@ class TaskProjectWiringTest {
 
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
 
+        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
+
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused("startIfTodo")
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+            unused("startIfTodo")
 
         override suspend fun transition(
             ref: TaskRef,

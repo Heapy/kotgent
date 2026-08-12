@@ -653,9 +653,9 @@ class TaskCommandsTest {
     fun deletingAProjectPrintsTheTombstonedRowItself() = runCommandTest {
         val out = Sinks()
         val asked = mutableListOf<String>()
-        val exit = runProjectDeleteCommand(
+        val exit = runProjectArchiveCommand(
             id = PROJECT,
-            deleteProject = { id ->
+            setArchived = { id ->
                 asked += id
                 ProjectDto(id = id, name = "kotgent", path = "/repo", updatedAt = 3, archived = true)
             },
@@ -678,9 +678,9 @@ class TaskCommandsTest {
     fun restoringAProjectPrintsTheRowWithTheMarkCleared() = runCommandTest {
         val out = Sinks()
         val asked = mutableListOf<String>()
-        val exit = runProjectRestoreCommand(
+        val exit = runProjectArchiveCommand(
             id = PROJECT,
-            restoreProject = { id ->
+            setArchived = { id ->
                 asked += id
                 ProjectDto(id = id, name = "kotgent", path = "/repo", updatedAt = 4, archived = false)
             },
@@ -692,33 +692,27 @@ class TaskCommandsTest {
         assertEquals(false, out.onlyJsonObject()["archived"]?.jsonPrimitive?.content?.toBoolean())
     }
 
+    /**
+     * One case, not a loop over both verbs: this renderer takes the call as a lambda, so it cannot tell
+     * a delete from a restore and a second identical pass would only look like coverage. The verb that
+     * the parsed direction actually picks is `ApiClientTaskTest`'s
+     * `theParsedVerbPicksTheCallAndNothingBelowItCanSeeWhichDirectionItWas`, where a stub daemon reads
+     * the HTTP method and path back.
+     */
     @Test
     fun aProjectTheDaemonNeverSawIsOneErrorObjectCarryingIts404() = runCommandTest {
-        for (call in listOf<suspend (Sinks) -> Int>(
-            { out ->
-                runProjectDeleteCommand(
-                    id = OTHER_PROJECT,
-                    deleteProject = { throw ApiException(404, "no project '$OTHER_PROJECT'") },
-                    stdout = out.stdout::add,
-                    stderr = out.stderr::add,
-                )
-            },
-            { out ->
-                runProjectRestoreCommand(
-                    id = OTHER_PROJECT,
-                    restoreProject = { throw ApiException(404, "no project '$OTHER_PROJECT'") },
-                    stdout = out.stdout::add,
-                    stderr = out.stderr::add,
-                )
-            },
-        )) {
-            val out = Sinks()
-            assertEquals(1, call(out), "exit 3 stays reserved for `task next` finding nothing")
-            assertTrue(out.stdout.isEmpty(), "a failure never prints on the success stream: ${out.stdout}")
-            val err = Json.parseToJsonElement(out.onlyErrorJson()).jsonObject
-            assertEquals(404, err["status"]?.jsonPrimitive?.content?.toInt())
-            assertTrue(OTHER_PROJECT in (err["error"]?.jsonPrimitive?.content ?: ""))
-        }
+        val out = Sinks()
+        val exit = runProjectArchiveCommand(
+            id = OTHER_PROJECT,
+            setArchived = { throw ApiException(404, "no project '$OTHER_PROJECT'") },
+            stdout = out.stdout::add,
+            stderr = out.stderr::add,
+        )
+        assertEquals(1, exit, "exit 3 stays reserved for `task next` finding nothing")
+        assertTrue(out.stdout.isEmpty(), "a failure never prints on the success stream: ${out.stdout}")
+        val err = Json.parseToJsonElement(out.onlyErrorJson()).jsonObject
+        assertEquals(404, err["status"]?.jsonPrimitive?.content?.toInt())
+        assertTrue(OTHER_PROJECT in (err["error"]?.jsonPrimitive?.content ?: ""))
     }
 
     @Test

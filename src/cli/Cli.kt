@@ -124,7 +124,7 @@ val USAGE: String = """
       task move <ref>                --top | --bottom | --before <ref> | --after <ref>
       task dep add|rm <ref> --on R   add or remove "<ref> depends on R"
       task delete <ref>              remove the task, its dependencies and its feed
-      project list                   every project the daemon knows              [--archived]
+      project list                   the live projects, or the deleted ones      [--archived]
       project init [<path>]          write .kotgent.json for a project           [--name N]
       project delete <uuid>          hide a project everywhere; its file, tasks and sessions stay
       project restore <uuid>         bring a deleted project and its backlog back
@@ -584,8 +584,8 @@ private fun parseProject(rest: List<String>): CliCommand {
     return when (sub) {
         "list" -> parseProjectList(args)
         "init" -> parseProjectInit(args)
-        "delete" -> parseProjectId("project delete", args) { ProjectDelete(it) }
-        "restore" -> parseProjectId("project restore", args) { ProjectRestore(it) }
+        "delete" -> parseProjectId("project delete", args) { ProjectArchive(it, archived = true) }
+        "restore" -> parseProjectId("project restore", args) { ProjectArchive(it, archived = false) }
         else -> CliCommand.Invalid("project: unknown subcommand '$sub' (use: kotgent project $PROJECT_SUBCOMMANDS)")
     }
 }
@@ -602,11 +602,6 @@ private fun parseProjectList(rest: List<String>): CliCommand {
     return ProjectList(archived = ARCHIVED_FLAG in scan.switches)
 }
 
-/**
- * The uuid is required and never derived from the cwd: in a worktree an operator can easily be standing
- * somewhere other than they think, and deletion is the one place that matters. Restoring the project you
- * are standing in is already `kotgent project init`, whose adopt clears the mark.
- */
 private fun parseProjectId(command: String, rest: List<String>, make: (String) -> CliCommand): CliCommand {
     val scan = when (val s = scanFlags(command, rest)) {
         is Scan.Bad -> return CliCommand.Invalid(s.message)
@@ -667,8 +662,7 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is TaskDelete -> TaskCommands.delete(command.ref, command.session)
     is ProjectList -> TaskCommands.projectList(command.archived)
     is ProjectInit -> TaskCommands.projectInit(command.path, command.name)
-    is ProjectDelete -> TaskCommands.projectDelete(command.id)
-    is ProjectRestore -> TaskCommands.projectRestore(command.id)
+    is ProjectArchive -> TaskCommands.projectArchive(command.id, command.archived)
 }
 
 private fun runStart(command: CliCommand.Start): Int = runStartResolving(

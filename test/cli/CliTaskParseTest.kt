@@ -99,8 +99,14 @@ class CliTaskParseTest {
             ProjectInit("/repo", "kotgent"),
             parseArgs(listOf("project", "init", "/repo", "--name", "kotgent"), neverReadsStdin),
         )
-        assertEquals(ProjectDelete(PROJECT), parseArgs(listOf("project", "delete", PROJECT), neverReadsStdin))
-        assertEquals(ProjectRestore(PROJECT), parseArgs(listOf("project", "restore", PROJECT), neverReadsStdin))
+        assertEquals(
+            ProjectArchive(PROJECT, archived = true),
+            parseArgs(listOf("project", "delete", PROJECT), neverReadsStdin),
+        )
+        assertEquals(
+            ProjectArchive(PROJECT, archived = false),
+            parseArgs(listOf("project", "restore", PROJECT), neverReadsStdin),
+        )
     }
 
     @Test

@@ -503,7 +503,7 @@ class SessionDoneTaskTest {
                 .minByOrNull { it.position }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean {
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
             journal += "tasks.startIfTodo(${ref.value})"
             val existing = entries[ref] ?: return false
             if (existing.state != TaskState.todo) return false
@@ -531,6 +531,7 @@ class SessionDoneTaskTest {
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
+        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing = error("Done is not expected to call TaskStore.$name")
@@ -549,7 +550,8 @@ class SessionDoneTaskTest {
         override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused("startIfTodo")
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+            unused("startIfTodo")
         override suspend fun transition(
             ref: TaskRef,
             to: TaskState,
@@ -577,6 +579,7 @@ class SessionDoneTaskTest {
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
+        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing =

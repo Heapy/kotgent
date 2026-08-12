@@ -631,6 +631,9 @@ class TaskReadRoutesTest {
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
             record("listProjects", projects.values.filter { it.archived == archived }.sortedBy { it.name })
 
+        override suspend fun listAllProjects(): List<ProjectRecord> =
+            record("listAllProjects", projects.values.sortedBy { it.name })
+
         override suspend fun project(id: ProjectId): ProjectRecord? = record("project", projects[id])
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = readOnly("nextCandidate")
@@ -638,7 +641,8 @@ class TaskReadRoutesTest {
             readOnly("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = readOnly("update")
         override suspend fun delete(ref: TaskRef): Boolean = readOnly("delete")
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = readOnly("startIfTodo")
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+            readOnly("startIfTodo")
         override suspend fun transition(
             ref: TaskRef,
             to: TaskState,

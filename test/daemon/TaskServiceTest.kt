@@ -208,6 +208,41 @@ class TaskServiceTest {
     }
 
     @Test
+    fun aDeleteLandingBetweenTheSelectionAndItsStartHandsOutNothingAndNeedsNoNewControlFlow() =
+        runBlocking {
+            withTimeout(5_000) {
+                val f = Fixture()
+                f.seedSession(s1, createdAt = 1_000L)
+                f.seedTask(t1)
+
+                // linkNext holds no lock between selecting a card and starting it, so the delete lands
+                // here. The store refuses the start; nothing in this loop knows why, and nothing needs to.
+                f.tasks.afterNextCandidate = { call ->
+                    if (call == 0) f.tasks.archivedProjects += alpha
+                }
+
+                assertNull(
+                    f.service.linkNext(s1, alpha),
+                    "the refused start sends the loop back to a candidate query that now answers null, " +
+                        "so `task next` degrades to its ordinary 'nothing eligible'",
+                )
+
+                assertNull(f.linkOf(s1), "no session was linked to a deleted project's card")
+                assertEquals(TaskState.todo, f.stateOf(t1), "and the card never started")
+                assertEquals(
+                    listOf(
+                        "tasks.nextCandidate($alpha)",
+                        "tasks.startIfTodo(${t1.value})",
+                        "tasks.nextCandidate($alpha)",
+                    ),
+                    f.journal,
+                    "the existing arbitration is the whole mechanism: one refused start, one re-query, " +
+                        "and no session stamp or activity row in between",
+                )
+            }
+        }
+
+    @Test
     fun linkNextOnAnEmptyBacklogReportsNothingEligibleAndWritesNothing() = runBlocking {
         withTimeout(5_000) {
             val f = Fixture()
@@ -491,7 +526,11 @@ class TaskServiceTest {
 
         var nextCandidateCalls: Int = 0
 
-        // Runs after the read and outside the witness so two callers can hold the same candidate.
+        /** The delete tombstone, which both the selection and the selection's start must observe. */
+        val archivedProjects: MutableSet<ProjectId> = mutableSetOf()
+
+        // Runs after the read and outside the witness so two callers can hold the same candidate — which
+        // makes it the gap a `DELETE /projects/{id}` lands in, between selecting a card and starting it.
         var afterNextCandidate: (suspend (Int) -> Unit)? = null
 
         private var rev = 0L
@@ -511,18 +550,30 @@ class TaskServiceTest {
             val call = nextCandidateCalls++
             val candidate = witness.inTaskStore("nextCandidate") {
                 journal += "tasks.nextCandidate($project)"
-                entries.values
-                    .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
-                    .minByOrNull { it.position }
+                if (project in archivedProjects) {
+                    null
+                } else {
+                    entries.values
+                        .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
+                        .minByOrNull { it.position }
+                }
             }
             afterNextCandidate?.invoke(call)
             return candidate
         }
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = witness.inTaskStore("startIfTodo") {
-            journal += "tasks.startIfTodo(${ref.value})"
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+            witness.inTaskStore("startIfTodo") {
+                journal += "tasks.startIfTodo(${ref.value})"
+                startLocked(ref, requireLiveProject)
+            }
+
+        private fun startLocked(ref: TaskRef, requireLiveProject: Boolean): Boolean {
             val existing = entries[ref]
-            if (existing == null || existing.state != TaskState.todo) {
+            // One observation, tombstone included — production decides both halves in the one UPDATE.
+            return if (existing == null || existing.state != TaskState.todo) {
+                false
+            } else if (requireLiveProject && existing.project in archivedProjects) {
                 false
             } else {
                 entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
@@ -600,6 +651,7 @@ class TaskServiceTest {
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
+        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
         override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
 
         private fun unused(name: String): Nothing =

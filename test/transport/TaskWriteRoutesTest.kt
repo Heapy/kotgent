@@ -17,6 +17,7 @@ import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
 import io.kotgent.store.TaskStore
 import io.kotgent.task.ActivityKind
+import io.kotgent.task.ArchivedProjectException
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.DependencyRefusal
 import io.kotgent.task.DependencyRefusedException
@@ -240,6 +241,136 @@ class TaskWriteRoutesTest {
             TRANSPORT_JSON.decodeFromString(BacklogEntryDto.serializer(), resp.bodyAsText()).project,
         )
         assertEquals(alpha, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
+    }
+
+    @Test
+    fun createFromASessionStampedWithADeletedProjectIsRefusedToo() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "kotgent", "/repo")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = alpha)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        val resp = env.post("/tasks", """{"title":"through the old stamp"}""", pane = paneOne)
+
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            resp.status,
+            "the stamp is a shortcut past resolution, not a licence: a session bound before the delete " +
+                "would otherwise keep filing cards the board cannot show, and whether an agent hit the " +
+                "refusal would depend on which session it was in rather than which project it is",
+        )
+        val body = resp.bodyAsText()
+        assertTrue(body.contains("kotgent") && body.contains(alpha.value), "the refusal names the project: $body")
+        assertTrue(body.contains("kotgent project restore ${alpha.value}"), "and the way back: $body")
+        assertTrue(
+            body.contains(PROJECT_FILE_NAME),
+            "and the file exit too: after a delete no NEW session in a directory is ever stamped, so a " +
+                "session that IS stamped was stamped because a $PROJECT_FILE_NAME there named the " +
+                "project — which the tombstone never touches. That is the 'created in the wrong folder' " +
+                "case, and moving the file is the only exit that fixes it: $body",
+        )
+        assertTrue(
+            body.contains("started after that"),
+            "worded for THIS arrival, though — the stamp short-circuits the filesystem, so moving the " +
+                "file frees the directory while this session keeps the project it carries: $body",
+        )
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "nothing was created")
+        assertTrue(env.fs.reads.isEmpty(), "and the stamp still short-circuits the filesystem")
+
+        assertTrue(env.tasks.setProjectArchived(alpha, false), "the operator restores it")
+        assertEquals(
+            HttpStatusCode.Created,
+            env.post("/tasks", """{"title":"back in business"}""", pane = paneOne).status,
+            "and the same session files normally again — the mark is re-read, never latched",
+        )
+    }
+
+    @Test
+    fun aDeleteLandingBetweenResolutionAndTheInsertFilesNothing() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/sub")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "kotgent", "/repo")
+        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        // The window the route cannot close: resolution registers a LIVE project and this route then
+        // holds no lock at all before the insert. Archiving from inside the store seam interleaves the
+        // delete exactly there — calling the two in sequence proves nothing, because in sequence
+        // resolution's own check already refuses.
+        env.tasks.beforeCreate = {
+            assertTrue(env.tasks.setProjectArchived(alpha, true))
+            env.tasks.beforeCreate = null
+        }
+
+        val resp = env.post("/tasks", """{"title":"through the gap"}""", pane = paneOne)
+
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            resp.status,
+            "the insert reads the tombstone in its own transaction, so the delete wins the race it " +
+                "would otherwise lose to a route that had already stopped looking (answered " +
+                "${resp.bodyAsText()})",
+        )
+        val body = resp.bodyAsText()
+        assertTrue(body.contains("kotgent") && body.contains(alpha.value), "the refusal names it: $body")
+        assertTrue(
+            body.contains("kotgent project restore ${alpha.value}") && body.contains(PROJECT_FILE_NAME),
+            "and it is the ARRIVAL's refusal, not a generic one — the store answers whether, the route " +
+                "still answers how, so a card that resolved through a $PROJECT_FILE_NAME keeps the " +
+                "three exits that arrival offers: $body",
+        )
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "no card was filed into a deleted project")
+        assertTrue(env.tasks.snapshotTasks().isEmpty(), "and no tracker row was left behind either")
+
+        assertTrue(env.tasks.setProjectArchived(alpha, false), "the operator restores the project")
+        assertEquals(
+            HttpStatusCode.Created,
+            env.post("/tasks", """{"title":"after the restore"}""", pane = paneOne).status,
+            "and the very next request files normally — the guard is a re-read, never a latch",
+        )
+    }
+
+    @Test
+    fun aDeleteRacingACreateThatNamedTheProjectOutrightIs404LikeAnUnknownOne() = withTaskServer { env ->
+        env.tasks.seedProject(alpha, "kotgent", "/repo")
+        env.tasks.beforeCreate = {
+            assertTrue(env.tasks.setProjectArchived(alpha, true))
+            env.tasks.beforeCreate = null
+        }
+
+        val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"through the gap"}""")
+
+        assertEquals(
+            HttpStatusCode.NotFound,
+            resp.status,
+            "a caller who typed the uuid stands on no project file, so there is no third exit to offer " +
+                "and the store's refusal leaves through the same door the pre-check's does",
+        )
+        assertTrue(resp.bodyAsText().contains(alpha.value), "the body names the project it refused")
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "nothing was created")
+    }
+
+    @Test
+    fun createFromAPaneWhoseCwdIsGoneCannotAdoptItsWayIntoADeletedProject() = withTaskServer { env ->
+        // The cwd no longer canonicalizes, so `resolveProject` gives up before reading anything and the
+        // fallback runs. Its `ensureProjectFile` ADOPTS the checkout root's existing file, which is how
+        // a deleted project's uuid reaches an upsert that never minted it.
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "kotgent", "/repo")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+        env.sessions.seed(sessionOne, cwd = "/repo/gone", projectId = null)
+        env.panes[PaneId(paneOne)] = sessionOne
+
+        val resp = env.post("/tasks", """{"title":"through the fallback"}""", pane = paneOne)
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue(resp.bodyAsText().contains(alpha.value), "the refusal names the project it adopted")
+        assertTrue(env.tasks.snapshotEntries().isEmpty(), "no card was filed into a deleted project")
+        assertNull(
+            assertNotNull(env.sessions.snapshot()[sessionOne]).projectId,
+            "and the session was not bound to it either",
+        )
     }
 
     @Test
@@ -1041,7 +1172,15 @@ class TaskWriteRoutesTest {
                 resp.status,
                 "a uuid that cannot parse addresses no resource at all: ${resp.bodyAsText()}",
             )
-            assertTrue(resp.bodyAsText().contains("uuid"), resp.bodyAsText())
+            // Not merely "uuid": the request path carries that word itself, so an echo would satisfy it.
+            assertTrue(
+                resp.bodyAsText().contains("malformed project id 'not-a-uuid'"),
+                resp.bodyAsText(),
+            )
+            assertTrue(
+                resp.bodyAsText().contains("expected a canonical uuid"),
+                "and it says what a well-formed one is: ${resp.bodyAsText()}",
+            )
         }
         assertEquals(listOf(alpha), env.tasks.listProjects().map { it.id }, "and no row moved")
     }
@@ -1185,12 +1324,32 @@ class TaskWriteRoutesTest {
 
         override suspend fun get(ref: TaskRef): Task? = mutex.withLock { tasks[ref] }
 
+        /**
+         * Runs before the lock is taken, which is the whole point: it is the place a concurrent
+         * `DELETE /projects/{id}` lands — after resolution read the project row and before the insert
+         * reads it again.
+         */
+        var beforeCreate: (suspend () -> Unit)? = null
+
         override suspend fun create(
             project: ProjectId,
             title: String,
             body: String,
             author: String,
+        ): Task {
+            beforeCreate?.invoke()
+            return createLocked(project, title, body, author)
+        }
+
+        private suspend fun createLocked(
+            project: ProjectId,
+            title: String,
+            body: String,
+            author: String,
         ): Task = mutex.withLock {
+            // Under the insert's own lock, as the production transaction decides it: a fake checking
+            // outside would let this suite pass against a race the daemon has closed.
+            if (projects[project]?.archived == true) throw ArchivedProjectException(project)
             val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
             val task = Task(ref, title, body, url = null, updatedAt = 0L)
             tasks[ref] = task
@@ -1228,7 +1387,7 @@ class TaskWriteRoutesTest {
                 .minByOrNull { it.position }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = mutex.withLock {
             val existing = entries[ref] ?: return@withLock false
             if (existing.state != TaskState.todo) return@withLock false
             entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
@@ -1340,7 +1499,9 @@ class TaskWriteRoutesTest {
                 if (existing != null && existing.archived) {
                     return@withLock ProjectRegistration.refusedArchived
                 }
-                projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L)
+                // Carried, not defaulted — the production statement leaves `archived` out of its
+                // `ON CONFLICT DO UPDATE SET`, so an upsert can never clear a mark.
+                projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L, existing?.archived ?: false)
                 ProjectRegistration.registered
             }
 
@@ -1352,6 +1513,9 @@ class TaskWriteRoutesTest {
 
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
             mutex.withLock { projects.values.filter { it.archived == archived }.sortedBy { it.name } }
+
+        override suspend fun listAllProjects(): List<ProjectRecord> =
+            mutex.withLock { projects.values.sortedBy { it.name } }
 
         override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
     }

@@ -3,6 +3,7 @@ package io.kotgent.store
 import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
 import io.kotgent.task.ActivityKind
+import io.kotgent.task.ArchivedProjectException
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.DependencyRefusal
 import io.kotgent.task.DependencyRefusedException
@@ -141,6 +142,11 @@ class FakeTaskStore(
 
     override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
         mutex.withLock {
+            // Under the same lock as the insert, because that is what the real store's transaction does:
+            // a fake that checked outside it would let a component test pass against a race production
+            // has closed. `seedTask` deliberately bypasses this — a fixture stands for rows that already
+            // existed when the project was deleted, which is the state restore has to bring back.
+            if (projects[project]?.archived == true) throw ArchivedProjectException(project)
             publishing {
                 val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
                 val created = Task(ref, title, body, url = null, updatedAt = now())
@@ -193,16 +199,22 @@ class FakeTaskStore(
     }
 
     override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = mutex.withLock {
+        // One observation, tombstone included — see TaskStore.nextCandidate for why the two halves may
+        // not be separate reads.
+        if (projects[project]?.archived == true) return@withLock null
         entries.values
             .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
             .minWithOrNull(RANK_ORDER)
     }
 
 
-    override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
+    override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = mutex.withLock {
         publishing {
             val existing = entries[ref] ?: return@publishing false
             if (existing.state != TaskState.todo) return@publishing false
+            // One observation, tombstone included — see TaskStore.startIfTodo for why the selection path
+            // may not read the project first.
+            if (requireLiveProject && projects[existing.project]?.archived == true) return@publishing false
             writeStateLocked(existing, TaskState.in_progress)
             true
         }
@@ -320,7 +332,11 @@ class FakeTaskStore(
         mutex.withLock {
             val existing = projects[id]
             if (existing != null && existing.archived) return@withLock ProjectRegistration.refusedArchived
-            projects[id] = ProjectRecord(id, name, path ?: existing?.path, now())
+            // `archived` is carried, never defaulted: the production statement keeps it out of its
+            // `ON CONFLICT DO UPDATE SET`, so an upsert can never clear a mark. The refusal above means
+            // no live upsert meets a marked row today, and a fake that encoded "cleared" instead of
+            // "untouched" would hide the day one does.
+            projects[id] = ProjectRecord(id, name, path ?: existing?.path, now(), existing?.archived ?: false)
             ProjectRegistration.registered
         }
 
@@ -330,8 +346,17 @@ class FakeTaskStore(
         true
     }
 
-    override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
-        mutex.withLock { projects.values.filter { it.archived == archived }.sortedBy { it.name } }
+    // `name, id` is the SQL store's order; sorting by name alone would place same-named rows differently.
+    override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = mutex.withLock {
+        projects.values.filter { it.archived == archived }
+            .sortedWith(compareBy({ it.name }, { it.id.value }))
+    }
+
+    // One acquisition of the same lock every write takes, which is how the single-observation contract
+    // `TaskStore.listAllProjects` states is met here.
+    override suspend fun listAllProjects(): List<ProjectRecord> = mutex.withLock {
+        projects.values.sortedWith(compareBy({ it.name }, { it.id.value }))
+    }
 
     override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
 

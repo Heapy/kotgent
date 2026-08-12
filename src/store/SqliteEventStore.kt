@@ -83,9 +83,8 @@ class SqliteEventStore private constructor(
             },
             parameters = 0,
         )
-        // SQLDelight migrations are disabled by the codegen plugin. The guard on each ALTER lives in
-        // Migrations.kt, shared with the task store; it avoids SQLiter logging duplicate-column stack
-        // traces on every startup while still propagating real failures.
+        // SQLDelight migrations are disabled by the codegen plugin, so an additive column is added by
+        // hand here. The guard is not tidiness — see `hasColumn` in Migrations.kt.
         if (!driver.hasColumn("sessions", "archived")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }

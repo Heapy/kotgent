@@ -285,7 +285,7 @@ class SpaRoutingTest {
         override suspend fun entry(ref: TaskRef): BacklogEntry? = unused()
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused()
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused()
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused()
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = unused()
         override suspend fun transition(
             ref: TaskRef,
             to: TaskState,
@@ -311,6 +311,7 @@ class SpaRoutingTest {
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Nothing = unused()
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Nothing = unused()
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused()
+        override suspend fun listAllProjects(): List<ProjectRecord> = unused()
         override suspend fun project(id: ProjectId): ProjectRecord? = unused()
     }
 

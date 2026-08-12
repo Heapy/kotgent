@@ -165,7 +165,7 @@ object TaskCommands {
         )
     }
 
-    fun projectList(archived: Boolean = false): Int = withTaskApi { api ->
+    fun projectList(archived: Boolean): Int = withTaskApi { api ->
         runProjectListCommand(
             listProjects = { api.listProjects(archived) },
             stdout = ::println,
@@ -173,19 +173,10 @@ object TaskCommands {
         )
     }
 
-    fun projectDelete(id: String): Int = withTaskApi { api ->
-        runProjectDeleteCommand(
+    fun projectArchive(id: String, archived: Boolean): Int = withTaskApi { api ->
+        runProjectArchiveCommand(
             id = id,
-            deleteProject = { api.deleteProject(it) },
-            stdout = ::println,
-            stderr = ::eprintln,
-        )
-    }
-
-    fun projectRestore(id: String): Int = withTaskApi { api ->
-        runProjectRestoreCommand(
-            id = id,
-            restoreProject = { api.restoreProject(it) },
+            setArchived = projectArchiveCall(api, archived),
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -534,32 +525,27 @@ suspend fun runProjectListCommand(
 }
 
 /**
+ * The one place the parsed verb becomes an HTTP verb, and a named function rather than an `if` inside
+ * [TaskCommands.projectArchive] purely so a test can hold it: [runProjectArchiveCommand] takes the call
+ * as a lambda and can never see which direction it was handed, so an inverted branch would make
+ * `kotgent project delete` restore and `kotgent project restore` delete with the whole suite green.
+ * `ApiClientTaskTest` drives this against the stub daemon and reads the method and path back.
+ */
+fun projectArchiveCall(api: ApiClient, archived: Boolean): suspend (String) -> ProjectDto =
+    if (archived) api::deleteProject else api::restoreProject
+
+/**
  * Both sides of the tombstone print the project row itself rather than an acknowledgement, because
  * `archived` is the answer a script wants and the daemon is idempotent — a repeat says the same thing
  * instead of failing. A uuid the daemon never saw is a 404, and that reaches stderr as exit 1.
  */
-suspend fun runProjectDeleteCommand(
+suspend fun runProjectArchiveCommand(
     id: String,
-    deleteProject: suspend (String) -> ProjectDto,
-    stdout: (String) -> Unit,
-    stderr: (String) -> Unit,
-): Int = runProjectRowCommand(id, deleteProject, stdout, stderr)
-
-/** The counterpart of [runProjectDeleteCommand]; see it for why both answer the row. */
-suspend fun runProjectRestoreCommand(
-    id: String,
-    restoreProject: suspend (String) -> ProjectDto,
-    stdout: (String) -> Unit,
-    stderr: (String) -> Unit,
-): Int = runProjectRowCommand(id, restoreProject, stdout, stderr)
-
-private suspend fun runProjectRowCommand(
-    id: String,
-    call: suspend (String) -> ProjectDto,
+    setArchived: suspend (String) -> ProjectDto,
     stdout: (String) -> Unit,
     stderr: (String) -> Unit,
 ): Int = runTaskCommand(stdout, stderr) {
-    TaskOutput(TRANSPORT_JSON.encodeToString(ProjectDto.serializer(), call(id)))
+    TaskOutput(TRANSPORT_JSON.encodeToString(ProjectDto.serializer(), setArchived(id)))
 }
 
 /**

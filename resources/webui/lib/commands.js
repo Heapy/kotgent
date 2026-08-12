@@ -149,13 +149,14 @@ function sessionCommands(activeSession, attachedId, pendingAction, actions) {
   ];
 }
 
-// The board is the only screen with a project selection, so its three project commands exist there
-// alone; the sidebar-only done toggle is the mirror case.
+// The board is the only screen with a project selection, so the two commands that read one exist
+// there alone. "New project" deliberately stays on both screens: it navigates to the board itself.
+// The sidebar-only done toggle is the mirror case — one id, so a comparison rather than a set.
 const BOARD_ONLY = new Set([
   "general.delete-project",
   "general.restore-project",
 ]);
-const SESSION_VIEW_ONLY = new Set(["general.show-done"]);
+const SESSION_VIEW_ONLY = "general.show-done";
 
 // `o` means “the other screen”; leader mnemonics are first-match-wins and must remain unique.
 function generalCommands(onBoard, projectId, actions) {
@@ -270,7 +271,7 @@ function generalCommands(onBoard, projectId, actions) {
     },
   ];
   return commands.filter((command) => (onBoard
-    ? !SESSION_VIEW_ONLY.has(command.id)
+    ? command.id !== SESSION_VIEW_ONLY
     : !BOARD_ONLY.has(command.id)));
 }
 

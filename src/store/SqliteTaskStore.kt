@@ -6,6 +6,7 @@ import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.task.ActivityKind
+import io.kotgent.task.ArchivedProjectException
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectRecord
@@ -56,8 +57,8 @@ class SqliteTaskStore private constructor(
 
     init {
         for (statement in CREATE_TABLES_IF_NOT_EXISTS) driver.execute(null, statement, 0)
-        // A table created before the tombstone existed needs the column added; the guard keeps SQLiter
-        // from logging a duplicate-column stack trace on every open. See Migrations.kt.
+        // A table created before the tombstone existed needs the column added; the guard is `hasColumn`'s,
+        // and Migrations.kt says why it is not tidiness.
         if (!driver.hasColumn("projects", "archived")) {
             driver.execute(null, "ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0", 0)
         }
@@ -90,8 +91,18 @@ class SqliteTaskStore private constructor(
             val key = localKeyCounter + 1
             val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:$key")
             val ts = now()
-            val rev = nextRev()
+            var refused = false
             db.transaction {
+                // The tombstone is read by the INSERT's own transaction, exactly as upsertProject reads
+                // it: the caller resolved this project in an earlier call and holds no lock in between,
+                // so a delete landing in that gap would otherwise file a card into a project the board
+                // no longer lists. Refusing here is what makes the check and the write one decision.
+                val archived = projects.selectProjectArchived(project.value).executeAsOneOrNull()
+                if (archived != null && archived != 0L) {
+                    refused = true
+                    return@transaction
+                }
+                val rev = nextRev()
                 tasks.raiseLocalKeyHighWater(key)
                 val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
                 tasks.insertTask(ref.value, title, body, ts, ts)
@@ -114,6 +125,10 @@ class SqliteTaskStore private constructor(
                     ),
                 )
             }
+            // Thrown outside the transaction, so the rollback is SQLite's ordinary empty commit rather
+            // than an exception unwinding through it, and `publishing` clears its staging without ever
+            // emitting — nothing was staged, because the check runs before the first write.
+            if (refused) throw ArchivedProjectException(project)
             localKeyCounter = key
             Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
         }
@@ -161,16 +176,22 @@ class SqliteTaskStore private constructor(
         mutex.withLock { dependencies.nextCandidateLocked(project) }
 
 
-    override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
-        outbox.publishing { startIfTodoLocked(ref) }
+    override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = mutex.withLock {
+        outbox.publishing { startIfTodoLocked(ref, requireLiveProject) }
     }
 
-    private fun startIfTodoLocked(ref: TaskRef): Boolean {
+    private fun startIfTodoLocked(ref: TaskRef, requireLiveProject: Boolean): Boolean {
         val ts = now()
         val rev = nextRev()
         var changed = false
         db.transaction {
-            changed = backlog.startIfTodo(ts, rev, ref.value).value > 0L
+            // The tombstone rides in the WHERE rather than being read first: a selection that checked the
+            // project and then wrote would be the same race with more steps.
+            changed = if (requireLiveProject) {
+                backlog.startIfTodoInLiveProject(ts, rev, ref.value).value > 0L
+            } else {
+                backlog.startIfTodo(ts, rev, ref.value).value > 0L
+            }
             if (!changed) return@transaction
             dependencies.entryLocked(ref)?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
             dependencies.restampDependentsLocked(ref)
@@ -289,6 +310,16 @@ class SqliteTaskStore private constructor(
 
     override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = mutex.withLock {
         projects.selectProjectsByArchived(if (archived) 1L else 0L).executeAsList().mapNotNull { row ->
+            ProjectId.parseOrNull(row.id)?.let {
+                ProjectRecord(it, row.name, row.path, row.updated_at, row.archived != 0L)
+            }
+        }
+    }
+
+    // ONE statement under ONE lock, which is how `TaskStore.listAllProjects`' single-observation
+    // contract is met here.
+    override suspend fun listAllProjects(): List<ProjectRecord> = mutex.withLock {
+        projects.selectAllProjects().executeAsList().mapNotNull { row ->
             ProjectId.parseOrNull(row.id)?.let {
                 ProjectRecord(it, row.name, row.path, row.updated_at, row.archived != 0L)
             }

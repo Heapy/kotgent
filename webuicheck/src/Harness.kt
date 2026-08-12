@@ -167,3 +167,11 @@ val DEFAULT_TERMINAL_UPSTREAM: List<String> = listOf("/bin/cat")
 private val EMPTY_SEED = ByteArray(0)
 
 const val READY_LINE: String = "READY"
+
+/**
+ * A scenario command whose effect reaches the page only through a request the PAGE decides to make has
+ * no daemon-pushed frame to act as the driver's barrier, so it answers `OK <verb>` on the handshake
+ * stdout instead. Every other command's effect arrives as an `/events` frame, which Playwright's
+ * auto-retrying assertions already wait for; those stay silent.
+ */
+const val COMMAND_ACK_PREFIX: String = "OK "

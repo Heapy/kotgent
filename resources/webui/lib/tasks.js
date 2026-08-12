@@ -81,8 +81,7 @@ export async function deleteTask(ref) {
   return apiRequest(taskPath(ref), { method: "DELETE" });
 }
 
-// The two sides of the delete tombstone are one list each, never a flag on a merged one: every
-// selector wants the live projects and only the restore dialog wants exactly the deleted ones.
+// `archived` asks for the deleted projects instead of the live ones; only the restore dialog passes it.
 export async function fetchProjects(archived = false) {
   return (await apiRequest("/projects" + (archived ? "?archived=true" : ""))) || [];
 }

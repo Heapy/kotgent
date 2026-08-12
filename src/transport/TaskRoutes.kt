@@ -6,6 +6,7 @@ import io.kotgent.core.SessionId
 import io.kotgent.daemon.TaskService
 import io.kotgent.store.EventStore
 import io.kotgent.store.TaskStore
+import io.kotgent.task.PROJECT_FILE_NAME
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.RoutingContext
 import kotlinx.serialization.json.Json
@@ -26,6 +27,12 @@ fun Route.taskRoutes(routing: TaskRouting) {
     taskWriteRoutes(routing)
     taskLinkRoutes(routing)
 }
+
+// One spelling, so every route that takes a project uuid refuses a mistyped one the same way. Callers
+// that read the uuid off a flag append their own "pass --project <uuid>".
+fun malformedProjectIdMessage(raw: String): String =
+    "malformed project id '$raw' — expected a canonical uuid, the `id` field of the project's " +
+        PROJECT_FILE_NAME
 
 // Missing identity is the board; supplied-but-invalid identity must fail instead of being attributed to it.
 sealed interface CallerIdentity {

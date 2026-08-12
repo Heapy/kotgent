@@ -40,11 +40,22 @@ JOIN tasks t ON t.id = b.task_ref
 WHERE b.project = ?
 ORDER BY b.position, b.task_ref;
 
+-- The tombstone clause is what makes `POST /tasks/next` refuse a deleted project ATOMICALLY. The route
+-- reads the project row first, for the message, but it holds no lock afterwards; a delete landing
+-- between that read and this query would otherwise hand out work from a project the board no longer
+-- lists. One statement cannot be interleaved, so selection is closed here rather than re-checked there.
+-- A project with NO row is left alone deliberately: absence is not a tombstone, and only `archived <> 0`
+-- withdraws a backlog.
 nextCandidate:
 SELECT b.task_ref, b.project, b.position, b.state, b.created_at, b.updated_at, b.rev
 FROM backlog_entries b
 WHERE b.project = ?
   AND b.state = 'todo'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM projects p
+    WHERE p.id = b.project AND p.archived <> 0
+  )
   AND NOT EXISTS (
     SELECT 1
     FROM backlog_deps d
@@ -91,10 +102,30 @@ SET state = ?, updated_at = ?, rev = ?
 WHERE task_ref = ?;
 
 -- A selection convention for `task next`, not exclusivity: zero rows is normal and linking still proceeds.
+-- This is the DEFERENCE form, used for a card the caller NAMED (`POST /tasks/{ref}/link`): a tombstone
+-- withdraws a project as a SOURCE of work, and naming a ref is not selecting one, so it deliberately
+-- carries no tombstone clause.
 startIfTodo:
 UPDATE backlog_entries
 SET state = 'in_progress', updated_at = ?, rev = ?
 WHERE task_ref = ? AND state = 'todo';
+
+-- The SELECTION form, used only by `POST /tasks/next`. It is `nextCandidate`'s tombstone clause applied
+-- one step later, for the same reason: `linkNext` picks a card and starts it as two store calls, so a
+-- delete landing between them would otherwise let the daemon CHOOSE work out of a project the board no
+-- longer lists — precisely the outcome the route's refusal exists to prevent. Deciding it in the writing
+-- statement makes selection and start each atomic against the tombstone; zero rows is what `linkNext`'s
+-- loop already treats as "somebody else took it, re-query", and the re-query then finds no candidate at
+-- all and answers the ordinary `{"task":null}`.
+startIfTodoInLiveProject:
+UPDATE backlog_entries
+SET state = 'in_progress', updated_at = ?, rev = ?
+WHERE task_ref = ? AND state = 'todo'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM projects p
+    WHERE p.id = backlog_entries.project AND p.archived <> 0
+  );
 
 setPosition:
 UPDATE backlog_entries

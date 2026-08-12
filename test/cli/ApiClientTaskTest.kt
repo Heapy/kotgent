@@ -303,6 +303,24 @@ class ApiClientTaskTest {
         )
     }
 
+    /**
+     * The join the two tests above cannot make: `runProjectArchiveCommand` is handed the call as a
+     * lambda, so nothing below [projectArchiveCall] can see which direction the CLI parsed. Inverting
+     * that one branch would leave `kotgent project delete` restoring, and every other test green.
+     */
+    @Test
+    fun theParsedVerbPicksTheCallAndNothingBelowItCanSeeWhichDirectionItWas() = withStub { stub, api ->
+        assertEquals(ARCHIVED_PROJECT_DTO, projectArchiveCall(api, archived = true)(PROJECT))
+        val deleted = stub.requests.receive()
+        assertEquals("DELETE", deleted.method, "`project delete` sets the tombstone")
+        assertEquals("$API_PREFIX/projects/$PROJECT", deleted.path)
+
+        assertEquals(PROJECT_DTO, projectArchiveCall(api, archived = false)(PROJECT))
+        val restored = stub.requests.receive()
+        assertEquals("POST", restored.method, "`project restore` clears it")
+        assertEquals("$API_PREFIX/projects/$PROJECT/restore", restored.path)
+    }
+
     @Test
     fun nextReturnsTheTaskItLinked() = withStub { stub, api ->
         assertEquals(ENTRY, api.nextTask(PROJECT, "sess1234"))

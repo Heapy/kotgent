@@ -13,21 +13,10 @@ fun handleTaskCommand(words: List<String>, ctx: HarnessContext): Boolean {
         "task-add" -> runBlocking { addTask(ctx, words) }
         "task-del" -> runBlocking { deleteTask(ctx, words) }
         "task-race" -> runBlocking { raceTask(ctx, words) }
-        "project-del" -> runBlocking { markProject(ctx, words, archived = true) }
-        "project-restore" -> runBlocking { markProject(ctx, words, archived = false) }
+        "project-del" -> runBlocking { archiveProject(ctx, words, archived = true) }
+        "project-restore" -> runBlocking { archiveProject(ctx, words, archived = false) }
         else -> false
     }
-}
-
-// /events carries no project frame by design, so a page learns of this only by re-reading
-// `/projects` — which is exactly what a test drives this command to observe.
-private suspend fun markProject(ctx: HarnessContext, words: List<String>, archived: Boolean): Boolean {
-    val verb = words[0]
-    if (words.size != 2) return reject("usage: $verb <project-uuid>")
-    val id = ProjectId.parseOrNull(words[1])
-        ?: return reject("$verb: '${words[1]}' is not a project id; expected a canonical uuid")
-    return ctx.fakes.tasks.setProjectArchived(id, archived) ||
-        reject("$verb: no project '${words[1]}' in this scenario")
 }
 
 private suspend fun applyTaskState(ctx: HarnessContext, words: List<String>): Boolean {
@@ -78,6 +67,25 @@ private suspend fun raceTask(ctx: HarnessContext, words: List<String>): Boolean 
     val next = TaskState.entries[(current.state.ordinal + 1) % TaskState.entries.size]
     return ctx.fakes.tasks.transition(ref, next, TASK_COMMAND_AUTHOR, message = null) != null ||
         reject("task-race: '${ref.value}' refused the step to ${next.name}")
+}
+
+/**
+ * /events carries no project frame by design, so a page learns of this only by re-reading `/projects` —
+ * which is exactly what a test drives this command to observe. That makes the ONE observable a
+ * browser-initiated GET the driver has to beat, and a Playwright assertion on a rendered empty dialog
+ * can never recover from having asked too early. So this answers on stdout, the way `restart` answers
+ * with its second `READY`: the write has landed by the time the fixture sees the line.
+ */
+private suspend fun archiveProject(ctx: HarnessContext, words: List<String>, archived: Boolean): Boolean {
+    val verb = words[0]
+    if (words.size != 2) return reject("usage: $verb <project-uuid>")
+    val id = ProjectId.parseOrNull(words[1])
+        ?: return reject("$verb: '${words[1]}' is not a project id; expected a canonical uuid")
+    if (!ctx.fakes.tasks.setProjectArchived(id, archived)) {
+        return reject("$verb: no project '${words[1]}' in this scenario")
+    }
+    writeStdoutLine("$COMMAND_ACK_PREFIX$verb")
+    return true
 }
 
 private fun taskService(ctx: HarnessContext): TaskService = ctx.taskService

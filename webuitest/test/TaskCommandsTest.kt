@@ -232,55 +232,6 @@ class TaskCommandsTest {
         }
     }
 
-    private fun Page.openPalette(): Locator {
-        // Wait for the previous dialog node to unmount before toggling its state again.
-        assertThat(locator("#command-palette")).hasCount(0)
-        keyboard().press(PALETTE_OPENER)
-        val shell = locator(".command-palette-shell.leader")
-        assertThat(shell).isVisible()
-        assertThat(shell).isFocused()
-        return shell
-    }
-
-    private fun Page.closePalette() {
-        val query = searchQuery()
-        // Chromium consumes the first Escape in a non-empty search input to clear the field.
-        if (query.count() > 0) query.fill("")
-        keyboard().press("Escape")
-        assertThat(locator("#command-palette")).hasCount(0)
-    }
-
-    private fun Page.pressMnemonic(code: String) {
-        keyboard().press(code)
-    }
-
-    private fun Page.searchMode(): Locator {
-        pressMnemonic("KeyK")
-        val query = searchQuery()
-        assertThat(query).isVisible()
-        assertThat(query).isFocused()
-        return query
-    }
-
-    private fun Page.searchQuery(): Locator = locator("#command-palette-query")
-
-    private fun Page.searchFor(query: String): Locator {
-        val field = searchMode()
-        field.fill(query)
-        return field
-    }
-
-    private fun Page.runFirstMatch(query: String, expected: String) {
-        val field = searchFor(query)
-        val options = paletteOptions()
-        assertThat(options).hasCount(1)
-        assertThat(options.first()).containsText(expected)
-        assertThat(options.first()).hasClass(ACTIVE_OPTION)
-        field.press("Enter")
-    }
-
-    private fun Page.paletteOptions(): Locator = locator(".command-palette-option")
-
     private fun Page.leaderRow(title: String): Locator =
         locator(".command-palette-leader-command").filter(Locator.FilterOptions().setHasText(title))
 
@@ -319,16 +270,6 @@ class TaskCommandsTest {
         )
     }
 
-    private fun Page.awaitSessionView() {
-        assertThat(locator("#terminal-pane")).isVisible(visibleWithin(BOOT_TIMEOUT_MS))
-        assertThat(locator("main.board")).hasCount(0)
-    }
-
-    private fun Page.awaitBoard() {
-        assertThat(locator("main.board")).isVisible(visibleWithin(BOOT_TIMEOUT_MS))
-        assertThat(locator("#terminal-pane")).hasCount(0)
-    }
-
     private fun Page.awaitSelectedSession() {
         assertThat(locator("#terminal-title")).not().hasText(
             "No session selected",
@@ -336,14 +277,7 @@ class TaskCommandsTest {
         )
     }
 
-    private fun visibleWithin(millis: Double): LocatorAssertions.IsVisibleOptions =
-        LocatorAssertions.IsVisibleOptions().setTimeout(millis)
-
     private companion object {
         const val SHOW_DONE_QUERY = "hide done"
-
-        val ACTIVE_OPTION: Pattern = Pattern.compile("\\bactive\\b")
-
-        const val BOOT_TIMEOUT_MS = 15_000.0
     }
 }

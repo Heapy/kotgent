@@ -6,9 +6,11 @@ import com.microsoft.playwright.Browser
 import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.BrowserType
 import com.microsoft.playwright.CDPSession
+import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.Tracing
+import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.io.BufferedWriter
@@ -21,6 +23,7 @@ import java.nio.file.Path
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.regex.Pattern
 import kotlin.test.fail
 
 // The JVM browser tests spawn a native harness because KT-78062 prevents linking its cinterop here.
@@ -140,6 +143,16 @@ class Harness(scenario: String) : AutoCloseable {
                 harnessFailure("expected a second '$READY_LINE' after `restart`, got '$ready'")
             }
         }
+        // A command whose effect reaches the page only through a request the PAGE makes has no frame to
+        // wait on, so the harness acknowledges it and this is the barrier. Without it the very next
+        // assertion can read a dialog that asked before the write landed, and no retry recovers that.
+        val verb = line.trim().substringBefore(' ')
+        if (verb in ACKNOWLEDGED_COMMANDS) {
+            val ack = nextStdoutLine("the '$COMMAND_ACK_PREFIX$verb' acknowledgement")
+            if (ack != COMMAND_ACK_PREFIX + verb) {
+                harnessFailure("expected '$COMMAND_ACK_PREFIX$verb' after `$line`, got '$ack'")
+            }
+        }
     }
 
     override fun close() {
@@ -223,6 +236,84 @@ fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String) {
         page.close()
     }
 }
+
+/*
+ * Driving the command palette is fixture work, not a subject: these four gestures each encode something
+ * the platform taught this tier — that a dialog must be seen to unmount before the opener is pressed
+ * again, that Chromium spends the first Escape of a non-empty search input on its own clear, and that a
+ * wait must be on a state that measurably changes. Reach a command through here so a fifth lesson lands
+ * in one place; a few older classes still press their own keys privately and predate this.
+ */
+fun Page.openPalette(): Locator {
+    // Wait for the previous dialog node to unmount before toggling its state again.
+    assertThat(locator("#command-palette")).hasCount(0)
+    keyboard().press(PALETTE_OPENER)
+    val shell = locator(".command-palette-shell.leader")
+    assertThat(shell).isVisible()
+    assertThat(shell).isFocused()
+    return shell
+}
+
+fun Page.closePalette() {
+    val query = searchQuery()
+    // Chromium consumes the first Escape in a non-empty search input to clear the field.
+    if (query.count() > 0) query.fill("")
+    keyboard().press("Escape")
+    assertThat(locator("#command-palette")).hasCount(0)
+}
+
+fun Page.pressMnemonic(code: String) {
+    keyboard().press(code)
+}
+
+fun Page.searchQuery(): Locator = locator("#command-palette-query")
+
+fun Page.searchMode(): Locator {
+    pressMnemonic("KeyK")
+    val query = searchQuery()
+    assertThat(query).isVisible()
+    assertThat(query).isFocused()
+    return query
+}
+
+fun Page.searchFor(query: String): Locator {
+    val field = searchMode()
+    field.fill(query)
+    return field
+}
+
+fun Page.paletteOptions(): Locator = locator(".command-palette-option")
+
+fun Page.paletteOption(title: String): Locator =
+    paletteOptions().filter(Locator.FilterOptions().setHasText(title))
+
+fun Page.runFirstMatch(query: String, expected: String) {
+    val field = searchFor(query)
+    val options = paletteOptions()
+    assertThat(options).hasCount(1)
+    assertThat(options.first()).containsText(expected)
+    assertThat(options.first()).hasClass(ACTIVE_OPTION)
+    field.press("Enter")
+}
+
+fun Page.awaitSessionView() {
+    assertThat(locator("#terminal-pane")).isVisible(visibleWithin(BOOT_TIMEOUT_MS))
+    assertThat(locator("main.board")).hasCount(0)
+}
+
+fun Page.awaitBoard() {
+    assertThat(locator("main.board")).isVisible(visibleWithin(BOOT_TIMEOUT_MS))
+    assertThat(locator("#terminal-pane")).hasCount(0)
+}
+
+fun visibleWithin(millis: Double): LocatorAssertions.IsVisibleOptions =
+    LocatorAssertions.IsVisibleOptions().setTimeout(millis)
+
+/** The palette's highlight is a class among others, so the match is on the word. */
+val ACTIVE_OPTION: Pattern = Pattern.compile("\\bactive\\b")
+
+/** A cold page has to boot the app, the events socket and its first snapshot. */
+const val BOOT_TIMEOUT_MS: Double = 15_000.0
 
 // Chromium preserves the active pointer id across emulated touch events; synthetic DOM events do not.
 fun touchChromium(pw: Playwright): Browser =
@@ -354,6 +445,10 @@ private const val PORT_PREFIX = "PORT="
 private const val TICKET_PREFIX = "TICKET="
 private const val READY_LINE = "READY"
 private const val RESTART_COMMAND = "restart"
+
+// Duplicated from webuicheck's COMMAND_ACK_PREFIX: constants cannot cross the native/JVM boundary.
+private const val COMMAND_ACK_PREFIX = "OK "
+private val ACKNOWLEDGED_COMMANDS = setOf("project-del", "project-restore")
 
 private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
 private const val RESTART_TIMEOUT_MILLIS = 30_000L

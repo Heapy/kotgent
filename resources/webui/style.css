@@ -153,6 +153,16 @@ textarea:focus-visible {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
+/* A destructive confirmation should not read as the same button as Save. */
+.button-danger {
+  background: var(--attn);
+  border-color: var(--attn);
+  color: #1a0d0f;
+}
+.button-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--attn) 82%, #000);
+  border-color: color-mix(in srgb, var(--attn) 82%, #000);
+}
 .button-quiet { background: transparent; }
 .icon-button {
   font-size: 22px;
@@ -1057,13 +1067,16 @@ dialog::backdrop {
   line-height: 1.45;
   margin: 0 0 14px;
 }
-.upload-destination code {
+/* The one path a dialog quotes back at the operator: an upload's destination, a delete's subject. */
+.upload-destination code,
+.dialog-subject code {
   background: var(--row-hover);
   border-radius: 4px;
   color: var(--text);
   display: block;
   font-family: Menlo, Monaco, "Courier New", monospace;
-  margin-top: 5px;
+  font-size: 12px;
+  margin-top: 6px;
   overflow-wrap: anywhere;
   padding: 7px 8px;
 }
@@ -1106,17 +1119,7 @@ dialog::backdrop {
   font-size: 14px;
   margin: 0;
 }
-.dialog-subject code {
-  background: var(--row-hover);
-  border-radius: 4px;
-  color: var(--muted);
-  display: block;
-  font-family: Menlo, Monaco, "Courier New", monospace;
-  font-size: 12px;
-  margin-top: 6px;
-  overflow-wrap: anywhere;
-  padding: 7px 8px;
-}
+.dialog-subject code { color: var(--muted); }
 .dialog-facts {
   color: var(--muted);
   font-size: 12px;
@@ -1182,16 +1185,6 @@ dialog::backdrop {
   font-weight: 600;
   grid-column: 2;
   grid-row: 1 / span 2;
-}
-/* A destructive confirmation should not read as the same button as Save. */
-.dialog-danger {
-  background: var(--attn);
-  border-color: var(--attn);
-  color: #1a0d0f;
-}
-.dialog-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--attn) 82%, #000);
-  border-color: color-mix(in srgb, var(--attn) 82%, #000);
 }
 
 .phone-status {

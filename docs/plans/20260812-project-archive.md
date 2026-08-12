@@ -244,7 +244,6 @@ would land in a deleted project.
 - Modify: `src/transport/TaskWriteRoutes.kt`
 - Modify: `src/transport/TaskReadRoutes.kt`
 - Modify: `src/transport/TaskDtos.kt`
-- Modify: `src/transport/TaskRoutes.kt`
 - Modify: `test/transport/TaskWriteRoutesTest.kt`, `test/transport/TaskReadRoutesTest.kt`
 
 - [x] add `archived` to `ProjectDto` and its mapper
@@ -337,10 +336,12 @@ would land in a deleted project.
       restore it archives another project through the new stdin command and reopens, and the list is
       the daemon's new answer rather than the one it read the first time. That is what drives the
       command; a cached list is a real bug (delete, then open restore in the same session)
-- ➕ [x] the tests deliberately assert nothing about the restored project's CARDS: `readTasksBaseline`
-      iterates live projects only and the browser's task list is seeded once per socket, so a restored
-      project's backlog reaches the board on the next reload. Same family as the recorded
-      no-`project_update`-frame limitation; the daemon tier owns the "the tasks are still there" claim
+- ➕ [x] ~~the tests deliberately assert nothing about the restored project's CARDS~~ — the review phase
+      found this was a defect rather than a limitation: `readTasksBaseline` iterated LIVE projects only,
+      so the one snapshot a page builds its whole task list from omitted a deleted project's rows, which
+      broke a deep link to such a card and left a restored project showing an empty backlog under a
+      dialog that promises "The backlog comes back with it". It now reads both sides, Gamma is seeded
+      with two cards, and the browser test asserts them on screen after the restore
 - [x] run `:webuitest:testJvm` — must pass before task 9
 
 ### Task 9: Verify acceptance criteria
@@ -389,7 +390,8 @@ Chromium, which is what `docs/TESTING.md` asks a claim of this kind to rest on.
     with the row).
 - [x] `./kotlin build` then `./kotlin test` — full suite green, 0 skipped
   - `./kotlin build` successful; `./kotlin test` green. Native `:project-archive:testMacosArm64Debug`
-    **1361 passed / 0 skipped** (94 test cases), browser `:webuitest:testJvm` **121 passed / 0 skipped**
+    **1367 passed / 0 skipped** (94 test cases) after the two review rounds, browser
+    `:webuitest:testJvm` **123 passed / 0 skipped**
     (22 containers), `build-info` **7 passed / 0 skipped**. `PtyTest.realPtyChecksPass` and
     `WebUiCheckTest.harnessSelfCheckPasses` both green inside the native count, so `ptycheck`'s 11 checks
     and `webuicheck`'s 2 self-checks ran as well.
@@ -409,13 +411,111 @@ Chromium, which is what `docs/TESTING.md` asks a claim of this kind to rest on.
   `.kotgent.json` carrying the NEW uuid in a directory whose STALE row is tombstoned and then starts a
   session there. Likewise, no test asserts the backlog through the ADOPT path specifically; adopt and
   restore clear the same column through the same store call, so it follows, but it is inference.
-- ⚠️ **`POST /tasks/next` does not honour the tombstone, and `POST /tasks` does.** The create route
-  refuses an archived project with a 404 (`createNamingADeletedProjectIs404LikeAnUnknownOne`), while
-  `TaskLinkRoutes`' `/tasks/next` checks only `project(id) == null`. So an agent in a deleted project's
-  directory — or one whose session was stamped with that `projectId` before the delete — can still be
-  handed a card from it, and `startIfTodo` will move that card to `in_progress`. Reads staying open is
-  the design ("a deep link to a card must not break"); a *selection over the project that also writes*
-  sits on the other side of that line. Recorded for the review phase, not fixed here.
+- ✅ **`POST /tasks/next` did not honour the tombstone; the review phase fixed it.** It now refuses an
+  archived project with the same 404 an unknown one gets (`nextRefusesADeletedProjectBecauseItStartsThe`
+  `CardItHandsOut`), because it SELECTS the operator's next piece of work out of a project they deleted
+  and then starts it; reads, and writes to a card the caller names, stay open. The second review round
+  settled what divides the two, because the first round's KDoc had written it as "next writes, link does
+  not" — which is false: `TaskService.link` makes the SAME three writes `linkNext` does (`startIfTodo`,
+  the session stamp, the `linked` activity row). The discriminator is the ref, not the writing.
+  `POST /tasks/{ref}/link` therefore stays OPEN, both KDocs and `docs/agent-task-skill.md` now say so in
+  those terms, and `linkStaysOpenForADeletedProjectsCardBecauseItNamesOneThatAlreadyExists` asserts the
+  resulting `in_progress` and the feed row rather than only the 200. The review phase also closed the sibling hole the residual named —
+  `resolveProjectForCreate`'s `session.projectId` short-circuit, and its `ensureProjectFile` fallback,
+  which a session whose cwd no longer canonicalizes reaches with the checkout root's existing file.
+- ✅ **The `/events` task baseline read the two sides of the tombstone as TWO observations; the second
+  review round fixed it.** `listProjects() + listProjects(archived = true)` took the store's lock twice,
+  so a delete landing between them put one project in BOTH lists — `rows` is a list, so the snapshot
+  shipped duplicate cards, and `upsertTaskIfNewer`/`patchTaskIfNewer` only ever update the first match,
+  leaving the stale copy on screen — while a restore landing between them put it in NEITHER, which is
+  exactly the defect the two-sided read was written to close. `baselineDue` is one-shot per socket, so
+  nothing healed either. `TaskStore.listAllProjects()` (SQL `selectAllProjects`, one statement under one
+  lock) replaces the pair; `TaskStoreTest.listAllProjectsAnswersBothSidesOfTheTombstoneAsOneObservation`
+  covers the store and `TaskEventsTest`'s fake now THROWS from `listProjects`, so a revert to the pair
+  fails there rather than in review. **Residual, recorded not fixed:** the archived side is unbounded —
+  every deleted project's backlog reaches every browser on every connect and nothing prunes it. Narrowing
+  it would need the socket to know which deep link the page is on, so it is a design change, not a fix.
+- ✅ **The stamped-session refusal named no file exit; the second review round fixed that too.** After a
+  delete `resolveAndRegisterProject` returns null, so no NEW session in that directory is stamped — every
+  session reaching that branch was stamped BECAUSE a `.kotgent.json` there named the project, and the
+  tombstone never touches the file. Offering only `project restore` and `--project` therefore left the
+  "created in the wrong folder" case with neither exit that fixes it, while a session started after the
+  delete, in the same directory, was told about the file. `refuseDeletedProject` now takes a
+  `DeletedProjectArrival` and names the file in both texts, worded per arrival: the stamp short-circuits
+  the filesystem, so moving the file frees the DIRECTORY while that session keeps the project it carries
+  and it takes a session started afterwards. `createFromASessionStampedWithADeletedProjectIsRefusedToo`
+  asserted the omission and now asserts the exit.
+- ✅ **Both remaining tombstone checks were read-then-write at the CALL SITE; an external review round
+  found them and they are now closed inside the store.** `POST /tasks` read the project row in
+  `resolveProjectForCreate` and filed the card in a separate `TaskStore.create` call, and `POST
+  /tasks/next` read it in the route and selected in a separate `nextCandidate` call — in both, the route
+  holds no lock between the two, so a `DELETE /projects/{id}` landing in that gap filed a card into, or
+  handed work out of, a project the board had already stopped listing. The fix is the one this feature
+  had already chosen once: `upsertProject` reads `selectProjectArchived` inside its OWN transaction, and
+  `ProjectRegistration`'s KDoc says in as many words that a read-then-write at each call site "would
+  leave a window for a concurrent restore and spread one rule across five files". So `create` now reads
+  the tombstone as the first statement of the insert's transaction and throws `ArchivedProjectException`,
+  and `Backlog.sq`'s `nextCandidate` excludes an archived project in the same statement that picks the
+  card. **This is deliberately NOT the `sessions.task_ref` call**, which recorded its race instead of
+  closing it: that one needed a statement spanning two stores with independent mutexes, which is the
+  split's whole point, whereas both of these are one store, one mutex, one database — `TaskService`'s
+  no-nested-locks invariant is untouched, because `TaskService` is not on either path.
+  - The route checks STAY, and the two now answer different questions. Resolution's check decides HOW to
+    refuse — it is the only place that still knows whether the uuid was typed, carried on the session's
+    stamp, or read out of a `.kotgent.json`, and that picks the status and the three exits. The store's
+    check decides WHETHER, and it is the authority. So `resolveProjectForCreate` returns a `CreateTarget`
+    carrying the arrival, and the route re-uses `refuseDeletedProject` when the store refuses — a card
+    that raced the delete gets the same sentence it would have got a moment earlier, not a generic one.
+    `DeletedProjectArrival` gained `explicitUuid` for the arrival that has no file to move and therefore
+    leaves through the `404` door.
+  - `/tasks/next` needed no route change at all, and its degraded answer is recorded in its KDoc: a
+    delete that overtakes the route's check leaves `linkNext` nothing to select, so the answer is the
+    ordinary `{"task":null}` — `task next`'s documented exit `3` — rather than the `404` an instant
+    earlier would have given. Nothing is handed out either way, which is the contract. Re-reading the row
+    after the selection would be the same race with more steps.
+  - Tests interleave rather than sequence, because calling the two in sequence proves nothing — in
+    sequence the route's own check already answers. `TaskWriteRoutesTest` and `TaskLinkRoutesTest` each
+    gained a store-seam hook that archives the project between the route's read and the store's write
+    (`aDeleteLandingBetweenResolutionAndTheInsertFilesNothing`,
+    `aDeleteRacingACreateThatNamedTheProjectOutrightIs404LikeAnUnknownOne`,
+    `aDeleteLandingBetweenNextsCheckAndItsSelectionStillHandsOutNothing`), and `TaskStoreTest` pins the
+    guarantees against the real engine, including that the refused create rolls back whole and does not
+    consume its local key. Both private route doubles and the shared `fakes` `FakeTaskStore` carry the
+    check under their own lock, so a fake cannot prove a race production has closed.
+  - **The residual this first recorded is now CLOSED, and the reasoning that recorded it was wrong.** It
+    read: the store guards the SELECTION, not the writes that follow, so a delete landing between
+    `nextCandidate` and `startIfTodo` still starts and links that one card — "the same end state
+    `POST /tasks/{ref}/link` accepts on purpose". That reasons from the wrong half of the rule. The line
+    is not about which writes happen (`link` and `linkNext` make the identical three, settled earlier);
+    it is about WHO CHOSE THE CARD. `link` acts on a card its caller NAMED, which is deference; `next`
+    has the daemon CHOOSE one out of the project, which is the selection a deleted project stops
+    offering. A delete landing mid-`linkNext` therefore produced exactly the outcome the refusal exists
+    to prevent. Closed with the mechanism used twice already on this branch: the tombstone rides in the
+    statement that WRITES. `Backlog.sq` now carries two starts — `startIfTodo` (deference, no clause) and
+    `startIfTodoInLiveProject` (selection) — behind one `TaskStore.startIfTodo(ref, requireLiveProject)`,
+    which `linkNext` passes true and `link` false.
+    - One method with a parameter, not two, following `listProjects(archived)`: the two differ by one
+      WHERE clause, and a second interface method would mean eight more bodies across the fake and the
+      seven private test doubles for no added clarity. The named argument states the choice at both
+      production call sites, and the interface KDoc is where the WHO-CHOSE rule is written down.
+    - No new control flow: a refused start matches zero rows, which `linkNext`'s loop already treats as
+      "somebody else took it, re-query", and the re-query then finds the backlog withdrawn and answers
+      null. So the degraded answer is unchanged — the ordinary `{"task":null}`, `task next`'s documented
+      exit `3` — whichever of the two gaps the delete lands in.
+    - `POST /tasks/{ref}/link` is deliberately UNCHANGED and pinned by
+      `linkStaysOpenForADeletedProjectsCardBecauseItNamesOneThatAlreadyExists` plus the new store-level
+      `aNamedRefStartsInADeletedProjectBecauseDeferenceIsNotSelection`: an agent already working when the
+      operator deleted the project must still re-link and close what it holds.
+    - Proven at both honest levels, each interleaving rather than sequencing:
+      `TaskStoreTest.aSelectedCardIsStillRefusedByTheStartItselfWhenTheDeleteOvertookTheSelection`
+      against the real engine (plus `aStartInAProjectWithNoRowAtAllIsNotRefusedEitherWay` — absence is
+      still not a tombstone), `TaskServiceTest.aDeleteLandingBetweenTheSelectionAndItsStartHandsOut`
+      `NothingAndNeedsNoNewControlFlow` on the loop's journal, and
+      `TaskLinkRoutesTest.aDeleteLandingBetweenNextsSelectionAndItsStartStillHandsOutNothing` through the
+      route. Sensitivity checked by dropping the new clause: exactly those three fail, nothing else.
+  - **Not covered:** `aBacklogWhoseProjectHasNoRowAtAllIsStillOffered` pins that absence is not a
+    tombstone, but nothing asserts the same for `create` — an insert into an unregistered project is
+    exercised only incidentally, by every other test in `TaskStoreTest` that creates without upserting.
 
 ### Task 10: [Final] Documentation
 
@@ -434,8 +534,10 @@ Chromium, which is what `docs/TESTING.md` asks a claim of this kind to rest on.
   - Two judgement calls, both toward saying less. The `session.projectId` short-circuit IS documented, in
     one sentence, because it is agent-OBSERVABLE — two sessions in the same directory answer differently —
     and a skill author would otherwise file it as a bug; the design reason it is unguarded is not. The
-    `POST /tasks/next` residual (⚠️ in Task 9) is NOT documented: nothing about `task next` changed for the
-    agent, it is under review, and a contract document that describes an unfixed inconsistency ages badly.
+    `POST /tasks/next` window recorded in Task 9 is NOT documented: nothing about `task next` changed for
+    the agent, and a contract document that describes an internal race ages badly. (That window has since
+    been closed — see Task 9 — which leaves this judgement correct for a second reason: there is now
+    nothing inconsistent to describe, and the agent-visible answer is the same `{"task":null}` either way.)
     The refusal paragraph is therefore scoped to `task add` and makes no blanket claim that the whole
     family refuses.
   - Verified by reading only (Markdown-only change): the message text against

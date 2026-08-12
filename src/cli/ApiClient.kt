@@ -267,7 +267,7 @@ class ApiClient(
         return json.decodeFromString(NextTaskResponse.serializer(), taskPost("/tasks/next", request)).task
     }
 
-    /** The two sides of the delete tombstone are separate lists; [archived] asks for the deleted one. */
+    /** [archived] asks for the deleted projects instead of the live ones. */
     suspend fun listProjects(archived: Boolean = false): List<ProjectDto> =
         json.decodeFromString(
             ListSerializer(ProjectDto.serializer()),
@@ -286,16 +286,16 @@ class ApiClient(
      * Sets the delete tombstone and answers the row it marked, so a caller reads `archived` back rather
      * than trusting the verb. Idempotent at the daemon; only a uuid it has never seen is a 404.
      */
-    suspend fun deleteProject(id: String): ProjectDto {
-        val resp = client.delete(url("/projects/${id.encodeURLPathPart()}")) {
-            bearer()
-            paneHeader()
-        }
-        ensureSuccess(resp)
-        return json.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
-    }
+    suspend fun deleteProject(id: String): ProjectDto = json.decodeFromString(
+        ProjectDto.serializer(),
+        taskDelete("/projects/${id.encodeURLPathPart()}"),
+    )
 
-    /** Clears that tombstone; the request needs no body because the uuid is the whole subject. */
+    /**
+     * Clears that tombstone. The uuid in the path is the whole subject, so the body carries nothing —
+     * it is `{}` only because [taskPost] is the one place bearer, pane header and content type are
+     * applied, and a bespoke `post` here would be a second spelling of that.
+     */
     suspend fun restoreProject(id: String): ProjectDto = json.decodeFromString(
         ProjectDto.serializer(),
         taskPost("/projects/${id.encodeURLPathPart()}/restore", "{}"),
@@ -307,6 +307,15 @@ class ApiClient(
 
     private suspend fun taskGet(path: String): String {
         val resp = client.get(url(path)) {
+            bearer()
+            paneHeader()
+        }
+        ensureSuccess(resp)
+        return resp.bodyAsText()
+    }
+
+    private suspend fun taskDelete(path: String): String {
+        val resp = client.delete(url(path)) {
             bearer()
             paneHeader()
         }

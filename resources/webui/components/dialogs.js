@@ -611,7 +611,12 @@ export function UploadFilesDialog({ session, onClose }) {
   `;
 }
 
+// A null count means the task list has not arrived yet; only a read list may be counted out loud.
 function taskKeptSentence(count) {
+  if (count === null || count === undefined) {
+    return "Its tasks are kept, with their order, dependencies, comments and the sessions linked " +
+      "to them.";
+  }
   if (count === 0) return "It has no tasks, so nothing in the backlog changes.";
   if (count === 1) {
     return "Its 1 task is kept, with its dependencies, comments and the sessions linked to it.";
@@ -623,7 +628,7 @@ function taskKeptSentence(count) {
 /* Deleting a project is a tombstone, not a cascade, and the dialog has to say so: an operator who
  * believes they are erasing a backlog will not press the button, and one who believes the directory
  * is being cleaned up would press it wrongly. */
-export function DeleteProjectDialog({ project, taskCount = 0, onDelete, onClose }) {
+export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const cancelRef = useRef(null);
@@ -669,8 +674,9 @@ export function DeleteProjectDialog({ project, taskCount = 0, onDelete, onClose 
             a project whose directory is already gone is deleted just the same.
           </li>
           <li>
-            Restore brings the project and all of that back, exactly as it is now. So does adopting
-            the same directory again from New project.
+            Restore brings the project and all of that back, exactly as it is now. Adopting the same
+            directory again from New project brings it back too, with the name in the file and this
+            checkout's path.
           </li>
         </ul>
 
@@ -679,7 +685,7 @@ export function DeleteProjectDialog({ project, taskCount = 0, onDelete, onClose 
         <div class="dialog-actions">
           <button id="delete-project-cancel" class="button button-quiet" type="button"
                   ref=${cancelRef} disabled=${busy} onClick=${onClose}>Cancel</button>
-          <button id="delete-project-submit" class="button button-primary dialog-danger" type="submit"
+          <button id="delete-project-submit" class="button button-danger" type="submit"
                   disabled=${busy}>${busy ? "Deleting…" : "Delete project"}</button>
         </div>
       </form>
@@ -693,14 +699,20 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
   const [state, setState] = useState({ status: "loading" });
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState(null);
+  // Dismissing the dialog unmounts it while the read may still be in flight, so this one guards its own
+  // lifetime rather than setting state on a component that is gone.
+  const aliveRef = useRef(true);
+  useEffect(() => () => { aliveRef.current = false; }, []);
 
   const load = useCallback(async () => {
     setState({ status: "loading" });
     setError(null);
     try {
       const rows = await fetchProjects(true);
+      if (!aliveRef.current) return;
       setState({ status: "ready", projects: Array.isArray(rows) ? rows : [] });
     } catch (e) {
+      if (!aliveRef.current) return;
       setState({ status: "error", message: errorMessage(e) });
     }
   }, []);
@@ -759,7 +771,7 @@ function restoreProjectBody(state, busyId, restore, reload) {
   if (state.projects.length === 0) {
     return html`
       <p id="restore-project-empty" class="dialog-empty">
-        No deleted projects. Only Delete project puts one here, so there is nothing to bring back.
+        No deleted projects. Only a project delete puts one here, so there is nothing to bring back.
       </p>
     `;
   }

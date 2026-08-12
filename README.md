@@ -204,8 +204,10 @@ kotgent <command> [args]
   task move <ref>               --top | --bottom | --before <ref> | --after <ref>
   task dep add|rm <ref> --on R  add or remove "<ref> depends on R"
   task delete <ref>             remove the task, its dependencies and its feed
-  project list                  every project the daemon knows
+  project list                  the live projects, or the deleted ones      [--archived]
   project init [<path>]         write .kotgent.json for a project           [--name N]
+  project delete <uuid>         hide a project everywhere; its file, tasks and sessions stay
+  project restore <uuid>        bring a deleted project and its backlog back
 
   web [--print]                 open the Web UI in a browser (or print the login URL)
   token rotate                  re-mint the master token (old key stops authenticating)
@@ -263,7 +265,17 @@ sidebar shows which task each session is on, and a task's card shows every sessi
 - **A project is a committed file, not a path.** `.kotgent.json` at the checkout root holds a uuid and a
   name, so one backlog survives a `git worktree`, a move, a rename and a clone. It appears the first time a
   task is created somewhere that has no project (or when you run `kotgent project init`), it is written to
-  be committed, and **the daemon never commits it for you**. Nothing is written until then.
+  be committed, and **the daemon never commits it for you**. Nothing is written until then — and a
+  directory whose project was deleted writes nothing either: `task add` refuses there instead.
+- **Deleting a project is a tombstone, not a cascade.** `kotgent project delete <uuid>` (or Delete project
+  in the Web UI's command palette) takes the project out of every selector and stops it being a source of
+  new work — `task add` and `task next` refuse in its directory, and a `kotgent start` there is left
+  unstamped. Everything else is kept exactly as it was: the tasks, their order, their dependencies, their
+  comments, and the sessions linked to them. **`.kotgent.json` is never touched**, which is why a delete
+  needs no confirmation beyond the dialog and why the directory keeps resolving to that project — delete
+  or move the file if you want the directory to stop doing so. `kotgent project restore <uuid>`, or simply
+  adopting the directory again with `kotgent project init`, brings everything back; `kotgent project list
+  --archived` is how you find the uuid of a checkout that no longer exists.
 - **The states are `todo → in_progress → review → done`**, plus a position you drag on the board and
   dependencies that mark a task `blocked` until what it waits on is closed. `kotgent task next` hands out
   the first unblocked `todo` in rank order and exits `3` when there is nothing eligible.
@@ -410,6 +422,13 @@ the first question is almost always "does the plist still match my shell?".
   come from a long-lived `tmux` server started by an *older* kotgent, which is still holding the listening
   socket the daemon that spawned it left behind. `tmux -L kotgent kill-server` releases it — note that this
   also stops every agent running under that server.
+- **I created a project in the wrong folder.** `kotgent project delete <uuid>` removes it from every
+  selector without touching anything it owns (find the uuid with `kotgent project list`). The delete does
+  **not** remove `.kotgent.json`, so that directory still resolves to the deleted project: `task add` there
+  refuses and names all three ways out — restore it, file elsewhere with `--project`, or delete or move that
+  `.kotgent.json` — while `kotgent start` there leaves the session unstamped and says nothing. Committing
+  the file and then deleting the row is the one combination that keeps coming back.
+  `kotgent project restore <uuid>` undoes the delete with the whole backlog.
 - **My tmux settings do nothing inside a kotgent pane.** Expected: kotgent runs every tmux command with
   `-f /dev/null`, so `~/.tmux.conf` is never loaded on its socket (see [Requirements](#requirements) for
   what it forces instead). Your own `tmux` on the default socket is untouched. There is no user-facing

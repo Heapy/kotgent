@@ -382,6 +382,128 @@ class TaskLinkRoutesTest {
     }
 
     @Test
+    fun nextRefusesADeletedProjectBecauseItStartsTheCardItHandsOut() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+        env.seedSession(s1, pane1, alpha)
+        env.tasks.archiveProject(alpha)
+
+        val fromTheSession = env.post("/tasks/next", pane = pane1)
+        assertEquals(
+            HttpStatusCode.NotFound,
+            fromTheSession.status,
+            "a deleted project is not a work source: linkNext would start a card on a board that no " +
+                "longer lists it (answered ${fromTheSession.bodyAsText()})",
+        )
+        assertEquals(
+            HttpStatusCode.NotFound,
+            env.post("/tasks/next", pane = pane1, body = """{"project":"${alpha.value}"}""").status,
+            "naming it explicitly is the same answer an unknown uuid gets",
+        )
+        assertNull(env.sessions.linkOf(s1), "nothing was linked")
+        assertEquals(
+            TaskState.todo,
+            env.tasks.stateOf(t1),
+            "and the refusal precedes linkNext, so no card moved to in_progress",
+        )
+        assertTrue(
+            env.tasks.activityKinds(t1).isEmpty(),
+            "…and no activity row records work that never started",
+        )
+    }
+
+    @Test
+    fun aDeleteLandingBetweenNextsCheckAndItsSelectionStillHandsOutNothing() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+        env.seedSession(s1, pane1, alpha)
+
+        // The window the route cannot close: it reads the project row, finds it live, and then holds no
+        // lock at all while `linkNext` runs. Archiving from inside the store seam interleaves the delete
+        // exactly there — calling the two in sequence would prove nothing, because in sequence the
+        // route's own check already answers.
+        env.tasks.beforeNextCandidate = {
+            env.tasks.archiveProject(alpha)
+            env.tasks.beforeNextCandidate = null
+        }
+
+        val resp = env.post("/tasks/next", pane = pane1)
+
+        assertEquals(
+            HttpStatusCode.OK,
+            resp.status,
+            "the route's check saw a live project and answered before the delete landed",
+        )
+        assertNull(
+            TRANSPORT_JSON.decodeFromString(NextTaskResponse.serializer(), resp.bodyAsText()).task,
+            "but selection is the candidate query's own statement, so the delete withdrew the backlog " +
+                "with it: the degraded answer is `task next`'s ordinary 'nothing eligible', not a card",
+        )
+        assertNull(env.sessions.linkOf(s1), "nothing was linked")
+        assertEquals(
+            TaskState.todo,
+            env.tasks.stateOf(t1),
+            "and no card moved to in_progress on a board that no longer lists its project",
+        )
+        assertTrue(env.tasks.activityKinds(t1).isEmpty(), "…and nothing claims work that never started")
+    }
+
+    @Test
+    fun aDeleteLandingBetweenNextsSelectionAndItsStartStillHandsOutNothing() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+        env.seedSession(s1, pane1, alpha)
+
+        // The second window, and the one a tombstone-aware candidate query alone does not close: the card
+        // is selected out of a live project and the delete lands before the start. Guarding only the
+        // selection would leave the daemon CHOOSING work out of a deleted project and starting it —
+        // exactly what this route's refusal exists to prevent, and what `/tasks/{ref}/link` accepts only
+        // because its caller NAMED the card.
+        env.tasks.beforeStartIfTodo = {
+            env.tasks.archiveProject(alpha)
+            env.tasks.beforeStartIfTodo = null
+        }
+
+        val resp = env.post("/tasks/next", pane = pane1)
+
+        assertEquals(HttpStatusCode.OK, resp.status, "the route's check saw a live project, as did selection")
+        assertNull(
+            TRANSPORT_JSON.decodeFromString(NextTaskResponse.serializer(), resp.bodyAsText()).task,
+            "but the start carries the same tombstone clause, so it matched zero rows and the loop's " +
+                "re-query found the backlog withdrawn: the ordinary 'nothing eligible', not a card",
+        )
+        assertNull(env.sessions.linkOf(s1), "nothing was linked")
+        assertEquals(
+            TaskState.todo,
+            env.tasks.stateOf(t1),
+            "and no card moved to in_progress on a board that no longer lists its project",
+        )
+        assertTrue(env.tasks.activityKinds(t1).isEmpty(), "…and nothing claims work that never started")
+    }
+
+    @Test
+    fun linkStaysOpenForADeletedProjectsCardBecauseItNamesOneThatAlreadyExists() = withLinkServer { env ->
+        env.seedTask(t1, alpha)
+        env.seedSession(s1, pane1, alpha)
+        env.tasks.archiveProject(alpha)
+
+        assertEquals(
+            HttpStatusCode.OK,
+            env.link(t1, pane = pane1).status,
+            "the tombstone closes the project as a SOURCE of work — a card the caller names by ref is " +
+                "reachable exactly as `task show` and `task done` still are",
+        )
+        assertEquals(t1, env.sessions.linkOf(s1))
+        // The whole of what `link` does, stated rather than left to the 200: these are the SAME three
+        // writes `POST /tasks/next` makes and is refused for, so writing is not what the line divides.
+        // Selecting is: `next` picks the operator's next piece of work out of a project they deleted,
+        // while this one can only reach the card its caller already named.
+        assertEquals(
+            TaskState.in_progress,
+            env.tasks.stateOf(t1),
+            "claiming a `todo` card starts it here as it would in a live project",
+        )
+        assertEquals(listOf(ActivityKind.linked), env.tasks.activityKinds(t1), "…and the feed records it")
+    }
+
+    @Test
     fun theNextLiteralIsNeverShadowedByTheRefPattern() = withLinkServer { env ->
         env.seedSession(s1, pane1, alpha)
         env.seedProject(alpha)
@@ -650,6 +772,15 @@ class TaskLinkRoutesTest {
 
         suspend fun forgetProject(project: ProjectId) = mutex.withLock { projects.remove(project); Unit }
 
+        // Seeding, not the store method: `setProjectArchived` is refused above because these routes
+        // must never write a project row, and a fake answering a boolean production computes from a
+        // matched row would be a semantic the daemon does not have.
+        suspend fun archiveProject(project: ProjectId) = mutex.withLock {
+            val row = projects[project] ?: error("seed the project before archiving it")
+            projects[project] = row.copy(archived = true)
+            Unit
+        }
+
         suspend fun forget(ref: TaskRef) = mutex.withLock { entries.remove(ref); Unit }
 
         suspend fun stateOf(ref: TaskRef): TaskState? = mutex.withLock { entries[ref]?.state }
@@ -663,19 +794,47 @@ class TaskLinkRoutesTest {
             entries[ref]?.let { Task(ref, "title of ${ref.value}", "", null, it.updatedAt) }
         }
 
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = mutex.withLock {
-            entries.values
-                .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
-                .minByOrNull { it.position }
+        /**
+         * Runs before the lock is taken, which is the whole point: it is the place a concurrent
+         * `DELETE /projects/{id}` lands — after the route read the project row and before selection
+         * reads it again.
+         */
+        var beforeNextCandidate: (suspend () -> Unit)? = null
+
+        /**
+         * The second gap, and the reason the tombstone is repeated in the writing statement: `linkNext`
+         * releases the store lock between selecting a card and starting it, so a delete lands here just
+         * as readily as it lands at [beforeNextCandidate].
+         */
+        var beforeStartIfTodo: (suspend () -> Unit)? = null
+
+        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
+            beforeNextCandidate?.invoke()
+            return mutex.withLock {
+                // One observation, tombstone included — the production statement decides both halves at
+                // once, and a fake that skipped it would prove a race the daemon has closed.
+                if (projects[project]?.archived == true) return@withLock null
+                entries.values
+                    .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
+                    .minByOrNull { it.position }
+            }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
-            val existing = entries[ref]
-            if (existing == null || existing.state != TaskState.todo) {
-                false
-            } else {
-                entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
-                true
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
+            beforeStartIfTodo?.invoke()
+            return mutex.withLock {
+                val existing = entries[ref]
+                // One observation, tombstone included, exactly as nextCandidate above: production decides
+                // both halves in the one UPDATE, and a fake that read the project separately would prove
+                // a race the daemon has closed.
+                if (existing == null || existing.state != TaskState.todo) {
+                    false
+                } else if (requireLiveProject && projects[existing.project]?.archived == true) {
+                    false
+                } else {
+                    entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
+                    true
+                }
             }
         }
 
@@ -721,6 +880,7 @@ class TaskLinkRoutesTest {
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
+        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
         override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
 
         private fun unused(name: String): Nothing = error("the link routes must not call TaskStore.$name")

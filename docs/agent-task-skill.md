@@ -206,17 +206,37 @@ caller asked for "not linked to this", which is true). And **`task delete` on a 
 exits `1`**, not `0` — a script that deletes what it just created and is told "nothing there" has hit a
 real problem, so it is an error rather than `{"deleted":false}` on the success stream.
 
-**`task add` refuses in a project that was deleted**, rather than quietly filing the task into it or
-starting a fresh project beside it. A ref-less `task add` whose session resolves to such a project exits
-`1` with `{"error":"project '<name>' (<uuid>) was deleted — …","status":400}`, and the message names both
-ways out: `kotgent project restore <uuid>`, or `--project <other uuid>`. Naming a deleted uuid with
-`--project` explicitly is a `404`, the same answer an unknown uuid gets. **Do not retry it.** Nothing about
-the environment changes on its own — the `.kotgent.json` that names the project is still on disk and is
-exactly what the daemon refuses to act on — and both ways out are the human's call, so say in a comment
-that the project is deleted rather than restoring it or picking another project unasked. One asymmetry is
-worth knowing before it is reported as a bug: whether a session hits this depends on the session, not on
-the directory. A session already stamped with that project before it was deleted keeps filing into it,
-because its own link is read before the directory is resolved at all. And **`project delete` and
+**A deleted project is not a source of work.** `task add` refuses there rather than quietly filing the
+task into it or starting a fresh project beside it, and `task next` refuses too — it picks the next card
+out of the project for you, then moves it to `in_progress` and links your session to it. A ref-less
+`task add` whose session resolves to such a project exits `1` with
+`{"error":"project '<name>' (<uuid>) was deleted — …","status":400}`, and the message names the ways out:
+`kotgent project restore <uuid>`, `--project <other uuid>`, and deleting or moving the `.kotgent.json`
+that names the project — the delete never touches that file, so the file is what keeps a directory
+resolving to a project that is gone. If your session was stamped with the project before it was deleted,
+that last exit reads a little differently: moving the file frees the *directory*, but this session keeps
+the project it already carries, so it takes a session started afterwards. A uuid the caller spelled out
+itself gets a bare `404` instead, the same answer an unknown uuid gets: that is
+`task add --project <deleted uuid>` and
+`task next --project <deleted uuid>`. A ref-less `task next` answers in one of two shapes: `404` when
+your session is stamped with the deleted project, and the ordinary `session '<id>' resolves to no
+project` `400` when it is not — a session started in a deleted project's directory is never stamped at
+all. Every one of these exits `1`; exit `3` still means only "nothing eligible" in a live project.
+
+**Do not retry any of them.** Nothing about the environment changes on its own — the `.kotgent.json` that
+names the project is still on disk and is exactly what the daemon refuses to act on — and every way out is
+the human's call, so say in a comment that the project is deleted rather than restoring it, re-homing the
+task or picking another project unasked.
+
+What stays open for a deleted project is everything that addresses ONE existing card: `task show`,
+`task list`, `task comment`, `task review`, `task done`, `task claim` and `task unlink` all keep working,
+so a session already holding a card can finish it. **The line is drawn at selecting work, not at writing
+to it** — `task claim <ref>` on a `todo` card in a deleted project starts it, moving it to `in_progress`
+and adding a `linked` row to its feed exactly as it would in a live project, and `task review` /
+`task comment` move and write the same way. What a deleted project no longer does is hand you a card you
+did not name (`task next`) or accept a new one (`task add`). `task show` will not warn you, though —
+`TaskDetailDto` carries the project's name and path but no deleted flag, so `project list` (which lists
+the live projects only) is the authority on whether a project still exists. And **`project delete` and
 `project restore` are both idempotent** — a repeat answers the same row instead of failing, and the only
 `404` is a uuid the daemon has never seen.
 

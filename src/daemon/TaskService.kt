@@ -22,16 +22,20 @@ class TaskService(
 ) {
 
     suspend fun link(sessionId: SessionId, ref: TaskRef) {
-        tasks.startIfTodo(ref)
+        // The caller NAMED this card, so the delete tombstone does not withdraw it — see TaskStore.
+        tasks.startIfTodo(ref, requireLiveProject = false)
         sessions.setTaskRef(sessionId, ref, now())
         tasks.appendActivity(ref, ActivityKind.linked, author = sessionId.value)
     }
 
     suspend fun linkNext(sessionId: SessionId, project: ProjectId): BacklogEntry? {
-        // startIfTodo arbitrates races; a loser re-queries instead of claiming the same task.
+        // startIfTodo arbitrates races; a loser re-queries instead of claiming the same task. The two
+        // calls are separately atomic against the delete tombstone and nothing holds a lock across them,
+        // so `requireLiveProject` is what stops a delete landing in that gap from starting a card here:
+        // it makes the update match zero rows, the loop re-queries, and nextCandidate then answers null.
         while (true) {
             val candidate = tasks.nextCandidate(project) ?: return null
-            if (!tasks.startIfTodo(candidate.ref)) continue
+            if (!tasks.startIfTodo(candidate.ref, requireLiveProject = true)) continue
             sessions.setTaskRef(sessionId, candidate.ref, now())
             tasks.appendActivity(candidate.ref, ActivityKind.linked, author = sessionId.value)
             return tasks.entry(candidate.ref) ?: candidate

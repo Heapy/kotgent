@@ -126,6 +126,9 @@ export function Board({
   }, [onTaskRow]);
 
   const routeId = route && route.id;
+  // Every gate on this screen reads the resolved ROW, never the bare id: an id the live list cannot
+  // name is a deleted project, whose cards must not be painted under a header with no name for them
+  // and whose New task can only 404. The parent already resolves it, so this is the second lock.
   const project = projects.find((row) => row.id === projectId) || null;
 
   useEffect(() => {
@@ -156,11 +159,12 @@ export function Board({
     setForm("project");
   }, [newProjectRequest]);
 
+  const shownProjectId = project ? project.id : null;
   const entries = useMemo(() => tasks
-    .filter((task) => task.project === projectId)
+    .filter((task) => task.project === shownProjectId)
     .slice()
     .sort((a, b) => (a.position - b.position) || (a.createdAt - b.createdAt) ||
-      (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)), [tasks, projectId]);
+      (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)), [tasks, shownProjectId]);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
 
@@ -199,11 +203,11 @@ export function Board({
   }, [publishRow, say]);
 
   const submitTask = useCallback(async (title, body) => {
-    const created = await createTask(projectId, title, body);
+    const created = await createTask(shownProjectId, title, body);
     publishRow(created);
     setForm(null);
     say("Created " + ((created && created.ref) || "the task") + ".");
-  }, [projectId, publishRow, say]);
+  }, [shownProjectId, publishRow, say]);
 
   const submitProject = useCallback(async (path, name) => {
     const created = await createProject(path, name);
@@ -340,7 +344,7 @@ export function Board({
             ${(project && project.path) || "Adopt a directory to start a backlog"}
           </span>
         </div>
-        <button type="button" class="button board-new-task" disabled=${!projectId}
+        <button type="button" class="button board-new-task" disabled=${!project}
                 onClick=${() => setForm("task")}>New task</button>
         <button
           id="palette-button"
@@ -367,7 +371,7 @@ export function Board({
       </div>
 
       ${form === "task" && html`
-        <${NewTaskForm} project=${projects.find((project) => project.id === projectId)}
+        <${NewTaskForm} project=${project}
                         onCreate=${submitTask} onClose=${() => setForm(null)} />`}
       ${form === "project" && html`
         <${NewProjectForm} basePath=${basePath} onCreate=${submitProject}

@@ -11,6 +11,7 @@ import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.task.ActivityKind
+import io.kotgent.task.ArchivedProjectException
 import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskTracker
@@ -547,6 +548,120 @@ class TaskStoreTest {
     }
 
     @Test
+    fun anArchivedProjectRefusesACreateInTheInsertsOwnTransactionAndWritesNothing() = test { f ->
+        assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
+        f.store.create(alpha, "filed while it was live", "")
+        assertTrue(f.store.setProjectArchived(alpha, true))
+
+        assertFailsWith<ArchivedProjectException>(
+            "the check belongs to the insert, not to a caller that read the row an instant earlier — " +
+                "that gap is where a concurrent DELETE /projects/{id} lands",
+        ) { f.store.create(alpha, "filed after the delete", "") }
+
+        assertEquals(
+            listOf(first),
+            f.store.listBacklog(alpha).map { it.ref },
+            "the refused transaction rolled back whole: no entry, no local-key rise, no activity row",
+        )
+        assertEquals(listOf("filed while it was live"), f.store.list(alpha).map { it.title })
+        assertNull(f.store.get(second), "and the ref its key would have minted is still unissued")
+
+        assertTrue(f.store.setProjectArchived(alpha, false), "the operator restores the project")
+        assertEquals(
+            second,
+            f.store.create(alpha, "filed after the restore", "").ref,
+            "…and the very next create takes the key the refusal never consumed",
+        )
+    }
+
+    @Test
+    fun anArchivedProjectOffersNoCandidateSoASelectionCannotRaceADelete() = test { f ->
+        assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
+        f.store.create(alpha, "ready to be handed out", "")
+        assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref, "live, it is offered")
+
+        assertTrue(f.store.setProjectArchived(alpha, true))
+
+        assertNull(
+            f.store.nextCandidate(alpha),
+            "the tombstone is read by the SAME statement that picks the card, which is what makes the " +
+                "refusal atomic: a caller that checked the project first holds no lock afterwards",
+        )
+        assertEquals(
+            TaskState.todo,
+            assertNotNull(f.store.entry(first)).state,
+            "and the card itself is untouched — a tombstone withdraws a backlog, it does not rewrite it",
+        )
+
+        assertTrue(f.store.setProjectArchived(alpha, false))
+        assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref, "restore returns it as it was")
+    }
+
+    @Test
+    fun aSelectedCardIsStillRefusedByTheStartItselfWhenTheDeleteOvertookTheSelection() = test { f ->
+        // The second half of the same rule. `linkNext` selects and starts as two calls holding no lock in
+        // between, so guarding only the candidate query would still let a delete landing in that gap have
+        // the daemon CHOOSE work out of a project the board no longer lists — the outcome the refusal
+        // exists to prevent. Selecting the card while the project is live and archiving before the start
+        // is exactly that interleaving.
+        assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
+        f.store.create(alpha, "selected an instant before the delete", "")
+        assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref, "live, it is offered")
+
+        assertTrue(f.store.setProjectArchived(alpha, true), "the delete lands after the selection")
+
+        assertFalse(
+            f.store.startIfTodo(first, requireLiveProject = true),
+            "the tombstone is read by the same statement that WRITES, so the start matches zero rows — " +
+                "which linkNext's loop already treats as 'somebody else took it, re-query'",
+        )
+        assertEquals(
+            TaskState.todo,
+            assertNotNull(f.store.entry(first)).state,
+            "and the card did not move: nothing was handed out, and restore returns it as it was",
+        )
+        assertNull(f.store.nextCandidate(alpha), "the re-query then finds nothing eligible at all")
+
+        assertTrue(f.store.setProjectArchived(alpha, false))
+        assertTrue(f.store.startIfTodo(first, requireLiveProject = true), "restored, selection resumes")
+    }
+
+    @Test
+    fun aNamedRefStartsInADeletedProjectBecauseDeferenceIsNotSelection() = test { f ->
+        // `POST /tasks/{ref}/link`'s half of the same method: the tombstone withdraws a project as a
+        // SOURCE of work, not the cards an agent already holds, so the default form carries no clause.
+        assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
+        f.store.create(alpha, "held by an agent when the project was deleted", "")
+        assertTrue(f.store.setProjectArchived(alpha, true))
+
+        assertTrue(
+            f.store.startIfTodo(first),
+            "claiming a card by ref starts it here exactly as it would in a live project",
+        )
+        assertEquals(TaskState.in_progress, assertNotNull(f.store.entry(first)).state)
+    }
+
+    @Test
+    fun aStartInAProjectWithNoRowAtAllIsNotRefusedEitherWay() = test { f ->
+        // Absence is not a tombstone — the same clause `nextCandidate` carries, so an entry whose project
+        // was never registered behaves exactly as it did before the column.
+        f.store.create(alpha, "no project row anywhere", "")
+
+        assertNull(f.store.project(alpha), "nothing registered this project")
+        assertTrue(f.store.startIfTodo(first, requireLiveProject = true))
+    }
+
+    @Test
+    fun aBacklogWhoseProjectHasNoRowAtAllIsStillOffered() = test { f ->
+        // Absence is not a tombstone. The candidate query excludes only an `archived <> 0` row, so an
+        // entry whose project was never registered keeps behaving exactly as it did before the column.
+        f.store.create(alpha, "no project row anywhere", "")
+
+        assertNull(f.store.project(alpha), "nothing registered this project")
+        assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref)
+    }
+
+    @Test
     fun theProjectTombstoneRoundTripsAndAnUnknownUuidIsRefusedRatherThanInvented() = test { f ->
         f.store.upsertProject(alpha, "kotgent", "/repo")
         assertFalse(assertNotNull(f.store.project(alpha)).archived, "a fresh project is live")
@@ -590,6 +705,30 @@ class TaskStoreTest {
             "and the restore dialog reads exactly the other side",
         )
         assertTrue(f.store.listProjects(archived = true).single().archived, "each record carries its mark")
+    }
+
+    @Test
+    fun listAllProjectsAnswersBothSidesOfTheTombstoneAsOneObservation() = test { f ->
+        f.store.upsertProject(alpha, "alfa", "/a")
+        f.store.upsertProject(beta, "zulu", "/z")
+        f.store.setProjectArchived(alpha, true)
+
+        val all = f.store.listAllProjects()
+        assertEquals(
+            listOf(alpha, beta),
+            all.map { it.id },
+            "one read, both sides, in the selector's `name, id` order — the /events baseline builds the " +
+                "page's whole task list from it, and two selector reads would place a project deleted " +
+                "between them on BOTH sides and one restored between them on neither",
+        )
+        assertEquals(listOf(true, false), all.map { it.archived }, "each record still carries its own mark")
+
+        f.store.setProjectArchived(alpha, false)
+        assertEquals(
+            listOf(false, false),
+            f.store.listAllProjects().map { it.archived },
+            "and it re-reads the mark rather than latching it",
+        )
     }
 
     @Test

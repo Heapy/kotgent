@@ -102,6 +102,34 @@ class TaskEventsTest {
     }
 
     @Test
+    fun theBaselineCarriesADeletedProjectsCardsInOneReadBecauseThePageHasNoOtherSourceForThem() = withTasksSocket(
+        seed = { tasks ->
+            tasks.seedProject(alpha, "alpha", "/repo/alpha")
+            tasks.seedProject(beta, "beta", "/repo/beta", archived = true)
+            tasks.seedTask(TaskRef("local:1"), alpha, "live", position = 1.0)
+            tasks.seedTask(TaskRef("local:9"), beta, "deleted but kept", position = 1.0)
+        },
+    ) { ws ->
+        val snapshot = ws.expectSnapshot()
+        assertEquals(
+            listOf("local:1", "local:9"),
+            snapshot.tasks.map { it.ref },
+            "`listProjects()` defaults to the LIVE projects — right for a selector, wrong here: this " +
+                "snapshot is the only thing a page builds its task list from, so a deleted project's " +
+                "deep-linked card would 404 in the browser and a restore would show an empty backlog " +
+                "until a reload, which is not what 'reads stay open' means. The fake's selector throws, " +
+                "so this also pins the read as ONE observation: asking it twice would ship a project " +
+                "TWICE across a delete (a duplicate card no later patch can reach) and not at all " +
+                "across a restore, and the baseline is one-shot per socket",
+        )
+        assertEquals(
+            "deleted but kept",
+            snapshot.tasks.single { it.ref == "local:9" }.title,
+            "and it is a whole row, joined like any other",
+        )
+    }
+
+    @Test
     fun aDaemonWithoutATaskStoreSendsNoTaskFramesAtAll() = runBlocking {
         withTimeout(30_000) {
             withServer(tasks = null) { port, client ->
@@ -390,8 +418,8 @@ class TaskEventsTest {
         override val taskUpdates: SharedFlow<TaskUpdate> = updates
 
 
-        fun seedProject(id: ProjectId, name: String, path: String) {
-            projects[id] = ProjectRecord(id, name, path, updatedAt = 1_000L)
+        fun seedProject(id: ProjectId, name: String, path: String, archived: Boolean = false) {
+            projects[id] = ProjectRecord(id, name, path, updatedAt = 1_000L, archived = archived)
         }
 
         fun seedTask(
@@ -436,8 +464,12 @@ class TaskEventsTest {
         }
 
 
+        // The baseline is the ONLY caller of either here, and it must take the single-read one.
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
-            lock.withLock { projects.values.filter { it.archived == archived } }
+            error("the /events baseline owes TaskStore.listAllProjects' single-observation contract")
+
+        override suspend fun listAllProjects(): List<ProjectRecord> =
+            lock.withLock { projects.values.toList() }
 
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = lock.withLock {
             entries.values.filter { it.project == project }.sortedBy { it.position }
@@ -461,7 +493,7 @@ class TaskEventsTest {
             lock.withLock { edges[ref]?.toList().orEmpty() }
 
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean {
+        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
             val started = lock.withLock {
                 val existing = entries[ref]
                 if (existing == null || existing.state != TaskState.todo) {
