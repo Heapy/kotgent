@@ -189,11 +189,13 @@ present in the JSON, nulls included — a parser may rely on the key existing.
 | `task move <ref> --top\|--bottom\|--before R\|--after R` | `BacklogEntryDto` |
 | `task dep add\|rm <ref> --on R` | `BacklogEntryDto` — the **edited** entry, so `blocked` is readable |
 | `task delete <ref>` | `{"ref":"local:42","deleted":true}` |
-| `project list` | array of `ProjectDto` |
+| `project list [--archived]` | array of `ProjectDto`; live projects, or the deleted ones with `--archived` |
 | `project init [<path>] [--name N]` | `ProjectDto` |
+| `project delete <uuid>` | `ProjectDto`, now `archived: true` |
+| `project restore <uuid>` | `ProjectDto`, now `archived: false` |
 | `start <agent> [cwd] --task <ref>` | `{"taskRef","cwd","cwdSource","session":SessionDto}` |
 
-Two behaviours the table cannot show. **`task unlink` with an explicit ref the session does not hold is a
+Four behaviours the table cannot show. **`task unlink` with an explicit ref the session does not hold is a
 `409`**, not a silent no-op: the daemon refuses to clear a link nobody asked about, and names the ref that
 is actually held. The same `409` answers the RACE of that case — if a `task claim` or a `task next` from
 somewhere else re-points the session between the daemon reading its link and clearing it, the clear is
@@ -203,6 +205,20 @@ a ref-less `task show` and unlink what it holds now. Unlinking a session that ho
 caller asked for "not linked to this", which is true). And **`task delete` on a ref that names no task
 exits `1`**, not `0` — a script that deletes what it just created and is told "nothing there" has hit a
 real problem, so it is an error rather than `{"deleted":false}` on the success stream.
+
+**`task add` refuses in a project that was deleted**, rather than quietly filing the task into it or
+starting a fresh project beside it. A ref-less `task add` whose session resolves to such a project exits
+`1` with `{"error":"project '<name>' (<uuid>) was deleted — …","status":400}`, and the message names both
+ways out: `kotgent project restore <uuid>`, or `--project <other uuid>`. Naming a deleted uuid with
+`--project` explicitly is a `404`, the same answer an unknown uuid gets. **Do not retry it.** Nothing about
+the environment changes on its own — the `.kotgent.json` that names the project is still on disk and is
+exactly what the daemon refuses to act on — and both ways out are the human's call, so say in a comment
+that the project is deleted rather than restoring it or picking another project unasked. One asymmetry is
+worth knowing before it is reported as a bug: whether a session hits this depends on the session, not on
+the directory. A session already stamped with that project before it was deleted keeps filing into it,
+because its own link is read before the directory is resolved at all. And **`project delete` and
+`project restore` are both idempotent** — a repeat answers the same row instead of failing, and the only
+`404` is a uuid the daemon has never seen.
 
 The three shapes a skill actually reads:
 
@@ -245,6 +261,14 @@ create. The rule:
   own commit with its own message, not folded silently into the change under review. Staging with a
   whole-tree `git add -A` is exactly how it ends up in the wrong one.
 - **Do not delete it.** Deleting it unlinks the backlog from that checkout.
+
+**A project can be deleted while its file stays**, so the presence of `.kotgent.json` is not proof that
+there is a project to file into. `kotgent project delete <uuid>` takes a project out of every selector and
+makes `task add` refuse there, and deliberately does not touch the file: kotgent creates `.kotgent.json`
+and never removes it. Nothing cascades either — the tasks, their dependencies, their feeds and the
+sessions linked to them are all left where they are — which is why `kotgent project restore <uuid>` brings
+the whole backlog back. `kotgent project list` is the authority on what is live; `--archived` lists the
+deleted ones, and is how an operator finds the uuid of a checkout that no longer exists.
 
 ## Things the contract deliberately does not offer
 

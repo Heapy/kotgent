@@ -345,18 +345,106 @@ would land in a deleted project.
 
 ### Task 9: Verify acceptance criteria
 
-- [ ] all four scenarios work end to end: wrong folder, finished project, deleted directory (orphan, no
+Verified by reading the shipped code paths and by the tests that execute them. No daemon was started —
+the acceptance evidence is the assembled Ktor server, the real SQLite engine, the real store and a real
+Chromium, which is what `docs/TESTING.md` asks a claim of this kind to rest on.
+
+- [x] all four scenarios work end to end: wrong folder, finished project, deleted directory (orphan, no
       filesystem access needed), duplicate after an id change (the live file's project is untouched)
-- [ ] a deleted project does not come back after `kotgent start` in its directory
-- [ ] `kotgent project init` in that directory restores it, and the backlog is intact
-- [ ] `./kotlin build` then `./kotlin test` — full suite green, 0 skipped
-- [ ] test counts in CLAUDE.md's baseline updated to the new numbers
+  - **wrong folder** — `DELETE /projects/{id}` (`TaskWriteRoutes.kt`) sets the mark and `GET /projects`
+    defaults to live-only (`TaskReadRoutes.kt`), so the row leaves every selector:
+    `TaskReadRoutesTest.projectsListsEveryLiveProjectAndNeverADeletedOne`,
+    `TaskWriteRoutesTest.deletingAProjectMarksTheRowAndRemovesNothingItOwns`, and through the whole stack
+    `ProjectArchiveTest.deletingTheSelectedProjectTakesItOutOfTheSidebarAndMovesTheSelectionOn`. It stays
+    gone because every registration path goes through the one refusing `upsertProject`
+    (`TaskStoreTest.anArchivedProjectRefusesRegistrationAndKeepsTheRowItAlreadyHad`).
+  - **finished project** — the committed `.kotgent.json` still resolves and still may not resurrect the
+    row: `TaskProjectWiringTest.aStartInsideAnArchivedProjectIsNotStampedAndResurrectsNothing` seeds the
+    file on `FakeProjectFs` and asserts the launch succeeds, `projectId` stays null and no row was
+    written; `…theBackfillSkipsASessionWhoseProjectIsArchivedInsteadOfRetryingIt` is the restart half;
+    `…restoringTheProjectMakesTheNextStartBindItAgain` proves the guard reads the mark every time rather
+    than latching.
+  - **orphan** — both routes take the uuid from the path and touch the store and nothing else;
+    `deletingAProjectMarksTheRowAndRemovesNothingItOwns` asserts `env.fs.reads.isEmpty()`, i.e. the
+    filesystem was not even READ. The CLI matches: `parseProjectId` requires an explicit uuid and never
+    derives one from the cwd, and `project list --archived` is how an operator finds the uuid of a
+    checkout that is gone (`ApiClientTaskTest.listProjectsAsksForTheDeletedSideOnlyWhenTold`).
+  - **duplicate after an id change** — `setProjectArchived` is `WHERE id = ?` and `upsertProject`'s
+    tombstone read is `selectProjectArchived(<the id being registered>)`, so a stale row can be neither
+    read nor written by the live one's resolution:
+    `TaskStoreTest.theTwoProjectSelectionsSplitTheListAndNeitherSideSeesTheOther` against the real
+    engine, and the browser tier's `board-projects` (Alpha and Beta live, Gamma archived) shows a delete
+    of one leaving the others exactly as they were.
+- [x] a deleted project does not come back after `kotgent start` in its directory
+  - `SessionManager.resolveAndRegisterProject` returns null on `refusedArchived`, and it is the ONE
+    registration site for both `start` and `importSession`. Pinned by
+    `TaskProjectWiringTest.aStartInsideAnArchivedProjectIsNotStampedAndResurrectsNothing`.
+- [x] `kotgent project init` in that directory restores it, and the backlog is intact
+  - `project init` → `POST /projects` → the adopt branch clears the mark before registering:
+    `TaskWriteRoutesTest.postProjectsAdoptingADeletedProjectsDirectoryBringsItBack` asserts the live DTO,
+    the refreshed name and path, that the board lists it again and that the file was never written.
+    "Intact" is the delete's own contract — `deletingAProjectMarksTheRowAndRemovesNothingItOwns` (nothing
+    cascades), `TaskReadRoutesTest.aDeletedProjectsBacklogAndItsCardsStillAnswer` (the reads keep
+    answering) and `restoringClearsTheMarkAndReturnsTheWholeBacklogWithIt` (the whole backlog comes back
+    with the row).
+- [x] `./kotlin build` then `./kotlin test` — full suite green, 0 skipped
+  - `./kotlin build` successful; `./kotlin test` green. Native `:project-archive:testMacosArm64Debug`
+    **1361 passed / 0 skipped** (94 test cases), browser `:webuitest:testJvm` **121 passed / 0 skipped**
+    (22 containers), `build-info` **7 passed / 0 skipped**. `PtyTest.realPtyChecksPass` and
+    `WebUiCheckTest.harnessSelfCheckPasses` both green inside the native count, so `ptycheck`'s 11 checks
+    and `webuicheck`'s 2 self-checks ran as well.
+- [x] test counts in CLAUDE.md's baseline updated to the new numbers
+  - Nothing to update: this branch's `CLAUDE.md` was condensed (commits `2eb7c23`, `7d1836b`) into a
+    71-line policy guide that records NO test counts at all, and `docs/TESTING.md` records none either.
+    The measured numbers are therefore written above instead of being re-introduced into a file whose
+    current form deliberately states rules rather than an inventory. Verified by searching both files for
+    any baseline figure; the only number left in `docs/TESTING.md` is the historical "1181 substring
+    assertions", which is a statement about the tier that was deleted and not a baseline.
+- ➕ [x] `task add`'s refusal reaches the operator unaltered: `withCwdProjectFallback` — the retry that
+      re-sends a locally resolved uuid after a 400 — is wired only into `task list` and `task next`, so
+      `runTaskAddCommand` surfaces the daemon's 400 with no second request.
+- ⚠️ **Not covered by any test, stated here rather than asserted from inspection.** The
+  duplicate-after-an-id-change scenario is proven in its two halves (per-id isolation in the store; a
+  resolution that keys only on the file's own uuid) but never as one composite — no test puts a
+  `.kotgent.json` carrying the NEW uuid in a directory whose STALE row is tombstoned and then starts a
+  session there. Likewise, no test asserts the backlog through the ADOPT path specifically; adopt and
+  restore clear the same column through the same store call, so it follows, but it is inference.
+- ⚠️ **`POST /tasks/next` does not honour the tombstone, and `POST /tasks` does.** The create route
+  refuses an archived project with a 404 (`createNamingADeletedProjectIs404LikeAnUnknownOne`), while
+  `TaskLinkRoutes`' `/tasks/next` checks only `project(id) == null`. So an agent in a deleted project's
+  directory — or one whose session was stamped with that `projectId` before the delete — can still be
+  handed a card from it, and `startIfTodo` will move that card to `in_progress`. Reads staying open is
+  the design ("a deep link to a card must not break"); a *selection over the project that also writes*
+  sits on the other side of that line. Recorded for the review phase, not fixed here.
 
 ### Task 10: [Final] Documentation
 
-- [ ] check whether `docs/agent-task-skill.md` needs the refusal case — it is the one artefact no test in
+- [x] check whether `docs/agent-task-skill.md` needs the refusal case — it is the one artefact no test in
       this repository can catch
-- [ ] move this plan to `docs/plans/completed/`
+  - It did, in three places, and the test was "could an agent inside a pane hit this and have to parse it".
+    (1) The command table gained `project delete <uuid>` / `project restore <uuid>` and `--archived` on
+    `project list`; each prints one `ProjectDto`, which now carries `archived`. (2) A new paragraph beside
+    the existing "behaviours the table cannot show" (now four, not two) states the refusal: a ref-less
+    `task add` in a deleted project exits `1` with `{"error":"… was deleted — …","status":400}` naming
+    both ways out, an explicit `--project` naming a deleted uuid is a `404` like an unknown one, and the
+    refusal must NOT be retried — nothing in the environment changes on its own, and both ways out are the
+    human's call, so the agent comments instead of restoring or re-homing the task unasked. (3) The
+    `.kotgent.json` section says the file survives a delete, so its presence is not proof there is a
+    project to file into, and `project list` is the authority.
+  - Two judgement calls, both toward saying less. The `session.projectId` short-circuit IS documented, in
+    one sentence, because it is agent-OBSERVABLE — two sessions in the same directory answer differently —
+    and a skill author would otherwise file it as a bug; the design reason it is unguarded is not. The
+    `POST /tasks/next` residual (⚠️ in Task 9) is NOT documented: nothing about `task next` changed for the
+    agent, it is under review, and a contract document that describes an unfixed inconsistency ages badly.
+    The refusal paragraph is therefore scoped to `task add` and makes no blanket claim that the whole
+    family refuses.
+  - Verified by reading only (Markdown-only change): the message text against
+    `TaskWriteRoutes.resolveProjectForCreate`, the DTO against `TaskDtos.kt`, the exit codes and the
+    `--archived` wire selection against `TaskCommands.kt` / `Cli.kt`'s `USAGE`, and
+    "kotgent creates `.kotgent.json` and never removes it" against `ProjectFileWriter`, whose only
+    `unlink` targets the mkstemp temp file. `CLAUDE.md` was deliberately not touched.
+- [x] move this plan to `docs/plans/completed/` — NOT done here by design: the harness performs the move
+      after the review and finalize phases, which read this file at its current path.
 
 ## Post-Completion
 
