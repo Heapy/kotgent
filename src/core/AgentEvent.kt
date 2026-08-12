@@ -23,10 +23,13 @@ sealed class AgentEvent {
     @SerialName("approval_requested")
     data class ApprovalRequested(val approvalId: String) : AgentEvent()
 
-    /** Forward-modeled for providers that can report an approval decision. */
+    /** `approved` is null when resolution is observed but the decision is not. */
     @Serializable
     @SerialName("approval_resolved")
-    data class ApprovalResolved(val approvalId: String, val approved: Boolean) : AgentEvent()
+    data class ApprovalResolved(
+        val approvalId: String,
+        val approved: Boolean? = null,
+    ) : AgentEvent()
 
     @Serializable
     @SerialName("tool_call")

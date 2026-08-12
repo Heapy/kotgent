@@ -213,6 +213,28 @@ class EventStoreTest {
     }
 
     @Test
+    fun replaysAnApprovalResolvedWithoutAnObservedDecision() = runBlocking {
+        withTimeout(20_000) {
+            val driver = inMemoryDriver(KotgentDatabase.Schema)
+            val store = SqliteEventStore.using(driver, now = { 7L })
+            val sid = SessionId("unknown-approval-decision")
+            KotgentDatabase(driver).eventsQueries.insert(
+                sid.value,
+                1L,
+                7L,
+                "approval_resolved",
+                EventSource.system.name,
+                """{"type":"approval_resolved","approvalId":"recovery@%36#1","approved":null}""",
+            )
+
+            val event = store.read(sid, Seq(0)).single().event as AgentEvent.ApprovalResolved
+            assertEquals("recovery@%36#1", event.approvalId)
+            assertNull(event.approved)
+            assertEquals(Seq(1), store.projectionOf(sid).lastSeq)
+        }
+    }
+
+    @Test
     fun subscribeLiveStreamsNewlyAppendedEvents() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 0L })
