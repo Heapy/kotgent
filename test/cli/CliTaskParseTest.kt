@@ -92,13 +92,40 @@ class CliTaskParseTest {
     }
 
     @Test
-    fun parsesBothProjectSubcommands() {
-        assertEquals(ProjectList, parseArgs(listOf("project", "list"), neverReadsStdin))
+    fun parsesEveryProjectSubcommand() {
+        assertEquals(ProjectList(archived = false), parseArgs(listOf("project", "list"), neverReadsStdin))
         assertEquals(ProjectInit(null, null), parseArgs(listOf("project", "init"), neverReadsStdin))
         assertEquals(
             ProjectInit("/repo", "kotgent"),
             parseArgs(listOf("project", "init", "/repo", "--name", "kotgent"), neverReadsStdin),
         )
+        assertEquals(ProjectDelete(PROJECT), parseArgs(listOf("project", "delete", PROJECT), neverReadsStdin))
+        assertEquals(ProjectRestore(PROJECT), parseArgs(listOf("project", "restore", PROJECT), neverReadsStdin))
+    }
+
+    @Test
+    fun listSelectsTheDeletedSideOnlyWhenAskedTo() {
+        assertEquals(
+            ProjectList(archived = true),
+            parseArgs(listOf("project", "list", "--archived"), neverReadsStdin),
+            "the two sides of the tombstone are one list each; the default stays live-only",
+        )
+    }
+
+    @Test
+    fun deleteAndRestoreDemandTheUuidRatherThanTakingItFromTheCwd() {
+        for (sub in listOf("delete", "restore")) {
+            val missing = invalidMessage(listOf("project", sub))
+            assertTrue("requires a project id" in missing, "'$sub' with no uuid: $missing")
+            assertTrue(
+                "project list" in missing,
+                "the error says where to find the uuid instead of guessing at the cwd: $missing",
+            )
+            val malformed = invalidMessage(listOf("project", sub, "kotgent"))
+            assertTrue("not a project id" in malformed, "'$sub kotgent': $malformed")
+            val extra = invalidMessage(listOf("project", sub, PROJECT, PROJECT))
+            assertTrue("unexpected argument" in extra, "'$sub' takes exactly one uuid: $extra")
+        }
     }
 
 
@@ -368,7 +395,9 @@ class CliTaskParseTest {
     fun anUnknownProjectSubcommandNamesTheAlternatives() {
         val message = invalidMessage(listOf("project", "create"))
         assertTrue("unknown subcommand 'create'" in message, message)
-        assertTrue("list" in message && "init" in message, message)
+        for (sub in listOf("list", "init", "delete", "restore")) {
+            assertTrue(sub in message, "the error offers '$sub': $message")
+        }
     }
 
     @Test
@@ -382,8 +411,12 @@ class CliTaskParseTest {
     fun theUsageNamesTheTaskAndProjectFamilies() {
         for (line in listOf("task add", "task list", "task show", "task next", "task claim", "task comment",
             "task review", "task done", "task unlink", "task move", "task dep", "task delete",
-            "project list", "project init", "--task")) {
+            "project list", "project init", "project delete", "project restore", "--task")) {
             assertTrue(line in USAGE, "the usage mentions '$line': $USAGE")
         }
+    }
+
+    private companion object {
+        const val PROJECT: String = "0f4e2b1c-9a8d-4c7e-b6f5-1234567890ab"
     }
 }

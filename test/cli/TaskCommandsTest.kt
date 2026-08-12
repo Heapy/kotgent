@@ -650,6 +650,78 @@ class TaskCommandsTest {
     }
 
     @Test
+    fun deletingAProjectPrintsTheTombstonedRowItself() = runCommandTest {
+        val out = Sinks()
+        val asked = mutableListOf<String>()
+        val exit = runProjectDeleteCommand(
+            id = PROJECT,
+            deleteProject = { id ->
+                asked += id
+                ProjectDto(id = id, name = "kotgent", path = "/repo", updatedAt = 3, archived = true)
+            },
+            stdout = out.stdout::add,
+            stderr = out.stderr::add,
+        )
+        assertEquals(0, exit)
+        out.assertNoErrors()
+        assertEquals(listOf(PROJECT), asked)
+        val json = out.onlyJsonObject()
+        assertEquals(PROJECT, json["id"]?.jsonPrimitive?.content)
+        assertEquals(
+            true,
+            json["archived"]?.jsonPrimitive?.content?.toBoolean(),
+            "a script reads the mark back off the row rather than trusting the verb",
+        )
+    }
+
+    @Test
+    fun restoringAProjectPrintsTheRowWithTheMarkCleared() = runCommandTest {
+        val out = Sinks()
+        val asked = mutableListOf<String>()
+        val exit = runProjectRestoreCommand(
+            id = PROJECT,
+            restoreProject = { id ->
+                asked += id
+                ProjectDto(id = id, name = "kotgent", path = "/repo", updatedAt = 4, archived = false)
+            },
+            stdout = out.stdout::add,
+            stderr = out.stderr::add,
+        )
+        assertEquals(0, exit)
+        assertEquals(listOf(PROJECT), asked)
+        assertEquals(false, out.onlyJsonObject()["archived"]?.jsonPrimitive?.content?.toBoolean())
+    }
+
+    @Test
+    fun aProjectTheDaemonNeverSawIsOneErrorObjectCarryingIts404() = runCommandTest {
+        for (call in listOf<suspend (Sinks) -> Int>(
+            { out ->
+                runProjectDeleteCommand(
+                    id = OTHER_PROJECT,
+                    deleteProject = { throw ApiException(404, "no project '$OTHER_PROJECT'") },
+                    stdout = out.stdout::add,
+                    stderr = out.stderr::add,
+                )
+            },
+            { out ->
+                runProjectRestoreCommand(
+                    id = OTHER_PROJECT,
+                    restoreProject = { throw ApiException(404, "no project '$OTHER_PROJECT'") },
+                    stdout = out.stdout::add,
+                    stderr = out.stderr::add,
+                )
+            },
+        )) {
+            val out = Sinks()
+            assertEquals(1, call(out), "exit 3 stays reserved for `task next` finding nothing")
+            assertTrue(out.stdout.isEmpty(), "a failure never prints on the success stream: ${out.stdout}")
+            val err = Json.parseToJsonElement(out.onlyErrorJson()).jsonObject
+            assertEquals(404, err["status"]?.jsonPrimitive?.content?.toInt())
+            assertTrue(OTHER_PROJECT in (err["error"]?.jsonPrimitive?.content ?: ""))
+        }
+    }
+
+    @Test
     fun projectInitDefaultsToTheCallerCwdAndSendsAnAbsolutePath() = runCommandTest {
         val out = Sinks()
         val created = mutableListOf<Pair<String, String?>>()

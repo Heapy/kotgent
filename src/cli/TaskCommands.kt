@@ -165,9 +165,27 @@ object TaskCommands {
         )
     }
 
-    fun projectList(): Int = withTaskApi { api ->
+    fun projectList(archived: Boolean = false): Int = withTaskApi { api ->
         runProjectListCommand(
-            listProjects = { api.listProjects() },
+            listProjects = { api.listProjects(archived) },
+            stdout = ::println,
+            stderr = ::eprintln,
+        )
+    }
+
+    fun projectDelete(id: String): Int = withTaskApi { api ->
+        runProjectDeleteCommand(
+            id = id,
+            deleteProject = { api.deleteProject(it) },
+            stdout = ::println,
+            stderr = ::eprintln,
+        )
+    }
+
+    fun projectRestore(id: String): Int = withTaskApi { api ->
+        runProjectRestoreCommand(
+            id = id,
+            restoreProject = { api.restoreProject(it) },
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -513,6 +531,35 @@ suspend fun runProjectListCommand(
     stderr: (String) -> Unit,
 ): Int = runTaskCommand(stdout, stderr) {
     TaskOutput(TRANSPORT_JSON.encodeToString(ListSerializer(ProjectDto.serializer()), listProjects()))
+}
+
+/**
+ * Both sides of the tombstone print the project row itself rather than an acknowledgement, because
+ * `archived` is the answer a script wants and the daemon is idempotent — a repeat says the same thing
+ * instead of failing. A uuid the daemon never saw is a 404, and that reaches stderr as exit 1.
+ */
+suspend fun runProjectDeleteCommand(
+    id: String,
+    deleteProject: suspend (String) -> ProjectDto,
+    stdout: (String) -> Unit,
+    stderr: (String) -> Unit,
+): Int = runProjectRowCommand(id, deleteProject, stdout, stderr)
+
+/** The counterpart of [runProjectDeleteCommand]; see it for why both answer the row. */
+suspend fun runProjectRestoreCommand(
+    id: String,
+    restoreProject: suspend (String) -> ProjectDto,
+    stdout: (String) -> Unit,
+    stderr: (String) -> Unit,
+): Int = runProjectRowCommand(id, restoreProject, stdout, stderr)
+
+private suspend fun runProjectRowCommand(
+    id: String,
+    call: suspend (String) -> ProjectDto,
+    stdout: (String) -> Unit,
+    stderr: (String) -> Unit,
+): Int = runTaskCommand(stdout, stderr) {
+    TaskOutput(TRANSPORT_JSON.encodeToString(ProjectDto.serializer(), call(id)))
 }
 
 /**

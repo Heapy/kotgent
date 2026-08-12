@@ -267,8 +267,12 @@ class ApiClient(
         return json.decodeFromString(NextTaskResponse.serializer(), taskPost("/tasks/next", request)).task
     }
 
-    suspend fun listProjects(): List<ProjectDto> =
-        json.decodeFromString(ListSerializer(ProjectDto.serializer()), taskGet("/projects"))
+    /** The two sides of the delete tombstone are separate lists; [archived] asks for the deleted one. */
+    suspend fun listProjects(archived: Boolean = false): List<ProjectDto> =
+        json.decodeFromString(
+            ListSerializer(ProjectDto.serializer()),
+            taskGet(if (archived) "/projects?archived=true" else "/projects"),
+        )
 
     suspend fun createProject(path: String, name: String? = null): ProjectDto {
         val request = json.encodeToString(
@@ -277,6 +281,25 @@ class ApiClient(
         )
         return json.decodeFromString(ProjectDto.serializer(), taskPost("/projects", request))
     }
+
+    /**
+     * Sets the delete tombstone and answers the row it marked, so a caller reads `archived` back rather
+     * than trusting the verb. Idempotent at the daemon; only a uuid it has never seen is a 404.
+     */
+    suspend fun deleteProject(id: String): ProjectDto {
+        val resp = client.delete(url("/projects/${id.encodeURLPathPart()}")) {
+            bearer()
+            paneHeader()
+        }
+        ensureSuccess(resp)
+        return json.decodeFromString(ProjectDto.serializer(), resp.bodyAsText())
+    }
+
+    /** Clears that tombstone; the request needs no body because the uuid is the whole subject. */
+    suspend fun restoreProject(id: String): ProjectDto = json.decodeFromString(
+        ProjectDto.serializer(),
+        taskPost("/projects/${id.encodeURLPathPart()}/restore", "{}"),
+    )
 
     override fun close(): Unit = client.close()
 

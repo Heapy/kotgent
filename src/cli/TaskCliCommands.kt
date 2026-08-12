@@ -45,7 +45,22 @@ data class TaskDep(
 
 data class TaskDelete(val ref: String, val session: String?) : CliCommand
 
-data object ProjectList : CliCommand
+/** The two sides of the delete tombstone are one list each, never a flag on a merged one. */
+data class ProjectList(val archived: Boolean = false) : CliCommand
 
 /** Project initialization writes but never commits `.kotgent.json`. */
 data class ProjectInit(val path: String?, val name: String?) : CliCommand
+
+/**
+ * Deletion sets a tombstone the daemon respects; the file, the tasks and the sessions are untouched.
+ *
+ * The uuid is required rather than derived from the cwd: in a worktree an operator can easily be standing
+ * somewhere other than they think, and this is the one command where that matters.
+ */
+data class ProjectDelete(val id: String) : CliCommand
+
+/**
+ * Clears that tombstone by uuid, which is the only way back for an orphan whose directory is gone.
+ * Restoring a project you are standing in is already `project init`, whose adopt clears the mark.
+ */
+data class ProjectRestore(val id: String) : CliCommand

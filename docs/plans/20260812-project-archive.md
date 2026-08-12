@@ -269,13 +269,16 @@ would land in a deleted project.
 - Modify: `src/cli/TaskCliCommands.kt`
 - Modify: `test/cli/CliTaskParseTest.kt`, `test/cli/TaskCommandsTest.kt`, `test/cli/ApiClientTaskTest.kt`
 
-- [ ] extend `parseProject` with `delete <uuid>` and `restore <uuid>` (uuid required) and
+- [x] extend `parseProject` with `delete <uuid>` and `restore <uuid>` (uuid required) and
       `list [--archived]`; update the `USAGE` block
-- [ ] add the two `ApiClient` calls against the real paths
-- [ ] render both as the JSON-only family does — one JSON value on stdout, one error object on stderr
-- [ ] write parser tests including the malformed/missing-uuid rejections
-- [ ] write command tests against stubs for output shape and exit codes
-- [ ] run tests — must pass before task 7
+- [x] add the two `ApiClient` calls against the real paths
+- [x] render both as the JSON-only family does — one JSON value on stdout, one error object on stderr
+- [x] write parser tests including the malformed/missing-uuid rejections
+- [x] write command tests against stubs for output shape and exit codes
+- ➕ [x] `listProjects` gained the `archived` parameter too — `project list --archived` is a wire
+      selection the render layer cannot see, so `ApiClientTaskTest` is where `?archived=true` is proven
+      and `TaskCommandsTest` stays about output shape
+- [x] run tests — must pass before task 7
 
 ### Task 7: The two Web UI dialogs
 

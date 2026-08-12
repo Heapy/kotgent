@@ -149,7 +149,15 @@ class ApiClientTaskTest {
     @Test
     fun listProjectsDecodesTheSelectorsSource() = withStub { stub, api ->
         assertEquals(listOf(PROJECT_DTO), api.listProjects())
-        assertEquals("$API_PREFIX/projects", stub.requests.receive().path)
+        val seen = stub.requests.receive()
+        assertEquals("$API_PREFIX/projects", seen.path)
+        assertEquals("", seen.query, "the default is live-only; a deleted project stays out of every selector")
+    }
+
+    @Test
+    fun listProjectsAsksForTheDeletedSideOnlyWhenTold() = withStub { stub, api ->
+        api.listProjects(archived = true)
+        assertEquals("archived=true", stub.requests.receive().query, "the restore dialog's single request")
     }
 
 
@@ -276,6 +284,26 @@ class ApiClientTaskTest {
 
 
     @Test
+    fun deletingAProjectAddressesTheUuidAndReadsTheTombstoneBack() = withStub { stub, api ->
+        assertEquals(ARCHIVED_PROJECT_DTO, api.deleteProject(PROJECT))
+        val seen = stub.requests.receive()
+        assertEquals("DELETE", seen.method)
+        assertEquals("$API_PREFIX/projects/$PROJECT", seen.path, "the uuid is the whole subject — no body")
+    }
+
+    @Test
+    fun restoringAProjectPostsToItsOwnVerbPath() = withStub { stub, api ->
+        assertEquals(PROJECT_DTO, api.restoreProject(PROJECT))
+        val seen = stub.requests.receive()
+        assertEquals("POST", seen.method)
+        assertEquals(
+            "$API_PREFIX/projects/$PROJECT/restore",
+            seen.path,
+            "restore is an action on the row, so it cannot be a DELETE and must not shadow POST /projects",
+        )
+    }
+
+    @Test
     fun nextReturnsTheTaskItLinked() = withStub { stub, api ->
         assertEquals(ENTRY, api.nextTask(PROJECT, "sess1234"))
         val seen = stub.requests.receive()
@@ -311,6 +339,8 @@ class ApiClientTaskTest {
         assertFailsWith<MissingTokenException> { api.nextTask() }
         assertFailsWith<MissingTokenException> { api.listProjects() }
         assertFailsWith<MissingTokenException> { api.createProject("/repo") }
+        assertFailsWith<MissingTokenException> { api.deleteProject(PROJECT) }
+        assertFailsWith<MissingTokenException> { api.restoreProject(PROJECT) }
         assertNull(stub.requests.tryReceive().getOrNull(), "no network I/O happens without a token")
     }
 
@@ -425,6 +455,14 @@ class ApiClientTaskTest {
                     record("POST", call.receiveText())
                     respondJson(ProjectDto.serializer(), PROJECT_DTO, HttpStatusCode.Created)
                 }
+                delete("$API_PREFIX/projects/{id}") {
+                    record("DELETE", "")
+                    respondJson(ProjectDto.serializer(), ARCHIVED_PROJECT_DTO)
+                }
+                post("$API_PREFIX/projects/{id}/restore") {
+                    record("POST", call.receiveText())
+                    respondJson(ProjectDto.serializer(), PROJECT_DTO)
+                }
             }
         }
 
@@ -502,6 +540,8 @@ class ApiClientTaskTest {
         )
 
         val PROJECT_DTO = ProjectDto(id = PROJECT, name = "kotgent", path = "/repo", updatedAt = 7)
+
+        val ARCHIVED_PROJECT_DTO = PROJECT_DTO.copy(archived = true)
 
         val DETAIL = TaskDetailDto(
             task = ENTRY,
