@@ -1,5 +1,6 @@
 package io.kotgent.webuicheck
 
+import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.task.TaskState
@@ -12,8 +13,21 @@ fun handleTaskCommand(words: List<String>, ctx: HarnessContext): Boolean {
         "task-add" -> runBlocking { addTask(ctx, words) }
         "task-del" -> runBlocking { deleteTask(ctx, words) }
         "task-race" -> runBlocking { raceTask(ctx, words) }
+        "project-del" -> runBlocking { markProject(ctx, words, archived = true) }
+        "project-restore" -> runBlocking { markProject(ctx, words, archived = false) }
         else -> false
     }
+}
+
+// /events carries no project frame by design, so a page learns of this only by re-reading
+// `/projects` — which is exactly what a test drives this command to observe.
+private suspend fun markProject(ctx: HarnessContext, words: List<String>, archived: Boolean): Boolean {
+    val verb = words[0]
+    if (words.size != 2) return reject("usage: $verb <project-uuid>")
+    val id = ProjectId.parseOrNull(words[1])
+        ?: return reject("$verb: '${words[1]}' is not a project id; expected a canonical uuid")
+    return ctx.fakes.tasks.setProjectArchived(id, archived) ||
+        reject("$verb: no project '${words[1]}' in this scenario")
 }
 
 private suspend fun applyTaskState(ctx: HarnessContext, words: List<String>): Boolean {

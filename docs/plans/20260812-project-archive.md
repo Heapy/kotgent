@@ -313,15 +313,35 @@ would land in a deleted project.
 **Files:**
 - Modify: `webuicheck/src/scenarios/Board.kt`
 - Modify: `webuicheck/src/TaskCommands.kt`
+- ➕ Modify: `webuitest/test/HarnessFixture.kt`
 - Create: `webuitest/test/ProjectArchiveTest.kt`
 
-- [ ] seed an archived project in the board scenario, and add a stdin command to archive/restore one so a
+- [x] seed an archived project in the board scenario, and add a stdin command to archive/restore one so a
       test can drive the transition
-- [ ] write a browser test that the palette shows both rows on the board and that "Delete project" is
+- ➕ [x] the seed went into a NEW board scenario (`board-projects`, declared in `Board.kt` beside the
+      others and registered through `boardScenarios()`) rather than into `board` itself. `board` is the
+      shared fixture of BoardTest, TaskCommandsTest and the style tests, and "the selection moves on" can
+      only be observed where a project SURVIVES the delete — a lone project proves the null branch alone.
+      Adding a second LIVE project to `board` would have moved what `task-add` files under
+      (`listProjects().firstOrNull()`) and what the board selects by default. The new scenario seeds
+      Alpha (3 tasks, selected), Beta (spare) and an archived Gamma; `fixtureProject` gained an
+      `archived` flag and still writes `.kotgent.json` for an archived project, because the file the
+      tombstone does not touch is the whole reason the row exists.
+- ➕ [x] the stdin commands are `project-del <uuid>` / `project-restore <uuid>` (the `task-del` naming),
+      dispatched from `handleTaskCommand`
+- [x] write a browser test that the palette shows both rows on the board and that "Delete project" is
       disabled with no selection
-- [ ] write a browser test that deleting removes the project from the sidebar and moves the selection
-- [ ] write a browser test that restore returns it, driven through the restore dialog
-- [ ] run `:webuitest:testJvm` — must pass before task 9
+- [x] write a browser test that deleting removes the project from the sidebar and moves the selection
+- [x] write a browser test that restore returns it, driven through the restore dialog
+- ➕ [x] the restore test also proves the dialog re-reads `?archived=true` on EVERY opening: after the
+      restore it archives another project through the new stdin command and reopens, and the list is
+      the daemon's new answer rather than the one it read the first time. That is what drives the
+      command; a cached list is a real bug (delete, then open restore in the same session)
+- ➕ [x] the tests deliberately assert nothing about the restored project's CARDS: `readTasksBaseline`
+      iterates live projects only and the browser's task list is seeded once per socket, so a restored
+      project's backlog reaches the board on the next reload. Same family as the recorded
+      no-`project_update`-frame limitation; the daemon tier owns the "the tasks are still there" claim
+- [x] run `:webuitest:testJvm` — must pass before task 9
 
 ### Task 9: Verify acceptance criteria
 
