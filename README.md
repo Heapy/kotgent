@@ -38,7 +38,7 @@ immortal:
   [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web),
   [sign in from your phone](#sign-in-from-your-phone)
 - [Troubleshooting](#troubleshooting)
-- [The first vertical slice](#the-first-vertical-slice)
+- [How a session stays available](#how-a-session-stays-available)
 - [Architecture at a glance](#architecture-at-a-glance)
 - [Status & limitations](#status--limitations)
 - [Contributing](#contributing)
@@ -117,6 +117,8 @@ To build from source instead, see [Build & test](#build--test).
   it just shows a coarser state. Developed against junie 26.8.3 (EAP).
 - **`shell`** — your current login shell (`$SHELL`, then the passwd entry, with `/bin/zsh` as the safe
   fallback). It launches with `-l`, needs no additional CLI, emits no provider hooks and has no import path.
+  Consequently it has no model or attention notifications; Resume starts a new login shell in the same
+  working directory rather than restoring a conversation.
 - **`/usr/bin/openssl` and NSURLSession (Web Push only).** kotgent lazily uses macOS's system
   `/usr/bin/openssl` to generate and sign its VAPID P-256 credential; outbound HTTPS delivery uses
   the Darwin HTTP client backed by NSURLSession and the system trust store. Both are macOS runtime
@@ -466,9 +468,9 @@ brew uninstall kotgent             # if installed from the tap
 `kotgent uninstall` only removes the launchd entry — the agents in `tmux` and the state under `~/.kotgent`
 outlive it by design, so drop them explicitly if you mean to.
 
-## The first vertical slice
+## How a session stays available
 
-kotgent's first milestone is one end-to-end path that proves the core value:
+Kotgent's core control loop is one end-to-end path:
 
 > **`kotgent start` a Claude session → close IDEA (Detach) → open the browser → continue the same
 > session → see it flag "needs attention" when Claude asks for approval.**
@@ -522,10 +524,9 @@ For deeper conventions and the toolchain gotchas, see [CLAUDE.md](CLAUDE.md).
 
 ## Status & limitations
 
-This is the **first vertical slice** — deliberately narrow but genuinely end-to-end. Be honest about what
-is and isn't here:
+Kotgent is deliberately focused. The current product boundary is:
 
-**In the slice (v1):**
+**Implemented:**
 
 - **Four launch kinds: Claude, Codex, Junie and Shell.** The three providers run as a TUI in `tmux` and
   report through hooks; Shell runs the user's login shell through the same lifecycle and terminal fan-out.

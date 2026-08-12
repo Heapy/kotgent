@@ -486,6 +486,8 @@ class SessionManager(
                 updatedAt = ts,
                 projectId = projectId,
             )
+            // Commit the resumable row first. If SessionBound append fails, resume still works from the
+            // row; only replay of this imported session lacks its provider binding.
             store.upsertSession(meta)
             idCapture.bind(sessionId, id)
             store.getSession(sessionId) ?: meta

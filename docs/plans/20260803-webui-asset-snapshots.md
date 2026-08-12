@@ -365,7 +365,7 @@ failure that survives a reload.
 
 - [ ] update `CLAUDE.md` if implementation revealed patterns beyond Task 11's scope
 - [ ] update the "Where things live" list if new files warrant it
-- [ ] move this plan to `docs/plans/completed/`
+- [ ] move durable outcomes to their authoritative documentation, then delete this plan
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

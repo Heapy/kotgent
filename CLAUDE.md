@@ -1,8 +1,10 @@
 # Kotgent development guide
 
 Read [docs/INTENT.md](docs/INTENT.md) for product intent and [docs/TESTING.md](docs/TESTING.md) for the
-testing strategy. Implementation plans belong in `docs/plans/`; move completed plans to
-`docs/plans/completed/`.
+testing strategy. Active implementation plans belong in `docs/plans/`. Before completing one, move its
+durable product intent, user behavior, architecture constraints, and testing policy to their authoritative
+homes; carry any still-intended work into an active plan or backlog; then delete the completed plan. Do not
+archive completed plans.
 
 ## Tooling
 
