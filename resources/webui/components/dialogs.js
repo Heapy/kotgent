@@ -8,6 +8,7 @@ import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
 import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
 import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.js";
+import { fetchProjects } from "../lib/tasks.js";
 import { qrSvg } from "../lib/qr.js";
 
 const SWIPE_SLOP_PX = 8;
@@ -607,6 +608,176 @@ export function UploadFilesDialog({ session, onClose }) {
         </div>
       </form>
     <//>
+  `;
+}
+
+function taskKeptSentence(count) {
+  if (count === 0) return "It has no tasks, so nothing in the backlog changes.";
+  if (count === 1) {
+    return "Its 1 task is kept, with its dependencies, comments and the sessions linked to it.";
+  }
+  return "Its " + count + " tasks are kept, with their order, dependencies, comments and the " +
+    "sessions linked to them.";
+}
+
+/* Deleting a project is a tombstone, not a cascade, and the dialog has to say so: an operator who
+ * believes they are erasing a backlog will not press the button, and one who believes the directory
+ * is being cleaned up would press it wrongly. */
+export function DeleteProjectDialog({ project, taskCount = 0, onDelete, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const cancelRef = useRef(null);
+
+  // A destructive confirmation opens on its safe control.
+  useEffect(() => { if (cancelRef.current) cancelRef.current.focus(); }, []);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onDelete(project.id);
+    } catch (e) {
+      setError("Could not delete the project: " + errorMessage(e));
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <${Dialog} id="delete-project-dialog" labelledBy="delete-project-title" lightDismiss=${!busy}
+               onClose=${onClose}>
+      <form id="delete-project-form" onSubmit=${submit}>
+        <div class="dialog-head">
+          <div>
+            <h2 id="delete-project-title">Delete project</h2>
+            <p>Takes it out of every selector. Nothing on disk is touched.</p>
+          </div>
+          <button id="delete-project-close" class="icon-button" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+
+        <p class="dialog-subject">
+          <strong id="delete-project-name">${project.name || project.id}</strong>
+          <code id="delete-project-path">${project.path || "last-seen directory unknown"}</code>
+        </p>
+
+        <ul id="delete-project-facts" class="dialog-facts">
+          <li>${taskKeptSentence(taskCount)}</li>
+          <li>
+            Its <code>.kotgent.json</code> stays on disk. This writes nothing into the directory, and
+            a project whose directory is already gone is deleted just the same.
+          </li>
+          <li>
+            Restore brings the project and all of that back, exactly as it is now. So does adopting
+            the same directory again from New project.
+          </li>
+        </ul>
+
+        ${error && html`<p id="delete-project-error" class="form-error" role="alert">${error}</p>`}
+
+        <div class="dialog-actions">
+          <button id="delete-project-cancel" class="button button-quiet" type="button"
+                  ref=${cancelRef} disabled=${busy} onClick=${onClose}>Cancel</button>
+          <button id="delete-project-submit" class="button button-primary dialog-danger" type="submit"
+                  disabled=${busy}>${busy ? "Deleting…" : "Delete project"}</button>
+        </div>
+      </form>
+    <//>
+  `;
+}
+
+/* The browser cannot know whether anything was ever deleted without asking, which is why the command
+ * that opens this is never disabled and why the empty answer is a sentence rather than an empty box. */
+export function RestoreProjectDialog({ onRestore, onClose }) {
+  const [state, setState] = useState({ status: "loading" });
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState(null);
+
+  const load = useCallback(async () => {
+    setState({ status: "loading" });
+    setError(null);
+    try {
+      const rows = await fetchProjects(true);
+      setState({ status: "ready", projects: Array.isArray(rows) ? rows : [] });
+    } catch (e) {
+      setState({ status: "error", message: errorMessage(e) });
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const restore = async (project) => {
+    if (busyId) return;
+    setBusyId(project.id);
+    setError(null);
+    try {
+      await onRestore(project.id);
+    } catch (e) {
+      setError("Could not restore the project: " + errorMessage(e));
+      setBusyId(null);
+    }
+  };
+
+  return html`
+    <${Dialog} id="restore-project-dialog" labelledBy="restore-project-title"
+               lightDismiss=${!busyId} onClose=${onClose}>
+      <div id="restore-project-form">
+        <div class="dialog-head">
+          <div>
+            <h2 id="restore-project-title">Restore a deleted project</h2>
+            <p>Clears the delete mark. The backlog comes back with it.</p>
+          </div>
+          <button id="restore-project-close" class="icon-button" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+
+        ${restoreProjectBody(state, busyId, restore, load)}
+        ${error && html`<p id="restore-project-error" class="form-error" role="alert">${error}</p>`}
+
+        <div class="dialog-actions">
+          <button id="restore-project-cancel" class="button button-quiet" type="button"
+                  disabled=${!!busyId} onClick=${onClose}>Close</button>
+        </div>
+      </div>
+    <//>
+  `;
+}
+
+function restoreProjectBody(state, busyId, restore, reload) {
+  if (state.status === "loading") {
+    return html`<p id="restore-project-status" class="dialog-status">Reading deleted projects…</p>`;
+  }
+  if (state.status === "error") {
+    return html`
+      <p id="restore-project-load-error" class="form-error" role="alert">
+        Could not read the deleted projects: ${state.message}
+      </p>
+      <button id="restore-project-retry" class="button" type="button" onClick=${reload}>Try again</button>
+    `;
+  }
+  if (state.projects.length === 0) {
+    return html`
+      <p id="restore-project-empty" class="dialog-empty">
+        No deleted projects. Only Delete project puts one here, so there is nothing to bring back.
+      </p>
+    `;
+  }
+  return html`
+    <ul id="restore-project-list" class="dialog-list">
+      ${state.projects.map((project) => html`
+        <li key=${project.id}>
+          <button class="dialog-list-row" type="button" data-id=${project.id}
+                  disabled=${!!busyId} onClick=${() => restore(project)}>
+            <span class="dialog-list-name">${project.name || project.id}</span>
+            <span class="dialog-list-sub">${project.path || "last-seen directory unknown"}</span>
+            <span class="dialog-list-action">
+              ${busyId === project.id ? "Restoring…" : "Restore"}
+            </span>
+          </button>
+        </li>
+      `)}
+    </ul>
   `;
 }
 

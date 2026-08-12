@@ -81,10 +81,26 @@ export async function deleteTask(ref) {
   return apiRequest(taskPath(ref), { method: "DELETE" });
 }
 
-export async function fetchProjects() {
-  return (await apiRequest("/projects")) || [];
+// The two sides of the delete tombstone are one list each, never a flag on a merged one: every
+// selector wants the live projects and only the restore dialog wants exactly the deleted ones.
+export async function fetchProjects(archived = false) {
+  return (await apiRequest("/projects" + (archived ? "?archived=true" : ""))) || [];
 }
 
 export async function createProject(path, name) {
   return apiRequest("/projects", jsonBody("POST", { path: path, name: name || null }));
+}
+
+function projectPath(id, suffix) {
+  return "/projects/" + encodeURIComponent(id) + (suffix || "");
+}
+
+// A tombstone, not a cascade: the tasks, the sessions' links and the project's `.kotgent.json` all
+// survive it. Both calls are idempotent, so a repeated click answers the same row rather than a 404.
+export async function deleteProject(id) {
+  return apiRequest(projectPath(id), { method: "DELETE" });
+}
+
+export async function restoreProject(id) {
+  return apiRequest(projectPath(id, "/restore"), { method: "POST" });
 }

@@ -16,6 +16,10 @@ function disabledWhenAlive(session) {
   return isAliveState(session.state) ? "the selected session is already running" : null;
 }
 
+function disabledWhenNoProject(projectId) {
+  return projectId ? null : "no project is selected";
+}
+
 function disabledWhenNoSessionTask(session) {
   if (!session) return "no session is selected";
   return session.taskRef ? null : "the selected session is not linked to a task";
@@ -145,8 +149,16 @@ function sessionCommands(activeSession, attachedId, pendingAction, actions) {
   ];
 }
 
+// The board is the only screen with a project selection, so its three project commands exist there
+// alone; the sidebar-only done toggle is the mirror case.
+const BOARD_ONLY = new Set([
+  "general.delete-project",
+  "general.restore-project",
+]);
+const SESSION_VIEW_ONLY = new Set(["general.show-done"]);
+
 // `o` means “the other screen”; leader mnemonics are first-match-wins and must remain unique.
-function generalCommands(onBoard, actions) {
+function generalCommands(onBoard, projectId, actions) {
   const commands = [
     {
       id: "general.new", group: "general", chord: "n",
@@ -199,6 +211,24 @@ function generalCommands(onBoard, actions) {
       run: () => actions.newProject(),
     },
     {
+      id: "general.delete-project", group: "general", chord: null,
+      title: "Delete project…",
+      subtitle: "hides the selected project; its tasks and its .kotgent.json are kept",
+      hint: null,
+      disabled: disabledWhenNoProject(projectId),
+      run: () => actions.deleteProject(),
+    },
+    {
+      id: "general.restore-project", group: "general", chord: null,
+      title: "Restore a deleted project…",
+      subtitle: "lists the deleted projects and brings one back with its backlog",
+      hint: null,
+      // Never disabled: only the daemon knows whether any project was ever deleted, and the dialog
+      // asking it is what says so honestly.
+      disabled: null,
+      run: () => actions.restoreProject(),
+    },
+    {
       id: "general.show-done", group: "general", chord: null,
       title: "Show or hide done sessions",
       subtitle: "toggles archived sessions in the sidebar",
@@ -239,17 +269,19 @@ function generalCommands(onBoard, actions) {
       run: () => actions.preferences(),
     },
   ];
-  return onBoard ? commands.filter((command) => command.id !== "general.show-done") : commands;
+  return commands.filter((command) => (onBoard
+    ? !SESSION_VIEW_ONLY.has(command.id)
+    : !BOARD_ONLY.has(command.id)));
 }
 
 export function buildCommands({
   sessions = [], activeSession = null, attachedId = null, pendingAction = null,
-  onBoard = false, actions,
+  onBoard = false, projectId = null, actions,
 }) {
   return [
     ...sessionRows(sessions, actions),
     ...(onBoard ? [] : sessionCommands(activeSession, attachedId, pendingAction, actions)),
-    ...generalCommands(onBoard, actions),
+    ...generalCommands(onBoard, projectId, actions),
   ];
 }
 

@@ -287,17 +287,26 @@ would land in a deleted project.
 - Modify: `resources/webui/app.js`
 - Modify: `resources/webui/lib/tasks.js`
 - Modify: `resources/webui/style.css`
+- ➕ Modify: `resources/webui/components/dialogs.js`
 
-- [ ] add two chordless board commands to the registry: "Delete project" (disabled with no project
+- [x] add two chordless board commands to the registry: "Delete project" (disabled with no project
       selected) and "Restore project"
-- [ ] add the two API calls to `lib/tasks.js` beside the existing project reads
-- [ ] render both dialogs from `app.js`'s existing `dialog` state via `Dialog`, with `lightDismiss={!busy}`
-- [ ] delete dialog: name, last-seen path, task count from the live list, and explicit text that the file
+- [x] add the two API calls to `lib/tasks.js` beside the existing project reads
+- [x] render both dialogs from `app.js`'s existing `dialog` state via `Dialog`, with `lightDismiss={!busy}`
+- [x] delete dialog: name, last-seen path, task count from the live list, and explicit text that the file
       stays, the tasks stay, and restore brings them back
-- [ ] restore dialog: reads `?archived=true` on open, one row per project, honest empty state
-- [ ] on success re-read `GET /projects` and move the selection to the first remaining project, or null
-- [ ] run `node --check` on every changed module
-- [ ] run tests — must pass before task 8
+- [x] restore dialog: reads `?archived=true` on open, one row per project, honest empty state
+- [x] on success re-read `GET /projects` and move the selection to the first remaining project, or null
+- ➕ [x] the two dialog COMPONENTS were declared in `components/dialogs.js`, beside the five other
+      app-owned dialogs, and are rendered from `app.js`'s `dialog` state (`kind: "delete-project"` /
+      `"restore-project"`). The plan's "in `app.js`, not in `Board.js`" rule is about which screen owns
+      the state and the render — that is honoured; declaring the components where every sibling dialog
+      already lives adds no served module and keeps `Board.js` out of it. `dialogs.js` now imports
+      `lib/tasks.js`, which introduces no cycle.
+- ➕ [x] a restore selects the project it brought back (the `projectCreated`/adopt precedent) rather than
+      falling to "first remaining"; the fallback rule still applies when the restored row is absent
+- [x] run `node --check` on every changed module
+- [x] run tests — must pass before task 8
 
 ### Task 8: The browser tier
 

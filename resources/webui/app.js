@@ -43,9 +43,11 @@ import {
 } from "./lib/router.js";
 import {
   applyTasksSnapshot,
+  deleteProject,
   fetchProjects,
   patchTaskIfNewer,
   removeTask,
+  restoreProject,
   upsertTaskIfNewer,
 } from "./lib/tasks.js";
 import { Board } from "./components/Board.js";
@@ -54,10 +56,12 @@ import { CommandPalette } from "./components/CommandPalette.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TerminalPane } from "./components/TerminalPane.js";
 import {
+  DeleteProjectDialog,
   HelpDialog,
   NewSessionDialog,
   PhoneDialog,
   PreferencesDialog,
+  RestoreProjectDialog,
   UploadFilesDialog,
 } from "./components/dialogs.js";
 
@@ -375,6 +379,31 @@ function App() {
   const closeDialogFrom = useCallback((submitted) => {
     setDialog((current) => (current === submitted ? null : current));
   }, []);
+
+  // Delete and restore only move a mark on the project row — no cascade, no file write — so each is
+  // one request plus a re-read. /events carries no project frame by design, which is exactly why the
+  // tab that made the change re-reads the list itself.
+  const applyProjectArchive = useCallback(async (id, archived) => {
+    const submittedDialog = dialogRef.current;
+    const changed = archived ? await deleteProject(id) : await restoreProject(id);
+    const rows = await reloadProjects();
+    if (rows) {
+      setProjectId((current) => {
+        // A restore is the operator naming that project; a delete only has to leave a valid one.
+        if (!archived && rows.some((project) => project.id === id)) return id;
+        if (current && rows.some((project) => project.id === current)) return current;
+        return rows.length > 0 ? rows[0].id : null;
+      });
+    }
+    closeDialogFrom(submittedDialog);
+    const label = (changed && changed.name) || id;
+    say(archived
+      ? "Deleted " + label + ". Restore brings it back with its backlog."
+      : "Restored " + label + ".");
+  }, [closeDialogFrom, reloadProjects, say]);
+
+  const removeProject = useCallback((id) => applyProjectArchive(id, true), [applyProjectArchive]);
+  const bringBackProject = useCallback((id) => applyProjectArchive(id, false), [applyProjectArchive]);
 
   const activeSession = sessions.find((s) => s.id === activeId) || null;
 
@@ -956,6 +985,12 @@ function App() {
     const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
     if (selected) setDialog({ kind: "upload", session: selected });
   }, []);
+  // Snapshot the row: the reload that follows a delete is what removes it from `projects`.
+  const openDeleteProject = useCallback(() => {
+    const selected = projects.find((project) => project.id === projectId);
+    if (selected) setDialog({ kind: "delete-project", project: selected });
+  }, [projects, projectId]);
+  const openRestoreProject = useCallback(() => setDialog({ kind: "restore-project" }), []);
 
   const interrupt = useCallback(() => controlSession("interrupt"), [controlSession]);
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
@@ -973,6 +1008,7 @@ function App() {
     attachedId: attachedId,
     pendingAction: pendingAction,
     onBoard: onBoard,
+    projectId: projectId,
     actions: {
       selectSession: selectSession,
       interrupt: interrupt,
@@ -994,6 +1030,8 @@ function App() {
       openSessions: openSessions,
       newTask: newTask,
       newProject: newProject,
+      deleteProject: openDeleteProject,
+      restoreProject: openRestoreProject,
       openSessionTask: openSessionTask,
     },
   });
@@ -1088,6 +1126,13 @@ function App() {
     ${dialog && dialog.kind === "prefs" && html`
       <${PreferencesDialog} key=${prefs.revision} prefs=${prefs} sessions=${sessions}
                             onSave=${savePreferences} onClose=${closeDialog} />`}
+    ${/* The count is read off the live task list, so the confirmation costs no request. */ ""}
+    ${dialog && dialog.kind === "delete-project" && html`
+      <${DeleteProjectDialog} project=${dialog.project}
+                              taskCount=${tasks.filter((task) => task.project === dialog.project.id).length}
+                              onDelete=${removeProject} onClose=${closeDialog} />`}
+    ${dialog && dialog.kind === "restore-project" && html`
+      <${RestoreProjectDialog} onRestore=${bringBackProject} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "help" && html`<${HelpDialog} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "phone" && html`<${PhoneDialog} onClose=${closeDialog} />`}
   `;
