@@ -420,7 +420,18 @@ export function Sidebar({
   };
   const onTasks = screen === SCREEN_TASKS;
   const visible = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
-  const doneSessions = useMemo(() => sessions.filter((s) => s.archived), [sessions]);
+  // Every live frame replaces the sessions array, so the archive derivations below key on this
+  // signature instead: it moves only when an archived row does. The id length keeps it unambiguous.
+  const [doneSessions, doneSignature] = useMemo(() => {
+    const done = [];
+    let signature = "";
+    for (const session of sessions) {
+      if (!session.archived) continue;
+      done.push(session);
+      signature += `${session.id.length}:${session.id}:${session.updatedAt}:${session.rev};`;
+    }
+    return [done, signature];
+  }, [sessions]);
   const attention = useMemo(() => visible.filter((s) => isNeedsAttention(s.state)), [visible]);
   const grouped = groupingEnabled(prefs);
   const liveGroups = useMemo(
@@ -433,12 +444,12 @@ export function Sidebar({
     () => grouped && showDone && !onTasks
       ? orderGroupsByRecentChange(groupSessions(doneSessions, prefs.basePath, prefs.groupingLevel))
       : [],
-    [doneSessions, grouped, onTasks, prefs.basePath, prefs.groupingLevel, showDone],
+    [doneSignature, grouped, onTasks, prefs.basePath, prefs.groupingLevel, showDone],
   );
   // Live rows keep the daemon's order; the flat archive answers "what did I just finish" instead.
   const flatDoneSessions = useMemo(
     () => !grouped && showDone && !onTasks ? byRecentChange(doneSessions) : [],
-    [doneSessions, grouped, onTasks, showDone],
+    [doneSignature, grouped, onTasks, showDone],
   );
   const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
   const openPerProject = new Map();
