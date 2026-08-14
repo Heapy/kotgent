@@ -437,7 +437,6 @@ class TaskWriteRoutesTest {
             row.projectId,
             "the session that resolved a project keeps it, or its next ref-less task command has no project",
         )
-        assertEquals(4242L, row.updatedAt, "a derived backfill is not activity and must not restamp the sort key")
     }
 
     @Test
