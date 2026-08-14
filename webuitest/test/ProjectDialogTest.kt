@@ -109,6 +109,42 @@ class ProjectDialogTest {
     }
 
     @Test
+    fun aSuccessfulDeleteRemovesTheSelectedProjectWhenItsLiveRereadFails() {
+        val failNextLiveRead = AtomicBoolean(false)
+        onProjects(
+            "project-delete-failed-reread",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API") { route ->
+                    val isLiveRead = route.request().method() == "GET" && !route.request().url().contains('?')
+                    if (isLiveRead && failNextLiveRead.compareAndSet(true, false)) {
+                        route.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(500)
+                                .setContentType("text/plain")
+                                .setBody("projects unavailable"),
+                        )
+                    } else {
+                        route.resume()
+                    }
+                }
+            },
+        ) { _, page ->
+            assertThat(page.projectRow(SELECTED_PROJECT)).hasClass("project-row active")
+            failNextLiveRead.set(true)
+
+            page.openPalette()
+            page.runFirstMatch("delete project", "Delete project")
+            page.locator("#delete-project-submit").click()
+
+            assertThat(page.projectRow(SELECTED_PROJECT)).hasCount(0)
+            assertThat(page.projectRow(SPARE_PROJECT)).hasClass("project-row active")
+            assertThat(page.locator(".board-project")).hasText("Beta Fixture")
+            assertThat(page.locator("#board-status"))
+                .containsText("The project list could not be re-read — reload the page.")
+        }
+    }
+
+    @Test
     fun deleteRefusesEveryDismissalWhileItsRequestIsInFlight() {
         val held = AtomicReference<Route?>(null)
         onProjects(

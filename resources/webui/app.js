@@ -452,7 +452,6 @@ function App() {
         errorMessage(e), true);
       return;
     }
-    const rows = await reloadProjects();
     const label = (changed && changed.name) || id;
     if (!changed || typeof changed.archived !== "boolean") {
       throw new Error("The daemon did not confirm whether " + label + " is deleted. Reload and try again.");
@@ -462,6 +461,25 @@ function App() {
         ? label + " was restored again while it was being deleted. Delete it again if needed."
         : label + " was deleted again while it was being restored. Restore it again.");
     }
+    // The response confirmed this row, so apply it before the refetch: a re-read that fails must not
+    // leave a deleted project selected and interactive against its own tombstone.
+    setProjects((current) => {
+      const index = current.findIndex((project) => project.id === id);
+      if (archived) {
+        if (index < 0) return current;
+        const next = current.slice();
+        next.splice(index, 1);
+        return next;
+      }
+      if (index < 0) return current.concat([changed]);
+      const next = current.slice();
+      next[index] = changed;
+      return next;
+    });
+    if (archived) setProjectId((current) => current === id ? null : current);
+    else setProjectId(id);
+
+    const rows = await reloadProjects();
     // Restore selects its row; delete only repairs a selection that is no longer live.
     if (rows && rows.length === 0) setProjectId(null);
     if (rows && !archived && rows.some((project) => project.id === id)) setProjectId(id);
