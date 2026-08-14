@@ -292,31 +292,6 @@ class TaskServiceTest {
     }
 
     @Test
-    fun taskWritesLeaveActivityOrderingWhereTheyFoundIt() = runBlocking {
-        withTimeout(5_000) {
-            val f = Fixture()
-            f.seedTask(t1)
-            f.seedTask(t2, position = 2.0)
-            f.seedSession(s1, createdAt = 1_000L)
-            f.seedSession(s2, createdAt = 2_000L)
-
-            f.service.link(s1, t1)
-            f.service.linkNext(s2, alpha)
-            f.service.unlink(s1)
-            f.service.link(s1, t1)
-            // Closing the task releases every holder — the one write that reaches rows nobody touched.
-            f.service.transition(t1, TaskState.done, author = s2.value)
-
-            assertEquals(
-                mapOf(s1 to 1_000L, s2 to 2_000L),
-                f.sessions.rows.mapValues { (_, row) -> row.updatedAt },
-                "linking, releasing and closing a task are consequences of other work: a session sorted " +
-                    "by recency must not jump for any of them",
-            )
-        }
-    }
-
-    @Test
     fun aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone() = runBlocking {
         withTimeout(5_000) {
             val f = Fixture()

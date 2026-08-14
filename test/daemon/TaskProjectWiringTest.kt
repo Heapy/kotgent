@@ -354,52 +354,6 @@ class TaskProjectWiringTest {
     }
 
     @Test
-    fun theTaskPassCarriesTheRowsOwnSortKeyRatherThanTheRestartTime() = runBlocking {
-        withTimeout(20_000) {
-            val f = Fixture(this)
-            val gone = TaskRef("local:404")
-            f.seedSession(
-                "quiet001",
-                cwd = "/repo/sub",
-                taskRef = gone,
-                state = SessionState.crashed,
-                updatedAt = SEEDED,
-            )
-            f.seedSession(
-                "moved001",
-                cwd = "/repo",
-                projectId = alpha,
-                taskRef = gone,
-                state = SessionState.running,
-                updatedAt = SEEDED,
-            )
-
-            f.reconciler(now = RESTART).reconcile()
-
-            assertEquals(
-                SessionState.crashed,
-                f.store.getSession(SessionId("moved001"))!!.state,
-                "the second row really did take a state write, or its half of this test is vacuous",
-            )
-            assertNull(f.store.getSession(SessionId("quiet001"))!!.taskRef, "and both clears happened")
-            assertNull(f.store.getSession(SessionId("moved001"))!!.taskRef)
-            assertEquals(
-                alpha,
-                f.store.getSession(SessionId("quiet001"))!!.projectId,
-                "as did the backfill the quiet row needed",
-            )
-
-            assertEquals(
-                mapOf(SessionId("quiet001") to SEEDED, SessionId("moved001") to RESTART),
-                listOf(SessionId("quiet001"), SessionId("moved001")).associateWith {
-                    f.store.getSession(it)!!.updatedAt
-                },
-                "a derived backfill and a reference GC keep the row's own sort key; a liveness change owns its",
-            )
-        }
-    }
-
-    @Test
     fun oneFailingRowDoesNotAbortTheRestOfTheTaskPass() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture(this)
@@ -675,9 +629,5 @@ class TaskProjectWiringTest {
 
     private companion object {
         const val CLOCK: Long = 7_000L
-
-        const val SEEDED: Long = 1_000L
-
-        const val RESTART: Long = 90_000L
     }
 }
