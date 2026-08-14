@@ -58,7 +58,7 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
         }
     }
 
-    // Automatic selection is withdrawn by deletion; the store closes races after this diagnostic check.
+    // Automatic selection is withdrawn by deletion; the store closes the write race and the route diagnoses it.
     post("/tasks/next") {
         val req = taskLinkBody(routing, NextTaskRequest.serializer(), NextTaskRequest()) ?: return@post
         val session = taskLinkCallerSession(routing, req.sessionId) ?: return@post
@@ -89,6 +89,13 @@ fun Route.taskLinkRoutes(routing: TaskRouting) {
             return@post
         }
         val taken = routing.service.linkNext(session.id, project)
+        if (taken == null) {
+            val current = routing.tasks.project(project)
+            if (current == null || current.archived) {
+                refuseTaskLink(UnknownProjectException(project), HttpStatusCode.NotFound)
+                return@post
+            }
+        }
         call.respondText(
             routing.json.encodeToString(
                 NextTaskResponse.serializer(),

@@ -36,6 +36,7 @@ import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
 import io.kotgent.task.TaskUpdate
+import io.kotgent.task.UnknownProjectException
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
@@ -412,7 +413,7 @@ class TaskLinkRoutesTest {
     }
 
     @Test
-    fun aDeleteLandingBetweenNextsCheckAndItsSelectionStillHandsOutNothing() = withLinkServer { env ->
+    fun aDeleteLandingBetweenNextsCheckAndItsSelectionIsRefused() = withLinkServer { env ->
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
 
@@ -423,16 +424,18 @@ class TaskLinkRoutesTest {
         }
 
         val resp = env.post("/tasks/next", pane = pane1)
+        val body = resp.bodyAsText()
 
         assertEquals(
-            HttpStatusCode.OK,
+            HttpStatusCode.NotFound,
             resp.status,
-            "the route's check saw a live project and answered before the delete landed",
+            "a delete after the route's check is a refused project, not an empty live backlog " +
+                "(answered $body)",
         )
-        assertNull(
-            TRANSPORT_JSON.decodeFromString(NextTaskResponse.serializer(), resp.bodyAsText()).task,
-            "but selection is the candidate query's own statement, so the delete withdrew the backlog " +
-                "with it: the degraded answer is `task next`'s ordinary 'nothing eligible', not a card",
+        assertEquals(
+            UnknownProjectException(alpha).message,
+            body,
+            "the race uses the same refusal as a project deleted before the request",
         )
         assertNull(env.sessions.linkOf(s1), "nothing was linked")
         assertEquals(
@@ -444,7 +447,7 @@ class TaskLinkRoutesTest {
     }
 
     @Test
-    fun aDeleteLandingBetweenNextsSelectionAndItsStartStillHandsOutNothing() = withLinkServer { env ->
+    fun aDeleteLandingBetweenNextsSelectionAndItsStartIsRefused() = withLinkServer { env ->
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
 
@@ -455,12 +458,17 @@ class TaskLinkRoutesTest {
         }
 
         val resp = env.post("/tasks/next", pane = pane1)
+        val body = resp.bodyAsText()
 
-        assertEquals(HttpStatusCode.OK, resp.status, "the route's check saw a live project, as did selection")
-        assertNull(
-            TRANSPORT_JSON.decodeFromString(NextTaskResponse.serializer(), resp.bodyAsText()).task,
-            "but the start carries the same tombstone clause, so it matched zero rows and the loop's " +
-                "re-query found the backlog withdrawn: the ordinary 'nothing eligible', not a card",
+        assertEquals(
+            HttpStatusCode.NotFound,
+            resp.status,
+            "a delete after selection is a refused project, not an empty live backlog (answered $body)",
+        )
+        assertEquals(
+            UnknownProjectException(alpha).message,
+            body,
+            "the race uses the same refusal as a project deleted before the request",
         )
         assertNull(env.sessions.linkOf(s1), "nothing was linked")
         assertEquals(
