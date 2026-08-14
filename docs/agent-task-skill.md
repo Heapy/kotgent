@@ -4,10 +4,11 @@ This is the interface an **Agent Skill** is written against — the one that let
 kotgent session read the task it was started for, report progress on it, close it, and pick up the next
 one without a human typing anything.
 
-The skill itself is **not in this repository**. It lives in Heapy/Kortex and ships through the heapy
-plugin. This file is the contract it implements: the commands, their output shapes, their exit codes, and
-the four things an agent must not assume. Nothing here is code and nothing here is tested by
-`./kotlin test`; when the CLI changes, this file changes with it.
+The skills themselves are **not in this repository**. They live in Heapy/Kortex and ship through the
+separate `kotgent` plugin as `create-tasks`, `sync-tasks`, `review-tasks`, `take-task`, and `work-task`.
+This file is the contract they implement: the commands, their output shapes, their exit codes, and the
+four things an agent must not assume. Nothing here is code and nothing here is tested by `./kotlin test`;
+when the CLI changes, this file changes with it.
 
 Everything below is the `kotgent` CLI. There is no SDK, no library and no direct daemon access — the
 commands are the API surface, and they exist because an agent already has a shell.
