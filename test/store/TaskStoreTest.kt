@@ -232,7 +232,7 @@ class TaskStoreTest {
     }
 
     @Test
-    fun aMutatorWhoseTransactionRollsBackPublishesNothingItStaged() = test { f ->
+    fun aMutatorWhoseTransactionThrowsPublishesNothingAndRetainsNothingForTheNextCall() = test { f ->
         f.store.create(alpha, "one", "")
         f.store.create(alpha, "two", "")
         f.store.addDependency(second, first)
@@ -248,7 +248,7 @@ class TaskStoreTest {
         assertEquals(first, only.ref)
         assertNotNull(
             only.entry,
-            "the one frame is the rename, not the removal the rolled-back delete staged",
+            "the failed delete neither published its staged removal nor retained it for the succeeding rename",
         )
         assertNotNull(f.store.get(first), "and the row really is still there — the transaction rolled back")
         assertNotNull(f.store.entry(first))

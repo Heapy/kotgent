@@ -90,13 +90,9 @@ class SqliteTaskStore private constructor(
             val key = localKeyCounter + 1
             val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:$key")
             val ts = now()
-            var refused = false
             db.transaction {
                 // Keep the tombstone check atomic with insertion so project deletion cannot race creation.
-                if (projectIsArchivedLocked(project)) {
-                    refused = true
-                    return@transaction
-                }
+                if (projectIsArchivedLocked(project)) throw ArchivedProjectException(project)
                 val rev = nextRev()
                 tasks.raiseLocalKeyHighWater(key)
                 val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
@@ -120,8 +116,6 @@ class SqliteTaskStore private constructor(
                     ),
                 )
             }
-            // Throw after the empty transaction so the publishing outbox cannot retain staged updates.
-            if (refused) throw ArchivedProjectException(project)
             localKeyCounter = key
             Task(ref = ref, title = title, body = body, url = null, updatedAt = ts)
         }
@@ -284,16 +278,15 @@ class SqliteTaskStore private constructor(
 
     override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
         mutex.withLock {
-            var outcome = ProjectRegistration.registered
             // Keep the tombstone check and registration atomic with restore.
-            db.transaction {
+            db.transactionWithResult {
                 if (projectIsArchivedLocked(id)) {
-                    outcome = ProjectRegistration.refusedArchived
-                    return@transaction
+                    ProjectRegistration.refusedArchived
+                } else {
+                    projects.upsertProject(id.value, name, path, now())
+                    ProjectRegistration.registered
                 }
-                projects.upsertProject(id.value, name, path, now())
             }
-            outcome
         }
 
     override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
