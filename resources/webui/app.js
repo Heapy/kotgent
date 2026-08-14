@@ -386,14 +386,29 @@ function App() {
     if (first || onBoard) reloadProjects();
     if (!onBoard) return undefined;
 
-    const refreshIfVisible = () => {
-      if (document.visibilityState === "visible") reloadProjects(false);
+    let pageWasAway = false;
+    const markPageAway = () => {
+      pageWasAway = true;
     };
-    window.addEventListener("focus", refreshIfVisible);
-    document.addEventListener("visibilitychange", refreshIfVisible);
+    const refreshAfterReturn = () => {
+      if (!pageWasAway || document.visibilityState !== "visible") return;
+      pageWasAway = false;
+      reloadProjects(false);
+    };
+    const trackVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        markPageAway();
+      } else {
+        refreshAfterReturn();
+      }
+    };
+    window.addEventListener("blur", markPageAway);
+    window.addEventListener("focus", refreshAfterReturn);
+    document.addEventListener("visibilitychange", trackVisibility);
     return () => {
-      window.removeEventListener("focus", refreshIfVisible);
-      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("blur", markPageAway);
+      window.removeEventListener("focus", refreshAfterReturn);
+      document.removeEventListener("visibilitychange", trackVisibility);
     };
   }, [onBoard, reloadProjects]);
 

@@ -5,8 +5,10 @@ import com.microsoft.playwright.Page
 import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class ProjectDialogTest {
@@ -163,6 +165,60 @@ class ProjectDialogTest {
             val status = page.locator("#board-status")
             assertThat(status).containsText("was restored again")
             assertThat(status).containsText("Delete it again")
+        }
+    }
+
+    @Test
+    fun foregroundingTheBoardRequestsProjectsOnce() {
+        val foregrounding = AtomicBoolean(false)
+        val holdNext = AtomicBoolean(false)
+        val held = AtomicReference<Route?>(null)
+        val liveReads = AtomicInteger(0)
+        val refreshedRows =
+            "[${projectJson(SELECTED_PROJECT, "Foreground Fixture", "/repo/alpha", archived = false)}]"
+        onProjects(
+            "project-refresh-foreground-once",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API") { route ->
+                    val isLiveRead = route.request().method() == "GET" && !route.request().url().contains('?')
+                    if (!isLiveRead) {
+                        route.resume()
+                        return@route
+                    }
+                    liveReads.incrementAndGet()
+                    if (!foregrounding.get()) {
+                        route.resume()
+                    } else if (holdNext.compareAndSet(true, false)) {
+                        held.set(route)
+                    } else {
+                        route.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(200)
+                                .setContentType("application/json")
+                                .setBody(refreshedRows),
+                        )
+                    }
+                }
+            },
+        ) { _, page ->
+            assertEquals(1, liveReads.get(), "board entry must issue its initial projects request")
+            liveReads.set(0)
+            foregrounding.set(true)
+            holdNext.set(true)
+
+            page.leaveBoard()
+            page.showBoard()
+            page.waitForCondition { held.get() != null }
+            page.focusBoard()
+            held.get()!!.fulfill(
+                Route.FulfillOptions()
+                    .setStatus(200)
+                    .setContentType("application/json")
+                    .setBody(refreshedRows),
+            )
+
+            assertThat(page.locator(".board-project")).hasText("Foreground Fixture")
+            assertEquals(1, liveReads.get(), "one foregrounding must issue one live projects request")
         }
     }
 
@@ -340,8 +396,37 @@ class ProjectDialogTest {
 
     private fun Page.restoreRow(id: String) = locator("#restore-project-list .dialog-list-row[data-id=\"$id\"]")
 
-    private fun Page.requestProjectRefresh() {
+    private fun Page.leaveBoard() {
+        evaluate(
+            """
+            () => {
+              Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+              window.dispatchEvent(new Event("blur"));
+              document.dispatchEvent(new Event("visibilitychange"));
+            }
+            """.trimIndent(),
+        )
+    }
+
+    private fun Page.showBoard() {
+        evaluate(
+            """
+            () => {
+              Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+              document.dispatchEvent(new Event("visibilitychange"));
+            }
+            """.trimIndent(),
+        )
+    }
+
+    private fun Page.focusBoard() {
         evaluate("() => window.dispatchEvent(new Event('focus'))")
+    }
+
+    private fun Page.requestProjectRefresh() {
+        leaveBoard()
+        showBoard()
+        focusBoard()
     }
 
     private companion object {
