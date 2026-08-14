@@ -13,6 +13,9 @@ export function TaskCard({
   sessions = [],
   active = false,
   dragging = false,
+  dragOffset = 0,
+  lifted = false,
+  style = null,
   onOpen,
   onOpenSession,
   onDragPointerDown,
@@ -36,9 +39,11 @@ export function TaskCard({
 
   return html`
     <article
-      class=${"task-card" + (dragging ? " is-dragging" : "")}
-      data-ref=${entry.ref}
+      class=${"task-card" + (dragging ? " is-dragging" : "") + (lifted ? " is-lifted" : "")}
+      data-ref=${lifted ? null : entry.ref}
       data-state=${entry.state}
+      aria-hidden=${lifted ? "true" : null}
+      style=${style || (dragOffset ? { transform: "translateY(" + dragOffset + "px)" } : null)}
     >
       <div
         class="task-card-handle"

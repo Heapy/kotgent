@@ -13,6 +13,7 @@ import java.util.Collections
 import java.util.concurrent.atomic.AtomicReference
 import java.util.function.Consumer
 import java.util.function.Predicate
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -126,21 +127,108 @@ class BoardTest {
             assertThat(page.column("in_progress")).hasClass(DROP_TARGET_CLASS)
             assertThat(page.column("todo")).hasClass(COLUMN_CLASS)
             assertThat(page.card("local:1")).hasClass("task-card is-dragging")
+            assertThat(page.locator(".board-drop-slot")).hasCount(1)
+            assertThat(page.column("in_progress").locator(".board-drop-slot")).hasCount(1)
 
             page.travelTo(page.column("review").centre())
             assertThat(page.column("review")).hasClass(DROP_TARGET_CLASS)
             assertThat(page.column("in_progress")).hasClass(COLUMN_CLASS)
+            assertThat(page.locator(".board-drop-slot")).hasCount(1)
+            assertThat(page.column("review").locator(".board-drop-slot")).hasCount(1)
 
             page.travelTo(page.column("done").bottomInside())
             assertThat(page.column("done")).hasClass(DROP_TARGET_CLASS)
             assertThat(page.column("review")).hasClass(COLUMN_CLASS)
+            assertThat(page.locator(".board-drop-slot")).hasCount(1)
+            assertThat(page.column("done").locator(".board-drop-slot")).hasCount(1)
 
-            page.releaseOverNothing()
+            page.travelTo(page.locator(".board-identity").centre())
             assertThat(page.locator(".board-drop-target")).hasCount(0)
+            assertThat(page.locator(".board-drop-slot")).hasCount(0)
+            page.assertNoInFlowTransforms("holding the claimed drag outside every column")
+            page.mouse().up()
             assertThat(page.locator(".task-card.is-dragging")).hasCount(0)
+            page.assertPreviewCleared("releasing the claimed drag outside every column")
             assertEquals(emptyList<String>(), writes.snapshot(), "a release outside every column drops nothing")
             assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))
             page.proveTheWriteRecorderWasLive(writes, "local:1", "in_progress")
+        }
+
+    @Test
+    fun aMiddleDropSlotNamesTheSameNeighbourTheReleaseWrites() =
+        onTheBoard("aMiddleDropSlotNamesTheSameNeighbourTheReleaseWrites") { _, page ->
+            val moves = page.recordMoveBodies()
+            page.pressHandleOf("local:7")
+            page.travelTo(page.card("local:3").topHalf())
+
+            val slot = page.locator(".board-drop-slot")
+            assertThat(slot).hasCount(1)
+            assertThat(page.column("todo").locator(".board-drop-slot")).hasCount(1)
+            page.waitForPreviewToSettle()
+            page.assertBetween(slot, page.card("local:2"), page.card("local:3"), "the middle drop slot")
+
+            page.mouse().up()
+            page.waitForCondition { moves.snapshot().isNotEmpty() }
+            assertEquals(
+                listOf("{\"before\":\"local:3\"}"),
+                moves.snapshot(),
+                "the neighbour drawn after local:2 is the neighbour sent by /move",
+            )
+            page.assertPreviewCleared("dropping into the middle of a column")
+        }
+
+    @Test
+    fun aFirstDropSlotOccupiesTheSpaceTheNamedCardVacates() =
+        onTheBoard("aFirstDropSlotOccupiesTheSpaceTheNamedCardVacates") { _, page ->
+            val moves = page.recordMoveBodies()
+            val first = page.card("local:1")
+            val firstTop = first.top()
+
+            page.pressHandleOf("local:7")
+            page.travelTo(first.topHalf())
+
+            val slot = page.locator(".board-drop-slot")
+            assertThat(slot).hasCount(1)
+            assertThat(page.column("todo").locator(".board-drop-slot")).hasCount(1)
+            page.waitForPreviewToSettle()
+            assertClose(firstTop, slot.top(), "the first slot starts where the first card stood")
+            assertTrue(
+                slot.bottom() < first.top(),
+                "the first slot overlaps the card that should have shifted below it",
+            )
+
+            page.mouse().up()
+            page.waitForCondition { moves.snapshot().isNotEmpty() }
+            assertEquals(
+                listOf("{\"before\":\"local:1\"}"),
+                moves.snapshot(),
+                "the first card displaced by the slot is the neighbour sent by /move",
+            )
+            page.assertPreviewCleared("dropping above the first card")
+        }
+
+    @Test
+    fun theFirstCardsNoOpSlotUsesItsPreservedPlaceholder() =
+        onTheBoard("theFirstCardsNoOpSlotUsesItsPreservedPlaceholder") { _, page ->
+            val writes = page.recordTaskWrites()
+            val placeholderTop = page.card("local:1").top()
+
+            page.pressHandleOf("local:1")
+            page.travelTo(page.card("local:2").topHalf())
+
+            val slot = page.locator(".board-drop-slot")
+            assertThat(slot).hasCount(1)
+            page.waitForPreviewToSettle()
+            assertClose(placeholderTop, slot.top(), "the no-op slot stays on the first card's placeholder")
+            page.assertNoInFlowTransforms("previewing the first card in its existing position")
+            assertTrue(
+                slot.bottom() < page.card("local:2").top(),
+                "the no-op slot was placed over the first other card instead of the placeholder",
+            )
+
+            page.mouse().up()
+            page.assertPreviewCleared("releasing the first card in its existing position")
+            assertEquals(emptyList<String>(), writes.snapshot(), "releasing onto the existing slot writes nothing")
         }
 
     @Test
@@ -149,17 +237,27 @@ class BoardTest {
             val writes = page.recordTaskWrites()
             page.watchPointerIds()
 
-            page.pressHandleOf("local:1")
-            page.travelTo(page.column("in_progress").centre())
+            page.pressHandleOf("local:2")
+            page.travelTo(page.card("local:6").topHalf())
             assertThat(page.column("in_progress")).hasClass(DROP_TARGET_CLASS)
+            assertThat(page.locator(".board-drop-slot")).hasCount(1)
+            assertTrue(
+                page.card("local:6").inlineTranslateY() > 0,
+                "the destination card below the insertion point did not open a positive slot",
+            )
+            assertTrue(
+                page.card("local:3").inlineTranslateY() < 0,
+                "the source card below the dragged card did not close the old slot",
+            )
 
             val pointerId = page.lastPointerDownId()
-            page.handleOf("local:1").dispatchEvent("pointercancel", mapOf("pointerId" to pointerId))
+            page.handleOf("local:2").dispatchEvent("pointercancel", mapOf("pointerId" to pointerId))
             page.mouse().up()
 
             assertThat(page.locator(".task-card.is-dragging")).hasCount(0)
             assertThat(page.locator(".board-drop-target")).hasCount(0)
-            assertThat(page.card("local:1")).hasCount(1)
+            assertThat(page.card("local:2")).hasCount(1)
+            page.assertPreviewCleared("cancelling a drag with both source and destination shifts")
             assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))
 
             page.dragToBottomOf("local:1", "in_progress")
@@ -184,6 +282,7 @@ class BoardTest {
                 writes.snapshot(),
                 "the PATCH carries the state, the move carries the rank, and the PATCH goes first",
             )
+            page.assertPreviewCleared("completing a cross-column drop")
             assertThat(page.column("in_progress").locator(".task-card").last())
                 .hasAttribute("data-ref", "local:1")
             assertThat(page.column("in_progress").locator(".task-card")).hasCount(3)
@@ -314,6 +413,22 @@ class BoardTest {
     private fun Locator.bottomInside(): Pair<Double, Double> =
         boundingBox().let { it.x + it.width / 2 to it.y + it.height - 16 }
 
+    private fun Locator.topHalf(): Pair<Double, Double> =
+        boundingBox().let { it.x + it.width / 2 to it.y + it.height / 4 }
+
+    private fun Locator.top(): Double = boundingBox().y
+
+    private fun Locator.bottom(): Double = boundingBox().let { it.y + it.height }
+
+    private fun Locator.inlineTranslateY(): Double = (evaluate(
+        """
+        el => {
+          const match = el.style.transform.match(/translateY\((-?[0-9.]+)px\)/);
+          return match ? Number(match[1]) : 0;
+        }
+        """.trimIndent(),
+    ) as Number).toDouble()
+
     private fun Page.pressHandleOf(ref: String) {
         val start = handleOf(ref).centre()
         mouse().move(start.first, start.second)
@@ -338,6 +453,45 @@ class BoardTest {
     }
 
 
+    private fun Page.waitForPreviewToSettle() {
+        waitForFunction(
+            "() => { const board = document.querySelector('.board'); return !!board && " +
+                "board.getAnimations({ subtree: true }).every((animation) => animation.playState === 'finished'); }",
+        )
+    }
+
+    private fun Page.assertNoInFlowTransforms(where: String) {
+        waitForPreviewToSettle()
+        val transforms = locator(".board-column .task-card")
+            .evaluateAll("cards => cards.map((card) => getComputedStyle(card).transform)") as List<*>
+        assertTrue(
+            transforms.all { it == "none" },
+            "$where left transformed in-flow cards behind: $transforms",
+        )
+    }
+
+    private fun Page.assertPreviewCleared(where: String) {
+        assertThat(locator(".board-drop-slot")).hasCount(0)
+        assertNoInFlowTransforms(where)
+    }
+
+    private fun Page.assertBetween(slot: Locator, previous: Locator, following: Locator, what: String) {
+        val previousBottom = previous.bottom()
+        val slotTop = slot.top()
+        val slotBottom = slot.bottom()
+        val followingTop = following.top()
+        assertTrue(
+            slotTop > previousBottom && slotBottom < followingTop,
+            "$what is not between its neighbours: previous bottom $previousBottom, " +
+                "slot $slotTop..$slotBottom, following top $followingTop",
+        )
+    }
+
+    private fun assertClose(expected: Double, actual: Double, message: String) {
+        assertTrue(abs(expected - actual) <= 1.0, "$message — expected ≈$expected, measured $actual")
+    }
+
+
     private fun Page.recordTaskWrites(): MutableList<String> {
         val calls = Collections.synchronizedList(mutableListOf<String>())
         onRequest { request ->
@@ -347,6 +501,17 @@ class BoardTest {
             }
         }
         return calls
+    }
+
+    private fun Page.recordMoveBodies(): MutableList<String> {
+        val bodies = Collections.synchronizedList(mutableListOf<String>())
+        onRequest { request ->
+            val url = request.url()
+            if (request.method() == "POST" && url.contains("$API_PREFIX/tasks/") && url.endsWith("/move")) {
+                bodies.add(request.postData().orEmpty())
+            }
+        }
+        return bodies
     }
 
     private fun MutableList<String>.snapshot(): List<String> = synchronized(this) { toList() }

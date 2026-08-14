@@ -789,7 +789,7 @@ private val BOARD_VOCABULARY: Set<String> = setOf(
     "board", "board-head", "board-identity", "board-project", "board-project-path",
     "board-new-task",
     "board-columns", "board-column", "board-column-head", "board-column-switch",
-    "board-show-all-done", "board-drop-target",
+    "board-show-all-done", "board-drop-target", "board-drop-slot",
     "task-card", "task-card-handle", "task-card-title", "task-card-meta",
     "task-blocked", "task-dep-count", "task-sessions", "task-session-dot",
     "task-detail", "task-detail-head", "task-detail-body", "task-deps",

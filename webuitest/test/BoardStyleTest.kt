@@ -165,21 +165,39 @@ class BoardStyleTest {
             page.mouse().down()
             page.mouse().move(grip.centerX + 20, grip.centerY + 2)
 
-            val card = page.locator(".task-card[data-ref='local:1']")
-            assertThat(card).hasClass(Regex(".*\\bis-dragging\\b.*").toPattern())
-            assertTrue(
-                card.number("el => parseFloat(getComputedStyle(el).opacity)") < 1.0,
-                "the dragged card lifts off the column",
+            val placeholder = page.locator(".task-card[data-ref='local:1']")
+            assertThat(placeholder).hasClass(Regex(".*\\bis-dragging\\b.*").toPattern())
+            assertEquals(
+                "hidden",
+                placeholder.style("visibility"),
+                "the original card preserves its layout slot without remaining visible",
             )
-            assertThat(card).hasCSS("border-top-color", page.resolved("var(--accent)"))
+            val lifted = page.locator(".task-card.is-lifted")
+            assertThat(lifted).hasCount(1)
+            assertThat(lifted).isVisible()
+            assertThat(lifted).hasAttribute("aria-hidden", "true")
+            assertEquals(null, lifted.getAttribute("data-ref"), "the lifted copy must not duplicate card locators")
+            assertEquals("fixed", lifted.style("position"), "the dragged card lifts out of the scrolling column")
+            assertEquals("none", lifted.style("pointer-events"), "the lifted copy cannot intercept its own hit test")
+            assertNotEquals("none", lifted.style("box-shadow"), "the lifted copy carries the drag elevation")
+            assertThat(lifted).hasCSS("border-top-color", page.resolved("var(--accent)"))
+            assertEquals(
+                "none",
+                lifted.style("transition-property"),
+                "the lifted copy tracks the pointer without a transform transition",
+            )
 
             val tint = linkedMapOf<String, String>()
             val tintBorder = linkedMapOf<String, String>()
+            val slotBorder = linkedMapOf<String, String>()
             for (state in listOf("in_progress", "review")) {
                 val section = column(page, state)
                 val box = section.rect()
                 page.mouse().move(box.centerX, box.top + 12)
                 assertThat(page.locator(".board-column[data-state='$state'].board-drop-target")).hasCount(1)
+                val slot = section.locator(".board-drop-slot")
+                assertThat(page.locator(".board-drop-slot")).hasCount(1)
+                assertThat(slot).hasCount(1)
                 page.paintSettled(columnSelector(state))
 
                 val fill = section.style("background-color")
@@ -191,6 +209,13 @@ class BoardStyleTest {
                 )
                 tint[state] = fill
                 tintBorder[state] = section.style("border-top-color")
+                assertEquals("dashed", slot.style("border-top-style"), "the `$state` slot is an outline")
+                slotBorder[state] = slot.style("border-top-color")
+                assertEquals(
+                    section.resolvedInside("color-mix(in srgb, var(--column-accent) 70%, transparent)"),
+                    slotBorder[state],
+                    "the `$state` slot border derives from that column's accent",
+                )
             }
             assertNotEquals(
                 tint["in_progress"],
@@ -202,10 +227,16 @@ class BoardStyleTest {
                 tintBorder["in_progress"],
                 "the drop target's border moves with its fill",
             )
+            assertNotEquals(
+                slotBorder["in_progress"],
+                slotBorder["review"],
+                "the slot border derives from each column's own accent, not from one drag colour",
+            )
 
             page.mouse().move(4.0, 4.0)
             page.mouse().up()
             assertThat(page.locator(".board-drop-target")).hasCount(0)
+            assertThat(page.locator(".board-drop-slot")).hasCount(0)
             for (state in BOARD_STATES) {
                 page.paintSettled(columnSelector(state))
                 assertEquals(

@@ -54,3 +54,11 @@ archive completed plans.
   not an ordering guarantee.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
+- A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot
+  as an invisible in-flow placeholder, and the lifted copy is `position: fixed` to escape the column's
+  overflow. Hit-testing therefore reads `offsetTop`/`offsetHeight`, which ignore transforms;
+  `getBoundingClientRect` would feed shifted geometry back under the pointer and oscillate the target.
+- `BOARD_VOCABULARY` in `test/transport/WebUiServingTest.kt` closes the board's class vocabulary in three
+  directions: every `board`/`board-*`/`task-*` token the components emit is declared there, every owned
+  word is emitted, and every word carries a rule in `style.css`. Register new structural classes; pure
+  state modifiers stay unprefixed and outside the scan.
