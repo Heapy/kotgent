@@ -1424,14 +1424,21 @@ class TaskWriteRoutesTest {
                 .minByOrNull { it.position }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
+        override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoWhen(ref) { true }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            startIfTodoWhen(ref) { projects[it]?.archived != true }
+
+        private suspend fun startIfTodoWhen(
+            ref: TaskRef,
+            acceptsProject: (ProjectId) -> Boolean,
+        ): Boolean = mutex.withLock {
             val existing = entries[ref] ?: return@withLock false
             if (existing.state != TaskState.todo) return@withLock false
+            if (!acceptsProject(existing.project)) return@withLock false
             entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
             true
         }
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodo(ref)
 
         override suspend fun transition(
             ref: TaskRef,

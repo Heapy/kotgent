@@ -492,10 +492,18 @@ class TaskEventsTest {
             lock.withLock { edges[ref]?.toList().orEmpty() }
 
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean {
+        override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoWhen(ref) { true }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            startIfTodoWhen(ref) { projects[it]?.archived != true }
+
+        private suspend fun startIfTodoWhen(
+            ref: TaskRef,
+            acceptsProject: (ProjectId) -> Boolean,
+        ): Boolean {
             val started = lock.withLock {
                 val existing = entries[ref]
-                if (existing == null || existing.state != TaskState.todo) {
+                if (existing == null || existing.state != TaskState.todo || !acceptsProject(existing.project)) {
                     null
                 } else {
                     existing.copy(state = TaskState.in_progress, rev = ++rev).also { entries[ref] = it }
@@ -504,8 +512,6 @@ class TaskEventsTest {
             updates.emit(TaskUpdate(ref, started, started.rev))
             return true
         }
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodo(ref)
 
         override suspend fun transition(
             ref: TaskRef,

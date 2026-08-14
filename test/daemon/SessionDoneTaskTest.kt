@@ -320,6 +320,39 @@ class SessionDoneTaskTest {
         }
     }
 
+    @Test
+    fun linkNextRefusesASelectedCardWhenItsProjectIsTombstonedBeforeStart() = runBlocking {
+        withTimeout(20_000) {
+            val f = Fixture()
+            val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.todo) }
+            val mgr = managerOver(f, tasks)
+            val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
+
+            mgr.start("claude", "/tmp")
+            f.journal.clear()
+            tasks.afterNextCandidate = {
+                tasks.afterNextCandidate = null
+                tasks.tombstone(alpha)
+            }
+
+            val taken = service.linkNext(worker, alpha)
+            val trace = f.journal.toList()
+
+            assertNull(taken, "a card selected before its project tombstone must not be handed out")
+            assertEquals(TaskState.todo, tasks.entries.getValue(ref).state, "the refused card stays todo")
+            assertNull(f.store.getSession(worker)!!.taskRef, "the session stays unlinked")
+            assertEquals(
+                listOf(
+                    "tasks.nextCandidate($alpha)",
+                    "tasks.startIfTodoInLiveProject(${ref.value})",
+                    "tasks.nextCandidate($alpha)",
+                ),
+                trace,
+                "the automatic path records and retries the tombstone-aware operation",
+            )
+        }
+    }
+
 
     @Test
     fun doneOnAnUnlinkedSessionNeverConsultsTheTaskStore() = runBlocking {
@@ -430,9 +463,11 @@ class SessionDoneTaskTest {
         val activity: MutableList<TaskActivityEntry> = mutableListOf()
 
         var duringTransition: (suspend () -> Unit)? = null
+        var afterNextCandidate: (suspend () -> Unit)? = null
 
         private var rev = 0L
         private var activityId = 0L
+        private val tombstonedProjects: MutableSet<ProjectId> = mutableSetOf()
 
         fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double = 1.0) {
             entries[ref] = BacklogEntry(
@@ -445,6 +480,10 @@ class SessionDoneTaskTest {
                 updatedAt = 1_000L,
                 rev = ++rev,
             )
+        }
+
+        fun tombstone(project: ProjectId) {
+            tombstonedProjects += project
         }
 
         override val id: String = TaskRef.LOCAL_TRACKER
@@ -497,20 +536,32 @@ class SessionDoneTaskTest {
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
             journal += "tasks.nextCandidate($project)"
-            return entries.values
+            if (project in tombstonedProjects) return null
+            val candidate = entries.values
                 .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
                 .minByOrNull { it.position }
+            afterNextCandidate?.invoke()
+            return candidate
         }
 
-        override suspend fun startIfTodo(ref: TaskRef): Boolean {
-            journal += "tasks.startIfTodo(${ref.value})"
+        override suspend fun startIfTodo(ref: TaskRef): Boolean =
+            startIfTodoWhen(ref, "startIfTodo") { true }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            startIfTodoWhen(ref, "startIfTodoInLiveProject") { it !in tombstonedProjects }
+
+        private fun startIfTodoWhen(
+            ref: TaskRef,
+            operation: String,
+            acceptsProject: (ProjectId) -> Boolean,
+        ): Boolean {
+            journal += "tasks.$operation(${ref.value})"
             val existing = entries[ref] ?: return false
             if (existing.state != TaskState.todo) return false
+            if (!acceptsProject(existing.project)) return false
             entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
             return true
         }
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodo(ref)
 
         override suspend fun list(project: ProjectId): List<Task> = unused("list")
         override suspend fun get(ref: TaskRef): Task? = unused("get")
