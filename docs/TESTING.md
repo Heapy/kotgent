@@ -266,6 +266,14 @@ Real-device release checklist:
 
 - On iOS and Android, long-press a board card's title and linked-session name; neither a text-selection
   menu nor a link callout should appear, while a tap should still open the task or session.
+- Both project dialogs on a phone and a tablet: the swipe handle, the compensated padding, and backdrop
+  dismissal. While a delete or restore request runs, swipe and backdrop dismissal must stop and Cancel and
+  the header close button must stay disabled.
+- The platform close request against a busy project dialog. The busy state sets `closedby="none"`, so the
+  dialog must stay open wherever that attribute is supported — Chrome and Edge 134+, Firefox 141+ — and
+  Safari does not support it yet, so on an iPhone the system back gesture still dismisses. Where it
+  dismisses, the outcome of the still-running mutation must appear in the status line instead.
+- An installed PWA reaching the board and deleting a project from the palette button rather than `⌘K`.
 
 ### Static assets and source-shape checks
 
