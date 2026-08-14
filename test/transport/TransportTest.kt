@@ -15,6 +15,7 @@ import io.kotgent.core.Seq
 import io.kotgent.core.SessionState
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.TaskRef
 import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
@@ -1131,7 +1132,7 @@ class TransportTest {
     @Test
     fun fakeEventStoreMirrorsTheRealStoresCacheStateAuthority() = runBlocking {
         withTimeout(15_000) {
-            suspend fun cacheAuthorityAnswers(store: EventStore): List<Any?> {
+            suspend fun cacheAuthorityAnswers(store: EventStore): CacheAuthorityAnswers {
                 val dead = SessionId("contrct1")
                 store.upsertSession(contractMeta(dead, SessionState.resumable))
                 store.append(dead, AgentEvent.SessionBound(providerId), EventSource.system)
@@ -1143,18 +1144,106 @@ class TransportTest {
                 store.append(alive, AgentEvent.TurnCompleted, EventSource.hook)
                 val afterAliveAppends = store.getSession(alive)!!
 
-                return listOf(
-                    afterDeadAppend.state, afterDeadAppend.providerSessionId, afterDeadAppend.lastSeq,
-                    afterAliveAppends.state, afterAliveAppends.lastSeq,
-                )
+                val updates = Channel<SessionUpdate>(Channel.UNLIMITED)
+                val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                    store.reliableSessionUpdates.collect { updates.send(it) }
+                }
+                return try {
+                    store.setTaskRef(alive, TaskRef("local:contract"))
+                    val derivedUpdate = updates.receive()
+                    val afterDerivedWrite = store.getSession(alive)!!
+
+                    store.updateSessionState(
+                        alive,
+                        SessionState.stopped,
+                        EventSource.system,
+                        paneId = null,
+                        updatedAt = 1_700_000_010_000L,
+                    )
+                    val livenessUpdate = updates.receive()
+                    val afterLivenessWrite = store.getSession(alive)!!
+
+                    CacheAuthorityAnswers(
+                        afterDeadAppend = afterDeadAppend.toCacheAuthorityRow(),
+                        afterAliveAppends = afterAliveAppends.toCacheAuthorityRow(),
+                        afterDerivedWrite = afterDerivedWrite.toCacheAuthorityRow(),
+                        afterLivenessWrite = afterLivenessWrite.toCacheAuthorityRow(),
+                        derivedUpdate = derivedUpdate,
+                        livenessUpdate = livenessUpdate,
+                    )
+                } finally {
+                    collector.cancel()
+                }
             }
 
+            val sqlite = cacheAuthorityAnswers(SqliteEventStore.inMemory(now = increasingClock()))
+            val fake = cacheAuthorityAnswers(FakeEventStore(now = increasingClock()))
+
+            assertCacheAuthorityRevisions("SqliteEventStore", sqlite)
+            assertCacheAuthorityRevisions("FakeEventStore", fake)
             assertEquals(
-                cacheAuthorityAnswers(SqliteEventStore.inMemory(now = increasingClock())),
-                cacheAuthorityAnswers(FakeEventStore(now = increasingClock())),
-                "the harness fake must answer append/upsert exactly like SqliteEventStore",
+                sqlite.withoutAbsoluteRevisions(),
+                fake.withoutAbsoluteRevisions(),
+                "the harness fake must preserve cache fields and emissions like SqliteEventStore",
             )
         }
+    }
+
+    private data class CacheAuthorityRow(
+        val state: SessionState,
+        val providerSessionId: ProviderSessionId?,
+        val lastSeq: Seq,
+        val updatedAt: Long,
+        val rev: Long,
+        val taskRef: TaskRef?,
+    )
+
+    private data class CacheAuthorityAnswers(
+        val afterDeadAppend: CacheAuthorityRow,
+        val afterAliveAppends: CacheAuthorityRow,
+        val afterDerivedWrite: CacheAuthorityRow,
+        val afterLivenessWrite: CacheAuthorityRow,
+        val derivedUpdate: SessionUpdate,
+        val livenessUpdate: SessionUpdate,
+    ) {
+        fun withoutAbsoluteRevisions() = copy(
+            afterDeadAppend = afterDeadAppend.copy(rev = 0),
+            afterAliveAppends = afterAliveAppends.copy(rev = 0),
+            afterDerivedWrite = afterDerivedWrite.copy(rev = 0),
+            afterLivenessWrite = afterLivenessWrite.copy(rev = 0),
+            derivedUpdate = derivedUpdate.copy(rev = 0),
+            livenessUpdate = livenessUpdate.copy(rev = 0),
+        )
+    }
+
+    private fun SessionMeta.toCacheAuthorityRow() = CacheAuthorityRow(
+        state = state,
+        providerSessionId = providerSessionId,
+        lastSeq = lastSeq,
+        updatedAt = updatedAt,
+        rev = rev,
+        taskRef = taskRef,
+    )
+
+    private fun assertCacheAuthorityRevisions(storeName: String, answers: CacheAuthorityAnswers) {
+        assertTrue(
+            answers.afterDerivedWrite.rev > answers.afterAliveAppends.rev,
+            "$storeName must advance rev for a derived write",
+        )
+        assertTrue(
+            answers.afterLivenessWrite.rev > answers.afterDerivedWrite.rev,
+            "$storeName must advance rev for a liveness write",
+        )
+        assertEquals(
+            answers.afterDerivedWrite.rev,
+            answers.derivedUpdate.rev,
+            "$storeName must emit the derived write's committed rev",
+        )
+        assertEquals(
+            answers.afterLivenessWrite.rev,
+            answers.livenessUpdate.rev,
+            "$storeName must emit the liveness write's committed rev",
+        )
     }
 
     @Test
