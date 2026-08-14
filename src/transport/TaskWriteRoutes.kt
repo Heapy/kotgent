@@ -246,6 +246,11 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
         val owner = resolveProject(fs, canonical)
         // Adopt the nearest existing project before considering a new root-level project file.
         if (owner != null) {
+            // Only naming the directory that retains the project file explicitly restores its tombstone.
+            if (routing.tasks.project(owner.id)?.archived == true && canonical != owner.root) {
+                fail(HttpStatusCode.BadRequest, ArchivedProjectException(owner.id))
+                return@post
+            }
             // Adoption explicitly restores first, but a delete that wins before registration stays authoritative.
             routing.tasks.setProjectArchived(owner.id, false)
             if (routing.tasks.upsertProject(owner.id, owner.name, owner.root) == ProjectRegistration.refusedArchived) {

@@ -928,6 +928,47 @@ class TaskWriteRoutesTest {
     }
 
     @Test
+    fun postProjectsRefusesToRestoreADeletedProjectFromADescendantPath() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/sub")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+
+        val resp = env.post("/projects", """{"path":"/repo/sub"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("was deleted"), resp.bodyAsText())
+        assertEquals(
+            ProjectRecord(alpha, "deleted name", "/old/checkout", 0L, archived = true),
+            env.tasks.snapshotProjects()[alpha],
+            "adopting a descendant must not clear the tombstone or rewrite the archived project's identity",
+        )
+        assertTrue(env.tasks.listProjects().isEmpty(), "the deleted ancestor must stay out of live selectors")
+        assertEquals(listOf(alpha), env.tasks.listProjects(archived = true).map { it.id })
+        assertTrue(env.writer.calls.isEmpty(), "a refused ancestor adoption must not write a competing project file")
+    }
+
+    @Test
+    fun postProjectsRefusesToRestoreADeletedProjectFromOneOfItsLinkedWorktrees() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.files["/wt/feature/.git"] = "gitdir: /repo/.git/worktrees/feature\n"
+        env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+
+        val resp = env.post("/projects", """{"path":"/wt/feature"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("was deleted"), resp.bodyAsText())
+        assertEquals(
+            ProjectRecord(alpha, "deleted name", "/old/checkout", 0L, archived = true),
+            env.tasks.snapshotProjects()[alpha],
+            "a worktree carries no project file of its own, so naming it is not the explicit re-adoption",
+        )
+        assertTrue(env.writer.calls.isEmpty(), "and nothing is written into the main checkout either")
+    }
+
+    @Test
     fun postProjectsAdoptingADeletedProjectsDirectoryBringsItBack() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git")
         env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
