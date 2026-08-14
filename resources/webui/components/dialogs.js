@@ -656,7 +656,7 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
             <p>Takes it out of every selector. Nothing on disk is touched.</p>
           </div>
           <button id="delete-project-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+                  aria-label="Close" disabled=${busy} onClick=${onClose}>×</button>
         </div>
 
         <p class="dialog-subject">
@@ -735,7 +735,7 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
             <p>Clears the delete mark. The backlog comes back with it.</p>
           </div>
           <button id="restore-project-close" class="icon-button" type="button"
-                  aria-label="Close" onClick=${onClose}>×</button>
+                  aria-label="Close" disabled=${!!busyId} onClick=${onClose}>×</button>
         </div>
 
         ${restoreProjectBody(state, busyId, restore, load)}

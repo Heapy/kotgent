@@ -59,6 +59,7 @@ import io.ktor.websocket.readText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -66,6 +67,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
@@ -1146,11 +1148,62 @@ class TransportTest {
                     afterAliveAppends.state, afterAliveAppends.lastSeq,
                 )
             }
+
             assertEquals(
-                cacheAuthorityAnswers(SqliteEventStore.inMemory(now = { 1L })),
-                cacheAuthorityAnswers(FakeEventStore(now = { 1L })),
+                cacheAuthorityAnswers(SqliteEventStore.inMemory(now = increasingClock())),
+                cacheAuthorityAnswers(FakeEventStore(now = increasingClock())),
                 "the harness fake must answer append/upsert exactly like SqliteEventStore",
             )
+        }
+    }
+
+    @Test
+    fun theFakeEventStoreDefaultClockMovesAppendsPastRealisticSeedsAndKeepsEmissionsMonotonic() = runBlocking {
+        withTimeout(15_000) {
+            val store = FakeEventStore()
+            val older = SessionId("clock001")
+            val newer = SessionId("clock002")
+            val olderSeed = 1_700_000_000_001L
+            val newerSeed = 1_700_000_000_002L
+            store.upsertSession(
+                contractMeta(older, SessionState.running).copy(createdAt = olderSeed, updatedAt = olderSeed),
+            )
+            store.upsertSession(
+                contractMeta(newer, SessionState.running).copy(createdAt = newerSeed, updatedAt = newerSeed),
+            )
+
+            val updates = Channel<SessionUpdate>(Channel.UNLIMITED)
+            val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                store.reliableSessionUpdates.collect { updates.send(it) }
+            }
+
+            store.append(older, AgentEvent.TurnStarted, EventSource.hook)
+            val first = updates.receive()
+            store.append(older, AgentEvent.ToolCall("Read"), EventSource.hook)
+            val second = updates.receive()
+            collector.cancel()
+
+            assertTrue(
+                first.updatedAt > newerSeed,
+                "the default clock puts new activity after realistic seeded rows; a tiny stamp reverses recency",
+            )
+            assertTrue(
+                second.updatedAt > first.updatedAt,
+                "successive emitted activity stamps increase; a constant default must fail here",
+            )
+            assertEquals(
+                second.updatedAt,
+                store.getSession(older)!!.updatedAt,
+                "the emitted stamp is the same activity key persisted on the session row",
+            )
+        }
+    }
+
+    private fun increasingClock(): () -> Long {
+        var stamp = 1_700_000_000_000L
+        return {
+            stamp += 1_000L
+            stamp
         }
     }
 
@@ -1469,7 +1522,7 @@ class TransportTest {
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
         withTimeout(40_000) {
-            val store = FakeEventStore(now = { 1L })
+            val store = FakeEventStore()
             val tmux = FakeTmux()
             val registry = PaneRegistry()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

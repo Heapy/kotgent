@@ -606,7 +606,7 @@ class TaskStoreTest {
         assertTrue(f.store.setProjectArchived(alpha, true), "the delete lands after the selection")
 
         assertFalse(
-            f.store.startIfTodo(first, requireLiveProject = true),
+            f.store.startIfTodoInLiveProject(first),
             "the tombstone is read by the same statement that WRITES, so the start matches zero rows — " +
                 "which linkNext's loop already treats as 'somebody else took it, re-query'",
         )
@@ -618,7 +618,7 @@ class TaskStoreTest {
         assertNull(f.store.nextCandidate(alpha), "the re-query then finds nothing eligible at all")
 
         assertTrue(f.store.setProjectArchived(alpha, false))
-        assertTrue(f.store.startIfTodo(first, requireLiveProject = true), "restored, selection resumes")
+        assertTrue(f.store.startIfTodoInLiveProject(first), "restored, selection resumes")
     }
 
     @Test
@@ -639,7 +639,7 @@ class TaskStoreTest {
         f.store.create(alpha, "no project row anywhere", "")
 
         assertNull(f.store.project(alpha), "nothing registered this project")
-        assertTrue(f.store.startIfTodo(first, requireLiveProject = true))
+        assertTrue(f.store.startIfTodoInLiveProject(first))
     }
 
     @Test

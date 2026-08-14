@@ -240,6 +240,9 @@ function App() {
   const reattachRequestRef = useRef(null);
   // Foregrounding or event-socket recovery grants one reattach attempt.
   const reattachAvailableRef = useRef(false);
+  // Project rows have no revision. Serialize refreshes and discard a response once a later read is requested.
+  const projectRefreshRef = useRef({ requested: 0, settled: 0, running: false, waiters: [] });
+  const projectRefreshStartedRef = useRef(false);
 
   // Capture before xterm/forms; KeyboardEvent.code keeps the shortcut physical across layouts.
   useEffect(() => {
@@ -333,22 +336,66 @@ function App() {
 
   const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
 
-  // Project names are not sent over /events, so refresh them on mount and board entry.
-  const reloadProjects = useCallback(async () => {
-    try {
-      const response = await fetchProjects();
-      const rows = Array.isArray(response)
-        ? response
-        : (response && Array.isArray(response.projects) ? response.projects : []);
-      setProjects(rows);
-      return rows;
-    } catch (e) {
-      say("Could not load projects: " + errorMessage(e), true);
-      return null;
+  const reloadProjects = useCallback((reportFailure = true) => {
+    const refresh = projectRefreshRef.current;
+    const request = ++refresh.requested;
+    const result = new Promise((resolve) => {
+      refresh.waiters.push({ request: request, reportFailure: reportFailure, resolve: resolve });
+    });
+
+    if (!refresh.running) {
+      refresh.running = true;
+      void (async () => {
+        while (refresh.settled < refresh.requested) {
+          const reading = refresh.requested;
+          let rows = null;
+          let failure = null;
+          try {
+            const response = await fetchProjects();
+            rows = Array.isArray(response)
+              ? response
+              : (response && Array.isArray(response.projects) ? response.projects : []);
+          } catch (e) {
+            failure = e;
+          }
+
+          // A later request represents a later observation. Never apply or report this older response.
+          if (reading !== refresh.requested) continue;
+          const ready = refresh.waiters.filter((waiter) => waiter.request <= reading);
+          refresh.waiters = refresh.waiters.filter((waiter) => waiter.request > reading);
+          if (failure) {
+            if (ready.some((waiter) => waiter.reportFailure)) {
+              say("Could not load projects: " + errorMessage(failure), true);
+            }
+          } else {
+            setProjects(rows);
+          }
+          refresh.settled = reading;
+          for (const waiter of ready) waiter.resolve(failure ? null : rows);
+        }
+        refresh.running = false;
+      })();
     }
+    return result;
   }, [say]);
 
-  useEffect(() => { reloadProjects(); }, [reloadProjects]);
+  // Project changes have no event frame. Refresh on mount, board entry and foregrounding.
+  useEffect(() => {
+    const first = !projectRefreshStartedRef.current;
+    projectRefreshStartedRef.current = true;
+    if (first || onBoard) reloadProjects();
+    if (!onBoard) return undefined;
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") reloadProjects(false);
+    };
+    window.addEventListener("focus", refreshIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.removeEventListener("focus", refreshIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [onBoard, reloadProjects]);
 
   useEffect(() => {
     if (projects.length === 0) return;
@@ -363,9 +410,19 @@ function App() {
 
   const projectCreated = useCallback(async (created) => {
     const rows = await reloadProjects();
-    if (created && created.id && rows && rows.some((project) => project.id === created.id)) {
-      setProjectId(created.id);
+    const label = (created && created.name) || "the project";
+    if (created && created.archived === true) {
+      throw new Error("Project " + label + " was deleted again while it was being adopted. " +
+        "Restore it before trying again.");
     }
+    if (!rows) {
+      throw new Error("Project " + label + " may be ready, but the live project list could not be re-read. " +
+        "Reload the page before using it.");
+    }
+    if (!created || !created.id || !rows.some((project) => project.id === created.id)) {
+      throw new Error("Project " + label + " is no longer live. Restore it before trying again.");
+    }
+    setProjectId(created.id);
   }, [reloadProjects]);
 
   const applyServerPreferences = useCallback((raw) => {
@@ -396,11 +453,19 @@ function App() {
       return;
     }
     const rows = await reloadProjects();
+    const label = (changed && changed.name) || id;
+    if (!changed || typeof changed.archived !== "boolean") {
+      throw new Error("The daemon did not confirm whether " + label + " is deleted. Reload and try again.");
+    }
+    if (changed.archived !== archived) {
+      throw new Error(archived
+        ? label + " was restored again while it was being deleted. Delete it again if needed."
+        : label + " was deleted again while it was being restored. Restore it again.");
+    }
     // Restore selects its row; delete only repairs a selection that is no longer live.
     if (rows && rows.length === 0) setProjectId(null);
     if (rows && !archived && rows.some((project) => project.id === id)) setProjectId(id);
     closeDialogFrom(submittedDialog);
-    const label = (changed && changed.name) || id;
     const done = archived
       ? "Deleted " + label + ". Restore brings it back with its backlog."
       : "Restored " + label + ".";
@@ -451,10 +516,6 @@ function App() {
     if (deepLinkRef.current === routeSessionId) deepLinkRef.current = null;
     showSession(target);
   }, [routeSessionId, sessions, activeId, showSession]);
-
-  useEffect(() => {
-    if (onBoard) reloadProjects();
-  }, [onBoard, reloadProjects]);
 
   // Apply a task route's project once per ref so later manual project selection remains authoritative.
   const appliedTaskProjectRef = useRef(null);

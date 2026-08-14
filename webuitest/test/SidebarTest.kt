@@ -289,6 +289,8 @@ class SidebarTest {
 
             doneFolderHead(page, "/a").locator(".group-toggle").click()
 
+            assertThat(doneFolderHead(page, "/a").locator(".group-toggle"))
+                .hasAttribute("aria-expanded", "false")
             assertSidebarTree(
                 page,
                 """
@@ -349,6 +351,7 @@ class SidebarTest {
             harness.send("done m-deep ${SEED_EPOCH_MILLIS + 3_000}")
 
             page.locator("#show-done-toggle").click()
+            assertThat(page.locator("#done-count")).hasText("3")
             assertSidebarTree(
                 page,
                 """

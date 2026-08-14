@@ -246,9 +246,12 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
         val owner = resolveProject(fs, canonical)
         // Adopt the nearest existing project before considering a new root-level project file.
         if (owner != null) {
-            // Adoption explicitly restores before registering; the response re-reads any racing delete.
+            // Adoption explicitly restores first, but a delete that wins before registration stays authoritative.
             routing.tasks.setProjectArchived(owner.id, false)
-            routing.tasks.upsertProject(owner.id, owner.name, owner.root)
+            if (routing.tasks.upsertProject(owner.id, owner.name, owner.root) == ProjectRegistration.refusedArchived) {
+                fail(HttpStatusCode.BadRequest, ArchivedProjectException(owner.id))
+                return@post
+            }
             respondProject(routing, owner.id)
             return@post
         }
@@ -260,8 +263,11 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
             fail(HttpStatusCode.BadRequest, e)
             return@post
         }
-        // resolveProject already proved the writer minted a new, unarchived identity.
-        routing.tasks.upsertProject(file.id, file.name, dir)
+        // The writer may adopt a file that appeared after resolution, so registration can still meet a tombstone.
+        if (routing.tasks.upsertProject(file.id, file.name, dir) == ProjectRegistration.refusedArchived) {
+            fail(HttpStatusCode.BadRequest, ArchivedProjectException(file.id))
+            return@post
+        }
         respondProject(routing, file.id)
     }
 

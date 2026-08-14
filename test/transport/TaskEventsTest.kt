@@ -492,7 +492,7 @@ class TaskEventsTest {
             lock.withLock { edges[ref]?.toList().orEmpty() }
 
 
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
+        override suspend fun startIfTodo(ref: TaskRef): Boolean {
             val started = lock.withLock {
                 val existing = entries[ref]
                 if (existing == null || existing.state != TaskState.todo) {
@@ -504,6 +504,8 @@ class TaskEventsTest {
             updates.emit(TaskUpdate(ref, started, started.rev))
             return true
         }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodo(ref)
 
         override suspend fun transition(
             ref: TaskRef,

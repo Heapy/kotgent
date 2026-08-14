@@ -190,7 +190,7 @@ present in the JSON, nulls included — a parser may rely on the key existing.
 | `task dep add\|rm <ref> --on R` | `BacklogEntryDto` — the **edited** entry, so `blocked` is readable |
 | `task delete <ref>` | `{"ref":"local:42","deleted":true}` |
 | `project list [--archived]` | array of `ProjectDto`; live projects, or the deleted ones with `--archived` |
-| `project init [<path>] [--name N]` | `ProjectDto` |
+| `project init [<path>] [--name N]` | `ProjectDto`; explicit create/adopt, which also clears an existing delete mark |
 | `project delete <uuid>` | `ProjectDto`, now `archived: true` |
 | `project restore <uuid>` | `ProjectDto`, now `archived: false` |
 | `start <agent> [cwd] --task <ref>` | `{"taskRef","cwd","cwdSource","session":SessionDto}` |
@@ -226,7 +226,9 @@ all. Every one of these exits `1`; exit `3` still means only "nothing eligible" 
 **Do not retry any of them.** Nothing about the environment changes on its own — the `.kotgent.json` that
 names the project is still on disk and is exactly what the daemon refuses to act on — and every way out is
 the human's call, so say in a comment that the project is deleted rather than restoring it, re-homing the
-task or picking another project unasked.
+task or picking another project unasked. **`project init` is a restore in this situation, not a workaround:**
+when the directory's retained `.kotgent.json` names the deleted project, init explicitly adopts it again and
+clears the delete mark. An agent must not run it unless the human asked to restore or re-adopt that project.
 
 What stays open for a deleted project is everything that addresses ONE existing card: `task show`,
 `task list`, `task comment`, `task review`, `task done`, `task claim` and `task unlink` all keep working,

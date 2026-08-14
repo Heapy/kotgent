@@ -963,6 +963,53 @@ class TaskWriteRoutesTest {
     }
 
     @Test
+    fun postProjectsRefusesWhenADeleteWinsWhileAnExistingProjectIsBeingAdopted() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
+        assertTrue(env.tasks.setProjectArchived(alpha, true))
+        env.tasks.beforeUpsertProject = { id ->
+            assertEquals(alpha, id)
+            assertTrue(env.tasks.setProjectArchived(id, true), "the racing delete wins after POST clears the mark")
+        }
+
+        val resp = env.post("/projects", """{"path":"/repo"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("was deleted"), resp.bodyAsText())
+        assertTrue(resp.bodyAsText().contains("kotgent project restore ${alpha.value}"), resp.bodyAsText())
+        assertEquals(
+            ProjectRecord(alpha, "deleted name", "/old/checkout", 0L, archived = true),
+            env.tasks.snapshotProjects()[alpha],
+            "a refused registration must not overwrite the tombstoned row's name or last-seen path",
+        )
+        assertTrue(env.writer.calls.isEmpty(), "the race is in the adoption branch, which never invokes the writer")
+    }
+
+    @Test
+    fun postProjectsRefusesWhenTheWriterAdoptsAFileThatAppearedAfterResolution() = withTaskServer { env ->
+        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.writer.beforeEnsure = { dir, _ ->
+            env.fs.files["$dir/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+            env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
+            assertTrue(env.tasks.setProjectArchived(alpha, true))
+        }
+
+        val resp = env.post("/projects", """{"path":"/repo"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("was deleted"), resp.bodyAsText())
+        assertTrue(resp.bodyAsText().contains("kotgent project restore ${alpha.value}"), resp.bodyAsText())
+        assertEquals(listOf("/repo" to "repo"), env.writer.calls)
+        assertEquals(
+            ProjectRecord(alpha, "deleted name", "/old/checkout", 0L, archived = true),
+            env.tasks.snapshotProjects()[alpha],
+            "adopting a racing file must not resurrect or rewrite the project it identifies",
+        )
+        assertNull(env.tasks.snapshotProjects()[minted], "the writer adopted the racing uuid instead of minting one")
+    }
+
+    @Test
     fun postProjectsAdoptingALiveProjectIsUnchangedAndStaysIdempotent() = withTaskServer { env ->
         env.fs.dirs += setOf("/repo", "/repo/.git")
         env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
@@ -1320,6 +1367,9 @@ class TaskWriteRoutesTest {
         /** Runs outside the lock to expose the resolution/insert race. */
         var beforeCreate: (suspend () -> Unit)? = null
 
+        /** Runs outside the lock to expose POST /projects' restore/register race. */
+        var beforeUpsertProject: (suspend (ProjectId) -> Unit)? = null
+
         override suspend fun create(
             project: ProjectId,
             title: String,
@@ -1374,12 +1424,14 @@ class TaskWriteRoutesTest {
                 .minByOrNull { it.position }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = mutex.withLock {
+        override suspend fun startIfTodo(ref: TaskRef): Boolean = mutex.withLock {
             val existing = entries[ref] ?: return@withLock false
             if (existing.state != TaskState.todo) return@withLock false
             entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
             true
         }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodo(ref)
 
         override suspend fun transition(
             ref: TaskRef,
@@ -1480,8 +1532,9 @@ class TaskWriteRoutesTest {
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> =
             mutex.withLock { activity.filter { it.ref == ref } }
 
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
-            mutex.withLock {
+        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration {
+            beforeUpsertProject?.invoke(id)
+            return mutex.withLock {
                 val existing = projects[id]
                 if (existing != null && existing.archived) {
                     return@withLock ProjectRegistration.refusedArchived
@@ -1489,6 +1542,7 @@ class TaskWriteRoutesTest {
                 projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L, existing?.archived ?: false)
                 ProjectRegistration.registered
             }
+        }
 
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
             val existing = projects[id] ?: return@withLock false
@@ -1611,9 +1665,12 @@ class TaskWriteRoutesTest {
 
         val failOn: MutableSet<String> = mutableSetOf()
 
+        var beforeEnsure: (suspend (String, String) -> Unit)? = null
+
         override suspend fun ensureProjectFile(dir: String, name: String): ProjectFile {
             calls += dir to name
             if (dir in failOn) throw ProjectPathException(dir, "cannot write $PROJECT_FILE_NAME in '$dir'")
+            beforeEnsure?.invoke(dir, name)
             val path = "$dir/$PROJECT_FILE_NAME"
             fs.files[path]?.let { existing -> return parseProjectFile(existing) ?: ProjectFile(mint, name) }
             fs.files[path] = """{"id":"${mint.value}","name":"$name"}"""

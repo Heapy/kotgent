@@ -208,8 +208,8 @@ export function Board({
 
   const submitProject = useCallback(async (path, name) => {
     const created = await createProject(path, name);
-    setForm(null);
     if (onProjectCreated) await onProjectCreated(created);
+    setForm(null);
     say("Project " + ((created && created.name) || path) + " is ready.");
   }, [onProjectCreated, say]);
 

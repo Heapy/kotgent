@@ -93,8 +93,7 @@ class SqliteTaskStore private constructor(
             var refused = false
             db.transaction {
                 // Keep the tombstone check atomic with insertion so project deletion cannot race creation.
-                val archived = projects.selectProjectArchived(project.value).executeAsOneOrNull()
-                if (archived != null && archived != 0L) {
+                if (projectIsArchivedLocked(project)) {
                     refused = true
                     return@transaction
                 }
@@ -170,20 +169,23 @@ class SqliteTaskStore private constructor(
         mutex.withLock { dependencies.nextCandidateLocked(project) }
 
 
-    override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = mutex.withLock {
-        outbox.publishing { startIfTodoLocked(ref, requireLiveProject) }
+    override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoUsing(ref) { ts, rev ->
+        backlog.startIfTodo(ts, rev, ref.value).value > 0L
     }
 
-    private fun startIfTodoLocked(ref: TaskRef, requireLiveProject: Boolean): Boolean {
+    override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodoUsing(ref) { ts, rev ->
+        backlog.startIfTodoInLiveProject(ts, rev, ref.value).value > 0L
+    }
+
+    private suspend fun startIfTodoUsing(ref: TaskRef, update: (Long, Long) -> Boolean): Boolean =
+        mutex.withLock { outbox.publishing { startIfTodoLocked(ref, update) } }
+
+    private fun startIfTodoLocked(ref: TaskRef, update: (Long, Long) -> Boolean): Boolean {
         val ts = now()
         val rev = nextRev()
         var changed = false
         db.transaction {
-            changed = if (requireLiveProject) {
-                backlog.startIfTodoInLiveProject(ts, rev, ref.value).value > 0L
-            } else {
-                backlog.startIfTodo(ts, rev, ref.value).value > 0L
-            }
+            changed = update(ts, rev)
             if (!changed) return@transaction
             dependencies.entryLocked(ref)?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
             dependencies.restampDependentsLocked(ref)
@@ -285,8 +287,7 @@ class SqliteTaskStore private constructor(
             var outcome = ProjectRegistration.registered
             // Keep the tombstone check and registration atomic with restore.
             db.transaction {
-                val archived = projects.selectProjectArchived(id.value).executeAsOneOrNull()
-                if (archived != null && archived != 0L) {
+                if (projectIsArchivedLocked(id)) {
                     outcome = ProjectRegistration.refusedArchived
                     return@transaction
                 }
@@ -296,13 +297,13 @@ class SqliteTaskStore private constructor(
         }
 
     override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
-        projects.setProjectArchived(if (archived) 1L else 0L, id.value).value > 0L
+        projects.setProjectArchived(archived.toSqliteFlag(), id.value).value > 0L
     }
 
     override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = mutex.withLock {
-        projects.selectProjectsByArchived(if (archived) 1L else 0L).executeAsList().mapNotNull { row ->
+        projects.selectProjectsByArchived(archived.toSqliteFlag()).executeAsList().mapNotNull { row ->
             ProjectId.parseOrNull(row.id)?.let {
-                ProjectRecord(it, row.name, row.path, row.updated_at, row.archived != 0L)
+                ProjectRecord(it, row.name, row.path, row.updated_at, row.archived.isArchived())
             }
         }
     }
@@ -310,20 +311,23 @@ class SqliteTaskStore private constructor(
     override suspend fun listAllProjects(): List<ProjectRecord> = mutex.withLock {
         projects.selectAllProjects().executeAsList().mapNotNull { row ->
             ProjectId.parseOrNull(row.id)?.let {
-                ProjectRecord(it, row.name, row.path, row.updated_at, row.archived != 0L)
+                ProjectRecord(it, row.name, row.path, row.updated_at, row.archived.isArchived())
             }
         }
     }
 
     override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock {
         projects.selectProject(id.value) { _, name, path, updatedAt, archived ->
-            ProjectRecord(id = id, name = name, path = path, updatedAt = updatedAt, archived = archived != 0L)
+            ProjectRecord(id = id, name = name, path = path, updatedAt = updatedAt, archived = archived.isArchived())
         }.executeAsOneOrNull()
     }
 
 
     private fun existsLocked(ref: TaskRef): Boolean =
         tasks.selectTask(ref.value) { id, _, _, _, _ -> id }.executeAsOneOrNull() != null
+
+    private fun projectIsArchivedLocked(id: ProjectId): Boolean =
+        projects.selectProjectArchived(id.value).executeAsOneOrNull().isArchived()
 
     private fun taskLocked(ref: TaskRef): Task? =
         tasks.selectTask(ref.value) { _, title, body, _, updatedAt ->
@@ -411,6 +415,10 @@ class SqliteTaskStore private constructor(
             SqliteTaskStore(driver, now)
     }
 }
+
+private fun Long?.isArchived(): Boolean = this != null && this != 0L
+
+private fun Boolean.toSqliteFlag(): Long = if (this) 1L else 0L
 
 @OptIn(ExperimentalTime::class)
 fun taskStoreEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

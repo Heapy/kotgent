@@ -203,11 +203,19 @@ class FakeTaskStore(
     }
 
 
-    override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean = mutex.withLock {
+    override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoWhen(ref) { true }
+
+    override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+        startIfTodoWhen(ref) { projects[it]?.archived != true }
+
+    private suspend fun startIfTodoWhen(
+        ref: TaskRef,
+        acceptsProject: (ProjectId) -> Boolean,
+    ): Boolean = mutex.withLock {
         publishing {
             val existing = entries[ref] ?: return@publishing false
             if (existing.state != TaskState.todo) return@publishing false
-            if (requireLiveProject && projects[existing.project]?.archived == true) return@publishing false
+            if (!acceptsProject(existing.project)) return@publishing false
             writeStateLocked(existing, TaskState.in_progress)
             true
         }

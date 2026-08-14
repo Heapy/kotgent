@@ -235,23 +235,68 @@ class TaskProjectWiringTest {
     }
 
     @Test
-    fun theBackfillSkipsASessionWhoseProjectIsArchivedInsteadOfRetryingIt() = runBlocking {
+    fun aRefusedBackfillRetriesUntilRestoringTheProjectLetsTheNextPassBindIt() = runBlocking {
         withTimeout(20_000) {
             val f = Fixture(this)
             f.tasks.archiveProject(alpha, archived = true)
             f.seedSession("tombed01", cwd = "/repo/sub")
+            val registration = RegisteredProject(alpha, "kotgent", "/repo")
+            val reconciler = f.reconciler()
 
-            f.reconciler().reconcile()
+            reconciler.reconcile()
 
             assertNull(
                 f.store.getSession(SessionId("tombed01"))!!.projectId,
-                "a deleted project must not come back through the backfill either",
+                "a refused registration leaves the session unbound while the project is tombstoned",
+            )
+            assertEquals(
+                listOf(registration),
+                f.tasks.registrationAttempts,
+                "the first pass did resolve the file and ask the task store to register its project",
             )
             assertTrue(
                 f.store.projectWrites.isEmpty(),
-                "a refusal is final while the mark stands — unlike a store failure, it is not worth retrying",
+                "a refusal must not persist a project binding",
             )
-            assertTrue(f.tasks.registrations.isEmpty(), "and no row was written")
+            assertTrue(f.tasks.registrations.isEmpty(), "and the task store wrote no project row")
+
+            reconciler.reconcile()
+
+            assertNull(
+                f.store.getSession(SessionId("tombed01"))!!.projectId,
+                "the second refusal still leaves the session eligible for another pass",
+            )
+            assertEquals(
+                listOf(registration, registration),
+                f.tasks.registrationAttempts,
+                "a null projectId makes a later reconciliation retry the refused registration",
+            )
+            assertTrue(f.store.projectWrites.isEmpty(), "neither refused attempt binds the session")
+            assertTrue(f.tasks.registrations.isEmpty(), "neither refused attempt resurrects the project")
+
+            f.tasks.archiveProject(alpha, archived = false)
+            reconciler.reconcile()
+
+            assertEquals(
+                alpha,
+                f.store.getSession(SessionId("tombed01"))!!.projectId,
+                "restoring the project lets the very next backfill pass bind the waiting session",
+            )
+            assertEquals(
+                listOf<Pair<SessionId, ProjectId?>>(SessionId("tombed01") to alpha),
+                f.store.projectWrites,
+                "only the accepted registration produces the targeted session write",
+            )
+            assertEquals(
+                listOf(registration),
+                f.tasks.registrations,
+                "the restored project is registered exactly once",
+            )
+            assertEquals(
+                listOf(registration, registration, registration),
+                f.tasks.registrationAttempts,
+                "the accepted attempt follows both refusals instead of relying on a latched result",
+            )
         }
     }
 
@@ -488,6 +533,7 @@ class TaskProjectWiringTest {
 
     private class FakeTaskStore : TaskStore {
         val registrations = mutableListOf<RegisteredProject>()
+        val registrationAttempts = mutableListOf<RegisteredProject>()
         val entries = HashMap<TaskRef, BacklogEntry>()
 
         var upsertProjectFailure: Throwable? = null
@@ -501,9 +547,11 @@ class TaskProjectWiringTest {
         val archivedProjects = mutableSetOf<ProjectId>()
 
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration {
+            val registration = RegisteredProject(id, name, path)
+            registrationAttempts += registration
             upsertProjectFailure?.let { throw it }
             if (id in archivedProjects) return ProjectRegistration.refusedArchived
-            registrations += RegisteredProject(id, name, path)
+            registrations += registration
             return ProjectRegistration.registered
         }
 
@@ -530,8 +578,10 @@ class TaskProjectWiringTest {
 
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
 
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
-            unused("startIfTodo")
+        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused("startIfTodo")
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            unused("startIfTodoInLiveProject")
 
         override suspend fun transition(
             ref: TaskRef,

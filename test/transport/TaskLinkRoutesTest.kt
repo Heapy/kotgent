@@ -796,7 +796,12 @@ class TaskLinkRoutesTest {
             }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
+        override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodo(ref, requireLiveProject = false)
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            startIfTodo(ref, requireLiveProject = true)
+
+        private suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
             beforeStartIfTodo?.invoke()
             return mutex.withLock {
                 val existing = entries[ref]

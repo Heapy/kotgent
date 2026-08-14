@@ -232,7 +232,7 @@ class TaskServiceTest {
                 assertEquals(
                     listOf(
                         "tasks.nextCandidate($alpha)",
-                        "tasks.startIfTodo(${t1.value})",
+                        "tasks.startIfTodoInLiveProject(${t1.value})",
                         "tasks.nextCandidate($alpha)",
                     ),
                     f.journal,
@@ -585,10 +585,16 @@ class TaskServiceTest {
             return candidate
         }
 
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+        override suspend fun startIfTodo(ref: TaskRef): Boolean =
             witness.inTaskStore("startIfTodo") {
                 journal += "tasks.startIfTodo(${ref.value})"
-                startLocked(ref, requireLiveProject)
+                startLocked(ref, requireLiveProject = false)
+            }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            witness.inTaskStore("startIfTodoInLiveProject") {
+                journal += "tasks.startIfTodoInLiveProject(${ref.value})"
+                startLocked(ref, requireLiveProject = true)
             }
 
         private fun startLocked(ref: TaskRef, requireLiveProject: Boolean): Boolean {
@@ -732,9 +738,12 @@ class TaskServiceTest {
             return holders
         }
 
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {
-            if (archived) this.archived += sessionId else this.archived -= sessionId
-        }
+        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
+            witness.inEventStore("setArchived") {
+                val row = rows[sessionId] ?: return@inEventStore
+                rows[sessionId] = row.copy(archived = archived, updatedAt = updatedAt)
+                if (archived) this.archived += sessionId else this.archived -= sessionId
+            }
 
         override suspend fun upsertSession(meta: SessionMeta) = unused("upsertSession")
         override suspend fun updateSessionState(

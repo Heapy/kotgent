@@ -641,8 +641,10 @@ class TaskReadRoutesTest {
             readOnly("create")
         override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = readOnly("update")
         override suspend fun delete(ref: TaskRef): Boolean = readOnly("delete")
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+        override suspend fun startIfTodo(ref: TaskRef): Boolean =
             readOnly("startIfTodo")
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            readOnly("startIfTodoInLiveProject")
         override suspend fun transition(
             ref: TaskRef,
             to: TaskState,

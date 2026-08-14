@@ -21,7 +21,7 @@ class TaskService(
 ) {
 
     suspend fun link(sessionId: SessionId, ref: TaskRef) {
-        tasks.startIfTodo(ref, requireLiveProject = false)
+        tasks.startIfTodo(ref)
         sessions.setTaskRef(sessionId, ref)
         tasks.appendActivity(ref, ActivityKind.linked, author = sessionId.value)
     }
@@ -30,7 +30,7 @@ class TaskService(
         // A competing claimant or concurrent archive loses the start and re-queries.
         while (true) {
             val candidate = tasks.nextCandidate(project) ?: return null
-            if (!tasks.startIfTodo(candidate.ref, requireLiveProject = true)) continue
+            if (!tasks.startIfTodoInLiveProject(candidate.ref)) continue
             sessions.setTaskRef(sessionId, candidate.ref)
             tasks.appendActivity(candidate.ref, ActivityKind.linked, author = sessionId.value)
             return tasks.entry(candidate.ref) ?: candidate

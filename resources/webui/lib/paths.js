@@ -58,24 +58,25 @@ function finishNode(node) {
   };
 }
 
-function newestChange(group) {
-  let newest = 0;
-  for (const s of group.sessions) newest = Math.max(newest, s.updatedAt || 0);
-  for (const child of group.children) newest = Math.max(newest, newestChange(child));
-  return newest;
+function buildGroupEntries(sessions, children) {
+  return sessions.map((session) => ({ session: session, at: session.updatedAt || 0 }))
+    .concat(children.map((child) => ({ group: child, at: child.newestChange || 0 })));
+}
+
+// Only recency-ordered groups carry entries; live groups keep rows above subfolders.
+export function groupEntries(group) {
+  return group.entries || buildGroupEntries(group.sessions, group.children);
 }
 
 // One list per folder so a directly-held session and a subfolder compete on the same recency, not by kind.
 function orderedNode(group) {
   const children = orderGroupsByRecentChange(group.children);
-  const entries = group.sessions
-    .map((session) => ({ session: session, at: session.updatedAt || 0 }))
-    .concat(children.map((child) => ({ group: child, at: child.newestChange })))
+  const entries = buildGroupEntries(group.sessions, children)
     .sort((a, b) => b.at - a.at);
   return Object.assign({}, group, {
     children: children,
     entries: entries,
-    newestChange: newestChange(group),
+    newestChange: entries.length ? entries[0].at : 0,
   });
 }
 

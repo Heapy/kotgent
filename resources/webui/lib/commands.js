@@ -153,7 +153,9 @@ const BOARD_ONLY = new Set([
   "general.delete-project",
   "general.restore-project",
 ]);
-const SESSION_VIEW_ONLY = "general.show-done";
+const SESSION_VIEW_ONLY = new Set([
+  "general.show-done",
+]);
 
 // `o` means “the other screen”; leader mnemonics are first-match-wins and must remain unique.
 function generalCommands(onBoard, projectId, actions) {
@@ -266,7 +268,7 @@ function generalCommands(onBoard, projectId, actions) {
     },
   ];
   return commands.filter((command) => (onBoard
-    ? command.id !== SESSION_VIEW_ONLY
+    ? !SESSION_VIEW_ONLY.has(command.id)
     : !BOARD_ONLY.has(command.id)));
 }
 

@@ -1,6 +1,6 @@
 import { html } from "htm/preact";
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import {
@@ -230,13 +230,6 @@ function SessionRow({ session, tasks, active, onSelect, onRestore }) {
   `;
 }
 
-// Only the recency-ordered archive interleaves the two; the live tree keeps rows above subfolders.
-function groupEntries(group) {
-  if (group.entries) return group.entries;
-  return group.sessions.map((session) => ({ session: session }))
-    .concat(group.children.map((child) => ({ group: child })));
-}
-
 function groupNeedsAttention(group) {
   return group.sessions.some((s) => isNeedsAttention(s.state)) ||
     group.children.some(groupNeedsAttention);
@@ -425,15 +418,28 @@ export function Sidebar({
     Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
     repairPushRef.current();
   };
-  const visible = sessions.filter((s) => !s.archived);
-  // Live rows keep the daemon's order; the archive answers "what did I just finish" instead.
-  const doneSessions = byRecentChange(sessions.filter((s) => s.archived));
-  const attention = visible.filter((s) => isNeedsAttention(s.state));
-  const grouped = groupingEnabled(prefs);
-  const doneGroups = grouped && showDone
-    ? orderGroupsByRecentChange(groupSessions(doneSessions, prefs.basePath, prefs.groupingLevel))
-    : [];
   const onTasks = screen === SCREEN_TASKS;
+  const visible = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
+  const doneSessions = useMemo(() => sessions.filter((s) => s.archived), [sessions]);
+  const attention = useMemo(() => visible.filter((s) => isNeedsAttention(s.state)), [visible]);
+  const grouped = groupingEnabled(prefs);
+  const liveGroups = useMemo(
+    () => grouped && !onTasks
+      ? groupSessions(visible, prefs.basePath, prefs.groupingLevel)
+      : [],
+    [grouped, onTasks, prefs.basePath, prefs.groupingLevel, visible],
+  );
+  const doneGroups = useMemo(
+    () => grouped && showDone && !onTasks
+      ? orderGroupsByRecentChange(groupSessions(doneSessions, prefs.basePath, prefs.groupingLevel))
+      : [],
+    [doneSessions, grouped, onTasks, prefs.basePath, prefs.groupingLevel, showDone],
+  );
+  // Live rows keep the daemon's order; the flat archive answers "what did I just finish" instead.
+  const flatDoneSessions = useMemo(
+    () => !grouped && showDone && !onTasks ? byRecentChange(doneSessions) : [],
+    [doneSessions, grouped, onTasks, showDone],
+  );
   const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
   const openPerProject = new Map();
   if (onTasks) {
@@ -554,7 +560,7 @@ export function Sidebar({
 
         <ul id="session-list" class=${"session-list" + (grouped ? " grouped" : "")}>
           ${grouped
-            ? groupSessions(visible, prefs.basePath, prefs.groupingLevel).map((g) => html`
+            ? liveGroups.map((g) => html`
                 <${SessionGroup}
                   key=${g.path}
                   group=${g}
@@ -608,7 +614,7 @@ export function Sidebar({
                     done=${true}
                   />
                 `)
-              : doneSessions.map((s) => html`
+              : flatDoneSessions.map((s) => html`
                   <${SessionRow}
                     key=${s.id}
                     session=${s}

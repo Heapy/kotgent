@@ -27,8 +27,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+private fun increasingEpochClock(): () -> Long {
+    var stamp = 1_700_000_000_000L
+    return {
+        stamp += 1_000L
+        stamp
+    }
+}
+
 /** Thread-safe in-memory store shared by native tests and the live browser harness. */
-class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, PreferencesStore {
+class FakeEventStore(private val now: () -> Long = increasingEpochClock()) : EventStore, PreferencesStore {
     private val mutex = Mutex()
     private val metas = LinkedHashMap<SessionId, SessionMeta>()
 

@@ -502,13 +502,15 @@ class SessionDoneTaskTest {
                 .minByOrNull { it.position }
         }
 
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
+        override suspend fun startIfTodo(ref: TaskRef): Boolean {
             journal += "tasks.startIfTodo(${ref.value})"
             val existing = entries[ref] ?: return false
             if (existing.state != TaskState.todo) return false
             entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
             return true
         }
+
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = startIfTodo(ref)
 
         override suspend fun list(project: ProjectId): List<Task> = unused("list")
         override suspend fun get(ref: TaskRef): Task? = unused("get")
@@ -549,8 +551,10 @@ class SessionDoneTaskTest {
         override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
         override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
-        override suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean =
+        override suspend fun startIfTodo(ref: TaskRef): Boolean =
             unused("startIfTodo")
+        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
+            unused("startIfTodoInLiveProject")
         override suspend fun transition(
             ref: TaskRef,
             to: TaskState,

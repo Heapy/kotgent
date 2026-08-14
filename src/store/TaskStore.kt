@@ -26,11 +26,14 @@ interface TaskStore : TaskTracker {
     suspend fun nextCandidate(project: ProjectId): BacklogEntry?
 
 
+    /** Conditionally starts a named todo card; tombstoned projects remain writable by explicit ref. */
+    suspend fun startIfTodo(ref: TaskRef): Boolean
+
     /**
-     * Conditionally starts a todo card. Automatic selection passes [requireLiveProject] to close the
-     * select/start archive race; named-card linking remains allowed.
+     * Conditionally starts an automatically selected todo card, atomically refusing a project tombstone
+     * so deletion cannot land between [nextCandidate] and this write.
      */
-    suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean = false): Boolean
+    suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean
 
     suspend fun transition(ref: TaskRef, to: TaskState, author: String, message: String?): BacklogEntry?
 
