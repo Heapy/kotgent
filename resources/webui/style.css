@@ -1486,6 +1486,8 @@ dialog::backdrop {
   pointer-events: none;
   position: absolute;
   right: 8px;
+  /* Match the cards' transform timing: a slot that jumps lands on a card still travelling. */
+  transition: top 160ms ease-out;
 }
 .board-column-switch { display: none; }
 .board-show-all-done {
@@ -2144,6 +2146,7 @@ button.task-card-title:hover,
 
 @media (prefers-reduced-motion: reduce) {
   #sidebar,
+  .board-drop-slot,
   .board.is-dragging .task-card:not(.is-lifted) { transition: none; }
 }
 

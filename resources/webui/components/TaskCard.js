@@ -37,12 +37,14 @@ export function TaskCard({
     onOpenSession(id);
   };
 
+  // The lifted copy is inert rather than aria-hidden: aria-hidden leaves its links in the tab order,
+  // which puts keyboard focus somewhere assistive technology has been told not to describe.
   return html`
     <article
       class=${"task-card" + (dragging ? " is-dragging" : "") + (lifted ? " is-lifted" : "")}
       data-ref=${lifted ? null : entry.ref}
       data-state=${entry.state}
-      aria-hidden=${lifted ? "true" : null}
+      inert=${lifted ? true : null}
       style=${style || (dragOffset ? { transform: "translateY(" + dragOffset + "px)" } : null)}
     >
       <div

@@ -188,7 +188,19 @@ class BoardStyleTest {
             val lifted = page.locator(".task-card.is-lifted")
             assertThat(lifted).hasCount(1)
             assertThat(lifted).isVisible()
-            assertThat(lifted).hasAttribute("aria-hidden", "true")
+            assertEquals(
+                true,
+                lifted.evaluate("el => el.inert"),
+                "the copy is inert, so its duplicated links leave the tab order with it",
+            )
+            assertEquals(
+                false,
+                lifted.evaluate(
+                    "el => { const link = el.querySelector('a[href]'); if (!link) return null; " +
+                        "link.focus(); return document.activeElement === link; }",
+                ),
+                "the copy's duplicated links refuse keyboard focus, which aria-hidden alone allowed",
+            )
             assertEquals(null, lifted.getAttribute("data-ref"), "the lifted copy must not duplicate card locators")
             assertEquals("fixed", lifted.style("position"), "the dragged card lifts out of the scrolling column")
             assertEquals("none", lifted.style("pointer-events"), "the lifted copy cannot intercept its own hit test")
@@ -223,6 +235,13 @@ class BoardStyleTest {
                 tint[state] = fill
                 tintBorder[state] = section.style("border-top-color")
                 assertEquals("dashed", slot.style("border-top-style"), "the `$state` slot is an outline")
+                assertEquals("top", slot.style("transition-property"), "the `$state` slot travels rather than jumps")
+                assertEquals(
+                    page.locator(".task-card[data-ref='local:2']").style("transition-duration")
+                        .split(", ").last(),
+                    slot.style("transition-duration"),
+                    "the slot and the cards it opens room between move on one clock",
+                )
                 slotBorder[state] = slot.style("border-top-color")
                 assertEquals(
                     section.resolvedInside("color-mix(in srgb, var(--column-accent) 70%, transparent)"),
