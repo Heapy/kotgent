@@ -134,7 +134,6 @@ suspend fun captureJunieModelOnce(
     store: EventStore,
     scan: JunieSessionScan,
     meta: SessionMeta,
-    now: () -> Long = ::daemonEpochMillis,
 ): Boolean {
     // Provider-id discovery may land after launch; a stale launch snapshot must not choose the model.
     val providerId = store.getSession(meta.id)?.providerSessionId
@@ -142,5 +141,5 @@ suspend fun captureJunieModelOnce(
         ?: return false
     val model = scan.modelOf(providerId) ?: return false
     // Reject a filesystem scan raced by a provider-id rebind.
-    return store.setModelForProvider(meta.id, providerId, model, now())
+    return store.setModelForProvider(meta.id, providerId, model)
 }

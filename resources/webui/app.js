@@ -187,7 +187,6 @@ function App() {
   const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
   useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
-  // subscribeToRoute covers both popstate and navigate().
   useEffect(() => subscribeToRoute(setRoute), []);
 
   const applyTasksBaseline = useCallback((rows) => {
@@ -818,7 +817,7 @@ function App() {
       if (action === "stop" || action === "done") {
         if (s.id === activeRef.current) setAttachedId(null);
         setHint(action === "done"
-          ? "Marked done. Find it under “Show done”."
+          ? "Marked done. The archive toggle in the sidebar header brings it back."
           : "Session stopped. Resume it to continue.");
       } else if (action === "resume") {
         reattachAvailableRef.current = true;

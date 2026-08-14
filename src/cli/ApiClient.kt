@@ -49,12 +49,10 @@ import io.ktor.http.encodeURLPathPart
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-/** A control call cannot proceed because the daemon-owned token is unavailable. */
 class MissingTokenException(val tokenPath: String) : RuntimeException(
     "no kotgent token found at $tokenPath — is the daemon running? start it with: kotgent daemon",
 )
 
-/** A control call returned a non-2xx response. */
 class ApiException(val status: Int, val body: String) :
     RuntimeException("kotgent daemon returned HTTP $status: ${body.trim().ifEmpty { "(no body)" }}")
 

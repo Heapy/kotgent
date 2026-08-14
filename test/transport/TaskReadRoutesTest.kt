@@ -553,7 +553,7 @@ class TaskReadRoutesTest {
             val store = FakeEventStore(sessions)
             val routing = TaskRouting(
                 tasks = tasks,
-                service = TaskService(tasks, store, UnusedProjectFs, UnusedProjectFileWriter) { fixedNow },
+                service = TaskService(tasks, store, UnusedProjectFs, UnusedProjectFileWriter),
                 sessions = store,
                 paneLookup = { if (it == pane) paneSession else null },
                 json = TRANSPORT_JSON,
@@ -695,19 +695,18 @@ class TaskReadRoutesTest {
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
             unused("setArchived")
 
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = unused("setModel")
+        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: io.kotgent.core.ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = unused("setModelForProvider")
 
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) =
             unused("setTaskRef")
 
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) =
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
             unused("setProjectId")
 
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =

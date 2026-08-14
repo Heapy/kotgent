@@ -123,7 +123,7 @@ class Reconciler(
     private suspend fun clearDanglingTaskRef(tasks: TaskStore, meta: SessionMeta) {
         val ref = meta.taskRef ?: return
         if (tasks.entry(ref) != null) return
-        store.setTaskRef(meta.id, null, sortKeyOf(meta))
+        store.setTaskRef(meta.id, null)
     }
 
     /** Leaves archived projects unbound; failed registrations remain eligible for later reconciliation. */
@@ -133,14 +133,10 @@ class Reconciler(
         val resolved = resolveProject(fs, meta.cwd) ?: return
         // Register first so a failure cannot leave a session referencing an absent project row.
         when (tasks.upsertProject(resolved.id, resolved.name, resolved.root)) {
-            ProjectRegistration.registered -> store.setProjectId(meta.id, resolved.id, sortKeyOf(meta))
+            ProjectRegistration.registered -> store.setProjectId(meta.id, resolved.id)
             ProjectRegistration.refusedArchived -> Unit
         }
     }
-
-    // Re-read after liveness writes; derived cleanup must neither advance nor rewind activity ordering.
-    private suspend fun sortKeyOf(meta: SessionMeta): Long =
-        store.getSession(meta.id)?.updatedAt ?: meta.updatedAt
 
     companion object {
         fun classify(

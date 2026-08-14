@@ -243,7 +243,7 @@ class SpaRoutingTest {
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the SPA routing test") },
                 webUiDir = locateSpaWebUiDir(),
                 taskStore = tasks,
-                taskService = TaskService(tasks, store, UnusedProjectFs(), UnusedProjectFileWriter(), now = { 1L }),
+                taskService = TaskService(tasks, store, UnusedProjectFs(), UnusedProjectFileWriter()),
                 port = 0,
             ).start()
             val client = HttpClient(CIO)
@@ -342,12 +342,11 @@ class SpaRoutingTest {
             updatedAt: Long,
         ) {}
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) {}
+        override suspend fun setModel(sessionId: SessionId, model: String?) {}
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null

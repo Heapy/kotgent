@@ -90,6 +90,43 @@ private val SESSION_ROWS: List<SessionMeta> = listOf(
     ),
 )
 
+// A folder holding a session of its own beside subfolders: the shape that orders rows against folders.
+private val MIXED_ROWS: List<SessionMeta> = listOf(
+    harnessSession(
+        id = "m-root",
+        name = "root",
+        agent = "claude",
+        cwd = "/a",
+        state = SessionState.ready,
+        createdAt = SEED_EPOCH_MS + 1,
+    ),
+    harnessSession(
+        id = "m-deep",
+        name = "deep",
+        agent = "claude",
+        cwd = "/a/b",
+        state = SessionState.ready,
+        createdAt = SEED_EPOCH_MS + 2,
+    ),
+    harnessSession(
+        id = "m-side",
+        name = "side",
+        agent = "claude",
+        cwd = "/a/c",
+        state = SessionState.ready,
+        createdAt = SEED_EPOCH_MS + 3,
+    ),
+)
+
+fun sessionsMixedScenario(): Scenario = Scenario(
+    name = "sessions-mixed",
+    seed = { fakes ->
+        listOf("/a", "/a/b", "/a/c").forEach(fakes.projectFs::addDirectory)
+        MIXED_ROWS.forEach { seedSessionRow(fakes, it) }
+    },
+    terminalUpstream = deterministicUpstream(SESSIONS_BANNER),
+)
+
 fun sessionsScenario(): Scenario = Scenario(
     name = "sessions",
     seed = { fakes ->

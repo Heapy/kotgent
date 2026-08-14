@@ -238,7 +238,7 @@ class TaskLinkRoutesTest {
         env.seedSession(s1, pane1, alpha)
         env.link(t1, pane = pane1)
 
-        env.sessions.beforeConditionalClear = { env.sessions.setTaskRef(s1, t2, fixedNow) }
+        env.sessions.beforeConditionalClear = { env.sessions.setTaskRef(s1, t2) }
 
         val resp = env.unlink(t1, pane = pane1)
         assertEquals(
@@ -683,7 +683,6 @@ class TaskLinkRoutesTest {
                 sessions = store,
                 projectFs = UnusedProjectFs,
                 projectFiles = UnusedProjectFileWriter,
-                now = { fixedNow },
             )
             val routing = TaskRouting(
                 tasks = tasks,
@@ -884,16 +883,15 @@ class TaskLinkRoutesTest {
         // One-shot gate inserts a newer link immediately before the atomic conditional clear.
         var beforeConditionalClear: (suspend () -> Unit)? = null
 
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) =
             mutex.withLock {
                 val row = rows[sessionId] ?: return@withLock
-                rows[sessionId] = row.copy(taskRef = taskRef, updatedAt = updatedAt, rev = ++rev)
+                rows[sessionId] = row.copy(taskRef = taskRef, rev = ++rev)
             }
 
         override suspend fun clearTaskRefIf(
             sessionId: SessionId,
             expectedRef: TaskRef,
-            updatedAt: Long,
         ): Boolean {
             beforeConditionalClear?.let { hook ->
                 beforeConditionalClear = null
@@ -902,7 +900,7 @@ class TaskLinkRoutesTest {
             return mutex.withLock {
                 val row = rows[sessionId]
                 if (row == null || row.taskRef != expectedRef) return@withLock false
-                rows[sessionId] = row.copy(taskRef = null, updatedAt = updatedAt, rev = ++rev)
+                rows[sessionId] = row.copy(taskRef = null, rev = ++rev)
                 true
             }
         }
@@ -952,15 +950,14 @@ class TaskLinkRoutesTest {
         ) = unused("updateSessionState")
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
             unused("setArchived")
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = unused("setModel")
+        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = unused("setModelForProvider")
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) =
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
             unused("setProjectId")
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
 

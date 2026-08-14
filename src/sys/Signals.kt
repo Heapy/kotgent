@@ -38,7 +38,6 @@ fun shutdownSignalName(signo: Int): String = when (signo) {
     else -> "signal $signo"
 }
 
-/** Restores default dispositions and clears any pending request. */
 @OptIn(ExperimentalForeignApi::class)
 fun restoreDefaultShutdownSignals() {
     signal(SIGINT, null)

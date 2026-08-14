@@ -18,12 +18,11 @@ class TaskService(
     private val sessions: EventStore,
     val projectFs: ProjectFs,
     val projectFiles: ProjectFileWriter,
-    private val now: () -> Long = ::daemonEpochMillis,
 ) {
 
     suspend fun link(sessionId: SessionId, ref: TaskRef) {
         tasks.startIfTodo(ref, requireLiveProject = false)
-        sessions.setTaskRef(sessionId, ref, now())
+        sessions.setTaskRef(sessionId, ref)
         tasks.appendActivity(ref, ActivityKind.linked, author = sessionId.value)
     }
 
@@ -32,7 +31,7 @@ class TaskService(
         while (true) {
             val candidate = tasks.nextCandidate(project) ?: return null
             if (!tasks.startIfTodo(candidate.ref, requireLiveProject = true)) continue
-            sessions.setTaskRef(sessionId, candidate.ref, now())
+            sessions.setTaskRef(sessionId, candidate.ref)
             tasks.appendActivity(candidate.ref, ActivityKind.linked, author = sessionId.value)
             return tasks.entry(candidate.ref) ?: candidate
         }
@@ -40,7 +39,7 @@ class TaskService(
 
     suspend fun unlink(sessionId: SessionId): Boolean {
         val ref = sessions.getSession(sessionId)?.taskRef ?: return false
-        if (!sessions.clearTaskRefIf(sessionId, ref, now())) return false
+        if (!sessions.clearTaskRefIf(sessionId, ref)) return false
         tasks.appendActivity(ref, ActivityKind.unlinked, author = sessionId.value)
         return true
     }
@@ -64,7 +63,7 @@ class TaskService(
     private suspend fun unlinkEveryHolder(ref: TaskRef, feed: Boolean) {
         // The conditional clear protects a newer link made after sessionsHoldingTask's snapshot.
         for (holder in sessions.sessionsHoldingTask(ref)) {
-            if (!sessions.clearTaskRefIf(holder.id, ref, now())) continue
+            if (!sessions.clearTaskRefIf(holder.id, ref)) continue
             if (feed) tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
         }
     }

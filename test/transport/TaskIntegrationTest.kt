@@ -283,7 +283,7 @@ class TaskIntegrationTest {
                     "$projectRoot/$PROJECT_FILE_NAME" to """{"id":"${projectId.value}","name":"$projectName"}""",
                 ),
             )
-            val service = TaskService(tasks, events, fs, RefusingProjectFileWriter(), now = { 1L })
+            val service = TaskService(tasks, events, fs, RefusingProjectFileWriter())
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
                 FakeTmux(),

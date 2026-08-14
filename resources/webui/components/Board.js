@@ -541,7 +541,6 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     }
   };
 
-  // joinPath keeps the root base from producing //name.
   const placeholder = base.charAt(0) === "/" ? joinPath(base, ["name"]) : "/path/to/project";
 
   return html`

@@ -58,6 +58,32 @@ function finishNode(node) {
   };
 }
 
+function newestChange(group) {
+  let newest = 0;
+  for (const s of group.sessions) newest = Math.max(newest, s.updatedAt || 0);
+  for (const child of group.children) newest = Math.max(newest, newestChange(child));
+  return newest;
+}
+
+// One list per folder so a directly-held session and a subfolder compete on the same recency, not by kind.
+function orderedNode(group) {
+  const children = orderGroupsByRecentChange(group.children);
+  const entries = group.sessions
+    .map((session) => ({ session: session, at: session.updatedAt || 0 }))
+    .concat(children.map((child) => ({ group: child, at: child.newestChange })))
+    .sort((a, b) => b.at - a.at);
+  return Object.assign({}, group, {
+    children: children,
+    entries: entries,
+    newestChange: newestChange(group),
+  });
+}
+
+/** Path order is the archive's default; this re-reads the same tree newest-first at every level. */
+export function orderGroupsByRecentChange(groups) {
+  return groups.map(orderedNode).sort((a, b) => b.newestChange - a.newestChange);
+}
+
 export function groupSessions(list, basePath, level) {
   const base = normalizePath(basePath);
   const depth = Math.max(0, Math.trunc(Number(level)) || 0);

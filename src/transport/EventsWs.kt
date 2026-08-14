@@ -246,6 +246,7 @@ data class SessionUpdateDto(
     val archived: Boolean = false,
     val model: String? = null,
     val rev: Long = 0,
+    val updatedAt: Long = 0,
     val taskRef: String? = null,
     val projectId: String? = null,
 ) : EventsFrame()
@@ -259,6 +260,7 @@ fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
     archived = archived,
     model = model,
     rev = rev,
+    updatedAt = updatedAt,
     taskRef = taskRef?.value,
     projectId = projectId?.value,
 )

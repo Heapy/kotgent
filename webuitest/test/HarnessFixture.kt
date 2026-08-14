@@ -30,6 +30,7 @@ import kotlin.test.fail
 // Each login needs a fresh context: cookies are host-scoped, not port-scoped, but harness tokens differ.
 const val EMPTY_SCENARIO: String = "empty"
 const val SESSIONS_SCENARIO: String = "sessions"
+const val SESSIONS_MIXED_SCENARIO: String = "sessions-mixed"
 const val ATTENTION_SCENARIO: String = "attention"
 const val RESTART_SCENARIO: String = "restart"
 const val TERMINAL_SCENARIO: String = "terminal"

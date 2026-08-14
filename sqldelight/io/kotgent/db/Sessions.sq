@@ -80,32 +80,33 @@ UPDATE sessions
 SET read_cursor = MAX(read_cursor, MIN(?, last_seq)), rev = ?
 WHERE id = ?;
 
+-- Derived metadata mutators advance rev but leave updated_at to activity-owning writes.
 setModel:
 UPDATE sessions
-SET model = ?, updated_at = ?, rev = ?
+SET model = ?, rev = ?
 WHERE id = ?;
 
 -- Atomic id check prevents a slow model scan from writing past a provider-id rebind.
 setModelForProvider:
 UPDATE sessions
-SET model = ?, updated_at = ?, rev = ?
+SET model = ?, rev = ?
 WHERE id = ? AND provider_session_id = ?;
 
 -- Unconditional: multiple sessions may legitimately link to the same task.
 setTaskRef:
 UPDATE sessions
-SET task_ref = ?, updated_at = ?, rev = ?
+SET task_ref = ?, rev = ?
 WHERE id = ?;
 
 -- Lost-update guard: a clear must not erase a newer link that replaced the one the caller observed.
 clearTaskRefIf:
 UPDATE sessions
-SET task_ref = NULL, updated_at = ?, rev = ?
+SET task_ref = NULL, rev = ?
 WHERE id = ? AND task_ref = ?;
 
 setProjectId:
 UPDATE sessions
-SET project_id = ?, updated_at = ?, rev = ?
+SET project_id = ?, rev = ?
 WHERE id = ?;
 
 sessionsHoldingTask:

@@ -170,7 +170,6 @@ class HookRoutesTest {
         val capture = ClaudeModelCapture(
             store,
             readTranscriptTail = { path -> if (path == "/t.jsonl") """{"message":{"model":"claude-opus-4-8"}}""" else null },
-            now = { 2L },
         )
         withIngress(store, modelCapture = capture) { port, client ->
             store.upsertSession(
@@ -837,12 +836,11 @@ class HookRoutesTest {
             updatedAt: Long,
         ) = Unit
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = Unit
+        override suspend fun setModel(sessionId: SessionId, model: String?) = Unit
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = Unit
 

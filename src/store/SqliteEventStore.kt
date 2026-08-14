@@ -149,8 +149,8 @@ class SqliteEventStore private constructor(
         emitFromRow(sessionId)
     }
 
-    override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long): Unit = mutex.withLock {
-        sessions.setModel(model, updatedAt, ++revCounter, sessionId.value)
+    override suspend fun setModel(sessionId: SessionId, model: String?): Unit = mutex.withLock {
+        sessions.setModel(model, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
@@ -158,35 +158,33 @@ class SqliteEventStore private constructor(
         sessionId: SessionId,
         providerSessionId: ProviderSessionId,
         model: String,
-        updatedAt: Long,
     ): Boolean = mutex.withLock {
-        sessions.setModelForProvider(model, updatedAt, ++revCounter, sessionId.value, providerSessionId.value)
+        sessions.setModelForProvider(model, ++revCounter, sessionId.value, providerSessionId.value)
         val applied = sessions.get(sessionId.value).executeAsOneOrNull()
             ?.provider_session_id == providerSessionId.value
         if (applied) emitFromRow(sessionId)
         applied
     }
 
-    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long): Unit =
+    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?): Unit =
         mutex.withLock {
-            sessions.setTaskRef(taskRef?.value, updatedAt, ++revCounter, sessionId.value)
+            sessions.setTaskRef(taskRef?.value, ++revCounter, sessionId.value)
             emitFromRow(sessionId)
         }
 
     override suspend fun clearTaskRefIf(
         sessionId: SessionId,
         expectedRef: TaskRef,
-        updatedAt: Long,
     ): Boolean = mutex.withLock {
-        val cleared = sessions.clearTaskRefIf(updatedAt, ++revCounter, sessionId.value, expectedRef.value)
+        val cleared = sessions.clearTaskRefIf(++revCounter, sessionId.value, expectedRef.value)
             .value > 0L
         if (cleared) emitFromRow(sessionId)
         cleared
     }
 
-    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
+    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?): Unit =
         mutex.withLock {
-            sessions.setProjectId(projectId?.value, updatedAt, ++revCounter, sessionId.value)
+            sessions.setProjectId(projectId?.value, ++revCounter, sessionId.value)
             emitFromRow(sessionId)
         }
 
@@ -254,7 +252,7 @@ class SqliteEventStore private constructor(
             emitSessionUpdate(
                 SessionUpdate(
                     sessionId, cacheState, next.lastSeq,
-                    unread(next.lastSeq.value, readCursor), (cachedRow?.archived ?: 0L) != 0L,
+                    unread(next.lastSeq.value, readCursor), ts, (cachedRow?.archived ?: 0L) != 0L,
                     model = cachedRow?.model,
                     rev = if (cachedRow != null) rev else 0,
                     taskRef = cachedRow?.task_ref?.let(TaskRef::parseOrNull),
@@ -314,7 +312,7 @@ class SqliteEventStore private constructor(
         emitSessionUpdate(
             SessionUpdate(
                 sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
-                unread(row.last_seq, row.read_cursor), row.archived != 0L,
+                unread(row.last_seq, row.read_cursor), row.updated_at, row.archived != 0L,
                 model = row.model,
                 rev = row.rev,
                 taskRef = row.task_ref?.let(TaskRef::parseOrNull),

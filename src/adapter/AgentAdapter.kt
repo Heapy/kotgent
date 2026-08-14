@@ -7,6 +7,5 @@ import kotlinx.coroutines.flow.Flow
 interface AgentAdapter {
     fun buildLaunchSpec(mode: LaunchMode): LaunchSpec
 
-    /** Provider signals normalized to the shared event vocabulary. */
     val events: Flow<AgentEvent>
 }

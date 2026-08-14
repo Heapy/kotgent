@@ -26,8 +26,9 @@ These are not style preferences. Breaking any of them corrupts the wave for ever
 
 1. **Do not edit the plan file.** Not the checkboxes, not the prose, not anything. The wave closer marks
    your checkboxes after it has validated your work.
-2. **Do not run `git`.** No `add`, no `commit`, no `stash`, no `checkout`, no `restore`, no `rebase`.
-   The index is shared; the wave closer makes exactly one commit for the whole wave.
+2. **Do not run mutating `git` commands.** No `add`, no `commit`, no `stash`, no `checkout`, no
+   `restore`, no `rebase`. The index is shared; the wave closer makes exactly one commit for the whole
+   wave.
 3. **Do not run `./kotlin`** — not `build`, not `test`, not `task :…`. Nothing from the plan's
    `## Validation Commands` section. A native link and the test suite are shared, expensive and would
    compile your neighbours' half-written code. The wave closer validates once, for everyone.

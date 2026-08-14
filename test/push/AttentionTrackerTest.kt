@@ -25,7 +25,8 @@ class AttentionTrackerTest {
         state: SessionState,
         archived: Boolean = false,
     ) = SessionUpdate(
-        sessionId = SessionId(id), state = state, lastSeq = Seq(1), unread = 0L, archived = archived,
+        sessionId = SessionId(id), state = state, lastSeq = Seq(1), unread = 0L, updatedAt = 1L,
+        archived = archived,
     )
 
     @Test

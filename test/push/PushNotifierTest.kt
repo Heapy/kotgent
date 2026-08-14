@@ -43,7 +43,8 @@ class PushNotifierTest {
     )
 
     private fun update(id: String, state: SessionState, archived: Boolean = false) = SessionUpdate(
-        sessionId = SessionId(id), state = state, lastSeq = Seq(1), unread = 0L, archived = archived,
+        sessionId = SessionId(id), state = state, lastSeq = Seq(1), unread = 0L, updatedAt = 1L,
+        archived = archived,
     )
 
 
@@ -369,12 +370,11 @@ class PushNotifierTest {
             updatedAt: Long,
         ) {}
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) {}
+        override suspend fun setModel(sessionId: SessionId, model: String?) {}
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: io.kotgent.core.ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null

@@ -21,7 +21,7 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 
 ## 1. Preflight and isolate
 
-1. Read `version.txt` and both GitHub workflows. If repository guidance is not already loaded, inspect only the build-system and build-info sections of `CLAUDE.md`.
+1. Read `version.txt` and both GitHub workflows. If repository guidance is not already loaded, read `CLAUDE.md`.
 2. Inspect status, fetch `origin/main` and tags, and confirm:
    - `origin` and `gh repo view` identify `Heapy/kotgent`;
    - the requested version is newer than the newest stable tag reachable from `origin/main`, unless the user explicitly approves an exception;

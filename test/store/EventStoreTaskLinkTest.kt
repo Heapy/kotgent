@@ -55,7 +55,7 @@ class EventStoreTaskLinkTest {
             val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
             yield()
 
-            store.setTaskRef(sid, TaskRef("local:42"), updatedAt = 900L)
+            store.setTaskRef(sid, TaskRef("local:42"))
             repeat(20) { yield() }
 
             val after = store.getSession(sid)!!
@@ -67,7 +67,7 @@ class EventStoreTaskLinkTest {
                 after.providerSessionId,
                 "provider_session_id is untouched",
             )
-            assertEquals(900L, after.updatedAt, "the caller's timestamp lands (a link IS activity)")
+            assertEquals(before.updatedAt, after.updatedAt, "derived linking does not count as session activity")
             assertTrue(after.rev > before.rev, "the write stamps a newer revision")
 
             assertEquals(1, updates.size, "exactly one signal for one write: $updates")
@@ -79,18 +79,58 @@ class EventStoreTaskLinkTest {
     }
 
     @Test
+    fun aDerivedWriteCannotRewindNewerSessionActivity() = runBlocking {
+        withTimeout(20_000) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("link-race")
+            val provider = ProviderSessionId("provider-race")
+            store.upsertSession(meta(sid).copy(providerSessionId = provider))
+            val staleActivity = store.getSession(sid)!!.updatedAt
+
+            store.setArchived(sid, archived = true, updatedAt = 200L)
+            val archived = store.getSession(sid)!!
+            assertTrue(staleActivity < archived.updatedAt, "the test establishes the stale-read interleaving")
+
+            val derivedRows = mutableListOf<SessionMeta>()
+            store.setModel(sid, "gpt-6")
+            derivedRows += store.getSession(sid)!!
+            assertTrue(store.setModelForProvider(sid, provider, "gpt-5.5"))
+            derivedRows += store.getSession(sid)!!
+            store.setTaskRef(sid, TaskRef("local:42"))
+            derivedRows += store.getSession(sid)!!
+            assertTrue(store.clearTaskRefIf(sid, TaskRef("local:42")))
+            derivedRows += store.getSession(sid)!!
+            store.setProjectId(sid, projectA)
+            derivedRows += store.getSession(sid)!!
+
+            val after = derivedRows.last()
+            assertEquals("gpt-5.5", after.model, "the conditional model metadata lands")
+            assertNull(after.taskRef, "the conditional task clear lands")
+            assertEquals(projectA, after.projectId, "the project metadata lands")
+            assertTrue(
+                derivedRows.all { it.updatedAt == archived.updatedAt },
+                "no derived mutator may rewind the archive stamp: ${derivedRows.map { it.updatedAt }}",
+            )
+            assertTrue(
+                (listOf(archived.rev) + derivedRows.map { it.rev }).zipWithNext().all { (a, b) -> b > a },
+                "every derived patch still carries a newer revision",
+            )
+        }
+    }
+
+    @Test
     fun aNullRefClearsTheLinkAndTheClearIsBroadcast() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link02")
             store.upsertSession(meta(sid))
-            store.setTaskRef(sid, TaskRef("local:7"), updatedAt = 2L)
+            store.setTaskRef(sid, TaskRef("local:7"))
 
             val updates = mutableListOf<SessionUpdate>()
             val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
             yield()
 
-            store.setTaskRef(sid, null, updatedAt = 3L)
+            store.setTaskRef(sid, null)
             repeat(20) { yield() }
 
             assertNull(store.getSession(sid)!!.taskRef, "null clears the column")
@@ -106,19 +146,19 @@ class EventStoreTaskLinkTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link0c")
             store.upsertSession(meta(sid))
-            store.setTaskRef(sid, TaskRef("local:7"), updatedAt = 2L)
+            store.setTaskRef(sid, TaskRef("local:7"))
             val before = store.getSession(sid)!!
 
             val updates = mutableListOf<SessionUpdate>()
             val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
             yield()
 
-            assertTrue(store.clearTaskRefIf(sid, TaskRef("local:7"), updatedAt = 3L), "the write applied")
+            assertTrue(store.clearTaskRefIf(sid, TaskRef("local:7")), "the write applied")
             repeat(20) { yield() }
 
             val after = store.getSession(sid)!!
             assertNull(after.taskRef, "the link is gone")
-            assertEquals(3L, after.updatedAt, "the caller's timestamp lands")
+            assertEquals(before.updatedAt, after.updatedAt, "the derived clear preserves activity ordering")
             assertTrue(after.rev > before.rev, "and the write stamps a newer revision")
             assertEquals(1, updates.size, "the clear emits: $updates")
             assertNull(updates.single().taskRef, "…carrying the null")
@@ -132,8 +172,8 @@ class EventStoreTaskLinkTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link0d")
             store.upsertSession(meta(sid))
-            store.setTaskRef(sid, TaskRef("local:1"), updatedAt = 2L)
-            store.setTaskRef(sid, TaskRef("local:2"), updatedAt = 3L)
+            store.setTaskRef(sid, TaskRef("local:1"))
+            store.setTaskRef(sid, TaskRef("local:2"))
             val before = store.getSession(sid)!!
 
             val updates = mutableListOf<SessionUpdate>()
@@ -141,7 +181,7 @@ class EventStoreTaskLinkTest {
             yield()
 
             assertFalse(
-                store.clearTaskRefIf(sid, TaskRef("local:1"), updatedAt = 4L),
+                store.clearTaskRefIf(sid, TaskRef("local:1")),
                 "a clear keyed by a ref the row no longer holds writes nothing",
             )
             repeat(20) { yield() }
@@ -160,7 +200,7 @@ class EventStoreTaskLinkTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             assertFalse(
-                store.clearTaskRefIf(SessionId("ghost1"), TaskRef("local:1"), updatedAt = 2L),
+                store.clearTaskRefIf(SessionId("ghost1"), TaskRef("local:1")),
                 "a vanished session cannot have had its link cleared",
             )
         }
@@ -174,7 +214,7 @@ class EventStoreTaskLinkTest {
             store.upsertSession(meta(sid))
 
             assertFalse(
-                store.clearTaskRefIf(sid, TaskRef("local:1"), updatedAt = 2L),
+                store.clearTaskRefIf(sid, TaskRef("local:1")),
                 "an unlinked row answers false rather than reporting a clear that did not happen",
             )
             assertEquals(100L, store.getSession(sid)!!.updatedAt, "and nothing is written")
@@ -187,8 +227,8 @@ class EventStoreTaskLinkTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link03")
             store.upsertSession(meta(sid))
-            store.setTaskRef(sid, TaskRef("local:1"), updatedAt = 2L)
-            store.setTaskRef(sid, TaskRef("local:2"), updatedAt = 3L)
+            store.setTaskRef(sid, TaskRef("local:1"))
+            store.setTaskRef(sid, TaskRef("local:2"))
 
             assertEquals(TaskRef("local:2"), store.getSession(sid)!!.taskRef, "the newer link wins")
             assertEquals(
@@ -205,8 +245,8 @@ class EventStoreTaskLinkTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link04")
             store.upsertSession(meta(sid))
-            store.setTaskRef(sid, TaskRef("local:9"), updatedAt = 2L)
-            store.setProjectId(sid, projectA, updatedAt = 3L)
+            store.setTaskRef(sid, TaskRef("local:9"))
+            store.setProjectId(sid, projectA)
 
             store.upsertSession(meta(sid).copy(state = SessionState.ready))
 
@@ -235,8 +275,8 @@ class EventStoreTaskLinkTest {
             val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
             yield()
 
-            store.setProjectId(sid, projectA, updatedAt = 500L)
-            store.setProjectId(sid, null, updatedAt = 600L)
+            store.setProjectId(sid, projectA)
+            store.setProjectId(sid, null)
             repeat(20) { yield() }
 
             val after = store.getSession(sid)!!
@@ -247,6 +287,7 @@ class EventStoreTaskLinkTest {
                 after.providerSessionId,
                 "provider_session_id is untouched",
             )
+            assertEquals(before.updatedAt, after.updatedAt, "project binding is derived metadata, not activity")
             assertTrue(after.rev > before.rev, "both writes stamped revisions")
 
             assertEquals(2, updates.size, "one signal per write: $updates")
@@ -264,7 +305,7 @@ class EventStoreTaskLinkTest {
             val sid = SessionId("proj02")
             store.upsertSession(meta(sid))
 
-            store.setProjectId(sid, projectA, updatedAt = 2L)
+            store.setProjectId(sid, projectA)
             assertEquals(
                 "0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34",
                 store.getSession(sid)!!.projectId!!.value,
@@ -285,8 +326,8 @@ class EventStoreTaskLinkTest {
             val corrupt = SessionId("ref-bad")
             store.upsertSession(meta(healthy))
             store.upsertSession(meta(corrupt))
-            store.setTaskRef(healthy, TaskRef("local:7"), updatedAt = 2L)
-            store.setTaskRef(corrupt, TaskRef("local:8"), updatedAt = 3L)
+            store.setTaskRef(healthy, TaskRef("local:7"))
+            store.setTaskRef(corrupt, TaskRef("local:8"))
 
             driver.execute(null, "UPDATE sessions SET task_ref = '../etc' WHERE id = '${corrupt.value}'", 0)
 
@@ -319,9 +360,9 @@ class EventStoreTaskLinkTest {
             store.upsertSession(meta(older, createdAt = 100L))
             store.upsertSession(meta(other, createdAt = 150L))
 
-            store.setTaskRef(younger, TaskRef("local:5"), updatedAt = 2L)
-            store.setTaskRef(older, TaskRef("local:5"), updatedAt = 3L)
-            store.setTaskRef(other, TaskRef("local:6"), updatedAt = 4L)
+            store.setTaskRef(younger, TaskRef("local:5"))
+            store.setTaskRef(older, TaskRef("local:5"))
+            store.setTaskRef(other, TaskRef("local:6"))
 
             assertEquals(
                 listOf(older, younger),
@@ -352,8 +393,8 @@ class EventStoreTaskLinkTest {
             val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
             yield()
 
-            store.setTaskRef(missing, TaskRef("local:1"), updatedAt = 2L)
-            store.setProjectId(missing, projectA, updatedAt = 3L)
+            store.setTaskRef(missing, TaskRef("local:1"))
+            store.setProjectId(missing, projectA)
             repeat(20) { yield() }
 
             assertNull(store.getSession(missing), "no row is conjured")
@@ -372,8 +413,8 @@ class EventStoreTaskLinkTest {
             assertNull(store.getSession(sid)!!.taskRef, "an existing row reads as 'no task'")
             assertNull(store.getSession(sid)!!.projectId, "…and 'no project', which is exactly true")
 
-            store.setTaskRef(sid, TaskRef("local:3"), updatedAt = 2L)
-            store.setProjectId(sid, projectA, updatedAt = 3L)
+            store.setTaskRef(sid, TaskRef("local:3"))
+            store.setProjectId(sid, projectA)
             assertEquals(TaskRef("local:3"), store.getSession(sid)!!.taskRef, "both columns are writable")
             assertEquals(projectA, store.getSession(sid)!!.projectId)
             assertEquals(

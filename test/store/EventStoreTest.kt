@@ -471,25 +471,25 @@ class EventStoreTest {
             val scanned = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             val hook = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 
-            assertFalse(store.setModelForProvider(sid, scanned, "gpt-6", 2L), "no row: nothing written")
+            assertFalse(store.setModelForProvider(sid, scanned, "gpt-6"), "no row: nothing written")
 
             store.upsertSession(meta(sid))
-            assertFalse(store.setModelForProvider(sid, scanned, "gpt-6", 2L), "a NULL provider id never matches")
+            assertFalse(store.setModelForProvider(sid, scanned, "gpt-6"), "a NULL provider id never matches")
             assertNull(store.getSession(sid)!!.model)
 
             store.append(sid, AgentEvent.SessionBound(scanned), EventSource.system)
-            assertTrue(store.setModelForProvider(sid, scanned, "gpt-6", 3L), "the held id matches: written")
+            assertTrue(store.setModelForProvider(sid, scanned, "gpt-6"), "the held id matches: written")
             assertEquals("gpt-6", store.getSession(sid)!!.model)
 
             store.append(sid, AgentEvent.SessionBound(hook), EventSource.hook)
-            store.setModel(sid, null, 4L)
+            store.setModel(sid, null)
             assertFalse(
-                store.setModelForProvider(sid, scanned, "gpt-6", 5L),
+                store.setModelForProvider(sid, scanned, "gpt-6"),
                 "a write conditioned on the displaced id is refused",
             )
             assertNull(store.getSession(sid)!!.model, "the rebind's clear survives the raced capture")
 
-            assertTrue(store.setModelForProvider(sid, hook, "gpt-5.5", 6L))
+            assertTrue(store.setModelForProvider(sid, hook, "gpt-5.5"))
             assertEquals("gpt-5.5", store.getSession(sid)!!.model)
         }
     }

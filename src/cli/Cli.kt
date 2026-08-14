@@ -35,7 +35,6 @@ fun defaultBaseUrl(): String {
     return "http://127.0.0.1:$port"
 }
 
-/** A parsed CLI invocation. */
 sealed interface CliCommand {
     data object Version : CliCommand
 

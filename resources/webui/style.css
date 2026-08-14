@@ -1747,7 +1747,6 @@ button.task-card-title:hover,
   list-style: none;
   margin: 0;
   padding: 14px var(--detail-gutter);
-  /* Override card-level `.task-sessions` flex settings. */
   align-items: stretch;
   flex-wrap: nowrap;
 }
@@ -2135,22 +2134,34 @@ button.task-card-title:hover,
 }
 
 #done-section {
-  padding: 0 0.5rem 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.done-count {
+  color: var(--muted);
+  letter-spacing: 0;
 }
 
 .show-done-toggle {
-  width: 100%;
-  text-align: left;
-  padding: 0.4rem 0.5rem;
-  background: transparent;
+  align-items: center;
+  background: none;
   border: none;
-  color: #6b7280;
-  font: inherit;
-  font-size: 0.85rem;
-  cursor: pointer;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
+  padding: 0;
 }
-
-.show-done-toggle:hover { color: #111827; }
+.show-done-toggle.active { color: var(--accent); }
+/* Match `.icon-button:hover` specificity without restoring its plate. */
+.show-done-toggle:hover:not(:disabled) {
+  background: none;
+  opacity: 0.75;
+}
+/* Do not set SVG fill here: it would repaint the slot mask. */
+.show-done-toggle svg {
+  height: 18px;
+  width: 18px;
+}
 
 .done-list .session-row { opacity: 0.75; }
 

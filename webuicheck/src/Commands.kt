@@ -20,6 +20,7 @@ fun handleCommand(line: String, ctx: HarnessContext): Boolean {
     return when (words.firstOrNull()) {
         "restart" -> handleRestart(words, ctx)
         "emit" -> handleEmit(words, ctx)
+        "done" -> handleDone(words, ctx)
         "model" -> handleModel(words, ctx)
         "append" -> handleAppend(words, ctx)
         else -> handleTaskCommand(words, ctx)
@@ -56,7 +57,26 @@ private fun handleModel(words: List<String>, ctx: HarnessContext): Boolean {
         if (ctx.fakes.events.getSession(id) == null) {
             reject("model: no session '${id.value}' in this scenario")
         } else {
-            ctx.fakes.events.setModel(id, model, daemonEpochMillis())
+            ctx.fakes.events.setModel(id, model)
+            true
+        }
+    }
+}
+
+/** Archives in the store, so the browser learns it from the patch alone, exactly as a second tab would. */
+private fun handleDone(words: List<String>, ctx: HarnessContext): Boolean {
+    if (words.size !in 2..3) return reject("usage: done <session-id> [<epoch-millis>]")
+    val id = SessionId(words[1])
+    val stamp = if (words.size == 3) {
+        words[2].toLongOrNull() ?: return reject("done: '${words[2]}' is not an epoch-millis stamp")
+    } else {
+        daemonEpochMillis()
+    }
+    return runBlocking {
+        if (ctx.fakes.events.getSession(id) == null) {
+            reject("done: no session '${id.value}' in this scenario")
+        } else {
+            ctx.fakes.events.setArchived(id, true, stamp)
             true
         }
     }

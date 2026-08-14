@@ -51,7 +51,8 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
         val m = metas[sessionId] ?: return
         emitUpdate(
             SessionUpdate(
-                sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value), m.archived,
+                sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value),
+                m.updatedAt, m.archived,
                 model = m.model, rev = m.rev, taskRef = m.taskRef, projectId = m.projectId,
             ),
         )
@@ -95,9 +96,9 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
         emitFromMeta(sessionId)
     }
 
-    override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long): Unit = mutex.withLock {
+    override suspend fun setModel(sessionId: SessionId, model: String?): Unit = mutex.withLock {
         val m = metas[sessionId] ?: return@withLock
-        metas[sessionId] = m.copy(model = model, updatedAt = updatedAt, rev = ++revCounter)
+        metas[sessionId] = m.copy(model = model, rev = ++revCounter)
         emitFromMeta(sessionId)
     }
 
@@ -105,11 +106,10 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
         sessionId: SessionId,
         providerSessionId: ProviderSessionId,
         model: String,
-        updatedAt: Long,
     ): Boolean = mutex.withLock {
         val m = metas[sessionId] ?: return@withLock false
         if (m.providerSessionId != providerSessionId) return@withLock false
-        metas[sessionId] = m.copy(model = model, updatedAt = updatedAt, rev = ++revCounter)
+        metas[sessionId] = m.copy(model = model, rev = ++revCounter)
         emitFromMeta(sessionId)
         true
     }
@@ -124,29 +124,28 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
     }
 
 
-    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long): Unit =
+    override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?): Unit =
         mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
-            metas[sessionId] = m.copy(taskRef = taskRef, updatedAt = updatedAt, rev = ++revCounter)
+            metas[sessionId] = m.copy(taskRef = taskRef, rev = ++revCounter)
             emitFromMeta(sessionId)
         }
 
     override suspend fun clearTaskRefIf(
         sessionId: SessionId,
         expectedRef: TaskRef,
-        updatedAt: Long,
     ): Boolean = mutex.withLock {
         val m = metas[sessionId] ?: return@withLock false
         if (m.taskRef != expectedRef) return@withLock false
-        metas[sessionId] = m.copy(taskRef = null, updatedAt = updatedAt, rev = ++revCounter)
+        metas[sessionId] = m.copy(taskRef = null, rev = ++revCounter)
         emitFromMeta(sessionId)
         true
     }
 
-    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
+    override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?): Unit =
         mutex.withLock {
             val m = metas[sessionId] ?: return@withLock
-            metas[sessionId] = m.copy(projectId = projectId, updatedAt = updatedAt, rev = ++revCounter)
+            metas[sessionId] = m.copy(projectId = projectId, rev = ++revCounter)
             emitFromMeta(sessionId)
         }
 
@@ -190,7 +189,7 @@ class FakeEventStore(private val now: () -> Long = { 1L }) : EventStore, Prefere
         emitUpdate(
             SessionUpdate(
                 sessionId, cached?.state ?: next.state, next.lastSeq,
-                unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), cached?.archived ?: false,
+                unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), ts, cached?.archived ?: false,
                 model = cached?.model, rev = cached?.rev ?: 0,
                 taskRef = cached?.taskRef, projectId = cached?.projectId,
             ),

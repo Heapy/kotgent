@@ -86,7 +86,7 @@ class SessionDoneTaskTest {
                 updatedAt = 500L,
             ),
         )
-        store.setTaskRef(id, ref, 500L)
+        store.setTaskRef(id, ref)
     }
 
 
@@ -98,7 +98,7 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks)
 
             mgr.start("claude", "/tmp")
-            f.store.setTaskRef(worker, ref, 1L)
+            f.store.setTaskRef(worker, ref)
             f.seedNeighbour(neighbour, ref)
             f.journal.clear()
 
@@ -150,10 +150,10 @@ class SessionDoneTaskTest {
             val f = Fixture()
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
             val mgr = managerOver(f, tasks)
-            val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter, now = { 2L })
+            val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
             mgr.start("claude", "/tmp")
-            f.store.setTaskRef(worker, ref, 1L)
+            f.store.setTaskRef(worker, ref)
 
             service.transition(ref, TaskState.done, TaskService.BOARD_AUTHOR, message = null)
 
@@ -175,10 +175,10 @@ class SessionDoneTaskTest {
                 val f = Fixture()
                 val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
                 val mgr = managerOver(f, tasks)
-                val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter, now = { 1L })
+                val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
                 mgr.start("claude", "/tmp")
-                f.store.setTaskRef(worker, ref, 1L)
+                f.store.setTaskRef(worker, ref)
                 f.seedNeighbour(neighbour, ref)
                 f.journal.clear()
 
@@ -232,11 +232,11 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks)
 
             mgr.start("claude", "/tmp")
-            f.store.setTaskRef(worker, ref, 1L)
+            f.store.setTaskRef(worker, ref)
             f.seedNeighbour(neighbour, ref)
             f.store.afterSessionsHoldingTask = {
                 f.store.afterSessionsHoldingTask = null
-                f.store.setTaskRef(neighbour, other, 700L)
+                f.store.setTaskRef(neighbour, other)
             }
 
             mgr.markDone(worker)
@@ -273,7 +273,7 @@ class SessionDoneTaskTest {
                 seed(taken, alpha, TaskState.todo, position = 2.0)
             }
             val mgr = managerOver(f, tasks)
-            val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter, now = { 2L })
+            val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
             mgr.start("claude", "/tmp")
 
@@ -342,7 +342,7 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks = null)
 
             mgr.start("claude", "/tmp")
-            f.store.setTaskRef(worker, ref, 1L)
+            f.store.setTaskRef(worker, ref)
 
             mgr.markDone(worker)
 
@@ -362,7 +362,7 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks)
 
             mgr.start("claude", "/tmp")
-            f.store.setTaskRef(worker, ref, 1L)
+            f.store.setTaskRef(worker, ref)
 
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
@@ -396,9 +396,9 @@ class SessionDoneTaskTest {
             return delegate.getSession(sessionId)
         }
 
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
             journal += "sessions.setTaskRef(${sessionId.value} -> ${taskRef?.value})"
-            delegate.setTaskRef(sessionId, taskRef, updatedAt)
+            delegate.setTaskRef(sessionId, taskRef)
         }
 
         // Runs after the holder snapshot so a newer link can race the following conditional clear.
@@ -413,10 +413,9 @@ class SessionDoneTaskTest {
         override suspend fun clearTaskRefIf(
             sessionId: SessionId,
             expectedRef: TaskRef,
-            updatedAt: Long,
         ): Boolean {
             journal += "sessions.clearTaskRefIf(${sessionId.value}, ${expectedRef.value})"
-            return delegate.clearTaskRefIf(sessionId, expectedRef, updatedAt)
+            return delegate.clearTaskRefIf(sessionId, expectedRef)
         }
 
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {

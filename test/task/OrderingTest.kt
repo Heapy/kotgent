@@ -11,7 +11,7 @@ class OrderingTest {
 
     @Test
     fun theThresholdIsOneNanoRank() {
-        assertEquals(1e-9, POSITION_EPSILON, 0.0, "the plan and the store both name 1e-9 literally")
+        assertEquals(1e-9, POSITION_EPSILON, 0.0)
     }
 
 

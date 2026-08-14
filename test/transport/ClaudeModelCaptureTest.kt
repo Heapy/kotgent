@@ -33,7 +33,6 @@ class ClaudeModelCaptureTest {
                     reads++
                     if (path == "/t.jsonl") """{"message":{"model":"claude-opus-4-8"}}""" else null
                 },
-                now = { 2L },
             )
 
             capture.maybeCapture(SessionId("s1"), payload("""{"transcript_path":"/t.jsonl"}"""))
@@ -51,7 +50,7 @@ class ClaudeModelCaptureTest {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             store.upsertSession(meta("s2"))
-            val capture = ClaudeModelCapture(store, readTranscriptTail = { "no model in here" }, now = { 2L })
+            val capture = ClaudeModelCapture(store, readTranscriptTail = { "no model in here" })
 
             capture.maybeCapture(SessionId("s2"), payload("""{"session_id":"x"}"""))
             assertNull(store.getSession(SessionId("s2"))!!.model)
@@ -65,7 +64,7 @@ class ClaudeModelCaptureTest {
     fun aMissingSessionIsANoOp() = runBlocking {
         withTimeout(20_000) {
             val store = SqliteEventStore.inMemory(now = { 1L })
-            val capture = ClaudeModelCapture(store, readTranscriptTail = { """{"model":"x"}""" }, now = { 2L })
+            val capture = ClaudeModelCapture(store, readTranscriptTail = { """{"model":"x"}""" })
             capture.maybeCapture(SessionId("ghost"), payload("""{"transcript_path":"/t.jsonl"}"""))
             assertNull(store.getSession(SessionId("ghost")), "no row was created")
         }

@@ -247,21 +247,37 @@ class TransportTest {
         )
         assertTrue(meta.toDto().archived, "SessionDto carries archived")
         assertTrue(
-            SessionUpdate(SessionId("arc01"), SessionState.stopped, Seq(1), 0L, archived = true).toDto().archived,
+            SessionUpdate(
+                SessionId("arc01"), SessionState.stopped, Seq(1), 0L, updatedAt = 1L, archived = true,
+            ).toDto().archived,
             "the patch SessionUpdateDto carries archived",
+        )
+    }
+
+    @Test
+    fun thePatchCarriesTheUpdatedAtStampTheDoneListOrdersBy() {
+        assertEquals(
+            1_700_000_000_042L,
+            SessionUpdate(
+                SessionId("upd01"), SessionState.stopped, Seq(1), 0L,
+                updatedAt = 1_700_000_000_042L, archived = true,
+            ).toDto().updatedAt,
+            "a client that only ever sees patches still learns when the row last changed",
         )
     }
 
     @Test
     fun thePatchCarriesTheModelAndRevAndItsNullModelIsAuthoritative() {
         val live = SessionUpdate(
-            SessionId("mdl01"), SessionState.running, Seq(1), 0L,
+            SessionId("mdl01"), SessionState.running, Seq(1), 0L, updatedAt = 1L,
             model = "gpt-6", rev = 7,
         ).toDto()
         assertEquals("gpt-6", live.model, "the patch carries the row's model")
         assertEquals(7L, live.rev, "the patch carries the row's rev")
         assertNull(
-            SessionUpdate(SessionId("mdl01"), SessionState.running, Seq(1), 0L, rev = 8).toDto().model,
+            SessionUpdate(
+                SessionId("mdl01"), SessionState.running, Seq(1), 0L, updatedAt = 1L, rev = 8,
+            ).toDto().model,
             "a cleared model rides the patch as an authoritative null",
         )
     }
@@ -280,7 +296,7 @@ class TransportTest {
         assertEquals("session_row", typeOf(SessionRowDto(meta.toDto())))
         assertEquals(
             "session_update",
-            typeOf(SessionUpdate(SessionId("fr01"), SessionState.running, Seq(1), 0L).toDto()),
+            typeOf(SessionUpdate(SessionId("fr01"), SessionState.running, Seq(1), 0L, updatedAt = 1L).toDto()),
         )
         assertEquals("preferences_update", typeOf(UiPreferences("/p", 1, 1).toUpdateDto()))
     }
@@ -392,10 +408,10 @@ class TransportTest {
         ) {
             receiveSnapshot()
 
-            ctx.store.setModel(sid, "gpt-6", 2L)
+            ctx.store.setModel(sid, "gpt-6")
             val captured = awaitUpdate { it.sessionId == created.id && it.model == "gpt-6" }
 
-            ctx.store.setModel(sid, null, 3L)
+            ctx.store.setModel(sid, null)
             val cleared = awaitUpdate { it.sessionId == created.id && it.rev > captured.rev }
             assertNull(cleared.model, "the clear rides the patch as an authoritative null")
         }

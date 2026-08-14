@@ -243,8 +243,9 @@ class CommandPaletteTest {
         onThePaletteScreen("palette-entry-points") { _, page ->
             assertThat(page.locator("#terminal-title")).containsText("No session selected")
             assertThat(page.locator("#palette-button")).isVisible()
-            assertThat(page.locator(".brand-actions button")).hasCount(2)
+            // Named, not counted: the archive toggle joins this row whenever a session is done.
             assertThat(page.locator("#notify-toggle")).isVisible()
+            assertThat(page.locator("#drawer-close")).hasCount(1)
 
             for (id in REMOVED_CHROME_BUTTONS) {
                 assertThat(page.locator("#$id")).hasCount(0)

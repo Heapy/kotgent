@@ -168,7 +168,7 @@ class SessionManager(
 
     suspend fun onProviderIdRebound(sessionId: SessionId) {
         // A provisional same-cwd discovery may have captured another session's model.
-        store.setModel(sessionId, null, now())
+        store.setModel(sessionId, null)
         store.getSession(sessionId)?.let(captureModelInBackground)
     }
 
@@ -346,7 +346,7 @@ class SessionManager(
         tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
         for (holder in store.sessionsHoldingTask(ref)) {
             // Preserve a newer task link made after the holder snapshot.
-            if (!store.clearTaskRefIf(holder.id, ref, now())) continue
+            if (!store.clearTaskRefIf(holder.id, ref)) continue
             tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
         }
     }

@@ -18,13 +18,10 @@ import platform.posix.fopen
 import platform.posix.fread
 import platform.posix.fseek
 import platform.posix.ftell
-import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 
 class ClaudeModelCapture(
     private val store: EventStore,
     private val readTranscriptTail: (String) -> String? = ::readFileTail,
-    private val now: () -> Long = ::captureEpochMillis,
 ) {
     // Hook delivery must not fail when transcript IO/model extraction misses; later hooks retry.
     suspend fun maybeCapture(sessionId: SessionId, payload: JsonElement) {
@@ -33,7 +30,8 @@ class ClaudeModelCapture(
         val transcriptPath = payload.stringField(FIELD_TRANSCRIPT_PATH) ?: return
         val tail = readTranscriptTail(transcriptPath) ?: return
         val model = extractModel(tail) ?: return
-        store.setModel(sessionId, model, now())
+        // Reading the model out of a transcript is not the session doing something: keep its stamp.
+        store.setModel(sessionId, model)
     }
 
     private fun JsonElement.stringField(name: String): String? {
@@ -69,6 +67,3 @@ fun readFileTail(path: String): String? {
         fclose(fp)
     }
 }
-
-@OptIn(ExperimentalTime::class)
-private fun captureEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

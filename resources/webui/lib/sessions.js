@@ -85,7 +85,14 @@ export function patchIfNewer(list, msg) {
     model: msg.model,
     taskRef: msg.taskRef,
     projectId: msg.projectId,
+    // A daemon older than this field omits it; the snapshot's stamp stays authoritative then.
+    updatedAt: msg.updatedAt || prev.updatedAt,
     rev: msg.rev,
   });
   return next;
+}
+
+// Done sessions read newest-first: the archive stamp is the last thing that happened to the row.
+export function byRecentChange(list) {
+  return list.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }

@@ -272,7 +272,7 @@ class JunieSessionScanTest {
             val meta = launchMeta(providerSessionId = mine)
             store.upsertSession(meta)
 
-            assertTrue(captureJunieModelOnce(store, JunieSessionScan(junieDir), meta, now = { 43L }))
+            assertTrue(captureJunieModelOnce(store, JunieSessionScan(junieDir), meta))
             assertEquals("claude-fable-5", store.getSession(meta.id)!!.model)
         }
     }
@@ -287,11 +287,11 @@ class JunieSessionScanTest {
             store.upsertSession(meta)
             val scan = JunieSessionScan(junieDir)
 
-            assertFalse(captureJunieModelOnce(store, scan, meta, now = { 43L }))
+            assertFalse(captureJunieModelOnce(store, scan, meta))
             assertNull(store.getSession(meta.id)!!.model, "an id-less attempt persists nothing")
 
             store.upsertSession(meta.copy(providerSessionId = id("53-1j1h")))
-            assertTrue(captureJunieModelOnce(store, scan, meta, now = { 44L }))
+            assertTrue(captureJunieModelOnce(store, scan, meta))
             assertEquals("gpt-6", store.getSession(meta.id)!!.model)
         }
     }
@@ -309,7 +309,7 @@ class JunieSessionScanTest {
             store.upsertSession(meta.copy(providerSessionId = authoritative))
 
             assertFalse(
-                store.setModelForProvider(meta.id, displaced, "gpt-6", 43L),
+                store.setModelForProvider(meta.id, displaced, "gpt-6"),
                 "a write keyed by the displaced id hits zero rows",
             )
             assertNull(store.getSession(meta.id)!!.model)

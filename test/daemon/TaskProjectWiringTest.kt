@@ -346,7 +346,9 @@ class TaskProjectWiringTest {
 
             assertEquals(
                 mapOf(SessionId("quiet001") to SEEDED, SessionId("moved001") to RESTART),
-                f.store.writeTimestamps.toMap(),
+                listOf(SessionId("quiet001"), SessionId("moved001")).associateWith {
+                    f.store.getSession(it)!!.updatedAt
+                },
                 "a derived backfill and a reference GC keep the row's own sort key; a liveness change owns its",
             )
         }
@@ -586,8 +588,6 @@ class TaskProjectWiringTest {
 
         val projectWrites = mutableListOf<Pair<SessionId, ProjectId?>>()
 
-        val writeTimestamps = mutableListOf<Pair<SessionId, Long>>()
-
         private val taskRefs = HashMap<SessionId, TaskRef?>()
         private val projectIds = HashMap<SessionId, ProjectId?>()
 
@@ -597,18 +597,16 @@ class TaskProjectWiringTest {
             meta.projectId?.let { projectIds[meta.id] = it }
         }
 
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
             if (delegate.getSession(sessionId) == null) return
             taskRefs[sessionId] = taskRef
             taskRefWrites += sessionId to taskRef
-            writeTimestamps += sessionId to updatedAt
         }
 
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
             if (delegate.getSession(sessionId) == null) return
             projectIds[sessionId] = projectId
             projectWrites += sessionId to projectId
-            writeTimestamps += sessionId to updatedAt
         }
 
         override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =

@@ -120,7 +120,6 @@ suspend fun captureCodexModelOnce(
     store: EventStore,
     scan: CodexRolloutScan,
     meta: SessionMeta,
-    now: () -> Long = ::daemonEpochMillis,
 ): Boolean {
     // Re-read the row because provider-id capture may land after the launch snapshot.
     val providerId = store.getSession(meta.id)?.providerSessionId
@@ -128,5 +127,5 @@ suspend fun captureCodexModelOnce(
         ?: return false
     val model = scan.modelOf(providerId) ?: return false
     // The conditional write rejects a model scan raced by a provider-id rebind.
-    return store.setModelForProvider(meta.id, providerId, model, now())
+    return store.setModelForProvider(meta.id, providerId, model)
 }

@@ -27,6 +27,8 @@ data class SessionUpdate(
     val state: SessionState,
     val lastSeq: Seq,
     val unread: Long,
+    // Carried on every update so a client that only ever sees patches can still order rows by recency.
+    val updatedAt: Long,
     val archived: Boolean = false,
     val model: String? = null,
     val rev: Long = 0,
@@ -59,14 +61,14 @@ interface EventStore {
 
     suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long)
 
-    suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long)
+    /** Derived metadata write: advances rev and emits while preserving the committed activity timestamp. */
+    suspend fun setModel(sessionId: SessionId, model: String?)
 
     /** Atomically writes only while the row still holds the provider id used for the model lookup. */
     suspend fun setModelForProvider(
         sessionId: SessionId,
         providerSessionId: ProviderSessionId,
         model: String,
-        updatedAt: Long,
     ): Boolean
 
     /**
@@ -75,8 +77,8 @@ interface EventStore {
      */
     suspend fun markRead(sessionId: SessionId, seq: Seq)
 
-    /** Unconditional by design: several sessions may work the same task. */
-    suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long): Unit =
+    /** Unconditional by design: several sessions may work the same task; preserves activity ordering. */
+    suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?): Unit =
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not model session task links: override setTaskRef",
         )
@@ -85,13 +87,14 @@ interface EventStore {
      * Prevents a clear from erasing a newer link. This default is non-atomic and is suitable only for
      * single-threaded fakes; concurrent stores must override it with one check-and-write.
      */
-    suspend fun clearTaskRefIf(sessionId: SessionId, expectedRef: TaskRef, updatedAt: Long): Boolean {
+    suspend fun clearTaskRefIf(sessionId: SessionId, expectedRef: TaskRef): Boolean {
         if (getSession(sessionId)?.taskRef != expectedRef) return false
-        setTaskRef(sessionId, null, updatedAt)
+        setTaskRef(sessionId, null)
         return true
     }
 
-    suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long): Unit =
+    /** Derived metadata write that preserves activity ordering. */
+    suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?): Unit =
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not model session projects: override setProjectId",
         )

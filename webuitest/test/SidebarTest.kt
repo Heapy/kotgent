@@ -224,25 +224,26 @@ class SidebarTest {
     }
 
     @Test
-    fun aDoneSessionMovesIntoItsOwnCollapsedListAndRestoreBringsItBack() {
+    fun aDoneSessionMovesIntoItsOwnHiddenListAndRestoreBringsItBack() {
         signedIn(SESSIONS_SCENARIO, "sidebar-done") { _, _, page ->
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
             assertThat(page.locator("#done-section")).hasCount(0)
+            assertThat(page.locator("#show-done-toggle")).hasCount(0)
 
             page.onDialog { dialog -> dialog.accept() }
-
-            page.locator("#session-list .session-row[data-id='$DONE_SESSION']").click()
-            runLeaderCommand(page, "Done current session")
+            markDone(page, DONE_SESSION)
 
             assertThat(page.locator("#session-list .session-row")).hasCount(3)
             assertThat(page.locator("#session-list .session-row[data-id='$DONE_SESSION']")).hasCount(0)
             val toggle = page.locator("#show-done-toggle")
-            assertThat(toggle).hasText("▸ Show done (1)")
-            assertThat(toggle).hasAttribute("aria-expanded", "false")
+            assertThat(toggle).hasAttribute("aria-pressed", "false")
+            // The label names what the button is about; aria-pressed alone carries the state.
+            assertThat(toggle).hasAttribute("title", "Done sessions (1)")
             assertThat(page.locator("#done-list")).hasCount(0)
 
             toggle.click()
-            assertThat(toggle).hasAttribute("aria-expanded", "true")
+            assertThat(toggle).hasAttribute("aria-pressed", "true")
+            assertThat(page.locator("#done-count")).hasText("1")
             val doneRow = page.locator("#done-list .session-row[data-id='$DONE_SESSION']")
             assertThat(doneRow).hasCount(1)
             val restore = doneRow.locator(".session-restore")
@@ -254,6 +255,113 @@ class SidebarTest {
             assertThat(page.locator("#session-list .session-row[data-id='$DONE_SESSION']")).hasCount(1)
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
             assertThat(page.locator("#done-section")).hasCount(0)
+            assertThat(page.locator("#show-done-toggle")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun theDoneListIsItsOwnFoldedTreeOrderedByWhatWasFinishedLast() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-done-tree") { _, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+
+            page.onDialog { dialog -> dialog.accept() }
+            markDone(page, "s-beta")
+            markDone(page, "s-alpha")
+            markDone(page, "s-delta")
+
+            page.locator("#show-done-toggle").click()
+            assertThat(page.locator("#done-list.grouped")).hasCount(1)
+            assertSidebarTree(
+                page,
+                """
+                d [/d] (1)
+                  s-delta
+                a [/a] (2)
+                  b [/a/b] (2)
+                    s-alpha
+                    s-beta
+                """.trimIndent(),
+                "the archive keeps the directory tree but reads newest-first, folder and row alike",
+                listSelector = "#done-list",
+            )
+            assertThat(page.locator("#done-list .group-new")).hasCount(0)
+
+            doneFolderHead(page, "/a").locator(".group-toggle").click()
+
+            assertSidebarTree(
+                page,
+                """
+                d [/d] (1)
+                  s-delta
+                a [/a] (2)
+                """.trimIndent(),
+                "collapsing an archived folder hides its own contents",
+                listSelector = "#done-list",
+            )
+            assertSidebarTree(
+                page,
+                """
+                a [/a] (1)
+                  c [/a/c] (1)
+                    s-gamma
+                """.trimIndent(),
+                "the live tree has its own collapse state: the same path stays open there",
+            )
+
+            page.locator("#done-list .session-row[data-id='s-delta'] .session-restore").click()
+
+            assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(1)
+            assertThat(page.locator("#done-count")).hasText("2")
+            assertThat(page.locator("#done-list .group-title[title='/d']")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun anArchiveSeenOnlyAsAPatchStillOrdersByWhenItWasFinished() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-done-patch") { harness, _, page ->
+            // No action of this page's own: the archive arrives the way a second tab would learn it.
+            harness.send("done s-delta ${SEED_EPOCH_MILLIS + 5_000}")
+            harness.send("done s-alpha ${SEED_EPOCH_MILLIS + 9_000}")
+
+            page.locator("#show-done-toggle").click()
+            assertThat(page.locator("#done-count")).hasText("2")
+            assertSidebarTree(
+                page,
+                """
+                s-alpha
+                s-delta
+                """.trimIndent(),
+                "the stamp rode the patch: by the snapshot's own stamps delta would still be on top",
+                listSelector = "#done-list",
+            )
+        }
+    }
+
+    @Test
+    fun aFinishedFolderAndAFinishedSessionBesideItCompeteOnRecencyAlone() {
+        signedIn(SESSIONS_MIXED_SCENARIO, "sidebar-done-mixed") { harness, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            assertThat(page.locator("#session-list.grouped")).hasCount(1)
+
+            harness.send("done m-side ${SEED_EPOCH_MILLIS + 1_000}")
+            harness.send("done m-root ${SEED_EPOCH_MILLIS + 2_000}")
+            harness.send("done m-deep ${SEED_EPOCH_MILLIS + 3_000}")
+
+            page.locator("#show-done-toggle").click()
+            assertSidebarTree(
+                page,
+                """
+                a [/a] (3)
+                  b [/a/b] (1)
+                    m-deep
+                  m-root
+                  c [/a/c] (1)
+                    m-side
+                """.trimIndent(),
+                "a session held directly by a folder sorts among that folder's subfolders, not above them",
+                listSelector = "#done-list",
+            )
         }
     }
 
@@ -501,6 +609,9 @@ private fun sawUnreadFrame(seq: Int): String = """
 
 private const val DONE_SESSION: String = "s-delta"
 
+// Mirrors SEED_EPOCH_MS in the harness scenarios: archive stamps must outrank the seeded ones.
+private const val SEED_EPOCH_MILLIS: Long = 1_700_000_000_000L
+
 private const val DISCONNECT_LINE: String = "Daemon connection lost — reconnecting…"
 
 private const val READ_DEFINITE: String = "definite"
@@ -607,6 +718,16 @@ private fun awaitFoldedTree(page: Page, deepestFolder: String) {
 private fun folderHead(page: Page, path: String): Locator =
     page.locator("#session-list .group-head:has(.group-title[title='$path'])")
 
+private fun doneFolderHead(page: Page, path: String): Locator =
+    page.locator("#done-list .group-head:has(.group-title[title='$path'])")
+
+/** Requires a dialog handler already armed on the page: the command confirms before it archives. */
+private fun markDone(page: Page, id: String) {
+    page.locator("#session-list .session-row[data-id='$id']").click()
+    runLeaderCommand(page, "Done current session")
+    assertThat(page.locator("#session-list .session-row[data-id='$id']")).hasCount(0)
+}
+
 private fun interceptMarkRead(
     page: Page,
     id: String,
@@ -682,19 +803,24 @@ private fun awaitStatusOtherThan(page: Page, previous: String): String {
     return statusText(page)
 }
 
-private fun sidebarTree(page: Page): String {
-    val tree = page.evaluate(SIDEBAR_TREE_SCRIPT)
+private fun sidebarTree(page: Page, listSelector: String = "#session-list"): String {
+    val tree = page.evaluate(SIDEBAR_TREE_SCRIPT, listSelector)
     return tree as? String ?: fail("the sidebar tree script answered ${tree ?: "null"}")
 }
 
-private fun assertSidebarTree(page: Page, expected: String, message: String) {
-    assertEquals(expected, sidebarTree(page), message)
+private fun assertSidebarTree(
+    page: Page,
+    expected: String,
+    message: String,
+    listSelector: String = "#session-list",
+) {
+    assertEquals(expected, sidebarTree(page, listSelector), message)
 }
 
 private val SIDEBAR_TREE_SCRIPT: String = """
-    () => {
-      const list = document.querySelector("#session-list");
-      if (!list) return "(no #session-list)";
+    (selector) => {
+      const list = document.querySelector(selector);
+      if (!list) return "(no " + selector + ")";
       const walk = (ul, depth) => {
         const out = [];
         const pad = "  ".repeat(depth);

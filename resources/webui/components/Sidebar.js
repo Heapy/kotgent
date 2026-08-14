@@ -1,8 +1,6 @@
-/* One persistent shell sidebar; its body branches between session and project navigation. */
-
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { groupSessions } from "../lib/paths.js";
+import { groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import {
@@ -12,7 +10,14 @@ import {
   syncWorkerPushPreference,
   unsubscribe as pushUnsubscribe,
 } from "../lib/push.js";
-import { displayName, isNeedsAttention, sessionSubline, stateBadge, taskBadge } from "../lib/sessions.js";
+import {
+  byRecentChange,
+  displayName,
+  isNeedsAttention,
+  sessionSubline,
+  stateBadge,
+  taskBadge,
+} from "../lib/sessions.js";
 import {
   SCREEN_SESSIONS,
   SCREEN_TASKS,
@@ -79,6 +84,23 @@ function NotifyIcon({ on }) {
           stroke-width="1.9"
           stroke-linecap="round"
         />`}
+    </svg>`;
+}
+
+const DONE_BOX_LID =
+  "M3.6 4.4h16.8a1.4 1.4 0 0 1 1.4 1.4v2.2a1.4 1.4 0 0 1-1.4 1.4H3.6A1.4 1.4 0 0 1 2.2 8V5.8a1.4 1.4 0 0 1 1.4-1.4z";
+const DONE_BOX_BODY = "M4.3 10.6h15.4v7.2a2.2 2.2 0 0 1-2.2 2.2H6.5a2.2 2.2 0 0 1-2.2-2.2z";
+const DONE_BOX_SLOT = "M9.6 13.9h4.8";
+
+function DoneIcon() {
+  return html`
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true" fill="currentColor">
+      <mask id="done-slot-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+        <rect x="0" y="0" width="24" height="24" fill="#fff" />
+        <path d=${DONE_BOX_SLOT} fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" />
+      </mask>
+      <path d=${DONE_BOX_LID} />
+      <path d=${DONE_BOX_BODY} mask="url(#done-slot-cut)" />
     </svg>`;
 }
 
@@ -208,16 +230,25 @@ function SessionRow({ session, tasks, active, onSelect, onRestore }) {
   `;
 }
 
+// Only the recency-ordered archive interleaves the two; the live tree keeps rows above subfolders.
+function groupEntries(group) {
+  if (group.entries) return group.entries;
+  return group.sessions.map((session) => ({ session: session }))
+    .concat(group.children.map((child) => ({ group: child })));
+}
+
 function groupNeedsAttention(group) {
   return group.sessions.some((s) => isNeedsAttention(s.state)) ||
     group.children.some(groupNeedsAttention);
 }
 
 function SessionGroup({
-  group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession,
+  group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, done = false,
 }) {
-  const collapsed = collapsedGroups.has(group.path);
-  const hidingAttention = collapsed && groupNeedsAttention(group);
+  // The archive tree mirrors the live one, so its folders need collapse keys of their own.
+  const collapseKey = (done ? "done:" : "") + group.path;
+  const collapsed = collapsedGroups.has(collapseKey);
+  const hidingAttention = !done && collapsed && groupNeedsAttention(group);
 
   return html`
     <li class=${"session-group" + (collapsed ? " collapsed" : "")}>
@@ -227,7 +258,7 @@ function SessionGroup({
           class="group-toggle"
           aria-expanded=${collapsed ? "false" : "true"}
           title=${(collapsed ? "Expand " : "Collapse ") + (group.path || group.label)}
-          onClick=${() => onToggle(group.path)}
+          onClick=${() => onToggle(collapseKey)}
         >
           <span class="group-chevron" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>
           <span class="group-title" title=${group.path || group.label}>${group.label}</span>
@@ -235,7 +266,7 @@ function SessionGroup({
           ${hidingAttention &&
             html`<span class="attn-dot" title="A session in this group needs attention"></span>`}
         </button>
-        ${group.path &&
+        ${!done && group.path &&
           html`<button
             type="button"
             class="icon-button icon-button-small group-new"
@@ -246,22 +277,24 @@ function SessionGroup({
       </div>
       ${!collapsed && html`
         <ul class="session-list group-contents">
-          ${group.sessions.map((s) => html`
-            <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
-                           active=${s.id === activeId} onSelect=${onSelect} />
-          `)}
-          ${group.children.map((child) => html`
-            <${SessionGroup}
-              key=${child.path}
-              group=${child}
-              tasks=${tasks}
-              activeId=${activeId}
-              collapsedGroups=${collapsedGroups}
-              onSelect=${onSelect}
-              onToggle=${onToggle}
-              onNewSession=${onNewSession}
-            />
-          `)}
+          ${groupEntries(group).map((entry) => (entry.session
+            ? html`
+              <${SessionRow} key=${entry.session.id} session=${entry.session} tasks=${tasks}
+                             active=${entry.session.id === activeId} onSelect=${onSelect}
+                             onRestore=${onRestore} />`
+            : html`
+              <${SessionGroup}
+                key=${entry.group.path}
+                group=${entry.group}
+                tasks=${tasks}
+                activeId=${activeId}
+                collapsedGroups=${collapsedGroups}
+                onSelect=${onSelect}
+                onToggle=${onToggle}
+                onNewSession=${onNewSession}
+                onRestore=${onRestore}
+                done=${done}
+              />`))}
         </ul>
       `}
     </li>
@@ -393,9 +426,13 @@ export function Sidebar({
     repairPushRef.current();
   };
   const visible = sessions.filter((s) => !s.archived);
-  const doneSessions = sessions.filter((s) => s.archived);
+  // Live rows keep the daemon's order; the archive answers "what did I just finish" instead.
+  const doneSessions = byRecentChange(sessions.filter((s) => s.archived));
   const attention = visible.filter((s) => isNeedsAttention(s.state));
   const grouped = groupingEnabled(prefs);
+  const doneGroups = grouped && showDone
+    ? orderGroupsByRecentChange(groupSessions(doneSessions, prefs.basePath, prefs.groupingLevel))
+    : [];
   const onTasks = screen === SCREEN_TASKS;
   const sessionsPath = routePath({ screen: SCREEN_SESSIONS, id: activeId || null });
   const openPerProject = new Map();
@@ -413,6 +450,17 @@ export function Sidebar({
         <div class="brand-row">
           <h1>Kotgent</h1>
           <div class="brand-actions">
+            ${!onTasks && doneSessions.length > 0 && html`
+              <button
+                id="show-done-toggle"
+                class=${"icon-button icon-button-small show-done-toggle" + (showDone ? " active" : "")}
+                type="button"
+                aria-pressed=${showDone ? "true" : "false"}
+                aria-label=${"Done sessions (" + doneSessions.length + ")"}
+                title=${"Done sessions (" + doneSessions.length + ")"}
+                onClick=${onToggleShowDone}
+              ><${DoneIcon} /></button>
+            `}
             <button
               id="notify-toggle"
               class=${"icon-button icon-button-small notify-toggle" + (notifyOn ? " active" : "")}
@@ -539,29 +587,38 @@ export function Sidebar({
       </section>
       `}
 
-      ${!onTasks && doneSessions.length > 0 && html`
+      ${!onTasks && showDone && doneSessions.length > 0 && html`
         <section id="done-section">
-          <button
-            id="show-done-toggle"
-            class="show-done-toggle"
-            type="button"
-            aria-expanded=${showDone ? "true" : "false"}
-            onClick=${onToggleShowDone}
-          >${(showDone ? "▾ " : "▸ ") + "Show done (" + doneSessions.length + ")"}</button>
-          ${showDone && html`
-            <ul id="done-list" class="session-list done-list">
-              ${doneSessions.map((s) => html`
-                <${SessionRow}
-                  key=${s.id}
-                  session=${s}
-                  tasks=${tasks}
-                  active=${s.id === activeId}
-                  onSelect=${onSelect}
-                  onRestore=${onRestore}
-                />
-              `)}
-            </ul>
-          `}
+          <h2 class="section-title">
+            <span>Done</span>
+            <span id="done-count" class="done-count">${doneSessions.length}</span>
+          </h2>
+          <ul id="done-list" class=${"session-list done-list" + (grouped ? " grouped" : "")}>
+            ${grouped
+              ? doneGroups.map((g) => html`
+                  <${SessionGroup}
+                    key=${g.path}
+                    group=${g}
+                    tasks=${tasks}
+                    activeId=${activeId}
+                    collapsedGroups=${collapsedGroups}
+                    onSelect=${onSelect}
+                    onToggle=${toggleGroup}
+                    onRestore=${onRestore}
+                    done=${true}
+                  />
+                `)
+              : doneSessions.map((s) => html`
+                  <${SessionRow}
+                    key=${s.id}
+                    session=${s}
+                    tasks=${tasks}
+                    active=${s.id === activeId}
+                    onSelect=${onSelect}
+                    onRestore=${onRestore}
+                  />
+                `)}
+          </ul>
         </section>
       `}
 

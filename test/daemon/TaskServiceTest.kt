@@ -46,8 +46,6 @@ class TaskServiceTest {
     private val s1 = SessionId("s-one")
     private val s2 = SessionId("s-two")
 
-    private val clock = 7_000L
-
     private inner class Fixture {
         val journal: MutableList<String> = mutableListOf()
         val witness = LockWitness()
@@ -58,7 +56,6 @@ class TaskServiceTest {
             sessions = sessions,
             projectFs = UnusedProjectFs,
             projectFiles = UnusedProjectFileWriter,
-            now = { clock },
         )
 
         fun seedTask(ref: TaskRef, state: TaskState = TaskState.todo, position: Double = 1.0) {
@@ -138,7 +135,11 @@ class TaskServiceTest {
             assertEquals(revBefore, f.tasks.entries.getValue(t1).rev, "a zero-row advance must write nothing")
             assertEquals(t1, f.linkOf(s1), "the link is made regardless")
             assertEquals(
-                listOf("tasks.startIfTodo(local:1)", "sessions.setTaskRef(s-one -> local:1)", "tasks.appendActivity(local:1, linked)"),
+                listOf(
+                    "tasks.startIfTodo(local:1)",
+                    "sessions.setTaskRef(s-one -> local:1)",
+                    "tasks.appendActivity(local:1, linked)",
+                ),
                 f.journal,
                 "two independent sequential writes, then the feed row",
             )
@@ -291,6 +292,31 @@ class TaskServiceTest {
     }
 
     @Test
+    fun taskWritesLeaveActivityOrderingWhereTheyFoundIt() = runBlocking {
+        withTimeout(5_000) {
+            val f = Fixture()
+            f.seedTask(t1)
+            f.seedTask(t2, position = 2.0)
+            f.seedSession(s1, createdAt = 1_000L)
+            f.seedSession(s2, createdAt = 2_000L)
+
+            f.service.link(s1, t1)
+            f.service.linkNext(s2, alpha)
+            f.service.unlink(s1)
+            f.service.link(s1, t1)
+            // Closing the task releases every holder — the one write that reaches rows nobody touched.
+            f.service.transition(t1, TaskState.done, author = s2.value)
+
+            assertEquals(
+                mapOf(s1 to 1_000L, s2 to 2_000L),
+                f.sessions.rows.mapValues { (_, row) -> row.updatedAt },
+                "linking, releasing and closing a task are consequences of other work: a session sorted " +
+                    "by recency must not jump for any of them",
+            )
+        }
+    }
+
+    @Test
     fun aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone() = runBlocking {
         withTimeout(5_000) {
             val f = Fixture()
@@ -315,9 +341,9 @@ class TaskServiceTest {
                 "no `unlinked` row is written for a release that wrote nothing",
             )
             assertEquals(
-                listOf("sessions.getSession(s-one)"),
-                f.journal.filter { it.startsWith("sessions.getSession") },
-                "the ref it acted on came from that one read",
+                "sessions.getSession(s-one)",
+                f.journal.first(),
+                "the ref it acted on came from its own read, taken before the racing link ran: ${f.journal}",
             )
             assertTrue(
                 f.journal.contains("sessions.clearTaskRefIf(s-one, local:1)"),
@@ -676,24 +702,23 @@ class TaskServiceTest {
 
         var afterSessionsHoldingTask: (suspend () -> Unit)? = null
 
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) =
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) =
             witness.inEventStore("setTaskRef") {
                 journal += "sessions.setTaskRef(${sessionId.value} -> ${taskRef?.value})"
                 val row = rows[sessionId]
-                if (row != null) rows[sessionId] = row.copy(taskRef = taskRef, updatedAt = updatedAt)
+                if (row != null) rows[sessionId] = row.copy(taskRef = taskRef)
             }
 
         override suspend fun clearTaskRefIf(
             sessionId: SessionId,
             expectedRef: TaskRef,
-            updatedAt: Long,
         ): Boolean = witness.inEventStore("clearTaskRefIf") {
             journal += "sessions.clearTaskRefIf(${sessionId.value}, ${expectedRef.value})"
             val row = rows[sessionId]
             if (row == null || row.taskRef != expectedRef) {
                 false
             } else {
-                rows[sessionId] = row.copy(taskRef = null, updatedAt = updatedAt)
+                rows[sessionId] = row.copy(taskRef = null)
                 true
             }
         }
@@ -719,15 +744,14 @@ class TaskServiceTest {
             paneId: io.kotgent.core.PaneId?,
             updatedAt: Long,
         ) = unused("updateSessionState")
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = unused("setModel")
+        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: io.kotgent.core.ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = unused("setModelForProvider")
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) =
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
             unused("setProjectId")
         override suspend fun listSessions(): List<SessionMeta> = unused("listSessions")
         override suspend fun append(

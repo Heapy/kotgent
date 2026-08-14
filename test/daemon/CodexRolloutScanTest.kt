@@ -276,7 +276,7 @@ class CodexRolloutScanTest {
             )
             store.upsertSession(launchMeta.copy(providerSessionId = mine))
 
-            val persisted = captureCodexModelOnce(store, CodexRolloutScan(codexDir), launchMeta, now = { 43L })
+            val persisted = captureCodexModelOnce(store, CodexRolloutScan(codexDir), launchMeta)
 
             assertTrue(persisted, "the id-keyed lookup answered")
             assertEquals(
@@ -307,14 +307,14 @@ class CodexRolloutScanTest {
             store.upsertSession(launchMeta)
 
             val scan = CodexRolloutScan(codexDir)
-            assertFalse(captureCodexModelOnce(store, scan, launchMeta, now = { 43L }))
+            assertFalse(captureCodexModelOnce(store, scan, launchMeta))
             assertNull(
                 store.getSession(SessionId("cap00003"))!!.model,
                 "an id-less attempt persists nothing — any hit could be the neighbour's",
             )
 
             store.upsertSession(launchMeta.copy(providerSessionId = mine))
-            assertFalse(captureCodexModelOnce(store, scan, launchMeta, now = { 44L }))
+            assertFalse(captureCodexModelOnce(store, scan, launchMeta))
             assertNull(
                 store.getSession(SessionId("cap00003"))!!.model,
                 "a bound id makes the id-keyed lookup the only source; a miss stays null",
@@ -339,9 +339,7 @@ class CodexRolloutScanTest {
             store.upsertSession(launchMeta)
 
             val scan = CodexRolloutScan(codexDir)
-            repeat(3) { attempt ->
-                assertFalse(captureCodexModelOnce(store, scan, launchMeta, now = { 43L + attempt }))
-            }
+            repeat(3) { assertFalse(captureCodexModelOnce(store, scan, launchMeta)) }
             assertNull(
                 store.getSession(SessionId("cap00004"))!!.model,
                 "no attempt ever writes an id-less result — the model stays an honest null",
@@ -381,7 +379,7 @@ class CodexRolloutScanTest {
             )
 
             assertTrue(idCapture.bind(sid, neighbour), "the discovery fallback's bind path")
-            assertTrue(captureCodexModelOnce(store, scan, launchMeta, now = { 43L }))
+            assertTrue(captureCodexModelOnce(store, scan, launchMeta))
             assertEquals("gpt-6", store.getSession(sid)!!.model, "the neighbour's model was persisted")
 
             store.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
@@ -391,7 +389,7 @@ class CodexRolloutScanTest {
             mgr.onProviderIdRebound(sid)
             assertNull(store.getSession(sid)!!.model, "the suspect model is cleared before any recapture")
             val again = recapture.await()
-            assertTrue(captureCodexModelOnce(store, scan, again, now = { 44L }), "the re-run answers id-keyed")
+            assertTrue(captureCodexModelOnce(store, scan, again), "the re-run answers id-keyed")
             assertEquals("gpt-5.5", store.getSession(sid)!!.model, "the true model replaces the neighbour's")
         }
     }
@@ -423,14 +421,14 @@ class CodexRolloutScanTest {
                     if (!raced) {
                         raced = true
                         real.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
-                        real.setModel(sid, null, 43L)
+                        real.setModel(sid, null)
                     }
                     return row
                 }
             }
 
             assertFalse(
-                captureCodexModelOnce(store, CodexRolloutScan(codexDir), launchMeta, now = { 44L }),
+                captureCodexModelOnce(store, CodexRolloutScan(codexDir), launchMeta),
                 "a capture holding the displaced id writes zero rows",
             )
             assertNull(

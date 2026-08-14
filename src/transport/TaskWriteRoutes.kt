@@ -479,9 +479,8 @@ private suspend fun RoutingContext.refuseDeletedProject(
 }
 
 private suspend fun bindSessionProject(routing: TaskRouting, session: SessionMeta, project: ProjectId) {
-    // Derived binding is not activity. Re-read after filesystem work so it neither advances nor rewinds sorting.
-    val sortKey = routing.sessions.getSession(session.id)?.updatedAt ?: session.updatedAt
-    routing.sessions.setProjectId(session.id, project, sortKey)
+    // Derived binding is not activity; the store preserves the row's committed ordering stamp atomically.
+    routing.sessions.setProjectId(session.id, project)
 }
 
 /** Re-reads the row so clients see committed state, including a racing tombstone change. */

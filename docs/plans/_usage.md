@@ -45,7 +45,7 @@ Mirror the `model`/`archived` "discovered per-session telemetry" precedent end-t
 ```
 `encodeDefaults = true` so a cleared/empty `windows` round-trips (the `model`-clear invariant).
 
-**B4. `EventStore` + `SqliteEventStore`** — `setTokenLimits(id, limits, updatedAt)` + `setTokenLimitsForProvider(id, providerId, limits, updatedAt): Boolean` (templates `setModel` :135, `setModelForProvider` :152). The `ForProvider` conditional write is the rebind-race guard.
+**B4. `EventStore` + `SqliteEventStore`** — `setTokenLimits(id, limits)` + `setTokenLimitsForProvider(id, providerId, limits): Boolean` (templates `setModel`, `setModelForProvider`). Limits are derived metadata: both SQL updates advance `rev` but leave `updated_at` untouched. The `ForProvider` conditional write is the rebind-race guard.
 
 **B5. DTO/WS:** `SessionDto` add `tokenLimits: TokenLimits? = null` (after `model` :395), map in `SessionMeta.toDto()`. `SessionUpdateDto` add same field after `model` (:164), populate **only** in snapshot `toUpdateDto()` (null in live `SessionUpdate.toDto()`) — **same `snapshot`-discriminated rule as `model`**; document it.
 
@@ -66,7 +66,7 @@ Mirror the `model`/`archived` "discovered per-session telemetry" precedent end-t
 **D1. Rollout `TokenCount` tail-scan (primary).** The rollout JSONL carries `{type:"token_count", payload:{ info, rate_limits:{ primary:{used_percent,window_minutes,resets_at}, secondary:{…}, credits:{…?} }}}` after turns. `resets_at`=epoch sec. No new process — kotgent already scans this rollout for `model`.
 1. `CodexRolloutScan.kt` — add `tokenCountOf(providerSessionId): String?` mirroring `modelOf` (:150) but reading the **tail** via `VendorStoreFs.readTail(path, TOKENCOUNT_TAIL_BYTES=256KB)` (`TokenCount` sits near end; the current 256KB head window can miss it on long sessions).
 2. New `src/adapter/codex/CodexLimitsScan.kt` (mirrors `ModelScan.kt`): pure `extractTokenLimits(text): TokenLimits?` — finds the **last** `rate_limits` object, maps fields; handle `credits` (API-key) shape as a `Window(label="credits", note=…)` so the UI doesn't infer a missing meter.
-3. `captureCodexLimitsOnce(store, scan, meta, now)` mirroring `captureCodexModelOnce` (:266); writes via `setTokenLimitsForProvider` (conditional — survives rebind).
+3. `captureCodexLimitsOnce(store, scan, meta)` mirroring `captureCodexModelOnce`; writes via `setTokenLimitsForProvider` (conditional — survives rebind without changing activity ordering).
 4. Poll in `Commands.kt` `captureModelInBackground` lambda (:442) alongside the codex model poll, own `LIMITS_CAPTURE_ATTEMPTS`/`INTERVAL`.
 5. Field-check: confirm the last `TokenCount` is reachable in 256KB tail on a real rollout.
 
@@ -74,7 +74,7 @@ Mirror the `model`/`archived` "discovered per-session telemetry" precedent end-t
 
 **D3. No hook work for Codex** — its 6 wired hooks carry no usage; limits hit as an in-stream error item.
 
-**D4. Rebind correction** — extend `SessionManager.onProviderIdRebound` (:369) to also `store.setTokenLimits(id, null, now)` (the neighbour's `TokenCount` would persist a wrong meter). The conditional `setTokenLimitsForProvider` (D1.3) is the second guarantee — the exact two-guarantee pattern proven for `model`.
+**D4. Rebind correction** — extend `SessionManager.onProviderIdRebound` to also `store.setTokenLimits(id, null)` (the neighbour's `TokenCount` would persist a wrong meter). The conditional `setTokenLimitsForProvider` (D1.3) is the second guarantee — the exact two-guarantee pattern proven for `model`.
 
 ## Part E — Cursor as 4th provider + best-effort limits
 Mirror the Junie commit (`ed94fbde`) structure-for-structure.

@@ -575,12 +575,11 @@ class TaskEventsTest {
         ) = unused("updateSessionState")
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
             unused("setArchived")
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = unused("setModel")
+        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = unused("setModelForProvider")
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =

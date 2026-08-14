@@ -367,6 +367,38 @@ class LayoutTest {
             }
         }
     }
+
+    @Test
+    fun theArchiveToggleJoinsTheHeaderRowOnAPhoneWithoutWrappingIt() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onPhone(harness, "layout-archive-toggle") { page ->
+                // The row wraps by design on a phone, so an added button is exactly what could break it.
+                harness.send("done $ARCHIVED_SESSION_ID")
+                page.locator("#drawer-toggle").click()
+                assertThat(page.locator("#show-done-toggle")).isVisible()
+                // Measuring mid-slide would read positions the drawer never comes to rest at.
+                page.waitForFunction(DRAWER_AT_REST)
+
+                val row = page.values(MEASURE_BRAND_ACTIONS)
+                assertEquals(
+                    1,
+                    row.int("rows"),
+                    "the header keeps its buttons on one line: ${row.int("buttons")} buttons landed on " +
+                        "${row.int("rows")} rows (${row.num("buttonsWidth")}px of buttons in a " +
+                        "${row.num("rowWidth")}px row)",
+                )
+                assertTrue(
+                    row.num("doneWidth") >= MIN_TOGGLE_BOX && row.num("doneHeight") >= MIN_TOGGLE_BOX,
+                    "the archive toggle keeps a thumb-sized hit box (${row.num("doneWidth")}x" +
+                        "${row.num("doneHeight")})",
+                )
+                assertTrue(
+                    row.num("markWidth") > 0.0 && row.num("markHeight") > 0.0,
+                    "and the drawn mark inside it has a box of its own",
+                )
+            }
+        }
+    }
 }
 
 
@@ -391,6 +423,8 @@ private const val SCROLLBAR_RESERVATION = 14
 private const val MIN_DRAWER_WIDTH = 200.0
 
 private const val MIN_TOGGLE_BOX = 24.0
+
+private const val ARCHIVED_SESSION_ID = "s-delta"
 
 private const val SETTLE_QUIET_MILLIS = 220
 
@@ -536,6 +570,47 @@ private val MEASURE_SHELL = """
       out.viewportWidth = window.innerWidth;
       out.viewportHeight = window.innerHeight;
       return out;
+    }
+""".trimIndent()
+
+private val DRAWER_AT_REST = """
+    () => {
+      const sidebar = document.querySelector("#sidebar");
+      return !!sidebar && sidebar.getBoundingClientRect().left >= 0;
+    }
+""".trimIndent()
+
+private val MEASURE_BRAND_ACTIONS = """
+    () => {
+      const row = document.querySelector(".brand-actions");
+      if (!row) return { buttons: 0, rows: 0, doneWidth: 0, doneHeight: 0, markWidth: 0, markHeight: 0 };
+      const buttons = Array.from(row.querySelectorAll("button"));
+      // Buttons of different heights centre at different tops, so a row break is a vertical gap.
+      const boxes = buttons.map((b) => b.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+      let rows = boxes.length > 0 ? 1 : 0;
+      let rowBottom = boxes.length > 0 ? boxes[0].bottom : 0;
+      for (const box of boxes.slice(1)) {
+        if (box.top >= rowBottom) {
+          rows++;
+          rowBottom = box.bottom;
+        } else {
+          rowBottom = Math.max(rowBottom, box.bottom);
+        }
+      }
+      const done = row.querySelector("#show-done-toggle");
+      const box = done ? done.getBoundingClientRect() : { width: 0, height: 0 };
+      const mark = done ? done.querySelector("svg") : null;
+      const markBox = mark ? mark.getBoundingClientRect() : { width: 0, height: 0 };
+      return {
+        buttons: buttons.length,
+        rows: rows,
+        doneWidth: box.width,
+        doneHeight: box.height,
+        markWidth: markBox.width,
+        markHeight: markBox.height,
+        rowWidth: row.getBoundingClientRect().width,
+        buttonsWidth: buttons.reduce((sum, b) => sum + b.getBoundingClientRect().width, 0),
+      };
     }
 """.trimIndent()
 

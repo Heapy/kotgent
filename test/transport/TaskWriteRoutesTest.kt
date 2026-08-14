@@ -1253,7 +1253,6 @@ class TaskWriteRoutesTest {
                 sessions = sessions,
                 projectFs = fs,
                 projectFiles = writer,
-                now = { 0L },
             )
             val routing = TaskRouting(
                 tasks = tasks,
@@ -1538,9 +1537,9 @@ class TaskWriteRoutesTest {
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { rows[sessionId] }
 
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?, updatedAt: Long) {
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
             mutex.withLock {
-                rows[sessionId]?.let { rows[sessionId] = it.copy(taskRef = taskRef, updatedAt = updatedAt) }
+                rows[sessionId]?.let { rows[sessionId] = it.copy(taskRef = taskRef) }
             }
         }
 
@@ -1560,18 +1559,17 @@ class TaskWriteRoutesTest {
             paneId: PaneId?,
             updatedAt: Long,
         ) = unused("updateSessionState")
-        override suspend fun setModel(sessionId: SessionId, model: String?, updatedAt: Long) = unused("setModel")
+        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
         override suspend fun setModelForProvider(
             sessionId: SessionId,
             providerSessionId: ProviderSessionId,
             model: String,
-            updatedAt: Long,
         ): Boolean = unused("setModelForProvider")
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
 
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?, updatedAt: Long) {
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
             mutex.withLock {
-                rows[sessionId]?.let { rows[sessionId] = it.copy(projectId = projectId, updatedAt = updatedAt) }
+                rows[sessionId]?.let { rows[sessionId] = it.copy(projectId = projectId) }
             }
         }
         override suspend fun listSessions(): List<SessionMeta> = unused("listSessions")
