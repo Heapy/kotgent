@@ -442,24 +442,31 @@ function App() {
   // Project mutations have no event frame, so refresh the live list explicitly.
   const applyProjectArchive = useCallback(async (id, archived) => {
     const submittedDialog = dialogRef.current;
-    let changed;
-    try {
-      changed = archived ? await deleteProject(id) : await restoreProject(id);
-    } catch (e) {
+    const reportFailure = (e) => {
       // A dismissed dialog cannot own errors from its still-running request.
       if (dialogRef.current === submittedDialog) throw e;
       say((archived ? "Could not delete the project: " : "Could not restore the project: ") +
         errorMessage(e), true);
+    };
+    let changed;
+    try {
+      changed = archived ? await deleteProject(id) : await restoreProject(id);
+    } catch (e) {
+      reportFailure(e);
       return;
     }
     const label = (changed && changed.name) || id;
     if (!changed || typeof changed.archived !== "boolean") {
-      throw new Error("The daemon did not confirm whether " + label + " is deleted. Reload and try again.");
+      reportFailure(new Error(
+        "The daemon did not confirm whether " + label + " is deleted. Reload and try again.",
+      ));
+      return;
     }
     if (changed.archived !== archived) {
-      throw new Error(archived
+      reportFailure(new Error(archived
         ? label + " was restored again while it was being deleted. Delete it again if needed."
-        : label + " was deleted again while it was being restored. Restore it again.");
+        : label + " was deleted again while it was being restored. Restore it again."));
+      return;
     }
     // The response confirmed this row, so apply it before the refetch: a re-read that fails must not
     // leave a deleted project selected and interactive against its own tombstone.

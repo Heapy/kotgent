@@ -722,6 +722,7 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
     try {
       await onRestore(project.id);
     } catch (e) {
+      if (!aliveRef.current) return;
       setError("Could not restore the project: " + errorMessage(e));
       setBusyId(null);
     }

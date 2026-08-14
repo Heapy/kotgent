@@ -135,6 +135,38 @@ class ProjectDialogTest {
         }
 
     @Test
+    fun aDismissedDeleteDialogReportsItsLateRefusalInTheBoardStatus() {
+        val held = AtomicReference<Route?>(null)
+        onProjects(
+            "project-delete-dismissed-late-refusal",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API/$SELECTED_PROJECT") { route ->
+                    if (route.request().method() == "DELETE" && held.compareAndSet(null, route)) return@route
+                    route.resume()
+                }
+            },
+        ) { _, page ->
+            page.openPalette()
+            page.runFirstMatch("delete project", "Delete project")
+            page.locator("#delete-project-submit").click()
+            page.waitForCondition { held.get() != null }
+
+            page.evaluate("document.getElementById('delete-project-dialog').close()")
+            assertThat(page.locator("#delete-project-dialog")).hasCount(0)
+            held.get()!!.fulfill(
+                Route.FulfillOptions()
+                    .setStatus(200)
+                    .setContentType("application/json")
+                    .setBody(projectJson(SELECTED_PROJECT, "Alpha Fixture", "/repo/alpha", archived = false)),
+            )
+
+            val status = page.locator("#board-status")
+            assertThat(status).containsText("was restored again")
+            assertThat(status).containsText("Delete it again")
+        }
+    }
+
+    @Test
     fun aRefreshRequestedAfterDeleteDiscardsTheOlderProjectsResponse() {
         val holdNext = AtomicBoolean(false)
         val held = AtomicReference<Route?>(null)
