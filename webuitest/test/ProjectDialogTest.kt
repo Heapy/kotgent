@@ -46,6 +46,65 @@ class ProjectDialogTest {
         }
 
     @Test
+    fun aDismissedNewProjectFormReportsItsLateRefusalInTheBoardStatus() {
+        val held = AtomicReference<Route?>(null)
+        onProjects(
+            "project-create-dismissed-late-refusal",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API") { route ->
+                    if (route.request().method() == "POST" && held.compareAndSet(null, route)) return@route
+                    route.resume()
+                }
+            },
+        ) { _, page ->
+            page.openPalette()
+            page.runFirstMatch("new project", "New project")
+            page.locator("#new-project-path").fill("/repo/racing")
+            page.locator("#new-project-form button[type=submit]").click()
+            page.waitForCondition { held.get() != null }
+
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#new-project-dialog")).hasCount(0)
+            held.get()!!.fulfill(
+                Route.FulfillOptions()
+                    .setStatus(200)
+                    .setContentType("application/json")
+                    .setBody(projectJson(RACING_PROJECT, "Racing Fixture", "/repo/racing", archived = true)),
+            )
+
+            val status = page.locator("#board-status")
+            assertThat(status).containsText("was deleted again")
+            assertThat(status).containsText("Restore it")
+        }
+    }
+
+    @Test
+    fun aDismissedNewProjectFormReportsItsLateSuccessInTheBoardStatus() {
+        val held = AtomicReference<Route?>(null)
+        onProjects(
+            "project-create-dismissed-late-success",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API") { route ->
+                    if (route.request().method() == "POST" && held.compareAndSet(null, route)) return@route
+                    route.resume()
+                }
+            },
+        ) { _, page ->
+            page.openPalette()
+            page.runFirstMatch("new project", "New project")
+            page.locator("#new-project-path").fill("/repo/alpha")
+            page.locator("#new-project-form button[type=submit]").click()
+            page.waitForCondition { held.get() != null }
+
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#new-project-dialog")).hasCount(0)
+            held.get()!!.resume()
+
+            assertThat(page.locator("#board-status")).containsText("Project Alpha Fixture is ready.")
+        }
+    }
+
+    @Test
     fun anArchivedRestoreResponseKeepsTheDialogOpenWithRecoveryGuidance() =
         onProjects(
             "project-restore-racing-delete",

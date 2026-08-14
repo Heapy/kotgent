@@ -240,6 +240,8 @@ export function Board({
   onAnnounce,
 }) {
   const [form, setForm] = useState(null);
+  const formRef = useRef(form);
+  formRef.current = form;
   const [showAllDone, setShowAllDone] = useState(false);
   const [phone, setPhone] = useState(phoneNow);
   const [activeColumn, setActiveColumn] = useState(BOARD_COLUMNS[0].state);
@@ -278,14 +280,16 @@ export function Board({
   useEffect(() => {
     if (newTaskRequest === servedRequestRef.current) return;
     servedRequestRef.current = newTaskRequest;
-    setForm("task");
+    setForm({ kind: "task" });
   }, [newTaskRequest]);
   const servedProjectRequestRef = useRef(0);
   useEffect(() => {
     if (newProjectRequest === servedProjectRequestRef.current) return;
     servedProjectRequestRef.current = newProjectRequest;
-    setForm("project");
+    setForm({ kind: "project" });
   }, [newProjectRequest]);
+
+  useEffect(() => () => { formRef.current = null; }, []);
 
   const shownProjectId = project ? project.id : null;
   const entries = useMemo(() => tasks
@@ -338,9 +342,18 @@ export function Board({
   }, [shownProjectId, publishRow, say]);
 
   const submitProject = useCallback(async (path, name) => {
-    const created = await createProject(path, name);
-    if (onProjectCreated) await onProjectCreated(created);
-    setForm(null);
+    const submittedForm = formRef.current;
+    let created;
+    try {
+      created = await createProject(path, name);
+      if (onProjectCreated) await onProjectCreated(created);
+    } catch (e) {
+      // A dismissed or replaced form cannot display the outcome of its still-running request.
+      if (formRef.current === submittedForm) throw e;
+      say("Could not create the project: " + errorMessage(e), true);
+      return;
+    }
+    setForm((current) => current === submittedForm ? null : current);
     say("Project " + ((created && created.name) || path) + " is ready.");
   }, [onProjectCreated, say]);
 
@@ -607,7 +620,7 @@ export function Board({
           </span>
         </div>
         <button type="button" class="button board-new-task" disabled=${!project}
-                onClick=${() => setForm("task")}>New task</button>
+                onClick=${() => setForm({ kind: "task" })}>New task</button>
         <button
           id="palette-button"
           class="icon-button icon-button-small palette-button"
@@ -643,10 +656,10 @@ export function Board({
           onOpenSession=${openSession}
         />`}
 
-      ${form === "task" && html`
+      ${form && form.kind === "task" && html`
         <${NewTaskForm} project=${project}
                         onCreate=${submitTask} onClose=${() => setForm(null)} />`}
-      ${form === "project" && html`
+      ${form && form.kind === "project" && html`
         <${NewProjectForm} basePath=${basePath} onCreate=${submitProject}
                            onClose=${() => setForm(null)} />`}
     </main>
