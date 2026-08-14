@@ -488,6 +488,9 @@ export function Sidebar({
           </div>
         </div>
         <${NavSwitch} screen=${screen} sessionsPath=${sessionsPath} />
+      </header>
+
+      <div id="sidebar-scroll">
         ${!onTasks && html`
           <div
             id="attention-count"
@@ -496,39 +499,38 @@ export function Sidebar({
           >
             <span id="attention-num">${attention.length}</span> need attention
           </div>`}
-      </header>
 
-      ${onTasks && html`
-        <section id="projects-section">
-          <h2 class="section-title">
-            <span>Projects</span>
-            <button
-              id="sidebar-new-project"
-              class="button button-quiet button-small"
-              type="button"
-              title="Adopt a directory as a project"
-              onClick=${() => onNewProject()}
-            >+ New</button>
-          </h2>
-          <ul id="project-list" class="project-list">
-            ${projects.map((project) => html`
-              <${ProjectRow}
-                key=${project.id}
-                project=${project}
-                open=${openPerProject.get(project.id) || 0}
-                active=${project.id === projectId}
-                onSelect=${onSelectProject}
-              />`)}
-          </ul>
-          ${projects.length === 0 && html`
-            <div id="empty-projects" class="empty-sessions">
-              <p>No projects yet. Adopt a directory to start a backlog in it.</p>
-              <button id="empty-new-project-button" class="button button-primary" type="button"
-                      onClick=${() => onNewProject()}>New project</button>
-            </div>
-          `}
-        </section>
-      `}
+        ${onTasks && html`
+          <section id="projects-section">
+            <h2 class="section-title">
+              <span>Projects</span>
+              <button
+                id="sidebar-new-project"
+                class="button button-quiet button-small"
+                type="button"
+                title="Adopt a directory as a project"
+                onClick=${() => onNewProject()}
+              >+ New</button>
+            </h2>
+            <ul id="project-list" class="project-list">
+              ${projects.map((project) => html`
+                <${ProjectRow}
+                  key=${project.id}
+                  project=${project}
+                  open=${openPerProject.get(project.id) || 0}
+                  active=${project.id === projectId}
+                  onSelect=${onSelectProject}
+                />`)}
+            </ul>
+            ${projects.length === 0 && html`
+              <div id="empty-projects" class="empty-sessions">
+                <p>No projects yet. Adopt a directory to start a backlog in it.</p>
+                <button id="empty-new-project-button" class="button button-primary" type="button"
+                        onClick=${() => onNewProject()}>New project</button>
+              </div>
+            `}
+          </section>
+        `}
 
       ${!onTasks && attention.length > 0 && html`
         <section id="attention-section">
@@ -628,14 +630,15 @@ export function Sidebar({
         </section>
       `}
 
-      <footer id="sidebar-footer">
-        ${!onTasks && html`
-          <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
-             role="status" aria-live="polite">${status.text}</p>`}
-        ${currentVersion && html`
-          <span id="current-version" title="Kotgent version">${currentVersion}</span>
-        `}
-      </footer>
+        <footer id="sidebar-footer">
+          ${!onTasks && html`
+            <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
+               role="status" aria-live="polite">${status.text}</p>`}
+          ${currentVersion && html`
+            <span id="current-version" title="Kotgent version">${currentVersion}</span>
+          `}
+        </footer>
+      </div>
     </aside>
   `;
 }

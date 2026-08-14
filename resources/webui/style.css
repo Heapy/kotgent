@@ -84,7 +84,7 @@ html, body {
   display: flex;
   flex-direction: column;
   margin: 12px 0 12px 12px;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 12px;
   transition: width 180ms ease-out, min-width 180ms ease-out, padding 180ms ease-out,
               margin-left 180ms ease-out;
@@ -99,7 +99,17 @@ html, body {
   overflow: hidden;
 }
 
-#sidebar-head { margin-bottom: 8px; }
+#sidebar-head { flex: 0 0 auto; }
+#sidebar-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+#projects-section { padding-top: 8px; }
 .brand-row {
   display: flex;
   align-items: center;
@@ -1984,7 +1994,7 @@ button.task-card-title:hover,
     max-width: none;
     min-width: 0;
     border-right: 1px solid var(--border);
-    overflow-y: auto;
+    overflow: hidden;
     padding: calc(12px + env(safe-area-inset-top)) 12px
              calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
     /* Translation alone leaves closed-drawer controls focusable. */

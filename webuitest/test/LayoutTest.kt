@@ -129,6 +129,24 @@ class LayoutTest {
     }
 
     @Test
+    fun theSidebarPinsItsHeaderAboveTheSessionsAndTasksScrollersOnDesktop() {
+        Harness(TASK_LINKED_SESSION_SCENARIO).use { harness ->
+            onDesktop(harness, "layout-sidebar-scroll-desktop") { page ->
+                exercisePinnedSidebar(page, mobile = false)
+            }
+        }
+    }
+
+    @Test
+    fun theSidebarPinsItsHeaderInsideTheMobileDrawer() {
+        Harness(TASK_LINKED_SESSION_SCENARIO).use { harness ->
+            onPhone(harness, "layout-sidebar-scroll-phone") { page ->
+                exercisePinnedSidebar(page, mobile = true)
+            }
+        }
+    }
+
+    @Test
     fun theDesktopSidebarCollapsesAndANarrowedWindowStillOpensAFullDrawer() {
         Harness(SESSIONS_SCENARIO).use { harness ->
             onDesktop(harness, "layout-collapse") { page ->
@@ -411,6 +429,8 @@ private const val DESKTOP_HEIGHT = 900
 private const val PHONE_WIDTH = 390
 private const val PHONE_HEIGHT = 844
 
+private const val SIDEBAR_SCROLL_VIEWPORT_HEIGHT = 200
+
 private const val DEFAULT_TERMINAL_FONT_SIZE = 13
 private const val LARGEST_TERMINAL_FONT_SIZE = 16
 
@@ -644,6 +664,89 @@ private val MEASURE_NOTIFY_TOGGLE = """
       };
     }
 """.trimIndent()
+
+private fun exercisePinnedSidebar(page: Page, mobile: Boolean) {
+    assertThat(page.locator("#session-list .session-row")).hasCount(3)
+    page.setViewportSize(if (mobile) PHONE_WIDTH else DESKTOP_WIDTH, SIDEBAR_SCROLL_VIEWPORT_HEIGHT)
+    if (mobile) {
+        page.locator("#drawer-toggle").click()
+        waitForDrawer(page, open = true)
+    }
+
+    assertThat(page.locator("#sidebar-head #attention-count")).hasCount(0)
+    assertThat(page.locator("#sidebar-scroll > #attention-count")).hasCount(1)
+    assertPinnedSidebarScroll(page, "#attention-count", if (mobile) "the sessions drawer" else "the sessions sidebar")
+
+    val tasks = page.locator(".nav-switch a:text-is('Tasks')")
+    assertThat(tasks).isVisible()
+    tasks.click()
+    page.awaitBoard()
+    assertThat(page.locator("#project-list .project-row")).hasCount(1)
+    assertPinnedSidebarScroll(page, "#projects-section", if (mobile) "the tasks drawer" else "the tasks sidebar")
+
+    val sessions = page.locator(".nav-switch a:text-is('Sessions')")
+    assertThat(sessions).isVisible()
+    sessions.click()
+    page.awaitSessionView()
+    assertThat(page.locator("#session-list .session-row")).hasCount(3)
+}
+
+private fun assertPinnedSidebarScroll(page: Page, movingSelector: String, where: String) {
+    val sidebar = page.locator("#sidebar")
+    val header = page.locator("#sidebar-head")
+    val scroll = page.locator("#sidebar-scroll")
+    val moving = page.locator(movingSelector)
+    val footer = page.locator("#sidebar-footer")
+
+    scroll.evaluate("el => { el.scrollTop = 0; }")
+    val clientHeight = scroll.number("el => el.clientHeight")
+    val scrollHeight = scroll.number("el => el.scrollHeight")
+    assertTrue(
+        scrollHeight > clientHeight + EDGE_EPS,
+        "$where has no real overflow: its content is ${scrollHeight}px high in a ${clientHeight}px port",
+    )
+    assertEquals(0.0, sidebar.number("el => el.scrollTop"), "$where starts with no outer-sidebar scroll")
+    assertTrue(
+        header.number("el => el.scrollHeight") <= header.number("el => el.clientHeight") + EDGE_EPS,
+        "$where squeezed the pinned header until its brand or screen switch overflowed",
+    )
+
+    val headerBefore = header.boundingBox() ?: fail("$where rendered no header box")
+    val scrollBefore = scroll.boundingBox() ?: fail("$where rendered no scroll-port box")
+    val movingBefore = moving.boundingBox() ?: fail("$where rendered no $movingSelector box")
+    val footerBefore = footer.boundingBox() ?: fail("$where rendered no footer box")
+    assertTrue(
+        footerBefore.y + footerBefore.height > scrollBefore.y + scrollBefore.height + EDGE_EPS,
+        "$where showed the whole footer before scrolling, so reaching it proves nothing",
+    )
+
+    val scrolled = scroll.number("el => { el.scrollTop = el.scrollHeight; return el.scrollTop; }")
+    assertTrue(scrolled > EDGE_EPS, "$where did not scroll its dedicated region")
+
+    val headerAfter = header.boundingBox() ?: fail("$where lost its header while scrolling")
+    val movingAfter = moving.boundingBox() ?: fail("$where lost $movingSelector while scrolling")
+    val footerAfter = footer.boundingBox() ?: fail("$where lost its footer while scrolling")
+    assertTrue(
+        abs(headerAfter.y - headerBefore.y) <= EDGE_EPS &&
+            abs(headerAfter.height - headerBefore.height) <= EDGE_EPS &&
+            abs(headerAfter.width - headerBefore.width) <= EDGE_EPS,
+        "$where moved or resized its pinned header: " +
+            "${headerBefore.x},${headerBefore.y} ${headerBefore.width}x${headerBefore.height} -> " +
+            "${headerAfter.x},${headerAfter.y} ${headerAfter.width}x${headerAfter.height}",
+    )
+    assertTrue(
+        movingAfter.y < movingBefore.y - EDGE_EPS,
+        "$where did not move $movingSelector with the scrollable content",
+    )
+    assertTrue(
+        footerAfter.y >= scrollBefore.y - EDGE_EPS &&
+            footerAfter.y + footerAfter.height <= scrollBefore.y + scrollBefore.height + EDGE_EPS,
+        "$where did not bring its footer fully into the scroll port",
+    )
+    assertEquals(0.0, sidebar.number("el => el.scrollTop"), "$where scrolled the outer sidebar")
+}
+
+private fun Locator.number(expression: String): Double = (evaluate(expression) as Number).toDouble()
 
 private fun fontSizeApplied(size: Int): String = """
     () => {
