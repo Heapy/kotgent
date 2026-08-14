@@ -125,7 +125,7 @@ class SqliteEventStore private constructor(
             meta.readCursor.value,
             meta.createdAt,
             meta.updatedAt,
-            if (meta.archived) 1L else 0L,
+            meta.archived.toSqliteFlag(),
             ++revCounter,
             meta.taskRef?.value,
             meta.projectId?.value,
@@ -145,7 +145,7 @@ class SqliteEventStore private constructor(
     }
 
     override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
-        sessions.setArchived(if (archived) 1L else 0L, updatedAt, ++revCounter, sessionId.value)
+        sessions.setArchived(archived.toSqliteFlag(), updatedAt, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
@@ -252,7 +252,7 @@ class SqliteEventStore private constructor(
             emitSessionUpdate(
                 SessionUpdate(
                     sessionId, cacheState, next.lastSeq,
-                    unread(next.lastSeq.value, readCursor), ts, (cachedRow?.archived ?: 0L) != 0L,
+                    unread(next.lastSeq.value, readCursor), ts, cachedRow?.archived.isArchived(),
                     model = cachedRow?.model,
                     rev = if (cachedRow != null) rev else 0,
                     taskRef = cachedRow?.task_ref?.let(TaskRef::parseOrNull),
@@ -312,7 +312,7 @@ class SqliteEventStore private constructor(
         emitSessionUpdate(
             SessionUpdate(
                 sessionId, SessionState.valueOf(row.state), Seq(row.last_seq),
-                unread(row.last_seq, row.read_cursor), row.updated_at, row.archived != 0L,
+                unread(row.last_seq, row.read_cursor), row.updated_at, row.archived.isArchived(),
                 model = row.model,
                 rev = row.rev,
                 taskRef = row.task_ref?.let(TaskRef::parseOrNull),
@@ -386,7 +386,7 @@ class SqliteEventStore private constructor(
         readCursor = Seq(read_cursor),
         createdAt = created_at,
         updatedAt = updated_at,
-        archived = archived != 0L,
+        archived = archived.isArchived(),
         rev = rev,
         taskRef = task_ref?.let(TaskRef::parseOrNull),
         projectId = project_id?.let(ProjectId::parseOrNull),

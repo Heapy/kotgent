@@ -416,10 +416,6 @@ class SqliteTaskStore private constructor(
     }
 }
 
-private fun Long?.isArchived(): Boolean = this != null && this != 0L
-
-private fun Boolean.toSqliteFlag(): Long = if (this) 1L else 0L
-
 @OptIn(ExperimentalTime::class)
 fun taskStoreEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
 

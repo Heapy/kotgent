@@ -15,3 +15,8 @@ fun SqlDriver.hasColumn(table: String, column: String): Boolean =
         },
         parameters = 0,
     ).value
+
+/** SQLite has no boolean: any non-zero integer is set, and a missing row reads as absent, not archived. */
+fun Long?.isArchived(): Boolean = this != null && this != 0L
+
+fun Boolean.toSqliteFlag(): Long = if (this) 1L else 0L
