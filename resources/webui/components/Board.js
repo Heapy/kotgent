@@ -27,6 +27,9 @@ export const BOARD_COLUMNS = [
 export const DONE_VISIBLE_LIMIT = 10;
 
 const DRAG_SLOP_PX = 8;
+const AUTOSCROLL_EDGE_PX = 64;
+const AUTOSCROLL_MAX_SPEED_PX_PER_SECOND = 720;
+const AUTOSCROLL_MAX_ELAPSED_MS = 50;
 
 /** Must match `.task-card`'s margin-bottom in style.css. */
 const CARD_GAP_PX = 8;
@@ -46,27 +49,58 @@ function phoneNow() {
     window.matchMedia(PHONE_QUERY).matches;
 }
 
-/** Resolve a captured pointer against live DOM geometry, excluding the dragged card itself. */
-export function dropTargetAt(x, y, draggedRef) {
-  if (typeof document === "undefined") return null;
-  const columns = Array.prototype.slice.call(document.querySelectorAll(".board-column"));
-  for (const column of columns) {
-    const rect = column.getBoundingClientRect();
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
-    const state = column.getAttribute("data-state");
-    if (!state) return null;
-    const contentY = y - rect.top + column.scrollTop;
-    const cards = Array.prototype.slice.call(column.querySelectorAll(".task-card"));
-    for (const card of cards) {
-      const ref = card.getAttribute("data-ref");
-      if (!ref || ref === draggedRef) continue;
-      if (contentY < card.offsetTop + card.offsetHeight / 2) {
-        return { state: state, beforeRef: ref };
-      }
+/** Resolve column ownership by paint order, then card order from transform-free layout geometry. */
+function dropResolutionAt(x, y, draggedRef) {
+  if (typeof document === "undefined" || typeof document.elementFromPoint !== "function") {
+    return { column: null, target: null };
+  }
+  const hit = document.elementFromPoint(x, y);
+  const column = hit && hit.closest ? hit.closest(".board-column") : null;
+  if (!column) return { column: null, target: null };
+
+  const state = column.getAttribute("data-state");
+  if (!state) return { column: null, target: null };
+  const rect = column.getBoundingClientRect();
+  const contentY = y - rect.top + column.scrollTop;
+  const cards = Array.prototype.slice.call(column.querySelectorAll(".task-card"));
+  for (const card of cards) {
+    const ref = card.getAttribute("data-ref");
+    if (!ref || ref === draggedRef) continue;
+    if (contentY < card.offsetTop + card.offsetHeight / 2) {
+      return { column: column, target: { state: state, beforeRef: ref } };
     }
-    return { state: state, beforeRef: null };
+  }
+  return { column: column, target: { state: state, beforeRef: null } };
+}
+
+function sameDropTarget(left, right) {
+  return left === right || Boolean(left && right &&
+    left.state === right.state && left.beforeRef === right.beforeRef);
+}
+
+function verticalScrollerFor(column) {
+  let element = column;
+  while (element) {
+    const overflowY = getComputedStyle(element).overflowY;
+    if ((overflowY === "auto" || overflowY === "scroll") &&
+      element.scrollHeight > element.clientHeight) return element;
+    element = element.parentElement;
   }
   return null;
+}
+
+function autoscrollVelocityAt(y, rect) {
+  if (y < rect.top + AUTOSCROLL_EDGE_PX) {
+    const proximity = Math.min(1, Math.max(0, (rect.top + AUTOSCROLL_EDGE_PX - y) /
+      AUTOSCROLL_EDGE_PX));
+    return -AUTOSCROLL_MAX_SPEED_PX_PER_SECOND * proximity;
+  }
+  if (y > rect.bottom - AUTOSCROLL_EDGE_PX) {
+    const proximity = Math.min(1, Math.max(0, (y - rect.bottom + AUTOSCROLL_EDGE_PX) /
+      AUTOSCROLL_EDGE_PX));
+    return AUTOSCROLL_MAX_SPEED_PX_PER_SECOND * proximity;
+  }
+  return 0;
 }
 
 function previewShifts(cardsByState, sourceState, draggedRef, target, slotSize) {
@@ -311,19 +345,113 @@ export function Board({
   }, [onProjectCreated, say]);
 
   const gestureRef = useRef(null);
+  const gestureIdRef = useRef(0);
+  const abortGestureRef = useRef(null);
+  const frameTickRef = useRef(null);
+
+  const abortGesture = useCallback((expected = gestureRef.current) => {
+    const gesture = expected;
+    if (!gesture || gesture.aborted) return;
+    gesture.aborted = true;
+    if (gesture.frameRequest !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(gesture.frameRequest);
+      gesture.frameRequest = null;
+    }
+    if (gesture.lostPointerCapture && typeof document !== "undefined") {
+      document.removeEventListener("lostpointercapture", gesture.lostPointerCapture, true);
+    }
+    const owned = gestureRef.current === gesture;
+    if (owned) gestureRef.current = null;
+    try {
+      if (gesture.element && gesture.element.hasPointerCapture &&
+        gesture.element.hasPointerCapture(gesture.pointerId)) {
+        gesture.element.releasePointerCapture(gesture.pointerId);
+      }
+    } catch (_) {
+      // A disconnected handle can lose capture between the check and the release.
+    }
+    if (!owned) return;
+    setDragPreview(null);
+    setDropTarget(null);
+    setDragLayout(EMPTY_DRAG_LAYOUT);
+  }, []);
+  abortGestureRef.current = abortGesture;
+
+  const resolveGestureTarget = useCallback((gesture, x, y) => {
+    gesture.lastX = x;
+    gesture.lastY = y;
+    const resolution = dropResolutionAt(x, y, gesture.ref);
+    gesture.target = resolution.target;
+    gesture.targetColumn = resolution.target ? resolution.column : null;
+    setDropTarget((held) => sameDropTarget(held, resolution.target) ? held : resolution.target);
+    if (!resolution.target) setDragLayout(EMPTY_DRAG_LAYOUT);
+    return resolution.target;
+  }, []);
+
+  const scheduleGestureFrame = useCallback((gesture) => {
+    if (gesture.frameRequest !== null || typeof requestAnimationFrame !== "function") return;
+    const gestureId = gesture.id;
+    gesture.frameRequest = requestAnimationFrame((timestamp) => {
+      frameTickRef.current(gestureId, timestamp);
+    });
+  }, []);
+
+  frameTickRef.current = (gestureId, timestamp) => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.id !== gestureId || gesture.aborted) return;
+    gesture.frameRequest = null;
+    if (!gesture.element || !gesture.element.isConnected) {
+      abortGestureRef.current(gesture);
+      return;
+    }
+
+    const elapsedMs = gesture.lastFrameTimestamp === null
+      ? 0
+      : Math.min(AUTOSCROLL_MAX_ELAPSED_MS, Math.max(0, timestamp - gesture.lastFrameTimestamp));
+    gesture.lastFrameTimestamp = timestamp;
+    if (elapsedMs > 0 && gesture.target && gesture.targetColumn) {
+      const scroller = verticalScrollerFor(gesture.targetColumn);
+      if (scroller) {
+        const velocity = autoscrollVelocityAt(gesture.lastY, scroller.getBoundingClientRect());
+        if (velocity !== 0) {
+          scroller.scrollTop += velocity * elapsedMs / 1000;
+          resolveGestureTarget(gesture, gesture.lastX, gesture.lastY);
+        }
+      }
+    }
+    scheduleGestureFrame(gesture);
+  };
+
+  useEffect(() => () => abortGestureRef.current(), []);
+
+  useEffect(() => {
+    abortGestureRef.current();
+  }, [sidebarCollapsed]);
 
   const dragPointerDown = useCallback((event, entry) => {
     if (event.isPrimary === false) return;
     if (event.button !== undefined && event.button !== 0) return;
+    if (event.cancelable) event.preventDefault();
+    if (gestureRef.current) return;
     const element = event.currentTarget;
-    gestureRef.current = {
+    const gesture = {
+      id: ++gestureIdRef.current,
       pointerId: event.pointerId,
       ref: entry.ref,
       startX: event.clientX,
       startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
       claimed: false,
       element: element,
+      target: null,
+      targetColumn: null,
+      frameRequest: null,
+      lastFrameTimestamp: null,
+      lostPointerCapture: null,
+      aborted: false,
     };
+    gestureRef.current = gesture;
     // Capture immediately: the tiny drag-only handle is left before pointer travel clears the slop.
     if (element && element.setPointerCapture) element.setPointerCapture(event.pointerId);
   }, []);
@@ -346,6 +474,11 @@ export function Board({
         width: rect.width,
         height: rect.height,
       };
+      gesture.lostPointerCapture = (lost) => {
+        if (lost.pointerId === gesture.pointerId) abortGestureRef.current(gesture);
+      };
+      document.addEventListener("lostpointercapture", gesture.lostPointerCapture, true);
+      scheduleGestureFrame(gesture);
     }
     if (event.cancelable) event.preventDefault();
     setDragPreview({
@@ -357,37 +490,24 @@ export function Board({
       deltaX: event.clientX - gesture.startX,
       deltaY: event.clientY - gesture.startY,
     });
-    const target = dropTargetAt(event.clientX, event.clientY, gesture.ref);
-    setDropTarget(target);
-    if (!target) setDragLayout(EMPTY_DRAG_LAYOUT);
-  }, []);
-
-  const endGesture = useCallback((gesture, pointerId) => {
-    gestureRef.current = null;
-    if (gesture.element && gesture.element.hasPointerCapture &&
-      gesture.element.hasPointerCapture(pointerId)) {
-      gesture.element.releasePointerCapture(pointerId);
-    }
-    setDragPreview(null);
-    setDropTarget(null);
-    setDragLayout(EMPTY_DRAG_LAYOUT);
-  }, []);
+    resolveGestureTarget(gesture, event.clientX, event.clientY);
+  }, [resolveGestureTarget, scheduleGestureFrame]);
 
   const dragPointerUp = useCallback((event) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    const claimed = gesture.claimed;
-    // Pointerup need not be preceded by a move, so resolve the release position again.
-    const target = claimed ? dropTargetAt(event.clientX, event.clientY, gesture.ref) : null;
-    endGesture(gesture, event.pointerId);
-    if (claimed && target) applyDrop(gesture.ref, target);
-  }, [applyDrop, endGesture]);
+    // Commit the resolution the preview drew rather than resolving again; moves and autoscroll ticks
+    // both keep it current, and a second resolve can only disagree with what the operator was shown.
+    const target = gesture.claimed ? gesture.target : null;
+    abortGesture(gesture);
+    if (target) applyDrop(gesture.ref, target);
+  }, [applyDrop, abortGesture]);
 
   const dragPointerCancel = useCallback((event) => {
     const gesture = gestureRef.current;
     if (!gesture || event.pointerId !== gesture.pointerId) return;
-    endGesture(gesture, event.pointerId);
-  }, [endGesture]);
+    abortGesture(gesture);
+  }, [abortGesture]);
 
   const shownColumns = phone
     ? columns.filter((column) => column.state === activeColumn)

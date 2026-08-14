@@ -155,6 +155,144 @@ class BoardTest {
         }
 
     @Test
+    fun draggingAcrossTheColumnHeadsDoesNotSelectTheirText() =
+        onTheBoard("draggingAcrossTheColumnHeadsDoesNotSelectTheirText") { _, page ->
+            page.evaluate(
+                """
+                () => {
+                  window.getSelection().removeAllRanges();
+                  window.__kotgentCompatibilityMouseDowns = 0;
+                  document.addEventListener("mousedown", () => {
+                    window.__kotgentCompatibilityMouseDowns += 1;
+                  }, { capture: true, once: true });
+                }
+                """.trimIndent(),
+            )
+            page.pressHandleOf("local:1")
+            page.travelTo(page.card("local:3").locator(".task-card-title").centre())
+            page.travelTo(page.column("todo").locator(".board-column-head").centre())
+            page.travelTo(page.column("done").locator(".board-column-head").centre())
+
+            assertThat(page.locator(".task-card.is-dragging")).hasCount(1)
+            assertEquals(
+                0,
+                (page.evaluate("() => window.__kotgentCompatibilityMouseDowns") as Number).toInt(),
+                "cancelling pointerdown suppressed the compatibility mouse gesture that starts selection",
+            )
+            assertEquals(
+                "",
+                page.evaluate("() => window.getSelection().toString()"),
+                "a claimed drag swept across selectable column heads without starting a selection",
+            )
+
+            page.releaseOverNothing()
+            page.assertPreviewCleared("releasing the selection probe outside every column")
+            assertEquals(
+                "",
+                page.evaluate("() => window.getSelection().toString()"),
+                "the completed gesture left no selection behind",
+            )
+        }
+
+    @Test
+    fun theTaskDetailOwnsThePointerInsteadOfTheColumnBehindIt() =
+        onTheBoard("theTaskDetailOwnsThePointerInsteadOfTheColumnBehindIt") { _, page ->
+            val writes = page.recordTaskWrites()
+            page.card("local:3").locator(".task-card-title").click()
+            val detail = page.locator(".task-detail")
+            assertThat(detail).isVisible()
+
+            page.pressHandleOf("local:1")
+            page.travelTo(detail.centre())
+
+            assertThat(page.locator(".board-drop-target")).hasCount(0)
+            assertThat(page.locator(".board-drop-slot")).hasCount(0)
+            page.mouse().up()
+            page.assertPreviewCleared("releasing over the task detail")
+            assertEquals(emptyList<String>(), writes.snapshot(), "the covered done column received no drop")
+
+            page.locator("#task-detail-close").click()
+            assertThat(detail).hasCount(0)
+            page.proveTheWriteRecorderWasLive(writes, "local:1", "in_progress")
+        }
+
+    @Test
+    fun aHeldDesktopDragScrollsToAHiddenNeighbourAndDropsAfterIt() =
+        onTheBoard("aHeldDesktopDragScrollsToAHiddenNeighbourAndDropsAfterIt") { _, page ->
+            page.setViewportSize(DESKTOP_WIDTH, DRAG_VIEWPORT_HEIGHT)
+            val todo = page.column("todo")
+            todo.setScrollTop(0.0)
+            assertTrue(todo.scrollRange() > 0, "the shortened todo column did not overflow")
+            assertTrue(
+                page.card("local:10").top() >= todo.bottom(),
+                "local:10 was visible before autoscroll, so it cannot prove that scrolling revealed a target",
+            )
+            val moves = page.recordMoveBodies()
+
+            page.pressHandleOf("local:7")
+            page.travelTo(todo.bottomInside())
+            val firstSlot = page.locator(".board-drop-slot").offsetTop()
+            page.waitForFunction(AUTOSCROLL_REVEALED_LAST_CARD_JS)
+
+            assertTrue(todo.scrollTop() > 0, "holding the pointer still in the bottom edge did not scroll todo")
+            assertTrue(
+                page.locator(".board-drop-slot").offsetTop() > firstSlot,
+                "the slot did not follow the content beyond the newly revealed last card",
+            )
+            page.mouse().up()
+
+            page.waitForCondition { moves.snapshot().isNotEmpty() }
+            assertEquals(
+                listOf("{\"after\":\"local:10\"}"),
+                moves.snapshot(),
+                "the release named the same formerly hidden neighbour the slot followed past",
+            )
+            page.assertPreviewCleared("dropping after desktop autoscroll")
+            page.assertScrollStopped(todo, "the released desktop drag")
+        }
+
+    @Test
+    fun phoneAutoscrollUsesTheParentTrackAndTheSidebarShortcutAbortsIt() =
+        onTheBoard("phoneAutoscrollUsesTheParentTrackAndTheSidebarShortcutAbortsIt", phone = true) { _, page ->
+            page.setViewportSize(PHONE_WIDTH, DRAG_VIEWPORT_HEIGHT)
+            val track = page.locator(".board-columns")
+            val todo = page.column("todo")
+            track.setScrollTop(0.0)
+            assertTrue(track.scrollRange() > 0, "the shortened phone track did not overflow")
+            assertEquals(0.0, todo.scrollRange(), "the phone column itself unexpectedly became the scroller")
+
+            page.pressHandleOf("local:1")
+            page.travelTo(track.bottomInside())
+            page.waitForFunction("() => document.querySelector('.board-columns').scrollTop > 0")
+            assertEquals(0.0, todo.scrollTop(), "autoscroll moved the visible phone column instead of its track")
+            page.keyboard().press("Meta+Period")
+            page.assertPreviewCleared("collapsing the sidebar during phone autoscroll")
+            page.assertScrollStopped(track, "the sidebar-aborted phone drag")
+            page.mouse().up()
+        }
+
+    @Test
+    fun deletingTheDraggedTaskClearsThePreviewAndStopsAutoscroll() =
+        onTheBoard("deletingTheDraggedTaskClearsThePreviewAndStopsAutoscroll") { harness, page ->
+            page.setViewportSize(DESKTOP_WIDTH, DRAG_VIEWPORT_HEIGHT)
+            val todo = page.column("todo")
+            todo.setScrollTop(0.0)
+            assertTrue(todo.scrollRange() > 0, "the shortened todo column did not overflow")
+
+            page.pressHandleOf("local:2")
+            page.travelTo(todo.bottomInside())
+            page.waitForFunction("() => document.querySelector('[data-state=todo]').scrollTop > 0")
+            assertThat(page.locator(".board-drop-slot")).hasCount(1)
+
+            harness.send("task-del local:2")
+            assertThat(page.card("local:2")).hasCount(0)
+            assertThat(page.locator(".task-card.is-dragging")).hasCount(0)
+            page.assertPreviewCleared("deleting the dragged task during autoscroll")
+            page.assertScrollStopped(todo, "the drag whose task was deleted")
+            page.mouse().up()
+        }
+
+    @Test
     fun aMiddleDropSlotNamesTheSameNeighbourTheReleaseWrites() =
         onTheBoard("aMiddleDropSlotNamesTheSameNeighbourTheReleaseWrites") { _, page ->
             val moves = page.recordMoveBodies()
@@ -259,6 +397,18 @@ class BoardTest {
             assertThat(page.card("local:2")).hasCount(1)
             page.assertPreviewCleared("cancelling a drag with both source and destination shifts")
             assertEquals(listOf("local:1", "local:2", "local:3", "local:4", "local:10"), page.refsIn("todo"))
+
+            page.pressHandleOf("local:2")
+            page.travelTo(page.card("local:6").topHalf())
+            val recapturedPointerId = page.lastPointerDownId()
+            page.handleOf("local:2").evaluate(
+                "(handle, pointerId) => handle.releasePointerCapture(pointerId)",
+                recapturedPointerId,
+            )
+            page.mouse().up()
+            assertThat(page.locator(".task-card.is-dragging")).hasCount(0)
+            assertThat(page.locator(".board-drop-target")).hasCount(0)
+            page.assertPreviewCleared("losing pointer capture during a drag")
 
             page.dragToBottomOf("local:1", "in_progress")
             page.waitForCondition { writes.snapshot().size >= 2 }
@@ -420,6 +570,17 @@ class BoardTest {
 
     private fun Locator.bottom(): Double = boundingBox().let { it.y + it.height }
 
+    private fun Locator.offsetTop(): Double = (evaluate("el => el.offsetTop") as Number).toDouble()
+
+    private fun Locator.scrollTop(): Double = (evaluate("el => el.scrollTop") as Number).toDouble()
+
+    private fun Locator.scrollRange(): Double =
+        (evaluate("el => el.scrollHeight - el.clientHeight") as Number).toDouble()
+
+    private fun Locator.setScrollTop(value: Double) {
+        evaluate("(el, top) => { el.scrollTop = top; }", value)
+    }
+
     private fun Locator.inlineTranslateY(): Double = (evaluate(
         """
         el => {
@@ -473,6 +634,28 @@ class BoardTest {
     private fun Page.assertPreviewCleared(where: String) {
         assertThat(locator(".board-drop-slot")).hasCount(0)
         assertNoInFlowTransforms(where)
+    }
+
+    private fun Page.assertScrollStopped(scroller: Locator, where: String, start: Double = scroller.scrollTop()) {
+        waitAnimationFrames(8)
+        assertClose(start, scroller.scrollTop(), "$where kept scrolling after its gesture ended")
+    }
+
+    private fun Page.waitAnimationFrames(count: Int) {
+        evaluate(
+            """
+            count => new Promise((resolve) => {
+              let remaining = count;
+              const next = () => {
+                remaining -= 1;
+                if (remaining === 0) resolve();
+                else requestAnimationFrame(next);
+              };
+              requestAnimationFrame(next);
+            })
+            """.trimIndent(),
+            count,
+        )
     }
 
     private fun Page.assertBetween(slot: Locator, previous: Locator, following: Locator, what: String) {
@@ -587,6 +770,8 @@ class BoardTest {
 
         private const val PHONE_WIDTH = 390
 
+        private const val DRAG_VIEWPORT_HEIGHT = 320
+
         private const val SEEDED_CARDS = 10
         private const val SEEDED_TODO_CARDS = 5
 
@@ -622,6 +807,22 @@ class BoardTest {
             const cards = Array.prototype.slice.call(column.querySelectorAll(".task-card"));
             const slot = column.getAttribute("data-state") + "#" + cards.indexOf(card);
             return slot !== args.before;
+          }
+        """
+
+        private const val AUTOSCROLL_REVEALED_LAST_CARD_JS = """
+          () => {
+            const column = document.querySelector('.board-column[data-state="todo"]');
+            if (!column || column.scrollTop <= 0) return false;
+            const shifted = Array.prototype.filter.call(
+              column.querySelectorAll('.task-card'),
+              (card) => /translateY\((?!0(?:\.0+)?px)[^)]+\)/.test(card.style.transform),
+            );
+            const last = column.querySelector('.task-card[data-ref="local:10"]');
+            const slot = column.querySelector('.board-drop-slot');
+            return shifted.length === 0 && last && slot &&
+              slot.offsetTop >= last.offsetTop + last.offsetHeight &&
+              column.scrollTop >= column.scrollHeight - column.clientHeight - 1;
           }
         """
 

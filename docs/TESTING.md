@@ -262,6 +262,11 @@ Reserve a real-device release checklist for platform behavior that desktop autom
 reproduce, such as installed-PWA lifecycle, safe areas, software-keyboard geometry, touch physics, and
 notification permission prompts.
 
+Real-device release checklist:
+
+- On iOS and Android, long-press a board card's title and linked-session name; neither a text-selection
+  menu nor a link callout should appear, while a tap should still open the task or session.
+
 ### Static assets and source-shape checks
 
 Static-serving tests should verify externally observable facts: reachability, bytes, media types, cache

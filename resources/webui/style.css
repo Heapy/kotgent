@@ -1521,6 +1521,7 @@ dialog::backdrop {
   margin-bottom: 8px;
   padding: 9px 10px;
   transition: background 120ms ease-out, border-color 120ms ease-out;
+  user-select: none;
 }
 .task-card:hover { background: var(--row-hover); }
 .task-card:focus-within { border-color: var(--pill-active-border); }

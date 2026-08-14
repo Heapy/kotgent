@@ -131,6 +131,19 @@ class BoardStyleTest {
             )
         }
 
+    @Test
+    fun taskCardsDoNotOfferTextSelectionAtRest() =
+        onScreen(BOARD_SCENARIO, "board-card-selection") { harness, page ->
+            page.navigate(harness.baseUrl + "/tasks")
+            val cards = page.locator(".task-card")
+            assertThat(cards).hasCount(BOARD_CARDS)
+            assertEquals(
+                "none",
+                cards.first().style("user-select"),
+                "card text is copied from the opened task rather than selected on the board",
+            )
+        }
+
 
     @Test
     fun eachColumnStateOwnsOneAccentThatItsHeadAndItsDropTintShare() =

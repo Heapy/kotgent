@@ -56,8 +56,15 @@ archive completed plans.
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
 - A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot
   as an invisible in-flow placeholder, and the lifted copy is `position: fixed` to escape the column's
-  overflow. Hit-testing therefore reads `offsetTop`/`offsetHeight`, which ignore transforms;
+  overflow. Card geometry therefore comes from `offsetTop`/`offsetHeight`, which ignore transforms;
   `getBoundingClientRect` would feed shifted geometry back under the pointer and oscillate the target.
+  Column ownership is a separate question answered by paint order, through `elementFromPoint`: geometry
+  alone would resolve a column that an overlay such as the open task panel is covering. A release commits
+  the resolution the preview drew rather than resolving the release point again.
+- A board drag ends through one idempotent abort, not through its own handlers alone. Those handlers live
+  on the dragged card's handle, so deleting that task mid-drag removes them and strands the gesture. The
+  abort covers `pointerup`, `pointercancel`, a document-level `lostpointercapture`, an `isConnected` check
+  in the frame loop, unmount, and a sidebar toggle, whose animated width invalidates every measured offset.
 - `BOARD_VOCABULARY` in `test/transport/WebUiServingTest.kt` closes the board's class vocabulary in three
   directions: every `board`/`board-*`/`task-*` token the components emit is declared there, every owned
   word is emitted, and every word carries a rule in `style.css`. Register new structural classes; pure
