@@ -109,7 +109,7 @@ class ProjectDialogTest {
     }
 
     @Test
-    fun deleteOffersNoInPageDismissalItCannotHonourWhileTheRequestRuns() {
+    fun deleteRefusesEveryDismissalWhileItsRequestIsInFlight() {
         val held = AtomicReference<Route?>(null)
         onProjects(
             "project-delete-busy-close",
@@ -131,6 +131,9 @@ class ProjectDialogTest {
             assertThat(page.locator("#delete-project-cancel")).isDisabled()
             close.evaluate("button => button.click()")
             assertThat(dialog).isVisible()
+            // closedby="none" is what refuses this; preventDefault on the key or on cancel is ignored.
+            page.keyboard().press("Escape")
+            assertThat(dialog).isVisible()
 
             held.get()!!.resume()
             assertThat(dialog).hasCount(0)
@@ -138,38 +141,22 @@ class ProjectDialogTest {
         }
     }
 
-    /**
-     * Escape is a browser-owned close request: Chromium closes a modal on it whatever the page does, so
-     * the outcome of the still-running mutation has to land somewhere outside the dialog that asked for it.
-     */
+    /** The refusal is scoped to the request: an idle dialog must still answer Escape. */
     @Test
-    fun escapeStillDismissesABusyDeleteAndItsOutcomeIsReportedOutsideTheDialog() {
-        val held = AtomicReference<Route?>(null)
-        onProjects(
-            "project-delete-escape-dismiss",
-            beforeLoad = { _, context ->
-                context.route("**$PROJECTS_API/$SELECTED_PROJECT") { route ->
-                    if (route.request().method() == "DELETE" && held.compareAndSet(null, route)) return@route
-                    route.resume()
-                }
-            },
-        ) { _, page ->
+    fun escapeClosesTheDeleteDialogBeforeItIsSubmitted() =
+        onProjects("project-delete-escape-idle") { _, page ->
             page.openPalette()
             page.runFirstMatch("delete project", "Delete project")
-            page.locator("#delete-project-submit").click()
-            page.waitForCondition { held.get() != null }
+            assertThat(page.locator("#delete-project-dialog")).isVisible()
 
             page.keyboard().press("Escape")
-            assertThat(page.locator("#delete-project-dialog")).hasCount(0)
 
-            held.get()!!.resume()
-            assertThat(page.locator("#board-status")).containsText("Deleted Alpha Fixture")
-            assertThat(page.projectRow(SELECTED_PROJECT)).hasCount(0)
+            assertThat(page.locator("#delete-project-dialog")).hasCount(0)
+            assertThat(page.projectRow(SELECTED_PROJECT)).isVisible()
         }
-    }
 
     @Test
-    fun restoreOffersNoInPageDismissalItCannotHonourWhileTheRequestRuns() {
+    fun restoreRefusesEveryDismissalWhileItsRequestIsInFlight() {
         val held = AtomicReference<Route?>(null)
         onProjects(
             "project-restore-busy-close",
@@ -190,6 +177,8 @@ class ProjectDialogTest {
             assertThat(close).isDisabled()
             assertThat(page.locator("#restore-project-cancel")).isDisabled()
             close.evaluate("button => button.click()")
+            assertThat(dialog).isVisible()
+            page.keyboard().press("Escape")
             assertThat(dialog).isVisible()
 
             held.get()!!.resume()

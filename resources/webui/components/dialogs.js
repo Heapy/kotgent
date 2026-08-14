@@ -24,7 +24,9 @@ function prefersReducedMotion() {
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
+/* `closedby` is the only way to refuse a close request: browsers ignore preventDefault on the key and on
+ * the cancel event, deliberately, so a dialog cannot trap the user by accident — only by declaration. */
+export function Dialog({ id, labelledBy, lightDismiss = true, escapeDismiss = true, onClose, children }) {
   const ref = useRef(null);
   // Only one primary pointer's completed outside down-up-click may authorize dismissal.
   const outsidePress = useRef(null);
@@ -172,7 +174,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   };
 
   return html`
-    <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}
+    <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy} closedby=${escapeDismiss ? "closerequest" : "none"}
             onPointerDown=${pointerDown} onPointerMove=${pointerMove}
             onPointerUp=${pointerUp} onPointerCancel=${pointerCancel} onClick=${click}>
       <div class="dialog-grabber" aria-hidden="true"></div>
@@ -648,7 +650,7 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
 
   return html`
     <${Dialog} id="delete-project-dialog" labelledBy="delete-project-title" lightDismiss=${!busy}
-               onClose=${onClose}>
+               escapeDismiss=${!busy} onClose=${onClose}>
       <form id="delete-project-form" onSubmit=${submit}>
         <div class="dialog-head">
           <div>
@@ -727,7 +729,7 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
 
   return html`
     <${Dialog} id="restore-project-dialog" labelledBy="restore-project-title"
-               lightDismiss=${!busyId} onClose=${onClose}>
+               lightDismiss=${!busyId} escapeDismiss=${!busyId} onClose=${onClose}>
       <div id="restore-project-form">
         <div class="dialog-head">
           <div>
