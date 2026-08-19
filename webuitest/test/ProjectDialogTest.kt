@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class ProjectDialogTest {
 
@@ -153,7 +154,7 @@ class ProjectDialogTest {
             page.locator("#delete-project-submit").click()
             page.waitForCondition { held.get() != null }
 
-            page.evaluate("document.getElementById('delete-project-dialog').close()")
+            page.keyboard().press("Escape")
             assertThat(page.locator("#delete-project-dialog")).hasCount(0)
             held.get()!!.fulfill(
                 Route.FulfillOptions()
@@ -292,7 +293,7 @@ class ProjectDialogTest {
     }
 
     @Test
-    fun deleteRefusesEveryDismissalWhileItsRequestIsInFlight() {
+    fun escapeDismissesABusyDeleteAndItsOutcomeReachesTheBoardStatus() {
         val held = AtomicReference<Route?>(null)
         onProjects(
             "project-delete-busy-close",
@@ -308,26 +309,34 @@ class ProjectDialogTest {
             page.locator("#delete-project-submit").click()
             page.waitForCondition { held.get() != null }
 
-            val dialog = page.locator("#delete-project-dialog")
             val close = page.locator("#delete-project-close")
-            assertThat(close).isDisabled()
-            assertThat(page.locator("#delete-project-cancel")).isDisabled()
-            close.evaluate("button => button.click()")
-            assertThat(dialog).isVisible()
-            // closedby="none" is what refuses this; preventDefault on the key or on cancel is ignored.
+            val headerCloseEnabled = close.isEnabled
+            val footerCloseEnabled = page.locator("#delete-project-cancel").isEnabled
             page.keyboard().press("Escape")
-            assertThat(dialog).isVisible()
+            val dismissedByEscape = page.dialogWasDismissed("delete-project-dialog")
 
             held.get()!!.resume()
-            assertThat(dialog).hasCount(0)
             assertThat(page.locator("#board-status")).containsText("Deleted Alpha Fixture")
+            assertTrue(
+                headerCloseEnabled && footerCloseEnabled && dismissedByEscape,
+                "busy delete dismissal contract: headerCloseEnabled=$headerCloseEnabled, " +
+                    "footerCloseEnabled=$footerCloseEnabled, dismissedByEscape=$dismissedByEscape",
+            )
         }
     }
 
-    /** The refusal is scoped to the request: an idle dialog must still answer Escape. */
     @Test
-    fun escapeClosesTheDeleteDialogBeforeItIsSubmitted() =
-        onProjects("project-delete-escape-idle") { _, page ->
+    fun escapeDismissesAnIdleDeleteWithoutSubmittingIt() {
+        val deletes = AtomicInteger(0)
+        onProjects(
+            "project-delete-escape-idle",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API/$SELECTED_PROJECT") { route ->
+                    if (route.request().method() == "DELETE") deletes.incrementAndGet()
+                    route.resume()
+                }
+            },
+        ) { _, page ->
             page.openPalette()
             page.runFirstMatch("delete project", "Delete project")
             assertThat(page.locator("#delete-project-dialog")).isVisible()
@@ -336,10 +345,12 @@ class ProjectDialogTest {
 
             assertThat(page.locator("#delete-project-dialog")).hasCount(0)
             assertThat(page.projectRow(SELECTED_PROJECT)).isVisible()
+            assertEquals(0, deletes.get(), "dismissing the idle confirmation must not submit its delete")
         }
+    }
 
     @Test
-    fun restoreRefusesEveryDismissalWhileItsRequestIsInFlight() {
+    fun escapeDismissesABusyRestoreAndItsOutcomeReachesTheBoardStatus() {
         val held = AtomicReference<Route?>(null)
         onProjects(
             "project-restore-busy-close",
@@ -355,18 +366,19 @@ class ProjectDialogTest {
             page.restoreRow(DELETED_PROJECT).click()
             page.waitForCondition { held.get() != null }
 
-            val dialog = page.locator("#restore-project-dialog")
             val close = page.locator("#restore-project-close")
-            assertThat(close).isDisabled()
-            assertThat(page.locator("#restore-project-cancel")).isDisabled()
-            close.evaluate("button => button.click()")
-            assertThat(dialog).isVisible()
+            val headerCloseEnabled = close.isEnabled
+            val footerCloseEnabled = page.locator("#restore-project-cancel").isEnabled
             page.keyboard().press("Escape")
-            assertThat(dialog).isVisible()
+            val dismissedByEscape = page.dialogWasDismissed("restore-project-dialog")
 
             held.get()!!.resume()
-            assertThat(dialog).hasCount(0)
             assertThat(page.locator("#board-status")).containsText("Restored")
+            assertTrue(
+                headerCloseEnabled && footerCloseEnabled && dismissedByEscape,
+                "busy restore dismissal contract: headerCloseEnabled=$headerCloseEnabled, " +
+                    "footerCloseEnabled=$footerCloseEnabled, dismissedByEscape=$dismissedByEscape",
+            )
         }
     }
 
@@ -395,6 +407,12 @@ class ProjectDialogTest {
     private fun Page.projectRow(id: String) = locator("#project-list .project-row[data-id=\"$id\"]")
 
     private fun Page.restoreRow(id: String) = locator("#restore-project-list .dialog-list-row[data-id=\"$id\"]")
+
+    private fun Page.dialogWasDismissed(id: String): Boolean =
+        evaluate(
+            "(id) => { const dialog = document.getElementById(id); return !dialog || !dialog.open; }",
+            id,
+        ) == true
 
     private fun Page.leaveBoard() {
         evaluate(

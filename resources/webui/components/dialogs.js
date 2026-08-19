@@ -24,9 +24,7 @@ function prefersReducedMotion() {
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/* `closedby` is the only way to refuse a close request: browsers ignore preventDefault on the key and on
- * the cancel event, deliberately, so a dialog cannot trap the user by accident — only by declaration. */
-export function Dialog({ id, labelledBy, lightDismiss = true, escapeDismiss = true, onClose, children }) {
+export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children }) {
   const ref = useRef(null);
   // Only one primary pointer's completed outside down-up-click may authorize dismissal.
   const outsidePress = useRef(null);
@@ -174,7 +172,7 @@ export function Dialog({ id, labelledBy, lightDismiss = true, escapeDismiss = tr
   };
 
   return html`
-    <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy} closedby=${escapeDismiss ? "closerequest" : "none"}
+    <dialog id=${id} ref=${ref} aria-labelledby=${labelledBy}
             onPointerDown=${pointerDown} onPointerMove=${pointerMove}
             onPointerUp=${pointerUp} onPointerCancel=${pointerCancel} onClick=${click}>
       <div class="dialog-grabber" aria-hidden="true"></div>
@@ -650,7 +648,7 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
 
   return html`
     <${Dialog} id="delete-project-dialog" labelledBy="delete-project-title" lightDismiss=${!busy}
-               escapeDismiss=${!busy} onClose=${onClose}>
+               onClose=${onClose}>
       <form id="delete-project-form" onSubmit=${submit}>
         <div class="dialog-head">
           <div>
@@ -658,7 +656,7 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
             <p>Takes it out of every selector. Nothing on disk is touched.</p>
           </div>
           <button id="delete-project-close" class="icon-button" type="button"
-                  aria-label="Close" disabled=${busy} onClick=${onClose}>×</button>
+                  aria-label="Close" onClick=${onClose}>×</button>
         </div>
 
         <p class="dialog-subject">
@@ -683,7 +681,7 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
 
         <div class="dialog-actions">
           <button id="delete-project-cancel" class="button button-quiet" type="button"
-                  ref=${cancelRef} disabled=${busy} onClick=${onClose}>Cancel</button>
+                  ref=${cancelRef} onClick=${onClose}>Cancel</button>
           <button id="delete-project-submit" class="button button-danger" type="submit"
                   disabled=${busy}>${busy ? "Deleting…" : "Delete project"}</button>
         </div>
@@ -730,7 +728,7 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
 
   return html`
     <${Dialog} id="restore-project-dialog" labelledBy="restore-project-title"
-               lightDismiss=${!busyId} escapeDismiss=${!busyId} onClose=${onClose}>
+               lightDismiss=${!busyId} onClose=${onClose}>
       <div id="restore-project-form">
         <div class="dialog-head">
           <div>
@@ -738,7 +736,7 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
             <p>Clears the delete mark. The backlog comes back with it.</p>
           </div>
           <button id="restore-project-close" class="icon-button" type="button"
-                  aria-label="Close" disabled=${!!busyId} onClick=${onClose}>×</button>
+                  aria-label="Close" onClick=${onClose}>×</button>
         </div>
 
         ${restoreProjectBody(state, busyId, restore, load)}
@@ -746,7 +744,7 @@ export function RestoreProjectDialog({ onRestore, onClose }) {
 
         <div class="dialog-actions">
           <button id="restore-project-cancel" class="button button-quiet" type="button"
-                  disabled=${!!busyId} onClick=${onClose}>Close</button>
+                  onClick=${onClose}>Close</button>
         </div>
       </div>
     <//>
@@ -926,7 +924,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
 
         <div class="dialog-actions">
           <button id="prefs-cancel" class="button button-quiet" type="button"
-                  disabled=${busy} onClick=${onClose}>Cancel</button>
+                  onClick=${onClose}>Cancel</button>
           <button id="prefs-submit" class="button button-primary" type="submit" disabled=${busy}>
             ${busy ? "Saving…" : "Save"}
           </button>
