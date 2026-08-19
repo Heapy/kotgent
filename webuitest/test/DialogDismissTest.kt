@@ -183,6 +183,7 @@ class DialogDismissTest {
         ) { harness, context, page ->
             openBusyPreferences(page)
             page.waitForCondition { heldWrites.get() >= 1 }
+            val busyDismissalLabel = page.locator(PREFS_CANCEL).textContent().trim()
 
             val backdrop = backdropPoint(page, PREFS_DIALOG)
             page.touchscreen().tap(backdrop.x, backdrop.y)
@@ -200,6 +201,11 @@ class DialogDismissTest {
             openBusyPreferences(second)
             second.locator(PREFS_CLOSE).click()
             assertThat(second.locator(PREFS_DIALOG)).hasCount(0)
+            assertEquals(
+                "Close",
+                busyDismissalLabel,
+                "closing a busy preferences form does not cancel its save",
+            )
         }
     }
 
@@ -499,6 +505,7 @@ class DialogDismissTest {
         const val PREFS_DIALOG = "#prefs-dialog"
         const val PREFS_SUBMIT = "#prefs-submit"
         const val PREFS_CLOSE = "#prefs-close"
+        const val PREFS_CANCEL = "#prefs-cancel"
 
         const val PREFERENCES_PATH = "/api/v1/preferences"
 

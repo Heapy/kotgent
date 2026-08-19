@@ -489,7 +489,7 @@ export function NewSessionDialog({
 
         <div class="dialog-actions">
           <button id="new-session-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>Cancel</button>
+                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
           <button id="new-session-submit" class="button button-primary" type="submit" disabled=${busy}>
             ${mode === "import"
               ? (busy ? "Importing…" : "Import session")
@@ -681,7 +681,7 @@ export function DeleteProjectDialog({ project, taskCount = null, onDelete, onClo
 
         <div class="dialog-actions">
           <button id="delete-project-cancel" class="button button-quiet" type="button"
-                  ref=${cancelRef} onClick=${onClose}>Cancel</button>
+                  ref=${cancelRef} onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
           <button id="delete-project-submit" class="button button-danger" type="submit"
                   disabled=${busy}>${busy ? "Deleting…" : "Delete project"}</button>
         </div>
@@ -924,7 +924,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
 
         <div class="dialog-actions">
           <button id="prefs-cancel" class="button button-quiet" type="button"
-                  onClick=${onClose}>Cancel</button>
+                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
           <button id="prefs-submit" class="button button-primary" type="submit" disabled=${busy}>
             ${busy ? "Saving…" : "Save"}
           </button>

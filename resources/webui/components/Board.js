@@ -729,7 +729,9 @@ function NewTaskForm({ project, onCreate, onClose }) {
         ${error && html`<p class="form-error" role="alert">${error}</p>`}
 
         <div class="dialog-actions">
-          <button class="button button-quiet" type="button" onClick=${onClose}>Cancel</button>
+          <button class="button button-quiet" type="button" onClick=${onClose}>
+            ${busy ? "Close" : "Cancel"}
+          </button>
           <button class="button button-primary" type="submit" disabled=${busy}>
             ${busy ? "Creating…" : "Create task"}
           </button>

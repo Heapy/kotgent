@@ -311,12 +311,19 @@ class ProjectDialogTest {
 
             val close = page.locator("#delete-project-close")
             val headerCloseEnabled = close.isEnabled
-            val footerCloseEnabled = page.locator("#delete-project-cancel").isEnabled
+            val footerClose = page.locator("#delete-project-cancel")
+            val footerCloseEnabled = footerClose.isEnabled
+            val footerCloseLabel = footerClose.textContent().trim()
             page.keyboard().press("Escape")
             val dismissedByEscape = page.dialogWasDismissed("delete-project-dialog")
 
             held.get()!!.resume()
             assertThat(page.locator("#board-status")).containsText("Deleted Alpha Fixture")
+            assertEquals(
+                "Close",
+                footerCloseLabel,
+                "a busy delete dismissal does not cancel the delete request",
+            )
             assertTrue(
                 headerCloseEnabled && footerCloseEnabled && dismissedByEscape,
                 "busy delete dismissal contract: headerCloseEnabled=$headerCloseEnabled, " +
@@ -368,12 +375,19 @@ class ProjectDialogTest {
 
             val close = page.locator("#restore-project-close")
             val headerCloseEnabled = close.isEnabled
-            val footerCloseEnabled = page.locator("#restore-project-cancel").isEnabled
+            val footerClose = page.locator("#restore-project-cancel")
+            val footerCloseEnabled = footerClose.isEnabled
+            val footerCloseLabel = footerClose.textContent().trim()
             page.keyboard().press("Escape")
             val dismissedByEscape = page.dialogWasDismissed("restore-project-dialog")
 
             held.get()!!.resume()
             assertThat(page.locator("#board-status")).containsText("Restored")
+            assertEquals(
+                "Close",
+                footerCloseLabel,
+                "a busy restore dismissal does not cancel the restore request",
+            )
             assertTrue(
                 headerCloseEnabled && footerCloseEnabled && dismissedByEscape,
                 "busy restore dismissal contract: headerCloseEnabled=$headerCloseEnabled, " +

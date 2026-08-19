@@ -253,6 +253,49 @@ class SessionDialogsTest {
         }
     }
 
+    @Test
+    fun aBusyNewSessionDismissalSaysCloseAndItsLateFailureIsAnnounced() {
+        val held = AtomicReference<Route?>(null)
+        Harness(EMPTY_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.route("**$API/sessions") { route ->
+                        if (route.request().method() == "POST" && held.compareAndSet(null, route)) {
+                            return@route
+                        }
+                        route.resume()
+                    }
+                    context.traced("new-session-busy-dismissal-label") {
+                        val page = signIn(context, harness)
+                        openNewSession(page)
+                        agentCard(page, "claude").click()
+                        fillWorkingDirectory(page, "/a/b")
+                        page.locator("#new-session-submit").click()
+                        page.waitForCondition { held.get() != null }
+                        val dismissalLabel = page.locator("#new-session-cancel").textContent().trim()
+
+                        page.keyboard().press("Escape")
+                        assertThat(page.locator("#new-session-dialog")).hasCount(0)
+                        held.get()!!.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(500)
+                                .setContentType("text/plain")
+                                .setBody("late start refusal"),
+                        )
+
+                        assertThat(page.locator("#status-line"))
+                            .containsText("Could not start session: late start refusal")
+                        assertEquals(
+                            "Close",
+                            dismissalLabel,
+                            "closing a busy new-session form does not cancel its start",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
 
     @Test
     fun importModeAdoptsASessionAndOffersNoShell() {

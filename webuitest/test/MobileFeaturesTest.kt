@@ -4,11 +4,13 @@ import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Request
 import com.microsoft.playwright.Response
+import com.microsoft.playwright.Route
 import com.microsoft.playwright.WebSocketFrame
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.FilePayload
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -107,6 +109,7 @@ class MobileFeaturesTest {
         onMobileTerminal("mobile-upload") { harness, _, page ->
             val uploads = CopyOnWriteArrayList<Request>()
             val answers = CopyOnWriteArrayList<Response>()
+            val held = AtomicReference<Route?>(null)
             page.onRequest { if (it.url().contains(UPLOAD_PATH)) uploads.add(it) }
             page.onResponse { if (it.url().contains(UPLOAD_PATH)) answers.add(it) }
 
@@ -116,6 +119,13 @@ class MobileFeaturesTest {
             runLeaderCommand(page, "Upload files to current folder")
             assertThat(page.locator("#upload-dialog")).isVisible()
             assertThat(page.locator(".upload-destination")).containsText(SESSION_CWD)
+            page.route("**/*") { route ->
+                val request = route.request()
+                if (request.method() == "POST" && request.url().contains(UPLOAD_PATH) &&
+                    held.compareAndSet(null, route)
+                ) return@route
+                route.resume()
+            }
 
             page.locator("#upload-files").setInputFiles(
                 arrayOf(
@@ -124,6 +134,9 @@ class MobileFeaturesTest {
                 ),
             )
             page.locator("#upload-submit").click()
+            page.waitForCondition { held.get() != null }
+            assertThat(page.locator("#upload-cancel")).hasText("Cancel upload")
+            held.get()!!.resume()
 
             assertThat(page.locator(".upload-result")).containsText("Uploaded 2 files to $SESSION_CWD.")
             assertThat(page.locator("#upload-error")).hasCount(0)

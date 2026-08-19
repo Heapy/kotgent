@@ -171,6 +171,9 @@ class TaskCommandsTest {
             page.locator("#new-task-title-input").fill("Late failure")
             page.locator("#new-task-form button[type=submit]").click()
             page.waitForCondition { held.get() != null }
+            val dismissalLabel = page.locator(
+                "#new-task-form .dialog-actions button[type=button]",
+            ).textContent().trim()
 
             page.keyboard().press("Escape")
             assertThat(page.locator("#new-task-dialog")).hasCount(0)
@@ -182,6 +185,11 @@ class TaskCommandsTest {
             )
 
             assertThat(page.locator("#board-status")).containsText(LATE_FAILURE)
+            assertEquals(
+                "Close",
+                dismissalLabel,
+                "a busy task form dismisses without cancelling its still-running request",
+            )
         }
     }
 
