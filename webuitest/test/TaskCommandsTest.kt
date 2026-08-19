@@ -1,9 +1,12 @@
 package io.kotgent.webuitest
 
+import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
+import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
+import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -150,6 +153,71 @@ class TaskCommandsTest {
         }
 
     @Test
+    fun aDismissedNewTaskFormReportsItsLateFailureInTheBoardStatus() {
+        val held = AtomicReference<Route?>(null)
+        onScenario(
+            BOARD_SCENARIO,
+            "new-task-dismissed-late-failure",
+            beforeLoad = { _, context ->
+                context.route("**$TASKS_API") { route ->
+                    if (route.request().method() == "POST" && held.compareAndSet(null, route)) return@route
+                    route.resume()
+                }
+            },
+        ) { harness, page ->
+            page.navigate(harness.baseUrl + "/tasks")
+            page.awaitBoard()
+            page.locator(".board-new-task").click()
+            page.locator("#new-task-title-input").fill("Late failure")
+            page.locator("#new-task-form button[type=submit]").click()
+            page.waitForCondition { held.get() != null }
+
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#new-task-dialog")).hasCount(0)
+            held.get()!!.fulfill(
+                Route.FulfillOptions()
+                    .setStatus(500)
+                    .setContentType("text/plain")
+                    .setBody(LATE_FAILURE),
+            )
+
+            assertThat(page.locator("#board-status")).containsText(LATE_FAILURE)
+        }
+    }
+
+    @Test
+    fun aLateTaskSuccessLeavesItsReplacementFormOpenAndAnnouncesTheCreatedTask() {
+        val held = AtomicReference<Route?>(null)
+        onScenario(
+            BOARD_SCENARIO,
+            "new-task-replacement-survives-late-success",
+            beforeLoad = { _, context ->
+                context.route("**$TASKS_API") { route ->
+                    if (route.request().method() == "POST" && held.compareAndSet(null, route)) return@route
+                    route.resume()
+                }
+            },
+        ) { harness, page ->
+            page.navigate(harness.baseUrl + "/tasks")
+            page.awaitBoard()
+            page.locator(".board-new-task").click()
+            page.locator("#new-task-title-input").fill("First task")
+            page.locator("#new-task-form button[type=submit]").click()
+            page.waitForCondition { held.get() != null }
+
+            page.keyboard().press("Escape")
+            assertThat(page.locator("#new-task-dialog")).hasCount(0)
+            page.locator(".board-new-task").click()
+            page.locator("#new-task-title-input").fill("Replacement draft")
+            held.get()!!.resume()
+
+            assertThat(page.locator("#board-status")).containsText("Created local:11.")
+            assertThat(page.locator("#new-task-dialog")).isVisible()
+            assertThat(page.locator("#new-task-title-input")).hasValue("Replacement draft")
+        }
+    }
+
+    @Test
     fun theBoardsNewProjectFormIsReachableFromTheSearchListWithoutAMnemonic() =
         onScenario(BOARD_SCENARIO, "new-project-command") { harness, page ->
             page.navigate(harness.baseUrl + "/")
@@ -221,11 +289,17 @@ class TaskCommandsTest {
         }
 
 
-    private fun onScenario(scenario: String, trace: String, block: (Harness, Page) -> Unit) {
+    private fun onScenario(
+        scenario: String,
+        trace: String,
+        beforeLoad: (Harness, BrowserContext) -> Unit = { _, _ -> },
+        block: (Harness, Page) -> Unit,
+    ) {
         Harness(scenario).use { harness ->
             onChromium { browser ->
                 browser.touchContext().use { context ->
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
+                    beforeLoad(harness, context)
                     context.traced(trace) { block(harness, context.newPage()) }
                 }
             }
@@ -278,6 +352,8 @@ class TaskCommandsTest {
     }
 
     private companion object {
+        const val TASKS_API = "/api/v1/tasks"
+        const val LATE_FAILURE = "Task creation failed after dismissal."
         const val SHOW_DONE_QUERY = "hide done"
     }
 }

@@ -335,9 +335,18 @@ export function Board({
   }, [publishRow, say]);
 
   const submitTask = useCallback(async (title, body) => {
-    const created = await createTask(shownProjectId, title, body);
-    publishRow(created);
-    setForm(null);
+    const submittedForm = formRef.current;
+    let created;
+    try {
+      created = await createTask(shownProjectId, title, body);
+      publishRow(created);
+    } catch (e) {
+      // A dismissed or replaced form cannot display the outcome of its still-running request.
+      if (formRef.current === submittedForm) throw e;
+      say("Could not create the task: " + errorMessage(e), true);
+      return;
+    }
+    setForm((current) => current === submittedForm ? null : current);
     say("Created " + ((created && created.ref) || "the task") + ".");
   }, [shownProjectId, publishRow, say]);
 
