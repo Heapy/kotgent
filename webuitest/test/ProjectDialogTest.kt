@@ -293,6 +293,58 @@ class ProjectDialogTest {
     }
 
     @Test
+    fun aStalledDeleteTimesOutWithAnUnconfirmedOutcomeAndUnlocksTheDialog() {
+        val held = AtomicReference<Route?>(null)
+        onProjects(
+            "project-delete-timeout",
+            beforeLoad = { _, context ->
+                context.addInitScript(API_TIMEOUT_CONTROL)
+                context.route("**$PROJECTS_API/$SELECTED_PROJECT") { route ->
+                    if (route.request().method() == "DELETE" && held.compareAndSet(null, route)) return@route
+                    route.resume()
+                }
+            },
+        ) { _, page ->
+            page.evaluate(ARM_SHORT_API_TIMEOUT, SHORT_API_TIMEOUT_MILLIS)
+            page.openPalette()
+            page.runFirstMatch("delete project", "Delete project")
+
+            val dialog = page.locator("#delete-project-dialog")
+            val submit = page.locator("#delete-project-submit")
+            page.locator("#delete-project-submit").click()
+            page.waitForCondition { held.get() != null }
+            assertThat(dialog).isVisible()
+            assertThat(submit).isDisabled()
+
+            page.waitForTimeout(TIMEOUT_OBSERVATION_MILLIS)
+            val timeoutErrors = page.locator("#delete-project-error").count()
+            val stillBusy = submit.isDisabled
+            assertTrue(
+                !stillBusy && timeoutErrors == 1,
+                "held DELETE observation after ${TIMEOUT_OBSERVATION_MILLIS.toLong()}ms: " +
+                    "stillBusy=$stillBusy, timeoutErrors=$timeoutErrors",
+            )
+
+            val error = page.locator("#delete-project-error")
+            assertThat(error).containsText("timed out after 60 seconds")
+            assertThat(error).containsText("outcome is unconfirmed")
+            assertThat(error).containsText("Reload")
+            assertThat(dialog).isVisible()
+            assertThat(submit).isEnabled()
+            assertThat(submit).hasText("Delete project")
+
+            val requested = (page.evaluate("() => window.__kotgentApiTimeoutCalls.slice()") as List<*>)
+                .map { (it as Number).toInt() }
+            assertTrue(requested.isNotEmpty(), "the request must use AbortSignal.timeout")
+            assertEquals(
+                setOf(60_000),
+                requested.toSet(),
+                "every request after the harness override was armed must ask for the 60-second default",
+            )
+        }
+    }
+
+    @Test
     fun escapeDismissesABusyDeleteAndItsOutcomeReachesTheBoardStatus() {
         val held = AtomicReference<Route?>(null)
         onProjects(
@@ -467,6 +519,29 @@ class ProjectDialogTest {
         private const val SPARE_PROJECT = "44444444-4444-4444-8444-444444444444"
         private const val DELETED_PROJECT = "55555555-5555-4555-8555-555555555555"
         private const val RACING_PROJECT = "66666666-6666-4666-8666-666666666666"
+
+        private const val SHORT_API_TIMEOUT_MILLIS = 100.0
+        private const val TIMEOUT_OBSERVATION_MILLIS = 1_000.0
+
+        private val API_TIMEOUT_CONTROL = """
+            (() => {
+              const nativeTimeout = AbortSignal.timeout.bind(AbortSignal);
+              window.__kotgentApiTimeoutCalls = [];
+              window.__kotgentApiTimeoutOverrideMs = null;
+              AbortSignal.timeout = (milliseconds) => {
+                window.__kotgentApiTimeoutCalls.push(milliseconds);
+                const override = window.__kotgentApiTimeoutOverrideMs;
+                return nativeTimeout(override === null ? milliseconds : override);
+              };
+            })();
+        """.trimIndent()
+
+        private val ARM_SHORT_API_TIMEOUT = """
+            (milliseconds) => {
+              window.__kotgentApiTimeoutCalls.length = 0;
+              window.__kotgentApiTimeoutOverrideMs = milliseconds;
+            }
+        """.trimIndent()
 
         private fun projectJson(id: String, name: String, path: String, archived: Boolean): String =
             """{"id":"$id","name":"$name","path":"$path","updatedAt":0,"archived":$archived}"""

@@ -543,7 +543,7 @@ export function UploadFilesDialog({ session, onClose }) {
           await apiRequest(
             "/sessions/" + encodeURIComponent(session.id) + "/files?name=" +
               encodeURIComponent(file.name),
-            { method: "POST", body: file, signal: controller.signal },
+            { method: "POST", body: file, signal: controller.signal, timeout: false },
           );
           uploaded += 1;
         } catch (e) {
