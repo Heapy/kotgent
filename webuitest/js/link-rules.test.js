@@ -15,22 +15,8 @@ import {
   sessionTaskLinkSubmitBlocked,
   taskMatchesQuery,
 } from "../../resources/webui/lib/sessions.js";
+import { sessionRow } from "./fixtures.js";
 import { underTurkishFold } from "./turkish-fold.js";
-
-// Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
-function sessionRow(overrides) {
-  return Object.freeze({
-    id: "s1",
-    name: "one",
-    tmuxSession: "kotgent-one",
-    state: "running",
-    alive: true,
-    taskRef: null,
-    projectId: "p1",
-    rev: 2,
-    ...overrides,
-  });
-}
 
 describe("sessionTaskLinkDisabledReason", () => {
   test("a running session in a project with no task is linkable", () => {
@@ -70,8 +56,8 @@ describe("sessionTaskLinkDisabledReason", () => {
 
   test("an already linked session names the task it is holding", () => {
     assert.equal(
-      sessionTaskLinkDisabledReason(sessionRow({ taskRef: "kotgent#12" }), null),
-      "the selected session is already linked to kotgent#12",
+      sessionTaskLinkDisabledReason(sessionRow({ taskRef: "local:12" }), null),
+      "the selected session is already linked to local:12",
     );
   });
 
@@ -85,8 +71,8 @@ describe("sessionTaskLinkDisabledReason", () => {
   test("an existing link outranks a missing project", () => {
     // Both are true here; the sentence the operator reads must be the actionable one.
     assert.equal(
-      sessionTaskLinkDisabledReason(sessionRow({ taskRef: "kotgent#12", projectId: null }), null),
-      "the selected session is already linked to kotgent#12",
+      sessionTaskLinkDisabledReason(sessionRow({ taskRef: "local:12", projectId: null }), null),
+      "the selected session is already linked to local:12",
     );
   });
 
@@ -106,7 +92,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
       sessionId: "s1",
       expectedProjectId: "p1",
       projects: [{ id: "p1", name: "kotgent" }],
-      task: { ref: "kotgent#12", project: "p1", state: "todo" },
+      task: { ref: "local:12", project: "p1", state: "todo" },
       ...overrides,
     };
   }
@@ -120,7 +106,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
       { pendingAction: "stop" },
       { session: null },
       { session: sessionRow({ state: "stopped" }) },
-      { session: sessionRow({ taskRef: "kotgent#9" }) },
+      { session: sessionRow({ taskRef: "local:9" }) },
       { session: sessionRow({ projectId: null }) },
     ]) {
       assert.equal(sessionTaskLinkSubmitBlocked(submission(overrides)), true, JSON.stringify(overrides));
@@ -159,7 +145,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
   test("a task that moved to another project blocks the submission", () => {
     assert.equal(
       sessionTaskLinkSubmitBlocked(
-        submission({ task: { ref: "kotgent#12", project: "p2", state: "todo" } }),
+        submission({ task: { ref: "local:12", project: "p2", state: "todo" } }),
       ),
       true,
     );
@@ -169,7 +155,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
     for (const state of ["todo", "in_progress", "review"]) {
       assert.equal(
         sessionTaskLinkSubmitBlocked(
-          submission({ task: { ref: "kotgent#12", project: "p1", state: state } }),
+          submission({ task: { ref: "local:12", project: "p1", state: state } }),
         ),
         false,
         state,
@@ -178,7 +164,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
     for (const state of ["done", "unknown", undefined]) {
       assert.equal(
         sessionTaskLinkSubmitBlocked(
-          submission({ task: { ref: "kotgent#12", project: "p1", state: state } }),
+          submission({ task: { ref: "local:12", project: "p1", state: state } }),
         ),
         true,
         String(state),
@@ -188,7 +174,7 @@ describe("sessionTaskLinkSubmitBlocked", () => {
 });
 
 describe("task query matching", () => {
-  const INDEX_TASK = Object.freeze({ ref: "kotgent#12", project: "p1", title: "Index the API", state: "todo" });
+  const INDEX_TASK = Object.freeze({ ref: "local:12", project: "p1", title: "Index the API", state: "todo" });
 
   test("an empty or blank query matches every task", () => {
     assert.equal(normalizeTaskQuery(""), "");
@@ -198,15 +184,15 @@ describe("task query matching", () => {
   });
 
   test("the ref and the title are both searchable, and case is folded on both sides", () => {
-    assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("KOTGENT#12")), true);
+    assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("LOCAL:12")), true);
     assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("the api")), true);
     assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("  index  ")), true);
     assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("board")), false);
   });
 
   test("a task with no title still matches on its ref", () => {
-    assert.equal(taskMatchesQuery({ ref: "kotgent#12", title: null }, normalizeTaskQuery("12")), true);
-    assert.equal(taskMatchesQuery({ ref: "kotgent#12", title: null }, normalizeTaskQuery("index")), false);
+    assert.equal(taskMatchesQuery({ ref: "local:12", title: null }, normalizeTaskQuery("12")), true);
+    assert.equal(taskMatchesQuery({ ref: "local:12", title: null }, normalizeTaskQuery("index")), false);
   });
 
   test("a task the list no longer holds matches nothing", () => {
@@ -250,7 +236,7 @@ describe("task query matching", () => {
 });
 
 describe("sessionTaskLinkOutcome", () => {
-  const REF = "kotgent#12";
+  const REF = "local:12";
 
   test("the committed link is reported as plain status", () => {
     const winner = sessionRow({ name: "one", taskRef: REF });
@@ -282,11 +268,11 @@ describe("sessionTaskLinkOutcome", () => {
   });
 
   test("a session that ended up linked elsewhere names the task it actually holds", () => {
-    const winner = sessionRow({ name: "one", taskRef: "kotgent#99" });
+    const winner = sessionRow({ name: "one", taskRef: "local:99" });
 
     assert.deepEqual(
       sessionTaskLinkOutcome({ label: "one", ref: REF, fresh: winner, winner: winner }),
-      { text: "The link request completed, but one is now linked to kotgent#99.", error: true },
+      { text: "The link request completed, but one is now linked to local:99.", error: true },
     );
   });
 

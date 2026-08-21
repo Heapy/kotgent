@@ -6,50 +6,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { patchIfNewer, upsertIfNewer } from "../../resources/webui/lib/sessions.js";
-
-// Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
-function sessionRow(overrides) {
-  return Object.freeze({
-    id: "s1",
-    name: "one",
-    tmuxSession: "kotgent-one",
-    cwd: "/work/one",
-    agent: "claude",
-    state: "running",
-    needsAttention: false,
-    alive: true,
-    lastSeq: 7,
-    unread: 0,
-    archived: false,
-    model: "opus",
-    taskRef: null,
-    projectId: "p1",
-    updatedAt: 100,
-    rev: 2,
-    ...overrides,
-  });
-}
-
-function patchFrame(overrides) {
-  return Object.freeze({
-    sessionId: "s1",
-    state: "ready",
-    needsAttention: false,
-    lastSeq: 9,
-    unread: 1,
-    archived: false,
-    model: "opus",
-    taskRef: null,
-    projectId: "p1",
-    updatedAt: 300,
-    rev: 3,
-    ...overrides,
-  });
-}
-
-function listOf(...rows) {
-  return Object.freeze(rows);
-}
+import { listOf, patchFrame, sessionRow } from "./fixtures.js";
 
 describe("upsertIfNewer", () => {
   test("a session the list has never seen is appended", () => {
@@ -122,7 +79,7 @@ describe("patchIfNewer", () => {
   });
 
   test("null clears a field authoritatively", () => {
-    const list = listOf(sessionRow({ rev: 2, taskRef: "kotgent#12", projectId: "p1" }));
+    const list = listOf(sessionRow({ rev: 2, taskRef: "local:12", projectId: "p1" }));
 
     const merged = patchIfNewer(list, patchFrame({ rev: 4, taskRef: null }));
 
@@ -176,7 +133,7 @@ describe("out-of-order arrival", () => {
     needsAttention: false,
     lastSeq: 31,
     unread: 4,
-    taskRef: "kotgent#12",
+    taskRef: "local:12",
     updatedAt: 500,
   });
   const FRAMES = [
@@ -226,7 +183,7 @@ describe("out-of-order arrival", () => {
     needsAttention: true,
     lastSeq: 44,
     unread: 7,
-    taskRef: "kotgent#12",
+    taskRef: "local:12",
     updatedAt: 600,
   });
 
@@ -245,7 +202,7 @@ describe("out-of-order arrival", () => {
       assert.equal(row.alive, true, "aliveness is derived from the patched state, not carried over");
       assert.equal(row.lastSeq, 44);
       assert.equal(row.unread, 7);
-      assert.equal(row.taskRef, "kotgent#12");
+      assert.equal(row.taskRef, "local:12");
       assert.equal(row.updatedAt, 600);
       // A patch carries no identity fields, so the snapshot's are the only ones the row can have.
       assert.equal(row.cwd, FIRST.cwd);

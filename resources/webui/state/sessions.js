@@ -11,12 +11,16 @@
 // — and these rules are proven at the node tier, in webuitest/js/state-sessions.test.js.
 
 import { computed, signal } from "../vendor/signals-core.module.js";
+import { READY, createReadiness } from "../lib/readiness.js";
 import { patchIfNewer, upsertIfNewer } from "../lib/sessions.js";
 
 export const sessions = signal([]);
 
 // A snapshot distinguishes an unloaded list from an empty one; only the first one is an announcement.
-export const sessionsReady = signal(false);
+// The same vocabulary as the task and project lists, so the three answer one question rather than three:
+// like the task list this one arrives on the events socket and never reaches `failed`, because the socket
+// retries forever on its own and announces the outage itself.
+export const sessionsReadiness = createReadiness();
 
 // Derived, not reconciled: an index rebuilt by a caller after each write is a mirror by another name.
 const sessionById = computed(() => {
@@ -35,8 +39,8 @@ export function findSession(id) {
 export function replaceSessions(rows) {
   const previous = sessions.value;
   sessions.value = rows ? rows.slice() : [];
-  const first = !sessionsReady.value;
-  if (first) sessionsReady.value = true;
+  const first = sessionsReadiness.status.value.state !== READY;
+  sessionsReadiness.succeed();
   return { previous: previous, first: first };
 }
 

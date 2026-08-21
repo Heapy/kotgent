@@ -1,7 +1,7 @@
 # JVM test-only module because Playwright cannot run in the native suite.
 # JUnit discovery requires every test class name to match `.*Tests?`; other names silently yield no tests.
 # Playwright embeds its Node driver; only the browser bundle cache is external, so no npm setup is needed.
-# WebUiLogicTests runs the JavaScript tier in webuitest/js/ under a system `node` (v24 or newer) on PATH.
+# WebUiLogicTest runs the JavaScript tier in webuitest/js/ under a system `node` (v24 or newer) on PATH.
 # That binary is the module's only external prerequisite: still no npm install, no bundler, no build step.
 product: jvm/lib
 

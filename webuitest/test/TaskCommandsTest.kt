@@ -244,8 +244,7 @@ class TaskCommandsTest {
             assertThat(page).hasURL(Pattern.compile("/tasks$"))
             assertThat(page.locator("#new-project-dialog")).isVisible()
             assertThat(page.locator("#new-project-path")).isVisible()
-            // Served DOM, not source text: the string "false" coerces to true through the boolean
-            // IDL setter, so only the boolean spelling actually turns spellcheck off.
+            // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
             assertThat(page.locator("#new-project-path")).hasAttribute("spellcheck", "false")
             assertThat(page.locator("#new-task-dialog")).hasCount(0)
         }
@@ -329,7 +328,7 @@ class TaskCommandsTest {
         onScenario(
             TASK_LINK_PICKER_SCENARIO,
             "link-task-success",
-            beforeLoad = { _, context -> context.addInitScript(TASK_SNAPSHOT_GATE) },
+            beforeLoad = { _, context -> context.recordFramesHoldingTasksSnapshot() },
         ) { harness, page ->
             val writes = CopyOnWriteArrayList<Pair<String, String>>()
             val targetedReads = AtomicInteger(0)
@@ -377,11 +376,7 @@ class TaskCommandsTest {
             ).hasText("Blocked")
 
             val query = page.locator("#link-task-query")
-            // Lowercase and boolean, and asserted on the served DOM rather than read off the source:
-            // the IDL name is `spellcheck`, so Preact's `spellCheck={false}` found no such property,
-            // fell back to `removeAttribute("spellCheck")` and set nothing at all — while the lowercase
-            // name with the *string* "false" reaches the property and the boolean IDL setter coerces a
-            // non-empty string to `true`, which is how spelling it as an attribute turns spellcheck on.
+            // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
             assertThat(query).hasAttribute("spellcheck", "false")
             query.fill("local:4")
             assertThat(options).hasCount(1)
@@ -397,7 +392,8 @@ class TaskCommandsTest {
             assertThat(options.nth(1)).hasClass(ACTIVE_OPTION)
             harness.send("task local:7 in_progress")
             page.waitForFunction(
-                """() => (window.__kotgentTaskFrames || []).some((frame) =>
+                """() => (window.__kotgentFrames || []).some((frame) =>
+                    frame.indexOf('"type":"task_update"') >= 0 &&
                     frame.indexOf('"ref":"local:7"') >= 0)""".trimIndent(),
             )
             assertThat(options.nth(1)).hasClass(ACTIVE_OPTION)
@@ -934,13 +930,20 @@ class TaskCommandsTest {
     private fun onScenario(
         scenario: String,
         trace: String,
-        viewportHeight: Int = 844,
+        // Null means the shared phone viewport, rather than a copy of touchContext's own default that a
+        // change there would silently not reach.
+        viewportHeight: Int? = null,
         beforeLoad: (Harness, BrowserContext) -> Unit = { _, _ -> },
         block: (Harness, Page) -> Unit,
     ) {
         Harness(scenario).use { harness ->
             onChromium { browser ->
-                browser.touchContext(height = viewportHeight).use { context ->
+                val fresh = if (viewportHeight == null) {
+                    browser.touchContext()
+                } else {
+                    browser.touchContext(height = viewportHeight)
+                }
+                fresh.use { context ->
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
                     beforeLoad(harness, context)
                     context.traced(trace) { block(harness, context.newPage()) }
@@ -1033,46 +1036,6 @@ class TaskCommandsTest {
                 window.__kotgentScrollIntoViewCalls += 1;
                 return nativeScrollIntoView.apply(this, args);
               };
-            })();
-        """.trimIndent()
-
-        val TASK_SNAPSHOT_GATE = """
-            (() => {
-              const Native = window.WebSocket;
-              window.__kotgentHeldTasksSnapshot = false;
-              window.__kotgentTaskFrames = [];
-              window.__kotgentReleaseTasksSnapshot = () => {};
-              const Gated = function (url, protocols) {
-                const socket = protocols === undefined ? new Native(url) : new Native(url, protocols);
-                if (String(url).indexOf("/api/v1/events") >= 0) {
-                  let released = false;
-                  const held = [];
-                  socket.addEventListener("message", (event) => {
-                    if (typeof event.data === "string" &&
-                        event.data.indexOf('"type":"task_update"') >= 0) {
-                      window.__kotgentTaskFrames.push(event.data);
-                    }
-                    if (released || typeof event.data !== "string" ||
-                        event.data.indexOf('"type":"tasks_snapshot"') < 0) return;
-                    event.stopImmediatePropagation();
-                    held.push(event.data);
-                    window.__kotgentHeldTasksSnapshot = true;
-                  });
-                  window.__kotgentReleaseTasksSnapshot = () => {
-                    released = true;
-                    for (const data of held.splice(0)) {
-                      socket.dispatchEvent(new MessageEvent("message", { data }));
-                    }
-                  };
-                }
-                return socket;
-              };
-              Gated.prototype = Native.prototype;
-              Gated.CONNECTING = Native.CONNECTING;
-              Gated.OPEN = Native.OPEN;
-              Gated.CLOSING = Native.CLOSING;
-              Gated.CLOSED = Native.CLOSED;
-              window.WebSocket = Gated;
             })();
         """.trimIndent()
     }

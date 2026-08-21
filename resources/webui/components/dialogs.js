@@ -24,6 +24,7 @@ import {
   taskStateRank,
 } from "../lib/tasks.js";
 import { qrSvg } from "../lib/qr.js";
+import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.js";
 import { useTypeahead } from "./Typeahead.js";
 
 const SWIPE_SLOP_PX = 8;
@@ -196,7 +197,6 @@ export function Dialog({ id, labelledBy, lightDismiss = true, onClose, children 
   `;
 }
 
-const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
 /* Start and import share one form. taskRef belongs only to start requests; import discovers cwd from
  * the provider transcript unless the operator explicitly overrides it. */
@@ -207,9 +207,6 @@ export function NewSessionDialog({
   const [mode, setMode] = useState(initialMode);
   const [agent, setAgent] = useState(initialAgent);
   const [cwd, setCwd] = useState(initialMode === "import" ? "" : (initialCwd || ""));
-  const [completionQuery, setCompletionQuery] = useState(null);
-  const [suggestions, setSuggestions] = useState([]);
-  const [cwdFocused, setCwdFocused] = useState(false);
   const [name, setName] = useState("");
   const [tags, setTags] = useState("");
   const [sessionId, setSessionId] = useState("");
@@ -219,6 +216,12 @@ export function NewSessionDialog({
   const cwdRef = useRef(null);
   const agentRef = useRef(null);
   const sessionIdRef = useRef(null);
+  const cwdPicker = usePathSuggestions({
+    id: "session-cwd",
+    basePath: basePath,
+    inputRef: cwdRef,
+    onChoose: setCwd,
+  });
   const taskRef = typeof initialTaskRef === "string" && initialTaskRef.trim().length > 0
     ? initialTaskRef.trim()
     : null;
@@ -229,70 +232,11 @@ export function NewSessionDialog({
     if (target) target.focus();
   }, []);
 
-  useEffect(() => {
-    if (completionQuery === null) return undefined;
-
-    const typed = completionQuery.trim();
-    const normalizedBase = normalizePath(basePath);
-    setSuggestions([]);
-    if (!typed || (typed.charAt(0) !== "/" && normalizedBase.charAt(0) !== "/")) return undefined;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      apiRequest("/directories/complete", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({ basePath: normalizedBase || null, input: typed }),
-      })
-        .then((response) => {
-          if (controller.signal.aborted) return;
-          const paths = response && Array.isArray(response.paths)
-            ? response.paths.filter((path) => typeof path === "string")
-            : [];
-          setSuggestions(paths);
-        })
-        .catch((e) => {
-          if (!controller.signal.aborted && (!e || e.name !== "AbortError")) setSuggestions([]);
-        });
-    }, DIRECTORY_COMPLETION_DELAY_MS);
-
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [completionQuery, basePath]);
-
-  const dismissSuggestions = () => {
-    setCompletionQuery(null);
-    setSuggestions([]);
-  };
-
-  const chooseSuggestion = (path) => {
-    setCwd(path);
-    dismissSuggestions();
-    if (cwdRef.current) cwdRef.current.focus();
-  };
-
   const cwdInput = (event) => {
     const value = event.target.value;
     setCwd(value);
-    setCompletionQuery(value);
+    cwdPicker.onType(value);
   };
-
-  // Nothing is navigable while the field is unfocused, and no row opens active: Enter belongs to the
-  // form until an arrow key claims it.
-  const cwdOptions = useMemo(
-    () => (cwdFocused ? suggestions : []),
-    [cwdFocused, suggestions],
-  );
-  const cwdTypeahead = useTypeahead({
-    keys: cwdOptions,
-    token: completionQuery,
-    autoFirst: false,
-    onCommit: chooseSuggestion,
-    onDismiss: dismissSuggestions,
-  });
-  const activeSuggestion = suggestions.indexOf(cwdTypeahead.activeKey);
 
   const chooseAgent = (event) => {
     setAgent(event.target.value);
@@ -307,8 +251,7 @@ export function NewSessionDialog({
     )) setAgent("");
     // Never carry a start-mode cwd into import as an accidental transcript-discovery override.
     setCwd(next === "import" ? "" : (initialCwd || ""));
-    setCompletionQuery(null);
-    setSuggestions([]);
+    cwdPicker.reset();
   };
 
   const submit = async (event) => {
@@ -433,31 +376,12 @@ export function NewSessionDialog({
           <div class="path-autocomplete">
             <input id="session-cwd" type="text" required=${mode === "start"} spellcheck=${false}
                    autocomplete="off"
-                   role="combobox" aria-autocomplete="list"
-                   aria-expanded=${cwdFocused && suggestions.length > 0 ? "true" : "false"}
-                   aria-controls="session-cwd-options"
-                   aria-activedescendant=${activeSuggestion >= 0
-                     ? "session-cwd-option-" + activeSuggestion
-                     : null}
+                   ...${cwdPicker.fieldProps}
                    placeholder=${mode === "import"
                      ? "found from the transcript when omitted"
                      : "/path/to/project"} ref=${cwdRef}
-                   value=${cwd} onInput=${cwdInput} onKeyDown=${cwdTypeahead.keyDown}
-                   onFocus=${() => setCwdFocused(true)} onBlur=${() => setCwdFocused(false)} />
-            ${cwdFocused && suggestions.length > 0 && html`
-              <ul id="session-cwd-options" class="path-suggestions" role="listbox">
-                ${suggestions.map((path, index) => html`
-                  <li id=${"session-cwd-option-" + index} key=${path} role="option"
-                      class=${"path-suggestion" + (index === activeSuggestion ? " active" : "")}
-                      aria-selected=${index === activeSuggestion ? "true" : "false"}
-                      title=${path}
-                      ref=${cwdTypeahead.optionRef(path)}
-                      onMouseDown=${(event) => event.preventDefault()}
-                      onMouseEnter=${() => cwdTypeahead.activate(path)}
-                      onClick=${() => chooseSuggestion(path)}>${path}</li>
-                `)}
-              </ul>
-            `}
+                   value=${cwd} onInput=${cwdInput} />
+            <${PathSuggestions} picker=${cwdPicker} />
           </div>
         </div>
 
@@ -911,69 +835,21 @@ export function LinkTaskDialog({
   const activeIndex = results.findIndex((task) => task.ref === activeTaskRef);
   const listId = !listLocked && results.length > 0 ? "link-task-list" : null;
 
-  const listBody = changed
-    ? html`
-      <p id="link-task-changed" class="form-error" role="status">
-        The selected session changed while this picker was open. Close it and try again.
-      </p>`
-    : projectUnavailable
-      ? html`
-        <p id="link-task-project-missing" class="form-error" role="status">
-          This session's project is no longer active. Restore it before linking a task.
-        </p>`
-      : failure
-      ? html`
-        <div id="link-task-failed" role="alert">
-          <p class="form-error">${failure}</p>
-          <div class="dialog-actions">
-            <button id="link-task-retry" class="button" type="button"
-                    onClick=${onRetryProjects}>Try again</button>
-          </div>
-        </div>`
-      : !ready
-      ? html`<p id="link-task-status" class="dialog-status">Reading open tasks…</p>`
-      : results.length === 0
-        ? html`
-          <p id="link-task-empty" class="dialog-empty">
-            ${rows.length === 0
-              ? "No open tasks in this session's project."
-              : "No open tasks match “" + query.trim() + "”."}
-          </p>`
-        : html`
-          <ul id="link-task-list" class="dialog-list link-picker-list" role="listbox">
-            ${results.map((task, index) => html`
-              <li key=${task.ref} role="presentation">
-                <button
-                  id=${"link-task-option-" + index}
-                  class=${"dialog-list-row link-picker-option" +
-                    (task.ref === activeTaskRef ? " active" : "")}
-                  type="button"
-                  role="option"
-                  aria-selected=${task.ref === activeTaskRef ? "true" : "false"}
-                  data-ref=${task.ref}
-                  data-state=${task.state}
-                  disabled=${busy}
-                  ref=${typeahead.optionRef(task.ref)}
-                  onMouseEnter=${() => typeahead.activate(task.ref)}
-                  onFocus=${() => typeahead.activate(task.ref)}
-                  onClick=${() => choose(task)}
-                >
-                  <span class="dialog-list-name">${task.title || task.ref}</span>
-                  <span class="dialog-list-sub link-picker-meta">
-                    <span>${task.ref}</span>
-                    ${task.blocked && html`
-                      <span class="link-picker-blocked"
-                            title="A dependency is not done yet">Blocked</span>`}
-                  </span>
-                  <span class="dialog-list-action link-picker-state">
-                    ${busyTaskRef === task.ref
-                      ? "Linking…"
-                      : taskStateLabel(task.state)}
-                  </span>
-                </button>
-              </li>
-            `)}
-          </ul>`;
+  const listBody = linkTaskBody({
+    changed: changed,
+    projectUnavailable: projectUnavailable,
+    failure: failure,
+    ready: ready,
+    rows: rows,
+    results: results,
+    query: query,
+    activeTaskRef: activeTaskRef,
+    busy: busy,
+    busyTaskRef: busyTaskRef,
+    typeahead: typeahead,
+    choose: choose,
+    onRetryProjects: onRetryProjects,
+  });
 
   return html`
     <${Dialog} id="link-task-dialog" labelledBy="link-task-title" lightDismiss=${!busy}
@@ -1014,6 +890,83 @@ export function LinkTaskDialog({
       </div>
     <//>
   `;
+}
+
+// The results panel, as early returns in refusal order rather than one five-branch ternary; this is the
+// shape restoreProjectBody above already answers. Everything it reads is derived in the component, so it
+// takes a record rather than thirteen positional arguments.
+function linkTaskBody({
+  changed, projectUnavailable, failure, ready, rows, results, query,
+  activeTaskRef, busy, busyTaskRef, typeahead, choose, onRetryProjects,
+}) {
+  if (changed) {
+    return html`
+      <p id="link-task-changed" class="form-error" role="status">
+        The selected session changed while this picker was open. Close it and try again.
+      </p>`;
+  }
+  if (projectUnavailable) {
+    return html`
+      <p id="link-task-project-missing" class="form-error" role="status">
+        This session's project is no longer active. Restore it before linking a task.
+      </p>`;
+  }
+  if (failure) {
+    return html`
+      <div id="link-task-failed" role="alert">
+        <p class="form-error">${failure}</p>
+        <div class="dialog-actions">
+          <button id="link-task-retry" class="button" type="button"
+                  onClick=${onRetryProjects}>Try again</button>
+        </div>
+      </div>`;
+  }
+  if (!ready) {
+    return html`<p id="link-task-status" class="dialog-status">Reading open tasks…</p>`;
+  }
+  if (results.length === 0) {
+    return html`
+      <p id="link-task-empty" class="dialog-empty">
+        ${rows.length === 0
+          ? "No open tasks in this session's project."
+          : "No open tasks match “" + query.trim() + "”."}
+      </p>`;
+  }
+  return html`
+    <ul id="link-task-list" class="dialog-list link-picker-list" role="listbox">
+      ${results.map((task, index) => html`
+        <li key=${task.ref} role="presentation">
+          <button
+            id=${"link-task-option-" + index}
+            class=${"dialog-list-row link-picker-option" +
+              (task.ref === activeTaskRef ? " active" : "")}
+            type="button"
+            role="option"
+            aria-selected=${task.ref === activeTaskRef ? "true" : "false"}
+            data-ref=${task.ref}
+            data-state=${task.state}
+            disabled=${busy}
+            ref=${typeahead.optionRef(task.ref)}
+            onMouseEnter=${() => typeahead.activate(task.ref)}
+            onFocus=${() => typeahead.activate(task.ref)}
+            onClick=${() => choose(task)}
+          >
+            <span class="dialog-list-name">${task.title || task.ref}</span>
+            <span class="dialog-list-sub link-picker-meta">
+              <span>${task.ref}</span>
+              ${task.blocked && html`
+                <span class="link-picker-blocked"
+                      title="A dependency is not done yet">Blocked</span>`}
+            </span>
+            <span class="dialog-list-action link-picker-state">
+              ${busyTaskRef === task.ref
+                ? "Linking…"
+                : taskStateLabel(task.state)}
+            </span>
+          </button>
+        </li>
+      `)}
+    </ul>`;
 }
 
 function groupingPreview(draft, sessions) {

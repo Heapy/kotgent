@@ -33,7 +33,7 @@ export function findTask(ref) {
 // A reconnect snapshot replaces the list so rows deleted during the outage cannot reappear.
 export function replaceTasks(rows) {
   const previous = tasks.value;
-  tasks.value = applyTasksSnapshot(previous, rows);
+  tasks.value = applyTasksSnapshot(rows);
   const first = tasksReadiness.status.value.state !== READY;
   tasksReadiness.succeed();
   return { previous: previous, first: first };

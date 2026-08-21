@@ -16,24 +16,7 @@ import {
   taskStateRank,
   upsertTaskIfNewer,
 } from "../../resources/webui/lib/tasks.js";
-
-// Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
-function taskRow(overrides) {
-  return Object.freeze({
-    ref: "kotgent#12",
-    project: "p1",
-    title: "wire the board",
-    state: "todo",
-    position: 100,
-    createdAt: 10,
-    rev: 2,
-    ...overrides,
-  });
-}
-
-function listOf(...rows) {
-  return Object.freeze(rows);
-}
+import { listOf, taskRow } from "./fixtures.js";
 
 describe("upsertTaskIfNewer", () => {
   test("a task the list has never seen is appended", () => {
@@ -45,12 +28,12 @@ describe("upsertTaskIfNewer", () => {
   });
 
   test("a newer revision replaces the row without moving it", () => {
-    const list = listOf(taskRow({ ref: "a", rev: 1 }), taskRow({ rev: 2 }), taskRow({ ref: "c", rev: 1 }));
+    const list = listOf(taskRow({ ref: "local:a", rev: 1 }), taskRow({ rev: 2 }), taskRow({ ref: "local:c", rev: 1 }));
     const newer = taskRow({ rev: 3, state: "review" });
 
     const merged = upsertTaskIfNewer(list, newer);
 
-    assert.deepEqual(merged.map((t) => t.ref), ["a", "kotgent#12", "c"]);
+    assert.deepEqual(merged.map((t) => t.ref), ["local:a", "local:12", "local:c"]);
     assert.strictEqual(merged[1], newer);
   });
 
@@ -78,19 +61,19 @@ describe("patchTaskIfNewer", () => {
   test("a patch for an unknown ref is a no-op", () => {
     const list = listOf(taskRow({}));
 
-    assert.strictEqual(patchTaskIfNewer(list, { ref: "kotgent#99", rev: 99, state: "done" }), list);
+    assert.strictEqual(patchTaskIfNewer(list, { ref: "local:99", rev: 99, state: "done" }), list);
   });
 
   test("a patch on an empty collection is a no-op", () => {
     const empty = listOf();
 
-    assert.strictEqual(patchTaskIfNewer(empty, { ref: "kotgent#12", rev: 99, state: "done" }), empty);
+    assert.strictEqual(patchTaskIfNewer(empty, { ref: "local:12", rev: 99, state: "done" }), empty);
   });
 
   test("a newer patch merges its fields and keeps its own revision", () => {
     const list = listOf(taskRow({ rev: 2, state: "todo", position: 100 }));
 
-    const merged = patchTaskIfNewer(list, { ref: "kotgent#12", rev: 4, state: "in_progress", position: 250 });
+    const merged = patchTaskIfNewer(list, { ref: "local:12", rev: 4, state: "in_progress", position: 250 });
 
     assert.equal(merged[0].state, "in_progress");
     assert.equal(merged[0].position, 250);
@@ -101,7 +84,7 @@ describe("patchTaskIfNewer", () => {
   test("fields the patch does not carry survive from the stored row", () => {
     const list = listOf(taskRow({ rev: 2, title: "wire the board", createdAt: 10 }));
 
-    const merged = patchTaskIfNewer(list, { ref: "kotgent#12", rev: 4, state: "review" });
+    const merged = patchTaskIfNewer(list, { ref: "local:12", rev: 4, state: "review" });
 
     assert.equal(merged[0].title, "wire the board");
     assert.equal(merged[0].createdAt, 10);
@@ -110,69 +93,68 @@ describe("patchTaskIfNewer", () => {
   test("an equal revision is a no-op that returns the very same list", () => {
     const list = listOf(taskRow({ rev: 3 }));
 
-    assert.strictEqual(patchTaskIfNewer(list, { ref: "kotgent#12", rev: 3, state: "done" }), list);
+    assert.strictEqual(patchTaskIfNewer(list, { ref: "local:12", rev: 3, state: "done" }), list);
   });
 
   test("an older revision is a no-op that returns the very same list", () => {
     const list = listOf(taskRow({ rev: 5 }));
 
-    assert.strictEqual(patchTaskIfNewer(list, { ref: "kotgent#12", rev: 4, state: "done" }), list);
+    assert.strictEqual(patchTaskIfNewer(list, { ref: "local:12", rev: 4, state: "done" }), list);
   });
 
   test("a patch carrying no revision is a no-op", () => {
     const list = listOf(taskRow({ rev: 2 }));
 
-    assert.strictEqual(patchTaskIfNewer(list, { ref: "kotgent#12", state: "done" }), list);
+    assert.strictEqual(patchTaskIfNewer(list, { ref: "local:12", state: "done" }), list);
   });
 });
 
 describe("removeTask", () => {
   test("the named task goes and the rest keep their order", () => {
-    const list = listOf(taskRow({ ref: "a" }), taskRow({ ref: "b" }), taskRow({ ref: "c" }));
+    const list = listOf(taskRow({ ref: "local:a" }), taskRow({ ref: "local:b" }), taskRow({ ref: "local:c" }));
 
-    assert.deepEqual(removeTask(list, "b").map((t) => t.ref), ["a", "c"]);
-    assert.deepEqual(list.map((t) => t.ref), ["a", "b", "c"], "the caller's list must not be mutated");
+    assert.deepEqual(removeTask(list, "local:b").map((t) => t.ref), ["local:a", "local:c"]);
+    assert.deepEqual(list.map((t) => t.ref), ["local:a", "local:b", "local:c"], "the caller's list must not be mutated");
   });
 
   test("removal carries no revision and outranks the stored one", () => {
     // The frame is authoritative: a high stored revision is not a reason to keep a deleted row.
-    const list = listOf(taskRow({ ref: "a", rev: 99 }));
+    const list = listOf(taskRow({ ref: "local:a", rev: 99 }));
 
-    assert.deepEqual(removeTask(list, "a"), []);
+    assert.deepEqual(removeTask(list, "local:a"), []);
   });
 
   test("an unknown ref is a no-op that returns the very same list", () => {
-    const list = listOf(taskRow({ ref: "a" }));
+    const list = listOf(taskRow({ ref: "local:a" }));
 
-    assert.strictEqual(removeTask(list, "kotgent#404"), list);
+    assert.strictEqual(removeTask(list, "local:404"), list);
   });
 
   test("an empty collection is a no-op that returns the very same list", () => {
     const empty = listOf();
 
-    assert.strictEqual(removeTask(empty, "a"), empty);
+    assert.strictEqual(removeTask(empty, "local:a"), empty);
   });
 });
 
 describe("applyTasksSnapshot", () => {
-  test("a reconnect snapshot replaces the list so a deleted row cannot reappear", () => {
-    const stale = listOf(taskRow({ ref: "deleted-during-the-outage", rev: 99 }));
-    const rows = [taskRow({ ref: "a" })];
+  // The snapshot is the whole list and reads nothing of the one it replaces, which is what makes a row
+  // deleted during an outage unable to reappear. Its caller is state/tasks.js's replaceTasks.
+  test("a snapshot becomes the list, and only the rows it carries", () => {
+    const rows = [taskRow({ ref: "local:a" })];
 
-    assert.deepEqual(applyTasksSnapshot(stale, rows).map((t) => t.ref), ["a"]);
+    assert.deepEqual(applyTasksSnapshot(rows).map((t) => t.ref), ["local:a"]);
   });
 
   test("an absent snapshot empties the list", () => {
-    const stale = listOf(taskRow({ ref: "a" }));
-
-    assert.deepEqual(applyTasksSnapshot(stale, null), []);
-    assert.deepEqual(applyTasksSnapshot(stale, undefined), []);
+    assert.deepEqual(applyTasksSnapshot(null), []);
+    assert.deepEqual(applyTasksSnapshot(undefined), []);
   });
 
   test("the snapshot is copied, so the caller's array cannot alias board state", () => {
-    const rows = [taskRow({ ref: "a" })];
+    const rows = [taskRow({ ref: "local:a" })];
 
-    assert.notStrictEqual(applyTasksSnapshot(listOf(), rows), rows);
+    assert.notStrictEqual(applyTasksSnapshot(rows), rows);
   });
 });
 
@@ -213,51 +195,51 @@ describe("compareTasksByBoardOrder", () => {
   const sorted = (...rows) => rows.slice().sort(compareTasksByBoardOrder).map((row) => row.ref);
 
   test("position comes first", () => {
-    const low = taskRow({ ref: "a#1", position: 10, createdAt: 99 });
-    const high = taskRow({ ref: "a#2", position: 20, createdAt: 1 });
+    const low = taskRow({ ref: "local:a1", position: 10, createdAt: 99 });
+    const high = taskRow({ ref: "local:a2", position: 20, createdAt: 1 });
 
     assert.equal(compareTasksByBoardOrder(low, high), -1);
     assert.equal(compareTasksByBoardOrder(high, low), 1);
-    assert.deepEqual(sorted(high, low), ["a#1", "a#2"]);
+    assert.deepEqual(sorted(high, low), ["local:a1", "local:a2"]);
   });
 
   test("equal positions fall back to creation order", () => {
-    const older = taskRow({ ref: "b#2", position: 10, createdAt: 1 });
-    const newer = taskRow({ ref: "b#1", position: 10, createdAt: 2 });
+    const older = taskRow({ ref: "local:b2", position: 10, createdAt: 1 });
+    const newer = taskRow({ ref: "local:b1", position: 10, createdAt: 2 });
 
     assert.equal(compareTasksByBoardOrder(older, newer), -1);
     assert.deepEqual(
       sorted(newer, older),
-      ["b#2", "b#1"],
+      ["local:b2", "local:b1"],
       "the older row first, which the ref fallback alone would have reversed",
     );
   });
 
   test("rows agreeing on both fall back to the ref, so the order is total", () => {
-    const first = taskRow({ ref: "c#1", position: 10, createdAt: 5 });
-    const second = taskRow({ ref: "c#2", position: 10, createdAt: 5 });
+    const first = taskRow({ ref: "local:c1", position: 10, createdAt: 5 });
+    const second = taskRow({ ref: "local:c2", position: 10, createdAt: 5 });
 
     assert.equal(compareTasksByBoardOrder(first, second), -1);
     assert.equal(compareTasksByBoardOrder(first, first), 0);
-    assert.deepEqual(sorted(second, first), ["c#1", "c#2"]);
+    assert.deepEqual(sorted(second, first), ["local:c1", "local:c2"]);
   });
 
   test("a row missing a field sorts after one that has it, and never throws", () => {
-    const placed = taskRow({ ref: "d#1", position: 10 });
-    const unplaced = taskRow({ ref: "d#0", position: null });
-    const created = taskRow({ ref: "e#1", position: null, createdAt: 3 });
-    const uncreated = taskRow({ ref: "e#0", position: null, createdAt: undefined });
+    const placed = taskRow({ ref: "local:d1", position: 10 });
+    const unplaced = taskRow({ ref: "local:d0", position: null });
+    const created = taskRow({ ref: "local:e1", position: null, createdAt: 3 });
+    const uncreated = taskRow({ ref: "local:e0", position: null, createdAt: undefined });
 
-    assert.deepEqual(sorted(unplaced, placed), ["d#1", "d#0"]);
-    assert.deepEqual(sorted(uncreated, created), ["e#1", "e#0"]);
+    assert.deepEqual(sorted(unplaced, placed), ["local:d1", "local:d0"]);
+    assert.deepEqual(sorted(uncreated, created), ["local:e1", "local:e0"]);
     assert.equal(compareTasksByBoardOrder(null, null), 0);
     assert.equal(compareTasksByBoardOrder(placed, null), -1);
   });
 
   test("a non-finite position is not a position", () => {
-    const numbered = taskRow({ ref: "f#1", position: 10 });
-    const nan = taskRow({ ref: "f#0", position: Number.NaN });
+    const numbered = taskRow({ ref: "local:f1", position: 10 });
+    const nan = taskRow({ ref: "local:f0", position: Number.NaN });
 
-    assert.deepEqual(sorted(nan, numbered), ["f#1", "f#0"]);
+    assert.deepEqual(sorted(nan, numbered), ["local:f1", "local:f0"]);
   });
 });

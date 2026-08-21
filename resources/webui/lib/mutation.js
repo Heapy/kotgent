@@ -1,8 +1,6 @@
-// One runner for every flow in the Web UI that changes daemon state. Before this module each of the six
-// mutating flows in app.js re-invented "is something already running": a boolean save-in-flight ref for
-// preferences, a pending-action mirror ref for import/control/link, a status-sentence comparison for the
-// link's follow-up read, and nothing at all for session start and project archive. Four idioms, four
-// scopes, and no single answer to the question the command palette has to ask.
+// One runner for every flow in the Web UI that changes daemon state, so that "is something already
+// running" has one answer rather than one per flow. The command palette has to ask it about all six at
+// once, which a per-flow flag — or, for two of them, no flag at all — cannot answer.
 //
 // The runner owns three things and nothing else:
 //

@@ -16,8 +16,8 @@ jobs:
         run: brew install tmux
 
       # `webuitest` runs the browser-independent JavaScript tier through `node --test`, and
-      # WebUiLogicTests fails loudly rather than skipping when node is missing or too old.
-      # Installed only when the runner's bundled node is below the floor.
+      # WebUiLogicTest fails loudly rather than skipping when node is missing or too old — the floor
+      # below is NODE_MAJOR_FLOOR there. Installed only when the runner's bundled node is under it.
       - name: Ensure Node (browser-independent JavaScript tier)
         run: |
           have=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)

@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
  * `resources/webui/`, and the live app keeps rendering underneath it — which is itself part of the
  * proof, since the adapter patches the one shared `options` object the app already renders through.
  */
-class SignalsVendorTests {
+class SignalsVendorTest {
 
     @Test
     fun theVendoredAdapterDrivesTheVendoredPreactThroughItsMangledInternals() {
@@ -107,6 +107,12 @@ private const val DERIVED = "#signals-probe-derived"
 
 // Installed before navigation so it precedes the app's own modules. Resource load errors do not bubble
 // to window in this phase, so only genuine uncaught exceptions and rejections are recorded.
+//
+// `HarnessFixture.traced` already reddens any test whose page threw, so this is not that check a second
+// time. The delta it exists for is attribution: the assertion below compares the log either side of the
+// probe, which pins an error to the probe's own mount/write/unmount window — including a rejection
+// raised inside the adapter's microtask-batched effects, which settles mid-body — rather than to the
+// run as a whole.
 private val ERROR_RECORDER: String = """
     (() => {
       window.__kotgentPageErrors = [];

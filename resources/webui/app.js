@@ -56,7 +56,7 @@ import {
   mergeSessionRow,
   replaceSessions,
   sessions as sessionsSignal,
-  sessionsReady as sessionsReadySignal,
+  sessionsReadiness,
 } from "./state/sessions.js";
 import {
   dropTask,
@@ -214,7 +214,7 @@ function App() {
   // Reading a signal in the render body is the subscription: these values are never a second copy of
   // anything, and the writers below are module functions that every caller shares.
   const sessions = sessionsSignal.value;
-  const sessionsReady = sessionsReadySignal.value;
+  const sessionsReady = sessionsReadiness.status.value.state === READY;
   const tasks = tasksSignal.value;
   const projects = projectsSignal.value;
   // Readiness is a state, not a flag. A boolean cannot tell "not read yet" from "the read failed", which

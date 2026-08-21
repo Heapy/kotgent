@@ -407,6 +407,9 @@ fun regexLiteral(text: String): String = buildString {
 private const val REGEX_METACHARACTERS = "\\^$.|?*+()[]{}"
 
 // Install before page load: the listener must precede the app's socket listener to be a reliable barrier.
+// There is one `window.WebSocket` wrapper in this tier and this is it. A second one installed in the same
+// context would wrap this one and only the outer listener would win, so anything that has to intercept a
+// frame composes here instead, through the optional gate below.
 val FRAME_RECORDER: String = """
     (() => {
       const frames = [];
@@ -418,9 +421,16 @@ val FRAME_RECORDER: String = """
           // The socket itself is exposed so a test can redeliver a frame the daemon really sent, on the
           // real socket the app is listening to. Recording only tells a test what arrived.
           window.__kotgentEventsSocket = socket;
+          const gate = window.__kotgentFrameGate || null;
           socket.addEventListener("message", (event) => {
-            if (typeof event.data === "string") frames.push(event.data);
+            if (typeof event.data !== "string") return;
+            // The gate runs from this listener, not one of its own, because `stopImmediatePropagation`
+            // only beats the app's listener from the subscriber that registered first. A held frame is
+            // recorded when it is released, so the record stays the order the app actually saw.
+            if (gate && gate.hold(event)) return;
+            frames.push(event.data);
           });
+          if (gate) gate.arm(socket);
         }
         return socket;
       };
@@ -430,6 +440,42 @@ val FRAME_RECORDER: String = """
       Recording.CLOSING = Native.CLOSING;
       Recording.CLOSED = Native.CLOSED;
       window.WebSocket = Recording;
+    })();
+""".trimIndent()
+
+/**
+ * Records frames *and* holds the first `tasks_snapshot` until the test releases it, which is how a page
+ * can be driven while the task list is still unloaded. Both scripts are installed here because the order
+ * is load-bearing: the gate must publish itself before [FRAME_RECORDER] reads it in its constructor.
+ */
+fun BrowserContext.recordFramesHoldingTasksSnapshot() {
+    addInitScript(TASKS_SNAPSHOT_GATE)
+    addInitScript(FRAME_RECORDER)
+}
+
+private val TASKS_SNAPSHOT_GATE: String = """
+    (() => {
+      const held = [];
+      let released = false;
+      window.__kotgentHeldTasksSnapshot = false;
+      window.__kotgentReleaseTasksSnapshot = () => {};
+      window.__kotgentFrameGate = {
+        hold: (event) => {
+          if (released || event.data.indexOf('"type":"tasks_snapshot"') < 0) return false;
+          event.stopImmediatePropagation();
+          held.push(event.data);
+          window.__kotgentHeldTasksSnapshot = true;
+          return true;
+        },
+        arm: (socket) => {
+          window.__kotgentReleaseTasksSnapshot = () => {
+            released = true;
+            for (const data of held.splice(0)) {
+              socket.dispatchEvent(new MessageEvent("message", { data }));
+            }
+          };
+        },
+      };
     })();
 """.trimIndent()
 

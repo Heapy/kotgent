@@ -3,7 +3,7 @@
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
-import { apiRequest, errorMessage } from "../lib/api.js";
+import { errorMessage } from "../lib/api.js";
 import { joinPath, normalizePath } from "../lib/paths.js";
 import { navigate, sessionPath, taskPath } from "../lib/router.js";
 import {
@@ -16,8 +16,8 @@ import {
   taskStateLabel,
 } from "../lib/tasks.js";
 import { Dialog } from "./dialogs.js";
+import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.js";
 import { TaskCard } from "./TaskCard.js";
-import { useTypeahead } from "./Typeahead.js";
 
 export const BOARD_COLUMNS = TASK_STATES.map((state) => ({
   state: state,
@@ -38,7 +38,6 @@ const CARD_GAP_PX = 8;
 /** Must match the single-column breakpoint in style.css. */
 const PHONE_QUERY = "(max-width: 720px)";
 
-const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
 /** Must match PROJECT_NAME_MAX_LENGTH in ProjectFile.kt. */
 const PROJECT_NAME_MAX_LENGTH = 100;
@@ -755,67 +754,17 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
   const [base] = useState(() => normalizePath(basePath));
   const [path, setPath] = useState(base.charAt(0) === "/" ? base : "");
   const [name, setName] = useState("");
-  const [query, setQuery] = useState(null);
-  const [suggestions, setSuggestions] = useState([]);
-  const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const pathRef = useRef(null);
+  const picker = usePathSuggestions({
+    id: "new-project-path",
+    basePath: base,
+    inputRef: pathRef,
+    onChoose: setPath,
+  });
 
   useEffect(() => { if (pathRef.current) pathRef.current.focus(); }, []);
-
-  useEffect(() => {
-    if (query === null) return undefined;
-    const typed = query.trim();
-    setSuggestions([]);
-    if (!typed || (typed.charAt(0) !== "/" && base.charAt(0) !== "/")) return undefined;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      apiRequest("/directories/complete", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({ basePath: base || null, input: typed }),
-      })
-        .then((response) => {
-          if (controller.signal.aborted) return;
-          setSuggestions(response && Array.isArray(response.paths)
-            ? response.paths.filter((candidate) => typeof candidate === "string")
-            : []);
-        })
-        .catch((e) => {
-          if (!controller.signal.aborted && (!e || e.name !== "AbortError")) setSuggestions([]);
-        });
-    }, DIRECTORY_COMPLETION_DELAY_MS);
-
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [query, base]);
-
-  const dismiss = () => {
-    setQuery(null);
-    setSuggestions([]);
-  };
-
-  const choose = (candidate) => {
-    setPath(candidate);
-    dismiss();
-    if (pathRef.current) pathRef.current.focus();
-  };
-
-  // Nothing is navigable while the field is unfocused, and no row opens active: Enter belongs to the
-  // form until an arrow key claims it.
-  const options = useMemo(() => (focused ? suggestions : []), [focused, suggestions]);
-  const typeahead = useTypeahead({
-    keys: options,
-    token: query,
-    autoFirst: false,
-    onCommit: choose,
-    onDismiss: dismiss,
-  });
-  const activeSuggestion = suggestions.indexOf(typeahead.activeKey);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -853,29 +802,11 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
           <label for="new-project-path">Directory</label>
           <div class="path-autocomplete">
             <input id="new-project-path" type="text" required spellcheck=${false} autocomplete="off"
-                   role="combobox" aria-autocomplete="list"
-                   aria-expanded=${focused && suggestions.length > 0 ? "true" : "false"}
-                   aria-controls="new-project-path-options"
-                   aria-activedescendant=${activeSuggestion >= 0
-                     ? "new-project-path-option-" + activeSuggestion
-                     : null}
+                   ...${picker.fieldProps}
                    placeholder=${placeholder}
                    ref=${pathRef} value=${path} disabled=${busy}
-                   onInput=${(e) => { setPath(e.target.value); setQuery(e.target.value); }}
-                   onKeyDown=${typeahead.keyDown}
-                   onFocus=${() => setFocused(true)} onBlur=${() => setFocused(false)} />
-            ${focused && suggestions.length > 0 && html`
-              <ul id="new-project-path-options" class="path-suggestions" role="listbox">
-                ${suggestions.map((candidate, index) => html`
-                  <li id=${"new-project-path-option-" + index} key=${candidate} role="option"
-                      class=${"path-suggestion" + (index === activeSuggestion ? " active" : "")}
-                      aria-selected=${index === activeSuggestion ? "true" : "false"}
-                      title=${candidate}
-                      ref=${typeahead.optionRef(candidate)}
-                      onMouseDown=${(event) => event.preventDefault()}
-                      onMouseEnter=${() => typeahead.activate(candidate)}
-                      onClick=${() => choose(candidate)}>${candidate}</li>`)}
-              </ul>`}
+                   onInput=${(e) => { setPath(e.target.value); picker.onType(e.target.value); }} />
+            <${PathSuggestions} picker=${picker} />
           </div>
           ${base.charAt(0) === "/" && html`
             <small id="new-project-base-hint" class="field-hint">

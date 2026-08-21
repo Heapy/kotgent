@@ -176,8 +176,7 @@ class SessionDialogsTest {
 
                         val cwd = page.locator("#session-cwd")
                         val options = page.locator("#session-cwd-options li")
-                        // Served DOM, not source text: the string "false" coerces to true through the
-                        // boolean IDL setter, so only the boolean spelling turns spellcheck off.
+                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
                         assertThat(cwd).hasAttribute("spellcheck", "false")
                         cwd.fill("/a/")
 
@@ -348,6 +347,7 @@ class SessionDialogsTest {
                         assertThat(page.locator("#session-agent-cursor")).isDisabled()
 
                         assertThat(page.locator("#session-provider-id")).isVisible()
+                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
                         assertThat(page.locator("#session-provider-id"))
                             .hasAttribute("spellcheck", "false")
                         assertEquals(
@@ -485,6 +485,7 @@ class SessionDialogsTest {
 
                         val basePath = page.locator("#prefs-base-path")
                         assertThat(basePath).isVisible()
+                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
                         assertThat(basePath).hasAttribute("spellcheck", "false")
                         assertThat(basePath).hasValue("")
                         val preview = page.locator("#prefs-grouping-preview")

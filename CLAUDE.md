@@ -16,7 +16,7 @@ archive completed plans.
   build; browser behavior is tested in `webuitest`.
 - Browser-independent Web UI rules are proven under `node --test 'webuitest/js/**/*.test.js'`, run from
   the repository root — a bare directory argument is treated as a glob, matches only itself and fails to
-  load. `WebUiLogicTests` spawns that runner, so `./kotlin test` stays the single gate; it fails loudly on
+  load. `WebUiLogicTest` spawns that runner, so `./kotlin test` stays the single gate; it fails loudly on
   a missing `node` or an empty run rather than skipping, and a system `node` is now a prerequisite. The
   tier lives outside `resources/webui/` because `webUiRevision` digests that tree, so a test placed there
   would be served to browsers and would churn the asset revision.
@@ -111,7 +111,10 @@ archive completed plans.
   session/task link picker. It is two modules because node resolves no bare specifier and so must not
   reach Preact: `resources/webui/lib/typeahead.js` holds the selection rules framework-free for the node
   tier, and `resources/webui/components/Typeahead.js` binds them in `useTypeahead`. A new typeahead site
-  consumes it rather than deriving an active row of its own.
+  consumes it rather than deriving an active row of its own, and compares rows by key: an index with a
+  sentinel is the representation the primitive exists to remove. The two directory-path pickers share
+  their whole listbox — markup, debounced completion request and all — through
+  `resources/webui/components/PathSuggestions.js`.
 - Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
   uppercase `I` to a dotless `ı` and leaves a typed `i` dotted, so a locale fold removes matches that
   exist — for exactly the operators whose locale the code never anticipated. This has now been introduced

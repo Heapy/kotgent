@@ -140,13 +140,13 @@ To build from source instead, see [Build & test](#build--test).
 
 `./kotlin test` runs every tier and the suite has no skips: the native suite (`test/`), the browser tier
 (`webuitest/`, a real Chromium driven through Playwright), the browser-independent JavaScript tier
-(`webuitest/js/` under `node --test`, spawned by `WebUiLogicTests`), 7 JVM tests for the build-info
-plugin, the 11 real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs.
-The two module tasks
-— `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops; neither replaces the
-aggregate. **The counts are deliberately not written here**: they move with every change, and the run
-itself is the only source of truth that cannot go stale (`AGENTS.md` carries the current baseline for the
-one purpose a number serves — noticing that a change moved it by more than it meant to).
+(`webuitest/js/` under `node --test`, spawned by `WebUiLogicTest`), 7 JVM tests for the build-info
+plugin, the 11 real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs. The
+two module tasks — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops;
+neither replaces the aggregate. **The counts are deliberately not written here**: they move with every
+change, and the run itself is the only source of truth that cannot go stale (`AGENTS.md` carries the
+current baseline for the one purpose a number serves — noticing that a change moved it by more than it
+meant to).
 
 Run `build` before `test`, now for **two** fixture binaries rather than one. `./kotlin test` never links a
 main binary, and the suite execs two: `PtyTest` runs `ptycheck`, while `WebUiCheckTest` **and every browser
@@ -528,7 +528,7 @@ reducer folds the append-only log into a `Projection` (the derived state). Resta
 | `ptycheck/` (module) | Test fixture, not a product: a **main** binary running the real-PTY checks a test binary cannot link (KT-78062), driven from the suite by `PtyTest`. |
 | `fakes/` (module) | The shared test doubles (`FakeTmux`, `FakeEventStore`, `FakeTaskStore`, `FakeProjectFs`, `MemoryProjectFileWriter`) — a module because the root test fragment and the `webuicheck` main binary both consume them. |
 | `webuicheck/` (module) | The browser tier's fixture: a **main** binary (KT-78062 again — it serves a real PTY) that assembles the real server over those doubles, replaces the writing edges with in-memory ones, and takes scenario commands on stdin. |
-| `webuitest/` (module) | The browser tier itself: JVM tests only, driving a real Chromium through Playwright against the pages `webuicheck` serves. |
+| `webuitest/` (module) | Both browser-facing test tiers: JVM tests driving a real Chromium through Playwright against the pages `webuicheck` serves, plus the browser-independent JavaScript tier in `webuitest/js/`, which `WebUiLogicTest` runs through `node --test` against the shipped ES modules. |
 | `plugins/sqldelight-gen/` (build plugin) | Runs SQLDelight codegen from `sqldelight/*.sq` at build time. |
 
 The authenticated push HTTP surface is `GET /api/v1/push/vapid-key`, `POST /api/v1/push/subscribe`, and
@@ -577,7 +577,7 @@ Kotgent is deliberately focused. The current product boundary is:
 - **A browser-independent JavaScript tier.** The pure Web UI rules — revision merges, link eligibility,
   typeahead selection, readiness transitions — are proven under Node's own `node --test`, in
   `webuitest/js/`, against the shipped modules by relative import. It cost the promised nothing: no build
-  step, no package manager, no `node_modules`, and no copy of the code under test. `WebUiLogicTests`
+  step, no package manager, no `node_modules`, and no copy of the code under test. `WebUiLogicTest`
   spawns the runner, so `./kotlin test` remains the single gate.
 
 **Backlog (not built yet):**

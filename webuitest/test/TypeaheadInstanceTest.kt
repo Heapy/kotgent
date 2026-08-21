@@ -13,14 +13,14 @@ import kotlin.test.assertTrue
  * hook twice.
  *
  * The two instances are therefore mounted here, in the page realm, against the served module and the
- * import map the app itself resolves through — the same technique as `SignalsVendorTests`, for the same
+ * import map the app itself resolves through — the same technique as `SignalsVendorTest`, for the same
  * reason: hooks only run inside a real render, and this claim is about what a second instance sees. The
  * lists deliberately share their keys, because a choice that is not in the other picker's list would be
  * discarded by `resolveActiveKey` and a shared signal would go unnoticed.
  *
  * Navigation is driven by real key presses on a real focused input, not by calling the handler.
  */
-class TypeaheadInstanceTests {
+class TypeaheadInstanceTest {
 
     @Test
     fun twoMountedPickersDoNotShareOneActiveRow() {

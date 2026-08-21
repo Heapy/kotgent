@@ -210,7 +210,7 @@ so nothing is copied, transpiled, or bundled. The runner therefore adds one syst
 on `PATH` — and no build step, no package manager, and no `node_modules`. These stay plain ES modules,
 served exactly as they are written, and that property is worth more than any convenience a bundler would buy.
 
-`WebUiLogicTests` in `webuitest` spawns the runner, so the aggregate suite covers this tier; the direct loop
+`WebUiLogicTest` in `webuitest` spawns the runner, so the aggregate suite covers this tier; the direct loop
 is `node --test 'webuitest/js/**/*.test.js'` from the repository root. The prerequisite is **Node v24 or
 newer**, the same floor `README.md` and `webuitest/module.yaml` state. Name the files through a pattern
 rather than by their directory: Node treats every positional argument as a glob, and a bare directory matches
@@ -268,8 +268,9 @@ takes scenario commands on standard input. `webuicheck` proves nothing and must 
 scenario files under `webuicheck/src/scenarios/` contain zero assertions, and its `--self-check` only
 verifies that the fixture itself can start. A gate that must *prove* something belongs in `webuitest`,
 where a failure is a red test rather than a binary that quietly exits zero — that is why, for instance, the
-vendored signals adapter is proven by `SignalsVendorTests` and not by a scenario. Each test spawns its own harness on an ephemeral port, signs in
-through the real login form with a single-use ticket, and leaves nothing behind outside the checkout.
+vendored signals adapter is proven by `SignalsVendorTest` and not by a scenario. Each test spawns its own
+harness on an ephemeral port, signs in through the real login form with a single-use ticket, and leaves
+nothing behind outside the checkout.
 Journeys 1, 3, 4, 5, 8, and 9 are covered; 2, 6, and 7 are covered in part, as the dialogs and refusals that
 begin them rather than as the whole round trip; 10 is not covered at all, and neither is anything that needs
 a real push service. The Playwright driver ships its Node runtime inside the Maven artifact, so this layer
@@ -347,10 +348,12 @@ of three kinds, and a new guard must be one of them:
 - **The absence of a second implementation of something that must have one owner.** History reached only
   through `lib/router.js`; the shared lists assigned only inside their state modules, resolved through
   each file's own import statement so an aliased binding is caught too. A scan is the only thing that can
-  see an owner that does not exist yet. The tier it replaced made 1181 substring assertions over served
-JavaScript and CSS. One of them spelled out the exact line of a defect that the browser tier later found,
-so that suite had pinned the bug as a contract and broke when the bug was fixed. Keep the exception closed;
-a source scan cannot tell a fix from a regression.
+  see an owner that does not exist yet.
+
+The tier it replaced made 1181 substring assertions over served JavaScript and CSS. One of them spelled
+out the exact line of a defect that the browser tier later found, so that suite had pinned the bug as a
+contract and broke when the bug was fixed. Keep the exception closed; a source scan cannot tell a fix from
+a regression.
 
 ## CLI
 

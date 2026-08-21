@@ -1,10 +1,9 @@
 // Which session the operator has selected, and how many times they have changed that. See the header of
 // state/sessions.js for why signals-core is imported by relative path rather than by bare specifier.
 //
-// The generation counter used to be a loose `useRef` in app.js, sitting next to the selection it
-// describes without belonging to it. It belongs here because it is not a general-purpose counter: it
-// counts *selection events*, and the only writer that may advance it is the one that selects. Two rules
-// follow from that, and neither is expressible where the counter is a free-floating ref:
+// The generation counter belongs to the selection rather than sitting beside it, because it is not a
+// general-purpose counter: it counts *selection events*, and the only writer that may advance it is the
+// one that selects. Two rules follow from that, and neither survives a free-floating counter:
 //
 //   * `pruneSelection` clears a selection whose row a reconnect snapshot no longer carries, and does not
 //     advance the generation. The operator did not navigate; the row went away underneath them.

@@ -12,13 +12,13 @@ import io.kotgent.cli.TMUX_SOCKET
 import io.kotgent.core.SessionMeta
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
-import io.kotgent.daemon.isDirectory
-import io.kotgent.daemon.listDir
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.VendorSessionLocator
 import io.kotgent.daemon.VendorStoreProbe
+import io.kotgent.daemon.isDirectory
+import io.kotgent.daemon.listDir
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
@@ -148,7 +148,7 @@ class WebUiServingTest {
         // resolve because index.html's import map names them; neither file can observe the other, and no
         // running page can report which specifier a module *would* have failed on. That the adapter then
         // works against the vendored Preact internals is proven by execution, in
-        // webuitest/test/SignalsVendorTests.kt, not here.
+        // webuitest/test/SignalsVendorTest.kt, not here.
         val signals = ctx.get("/_v/$rev/vendor/signals.module.js").bodyAsText()
         for (specifier in listOf("preact", "preact/hooks", "@preact/signals-core")) {
             assertTrue(
@@ -191,6 +191,7 @@ class WebUiServingTest {
             "/lib/router.js", "/lib/tasks.js", "/lib/typeahead.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js", "/components/Typeahead.js",
+            "/components/PathSuggestions.js",
             "/components/Board.js", "/components/TaskCard.js", "/components/TaskDetail.js",
         ) + STATE_MODULES) {
             val resp = ctx.get(path)

@@ -54,8 +54,9 @@ function jsonBody(method, payload) {
   return { method: method, body: JSON.stringify(payload) };
 }
 
-// A reconnect snapshot replaces the list so rows deleted during the outage cannot reappear.
-export function applyTasksSnapshot(list, rows) {
+// A reconnect snapshot replaces the list so rows deleted during the outage cannot reappear, which is why
+// it reads nothing of the list it replaces.
+export function applyTasksSnapshot(rows) {
   return rows ? rows.slice() : [];
 }
 

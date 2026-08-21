@@ -2,7 +2,8 @@
  * session/task link picker — each carried their own copy of "which row is active, what does Enter mean,
  * what does hover mean, when does the list scroll". lib/typeahead.js holds the rules as pure functions;
  * this hook is the only thing that binds them to a component, and it renders no markup, so each site
- * keeps its own listbox and its own option ids.
+ * keeps its own listbox and its own option ids. The two path pickers keep one between them, in
+ * PathSuggestions.js: theirs were identical down to the class names.
  *
  * Three properties are the point of the hook, and each one was a defect at one of the sites:
  *

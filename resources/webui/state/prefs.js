@@ -9,10 +9,6 @@
 // Comparing the merged object against a response would let a device-local field decide a revision
 // question it has no part in, and the closing announcement of a save must quote what the daemon
 // committed rather than what the form asked for.
-//
-// app.js used to hold this as `useState` plus three refs: a `prefsRef` mirror, a
-// `preferencesRevisionRef`, and a `serverPreferencesRef` whose `.revision` was by construction always
-// equal to the second. Three hand-maintained copies of two facts.
 
 import { signal } from "../vendor/signals-core.module.js";
 import {

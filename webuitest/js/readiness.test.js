@@ -26,14 +26,7 @@ import {
   combineReadiness,
   createReadiness,
 } from "../../resources/webui/lib/readiness.js";
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((res) => {
-    resolve = res;
-  });
-  return { promise: promise, resolve: resolve };
-}
+import { deferred } from "./fixtures.js";
 
 describe("createReadiness", () => {
   test("a source nobody has read yet is idle, and idle carries no error", () => {

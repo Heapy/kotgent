@@ -20,18 +20,7 @@ import {
   pendingMutation,
   runMutation,
 } from "../../resources/webui/lib/mutation.js";
-
-// A deferred stands in for a request in flight: the run is suspended exactly where the network would
-// suspend it, without a timer deciding the test's outcome.
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise: promise, resolve: resolve, reject: reject };
-}
+import { deferred } from "./fixtures.js";
 
 async function settle(promise) {
   try {

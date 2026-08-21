@@ -47,7 +47,7 @@ export async function apiRequest(path, options) {
   opts.headers = Object.assign({}, opts.headers || {});
   // Let the browser choose multipart/binary headers for non-string bodies.
   const hasContentType = Object.keys(opts.headers)
-    .some((name) => name.toLocaleLowerCase() === "content-type");
+    .some((name) => name.toLowerCase() === "content-type");
   if (typeof opts.body === "string" && !hasContentType) {
     opts.headers["Content-Type"] = "application/json";
   }

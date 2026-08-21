@@ -16,10 +16,11 @@ import kotlin.test.fail
  * runner. The tier stays outside `resources/webui/` because `webUiRevision` digests and serves every file
  * under that tree; this class is the only thing that wires it into the aggregate suite.
  */
-class WebUiLogicTests {
+class WebUiLogicTest {
 
     @Test
     fun theBrowserIndependentWebLogicSuitePasses() {
+        assertNodeMeetsTheFloor()
         val root = locateRepoRoot()
         val jsDir = root.resolve(JS_RELATIVE)
         val testFiles = listTestFiles(jsDir)
@@ -63,6 +64,33 @@ class WebUiLogicTests {
         assertEquals(0, result.exitCode, "node --test exited non-zero$report")
     }
 
+    // The floor is a prerequisite, so it is asserted before the run rather than discovered as a parse
+    // error somewhere inside a module. Every other record of the number is prose — webuitest/module.yaml,
+    // README.md, docs/TESTING.md and the CI step — and none of them fails a build.
+    private fun assertNodeMeetsTheFloor() {
+        val printed = try {
+            val process = ProcessBuilder(NODE, "--version").redirectErrorStream(true).start()
+            val text = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            text
+        } catch (e: IOException) {
+            fail(missingNodeMessage(e.message))
+        }
+        val major = printed.removePrefix("v").substringBefore('.').toIntOrNull()
+            ?: fail("`$NODE --version` printed '$printed', which names no major version")
+        assertTrue(
+            major >= NODE_MAJOR_FLOOR,
+            "the browser-independent Web UI tier needs Node v$NODE_MAJOR_FLOOR or newer; the `$NODE` on " +
+                "PATH is $printed. Upgrade it rather than reading the failures the runner would report " +
+                "from inside the test files. This check never skips.",
+        )
+    }
+
+    private fun missingNodeMessage(cause: String?): String =
+        "`$NODE` is not on PATH, so the browser-independent Web UI tier cannot run ($cause). Node is a " +
+            "system prerequisite of this module, recorded in webuitest/module.yaml; install Node " +
+            "(v$NODE_MAJOR_FLOOR or newer) and re-run. This check never skips."
+
     private fun runNode(root: Path): NodeResult {
         // --test-timeout turns a test that never settles into a named TAP failure instead of a hang.
         // Node's runner has no default per-test timeout, and no test in webuitest/js/ sets its own, so
@@ -74,11 +102,7 @@ class WebUiLogicTests {
         val process = try {
             ProcessBuilder(command).directory(root.toFile()).start()
         } catch (e: IOException) {
-            fail(
-                "`$NODE` is not on PATH, so the browser-independent Web UI tier cannot run " +
-                    "(${e.message}). Node is a system prerequisite of this module, recorded in " +
-                    "webuitest/module.yaml; install Node (v24 or newer) and re-run. This check never skips.",
-            )
+            fail(missingNodeMessage(e.message))
         }
 
         // Both pipes are drained on their own threads and the watchdog runs before either is joined.
@@ -158,7 +182,7 @@ class WebUiLogicTests {
     }
 
     private fun codeSourceDirectory(): Path? = runCatching {
-        val location = WebUiLogicTests::class.java.protectionDomain?.codeSource?.location ?: return@runCatching null
+        val location = WebUiLogicTest::class.java.protectionDomain?.codeSource?.location ?: return@runCatching null
         val path = Path.of(location.toURI())
         if (Files.isDirectory(path)) path else path.parent
     }.getOrNull()
@@ -172,6 +196,10 @@ class WebUiLogicTests {
 
     private companion object {
         const val NODE = "node"
+
+        // The same floor webuitest/module.yaml, README.md, docs/TESTING.md and .github/workflows/ci.yml
+        // state in prose. This is the only copy that can fail a run.
+        const val NODE_MAJOR_FLOOR = 24
         const val PROJECT_MANIFEST = "project.yaml"
         const val JS_RELATIVE = "webuitest/js"
         const val TEST_SUFFIX = ".test.js"

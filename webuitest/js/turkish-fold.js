@@ -9,7 +9,7 @@
 // this helper is what makes reverting it red instead of green.
 //
 // This file is deliberately not named `*.test.js`: the node runner's pattern and the file count in
-// WebUiLogicTests both key on that suffix, and a helper is not a test.
+// WebUiLogicTest both key on that suffix, and a helper is not a test.
 
 export function underTurkishFold(run) {
   const original = String.prototype.toLocaleLowerCase;

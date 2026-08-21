@@ -11,13 +11,14 @@ import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { effect } from "../../resources/webui/vendor/signals-core.module.js";
+import { IDLE, READY } from "../../resources/webui/lib/readiness.js";
 import {
   findSession,
   mergeSessionPatch,
   mergeSessionRow,
   replaceSessions,
   sessions,
-  sessionsReady,
+  sessionsReadiness,
 } from "../../resources/webui/state/sessions.js";
 import {
   dropTask,
@@ -37,64 +38,12 @@ import {
   removeProjectRow,
   replaceProjects,
 } from "../../resources/webui/state/projects.js";
-
-// Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
-function sessionRow(overrides) {
-  return Object.freeze({
-    id: "s1",
-    name: "one",
-    tmuxSession: "kotgent-one",
-    cwd: "/work/one",
-    agent: "claude",
-    state: "running",
-    needsAttention: false,
-    alive: true,
-    lastSeq: 7,
-    unread: 0,
-    archived: false,
-    model: "opus",
-    taskRef: null,
-    projectId: "p1",
-    updatedAt: 100,
-    rev: 2,
-    ...overrides,
-  });
-}
-
-function patchFrame(overrides) {
-  return Object.freeze({
-    sessionId: "s1",
-    state: "ready",
-    needsAttention: false,
-    lastSeq: 7,
-    unread: 3,
-    archived: false,
-    model: "opus",
-    taskRef: null,
-    projectId: "p1",
-    updatedAt: 300,
-    rev: 3,
-    ...overrides,
-  });
-}
-
-function taskRow(overrides) {
-  return Object.freeze({
-    ref: "KOT-1",
-    title: "Index the API",
-    state: "todo",
-    project: "p1",
-    position: 1,
-    createdAt: 10,
-    rev: 2,
-    ...overrides,
-  });
-}
+import { patchFrame, sessionRow, taskRow } from "./fixtures.js";
 
 // The modules are singletons, exactly as a browser holds them. Reset the value rather than the module.
 function resetState() {
   replaceSessions([]);
-  sessionsReady.value = false;
+  sessionsReadiness.reset();
   replaceTasks([]);
   tasksReadiness.reset();
   replaceProjects([]);
@@ -277,10 +226,12 @@ describe("session snapshots", () => {
   });
 
   test("only the first snapshot is the readiness transition", () => {
-    assert.equal(sessionsReady.value, false, "an unloaded list is not an empty one");
+    assert.equal(
+      sessionsReadiness.status.value.state, IDLE, "an unloaded list is not an empty one",
+    );
 
     assert.equal(replaceSessions([]).first, true, "an empty first snapshot still establishes readiness");
-    assert.equal(sessionsReady.value, true);
+    assert.equal(sessionsReadiness.status.value.state, READY);
     assert.equal(replaceSessions([sessionRow({})]).first, false, "reconnects do not re-announce");
   });
 
@@ -321,45 +272,45 @@ describe("task writers", () => {
   test("a snapshot replaces the list and establishes readiness", () => {
     assert.equal(
       tasksReadiness.status.value.state,
-      "idle",
+      IDLE,
       "a destructive confirmation must not read an unloaded list",
     );
 
-    replaceTasks([taskRow({ ref: "KOT-1" })]);
+    replaceTasks([taskRow({ ref: "local:1" })]);
 
-    assert.equal(tasksReadiness.status.value.state, "ready");
-    assert.deepEqual(tasks.value.map((t) => t.ref), ["KOT-1"]);
+    assert.equal(tasksReadiness.status.value.state, READY);
+    assert.deepEqual(tasks.value.map((t) => t.ref), ["local:1"]);
   });
 
   test("an empty snapshot is a loaded empty backlog", () => {
     replaceTasks([]);
 
-    assert.equal(tasksReadiness.status.value.state, "ready");
+    assert.equal(tasksReadiness.status.value.state, READY);
     assert.deepEqual(tasks.value, []);
   });
 
   test("rows merge by revision and compose across writers", () => {
-    mergeTaskRow(taskRow({ ref: "KOT-1", rev: 2 }));
-    mergeTaskRow(taskRow({ ref: "KOT-2", rev: 1 }));
-    const stale = mergeTaskRow(taskRow({ ref: "KOT-1", rev: 1, title: "stale" }));
+    mergeTaskRow(taskRow({ ref: "local:1", rev: 2 }));
+    mergeTaskRow(taskRow({ ref: "local:2", rev: 1 }));
+    const stale = mergeTaskRow(taskRow({ ref: "local:1", rev: 1, title: "stale" }));
 
     assert.equal(stale.changed, false);
-    assert.equal(findTask("KOT-1").title, "Index the API");
-    assert.deepEqual(tasks.value.map((t) => t.ref), ["KOT-1", "KOT-2"]);
+    assert.equal(findTask("local:1").title, "wire the board");
+    assert.deepEqual(tasks.value.map((t) => t.ref), ["local:1", "local:2"]);
   });
 
   test("a patch merges by revision and reports the winner", () => {
-    mergeTaskRow(taskRow({ rev: 2 }));
+    mergeTaskRow(taskRow({ ref: "local:1", rev: 2 }));
 
-    const moved = mergeTaskPatch({ ref: "KOT-1", state: "in_progress", rev: 3 });
+    const moved = mergeTaskPatch({ ref: "local:1", state: "in_progress", rev: 3 });
 
     assert.equal(moved.changed, true);
     assert.equal(moved.winner.state, "in_progress");
-    assert.equal(moved.winner.title, "Index the API", "a patch keeps the fields it does not carry");
+    assert.equal(moved.winner.title, "wire the board", "a patch keeps the fields it does not carry");
   });
 
   test("a patch for an unknown ref is dropped", () => {
-    const orphan = mergeTaskPatch({ ref: "KOT-9", state: "done", rev: 3 });
+    const orphan = mergeTaskPatch({ ref: "local:9", state: "done", rev: 3 });
 
     assert.equal(orphan.changed, false);
     assert.equal(orphan.winner, null);
@@ -367,11 +318,11 @@ describe("task writers", () => {
   });
 
   test("removal carries no revision and is authoritative", () => {
-    mergeTaskRow(taskRow({ ref: "KOT-1", rev: 7 }));
+    mergeTaskRow(taskRow({ ref: "local:1", rev: 7 }));
 
-    assert.equal(dropTask("KOT-1").changed, true);
-    assert.equal(findTask("KOT-1"), null);
-    assert.equal(dropTask("KOT-1").changed, false, "removing twice is not an error");
+    assert.equal(dropTask("local:1").changed, true);
+    assert.equal(findTask("local:1"), null);
+    assert.equal(dropTask("local:1").changed, false, "removing twice is not an error");
   });
 
   test("an unchanged task write costs no render", () => {
@@ -380,7 +331,7 @@ describe("task writers", () => {
     const before = watch.renders;
 
     mergeTaskRow(taskRow({ rev: 4 }));
-    dropTask("KOT-404");
+    dropTask("local:404");
 
     assert.equal(watch.renders, before);
     watch.stop();
@@ -391,11 +342,11 @@ describe("project writers", () => {
   // Project rows carry no revision — the daemon emits no project frame — so these writers apply a
   // confirmed response verbatim rather than arbitrating it.
   test("a refresh replaces the list and establishes readiness", () => {
-    assert.equal(projectsReadiness.status.value.state, "idle");
+    assert.equal(projectsReadiness.status.value.state, IDLE);
 
     replaceProjects([{ id: "p1", name: "one" }]);
 
-    assert.equal(projectsReadiness.status.value.state, "ready");
+    assert.equal(projectsReadiness.status.value.state, READY);
     assert.equal(findProject("p1").name, "one");
   });
 
