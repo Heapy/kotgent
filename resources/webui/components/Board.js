@@ -852,7 +852,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
         <div class="field">
           <label for="new-project-path">Directory</label>
           <div class="path-autocomplete">
-            <input id="new-project-path" type="text" required spellcheck="false" autocomplete="off"
+            <input id="new-project-path" type="text" required spellcheck=${false} autocomplete="off"
                    role="combobox" aria-autocomplete="list"
                    aria-expanded=${focused && suggestions.length > 0 ? "true" : "false"}
                    aria-controls="new-project-path-options"

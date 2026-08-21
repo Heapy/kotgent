@@ -244,6 +244,9 @@ class TaskCommandsTest {
             assertThat(page).hasURL(Pattern.compile("/tasks$"))
             assertThat(page.locator("#new-project-dialog")).isVisible()
             assertThat(page.locator("#new-project-path")).isVisible()
+            // Served DOM, not source text: the string "false" coerces to true through the boolean
+            // IDL setter, so only the boolean spelling actually turns spellcheck off.
+            assertThat(page.locator("#new-project-path")).hasAttribute("spellcheck", "false")
             assertThat(page.locator("#new-task-dialog")).hasCount(0)
         }
 

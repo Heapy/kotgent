@@ -349,7 +349,7 @@ export function TaskDetail({
         <form id="task-detail-dep-form" onSubmit=${addDependency}>
           <label class="field">
             <span>Add a dependency <small>the ref of a task in this project</small></span>
-            <input id="task-detail-dep-input" type="text" spellcheck="false" autocomplete="off"
+            <input id="task-detail-dep-input" type="text" spellcheck=${false} autocomplete="off"
                    placeholder="local:42" disabled=${busy}
                    value=${depDraft} onInput=${(e) => setDepDraft(e.target.value)} />
           </label>

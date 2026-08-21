@@ -14,6 +14,12 @@ archive completed plans.
   and the test command does not build them.
 - Run `node --check <file>` for every changed JavaScript module. The Web UI deliberately has no npm
   build; browser behavior is tested in `webuitest`.
+- Browser-independent Web UI rules are proven under `node --test 'webuitest/js/**/*.test.js'`, run from
+  the repository root — a bare directory argument is treated as a glob, matches only itself and fails to
+  load. `WebUiLogicTests` spawns that runner, so `./kotlin test` stays the single gate; it fails loudly on
+  a missing `node` or an empty run rather than skipping, and a system `node` is now a prerequisite. The
+  tier lives outside `resources/webui/` because `webUiRevision` digests that tree, so a test placed there
+  would be served to browsers and would churn the asset revision.
 - Keep aggregate test runs serial across worktrees. Integration tests share the machine-global tmux
   socket label `kotgent-test`.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
@@ -50,15 +56,51 @@ archive completed plans.
   offline shell. Root shell and worker responses must revalidate.
 - `resources/webui/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
-- Session, task, and project state lives in signals under `resources/webui/state/`, one module per
-  concern. Each module exports the current value plus every function that writes it, so no caller can
-  bypass the merge and no second copy exists to go stale — the mirror refs those modules replaced were
-  maintained by only some writers. `resources/webui/lib/` still owns the merge arithmetic itself. Those
-  modules import signals-core by relative path rather than the `@preact/signals-core` bare specifier: it
-  resolves to the same URL the import map names, so the browser keeps one reactive graph, while node can
-  still import them for the `webuitest/js/` tier.
+- Session, task, project, selection, dialog, status, and preference state lives in signals under
+  `resources/webui/state/`, one module per concern. Each module exports the current value plus every
+  function that writes it, so no caller can bypass the merge and no second copy exists to go stale — the
+  mirror refs those modules replaced were maintained by only some writers. `resources/webui/lib/` still
+  owns the merge arithmetic itself. Those modules import signals-core by relative path rather than the
+  `@preact/signals-core` bare specifier: it resolves to the same URL the import map names, so the browser
+  keeps one reactive graph, while node can still import them for the `webuitest/js/` tier.
+- Reading `.value` in a render body is what subscribes a component to a signal. `app.js`'s bare
+  `import "@preact/signals"` installs the Preact options hooks that make that subscription happen, so the
+  import is load-bearing even though nothing is named from it: without it `.value` still answers
+  correctly and the tree simply never re-renders again.
+- Only an application-level singleton may hold a bare `computed()`. Anything a component can mount more
+  than once — two path pickers, a palette behind a dialog — must derive with `useComputed`/`useSignal`
+  from `@preact/signals`; a `computed()` hoisted into or out of a render body is one derived node shared
+  by every instance.
+- Vendored library versions are recorded once, in the `Vendored: …` comment in
+  `resources/webui/index.html` beside the import map that names each target. Do not add a per-file header
+  or a second list; two records drift.
 - Preserve revision-based newest-wins merging for HTTP responses and WebSocket frames. Arrival timing is
   not an ordering guarantee.
+- `runMutation` in `resources/webui/lib/mutation.js` is the only mutation-currency idiom, covering the
+  six mutating flows. It holds one global lock across the whole of a flow, that flow's own follow-up read
+  included, and hands out a monotonic generation token whose `isCurrent()` a late outcome must ask before
+  writing anything the operator can see. One global lock is deliberate and has a price: `start`,
+  `preferences`, `delete-project` and `restore-project` now disable the palette's session commands, which
+  they previously did not.
+- Two guards look like run currency and are not; `isCurrent()` replaces neither. The selection generation
+  in `resources/webui/state/selection.js` counts user selection changes, closing the A→B→A hole when an
+  async flow conditionally auto-selects. `aliveRef` in `resources/webui/components/dialogs.js` is a
+  component unmount guard. Do not fold either into `runMutation`.
+- `resources/webui/lib/readiness.js` answers `idle | loading | ready | failed` with `retry()`, and is
+  sticky at `ready`: `begin()` over an already-loaded source keeps it ready and a failed revalidation is
+  declined, so a picker opening over a list it already has never flickers its rows away. Only a source
+  that never succeeded may fail visibly; the price is a stale-but-usable list.
+- One typeahead-listbox primitive answers the command palette, both directory-path pickers and the
+  session/task link picker. It is two modules because node resolves no bare specifier and so must not
+  reach Preact: `resources/webui/lib/typeahead.js` holds the selection rules framework-free for the node
+  tier, and `resources/webui/components/Typeahead.js` binds them in `useTypeahead`. A new typeahead site
+  consumes it rather than deriving an active row of its own.
+- Spell it `spellcheck=${false}` — lowercase name, interpolated boolean. Every other spelling leaves
+  spellcheck **on**: `spellCheck=${false}` fails the vendored Preact's property test and removes an
+  attribute that was never set, `spellcheck="false"` takes the property branch where the boolean IDL
+  setter coerces the non-empty string to `true`, and a bare `{false}` in an htm template is the literal
+  string `"{false}"`. Only the served DOM separates the three, so every such input carries a served-DOM
+  assertion in `webuitest`.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
 - A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot

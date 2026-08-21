@@ -84,6 +84,11 @@ To build from source instead, see [Build & test](#build--test).
   first run. A JDK is required for the toolchain, for the build-time SQLDelight codegen plugin, and for
   the JVM-side browser tier (`webuitest`), whose first run additionally downloads Playwright's browser
   bundle — see [Build & test](#build--test).
+- **`node` (v24 or newer), for `./kotlin test` only.** The browser-independent Web UI tier runs under
+  Node's built-in runner (`node --test`) over the shipped ES modules themselves. It is a **test**
+  prerequisite, never a runtime or build one: kotgent itself needs no Node, and there is still no
+  `package.json`, no bundler and no `node_modules` anywhere in this repository. A missing `node` reddens
+  that tier by name rather than skipping it.
 - **`tmux`** — sessions live on a dedicated server socket (`tmux -L kotgent`), isolated from your normal
   `tmux` **and from your `~/.tmux.conf`**: kotgent passes `-f /dev/null` on every invocation, so none of
   your config is loaded into an agent's pane — not your prefix key, bindings, plugins, `status-format` or
@@ -134,8 +139,10 @@ To build from source instead, see [Build & test](#build--test).
 ```
 
 `./kotlin test` runs every tier and the suite has no skips: the native suite (`test/`), the browser tier
-(`webuitest/`, a real Chromium driven through Playwright), 7 JVM tests for the build-info plugin, the 11
-real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs. The two module tasks
+(`webuitest/`, a real Chromium driven through Playwright), the browser-independent JavaScript tier
+(`webuitest/js/` under `node --test`, spawned by `WebUiLogicTests`), 7 JVM tests for the build-info
+plugin, the 11 real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs.
+The two module tasks
 — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops; neither replaces the
 aggregate. **The counts are deliberately not written here**: they move with every change, and the run
 itself is the only source of truth that cannot go stale (`AGENTS.md` carries the current baseline for the
@@ -559,6 +566,11 @@ Kotgent is deliberately focused. The current product boundary is:
   over the shared doubles in `fakes` and serves a terminal from a real PTY running a deterministic script
   instead of a provider. Each test spawns its own harness on an ephemeral port, signs in through the real
   login form, and leaves nothing behind outside the checkout.
+- **A browser-independent JavaScript tier.** The pure Web UI rules — revision merges, link eligibility,
+  typeahead selection, readiness transitions — are proven under Node's own `node --test`, in
+  `webuitest/js/`, against the shipped modules by relative import. It cost the promised nothing: no build
+  step, no package manager, no `node_modules`, and no copy of the code under test. `WebUiLogicTests`
+  spawns the runner, so `./kotlin test` remains the single gate.
 
 **Backlog (not built yet):**
 
@@ -575,10 +587,6 @@ Kotgent is deliberately focused. The current product boundary is:
 - A **diff viewer** and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
-- A **browser-independent JavaScript** test layer. The pure modules (routing, data merges, command
-  matching, retry classification) are proven one level up in the browser tier or not at all; adding a
-  runner for them must not add a build step.
-
 **Why some checks live in their own binary.** A Kotlin Toolchain issue
 ([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)) means **our own** raw-cinterop path cannot be
 called from a test binary at all — partial linkage turns every such call into a stub that throws
@@ -623,8 +631,11 @@ Issues and pull requests are welcome. A few things worth knowing before you open
 - **Keep `./kotlin build` and `./kotlin test` green**, and run `build` before `test` (see
   [Build & test](#build--test)). New tests are expected to come with the change; the suite has no skips and
   should stay that way.
-- **Web UI changes go through three tiers, and which tier a claim belongs to is decided by whether a
-  running page could answer it.** `test/transport/WebUiServingTest.kt` keeps what only an address can
+- **Web UI changes go through four tiers, and which tier a claim belongs to is decided by whether a
+  running page could answer it.** Anything a browser is not needed for — data merges, matching, state
+  transitions and the other pure rules — belongs in `webuitest/js/`, which runs under `node --test`
+  against the shipped modules themselves; that is the cheapest tier and the one to reach for first.
+  `test/transport/WebUiServingTest.kt` keeps what only an address can
   prove — URLs, media types, caching headers, content revisions, path safety — plus the registry every
   newly served ES module must be added to. Anything a Chromium can answer belongs in `webuitest/`, as
   executed behaviour against the real server; it is no longer true that browser behaviour is verified by

@@ -415,7 +415,7 @@ export function NewSessionDialog({
         ${mode === "import" && html`
           <label class="field">
             <span>Provider session id</span>
-            <input id="session-provider-id" type="text" required spellcheck="false" autocomplete="off"
+            <input id="session-provider-id" type="text" required spellcheck=${false} autocomplete="off"
                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" ref=${sessionIdRef}
                    value=${sessionId} onInput=${(e) => setSessionId(e.target.value)} />
             <small class="field-hint">
@@ -432,7 +432,7 @@ export function NewSessionDialog({
             Working directory${mode === "import" ? html` <small>optional</small>` : ""}
           </label>
           <div class="path-autocomplete">
-            <input id="session-cwd" type="text" required=${mode === "start"} spellcheck="false"
+            <input id="session-cwd" type="text" required=${mode === "start"} spellcheck=${false}
                    autocomplete="off"
                    role="combobox" aria-autocomplete="list"
                    aria-expanded=${cwdFocused && suggestions.length > 0 ? "true" : "false"}
@@ -1110,7 +1110,7 @@ export function PreferencesDialog({ prefs, sessions, onSave, onClose }) {
 
         <label class="field">
           <span>Base path</span>
-          <input id="prefs-base-path" type="text" spellcheck="false" placeholder="/Users/you/dev"
+          <input id="prefs-base-path" type="text" spellcheck=${false} placeholder="/Users/you/dev"
                  ref=${inputRef} value=${basePath} onInput=${(e) => setBasePath(e.target.value)} />
           <small class="field-hint">
             Absolute path. Sessions below it form a folder tree, and new sessions default to it. Leave
