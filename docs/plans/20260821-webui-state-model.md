@@ -111,8 +111,9 @@ Dependencies identified:
   - add new test cases for new code paths
   - update existing test cases if behavior changes
   - tests cover both success and error scenarios
-  - **exemption:** Tasks 11 and 13 change documentation only and carry no tests. No other task may claim
-    this exemption.
+  - **exemption:** Tasks 7 and 19 change documentation only and carry no tests. Wave-closing tasks (2, 5,
+    8, 10, 12, 14, 16, 18, 20) validate rather than write code, so they carry none either. No other task
+    may claim this exemption.
 - **CRITICAL: all tests must pass before starting the next task** — no exceptions
 - **CRITICAL: update this plan file when scope changes during implementation**
 - run `./kotlin build` before `./kotlin test` — tests execute the `ptycheck` and `webuicheck` binaries
@@ -254,19 +255,62 @@ their class, not by individual patches.
 |---|---|
 | `TaskCommandsTest.kt:557` — no readiness barrier, test can hang | 1 |
 | `TaskCommandsTest.kt:650` — `el.click()` instead of a real tap | 1 |
-| `app.js:649` — `sessionsRef` maintained by 3 of 7 writers | 5 |
-| `app.js:667` — dropped mark-read retry on equal-revision frames | 5 |
-| `app.js:1147` — lock released before the badge re-read; double link overwrites | 6 |
-| `app.js:1166` — status sentence used as a generation token | 6 |
-| `app.js:388` — one failed `GET /projects` strands the picker forever | 7 |
-| `app.js:403` — project list frozen for the screen's lifetime | 7 |
-| `dialogs.js:857`, `:861` — `toLocaleLowerCase()` breaks search in `tr`/`az` | 4 |
-| `dialogs.js:876` — active row reconciled in an effect; Enter misfires | 9 |
-| `dialogs.js:870` — scroll flag latches and fires on a later hover | 9 |
-| `dialogs.js:925` — no `isComposing` guard; IME Enter links a wrong task | 9 |
-| `dialogs.js:968` — hover erases the link failure message | 9 |
-| `dialogs.js:1007` — `spellCheck=${false}` never reaches the DOM | 9 |
-| `docs/TESTING.md:265` — no real-device checklist entry for the picker | 11 |
+| `dialogs.js:857`, `:861` — `toLocaleLowerCase()` breaks search in `tr`/`az` | 6 |
+| `docs/TESTING.md:265` — no real-device checklist entry for the picker | 7 |
+| `app.js:649` — `sessionsRef` maintained by 3 of 7 writers | 9 |
+| `app.js:667` — dropped mark-read retry on equal-revision frames | 9 |
+| `app.js:1147` — lock released before the badge re-read; double link overwrites | 11 |
+| `app.js:1166` — status sentence used as a generation token | 11 |
+| `app.js:388` — one failed `GET /projects` strands the picker forever | 13 |
+| `app.js:403` — project list frozen for the screen's lifetime | 13 |
+| `dialogs.js:876` — active row reconciled in an effect; Enter misfires | 15 |
+| `dialogs.js:870` — scroll flag latches and fires on a later hover | 15 |
+| `dialogs.js:925` — no `isComposing` guard; IME Enter links a wrong task | 15 |
+| `dialogs.js:968` — hover erases the link failure message | 15 |
+| `dialogs.js:1007` — `spellCheck=${false}` never reaches the DOM | 15 |
+
+## Validation Commands
+
+Run **only** by a wave-closing task. Wave participants run nothing from this section.
+
+```
+./kotlin build     # required before test: the suite execs ptycheck and webuicheck,
+                   # which `./kotlin test` does not link
+./kotlin test
+# fast loops, not a substitute for the aggregate:
+#   ./kotlin task :kotgent:testMacosArm64Debug
+#   ./kotlin task :webuitest:testJvm
+node --test webuitest/js/          # available from wave 2 onward
+```
+
+## Параллельное исполнение волнами
+
+Each task carries `**Wave:** K` and `**Depends:** <numbers|—>`. Wave-closing passes are real
+`### Task N: Закрытие волны K` sections with their own checkboxes, so an ordinary sequential
+`/planning:exec` executes this plan correctly: sections run in order and the closer catches up on
+validation and the commit. The markup is a strict superset, not a fork. Wave mode requires an **explicit**
+instruction at launch, because `SKILL.md` is not in the override chain and its batch-spawn prohibition is
+not lifted on its own.
+
+Participant rules come from `.claude/exec-plan/prompts/task.md`: address the task **by name**, do not edit
+the plan file, do not run `git` mutations, do not run `./kotlin`, and touch only the paths in the task's
+`**Files:**` block. A participant returns `DONE:` and `FILES:` blocks; the closer marks the checkboxes.
+
+Wave grouping is deliberately conservative here. `app.js`, `dialogs.js`,
+`test/transport/WebUiServingTest.kt`, and `webuitest/test/TaskCommandsTest.kt` are each touched by four to
+six tasks, so most waves hold a single task. Only waves 2 and 3 have genuinely disjoint file ownership.
+
+| Wave | Participants | Closer | Why they may run together |
+|---|---|---|---|
+| 1 | 1 | 2 | alone — the commit also lands the pre-existing working tree |
+| 2 | 3, 4 | 5 | disjoint: vendor + `index.html` + `WebUiServingTest.kt` vs `webuitest/js/` + `docs/TESTING.md` |
+| 3 | 6, 7 | 8 | disjoint: `lib/sessions.js` + `dialogs.js` vs `docs/TESTING.md` |
+| 4 | 9 | 10 | alone — `app.js`, `state/`, `CLAUDE.md` |
+| 5 | 11 | 12 | alone — `app.js` |
+| 6 | 13 | 14 | alone — `app.js`, `dialogs.js` |
+| 7 | 15 | 16 | alone — `dialogs.js`, `Board.js`, `CommandPalette.js`, `style.css` |
+| 8 | 17 | 18 | alone — `app.js`, `state/` |
+| 9 | 19 | 20 | alone — final documentation, acceptance verification, plan retirement |
 
 ## What Goes Where
 
@@ -278,10 +322,12 @@ their class, not by individual patches.
 
 ### Task 1: Stabilize and commit the current link-task feature
 
+**Wave:** 1 · **Depends:** —
+
 The working tree holds a 1054-line uncommitted diff. Committing it first keeps vendor files and
 refactoring out of the same commits, and the two Playwright fixes make the suite trustworthy before it
-becomes every later task's gate. Finding `TaskCommandsTest.kt:557` is a hang, not a failure — left in
-place it burns wall-clock in every subsequent task.
+becomes every later wave's gate. Finding `TaskCommandsTest.kt:557` is a hang, not a failure — left in
+place it burns wall-clock in every subsequent validation run.
 
 **Files:**
 - Modify: `webuitest/test/TaskCommandsTest.kt`
@@ -291,17 +337,34 @@ place it burns wall-clock in every subsequent task.
 - [ ] replace `tapped.evaluate("el => el.click()")` at `TaskCommandsTest.kt:650` with `tapped.tap()`,
       and the synthesized `MouseEvent` dispatches at 636-637 with `hover()`
 - [ ] verify the scroll assertion measures the populated option list, not the placeholder
-- [ ] run `./kotlin build && ./kotlin test` — full suite must pass
-- [ ] commit the link-task feature with the two test fixes
 
-### Task 2: Vendor @preact/signals and prove it in a real browser
+### Task 2: Закрытие волны 1
+
+**Wave:** 1 · **Depends:** 1
+
+The wave's commit deliberately includes the pre-existing uncommitted link-task feature alongside the two
+test fixes — that is what makes this wave the plan's baseline.
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block plus the pre-existing
+      link-task diff, and stop with a report on any path neither accounts for
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 3: Vendor @preact/signals and prove it in a real browser
+
+**Wave:** 2 · **Depends:** 1
 
 Gate task. Export compatibility is verified; the adapter's use of mangled Preact internals is not. The
-proof must be an assertion, so it belongs in `webuitest`, not `webuicheck`.
+proof must be an assertion, so it belongs in `webuitest`, not `webuicheck`, whose scenario files contain
+zero assertions.
 
 **Fallback:** if the browser proof fails, replace the signal model with a single `useStateWithRef`
 primitive in `resources/webui/lib/hooks.js`. Every later task keeps its shape and its findings mapping;
-only the state mechanism changes.
+only the state mechanism changes. Record the switch as a `[deviation]` line.
 
 **Files:**
 - Create: `resources/webui/vendor/signals-core.module.js`
@@ -323,10 +386,10 @@ only the state mechanism changes.
       vendor module URLs, render a small Preact tree bound to a signal, write the signal, and assert the
       DOM updated. **No throwaway signal UI is added to `resources/webui/`**
 - [ ] run `node --check` on every changed JavaScript module
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 3
-- [ ] if the proof fails: record it with ⚠️ in this plan, switch to the fallback, and continue
 
-### Task 3: A node --test tier for browser-independent web logic
+### Task 4: A node --test tier for browser-independent web logic
+
+**Wave:** 2 · **Depends:** 1
 
 **Files:**
 - Create: `webuitest/js/sessions.test.js`
@@ -351,9 +414,23 @@ only the state mechanism changes.
       the runner and its location, and record that it adds no build step
 - [ ] record the new system `node` prerequisite in `webuitest/module.yaml`, whose comment currently
       states that no external tooling is needed
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 4
 
-### Task 4: Extend the shared link rules and fix locale-sensitive matching (TDD)
+### Task 5: Закрытие волны 2
+
+**Wave:** 2 · **Depends:** 3, 4
+
+- [ ] reconcile `git status --porcelain` against the union of both participants' `FILES:` blocks
+- [ ] record that this wave needs no registry edit, or apply it if `webuitest/module.yaml` requires one
+- [ ] run `## Validation Commands` in full, in order, including `node --test webuitest/js/`
+- [ ] if Task 3's browser proof failed, record the fallback decision and its consequence for later waves
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 6: Extend the shared link rules and fix locale-sensitive matching (TDD)
+
+**Wave:** 3 · **Depends:** 4
 
 `sessionTaskLinkDisabledReason` at `resources/webui/lib/sessions.js:25` is already the shared home for
 link eligibility, with four consumers. This task extends it rather than creating a fifth home.
@@ -361,7 +438,8 @@ link eligibility, with four consumers. This task extends it rather than creating
 Note that `app.js:1128-1131` and `dialogs.js:895` are **not** duplicates and must not be merged:
 `app.js` performs the authoritative pre-POST re-check (active session, expected project, task open
 state), while `dialogs.js` guards UI availability (`!task || submittingRef.current || changed ||
-projectUnavailable || !ready`). They are different rules that share a matcher.
+projectUnavailable || !ready`). They are different rules that share a matcher. The new pre-POST predicate
+is exported here but **wired into `app.js` in Task 9**, which owns that file — do not edit `app.js`.
 
 **Files:**
 - Modify: `resources/webui/lib/sessions.js`
@@ -370,8 +448,8 @@ projectUnavailable || !ready`). They are different rules that share a matcher.
 
 - [ ] write failing tests first for the existing `sessionTaskLinkDisabledReason` rules, pinning current
       behavior at the node tier before anything moves
-- [ ] write failing tests first for the pre-POST re-check conditions in `app.js:1128-1131`, kept as a
-      separate exported predicate with its own name, so the two guards stay distinguishable
+- [ ] write failing tests first for the pre-POST re-check conditions in `app.js:1128-1131`, and export
+      that predicate from `lib/sessions.js` under its own name so the two guards stay distinguishable
 - [ ] write a failing test for query matching including the `tr`/`az` case: a task titled "Index the API"
       must match the query "index" under any locale
 - [ ] add the query matcher to `lib/sessions.js` folding case with `toLowerCase()`
@@ -379,12 +457,46 @@ projectUnavailable || !ready`). They are different rules that share a matcher.
       shared matcher — this is the step that actually fixes the finding
 - [ ] write tests for the outcome-message rules (linked, linked-but-unreadable, linked-elsewhere)
 - [ ] run `node --check` on changed modules
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 5
 
-### Task 5: Move session, task, and project state to signals
+### Task 7: Record the link picker's real-device checks
+
+**Wave:** 3 · **Depends:** —
+
+Finding `docs/TESTING.md:265`. The picker has the busy-dismissal and coarse-pointer properties the
+checklist already itemises for the project dialogs, plus two nothing else has: an `<input type="search">`
+inside a `<dialog>` relying on the native cancel path for Escape, and a `78vh` scroll port the software
+keyboard shrinks. Documentation only; no tests, per the exemption in Development Approach.
+
+**Files:**
+- Modify: `docs/TESTING.md`
+
+- [ ] add the link picker to the real-device checklist: swipe handle, compensated padding, and backdrop
+      dismissal, with swipe and backdrop dismissal disabled while a link request runs and the footer and
+      header close controls staying enabled
+- [ ] add the platform close request against a busy picker on every engine — Escape or the system back
+      gesture dismisses without cancelling the mutation
+- [ ] add the search input's Escape behavior inside a dialog, on every engine
+- [ ] add the keyboard-shrunk scroll port on a short phone viewport
+
+### Task 8: Закрытие волны 3
+
+**Wave:** 3 · **Depends:** 6, 7
+
+- [ ] reconcile `git status --porcelain` against the union of both participants' `FILES:` blocks
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 9: Move session, task, and project state to signals
+
+**Wave:** 4 · **Depends:** 3, 4, 6
 
 Removes the mirror class (finding `app.js:649`) and rewrites `applySessionPatch`, so the equal-revision
-rule from finding `app.js:667` is decided **here**, once, rather than pinned now and unpinned later.
+rule from finding `app.js:667` is decided **here**, once, rather than pinned now and unpinned later. Also
+wires the pre-POST predicate Task 6 exported.
 
 **Files:**
 - Create: `resources/webui/state/sessions.js`
@@ -408,17 +520,30 @@ rule from finding `app.js:667` is decided **here**, once, rather than pinned now
       `startSession` 849, `importSession` 874 and 897/913, `controlSession` 926) through them
 - [ ] implement the equal-revision rule decided above, with a comment recording why the redundancy is
       deliberate
+- [ ] call the pre-POST predicate exported by Task 6 from `app.js:1128-1131`
 - [ ] replace effect-reconciled application-level derived values with `computed()`
 - [ ] delete the now-unused mirror refs
 - [ ] register the three new served modules in `daemonServesTheComponentAndLibModules`
-      (`test/transport/WebUiServingTest.kt:143-155`) — it is a hand-maintained list that will not fail on
-      its own
+      (`test/transport/WebUiServingTest.kt:143-155`) — a hand-maintained list that will not fail on its own
 - [ ] update the CLAUDE.md bullet that reads "`app.js` owns global shortcuts, session/task state
       merging, and screen selection" to record the new ownership, in the task that changes it
 - [ ] run `node --check` on changed modules
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 6
 
-### Task 6: One mutation runner with a generation token
+### Task 10: Закрытие волны 4
+
+**Wave:** 4 · **Depends:** 9
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 11: One mutation runner with a generation token
+
+**Wave:** 5 · **Depends:** 9
 
 Removes the ad-hoc currency idioms: findings `app.js:1147` and `app.js:1166`. Scope is the six mutating
 flows. `fetchSessionRow` (678), `copyTmuxCommand` (999), and `projectCreated` (443) are not mutations
@@ -445,12 +570,25 @@ and stay outside the lock.
       not run currency) and **keep `aliveRef`** (unmount guard, not currency) — neither is replaceable by
       `isCurrent()`
 - [ ] register the new served module in `daemonServesTheComponentAndLibModules`
-      (`test/transport/WebUiServingTest.kt:143-155`) — a hand-maintained list that will not fail on its own
 - [ ] add a Playwright test proving a second link attempt is refused while the first is still settling
 - [ ] add a Playwright test proving an unrelated control is not blocked by a non-mutating read
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 7
+- [ ] run `node --check` on changed modules
 
-### Task 7: Readiness as an explicit state with failure and retry
+### Task 12: Закрытие волны 5
+
+**Wave:** 5 · **Depends:** 11
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 13: Readiness as an explicit state with failure and retry
+
+**Wave:** 6 · **Depends:** 9
 
 Removes the stuck-forever and stale-project classes: findings `app.js:388` and `app.js:403`.
 
@@ -472,9 +610,23 @@ Removes the stuck-forever and stale-project classes: findings `app.js:388` and `
 - [ ] register the new served module in `daemonServesTheComponentAndLibModules`
 - [ ] add a Playwright test: a failing `GET /projects` shows an error and a retry, and the retry recovers
 - [ ] add a Playwright test: a project created after page load is linkable without a reload
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 8
+- [ ] run `node --check` on changed modules
 
-### Task 8: One shared typeahead-listbox primitive
+### Task 14: Закрытие волны 6
+
+**Wave:** 6 · **Depends:** 13
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 15: One shared typeahead-listbox primitive
+
+**Wave:** 7 · **Depends:** 3, 13
 
 Removes the interaction class: findings `dialogs.js:876`, `870`, `925`, `968`, and `1007`. The four real
 consumers are `CommandPalette.js:72`, the `NewProjectForm` path picker at `Board.js:752` (keys 806-815),
@@ -513,13 +665,27 @@ is the primitive's contract and this task's real cost.
 - [ ] add a Playwright test: hovering the option list does not erase a link failure message
 - [ ] add a DOM assertion that the served search input carries `spellcheck="false"`
 - [ ] run `node --check` on changed modules
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 9
 
-### Task 9: Move the remaining state groups to signals
+### Task 16: Закрытие волны 7
+
+**Wave:** 7 · **Depends:** 15
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 17: Move the remaining state groups to signals
+
+**Wave:** 8 · **Depends:** 9, 11
 
 Selection, dialog, status, and preference state are the last hook-and-mirror pairs in `app.js`. This
 task does not claim to fully decompose `app.js` — 60 `useCallback` flows remain, and moving them is not
-justified by any finding. It is deferrable after Task 11 if earlier tasks overrun.
+justified by any finding. It is deferrable: if earlier waves overrun, skip to wave 9 and record a
+`[deviation]`.
 
 **Files:**
 - Create: `resources/webui/state/selection.js`
@@ -537,28 +703,43 @@ justified by any finding. It is deferrable after Task 11 if earlier tasks overru
 - [ ] write node-tier tests for every rule that moved, including the A→B→A auto-select case the
       selection counter exists to close
 - [ ] run `node --check` on every changed module
-- [ ] run `./kotlin build && ./kotlin test` — must pass before task 10
 
-### Task 10: Record the link picker's real-device checks
+### Task 18: Закрытие волны 8
 
-Finding `docs/TESTING.md:265`. The picker has the busy-dismissal and coarse-pointer properties the
-checklist already itemises for the project dialogs, plus two nothing else has: an `<input type="search">`
-inside a `<dialog>` relying on the native cancel path for Escape, and a `78vh` scroll port the software
-keyboard shrinks. Documentation only; no tests, per the exemption in Development Approach.
+**Wave:** 8 · **Depends:** 17
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [ ] record that this wave needs no registry edit
+- [ ] run `## Validation Commands` in full, in order
+- [ ] on failure, attribute each error to the owning task rather than repairing broadly
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
+- [ ] make exactly one commit for the wave, including the plan file
+
+### Task 19: Update documentation
+
+**Wave:** 9 · **Depends:** 17
+
+Documentation only; no tests, per the exemption in Development Approach.
 
 **Files:**
+- Modify: `CLAUDE.md`
+- Modify: `README.md`
 - Modify: `docs/TESTING.md`
 
-- [ ] add the link picker to the real-device checklist: swipe handle, compensated padding, and backdrop
-      dismissal, with swipe and backdrop dismissal disabled while a link request runs and the footer and
-      header close controls staying enabled
-- [ ] add the platform close request against a busy picker on every engine — Escape or the system back
-      gesture dismisses without cancelling the mutation
-- [ ] add the search input's Escape behavior inside a dialog, on every engine
-- [ ] add the keyboard-shrunk scroll port on a short phone viewport
+- [ ] confirm the CLAUDE.md ownership bullet edited in Task 9 still matches the shipped code
+- [ ] add to `CLAUDE.md`: signals as the state model with the `useComputed`-per-instance rule,
+      `runMutation` as the only mutation-currency idiom and what it deliberately does not cover, the node
+      test tier's location and why it lives outside `resources/webui/`, and the shared typeahead primitive
+- [ ] update `README.md` if the vendored dependency list is stated there
+- [ ] confirm `docs/TESTING.md` carries the durable testing policy from this plan, including the rewritten
+      `206-209` paragraph and the real-device checklist entries
 
-### Task 11: Verify acceptance criteria
+### Task 20: Закрытие волны 9 — acceptance verification and plan retirement
 
+**Wave:** 9 · **Depends:** 19
+
+- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
 - [ ] verify all 15 review findings are addressed, by re-reading each cited line
 - [ ] verify the three root causes are removed: no state mirror refs remain, mutation currency has one
       implementation, and pure rules have node-tier coverage
@@ -566,27 +747,18 @@ keyboard shrinks. Documentation only; no tests, per the exemption in Development
       an unmounted dialog is not written to
 - [ ] verify no behavior regressed: the served asset contract, import map, and revision handling are
       unchanged in shape
-- [ ] run the full suite: `./kotlin build && ./kotlin test`
+- [ ] run `## Validation Commands` in full, in order
 - [ ] run `node --test` directly over `webuitest/js/` and confirm the JVM wrapper reports the same result
 - [ ] verify the wrapper fails loudly when `node` is unavailable, by temporarily shadowing it
 - [ ] verify test sensitivity: break one merge rule and one eligibility rule and confirm the node tier
       fails, then revert
 - [ ] run `./kotlin run -m webuicheck -- --self-check` (never `kotgent daemon` or a real agent command)
-
-### Task 12: [Final] Update documentation
-
-Documentation only; no tests, per the exemption in Development Approach.
-
-- [ ] confirm the CLAUDE.md ownership bullet edited in Task 5 still matches the shipped code
-- [ ] add to `CLAUDE.md`: signals as the state model with the `useComputed`-per-instance rule,
-      `runMutation` as the only mutation-currency idiom and what it deliberately does not cover, the node
-      test tier's location and why it lives outside `resources/webui/`, and the shared typeahead primitive
-- [ ] update `README.md` if the vendored dependency list is stated there
-- [ ] confirm `docs/TESTING.md` carries the durable testing policy from this plan, including the rewritten
-      `206-209` paragraph and the real-device checklist entries
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] write the wave's progress block
 - [ ] per `CLAUDE.md`, migrate this plan's durable product intent, architecture constraints, and
       testing policy to their authoritative homes, carry any still-intended work into an active plan or
       the backlog, then **delete this plan file** — completed plans are not archived in this repository
+- [ ] make exactly one commit for the wave, including the plan deletion
 
 ## Post-Completion
 
@@ -594,7 +766,7 @@ Documentation only; no tests, per the exemption in Development Approach.
 
 **Manual verification:**
 
-- the real-device checklist added in Task 10, on a physical phone across engines: dialog dismissal while
+- the real-device checklist added in Task 7, on a physical phone across engines: dialog dismissal while
   busy, the search input's Escape path, coarse-pointer padding, and the keyboard-shrunk scroll port
 - push permission and safe-area behavior, unchanged by this plan but adjacent to the dialogs it touches
 - a long live session with a real agent, confirming the signal-backed session list still merges
