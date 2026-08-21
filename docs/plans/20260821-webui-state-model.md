@@ -270,6 +270,7 @@ the table below.
 | `dialogs.js:968` — hover erases the link failure message | 15 |
 | `dialogs.js:1007` — `spellCheck=${false}` never reaches the DOM | 15 |
 | `lib/commands.js:301`, `:321` — `toLocaleLowerCase()` breaks command-palette search in `tr`/`az` | 15 |
+| `Board.js:855`, `dialogs.js:418`, `:435`, `:1113`, `TaskDetail.js:352` — `spellcheck="false"` coerces to `true`, spellcheck is on | 21 |
 
 ## Validation Commands
 
@@ -314,7 +315,7 @@ six tasks, so most waves hold a single task. Only waves 2 and 3 have genuinely d
 | 6 | 13 | 14 | alone — `app.js`, `dialogs.js` |
 | 7 | 15 | 16 | alone — `dialogs.js`, `Board.js`, `CommandPalette.js`, `style.css` |
 | 8 | 17 | 18 | alone — `app.js`, `state/` |
-| 9 | 19 | 20 | alone — final documentation, acceptance verification, plan retirement |
+| 9 | 19, 21 | 20 | disjoint: documentation vs `components/` + `TaskCommandsTest.kt` |
 
 ## What Goes Where
 
@@ -712,29 +713,31 @@ justified by any finding. It is deferrable: if earlier waves overrun, skip to wa
 - Create: `resources/webui/state/dialog.js`
 - Create: `resources/webui/state/status.js`
 - Create: `resources/webui/state/prefs.js`
+- Create: `webuitest/js/state-selection.test.js` — the block named no test file, but the node-tier
+  checkbox below requires one, and `webuitest/js/` is the only tree `WebUiLogicTests` globs
 - Modify: `resources/webui/app.js`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] move selection state, including the selection generation counter from `app.js:224`, into
+- [x] move selection state, including the selection generation counter from `app.js:224`, into
       `state/selection.js`, where it becomes a property of selection rather than a loose ref
-- [ ] move dialog, status, and preference state into their signal modules
-- [ ] keep `resources/webui/lib/router.js` the only owner of browser history
-- [ ] register the four new served modules in `daemonServesTheComponentAndLibModules`
-- [ ] write node-tier tests for every rule that moved, including the A→B→A auto-select case the
+- [x] move dialog, status, and preference state into their signal modules
+- [x] keep `resources/webui/lib/router.js` the only owner of browser history
+- [x] register the four new served modules in `daemonServesTheComponentAndLibModules`
+- [x] write node-tier tests for every rule that moved, including the A→B→A auto-select case the
       selection counter exists to close
-- [ ] run `node --check` on every changed module
+- [x] run `node --check` on every changed module
 
 ### Task 18: Закрытие волны 8
 
 **Wave:** 8 · **Depends:** 17
 
-- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 19: Update documentation
 
@@ -757,7 +760,7 @@ Documentation only; no tests, per the exemption in Development Approach.
 
 ### Task 20: Закрытие волны 9 — acceptance verification and plan retirement
 
-**Wave:** 9 · **Depends:** 19
+**Wave:** 9 · **Depends:** 19, 21
 
 Wave 6 shipped three judgement calls the acceptance pass must verify against the code rather than
 against this plan's original wording:
@@ -789,12 +792,49 @@ against this plan's original wording:
 - [ ] verify test sensitivity: break one merge rule and one eligibility rule and confirm the node tier
       fails, then revert
 - [ ] run `./kotlin run -m webuicheck -- --self-check` (never `kotgent daemon` or a real agent command)
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
+- [ ] mark `[x]` on every checkbox of every task in this wave, including this one — wave 9 has two
+      participants, so that is Task 21's checkboxes as well as Task 19's
 - [ ] write the wave's progress block
 - [ ] per `CLAUDE.md`, migrate this plan's durable product intent, architecture constraints, and
       testing policy to their authoritative homes, carry any still-intended work into an active plan or
       the backlog, then **delete this plan file** — completed plans are not archived in this repository
 - [ ] make exactly one commit for the wave, including the plan deletion
+
+### Task 21: Fix spellcheck on the remaining inputs
+
+**Wave:** 9 · **Depends:** —
+
+Five inputs that predate wave 7 still spell `spellcheck` as a string attribute, and therefore ship with
+spellcheck **on** — the opposite of what every one of them intends. Wave 7 proved the mechanism against
+the served DOM, and it has three arms, none of which the source text distinguishes:
+
+- `spellCheck={false}` (camelCase) — the IDL name is lowercase, so the vendored Preact's `l in n` test
+  fails, it calls `removeAttribute("spellCheck")`, and nothing is set at all. Spellcheck stays on. This
+  was finding `dialogs.js:1007`.
+- `spellcheck="false"` (lowercase name, **string** value) — `spellcheck` *is* an IDL attribute, so Preact
+  takes the property branch and the boolean IDL setter coerces the non-empty string `"false"` to `true`.
+  **Spellcheck is turned on.** This is the spelling Task 15's sixth checkbox wrongly called correct, and
+  it is the spelling all five of these sites carry.
+- `spellcheck={false}` (lowercase name, **boolean** value) — the only spelling that works. Wave 7 applied
+  it at `resources/webui/components/dialogs.js:1005`.
+
+No assertion covers any of the five, which is why one wave could fix an instance of this class and leave
+the class itself shipping. An assertion on the source text would pass for all three arms and prove
+nothing; only the served DOM separates them.
+
+**Files:**
+- Modify: `resources/webui/components/Board.js`
+- Modify: `resources/webui/components/dialogs.js`
+- Modify: `resources/webui/components/TaskDetail.js`
+- Modify: `webuitest/test/TaskCommandsTest.kt`
+
+- [ ] change all five sites to `spellcheck={false}`: `Board.js:855` (the new-project path), `dialogs.js:418`
+      (the provider id), `:435` (the session cwd), `:1113` (the preferences base path), and
+      `TaskDetail.js:352` (the dependency ref) — line numbers as of wave 8; re-verify them, they shift
+- [ ] add a served-DOM assertion for each of the five, in the shape of the picker's own at
+      `webuitest/test/TaskCommandsTest.kt:382` (`assertThat(input).hasAttribute("spellcheck", "false")`),
+      so the spelling cannot silently regress again
+- [ ] run `node --check` on every changed module
 
 ## Post-Completion
 

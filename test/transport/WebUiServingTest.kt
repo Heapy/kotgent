@@ -844,11 +844,14 @@ private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 
 private const val MODE_0700: Int = 0b111_000_000
 
-// The signal-backed shared state: one module per concern, each the only writer of its list. They are
-// named once here because two tests need them — the served-module registry and the source-shape check
-// that pins their vendor import to the import map's own target.
+// The signal-backed shared state: one module per concern, each the only writer of the state it holds —
+// the three lists, plus the selection (and its generation counter), the open dialog, the announced
+// status sentence and the preferences. They are named once here because two tests need them — the
+// served-module registry and the source-shape check that pins their vendor import to the import map's
+// own target.
 private val STATE_MODULES: List<String> = listOf(
     "/state/sessions.js", "/state/tasks.js", "/state/projects.js",
+    "/state/selection.js", "/state/dialog.js", "/state/status.js", "/state/prefs.js",
 )
 
 private const val CLASS_ATTRIBUTE: String = "class="

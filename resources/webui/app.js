@@ -19,11 +19,8 @@ import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
 import { READY } from "./lib/readiness.js";
 import {
-  loadPrefs,
   loadSidebarCollapsed,
   persistSidebarCollapsed,
-  persistTerminalFontSize,
-  persistTerminalUnicode,
   sanitizeServerPreferences,
 } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
@@ -80,6 +77,26 @@ import {
   removeProjectRow,
   replaceProjects,
 } from "./state/projects.js";
+import {
+  activeSession as activeSessionSignal,
+  activeSessionId,
+  markSelection,
+  pruneSelection,
+  selectSessionId,
+} from "./state/selection.js";
+import {
+  closeDialog,
+  closeDialogFrom,
+  dialog as dialogSignal,
+  openDialog,
+} from "./state/dialog.js";
+import { say, status as statusSignal } from "./state/status.js";
+import {
+  applyDevicePreferences,
+  applyServerPreferences,
+  prefs as prefsSignal,
+  serverPrefs,
+} from "./state/prefs.js";
 import { Board } from "./components/Board.js";
 import { TaskDetail } from "./components/TaskDetail.js";
 import { CommandPalette } from "./components/CommandPalette.js";
@@ -207,17 +224,20 @@ function App() {
   // The name of the flow holding the mutation lock. Every disabled reason in the palette is derived from
   // it, and every async closure below reads the same signal rather than a mirror of this value.
   const pendingAction = pendingMutation.value;
+  // Selection, the open dialog, the announced sentence and the preferences are held the same way, each
+  // by the module that owns its writers. Reading them here is what subscribes this component to them.
+  const activeId = activeSessionId.value;
+  const activeSession = activeSessionSignal.value;
+  const dialog = dialogSignal.value;
+  const status = statusSignal.value;
+  const prefs = prefsSignal.value;
   const [projectId, setProjectId] = useState(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
-  const [activeId, setActiveId] = useState(null);
   const [attachedId, setAttachedId] = useState(null);
-  const [prefs, setPrefs] = useState(loadPrefs);
-  const [dialog, setDialog] = useState(null);
   const [palette, setPalette] = useState(null);
   const [showDone, setShowDone] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
-  const [status, setStatus] = useState({ text: "", error: false });
   const [hint, setHint] = useState(SELECT_HINT);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -231,24 +251,6 @@ function App() {
 
   const openTaskEntry = route.screen === SCREEN_TASK ? findTask(route.id) : null;
 
-  const activeRef = useRef(activeId);
-  activeRef.current = activeId;
-  // A generation counter closes the A→B→A hole when async flows conditionally auto-select.
-  const selectionGenRef = useRef(0);
-  // Async completions may close only the dialog instance that submitted them.
-  const dialogRef = useRef(dialog);
-  dialogRef.current = dialog;
-  const prefsRef = useRef(prefs);
-  prefsRef.current = prefs;
-  const statusRef = useRef(status);
-  statusRef.current = status;
-  // Persisted revisions order racing HTTP and WebSocket updates; refs advance synchronously.
-  const preferencesRevisionRef = useRef(prefs.revision);
-  const serverPreferencesRef = useRef({
-    basePath: prefs.basePath,
-    groupingLevel: prefs.groupingLevel,
-    revision: prefs.revision,
-  });
   // Hold a notification target until a matching row exists.
   const deepLinkRef = useRef(deepLinkSessionId());
   // Announce each outage once so the reconnect loop does not flood the aria-live region.
@@ -272,7 +274,7 @@ function App() {
         (event.ctrlKey && event.shiftKey && event.code === "KeyK");
       // Safari also maps Command-period to stop-loading, so suppress it in capture phase.
       const togglesSidebar = event.metaKey && event.code === "Period";
-      if ((!opensPalette && !togglesSidebar) || dialogRef.current) return;
+      if ((!opensPalette && !togglesSidebar) || dialogSignal.value) return;
       event.preventDefault();
       event.stopPropagation();
       if (togglesSidebar) {
@@ -327,7 +329,7 @@ function App() {
         if (reattachRequestRef.current !== controller) return;
         if (reattachIdRef.current !== id) return;
         if (document.visibilityState !== "visible") return;
-        if (activeRef.current !== id) {
+        if (activeSessionId.value !== id) {
           reattachIdRef.current = null;
           return;
         }
@@ -346,18 +348,12 @@ function App() {
         if (reattachRequestRef.current !== controller) return;
         // Definite failures retire the candidate; transient failures await the next recovery grant.
         if (isDefiniteAnswer(err)) reattachIdRef.current = null;
-        if (activeRef.current === id) setHint(detachedHint(null));
+        if (activeSessionId.value === id) setHint(detachedHint(null));
       } finally {
         clearTimeout(livenessTimeout);
         if (reattachRequestRef.current === controller) reattachRequestRef.current = null;
       }
     }, 0);
-  }, []);
-
-  const say = useCallback((text, error) => {
-    const next = { text: text, error: !!error };
-    statusRef.current = next;
-    setStatus(next);
   }, []);
 
   const reloadProjects = useCallback((reportFailure = true) => {
@@ -405,7 +401,7 @@ function App() {
       })();
     }
     return result;
-  }, [say]);
+  }, []);
 
   // Project changes have no event frame. Refresh on mount, board entry and foregrounding.
   useEffect(() => {
@@ -478,27 +474,13 @@ function App() {
     setProjectId(created.id);
   }, [reloadProjects]);
 
-  const applyServerPreferences = useCallback((raw) => {
-    const next = sanitizeServerPreferences(raw);
-    if (!next || next.revision < preferencesRevisionRef.current) return false;
-    preferencesRevisionRef.current = next.revision;
-    serverPreferencesRef.current = next;
-    setPrefs((current) => Object.assign({}, current, next));
-    return true;
-  }, []);
-
-  // The submitting dialog may have been dismissed and replaced while its request was in flight.
-  const closeDialogFrom = useCallback((submitted) => {
-    setDialog((current) => (current === submitted ? null : current));
-  }, []);
-
   // Project mutations have no event frame, so refresh the live list explicitly. The refresh is this
   // mutation's own follow-up read and runs inside the lock, like the link's badge re-read.
   const applyProjectArchive = useCallback((id, archived) => {
-    const submittedDialog = dialogRef.current;
+    const submittedDialog = dialogSignal.value;
     const reportFailure = (e) => {
       // A dismissed dialog cannot own errors from its still-running request.
-      if (dialogRef.current === submittedDialog) throw e;
+      if (dialogSignal.value === submittedDialog) throw e;
       say((archived ? "Could not delete the project: " : "Could not restore the project: ") +
         errorMessage(e), true);
     };
@@ -542,7 +524,7 @@ function App() {
       if (!isCurrent()) return;
       say(rows ? done : done + " The project list could not be re-read — reload the page.", !rows);
     });
-  }, [closeDialogFrom, reloadProjects, say]);
+  }, [reloadProjects]);
 
   const removeProject = useCallback((id) => applyProjectArchive(id, true), [applyProjectArchive]);
   const bringBackProject = useCallback((id) => applyProjectArchive(id, false), [applyProjectArchive]);
@@ -551,12 +533,11 @@ function App() {
   const selectedProject = findProject(projectId);
   const selectedProjectId = selectedProject ? selectedProject.id : null;
 
-  const activeSession = findSession(activeId);
-
   const showSession = useCallback((session) => {
-    selectionGenRef.current += 1;
+    // The selection event and its generation advance together; nothing between here and the navigate
+    // below reads either.
+    selectSessionId(session.id);
     cancelReattach();
-    setActiveId(session.id);
     setDrawerOpen(false);
     // The route is the owner of both the visible screen and selected session.
     navigate(sessionPath(session.id));
@@ -606,7 +587,7 @@ function App() {
   // Returning from the board must retry mark-read even if the session emitted no new frame.
   useEffect(() => {
     if (onBoard) return;
-    const s = findSession(activeRef.current);
+    const s = activeSessionSignal.value;
     if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
   }, [onBoard]);
 
@@ -619,7 +600,7 @@ function App() {
       if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
     }
     const ids = new Set(rows.map((s) => s.id));
-    setActiveId((id) => (id && !ids.has(id) ? null : id));
+    pruneSelection(ids);
     setAttachedId((id) => (id && !ids.has(id) ? null : id));
     pruneReadPosters(ids);
     if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
@@ -633,12 +614,12 @@ function App() {
       }
     }
     // Judge unread from the authoritative frame.
-    const active = rows.find((s) => s.id === activeRef.current);
+    const active = rows.find((s) => s.id === activeSessionId.value);
     if (active) markReadIfViewing(active.id, active.unread, active.lastSeq);
     disconnectAnnouncedRef.current = false;
     // Do not repeat the routine count into the aria-live region after reconnects.
     if (first) say(rows.length + " session(s).");
-  }, [cancelReattach, say, showSession]);
+  }, [cancelReattach, showSession]);
 
   const applySessionRow = useCallback((row) => {
     const { changed, previous, winner } = mergeSessionRow(row);
@@ -651,7 +632,7 @@ function App() {
       if (winner) showSession(winner);
       return winner;
     }
-    if (winner && winner.id === activeRef.current) {
+    if (winner && winner.id === activeSessionId.value) {
       markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
     }
     return winner;
@@ -669,7 +650,7 @@ function App() {
     // app.js:152 makes that retry the contract. It costs nothing — the merge above already declined to
     // write the signal, so an unchanged frame subscribes nobody and renders nothing — and it makes this
     // path uniform with applySessionRow, which has always poked the read on every observation.
-    if (winner.id === activeRef.current) {
+    if (winner.id === activeSessionId.value) {
       markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
     }
   }, []);
@@ -702,7 +683,7 @@ function App() {
         say("Could not load preferences: " + errorMessage(e), true);
       });
     return () => { stopped = true; };
-  }, [applyServerPreferences, say]);
+  }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -785,12 +766,12 @@ function App() {
         try { socket.close(); } catch (_) {}
       }
     };
-  }, [applyServerPreferences, say]);
+  }, []);
 
   // Foregrounding retries mark-read after hidden-tab updates were deliberately suppressed.
   useEffect(() => {
     const onVisibilityChange = () => {
-      const s = findSession(activeRef.current);
+      const s = activeSessionSignal.value;
       if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -844,10 +825,10 @@ function App() {
   }, [cancelReattach, scheduleReattach]);
 
   const startSession = useCallback((body) => {
-    const submittedDialog = dialogRef.current;
+    const submittedDialog = dialogSignal.value;
     // Auto-select only if no selection event occurred during the request. Selection generation is not
     // run currency: the operator can navigate away and back while this one mutation stays current.
-    const selectionAtSubmit = selectionGenRef.current;
+    const selectionUnmoved = markSelection();
     return runMutation("start", async ({ isCurrent }) => {
       let created;
       try {
@@ -857,24 +838,23 @@ function App() {
         });
       } catch (e) {
         // Late failures surface globally if the submitting form has unmounted.
-        if (dialogRef.current === submittedDialog) throw e;
+        if (dialogSignal.value === submittedDialog) throw e;
         say("Could not start session: " + errorMessage(e), true);
         return;
       }
       mergeSessionRow(created);
       closeDialogFrom(submittedDialog);
       if (isCurrent()) say("Started " + displayName(created) + ".");
-      if (selectionGenRef.current === selectionAtSubmit) showSession(created);
+      if (selectionUnmoved()) showSession(created);
     });
-  }, [closeDialogFrom, say, showSession]);
+  }, [showSession]);
 
   // Import and optional resume are serialized as one action. HTTP rows merge by revision, targeted
   // GETs decide attachment from fresh state, and generation guards prevent late auto-selection.
   // Registration success closes the dialog even when its follow-up resume fails.
   const importSession = useCallback((body, registerOnly) => {
-    const submittedDialog = dialogRef.current;
-    const selectionAtSubmit = selectionGenRef.current;
-    const selectionUnmoved = () => selectionGenRef.current === selectionAtSubmit;
+    const submittedDialog = dialogSignal.value;
+    const selectionUnmoved = markSelection();
     return runMutation("import", async ({ isCurrent }) => {
       let created;
       try {
@@ -883,7 +863,7 @@ function App() {
           body: JSON.stringify(body),
         });
       } catch (e) {
-        if (dialogRef.current === submittedDialog) throw e;
+        if (dialogSignal.value === submittedDialog) throw e;
         say(errorMessage(e), true);
         return;
       }
@@ -916,10 +896,10 @@ function App() {
         if (isCurrent()) say("Imported, but resume failed: " + errorMessage(e), true);
       }
     });
-  }, [closeDialogFrom, fetchSessionRow, say, showSession]);
+  }, [fetchSessionRow, showSession]);
 
   const controlSession = useCallback(async (action, id) => {
-    const s = findSession(id || activeRef.current);
+    const s = findSession(id || activeSessionId.value);
     if (!s) return;
     // Refuse before the confirmation, not after: a stop that cannot be sent must not first ask the
     // operator whether to send it.
@@ -950,14 +930,14 @@ function App() {
           mergeSessionRow(updated);
         }
         if (action === "stop" || action === "done") {
-          if (s.id === activeRef.current) setAttachedId(null);
+          if (s.id === activeSessionId.value) setAttachedId(null);
           setHint(action === "done"
             ? "Marked done. The archive toggle in the sidebar header brings it back."
             : "Session stopped. Resume it to continue.");
         } else if (action === "resume") {
           reattachAvailableRef.current = true;
           // Do not attach over a newer selection or erase the hint that selection installed.
-          if (s.id === activeRef.current) {
+          if (s.id === activeSessionId.value) {
             setAttachedId(s.id);
             setHint(null);
           }
@@ -967,35 +947,35 @@ function App() {
     } catch (e) {
       say(capitalize(action) + " failed: " + errorMessage(e), true);
     }
-  }, [cancelReattach, say]);
+  }, [cancelReattach]);
 
   // Local attach/detach must not race actions that can rewrite attachment state.
   const attach = useCallback(() => {
-    if (!activeRef.current) return;
+    if (!activeSessionId.value) return;
     if (affectsAttachment(pendingMutation.value)) {
       say(MUTATION_BUSY_MESSAGE, true);
       return;
     }
     cancelReattach();
     reattachAvailableRef.current = true;
-    setAttachedId(activeRef.current);
+    setAttachedId(activeSessionId.value);
     setHint(null);
-  }, [cancelReattach, say]);
+  }, [cancelReattach]);
 
   const detach = useCallback(() => {
     if (affectsAttachment(pendingMutation.value)) {
       say(MUTATION_BUSY_MESSAGE, true);
       return;
     }
-    const s = findSession(activeRef.current);
+    const s = activeSessionSignal.value;
     cancelReattach();
     setAttachedId(null);
     setHint(detachedHint(s));
-  }, [cancelReattach, say]);
+  }, [cancelReattach]);
 
   // Report async copy results outside the palette because its aria-live region unmounts immediately.
   const copyTmuxCommand = useCallback(async () => {
-    const s = findSession(activeRef.current);
+    const s = activeSessionSignal.value;
     const command = s && isAliveState(s.state) && s.tmuxSession
       ? tmuxAttachCommand(s.tmuxSession)
       : "";
@@ -1009,13 +989,13 @@ function App() {
     } catch (_) {
       say("Could not copy the tmux command.", true);
     }
-  }, [say]);
+  }, []);
 
   const onTerminalClosed = useCallback((id) => {
     const s = findSession(id);
     reattachIdRef.current = id;
     setAttachedId((current) => (current === id ? null : current));
-    if (activeRef.current === id) setHint(detachedHint(s));
+    if (activeSessionId.value === id) setHint(detachedHint(s));
     // A foreground grant may precede this queued close callback; reschedule once its id is known.
     if (document.visibilityState === "visible") scheduleReattach();
   }, [scheduleReattach]);
@@ -1023,9 +1003,9 @@ function App() {
   // Dialogs can close or remount while saving, so component-local busy state cannot serialize PUTs.
   // The shared mutation lock outlives any one dialog instance, so it can.
   const savePreferences = useCallback((next) => {
-    const submittedDialog = dialogRef.current;
+    const submittedDialog = dialogSignal.value;
     // Form revision distinguishes a remounted PreferencesDialog when routing late failures.
-    const revisionAtSubmit = prefsRef.current.revision;
+    const revisionAtSubmit = prefsSignal.value.revision;
     return runMutation("preferences", async ({ isCurrent }) => {
       try {
         const saved = await apiRequest("/preferences", {
@@ -1042,12 +1022,7 @@ function App() {
         // A WS echo may beat this response: equal revision is this save, while strictly newer external
         // state wins and keeps the refreshed form open.
         const applied = applyServerPreferences(saved);
-        persistTerminalFontSize(next.terminalFontSize);
-        persistTerminalUnicode(next.terminalUnicode);
-        setPrefs((current) => Object.assign({}, current, {
-          terminalFontSize: next.terminalFontSize,
-          terminalUnicode: next.terminalUnicode,
-        }));
+        applyDevicePreferences(next);
         if (!applied) {
           if (!isCurrent()) return;
           say("Preferences were saved, but newer settings arrived. Review the current values.");
@@ -1055,24 +1030,24 @@ function App() {
         }
         // Keep the apply decision and close in the same turn.
         closeDialogFrom(submittedDialog);
-        const current = serverPreferencesRef.current;
+        const current = serverPrefs.value;
         if (!isCurrent()) return;
         say(current.basePath.length > 0
           ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
           : "Grouping off — no base path set.");
       } catch (e) {
         // Late failures surface globally if the submitting form has unmounted.
-        if (dialogRef.current === submittedDialog && prefsRef.current.revision === revisionAtSubmit) throw e;
+        if (dialogSignal.value === submittedDialog && prefsSignal.value.revision === revisionAtSubmit) throw e;
         say("Could not save preferences: " + errorMessage(e), true);
       }
     });
-  }, [applyServerPreferences, closeDialogFrom, say]);
+  }, []);
 
   const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
-    const selected = findSession(activeRef.current);
-    setDialog({
+    const selected = activeSessionSignal.value;
+    openDialog({
       kind: "new",
-      cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath,
+      cwd: cwd || (selected && selected.cwd) || prefsSignal.value.basePath,
       initialMode: initialMode,
       initialAgent: initialAgent,
       taskRef: taskRef,
@@ -1091,7 +1066,7 @@ function App() {
   const openBoard = useCallback(() => navigate(routePath({ screen: SCREEN_TASKS, id: null })), []);
   // Preserve selection and attachment when leaving the board; avoid showSession's side effects.
   const openSessions = useCallback(() => {
-    const id = activeRef.current;
+    const id = activeSessionId.value;
     navigate(routePath({ screen: SCREEN_SESSIONS, id: id }));
   }, []);
   // Counters let repeated commands retrigger while the board remains mounted.
@@ -1113,7 +1088,7 @@ function App() {
     }
   }, [onBoard]);
   const openSessionTask = useCallback(() => {
-    const selected = findSession(activeRef.current);
+    const selected = activeSessionSignal.value;
     if (selected && selected.taskRef) navigate(taskPath(selected.taskRef));
   }, []);
 
@@ -1124,7 +1099,7 @@ function App() {
     if (sessionTaskLinkSubmitBlocked({
       session: selected,
       pendingAction: pendingMutation.value,
-      activeSessionId: activeRef.current,
+      activeSessionId: activeSessionId.value,
       sessionId: sessionId,
       expectedProjectId: expectedProjectId,
       projects: projectsSignal.value,
@@ -1133,7 +1108,7 @@ function App() {
       throw new Error("The selected session or task changed. Close the picker and try again.");
     }
 
-    const submittedDialog = dialogRef.current;
+    const submittedDialog = dialogSignal.value;
     const label = displayName(selected);
     return runMutation("link-task", async ({ isCurrent }) => {
       let failure = null;
@@ -1144,7 +1119,7 @@ function App() {
       }
       if (failure) {
         // A dismissed picker has nowhere local to report the request failure.
-        if (dialogRef.current === submittedDialog) throw failure;
+        if (dialogSignal.value === submittedDialog) throw failure;
         say("Could not link " + label + " to " + ref + ": " + errorMessage(failure), true);
         return;
       }
@@ -1169,33 +1144,32 @@ function App() {
       const outcome = sessionTaskLinkOutcome({ label: label, ref: ref, fresh: fresh, winner: winner });
       say(outcome.text, outcome.error);
     });
-  }, [closeDialogFrom, fetchSessionRow, say]);
+  }, [fetchSessionRow]);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
   const toggleSidebar = useCallback(() => setSidebarCollapsed((collapsed) => !collapsed), []);
 
-  const closeDialog = useCallback(() => setDialog(null), []);
-  const openPrefs = useCallback(() => setDialog({ kind: "prefs" }), []);
-  const openHelp = useCallback(() => setDialog({ kind: "help" }), []);
-  const openPhone = useCallback(() => setDialog({ kind: "phone" }), []);
+  const openPrefs = useCallback(() => openDialog({ kind: "prefs" }), []);
+  const openHelp = useCallback(() => openDialog({ kind: "help" }), []);
+  const openPhone = useCallback(() => openDialog({ kind: "phone" }), []);
   const openUpload = useCallback(() => {
-    const selected = findSession(activeRef.current);
-    if (selected) setDialog({ kind: "upload", session: selected });
+    const selected = activeSessionSignal.value;
+    if (selected) openDialog({ kind: "upload", session: selected });
   }, []);
   const openLinkTask = useCallback(() => {
-    const selected = findSession(activeRef.current);
+    const selected = activeSessionSignal.value;
     const disabled = sessionTaskLinkDisabledReason(selected, pendingMutation.value);
     if (disabled) {
       say("Linking a task is no longer available: " + disabled + ".", true);
       return;
     }
-    setDialog({ kind: "link-task", session: selected });
-  }, [say]);
+    openDialog({ kind: "link-task", session: selected });
+  }, []);
   const openDeleteProject = useCallback(() => {
-    if (selectedProject) setDialog({ kind: "delete-project", project: selectedProject });
+    if (selectedProject) openDialog({ kind: "delete-project", project: selectedProject });
   }, [selectedProject]);
-  const openRestoreProject = useCallback(() => setDialog({ kind: "restore-project" }), []);
+  const openRestoreProject = useCallback(() => openDialog({ kind: "restore-project" }), []);
 
   const interrupt = useCallback(() => controlSession("interrupt"), [controlSession]);
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
