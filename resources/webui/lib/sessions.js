@@ -1,5 +1,7 @@
 // Keep the canonical state set in step with io.kotgent.core.SessionState.
 
+import { isOpenTaskState } from "./tasks.js";
+
 export function stateBadge(state) {
   switch (state) {
     case "running":       return { label: "running", cls: "badge-running" };
@@ -28,6 +30,60 @@ export function sessionTaskLinkDisabledReason(session, pendingAction = null) {
   if (!isAliveState(session.state)) return "the selected session is not running";
   if (session.taskRef) return "the selected session is already linked to " + session.taskRef;
   return session.projectId ? null : "the selected session has no project";
+}
+
+// The picker's guard above answers whether linking is offered. This one re-checks the same world one
+// statement before the POST, when the operator has already chosen a task and every input may have moved
+// underneath the open dialog. The clause order is load-bearing: the refusal reason runs first, so a
+// vanished session is refused rather than dereferenced.
+export function sessionTaskLinkSubmitBlocked({
+  session,
+  pendingAction = null,
+  activeSessionId,
+  sessionId,
+  expectedProjectId,
+  projects,
+  task,
+}) {
+  if (sessionTaskLinkDisabledReason(session, pendingAction)) return true;
+  if (activeSessionId !== sessionId) return true;
+  if (session.projectId !== expectedProjectId) return true;
+  if (!(projects || []).some((project) => project.id === expectedProjectId)) return true;
+  if (!task || task.project !== expectedProjectId) return true;
+  return !isOpenTaskState(task.state);
+}
+
+// Case folding here is locale-independent on purpose. `toLocaleLowerCase()` maps "I" to a dotless "ı"
+// under a tr/az browser locale, so a task titled "Index the API" would stop matching a typed "index"
+// for exactly the operators whose locale the picker never anticipated.
+export function normalizeTaskQuery(query) {
+  return (query || "").trim().toLowerCase();
+}
+
+export function taskMatchesQuery(task, normalizedQuery) {
+  if (!normalizedQuery) return true;
+  if (!task) return false;
+  return (task.ref + " " + (task.title || "")).toLowerCase().includes(normalizedQuery);
+}
+
+// What the committed link turned out to be, read back from the session row rather than assumed from the
+// accepted request: the link response carries no row, so a racing frame can still have moved the badge.
+export function sessionTaskLinkOutcome({ label, ref, fresh, winner }) {
+  if (!fresh) {
+    return {
+      text: "Linked " + label + " to " + ref +
+        ", but the session could not be re-read. A live update may still bring the badge in.",
+      error: true,
+    };
+  }
+  if (!winner || winner.taskRef !== ref) {
+    return {
+      text: "The link request completed, but " + (winner ? displayName(winner) : label) +
+        " is now linked to " + ((winner && winner.taskRef) || "no task") + ".",
+      error: true,
+    };
+  }
+  return { text: "Linked " + displayName(winner) + " to " + ref + ".", error: false };
 }
 
 export function displayName(s) {

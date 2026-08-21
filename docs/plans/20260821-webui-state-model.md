@@ -249,7 +249,8 @@ missing `node` fails loudly with a named prerequisite, per `docs/TESTING.md:450-
 ## Findings addressed
 
 The 15 open review findings on the uncommitted link-task diff are fixed by the structure that removes
-their class, not by individual patches.
+their class, not by individual patches. Findings discovered while executing the plan are appended to
+the table below.
 
 | Finding | Task |
 |---|---|
@@ -268,6 +269,7 @@ their class, not by individual patches.
 | `dialogs.js:925` — no `isComposing` guard; IME Enter links a wrong task | 15 |
 | `dialogs.js:968` — hover erases the link failure message | 15 |
 | `dialogs.js:1007` — `spellCheck=${false}` never reaches the DOM | 15 |
+| `lib/commands.js:301`, `:321` — `toLocaleLowerCase()` breaks command-palette search in `tr`/`az` | 15 |
 
 ## Validation Commands
 
@@ -448,49 +450,52 @@ is exported here but **wired into `app.js` in Task 9**, which owns that file —
 - Modify: `resources/webui/components/dialogs.js`
 - Create: `webuitest/js/link-rules.test.js`
 
-- [ ] write failing tests first for the existing `sessionTaskLinkDisabledReason` rules, pinning current
+- [x] write failing tests first for the existing `sessionTaskLinkDisabledReason` rules, pinning current
       behavior at the node tier before anything moves
-- [ ] write failing tests first for the pre-POST re-check conditions in `app.js:1128-1131`, and export
+- [x] write failing tests first for the pre-POST re-check conditions in `app.js:1128-1131`, and export
       that predicate from `lib/sessions.js` under its own name so the two guards stay distinguishable
-- [ ] write a failing test for query matching including the `tr`/`az` case: a task titled "Index the API"
+- [x] write a failing test for query matching including the `tr`/`az` case: a task titled "Index the API"
       must match the query "index" under any locale
-- [ ] add the query matcher to `lib/sessions.js` folding case with `toLowerCase()`
-- [ ] replace `normalizedQuery` at `dialogs.js:857` and the `results` filter at `dialogs.js:861` with the
+- [x] add the query matcher to `lib/sessions.js` folding case with `toLowerCase()`
+- [x] replace `normalizedQuery` at `dialogs.js:857` and the `results` filter at `dialogs.js:861` with the
       shared matcher — this is the step that actually fixes the finding
-- [ ] write tests for the outcome-message rules (linked, linked-but-unreadable, linked-elsewhere)
-- [ ] run `node --check` on changed modules
+- [x] write tests for the outcome-message rules (linked, linked-but-unreadable, linked-elsewhere)
+- [x] run `node --check` on changed modules
 
 ### Task 7: Record the link picker's real-device checks
 
 **Wave:** 3 · **Depends:** —
 
 Finding `docs/TESTING.md:265`. The picker has the busy-dismissal and coarse-pointer properties the
-checklist already itemises for the project dialogs, plus two nothing else has: an `<input type="search">`
-inside a `<dialog>` relying on the native cancel path for Escape, and a `78vh` scroll port the software
-keyboard shrinks. Documentation only; no tests, per the exemption in Development Approach.
+checklist already itemises for the project dialogs, plus two the checklist does not yet cover: an
+`<input type="search">` inside a `<dialog>`, where one Escape press has two competing native behaviors —
+clearing the field and the dialog's cancel path — and a `78vh` scroll port the software keyboard shrinks.
+The picker is not the only such input: `CommandPalette.js:136` puts one inside the same shared `Dialog`,
+so whichever behavior an engine takes is the app's behavior in both places. Documentation only; no
+tests, per the exemption in Development Approach.
 
 **Files:**
 - Modify: `docs/TESTING.md`
 
-- [ ] add the link picker to the real-device checklist: swipe handle, compensated padding, and backdrop
+- [x] add the link picker to the real-device checklist: swipe handle, compensated padding, and backdrop
       dismissal, with swipe and backdrop dismissal disabled while a link request runs and the footer and
       header close controls staying enabled
-- [ ] add the platform close request against a busy picker on every engine — Escape or the system back
+- [x] add the platform close request against a busy picker on every engine — Escape or the system back
       gesture dismisses without cancelling the mutation
-- [ ] add the search input's Escape behavior inside a dialog, on every engine
-- [ ] add the keyboard-shrunk scroll port on a short phone viewport
+- [x] add the search input's Escape behavior inside a dialog, on every engine
+- [x] add the keyboard-shrunk scroll port on a short phone viewport
 
 ### Task 8: Закрытие волны 3
 
 **Wave:** 3 · **Depends:** 6, 7
 
-- [ ] reconcile `git status --porcelain` against the union of both participants' `FILES:` blocks
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the union of both participants' `FILES:` blocks
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 9: Move session, task, and project state to signals
 
@@ -549,7 +554,9 @@ wires the pre-POST predicate Task 6 exported.
 
 Removes the ad-hoc currency idioms: findings `app.js:1147` and `app.js:1166`. Scope is the six mutating
 flows. `fetchSessionRow` (678), `copyTmuxCommand` (999), and `projectCreated` (443) are not mutations
-and stay outside the lock.
+and stay outside the lock. Task 6 also exported `sessionTaskLinkOutcome` from `lib/sessions.js` and left
+it deliberately unwired: the badge re-read below is its only caller, so phrase the link's outcome through
+it when the lock is held through that read.
 
 **Files:**
 - Create: `resources/webui/lib/mutation.js`
@@ -642,6 +649,7 @@ is the primitive's contract and this task's real cost.
 - Modify: `resources/webui/components/dialogs.js`
 - Modify: `resources/webui/components/CommandPalette.js`
 - Modify: `resources/webui/components/Board.js`
+- Modify: `resources/webui/lib/commands.js`
 - Modify: `resources/webui/style.css`
 - Modify: `test/transport/WebUiServingTest.kt`
 - Modify: `webuitest/test/TaskCommandsTest.kt`
@@ -666,6 +674,9 @@ is the primitive's contract and this task's real cost.
 - [ ] add a Playwright test for the IME path: an Enter with `isComposing` does not submit
 - [ ] add a Playwright test: hovering the option list does not erase a link failure message
 - [ ] add a DOM assertion that the served search input carries `spellcheck="false"`
+- [ ] fold the palette's query with the shared matcher exported from `lib/sessions.js` (or with
+      `toLowerCase()`) at `lib/commands.js:301` and `:321`, where `toLocaleLowerCase()` makes a command
+      containing `I` unfindable under a `tr`/`az` browser locale, and cover that locale at the node tier
 - [ ] run `node --check` on changed modules
 
 ### Task 16: Закрытие волны 7

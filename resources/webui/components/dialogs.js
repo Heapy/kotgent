@@ -6,7 +6,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks"
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
-import { displayName, sessionTaskLinkDisabledReason } from "../lib/sessions.js";
+import {
+  displayName,
+  normalizeTaskQuery,
+  sessionTaskLinkDisabledReason,
+  taskMatchesQuery,
+} from "../lib/sessions.js";
 import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
 import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.js";
 import {
@@ -854,11 +859,12 @@ export function LinkTaskDialog({
     () => projectActive ? openTasksForProject(projectTasks) : [],
     [projectTasks, projectActive],
   );
-  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const normalizedQuery = normalizeTaskQuery(query);
   const results = useMemo(() => {
+    // taskMatchesQuery already admits an empty query; this early return is kept for the array's
+    // identity, which the active-row effect below compares.
     if (!normalizedQuery) return rows;
-    return rows.filter((task) =>
-      (task.ref + " " + (task.title || "")).toLocaleLowerCase().includes(normalizedQuery));
+    return rows.filter((task) => taskMatchesQuery(task, normalizedQuery));
   }, [rows, normalizedQuery]);
   const activeIndex = results.findIndex((task) => task.ref === activeTaskRef);
   const listId = !changed && !projectUnavailable && ready && results.length > 0

@@ -280,6 +280,19 @@ Real-device release checklist:
 - The platform close request against a busy project dialog on every engine. Escape or the system back
   gesture must dismiss it without cancelling the mutation, and the outcome of the still-running request
   must appear in the status line.
+- The task link picker on a phone and a tablet: the swipe handle, the compensated padding, and backdrop
+  dismissal. While a link request runs, swipe and backdrop dismissal must stop, while the footer
+  dismissal button and the header close button must stay enabled.
+- The platform close request against a busy task link picker on every engine. Escape or the system back
+  gesture must dismiss it without cancelling the mutation, and the outcome of the still-running request
+  must appear in the status line.
+- Escape inside the picker's search field on every engine. A search input inside a dialog has two
+  competing native behaviors — clearing the field and the dialog's cancel path — and the picker handles
+  neither itself. Record which one a first press takes, and require that a repeated press still closes
+  the picker; Escape must never be swallowed into a state where only a pointer can dismiss it.
+- The picker's results list on a short phone viewport with the software keyboard raised. Its scroll port
+  is a viewport fraction the keyboard does not resize, so the list must still scroll, an option must
+  stay reachable and tappable, and the footer dismissal button must not be stranded under the keyboard.
 - An installed PWA reaching the board and deleting a project from the palette button rather than `⌘K`.
 
 ### Static assets and source-shape checks
