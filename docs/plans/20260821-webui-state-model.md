@@ -645,9 +645,12 @@ Removes the interaction class: findings `dialogs.js:876`, `870`, `925`, `968`, a
 consumers are `CommandPalette.js:72`, the `NewProjectForm` path picker at `Board.js:752` (keys 806-815),
 the session-cwd path picker at `dialogs.js:273`, and `LinkTaskDialog`. The first three use index-based
 `activeSuggestion` with a `-1` sentinel; the last is ref-based. Reconciling those two selection models
-is the primitive's contract and this task's real cost.
+is the primitive's contract and this task's real cost. The primitive ships as two modules because node
+resolves no bare specifier: `lib/typeahead.js` holds the selection rules framework-free so the node tier
+can prove them, and `components/Typeahead.js` binds them to Preact in the `useTypeahead` hook.
 
 **Files:**
+- Create: `resources/webui/lib/typeahead.js`
 - Create: `resources/webui/components/Typeahead.js`
 - Create: `webuitest/js/typeahead.test.js`
 - Modify: `resources/webui/components/dialogs.js`
@@ -658,42 +661,42 @@ is the primitive's contract and this task's real cost.
 - Modify: `test/transport/WebUiServingTest.kt`
 - Modify: `webuitest/test/TaskCommandsTest.kt`
 
-- [ ] write failing tests first for the pure selection rules: which row is active for a given result set
+- [x] write failing tests first for the pure selection rules: which row is active for a given result set
       and previous selection, how arrow movement wraps, and how index-based and ref-based callers map
       onto one representation
-- [ ] create `resources/webui/components/Typeahead.js` deriving the active row with `useComputed`/
+- [x] create `resources/webui/components/Typeahead.js` deriving the active row with `useComputed`/
       `useSignal` per instance — **not** a bare `computed()` in the render body, which would share one
       derived node across the two path-picker instances
-- [ ] guard Enter with `event.isComposing` and `keyCode === 229` so an IME candidate commit is not
+- [x] guard Enter with `event.isComposing` and `keyCode === 229` so an IME candidate commit is not
       treated as a selection
-- [ ] make hover activation passive: it moves the highlight but does not clear an error message
-- [ ] arm scroll-into-view unconditionally per navigation so the flag cannot latch across activations
-- [ ] write `spellcheck="false"` in lowercase, matching `Board.js:860`, `dialogs.js:413`, `:430`, `:1115`
-- [ ] adopt the primitive in all four sites
-- [ ] register `/components/Typeahead.js` in `daemonServesTheComponentAndLibModules`
+- [x] make hover activation passive: it moves the highlight but does not clear an error message
+- [x] arm scroll-into-view unconditionally per navigation so the flag cannot latch across activations
+- [x] write `spellcheck="false"` in lowercase, matching `Board.js:860`, `dialogs.js:413`, `:430`, `:1115`
+- [x] adopt the primitive in all four sites
+- [x] register `/components/Typeahead.js` in `daemonServesTheComponentAndLibModules`
       (`test/transport/WebUiServingTest.kt:143-155`), which lists both `/lib/` and `/components/` paths
-- [ ] if any `board-*`/`task-*` emission moves into `Typeahead.js`, add that file to the `sources` map at
+- [x] if any `board-*`/`task-*` emission moves into `Typeahead.js`, add that file to the `sources` map at
       `test/transport/WebUiServingTest.kt:534-538` — adding a word to `BOARD_VOCABULARY` is not the fix;
       register genuinely new structural classes there and give each a rule in `style.css`
-- [ ] add a Playwright test for the IME path: an Enter with `isComposing` does not submit
-- [ ] add a Playwright test: hovering the option list does not erase a link failure message
-- [ ] add a DOM assertion that the served search input carries `spellcheck="false"`
-- [ ] fold the palette's query with the shared matcher exported from `lib/sessions.js` (or with
+- [x] add a Playwright test for the IME path: an Enter with `isComposing` does not submit
+- [x] add a Playwright test: hovering the option list does not erase a link failure message
+- [x] add a DOM assertion that the served search input carries `spellcheck="false"`
+- [x] fold the palette's query with the shared matcher exported from `lib/sessions.js` (or with
       `toLowerCase()`) at `lib/commands.js:301` and `:321`, where `toLocaleLowerCase()` makes a command
       containing `I` unfindable under a `tr`/`az` browser locale, and cover that locale at the node tier
-- [ ] run `node --check` on changed modules
+- [x] run `node --check` on changed modules
 
 ### Task 16: Закрытие волны 7
 
 **Wave:** 7 · **Depends:** 15
 
-- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 17: Move the remaining state groups to signals
 

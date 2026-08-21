@@ -374,6 +374,12 @@ class TaskCommandsTest {
             ).hasText("Blocked")
 
             val query = page.locator("#link-task-query")
+            // Lowercase and boolean, and asserted on the served DOM rather than read off the source:
+            // the IDL name is `spellcheck`, so Preact's `spellCheck={false}` found no such property,
+            // fell back to `removeAttribute("spellCheck")` and set nothing at all — while the lowercase
+            // name with the *string* "false" reaches the property and the boolean IDL setter coerces a
+            // non-empty string to `true`, which is how spelling it as an attribute turns spellcheck on.
+            assertThat(query).hasAttribute("spellcheck", "false")
             query.fill("local:4")
             assertThat(options).hasCount(1)
             assertThat(options.first()).containsText("Continue the index")
@@ -641,8 +647,9 @@ class TaskCommandsTest {
             page.awaitSessionView()
             page.awaitSelectedSession()
             page.openLinkTaskPicker()
-            // Readiness detaches the placeholder; the first row is activated one effect later, and an
-            // Enter arriving before that activation is silently dropped instead of linking.
+            // The active row is derived during render rather than reconciled by a post-paint effect,
+            // so the first row is already active in the paint that first draws the list and this Enter
+            // has something to link.
             assertThat(page.locator(".link-picker-option").first()).hasClass(ACTIVE_OPTION)
             page.locator("#link-task-query").press("Enter")
 
@@ -810,6 +817,109 @@ class TaskCommandsTest {
             assertThat(page.searchQuery()).isVisible()
         }
 
+
+    @Test
+    fun linkTaskPickerTreatsAnImeCandidateCommitAsCompositionRatherThanASelection() {
+        val links = CopyOnWriteArrayList<String>()
+        onScenario(TASK_LINK_PICKER_SCENARIO, "link-task-ime-commit") { harness, page ->
+            page.onRequest { request ->
+                val url = request.url()
+                if (request.method() == "POST" && url.contains("/api/v1/tasks/") && url.endsWith("/link")) {
+                    links.add(url)
+                }
+            }
+            page.navigate(harness.baseUrl + "/s/link-live")
+            page.awaitSessionView()
+            page.awaitSelectedSession()
+            page.openLinkTaskPicker()
+            val options = page.locator(".link-picker-option")
+            assertThat(options).hasCount(5)
+            assertThat(options.first()).hasClass(ACTIVE_OPTION)
+
+            // A CJK candidate commit reaches the field as a keydown with key "Enter" while a
+            // composition is still open. This picker's Enter is the only one in the app that commits a
+            // mutating POST, so it must read as composition and link nothing. The arrow belongs to the
+            // IME's own candidate list for the same reason. The legacy `keyCode === 229` spelling of
+            // the same event is proven in webuitest/js/typeahead.test.js, where the event is built by
+            // hand rather than by a browser.
+            val query = page.locator("#link-task-query")
+            query.evaluate(
+                """el => {
+                  el.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Enter', isComposing: true, bubbles: true,
+                  }));
+                  el.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'ArrowDown', isComposing: true, bubbles: true,
+                  }));
+                }""".trimIndent(),
+            )
+            // Two frames: a POST the picker had wrongly started would have reached onRequest by now,
+            // so the empty list below is a statement rather than a race won.
+            page.evaluate(
+                """() => new Promise((resolve) => requestAnimationFrame(() =>
+                  requestAnimationFrame(resolve)))""".trimIndent(),
+            )
+            assertThat(page.locator("#link-task-dialog")).isVisible()
+            assertThat(options.first()).hasClass(ACTIVE_OPTION)
+            assertEquals(emptyList(), links.toList(), "a composition commit linked a task")
+
+            // Not a blanket refusal of Enter: the settled keystroke still links the active row.
+            query.press("Enter")
+            assertThat(page.locator("#link-task-dialog")).hasCount(0)
+            page.waitForCondition { links.size == 1 }
+            assertTrue(
+                links.single().endsWith("/api/v1/tasks/local%3A2/link"),
+                "the Enter after the composition linked ${links.single()}",
+            )
+        }
+    }
+
+    @Test
+    fun linkTaskPickerKeepsAFailureReadableWhileThePointerCrossesTheOptionList() {
+        onScenario(
+            TASK_LINK_PICKER_SCENARIO,
+            "link-task-hover-keeps-failure",
+            beforeLoad = { _, context ->
+                context.route("**/api/v1/tasks/**/link") { route ->
+                    route.fulfill(
+                        Route.FulfillOptions()
+                            .setStatus(503)
+                            .setContentType("text/plain")
+                            .setBody(LINK_FAILURE),
+                    )
+                }
+            },
+        ) { harness, page ->
+            page.navigate(harness.baseUrl + "/s/link-live")
+            page.awaitSessionView()
+            page.awaitSelectedSession()
+            page.openLinkTaskPicker()
+            val options = page.locator(".link-picker-option")
+            assertThat(options).hasCount(5)
+            val query = page.locator("#link-task-query")
+            query.press("Enter")
+            assertThat(page.locator("#link-task-error")).containsText(LINK_FAILURE)
+
+            // Reaching for another row is how the operator retries, and on a touch screen the tap that
+            // starts the retry is also the first hover. Pointer activation therefore moves the
+            // highlight and nothing else: it may not erase the sentence being read on the way past.
+            options.nth(3).hover()
+            assertThat(options.nth(3)).hasClass(ACTIVE_OPTION)
+            assertThat(page.locator("#link-task-error")).containsText(LINK_FAILURE)
+            options.nth(1).hover()
+            assertThat(options.nth(1)).hasClass(ACTIVE_OPTION)
+            assertThat(page.locator("#link-task-error")).containsText(LINK_FAILURE)
+
+            // Focus is the same gesture under another name, and tabbing is how the message is read.
+            options.nth(2).focus()
+            assertThat(options.nth(2)).hasClass(ACTIVE_OPTION)
+            assertThat(page.locator("#link-task-error")).containsText(LINK_FAILURE)
+
+            // Keyboard re-navigation is a deliberate fresh start and still clears it.
+            query.press("ArrowDown")
+            assertThat(page.locator("#link-task-error")).hasCount(0)
+        }
+    }
 
     private fun onScenario(
         scenario: String,

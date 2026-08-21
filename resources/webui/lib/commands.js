@@ -297,8 +297,12 @@ export function buildCommands({
   ];
 }
 
+// Case folding here is locale-independent for the same reason lib/sessions.js states over
+// `normalizeTaskQuery`: `toLocaleLowerCase()` maps an uppercase "I" to a dotless "ı" under a tr/az
+// browser locale while leaving a typed "i" dotted, so "Index the API" stopped answering to "index" for
+// exactly the operators whose locale the palette never anticipated.
 function matchOf(item, query) {
-  const haystack = (item.title + " " + (item.subtitle || "")).toLocaleLowerCase();
+  const haystack = (item.title + " " + (item.subtitle || "")).toLowerCase();
   const index = haystack.indexOf(query);
   if (index < 0) return null;
   const wordStart = index === 0 || !/[a-z0-9]/i.test(haystack.charAt(index - 1));
@@ -318,7 +322,7 @@ function rankedMatches(items, query) {
 }
 
 export function filterCommands(items, query) {
-  const normalized = (query || "").trim().toLocaleLowerCase();
+  const normalized = (query || "").trim().toLowerCase();
   if (normalized.length > 0) {
     const matches = rankedMatches(items, normalized);
     return matches.filter((item) => !item.disabled)

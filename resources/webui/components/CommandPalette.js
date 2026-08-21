@@ -2,6 +2,7 @@ import { html } from "htm/preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { filterCommands } from "../lib/commands.js";
 import { Dialog } from "./dialogs.js";
+import { useTypeahead } from "./Typeahead.js";
 
 const LISTBOX_ID = "command-palette-results";
 const OPTION_ID_PREFIX = "command-palette-option-";
@@ -10,35 +11,18 @@ function optionId(index) {
   return OPTION_ID_PREFIX + index;
 }
 
-function availableIndexes(items) {
-  const indexes = [];
-  items.forEach((item, index) => {
-    if (!item.disabled) indexes.push(index);
-  });
-  return indexes;
-}
-
 export function CommandPalette({ commands, mode = "leader", onModeChange, onClose }) {
   const [query, setQuery] = useState("");
-  const [activeIndex, setActiveIndex] = useState(-1);
   const [leaderMessage, setLeaderMessage] = useState("");
-  const activeOptionRef = useRef(null);
   const queryRef = useRef(null);
   const shellRef = useRef(null);
   const results = useMemo(() => filterCommands(commands, query), [commands, query]);
   const leaderCommands = commands.filter((item) => item.chord);
-  const enabled = availableIndexes(results);
-  const activeOptionId = activeIndex >= 0 ? optionId(activeIndex) : null;
-
-  useEffect(() => {
-    setActiveIndex(enabled.length > 0 ? enabled[0] : -1);
-  }, [query]);
-
-  useEffect(() => {
-    if (activeOptionRef.current) {
-      activeOptionRef.current.scrollIntoView({ block: "nearest" });
-    }
-  }, [activeIndex]);
+  // A disabled row is drawn but never navigated to, so it is not one of the keys.
+  const enabledIds = useMemo(
+    () => results.filter((item) => !item.disabled).map((item) => item.id),
+    [results],
+  );
 
   // Leader mode must focus the shell because its mnemonics rely on bubbled key events.
   useEffect(() => {
@@ -59,27 +43,13 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
     item.run();
   };
 
-  const moveActive = (delta) => {
-    if (enabled.length === 0) return;
-    const current = enabled.indexOf(activeIndex);
-    const next = current < 0
-      ? (delta > 0 ? 0 : enabled.length - 1)
-      : (current + delta + enabled.length) % enabled.length;
-    setActiveIndex(enabled[next]);
-  };
-
-  const keyDown = (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      moveActive(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      moveActive(-1);
-    } else if (event.key === "Enter" && activeIndex >= 0) {
-      event.preventDefault();
-      closeThenRun(results[activeIndex]);
-    }
-  };
+  const typeahead = useTypeahead({
+    keys: enabledIds,
+    token: query,
+    onCommit: (id) => closeThenRun(results.find((item) => item.id === id)),
+  });
+  const activeIndex = results.findIndex((item) => item.id === typeahead.activeKey);
+  const activeOptionId = activeIndex >= 0 ? optionId(activeIndex) : null;
 
   const runLeaderCommand = (item) => {
     if (item.disabled) {
@@ -145,7 +115,7 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
                 aria-activedescendant=${activeOptionId}
                 value=${query}
                 onInput=${(event) => setQuery(event.target.value)}
-                onKeyDown=${keyDown}
+                onKeyDown=${typeahead.keyDown}
               />`}
           <button id="command-palette-close" class="icon-button command-palette-close" type="button"
                   aria-label="Close" onClick=${onClose}>×</button>
@@ -181,8 +151,8 @@ export function CommandPalette({ commands, mode = "leader", onModeChange, onClos
                   role="option"
                   aria-selected=${index === activeIndex ? "true" : "false"}
                   aria-disabled=${item.disabled ? "true" : null}
-                  ref=${index === activeIndex ? activeOptionRef : null}
-                  onMouseMove=${() => { if (!item.disabled) setActiveIndex(index); }}
+                  ref=${typeahead.optionRef(item.id)}
+                  onMouseMove=${() => { if (!item.disabled) typeahead.activate(item.id); }}
                   onClick=${() => closeThenRun(item)}
                 >
                   <span class="command-palette-copy">

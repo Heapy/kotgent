@@ -185,9 +185,9 @@ class WebUiServingTest {
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/lib/clipboard.js", "/lib/unicode.js", "/lib/mutation.js", "/lib/readiness.js",
-            "/lib/router.js", "/lib/tasks.js",
+            "/lib/router.js", "/lib/tasks.js", "/lib/typeahead.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
-            "/components/dialogs.js", "/components/CommandPalette.js",
+            "/components/dialogs.js", "/components/CommandPalette.js", "/components/Typeahead.js",
             "/components/Board.js", "/components/TaskCard.js", "/components/TaskDetail.js",
         ) + STATE_MODULES) {
             val resp = ctx.get(path)

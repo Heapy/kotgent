@@ -3,6 +3,7 @@
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useSignal } from "@preact/signals";
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
@@ -23,6 +24,7 @@ import {
   taskStateRank,
 } from "../lib/tasks.js";
 import { qrSvg } from "../lib/qr.js";
+import { useTypeahead } from "./Typeahead.js";
 
 const SWIPE_SLOP_PX = 8;
 const SWIPE_DISMISS_PX = 96;
@@ -207,7 +209,6 @@ export function NewSessionDialog({
   const [cwd, setCwd] = useState(initialMode === "import" ? "" : (initialCwd || ""));
   const [completionQuery, setCompletionQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
-  const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const [cwdFocused, setCwdFocused] = useState(false);
   const [name, setName] = useState("");
   const [tags, setTags] = useState("");
@@ -234,7 +235,6 @@ export function NewSessionDialog({
     const typed = completionQuery.trim();
     const normalizedBase = normalizePath(basePath);
     setSuggestions([]);
-    setActiveSuggestion(-1);
     if (!typed || (typed.charAt(0) !== "/" && normalizedBase.charAt(0) !== "/")) return undefined;
 
     const controller = new AbortController();
@@ -262,11 +262,14 @@ export function NewSessionDialog({
     };
   }, [completionQuery, basePath]);
 
-  const chooseSuggestion = (path) => {
-    setCwd(path);
+  const dismissSuggestions = () => {
     setCompletionQuery(null);
     setSuggestions([]);
-    setActiveSuggestion(-1);
+  };
+
+  const chooseSuggestion = (path) => {
+    setCwd(path);
+    dismissSuggestions();
     if (cwdRef.current) cwdRef.current.focus();
   };
 
@@ -276,24 +279,20 @@ export function NewSessionDialog({
     setCompletionQuery(value);
   };
 
-  const cwdKeyDown = (event) => {
-    if (!cwdFocused || suggestions.length === 0) return;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActiveSuggestion((index) => (index + 1) % suggestions.length);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActiveSuggestion((index) => (index <= 0 ? suggestions.length - 1 : index - 1));
-    } else if (event.key === "Enter" && activeSuggestion >= 0) {
-      event.preventDefault();
-      chooseSuggestion(suggestions[activeSuggestion]);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setCompletionQuery(null);
-      setSuggestions([]);
-      setActiveSuggestion(-1);
-    }
-  };
+  // Nothing is navigable while the field is unfocused, and no row opens active: Enter belongs to the
+  // form until an arrow key claims it.
+  const cwdOptions = useMemo(
+    () => (cwdFocused ? suggestions : []),
+    [cwdFocused, suggestions],
+  );
+  const cwdTypeahead = useTypeahead({
+    keys: cwdOptions,
+    token: completionQuery,
+    autoFirst: false,
+    onCommit: chooseSuggestion,
+    onDismiss: dismissSuggestions,
+  });
+  const activeSuggestion = suggestions.indexOf(cwdTypeahead.activeKey);
 
   const chooseAgent = (event) => {
     setAgent(event.target.value);
@@ -444,7 +443,7 @@ export function NewSessionDialog({
                    placeholder=${mode === "import"
                      ? "found from the transcript when omitted"
                      : "/path/to/project"} ref=${cwdRef}
-                   value=${cwd} onInput=${cwdInput} onKeyDown=${cwdKeyDown}
+                   value=${cwd} onInput=${cwdInput} onKeyDown=${cwdTypeahead.keyDown}
                    onFocus=${() => setCwdFocused(true)} onBlur=${() => setCwdFocused(false)} />
             ${cwdFocused && suggestions.length > 0 && html`
               <ul id="session-cwd-options" class="path-suggestions" role="listbox">
@@ -453,8 +452,9 @@ export function NewSessionDialog({
                       class=${"path-suggestion" + (index === activeSuggestion ? " active" : "")}
                       aria-selected=${index === activeSuggestion ? "true" : "false"}
                       title=${path}
+                      ref=${cwdTypeahead.optionRef(path)}
                       onMouseDown=${(event) => event.preventDefault()}
-                      onMouseEnter=${() => setActiveSuggestion(index)}
+                      onMouseEnter=${() => cwdTypeahead.activate(path)}
                       onClick=${() => chooseSuggestion(path)}>${path}</li>
                 `)}
               </ul>
@@ -842,16 +842,17 @@ export function LinkTaskDialog({
   onClose,
 }) {
   const [query, setQuery] = useState("");
-  const [activeTaskRef, setActiveTaskRef] = useState(null);
-  const [busyTaskRef, setBusyTaskRef] = useState(null);
   const [error, setError] = useState(null);
-  const submittingRef = useRef(false);
   const inputRef = useRef(null);
-  const activeOptionRef = useRef(null);
+  // The picker's own unmount guard, not a currency check: a link that fails after the dialog closed has
+  // nothing left to tell anyone.
   const aliveRef = useRef(true);
-  const activeTaskValueRef = useRef(null);
-  const keyboardScrollRef = useRef(false);
-  const lastQueryRef = useRef(null);
+  // A signal, not state: two Enters can arrive in one task, and a `useState` flag read from the render
+  // closure is still `null` for the second one, which is how the same row used to be POSTed twice. The
+  // guard below reads it with `.peek()`, at event time. That is what `submittingRef` was for, minus the
+  // second copy of the same fact.
+  const busyTask = useSignal(null);
+  const busyTaskRef = busyTask.value;
   const busy = busyTaskRef !== null;
   const changed = !busy && linkSessionChanged(initialSession, session);
   // Judged on the project read alone: once that list has answered, an archived project is a definite
@@ -870,45 +871,30 @@ export function LinkTaskDialog({
   const normalizedQuery = normalizeTaskQuery(query);
   const results = useMemo(() => {
     // taskMatchesQuery already admits an empty query; this early return is kept for the array's
-    // identity, which the active-row effect below compares.
+    // identity, which useTypeahead's key list is derived from.
     if (!normalizedQuery) return rows;
     return rows.filter((task) => taskMatchesQuery(task, normalizedQuery));
   }, [rows, normalizedQuery]);
-  const activeIndex = results.findIndex((task) => task.ref === activeTaskRef);
-  const listId = !changed && !projectUnavailable && ready && results.length > 0
-    ? "link-task-list"
-    : null;
-
-  const activateTask = (ref, scroll = false, clearError = false) => {
-    activeTaskValueRef.current = ref;
-    if (scroll) keyboardScrollRef.current = true;
-    if (clearError) setError(null);
-    setActiveTaskRef(ref);
-  };
+  // While any of these hold, the list is not the keyboard's to navigate and Enter must not link.
+  const listLocked = changed || projectUnavailable || !ready;
+  const keys = useMemo(
+    () => (listLocked ? [] : results.map((task) => task.ref)),
+    [results, listLocked],
+  );
 
   useEffect(() => () => { aliveRef.current = false; }, []);
-  useEffect(() => {
-    const first = results.length > 0 ? results[0].ref : null;
-    const current = activeTaskValueRef.current;
-    const queryChanged = lastQueryRef.current !== normalizedQuery;
-    lastQueryRef.current = normalizedQuery;
-    const next = !queryChanged && results.some((task) => task.ref === current) ? current : first;
-    if (next !== current) activateTask(next);
-  }, [results, normalizedQuery]);
-  useEffect(() => {
-    if (!keyboardScrollRef.current) return;
-    keyboardScrollRef.current = false;
-    if (activeOptionRef.current) activeOptionRef.current.scrollIntoView({ block: "nearest" });
-  }, [activeTaskRef]);
   useEffect(() => {
     if (!busy && error && inputRef.current) inputRef.current.focus();
   }, [busy, error]);
 
+  // `typeahead` is declared below and captured, not read, until an event runs: the hook needs `choose`
+  // as its commit callback and `choose` needs the hook's activation, and only one of the two can come
+  // first.
   const choose = async (task) => {
-    if (!task || submittingRef.current || changed || projectUnavailable || !ready) return;
-    submittingRef.current = true;
-    activateTask(task.ref, false, true);
-    setBusyTaskRef(task.ref);
+    if (!task || busyTask.peek() !== null || listLocked) return;
+    setError(null);
+    typeahead.activate(task.ref);
+    busyTask.value = task.ref;
     try {
       await onLink(initialSession.id, task.ref, initialSession.projectId);
     } catch (e) {
@@ -916,34 +902,23 @@ export function LinkTaskDialog({
       setError(
         "Could not link " + displayName(initialSession) + " to " + task.ref + ": " + errorMessage(e),
       );
-      submittingRef.current = false;
-      setBusyTaskRef(null);
+      busyTask.value = null;
     }
   };
 
-  const moveActive = (delta) => {
-    if (results.length === 0) return;
-    const currentIndex = results.findIndex((task) => task.ref === activeTaskValueRef.current);
-    const at = currentIndex >= 0 ? currentIndex : 0;
-    activateTask(results[(at + delta + results.length) % results.length].ref, true, true);
-  };
-
-  const keyDown = (event) => {
-    if (changed || projectUnavailable || !ready) return;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      moveActive(1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      moveActive(-1);
-    } else if (event.key === "Enter") {
-      const active = results.find((task) => task.ref === activeTaskValueRef.current);
-      if (active) {
-        event.preventDefault();
-        choose(active);
-      }
-    }
-  };
+  // The active row is this hook's answer, derived during render and again inside its key handler, so an
+  // Enter in the same frame as the query that produced the list links the row that is drawn. Clearing
+  // the error on `onNavigate` is deliberate and belongs to the keyboard alone: hover and focus activate
+  // passively, or reaching for the retry would erase the sentence saying what went wrong.
+  const typeahead = useTypeahead({
+    keys: keys,
+    token: normalizedQuery,
+    onNavigate: () => setError(null),
+    onCommit: (ref) => choose(results.find((task) => task.ref === ref)),
+  });
+  const activeTaskRef = typeahead.activeKey;
+  const activeIndex = results.findIndex((task) => task.ref === activeTaskRef);
+  const listId = !listLocked && results.length > 0 ? "link-task-list" : null;
 
   const listBody = changed
     ? html`
@@ -987,9 +962,9 @@ export function LinkTaskDialog({
                   data-ref=${task.ref}
                   data-state=${task.state}
                   disabled=${busy}
-                  ref=${task.ref === activeTaskRef ? activeOptionRef : null}
-                  onMouseEnter=${() => activateTask(task.ref, false, true)}
-                  onFocus=${() => activateTask(task.ref, false, true)}
+                  ref=${typeahead.optionRef(task.ref)}
+                  onMouseEnter=${() => typeahead.activate(task.ref)}
+                  onFocus=${() => typeahead.activate(task.ref)}
                   onClick=${() => choose(task)}
                 >
                   <span class="dialog-list-name">${task.title || task.ref}</span>
@@ -1027,7 +1002,7 @@ export function LinkTaskDialog({
         <label class="field link-picker-search">
           <span>Search by ref or title</span>
           <input id="link-task-query" type="search" role="combobox" autoComplete="off"
-                 autoFocus spellCheck=${false} placeholder="local:42 or task title" ref=${inputRef}
+                 autoFocus spellcheck=${false} placeholder="local:42 or task title" ref=${inputRef}
                  aria-autocomplete="list" aria-controls=${listId}
                  aria-expanded=${listId ? "true" : "false"}
                  aria-activedescendant=${listId && activeIndex >= 0
@@ -1035,7 +1010,7 @@ export function LinkTaskDialog({
                    : null}
                  disabled=${busy || changed || projectUnavailable || failure !== null} value=${query}
                  onInput=${(event) => { setError(null); setQuery(event.target.value); }}
-                 onKeyDown=${keyDown} />
+                 onKeyDown=${typeahead.keyDown} />
         </label>
 
         <div class="link-picker-results">${listBody}</div>

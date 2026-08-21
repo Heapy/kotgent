@@ -17,6 +17,7 @@ import {
 } from "../lib/tasks.js";
 import { Dialog } from "./dialogs.js";
 import { TaskCard } from "./TaskCard.js";
+import { useTypeahead } from "./Typeahead.js";
 
 export const BOARD_COLUMNS = TASK_STATES.map((state) => ({
   state: state,
@@ -756,7 +757,6 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
   const [name, setName] = useState("");
   const [query, setQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
-  const [activeSuggestion, setActiveSuggestion] = useState(-1);
   const [focused, setFocused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -768,7 +768,6 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     if (query === null) return undefined;
     const typed = query.trim();
     setSuggestions([]);
-    setActiveSuggestion(-1);
     if (!typed || (typed.charAt(0) !== "/" && base.charAt(0) !== "/")) return undefined;
 
     const controller = new AbortController();
@@ -795,32 +794,28 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
     };
   }, [query, base]);
 
-  const choose = (candidate) => {
-    setPath(candidate);
+  const dismiss = () => {
     setQuery(null);
     setSuggestions([]);
-    setActiveSuggestion(-1);
+  };
+
+  const choose = (candidate) => {
+    setPath(candidate);
+    dismiss();
     if (pathRef.current) pathRef.current.focus();
   };
 
-  const pathKeyDown = (event) => {
-    if (!focused || suggestions.length === 0) return;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActiveSuggestion((index) => (index + 1) % suggestions.length);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActiveSuggestion((index) => (index <= 0 ? suggestions.length - 1 : index - 1));
-    } else if (event.key === "Enter" && activeSuggestion >= 0) {
-      event.preventDefault();
-      choose(suggestions[activeSuggestion]);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setQuery(null);
-      setSuggestions([]);
-      setActiveSuggestion(-1);
-    }
-  };
+  // Nothing is navigable while the field is unfocused, and no row opens active: Enter belongs to the
+  // form until an arrow key claims it.
+  const options = useMemo(() => (focused ? suggestions : []), [focused, suggestions]);
+  const typeahead = useTypeahead({
+    keys: options,
+    token: query,
+    autoFirst: false,
+    onCommit: choose,
+    onDismiss: dismiss,
+  });
+  const activeSuggestion = suggestions.indexOf(typeahead.activeKey);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -867,7 +862,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
                    placeholder=${placeholder}
                    ref=${pathRef} value=${path} disabled=${busy}
                    onInput=${(e) => { setPath(e.target.value); setQuery(e.target.value); }}
-                   onKeyDown=${pathKeyDown}
+                   onKeyDown=${typeahead.keyDown}
                    onFocus=${() => setFocused(true)} onBlur=${() => setFocused(false)} />
             ${focused && suggestions.length > 0 && html`
               <ul id="new-project-path-options" class="path-suggestions" role="listbox">
@@ -876,8 +871,9 @@ function NewProjectForm({ basePath = "", onCreate, onClose }) {
                       class=${"path-suggestion" + (index === activeSuggestion ? " active" : "")}
                       aria-selected=${index === activeSuggestion ? "true" : "false"}
                       title=${candidate}
+                      ref=${typeahead.optionRef(candidate)}
                       onMouseDown=${(event) => event.preventDefault()}
-                      onMouseEnter=${() => setActiveSuggestion(index)}
+                      onMouseEnter=${() => typeahead.activate(candidate)}
                       onClick=${() => choose(candidate)}>${candidate}</li>`)}
               </ul>`}
           </div>
