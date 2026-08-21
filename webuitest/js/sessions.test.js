@@ -1,0 +1,218 @@
+// Revision merge rules from resources/webui/lib/sessions.js. These decide which observation a browser
+// keeps when an HTTP response and a WebSocket frame describe the same session, so they are proven here
+// rather than in the browser tier: nothing in them touches the DOM, the network, or a timer.
+
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+
+import { patchIfNewer, upsertIfNewer } from "../../resources/webui/lib/sessions.js";
+
+// Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
+function sessionRow(overrides) {
+  return Object.freeze({
+    id: "s1",
+    name: "one",
+    tmuxSession: "kotgent-one",
+    cwd: "/work/one",
+    agent: "claude",
+    state: "running",
+    needsAttention: false,
+    alive: true,
+    lastSeq: 7,
+    unread: 0,
+    archived: false,
+    model: "opus",
+    taskRef: null,
+    projectId: "p1",
+    updatedAt: 100,
+    rev: 2,
+    ...overrides,
+  });
+}
+
+function patchFrame(overrides) {
+  return Object.freeze({
+    sessionId: "s1",
+    state: "ready",
+    needsAttention: false,
+    lastSeq: 9,
+    unread: 1,
+    archived: false,
+    model: "opus",
+    taskRef: null,
+    projectId: "p1",
+    updatedAt: 300,
+    rev: 3,
+    ...overrides,
+  });
+}
+
+function listOf(...rows) {
+  return Object.freeze(rows);
+}
+
+describe("upsertIfNewer", () => {
+  test("a session the list has never seen is appended", () => {
+    const empty = listOf();
+    const row = sessionRow({});
+
+    assert.deepEqual(upsertIfNewer(empty, row), [row]);
+    assert.equal(empty.length, 0, "the caller's list must not be mutated");
+  });
+
+  test("a newer revision replaces the row without moving it", () => {
+    const list = listOf(sessionRow({ id: "s0", rev: 1 }), sessionRow({ rev: 2 }), sessionRow({ id: "s2", rev: 1 }));
+    const newer = sessionRow({ rev: 3, state: "stopped" });
+
+    const merged = upsertIfNewer(list, newer);
+
+    assert.deepEqual(merged.map((s) => s.id), ["s0", "s1", "s2"]);
+    assert.strictEqual(merged[1], newer);
+  });
+
+  test("an equal revision is a no-op that returns the very same list", () => {
+    const list = listOf(sessionRow({ rev: 2 }));
+
+    // Identity, not deep equality: the app re-renders on a changed list, so a no-op must stay the same value.
+    assert.strictEqual(upsertIfNewer(list, sessionRow({ rev: 2, state: "crashed" })), list);
+  });
+
+  test("an older revision is a no-op that returns the very same list", () => {
+    const list = listOf(sessionRow({ rev: 5 }));
+
+    assert.strictEqual(upsertIfNewer(list, sessionRow({ rev: 4, state: "crashed" })), list);
+  });
+
+  test("a row carrying no revision never displaces a stored row", () => {
+    const list = listOf(sessionRow({ rev: 2 }));
+    const unstamped = sessionRow({ rev: undefined, state: "crashed" });
+
+    assert.strictEqual(upsertIfNewer(list, unstamped), list);
+  });
+
+  test("a first observation is appended even when it carries no revision", () => {
+    // Documented behavior, not an oversight: a row with no counterpart has nothing to lose a comparison to.
+    const unstamped = sessionRow({ rev: undefined });
+
+    assert.deepEqual(upsertIfNewer(listOf(), unstamped), [unstamped]);
+  });
+});
+
+describe("patchIfNewer", () => {
+  test("a patch for a session the list does not hold is a no-op", () => {
+    const list = listOf(sessionRow({}));
+
+    assert.strictEqual(patchIfNewer(list, patchFrame({ sessionId: "missing", rev: 99 })), list);
+  });
+
+  test("a patch on an empty collection is a no-op", () => {
+    const empty = listOf();
+
+    assert.strictEqual(patchIfNewer(empty, patchFrame({ rev: 99 })), empty);
+  });
+
+  test("a newer patch stamps its own revision and recomputes liveness", () => {
+    const list = listOf(sessionRow({ rev: 2, state: "running", alive: true }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, state: "stopped" }));
+
+    assert.equal(merged[0].rev, 4);
+    assert.equal(merged[0].state, "stopped");
+    assert.equal(merged[0].alive, false, "liveness is derived from the patched state, never carried over");
+  });
+
+  test("null clears a field authoritatively", () => {
+    const list = listOf(sessionRow({ rev: 2, taskRef: "kotgent#12", projectId: "p1" }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, taskRef: null }));
+
+    assert.equal(merged[0].taskRef, null);
+  });
+
+  test("fields the patch does not carry survive from the stored row", () => {
+    const list = listOf(sessionRow({ rev: 2, name: "one", cwd: "/work/one" }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4 }));
+
+    assert.equal(merged[0].name, "one");
+    assert.equal(merged[0].cwd, "/work/one");
+  });
+
+  test("a patch from a daemon that omits updatedAt keeps the snapshot's stamp", () => {
+    const list = listOf(sessionRow({ rev: 2, updatedAt: 100 }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, updatedAt: undefined }));
+
+    assert.equal(merged[0].updatedAt, 100);
+  });
+
+  test("an equal revision is a no-op that returns the very same list", () => {
+    const list = listOf(sessionRow({ rev: 3 }));
+
+    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: 3, state: "crashed" })), list);
+  });
+
+  test("an older revision is a no-op that returns the very same list", () => {
+    const list = listOf(sessionRow({ rev: 5 }));
+
+    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: 4, state: "crashed" })), list);
+  });
+
+  test("a patch carrying no revision is a no-op", () => {
+    const list = listOf(sessionRow({ rev: 2 }));
+
+    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: undefined, state: "crashed" })), list);
+  });
+});
+
+describe("out-of-order arrival", () => {
+  // Arrival timing is not an ordering guarantee: the daemon's revision is. Every delivery order of the
+  // same frames must therefore land on the highest-revision snapshot.
+  const FIRST = sessionRow({ rev: 2, state: "ready", unread: 0, updatedAt: 200 });
+  const NEWEST = sessionRow({
+    rev: 5,
+    state: "resumable",
+    alive: false,
+    needsAttention: false,
+    lastSeq: 31,
+    unread: 4,
+    taskRef: "kotgent#12",
+    updatedAt: 500,
+  });
+  const FRAMES = [
+    { kind: "upsert", frame: FIRST },
+    { kind: "patch", frame: patchFrame({ rev: 3, state: "needs_approval", needsAttention: true, updatedAt: 300 }) },
+    { kind: "patch", frame: patchFrame({ rev: 4, state: "stopped", updatedAt: 400 }) },
+    { kind: "upsert", frame: NEWEST },
+  ];
+
+  function permutations(items) {
+    if (items.length <= 1) return [items.slice()];
+    const out = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const rest = items.slice(0, index).concat(items.slice(index + 1));
+      for (const tail of permutations(rest)) out.push([items[index], ...tail]);
+    }
+    return out;
+  }
+
+  function applyFrame(list, entry) {
+    return entry.kind === "upsert" ? upsertIfNewer(list, entry.frame) : patchIfNewer(list, entry.frame);
+  }
+
+  test("every delivery order of the same frames converges on the newest revision", () => {
+    assert.notDeepEqual(NEWEST, FIRST, "the frames must differ, or convergence would be vacuous");
+
+    const orders = permutations(FRAMES);
+    assert.equal(orders.length, 24, "all 4! orders must be exercised, or the rule below is partly untested");
+
+    for (const order of orders) {
+      const settled = order.reduce(applyFrame, listOf());
+      assert.deepEqual(
+        settled,
+        [NEWEST],
+        `arrival order ${order.map((entry) => `${entry.kind}@${entry.frame.rev}`).join(" -> ")} did not converge`,
+      );
+    }
+  });
+});

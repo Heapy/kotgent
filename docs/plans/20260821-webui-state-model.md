@@ -280,7 +280,9 @@ Run **only** by a wave-closing task. Wave participants run nothing from this sec
 # fast loops, not a substitute for the aggregate:
 #   ./kotlin task :kotgent:testMacosArm64Debug
 #   ./kotlin task :webuitest:testJvm
-node --test webuitest/js/          # available from wave 2 onward
+node --test 'webuitest/js/**/*.test.js'   # from the repository root; available from wave 2 onward.
+                                          # A bare directory argument is treated as a glob that matches
+                                          # only itself, fails to load as a module, and exits 1.
 ```
 
 ## Параллельное исполнение волнами
@@ -373,19 +375,19 @@ only the state mechanism changes. Record the switch as a `[deviation]` line.
 - Modify: `resources/webui/index.html`
 - Modify: `test/transport/WebUiServingTest.kt`
 
-- [ ] vendor the `@preact/signals-core` and `@preact/signals` ESM dist builds
-- [ ] extend the "Vendored: …" comment at `resources/webui/index.html:21` with both packages and their
+- [x] vendor the `@preact/signals-core` and `@preact/signals` ESM dist builds
+- [x] extend the "Vendored: …" comment at `resources/webui/index.html:21` with both packages and their
       exact versions — this is the single version record; do not add per-file headers
-- [ ] add the two import-map entries to `resources/webui/index.html`
-- [ ] extend the assertion map in `test/transport/WebUiServingTest.kt:110-140` with both specifiers
-- [ ] assert the adapter imports the bare `preact`, `preact/hooks`, and `@preact/signals-core`
+- [x] add the two import-map entries to `resources/webui/index.html`
+- [x] extend the assertion map in `test/transport/WebUiServingTest.kt:110-140` with both specifiers
+- [x] assert the adapter imports the bare `preact`, `preact/hooks`, and `@preact/signals-core`
       specifiers, mirroring the existing `htm-preact` check at `WebUiServingTest.kt:173-179`; record in
       the test that this fits the closed source-shape exception at `docs/TESTING.md:291-298` — an
       agreement between two files that never read each other
-- [ ] write `webuitest/test/SignalsVendorTests.kt`: in the page realm, dynamically import the served
+- [x] write `webuitest/test/SignalsVendorTests.kt`: in the page realm, dynamically import the served
       vendor module URLs, render a small Preact tree bound to a signal, write the signal, and assert the
       DOM updated. **No throwaway signal UI is added to `resources/webui/`**
-- [ ] run `node --check` on every changed JavaScript module
+- [x] run `node --check` on every changed JavaScript module
 
 ### Task 4: A node --test tier for browser-independent web logic
 
@@ -398,35 +400,35 @@ only the state mechanism changes. Record the switch as a `[deviation]` line.
 - Modify: `docs/TESTING.md`
 - Modify: `webuitest/module.yaml`
 
-- [ ] create `webuitest/js/` outside `resources/webui/` so `webUiRevision` does not digest or serve it
-- [ ] create `webuitest/test/WebUiLogicTests.kt` (name must match `.*Tests?`, or JUnit silently finds
+- [x] create `webuitest/js/` outside `resources/webui/` so `webUiRevision` does not digest or serve it
+- [x] create `webuitest/test/WebUiLogicTests.kt` (name must match `.*Tests?`, or JUnit silently finds
       nothing) that spawns `node --test <dir>` and fails with the runner output attached
-- [ ] resolve the JS directory by walking up from the current directory, mirroring `locateWebUiDir()` at
+- [x] resolve the JS directory by walking up from the current directory, mirroring `locateWebUiDir()` at
       `test/transport/WebUiServingTest.kt:804` — a repo-root CWD cannot be assumed
-- [ ] fail loudly with a named prerequisite when `node` is absent or the runner reports zero tests, per
+- [x] fail loudly with a named prerequisite when `node` is absent or the runner reports zero tests, per
       `docs/TESTING.md:450-452`; never skip
-- [ ] write tests for the revision merge rules in `resources/webui/lib/sessions.js`: newer revision wins,
+- [x] write tests for the revision merge rules in `resources/webui/lib/sessions.js`: newer revision wins,
       equal revision is a no-op, out-of-order arrival converges
-- [ ] write tests for `resources/webui/lib/tasks.js` pure rules: upsert, patch, remove, open-state
+- [x] write tests for `resources/webui/lib/tasks.js` pure rules: upsert, patch, remove, open-state
       classification
-- [ ] write error and edge cases: missing revision, unknown ref, empty collection
-- [ ] rewrite `docs/TESTING.md:206-209` — the paragraph asserting this layer does not exist — to name
+- [x] write error and edge cases: missing revision, unknown ref, empty collection
+- [x] rewrite `docs/TESTING.md:206-209` — the paragraph asserting this layer does not exist — to name
       the runner and its location, and record that it adds no build step
-- [ ] record the new system `node` prerequisite in `webuitest/module.yaml`, whose comment currently
+- [x] record the new system `node` prerequisite in `webuitest/module.yaml`, whose comment currently
       states that no external tooling is needed
 
 ### Task 5: Закрытие волны 2
 
 **Wave:** 2 · **Depends:** 3, 4
 
-- [ ] reconcile `git status --porcelain` against the union of both participants' `FILES:` blocks
-- [ ] record that this wave needs no registry edit, or apply it if `webuitest/module.yaml` requires one
-- [ ] run `## Validation Commands` in full, in order, including `node --test webuitest/js/`
-- [ ] if Task 3's browser proof failed, record the fallback decision and its consequence for later waves
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the union of both participants' `FILES:` blocks
+- [x] record that this wave needs no registry edit, or apply it if `webuitest/module.yaml` requires one
+- [x] run `## Validation Commands` in full, in order, including `node --test webuitest/js/`
+- [x] if Task 3's browser proof failed, record the fallback decision and its consequence for later waves
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 6: Extend the shared link rules and fix locale-sensitive matching (TDD)
 

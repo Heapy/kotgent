@@ -203,10 +203,18 @@ classification, preference transitions, notification decisions, and reconnect sc
 Timers, visibility, network results, and storage events should enter through controlled inputs. Tests should
 advance virtual time and inspect declared effects instead of sleeping or depending on wall time.
 
-This layer does not exist yet. There is no JavaScript build step and no package manager in the repository,
-and no runner has been introduced for these modules, so their rules are proven one level up in the browser
-tier or not at all. Adding a runner should not add a build: these are plain ES modules, served exactly as
-they are written, and that property is worth more than any convenience a bundler would buy.
+This layer runs under Node's built-in runner, `node --test`. Its tests live in `webuitest/js/`, deliberately
+outside `resources/webui/`: `webUiRevision` digests every file under that tree, so a test placed there would
+be served to browsers and would churn the asset revision. They import the shipped modules by relative path,
+so nothing is copied, transpiled, or bundled. The runner therefore adds one system prerequisite — a `node`
+on `PATH` — and no build step, no package manager, and no `node_modules`. These stay plain ES modules,
+served exactly as they are written, and that property is worth more than any convenience a bundler would buy.
+
+`WebUiLogicTests` in `webuitest` spawns the runner, so the aggregate suite covers this tier; the direct loop
+is `node --test 'webuitest/js/**/*.test.js'` from the repository root. Name the files through a pattern
+rather than by their directory: Node treats every positional argument as a glob, and a bare directory matches
+only itself and then fails to load as a module. A pattern that matches nothing exits zero, so the wrapper
+fails on an empty run and on a missing `node`, both of which are prerequisites rather than reasons to skip.
 
 ### Components and DOM behavior
 

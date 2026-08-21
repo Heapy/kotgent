@@ -117,6 +117,8 @@ class WebUiServingTest {
             "preact/hooks" to "/_v/$rev/vendor/preact-hooks.module.js",
             "htm" to "/_v/$rev/vendor/htm.module.js",
             "htm/preact" to "/_v/$rev/vendor/htm-preact.module.js",
+            "@preact/signals-core" to "/_v/$rev/vendor/signals-core.module.js",
+            "@preact/signals" to "/_v/$rev/vendor/signals.module.js",
             "qrcode" to "/_v/$rev/vendor/qrcode.module.js",
         )
         for ((specifier, path) in mapped) {
@@ -137,6 +139,20 @@ class WebUiServingTest {
             ctx.get("/_v/$rev/vendor/preact-hooks.module.js").bodyAsText().contains("\"preact\""),
             "the hooks build imports the bare 'preact' specifier",
         )
+
+        // Closed source-shape exception (docs/TESTING.md:291-298): an agreement between two files that
+        // never read each other. The signals adapter is a stock dist build whose bare specifiers only
+        // resolve because index.html's import map names them; neither file can observe the other, and no
+        // running page can report which specifier a module *would* have failed on. That the adapter then
+        // works against the vendored Preact internals is proven by execution, in
+        // webuitest/test/SignalsVendorTests.kt, not here.
+        val signals = ctx.get("/_v/$rev/vendor/signals.module.js").bodyAsText()
+        for (specifier in listOf("preact", "preact/hooks", "@preact/signals-core")) {
+            assertTrue(
+                signals.contains("\"$specifier\""),
+                "the signals adapter imports the bare '$specifier' specifier the import map wires",
+            )
+        }
     }
 
     @Test
