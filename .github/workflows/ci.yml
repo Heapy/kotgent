@@ -15,6 +15,15 @@ jobs:
       - name: Install tmux (real-PTY integration checks)
         run: brew install tmux
 
+      # `webuitest` runs the browser-independent JavaScript tier through `node --test`, and
+      # WebUiLogicTests fails loudly rather than skipping when node is missing or too old.
+      # Installed only when the runner's bundled node is below the floor.
+      - name: Ensure Node (browser-independent JavaScript tier)
+        run: |
+          have=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+          if [ "${have:-0}" -lt 24 ]; then brew install node; fi
+          node --version
+
       # This key does not hash nested module.yaml files.
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6
