@@ -16,6 +16,7 @@ import {
 } from "./lib/api.js";
 import { writeClipboard } from "./lib/clipboard.js";
 import { affectsAttachment, buildCommands } from "./lib/commands.js";
+import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
 import {
   loadPrefs,
   loadSidebarCollapsed,
@@ -30,6 +31,7 @@ import {
   displayName,
   isAliveState,
   sessionTaskLinkDisabledReason,
+  sessionTaskLinkOutcome,
   sessionTaskLinkSubmitBlocked,
   stateBadge,
   tmuxAttachCommand,
@@ -198,12 +200,14 @@ function App() {
   const tasksReady = tasksReadySignal.value;
   const projects = projectsSignal.value;
   const projectsReady = projectsReadySignal.value;
+  // The name of the flow holding the mutation lock. Every disabled reason in the palette is derived from
+  // it, and every async closure below reads the same signal rather than a mirror of this value.
+  const pendingAction = pendingMutation.value;
   const [projectId, setProjectId] = useState(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
   const [activeId, setActiveId] = useState(null);
   const [attachedId, setAttachedId] = useState(null);
-  const [pendingAction, setPendingAction] = useState(null);
   const [prefs, setPrefs] = useState(loadPrefs);
   const [dialog, setDialog] = useState(null);
   const [palette, setPalette] = useState(null);
@@ -227,8 +231,6 @@ function App() {
   activeRef.current = activeId;
   // A generation counter closes the A→B→A hole when async flows conditionally auto-select.
   const selectionGenRef = useRef(0);
-  const pendingRef = useRef(pendingAction);
-  pendingRef.current = pendingAction;
   // Async completions may close only the dialog instance that submitted them.
   const dialogRef = useRef(dialog);
   dialogRef.current = dialog;
@@ -326,7 +328,7 @@ function App() {
           return;
         }
         // A pending control action temporarily owns the attachment decision; retain the candidate.
-        if (pendingRef.current) return;
+        if (pendingMutation.value) return;
         if (!s || !isAliveState(s.state)) {
           reattachIdRef.current = null;
           setHint(deadHint(s && s.state));
@@ -472,8 +474,9 @@ function App() {
     setDialog((current) => (current === submitted ? null : current));
   }, []);
 
-  // Project mutations have no event frame, so refresh the live list explicitly.
-  const applyProjectArchive = useCallback(async (id, archived) => {
+  // Project mutations have no event frame, so refresh the live list explicitly. The refresh is this
+  // mutation's own follow-up read and runs inside the lock, like the link's badge re-read.
+  const applyProjectArchive = useCallback((id, archived) => {
     const submittedDialog = dialogRef.current;
     const reportFailure = (e) => {
       // A dismissed dialog cannot own errors from its still-running request.
@@ -481,43 +484,46 @@ function App() {
       say((archived ? "Could not delete the project: " : "Could not restore the project: ") +
         errorMessage(e), true);
     };
-    let changed;
-    try {
-      changed = archived ? await deleteProject(id) : await restoreProject(id);
-    } catch (e) {
-      reportFailure(e);
-      return;
-    }
-    const label = (changed && changed.name) || id;
-    if (!changed || typeof changed.archived !== "boolean") {
-      reportFailure(new Error(
-        "The daemon did not confirm whether " + label + " is deleted. Reload and try again.",
-      ));
-      return;
-    }
-    if (changed.archived !== archived) {
-      reportFailure(new Error(archived
-        ? label + " was restored again while it was being deleted. Delete it again if needed."
-        : label + " was deleted again while it was being restored. Restore it again."));
-      return;
-    }
-    // The response confirmed this row, so apply it before the refetch: a re-read that fails must not
-    // leave a deleted project selected and interactive against its own tombstone.
-    if (archived) removeProjectRow(id);
-    else applyProjectRow(changed);
-    if (archived) setProjectId((current) => current === id ? null : current);
-    else setProjectId(id);
+    return runMutation(archived ? "delete-project" : "restore-project", async ({ isCurrent }) => {
+      let changed;
+      try {
+        changed = archived ? await deleteProject(id) : await restoreProject(id);
+      } catch (e) {
+        reportFailure(e);
+        return;
+      }
+      const label = (changed && changed.name) || id;
+      if (!changed || typeof changed.archived !== "boolean") {
+        reportFailure(new Error(
+          "The daemon did not confirm whether " + label + " is deleted. Reload and try again.",
+        ));
+        return;
+      }
+      if (changed.archived !== archived) {
+        reportFailure(new Error(archived
+          ? label + " was restored again while it was being deleted. Delete it again if needed."
+          : label + " was deleted again while it was being restored. Restore it again."));
+        return;
+      }
+      // The response confirmed this row, so apply it before the refetch: a re-read that fails must not
+      // leave a deleted project selected and interactive against its own tombstone.
+      if (archived) removeProjectRow(id);
+      else applyProjectRow(changed);
+      if (archived) setProjectId((current) => current === id ? null : current);
+      else setProjectId(id);
 
-    const rows = await reloadProjects();
-    // Restore selects its row; delete only repairs a selection that is no longer live.
-    if (rows && rows.length === 0) setProjectId(null);
-    if (rows && !archived && rows.some((project) => project.id === id)) setProjectId(id);
-    closeDialogFrom(submittedDialog);
-    const done = archived
-      ? "Deleted " + label + ". Restore brings it back with its backlog."
-      : "Restored " + label + ".";
-    // Preserve the reload failure instead of reporting unqualified success.
-    say(rows ? done : done + " The project list could not be re-read — reload the page.", !rows);
+      const rows = await reloadProjects();
+      // Restore selects its row; delete only repairs a selection that is no longer live.
+      if (rows && rows.length === 0) setProjectId(null);
+      if (rows && !archived && rows.some((project) => project.id === id)) setProjectId(id);
+      closeDialogFrom(submittedDialog);
+      const done = archived
+        ? "Deleted " + label + ". Restore brings it back with its backlog."
+        : "Restored " + label + ".";
+      // Preserve the reload failure instead of reporting unqualified success.
+      if (!isCurrent()) return;
+      say(rows ? done : done + " The project list could not be re-read — reload the page.", !rows);
+    });
   }, [closeDialogFrom, reloadProjects, say]);
 
   const removeProject = useCallback((id) => applyProjectArchive(id, true), [applyProjectArchive]);
@@ -819,40 +825,39 @@ function App() {
     };
   }, [cancelReattach, scheduleReattach]);
 
-  const startSession = useCallback(async (body) => {
+  const startSession = useCallback((body) => {
     const submittedDialog = dialogRef.current;
-    // Auto-select only if no selection event occurred during the request.
+    // Auto-select only if no selection event occurred during the request. Selection generation is not
+    // run currency: the operator can navigate away and back while this one mutation stays current.
     const selectionAtSubmit = selectionGenRef.current;
-    let created;
-    try {
-      created = await apiRequest("/sessions", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    } catch (e) {
-      // Late failures surface globally if the submitting form has unmounted.
-      if (dialogRef.current === submittedDialog) throw e;
-      say("Could not start session: " + errorMessage(e), true);
-      return;
-    }
-    mergeSessionRow(created);
-    closeDialogFrom(submittedDialog);
-    say("Started " + displayName(created) + ".");
-    if (selectionGenRef.current === selectionAtSubmit) showSession(created);
+    return runMutation("start", async ({ isCurrent }) => {
+      let created;
+      try {
+        created = await apiRequest("/sessions", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+      } catch (e) {
+        // Late failures surface globally if the submitting form has unmounted.
+        if (dialogRef.current === submittedDialog) throw e;
+        say("Could not start session: " + errorMessage(e), true);
+        return;
+      }
+      mergeSessionRow(created);
+      closeDialogFrom(submittedDialog);
+      if (isCurrent()) say("Started " + displayName(created) + ".");
+      if (selectionGenRef.current === selectionAtSubmit) showSession(created);
+    });
   }, [closeDialogFrom, say, showSession]);
 
   // Import and optional resume are serialized as one action. HTTP rows merge by revision, targeted
   // GETs decide attachment from fresh state, and generation guards prevent late auto-selection.
   // Registration success closes the dialog even when its follow-up resume fails.
-  const importSession = useCallback(async (body, registerOnly) => {
-    if (pendingRef.current) {
-      throw new Error("Another action is still in progress — try again in a moment.");
-    }
+  const importSession = useCallback((body, registerOnly) => {
     const submittedDialog = dialogRef.current;
     const selectionAtSubmit = selectionGenRef.current;
     const selectionUnmoved = () => selectionGenRef.current === selectionAtSubmit;
-    setPendingAction("import");
-    try {
+    return runMutation("import", async ({ isCurrent }) => {
       let created;
       try {
         created = await apiRequest("/sessions/import", {
@@ -864,13 +869,14 @@ function App() {
         say(errorMessage(e), true);
         return;
       }
-      // Fetch after commit; fall back to the committed 201 row if the read is unavailable.
+      // Fetch after commit; fall back to the committed 201 row if the read is unavailable. Both this
+      // read and the post-resume one belong to the import, so they run inside its lock.
       const fetched = await fetchSessionRow(created.id);
       const registered = fetched || created;
       if (!fetched) mergeSessionRow(created);
       closeDialogFrom(submittedDialog);
       if (registerOnly) {
-        if (fetched) say("Imported " + displayName(registered) + " — registered only.");
+        if (fetched && isCurrent()) say("Imported " + displayName(registered) + " — registered only.");
         if (selectionUnmoved()) showSession(registered);
         return;
       }
@@ -884,23 +890,23 @@ function App() {
         // The resume DTO is the best fallback; the pre-resume row would suppress attachment.
         const row = freshRow || (resumedDto && resumedDto.id ? resumedDto : registered);
         if (!freshRow && resumedDto && resumedDto.id) mergeSessionRow(resumedDto);
-        if (freshRow) say("Imported and resumed " + displayName(row) + ".");
+        if (freshRow && isCurrent()) say("Imported and resumed " + displayName(row) + ".");
         if (selectionUnmoved()) showSession(row);
       } catch (e) {
         const after = await fetchSessionRow(created.id);
         if (selectionUnmoved()) showSession(after || registered);
-        say("Imported, but resume failed: " + errorMessage(e), true);
+        if (isCurrent()) say("Imported, but resume failed: " + errorMessage(e), true);
       }
-    } finally {
-      setPendingAction(null);
-    }
+    });
   }, [closeDialogFrom, fetchSessionRow, say, showSession]);
 
   const controlSession = useCallback(async (action, id) => {
     const s = findSession(id || activeRef.current);
     if (!s) return;
-    if (pendingRef.current) {
-      say("Another action is still in progress — try again in a moment.", true);
+    // Refuse before the confirmation, not after: a stop that cannot be sent must not first ask the
+    // operator whether to send it.
+    if (pendingMutation.value) {
+      say(MUTATION_BUSY_MESSAGE, true);
       return;
     }
     if (action === "stop" &&
@@ -913,42 +919,43 @@ function App() {
     }
     if (action === "stop" || action === "done" || action === "resume") cancelReattach();
 
-    setPendingAction(action);
-    say(capitalize(action) + " in progress…");
     try {
-      const updated = await apiRequest(
-        "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
-        { method: "POST" },
-      );
-      if (updated && updated.id) {
-        mergeSessionRow(updated);
-      }
-      if (action === "stop" || action === "done") {
-        if (s.id === activeRef.current) setAttachedId(null);
-        setHint(action === "done"
-          ? "Marked done. The archive toggle in the sidebar header brings it back."
-          : "Session stopped. Resume it to continue.");
-      } else if (action === "resume") {
-        reattachAvailableRef.current = true;
-        // Do not attach over a newer selection or erase the hint that selection installed.
-        if (s.id === activeRef.current) {
-          setAttachedId(s.id);
-          setHint(null);
+      // The action is the lock's name: lib/commands.js reads it back to decide which controls a
+      // stop/done/resume/import in flight may not share the attachment with.
+      await runMutation(action, async ({ isCurrent }) => {
+        say(capitalize(action) + " in progress…");
+        const updated = await apiRequest(
+          "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
+          { method: "POST" },
+        );
+        if (updated && updated.id) {
+          mergeSessionRow(updated);
         }
-      }
-      say(capitalize(action) + " completed for " + displayName(s) + ".");
+        if (action === "stop" || action === "done") {
+          if (s.id === activeRef.current) setAttachedId(null);
+          setHint(action === "done"
+            ? "Marked done. The archive toggle in the sidebar header brings it back."
+            : "Session stopped. Resume it to continue.");
+        } else if (action === "resume") {
+          reattachAvailableRef.current = true;
+          // Do not attach over a newer selection or erase the hint that selection installed.
+          if (s.id === activeRef.current) {
+            setAttachedId(s.id);
+            setHint(null);
+          }
+        }
+        if (isCurrent()) say(capitalize(action) + " completed for " + displayName(s) + ".");
+      });
     } catch (e) {
       say(capitalize(action) + " failed: " + errorMessage(e), true);
-    } finally {
-      setPendingAction(null);
     }
   }, [cancelReattach, say]);
 
   // Local attach/detach must not race actions that can rewrite attachment state.
   const attach = useCallback(() => {
     if (!activeRef.current) return;
-    if (affectsAttachment(pendingRef.current)) {
-      say("Another action is still in progress — try again in a moment.", true);
+    if (affectsAttachment(pendingMutation.value)) {
+      say(MUTATION_BUSY_MESSAGE, true);
       return;
     }
     cancelReattach();
@@ -958,8 +965,8 @@ function App() {
   }, [cancelReattach, say]);
 
   const detach = useCallback(() => {
-    if (affectsAttachment(pendingRef.current)) {
-      say("Another action is still in progress — try again in a moment.", true);
+    if (affectsAttachment(pendingMutation.value)) {
+      say(MUTATION_BUSY_MESSAGE, true);
       return;
     }
     const s = findSession(activeRef.current);
@@ -996,54 +1003,51 @@ function App() {
   }, [scheduleReattach]);
 
   // Dialogs can close or remount while saving, so component-local busy state cannot serialize PUTs.
-  const prefsSaveInFlightRef = useRef(false);
-
-  const savePreferences = useCallback(async (next) => {
-    if (prefsSaveInFlightRef.current) {
-      throw new Error("A preferences save is already in progress — try again in a moment.");
-    }
-    prefsSaveInFlightRef.current = true;
+  // The shared mutation lock outlives any one dialog instance, so it can.
+  const savePreferences = useCallback((next) => {
     const submittedDialog = dialogRef.current;
     // Form revision distinguishes a remounted PreferencesDialog when routing late failures.
     const revisionAtSubmit = prefsRef.current.revision;
-    try {
-      const saved = await apiRequest("/preferences", {
-        method: "PUT",
-        body: JSON.stringify({
-          basePath: next.basePath,
-          groupingLevel: next.groupingLevel,
-        }),
-      });
-      // An unreadable 2xx body cannot establish what the daemon committed.
-      if (!sanitizeServerPreferences(saved)) {
-        throw new Error("the daemon answered the save with an unreadable preferences payload");
+    return runMutation("preferences", async ({ isCurrent }) => {
+      try {
+        const saved = await apiRequest("/preferences", {
+          method: "PUT",
+          body: JSON.stringify({
+            basePath: next.basePath,
+            groupingLevel: next.groupingLevel,
+          }),
+        });
+        // An unreadable 2xx body cannot establish what the daemon committed.
+        if (!sanitizeServerPreferences(saved)) {
+          throw new Error("the daemon answered the save with an unreadable preferences payload");
+        }
+        // A WS echo may beat this response: equal revision is this save, while strictly newer external
+        // state wins and keeps the refreshed form open.
+        const applied = applyServerPreferences(saved);
+        persistTerminalFontSize(next.terminalFontSize);
+        persistTerminalUnicode(next.terminalUnicode);
+        setPrefs((current) => Object.assign({}, current, {
+          terminalFontSize: next.terminalFontSize,
+          terminalUnicode: next.terminalUnicode,
+        }));
+        if (!applied) {
+          if (!isCurrent()) return;
+          say("Preferences were saved, but newer settings arrived. Review the current values.");
+          return;
+        }
+        // Keep the apply decision and close in the same turn.
+        closeDialogFrom(submittedDialog);
+        const current = serverPreferencesRef.current;
+        if (!isCurrent()) return;
+        say(current.basePath.length > 0
+          ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
+          : "Grouping off — no base path set.");
+      } catch (e) {
+        // Late failures surface globally if the submitting form has unmounted.
+        if (dialogRef.current === submittedDialog && prefsRef.current.revision === revisionAtSubmit) throw e;
+        say("Could not save preferences: " + errorMessage(e), true);
       }
-      // A WS echo may beat this response: equal revision is this save, while strictly newer external
-      // state wins and keeps the refreshed form open.
-      const applied = applyServerPreferences(saved);
-      persistTerminalFontSize(next.terminalFontSize);
-      persistTerminalUnicode(next.terminalUnicode);
-      setPrefs((current) => Object.assign({}, current, {
-        terminalFontSize: next.terminalFontSize,
-        terminalUnicode: next.terminalUnicode,
-      }));
-      if (!applied) {
-        say("Preferences were saved, but newer settings arrived. Review the current values.");
-        return;
-      }
-      // Keep the apply decision and close in the same turn.
-      closeDialogFrom(submittedDialog);
-      const current = serverPreferencesRef.current;
-      say(current.basePath.length > 0
-        ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
-        : "Grouping off — no base path set.");
-    } catch (e) {
-      // Late failures surface globally if the submitting form has unmounted.
-      if (dialogRef.current === submittedDialog && prefsRef.current.revision === revisionAtSubmit) throw e;
-      say("Could not save preferences: " + errorMessage(e), true);
-    } finally {
-      prefsSaveInFlightRef.current = false;
-    }
+    });
   }, [applyServerPreferences, closeDialogFrom, say]);
 
   const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
@@ -1101,7 +1105,7 @@ function App() {
     // a task, and every input may have moved underneath the open dialog while they were choosing.
     if (sessionTaskLinkSubmitBlocked({
       session: selected,
-      pendingAction: pendingRef.current,
+      pendingAction: pendingMutation.value,
       activeSessionId: activeRef.current,
       sessionId: sessionId,
       expectedProjectId: expectedProjectId,
@@ -1113,52 +1117,40 @@ function App() {
 
     const submittedDialog = dialogRef.current;
     const label = displayName(selected);
-    pendingRef.current = "link-task";
-    setPendingAction("link-task");
-    let failure = null;
-    try {
-      await linkTask(ref, sessionId);
-    } catch (e) {
-      failure = e;
-    }
-    // Only the mutating POST owns the global session-action lock. The targeted read is revision-safe
-    // and must not make unrelated controls wait for its transport timeout.
-    if (pendingRef.current === "link-task") {
-      pendingRef.current = null;
-      setPendingAction(null);
-    }
-    if (failure) {
-      // A dismissed picker has nowhere local to report the request failure.
-      if (dialogRef.current === submittedDialog) throw failure;
-      say("Could not link " + label + " to " + ref + ": " + errorMessage(failure), true);
-      return;
-    }
+    return runMutation("link-task", async ({ isCurrent }) => {
+      let failure = null;
+      try {
+        await linkTask(ref, sessionId);
+      } catch (e) {
+        failure = e;
+      }
+      if (failure) {
+        // A dismissed picker has nowhere local to report the request failure.
+        if (dialogRef.current === submittedDialog) throw failure;
+        say("Could not link " + label + " to " + ref + ": " + errorMessage(failure), true);
+        return;
+      }
 
-    closeDialogFrom(submittedDialog);
-    const refreshing = "Link request completed for " + label + "; refreshing the session…";
-    say(refreshing);
+      closeDialogFrom(submittedDialog);
+      say("Link request completed for " + label + "; refreshing the session…");
 
-    // The text-only link response cannot update the badge. Re-read the committed row and let the
-    // normal revision merge arbitrate it against a racing WebSocket frame.
-    const fresh = await fetchSessionRow(sessionId);
-    // Do not overwrite feedback from a command the user started while this read was in flight.
-    if (statusRef.current.text !== refreshing) return;
-    const winner = findSession(sessionId) || fresh;
-    if (!fresh) {
-      say(
-        "Linked " + label + " to " + ref +
-          ", but the session could not be re-read. A live update may still bring the badge in.",
-        true,
-      );
-    } else if (!winner || winner.taskRef !== ref) {
-      say(
-        "The link request completed, but " + (winner ? displayName(winner) : label) +
-          " is now linked to " + ((winner && winner.taskRef) || "no task") + ".",
-        true,
-      );
-    } else {
-      say("Linked " + displayName(winner) + " to " + ref + ".");
-    }
+      // The text-only link response cannot update the badge. Re-read the committed row and let the
+      // normal revision merge arbitrate it against a racing WebSocket frame.
+      //
+      // The session-action lock is held through this read rather than released after the POST, which
+      // reverses the earlier decision recorded here. That decision reasoned that a revision-safe read
+      // must not make unrelated controls wait for its transport timeout; its cost was that a second
+      // link could start while this one was still settling and overwrite what it committed. Ordering
+      // the two links is worth more than the wait, and the wait is bounded: every request carries
+      // API_REQUEST_TIMEOUT_MS (60 s, lib/api.js:4), so a stalled read cannot hold the lock longer than
+      // one transport timeout. Reads that are not part of a mutation stay outside the lock entirely.
+      const fresh = await fetchSessionRow(sessionId);
+      // A superseded run has nothing to announce: the newer mutation owns the operator's attention.
+      if (!isCurrent()) return;
+      const winner = findSession(sessionId) || fresh;
+      const outcome = sessionTaskLinkOutcome({ label: label, ref: ref, fresh: fresh, winner: winner });
+      say(outcome.text, outcome.error);
+    });
   }, [closeDialogFrom, fetchSessionRow, say]);
 
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
@@ -1175,7 +1167,7 @@ function App() {
   }, []);
   const openLinkTask = useCallback(() => {
     const selected = findSession(activeRef.current);
-    const disabled = sessionTaskLinkDisabledReason(selected, pendingRef.current);
+    const disabled = sessionTaskLinkDisabledReason(selected, pendingMutation.value);
     if (disabled) {
       say("Linking a task is no longer available: " + disabled + ".", true);
       return;

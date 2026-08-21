@@ -565,35 +565,36 @@ it when the lock is held through that read.
 - Modify: `test/transport/WebUiServingTest.kt`
 - Modify: `webuitest/test/TaskCommandsTest.kt`
 
-- [ ] write failing tests first for `runMutation`: one flow at a time, a superseded run cannot write an
+- [x] write failing tests first for `runMutation`: one flow at a time, a superseded run cannot write an
       outcome, a failed run releases the lock, and the lock survives the mutation's own follow-up read
-- [ ] create `resources/webui/lib/mutation.js` with the pending signal, a monotonic generation counter,
+- [x] create `resources/webui/lib/mutation.js` with the pending signal, a monotonic generation counter,
       and `isCurrent()`
-- [ ] convert the six mutating flows: 475 `applyProjectArchive`, 849 `startSession`, 874
+- [x] convert the six mutating flows: 475 `applyProjectArchive`, 849 `startSession`, 874
       `importSession`, 926 `controlSession`, 1028 `savePreferences`, 1125 `linkSessionToTask`
-- [ ] hold the session-action lock through the link's badge re-read so a second link cannot start and
+- [x] hold the session-action lock through the link's badge re-read so a second link cannot start and
       overwrite the first, and **rewrite the comment at `app.js:1145-1146`** to record the new reasoning
       and that `API_REQUEST_TIMEOUT_MS` (60 s, `lib/api.js:4`) bounds the hold
-- [ ] replace the `statusRef.current.text !== refreshing` comparison with the generation token
-- [ ] delete `submittingRef` and `pendingRef` only. **Keep `selectionGenRef`** (selection generation,
-      not run currency) and **keep `aliveRef`** (unmount guard, not currency) — neither is replaceable by
-      `isCurrent()`
-- [ ] register the new served module in `daemonServesTheComponentAndLibModules`
-- [ ] add a Playwright test proving a second link attempt is refused while the first is still settling
-- [ ] add a Playwright test proving an unrelated control is not blocked by a non-mutating read
-- [ ] run `node --check` on changed modules
+- [x] replace the `statusRef.current.text !== refreshing` comparison with the generation token
+- [x] delete `pendingRef` only. **Keep `selectionGenRef`** (selection generation, not run currency) —
+      it is not replaceable by `isCurrent()`. `submittingRef` and `aliveRef` are not in `app.js` at all;
+      both live in `components/dialogs.js`, outside this task's Files block. `submittingRef` is Task 15's
+      to remove when it rewrites the picker, and `aliveRef` stays by design as an unmount guard.
+- [x] register the new served module in `daemonServesTheComponentAndLibModules`
+- [x] add a Playwright test proving a second link attempt is refused while the first is still settling
+- [x] add a Playwright test proving an unrelated control is not blocked by a non-mutating read
+- [x] run `node --check` on changed modules
 
 ### Task 12: Закрытие волны 5
 
 **Wave:** 5 · **Depends:** 11
 
-- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 13: Readiness as an explicit state with failure and retry
 

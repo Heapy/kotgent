@@ -529,7 +529,7 @@ class TaskCommandsTest {
         }
 
     @Test
-    fun linkTaskReadDoesNotHoldCommandsAndAStaleRowCannotWriteTheSuccessMessage() {
+    fun linkTaskHoldsItsLockThroughTheReadAndAStaleRowCannotWriteTheSuccessMessage() {
         val linkPosted = AtomicBoolean(false)
         val heldRead = AtomicReference<Route?>(null)
         onScenario(
@@ -564,10 +564,14 @@ class TaskCommandsTest {
             assertThat(page.locator("#link-task-dialog")).hasCount(0)
             assertThat(page.locator("#status-line")).containsText("refreshing the session")
 
+            // The badge re-read runs inside the link's own lock. Releasing the lock after the POST is
+            // what let a second link start while the first was still settling and overwrite it, so
+            // every session control — the link command among them — reads as busy until the read lands.
             page.openPalette()
             assertThat(page.leaderRow("Interrupt current session"))
-                .not().hasAttribute("aria-disabled", "true")
+                .hasAttribute("aria-disabled", "true")
             page.closePalette()
+            page.assertLinkTaskRefused("another action is still in progress")
 
             val replacementStatus = (
                 page.evaluate(
@@ -585,6 +589,44 @@ class TaskCommandsTest {
             assertThat(page.locator("#status-line")).containsText("now linked to local:5")
             assertThat(page.locator("#terminal-task")).hasText("Review the parser")
             assertThat(page.locator("#terminal-task")).hasAttribute("href", "/tasks/local%3A5")
+        }
+    }
+
+    @Test
+    fun aReadOutsideAMutationHoldsNoLockAndBlocksNoControl() {
+        val heldPreferences = AtomicReference<Route?>(null)
+        onScenario(
+            TASK_LINK_PICKER_SCENARIO,
+            "read-outside-a-mutation",
+            beforeLoad = { _, context ->
+                context.route("**/api/v1/preferences") { route ->
+                    if (route.request().method() == "GET" && heldPreferences.compareAndSet(null, route)) {
+                        return@route
+                    }
+                    route.resume()
+                }
+            },
+        ) { harness, page ->
+            page.navigate(harness.baseUrl + "/s/link-live")
+            page.awaitSessionView()
+            page.awaitSelectedSession()
+            page.waitForCondition { heldPreferences.get() != null }
+
+            // Scope discipline, the other half of the decision above: only the six mutating flows take
+            // the lock. A read that belongs to none of them disables nothing, so an unrelated control is
+            // offered and runs to completion while that read is still stalled on its own transport.
+            page.openPalette()
+            assertThat(page.leaderRow("Interrupt current session"))
+                .not().hasAttribute("aria-disabled", "true")
+            assertThat(page.leaderRow(LINK_TASK_COMMAND)).not().hasAttribute("aria-disabled", "true")
+            page.pressMnemonic("KeyI")
+            assertThat(page.locator("#status-line")).containsText("Interrupt completed")
+
+            heldPreferences.get()!!.resume()
+            page.openPalette()
+            assertThat(page.leaderRow("Interrupt current session"))
+                .not().hasAttribute("aria-disabled", "true")
+            page.closePalette()
         }
     }
 
