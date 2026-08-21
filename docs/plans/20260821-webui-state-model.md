@@ -514,39 +514,39 @@ wires the pre-POST predicate Task 6 exported.
 - Modify: `test/transport/WebUiServingTest.kt`
 - Modify: `CLAUDE.md`
 
-- [ ] write failing tests first: a functional-style write followed by a merge composes rather than
+- [x] write failing tests first: a functional-style write followed by a merge composes rather than
       discarding (the interleave finding `app.js:649` describes), and out-of-order and duplicate frames
       converge
-- [ ] write a failing test for the equal-revision rule: a redelivered or equal-revision `session_update`
+- [x] write a failing test for the equal-revision rule: a redelivered or equal-revision `session_update`
       still reaches `markReadIfViewing`, so a failed read POST is retried even when unread and seq do
       not change — while a genuinely unchanged frame does not cause a render loop
-- [ ] create signal modules exporting the current value plus the only writer functions, so every writer
+- [x] create signal modules exporting the current value plus the only writer functions, so every writer
       goes through the same merge
-- [ ] replace `sessions`/`sessionsRef`, `tasks`/`tasksRef`, `projects`/`projectsRef` in `app.js` with
+- [x] replace `sessions`/`sessionsRef`, `tasks`/`tasksRef`, `projects`/`projectsRef` in `app.js` with
       those signals, and route all seven session writers (`applySessionRow`, `applySessionPatch`,
       `startSession` 849, `importSession` 874 and 897/913, `controlSession` 926) through them
-- [ ] implement the equal-revision rule decided above, with a comment recording why the redundancy is
+- [x] implement the equal-revision rule decided above, with a comment recording why the redundancy is
       deliberate
-- [ ] call the pre-POST predicate exported by Task 6 from `app.js:1128-1131`
-- [ ] replace effect-reconciled application-level derived values with `computed()`
-- [ ] delete the now-unused mirror refs
-- [ ] register the three new served modules in `daemonServesTheComponentAndLibModules`
+- [x] call the pre-POST predicate exported by Task 6 from `app.js:1128-1131`
+- [x] replace effect-reconciled application-level derived values with `computed()`
+- [x] delete the now-unused mirror refs
+- [x] register the three new served modules in `daemonServesTheComponentAndLibModules`
       (`test/transport/WebUiServingTest.kt:143-155`) — a hand-maintained list that will not fail on its own
-- [ ] update the CLAUDE.md bullet that reads "`app.js` owns global shortcuts, session/task state
+- [x] update the CLAUDE.md bullet that reads "`app.js` owns global shortcuts, session/task state
       merging, and screen selection" to record the new ownership, in the task that changes it
-- [ ] run `node --check` on changed modules
+- [x] run `node --check` on changed modules
 
 ### Task 10: Закрытие волны 4
 
 **Wave:** 4 · **Depends:** 9
 
-- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 11: One mutation runner with a generation token
 

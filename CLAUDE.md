@@ -48,8 +48,15 @@ archive completed plans.
   URL; browser access uses one-time tickets and the stateless session cookie.
 - The service worker remains a classic, network-only worker at `/sw.js`; do not add module imports or an
   offline shell. Root shell and worker responses must revalidate.
-- `resources/webui/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts,
-  session/task state merging, and screen selection; avoid parallel sources of truth in components.
+- `resources/webui/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
+  and screen selection; avoid parallel sources of truth in components.
+- Session, task, and project state lives in signals under `resources/webui/state/`, one module per
+  concern. Each module exports the current value plus every function that writes it, so no caller can
+  bypass the merge and no second copy exists to go stale — the mirror refs those modules replaced were
+  maintained by only some writers. `resources/webui/lib/` still owns the merge arithmetic itself. Those
+  modules import signals-core by relative path rather than the `@preact/signals-core` bare specifier: it
+  resolves to the same URL the import map names, so the browser keeps one reactive graph, while node can
+  still import them for the `webuitest/js/` tier.
 - Preserve revision-based newest-wins merging for HTTP responses and WebSocket frames. Arrival timing is
   not an ordering guarantee.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has

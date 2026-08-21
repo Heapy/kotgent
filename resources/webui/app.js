@@ -1,6 +1,10 @@
 import { render } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { html } from "htm/preact";
+// Importing the adapter installs Preact's options hooks, which is what makes a signal read in a render
+// body subscribe the component that read it. Without this import `.value` still answers correctly and
+// the tree simply never re-renders again, so the import is load-bearing even with nothing named here.
+import "@preact/signals";
 
 import {
   AUTH_PATH,
@@ -25,11 +29,10 @@ import {
   capitalize,
   displayName,
   isAliveState,
-  patchIfNewer,
   sessionTaskLinkDisabledReason,
+  sessionTaskLinkSubmitBlocked,
   stateBadge,
   tmuxAttachCommand,
-  upsertIfNewer,
 } from "./lib/sessions.js";
 import {
   SCREEN_SESSIONS,
@@ -43,16 +46,37 @@ import {
   taskPath,
 } from "./lib/router.js";
 import {
-  applyTasksSnapshot,
   deleteProject,
   fetchProjects,
-  isOpenTaskState,
   linkTask,
-  patchTaskIfNewer,
-  removeTask,
   restoreProject,
-  upsertTaskIfNewer,
 } from "./lib/tasks.js";
+import {
+  findSession,
+  mergeSessionPatch,
+  mergeSessionRow,
+  replaceSessions,
+  sessions as sessionsSignal,
+  sessionsReady as sessionsReadySignal,
+} from "./state/sessions.js";
+import {
+  dropTask,
+  findTask,
+  mergeTaskPatch,
+  mergeTaskRow,
+  replaceTasks,
+  tasks as tasksSignal,
+  tasksReady as tasksReadySignal,
+} from "./state/tasks.js";
+import {
+  applyProjectRow,
+  findProject,
+  isLiveProject,
+  projects as projectsSignal,
+  projectsReady as projectsReadySignal,
+  removeProjectRow,
+  replaceProjects,
+} from "./state/projects.js";
 import { Board } from "./components/Board.js";
 import { TaskDetail } from "./components/TaskDetail.js";
 import { CommandPalette } from "./components/CommandPalette.js";
@@ -166,11 +190,14 @@ function detachedHint(session) {
 }
 
 function App() {
-  const [sessions, setSessions] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [tasksReady, setTasksReady] = useState(false);
-  const [projects, setProjects] = useState([]);
-  const [projectsReady, setProjectsReady] = useState(false);
+  // Reading a signal in the render body is the subscription: these values are never a second copy of
+  // anything, and the writers below are module functions that every caller shares.
+  const sessions = sessionsSignal.value;
+  const sessionsReady = sessionsReadySignal.value;
+  const tasks = tasksSignal.value;
+  const tasksReady = tasksReadySignal.value;
+  const projects = projectsSignal.value;
+  const projectsReady = projectsReadySignal.value;
   const [projectId, setProjectId] = useState(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
@@ -194,30 +221,8 @@ function App() {
   useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
   useEffect(() => subscribeToRoute(setRoute), []);
 
-  const applyTasksBaseline = useCallback((rows) => {
-    setTasks((current) => applyTasksSnapshot(current, rows));
-    // A destructive confirmation must distinguish an unloaded snapshot from an empty backlog.
-    setTasksReady(true);
-  }, []);
-  const applyTaskRow = useCallback((row) => {
-    setTasks((current) => upsertTaskIfNewer(current, row));
-  }, []);
-  const applyTaskPatch = useCallback((msg) => {
-    setTasks((current) => patchTaskIfNewer(current, msg));
-  }, []);
-  const applyTaskRemoved = useCallback((ref) => {
-    setTasks((current) => removeTask(current, ref));
-  }, []);
-  const openTaskEntry = route.screen === SCREEN_TASK && route.id
-    ? tasks.find((task) => task.ref === route.id) || null
-    : null;
+  const openTaskEntry = route.screen === SCREEN_TASK ? findTask(route.id) : null;
 
-  const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
-  const projectsRef = useRef(projects);
-  projectsRef.current = projects;
   const activeRef = useRef(activeId);
   activeRef.current = activeId;
   // A generation counter closes the A→B→A hole when async flows conditionally auto-select.
@@ -240,8 +245,6 @@ function App() {
   });
   // Hold a notification target until a matching row exists.
   const deepLinkRef = useRef(deepLinkSessionId());
-  const [sessionsReady, setSessionsReady] = useState(false);
-  const sessionsReadyRef = useRef(false);
   // Announce each outage once so the reconnect loop does not flood the aria-live region.
   const disconnectAnnouncedRef = useRef(false);
   // A zero-delay boundary prevents Preact batching detach→same-id attach into no state change.
@@ -383,9 +386,7 @@ function App() {
               say("Could not load projects: " + errorMessage(failure), true);
             }
           } else {
-            projectsRef.current = rows;
-            setProjects(rows);
-            setProjectsReady(true);
+            replaceProjects(rows);
           }
           refresh.settled = reading;
           for (const waiter of ready) waiter.resolve(failure ? null : rows);
@@ -502,25 +503,8 @@ function App() {
     }
     // The response confirmed this row, so apply it before the refetch: a re-read that fails must not
     // leave a deleted project selected and interactive against its own tombstone.
-    setProjects((current) => {
-      const index = current.findIndex((project) => project.id === id);
-      if (archived) {
-        if (index < 0) return current;
-        const next = current.slice();
-        next.splice(index, 1);
-        projectsRef.current = next;
-        return next;
-      }
-      if (index < 0) {
-        const next = current.concat([changed]);
-        projectsRef.current = next;
-        return next;
-      }
-      const next = current.slice();
-      next[index] = changed;
-      projectsRef.current = next;
-      return next;
-    });
+    if (archived) removeProjectRow(id);
+    else applyProjectRow(changed);
     if (archived) setProjectId((current) => current === id ? null : current);
     else setProjectId(id);
 
@@ -540,10 +524,10 @@ function App() {
   const bringBackProject = useCallback((id) => applyProjectArchive(id, false), [applyProjectArchive]);
 
   // Treat stale IDs absent from the live project list as no selection.
-  const selectedProject = projects.find((project) => project.id === projectId) || null;
+  const selectedProject = findProject(projectId);
   const selectedProjectId = selectedProject ? selectedProject.id : null;
 
-  const activeSession = sessions.find((s) => s.id === activeId) || null;
+  const activeSession = findSession(activeId);
 
   const showSession = useCallback((session) => {
     selectionGenRef.current += 1;
@@ -560,12 +544,12 @@ function App() {
       setAttachedId(null);
       setHint(deadHint(session.state));
     }
-    // Newly created rows may not have reached sessionsRef yet.
+    // The caller may hold a row the shared list has not merged yet; judge unread from what it handed us.
     markReadIfViewing(session.id, session.unread, session.lastSeq);
   }, [cancelReattach]);
 
   const selectSession = useCallback((id) => {
-    const session = sessionsRef.current.find((s) => s.id === id);
+    const session = findSession(id);
     if (session) showSession(session);
   }, [showSession]);
 
@@ -598,20 +582,18 @@ function App() {
   // Returning from the board must retry mark-read even if the session emitted no new frame.
   useEffect(() => {
     if (onBoard) return;
-    const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+    const s = findSession(activeRef.current);
     if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
   }, [onBoard]);
 
   const applySessionsSnapshot = useCallback((rows) => {
-    // Reconnect snapshots are the only attention transition carrier for changes made while offline.
-    const prev = sessionsRef.current;
+    // Reconnect snapshots are authoritative, including deletions, and are also the only attention
+    // transition carrier for changes made while the socket was down.
+    const { previous, first } = replaceSessions(rows);
     for (const row of rows) {
-      const prevRow = prev.find((s) => s.id === row.id);
+      const prevRow = previous.find((s) => s.id === row.id);
       if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
     }
-    // Reconnect snapshots are authoritative, including deletions.
-    sessionsRef.current = rows;
-    setSessions(rows);
     const ids = new Set(rows.map((s) => s.id));
     setActiveId((id) => (id && !ids.has(id) ? null : id));
     setAttachedId((id) => (id && !ids.has(id) ? null : id));
@@ -630,23 +612,14 @@ function App() {
     const active = rows.find((s) => s.id === activeRef.current);
     if (active) markReadIfViewing(active.id, active.unread, active.lastSeq);
     disconnectAnnouncedRef.current = false;
-    if (!sessionsReadyRef.current) {
-      sessionsReadyRef.current = true;
-      setSessionsReady(true);
-      // Do not repeat the routine count into the aria-live region after reconnects.
-      say(rows.length + " session(s).");
-    }
+    // Do not repeat the routine count into the aria-live region after reconnects.
+    if (first) say(rows.length + " session(s).");
   }, [cancelReattach, say, showSession]);
 
   const applySessionRow = useCallback((row) => {
-    const current = sessionsRef.current;
-    const prevRow = current.find((s) => s.id === row.id);
-    const next = upsertIfNewer(current, row);
-    const winner = next.find((s) => s.id === row.id) || null;
-    if (next !== current) {
-      if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
-      sessionsRef.current = next;
-      setSessions(next);
+    const { changed, previous, winner } = mergeSessionRow(row);
+    if (changed && previous && !previous.needsAttention && row.needsAttention) {
+      notifyAttention(previous);
     }
     if (deepLinkRef.current === row.id) {
       deepLinkRef.current = null;
@@ -661,15 +634,18 @@ function App() {
   }, [showSession]);
 
   const applySessionPatch = useCallback((msg) => {
-    const prevSession = sessionsRef.current.find((s) => s.id === msg.sessionId);
-    if (!prevSession) return;
-    const next = patchIfNewer(sessionsRef.current, msg);
-    if (next === sessionsRef.current) return;
-    if (!prevSession.needsAttention && msg.needsAttention) notifyAttention(prevSession);
-    sessionsRef.current = next;
-    setSessions(next);
-    const winner = next.find((session) => session.id === msg.sessionId);
-    if (winner && winner.id === activeRef.current) {
+    const { changed, previous, winner } = mergeSessionPatch(msg);
+    // A patch for a row this page has never seen carries too little to publish, so there is nothing to
+    // poke a read against either.
+    if (!winner) return;
+    if (changed && !previous.needsAttention && msg.needsAttention) notifyAttention(previous);
+    // Equal and older revisions deliberately fall through to markReadIfViewing instead of returning
+    // early, which is what this path used to do. The redundancy is the point: a redelivered
+    // session_update is the only trigger a stalled read POST gets when unread and seq never change, and
+    // app.js:152 makes that retry the contract. It costs nothing — the merge above already declined to
+    // write the signal, so an unchanged frame subscribes nobody and renders nothing — and it makes this
+    // path uniform with applySessionRow, which has always poked the read on every observation.
+    if (winner.id === activeRef.current) {
       markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
     }
   }, []);
@@ -721,14 +697,11 @@ function App() {
     if (msg.type === "sessions_snapshot") applySessionsSnapshot(msg.sessions);
     else if (msg.type === "session_row") applySessionRow(msg.session);
     else if (msg.type === "session_update") applySessionPatch(msg);
-    else if (msg.type === "tasks_snapshot") applyTasksBaseline(msg.tasks);
-    else if (msg.type === "task_row") applyTaskRow(msg.task);
-    else if (msg.type === "task_update") applyTaskPatch(msg.task);
-    else if (msg.type === "task_removed") applyTaskRemoved(msg.ref);
-  }, [
-    applySessionsSnapshot, applySessionRow, applySessionPatch,
-    applyTasksBaseline, applyTaskRow, applyTaskPatch, applyTaskRemoved,
-  ]);
+    else if (msg.type === "tasks_snapshot") replaceTasks(msg.tasks);
+    else if (msg.type === "task_row") mergeTaskRow(msg.task);
+    else if (msg.type === "task_update") mergeTaskPatch(msg.task);
+    else if (msg.type === "task_removed") dropTask(msg.ref);
+  }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;
   // Keeping the socket stable also preserves whether a later open is a recovery.
@@ -793,7 +766,7 @@ function App() {
   // Foregrounding retries mark-read after hidden-tab updates were deliberately suppressed.
   useEffect(() => {
     const onVisibilityChange = () => {
-      const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+      const s = findSession(activeRef.current);
       if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -806,7 +779,7 @@ function App() {
     const onMessage = (event) => {
       const msg = event.data;
       if (!msg || msg.type !== "select-session" || !msg.sessionId) return;
-      if (sessionsRef.current.some((session) => session.id === msg.sessionId)) {
+      if (findSession(msg.sessionId)) {
         // A newer tap supersedes any retained target whose row may arrive later.
         deepLinkRef.current = null;
         clearDeepLink();
@@ -862,7 +835,7 @@ function App() {
       say("Could not start session: " + errorMessage(e), true);
       return;
     }
-    setSessions((prev) => upsertIfNewer(prev, created));
+    mergeSessionRow(created);
     closeDialogFrom(submittedDialog);
     say("Started " + displayName(created) + ".");
     if (selectionGenRef.current === selectionAtSubmit) showSession(created);
@@ -894,7 +867,7 @@ function App() {
       // Fetch after commit; fall back to the committed 201 row if the read is unavailable.
       const fetched = await fetchSessionRow(created.id);
       const registered = fetched || created;
-      if (!fetched) setSessions((prev) => upsertIfNewer(prev, created));
+      if (!fetched) mergeSessionRow(created);
       closeDialogFrom(submittedDialog);
       if (registerOnly) {
         if (fetched) say("Imported " + displayName(registered) + " — registered only.");
@@ -910,7 +883,7 @@ function App() {
         const freshRow = await fetchSessionRow(created.id);
         // The resume DTO is the best fallback; the pre-resume row would suppress attachment.
         const row = freshRow || (resumedDto && resumedDto.id ? resumedDto : registered);
-        if (!freshRow && resumedDto && resumedDto.id) setSessions((prev) => upsertIfNewer(prev, resumedDto));
+        if (!freshRow && resumedDto && resumedDto.id) mergeSessionRow(resumedDto);
         if (freshRow) say("Imported and resumed " + displayName(row) + ".");
         if (selectionUnmoved()) showSession(row);
       } catch (e) {
@@ -924,7 +897,7 @@ function App() {
   }, [closeDialogFrom, fetchSessionRow, say, showSession]);
 
   const controlSession = useCallback(async (action, id) => {
-    const s = sessionsRef.current.find((x) => x.id === (id || activeRef.current));
+    const s = findSession(id || activeRef.current);
     if (!s) return;
     if (pendingRef.current) {
       say("Another action is still in progress — try again in a moment.", true);
@@ -948,7 +921,7 @@ function App() {
         { method: "POST" },
       );
       if (updated && updated.id) {
-        setSessions((prev) => upsertIfNewer(prev, updated));
+        mergeSessionRow(updated);
       }
       if (action === "stop" || action === "done") {
         if (s.id === activeRef.current) setAttachedId(null);
@@ -989,7 +962,7 @@ function App() {
       say("Another action is still in progress — try again in a moment.", true);
       return;
     }
-    const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+    const s = findSession(activeRef.current);
     cancelReattach();
     setAttachedId(null);
     setHint(detachedHint(s));
@@ -997,7 +970,7 @@ function App() {
 
   // Report async copy results outside the palette because its aria-live region unmounts immediately.
   const copyTmuxCommand = useCallback(async () => {
-    const s = sessionsRef.current.find((x) => x.id === activeRef.current);
+    const s = findSession(activeRef.current);
     const command = s && isAliveState(s.state) && s.tmuxSession
       ? tmuxAttachCommand(s.tmuxSession)
       : "";
@@ -1014,7 +987,7 @@ function App() {
   }, [say]);
 
   const onTerminalClosed = useCallback((id) => {
-    const s = sessionsRef.current.find((session) => session.id === id);
+    const s = findSession(id);
     reattachIdRef.current = id;
     setAttachedId((current) => (current === id ? null : current));
     if (activeRef.current === id) setHint(detachedHint(s));
@@ -1074,7 +1047,7 @@ function App() {
   }, [applyServerPreferences, closeDialogFrom, say]);
 
   const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
-    const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
+    const selected = findSession(activeRef.current);
     setDialog({
       kind: "new",
       cwd: cwd || (selected && selected.cwd) || prefsRef.current.basePath,
@@ -1118,17 +1091,23 @@ function App() {
     }
   }, [onBoard]);
   const openSessionTask = useCallback(() => {
-    const selected = sessionsRef.current.find((x) => x.id === activeRef.current);
+    const selected = findSession(activeRef.current);
     if (selected && selected.taskRef) navigate(taskPath(selected.taskRef));
   }, []);
 
   const linkSessionToTask = useCallback(async (sessionId, ref, expectedProjectId) => {
-    const selected = sessionsRef.current.find((session) => session.id === sessionId);
-    const candidate = tasksRef.current.find((task) => task.ref === ref);
-    if (sessionTaskLinkDisabledReason(selected, pendingRef.current) ||
-        activeRef.current !== sessionId || selected.projectId !== expectedProjectId ||
-        !projectsRef.current.some((project) => project.id === expectedProjectId) ||
-        !candidate || candidate.project !== expectedProjectId || !isOpenTaskState(candidate.state)) {
+    const selected = findSession(sessionId);
+    // The shared pre-POST re-check, not the picker's availability guard: the operator has already chosen
+    // a task, and every input may have moved underneath the open dialog while they were choosing.
+    if (sessionTaskLinkSubmitBlocked({
+      session: selected,
+      pendingAction: pendingRef.current,
+      activeSessionId: activeRef.current,
+      sessionId: sessionId,
+      expectedProjectId: expectedProjectId,
+      projects: projectsSignal.value,
+      task: findTask(ref),
+    })) {
       throw new Error("The selected session or task changed. Close the picker and try again.");
     }
 
@@ -1164,7 +1143,7 @@ function App() {
     const fresh = await fetchSessionRow(sessionId);
     // Do not overwrite feedback from a command the user started while this read was in flight.
     if (statusRef.current.text !== refreshing) return;
-    const winner = sessionsRef.current.find((session) => session.id === sessionId) || fresh;
+    const winner = findSession(sessionId) || fresh;
     if (!fresh) {
       say(
         "Linked " + label + " to " + ref +
@@ -1191,11 +1170,11 @@ function App() {
   const openHelp = useCallback(() => setDialog({ kind: "help" }), []);
   const openPhone = useCallback(() => setDialog({ kind: "phone" }), []);
   const openUpload = useCallback(() => {
-    const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
+    const selected = findSession(activeRef.current);
     if (selected) setDialog({ kind: "upload", session: selected });
   }, []);
   const openLinkTask = useCallback(() => {
-    const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
+    const selected = findSession(activeRef.current);
     const disabled = sessionTaskLinkDisabledReason(selected, pendingRef.current);
     if (disabled) {
       say("Linking a task is no longer available: " + disabled + ".", true);
@@ -1302,7 +1281,7 @@ function App() {
         newProjectRequest=${newProjectRequest}
         drawerOpen=${drawerOpen}
         sidebarCollapsed=${sidebarCollapsed}
-        onTaskRow=${applyTaskRow}
+        onTaskRow=${mergeTaskRow}
         onProjectCreated=${projectCreated}
         onToggleDrawer=${toggleDrawer}
         onToggleSidebar=${toggleSidebar}
@@ -1311,7 +1290,7 @@ function App() {
       />
       ${route.screen === SCREEN_TASK && html`
         <${TaskDetail} taskRef=${route.id} entry=${openTaskEntry} sessions=${sessions}
-                       onTaskRow=${applyTaskRow} onTaskRemoved=${applyTaskRemoved}
+                       onTaskRow=${mergeTaskRow} onTaskRemoved=${dropTask}
                        onStartSession=${startSessionForTask} onAnnounce=${say} />`}
       <p id="board-status" class=${"status-line board-status" + (status.error ? " error" : "")}
          role="status" aria-live="polite">${status.text}</p>
@@ -1343,8 +1322,7 @@ function App() {
       <${LinkTaskDialog} initialSession=${dialog.session} session=${activeSession}
                          tasks=${tasks} tasksReady=${tasksReady}
                          projectsReady=${projectsReady}
-                         projectActive=${projects.some((project) =>
-                           project.id === dialog.session.projectId)}
+                         projectActive=${isLiveProject(dialog.session.projectId)}
                          onLink=${linkSessionToTask} onClose=${closeDialog} />`}
     ${/* Remount on server revision so an open draft cannot overwrite newer committed values. */ ""}
     ${dialog && dialog.kind === "prefs" && html`

@@ -153,6 +153,27 @@ class WebUiServingTest {
                 "the signals adapter imports the bare '$specifier' specifier the import map wires",
             )
         }
+
+        // Same exception, same reason, opposite direction: the state modules must reach the *same*
+        // signals-core instance the adapter above reaches, or their signals would live in a second
+        // reactive graph and no component would ever re-render for them. index.html loads
+        // /_v/<rev>/app.js, so a state module is /_v/<rev>/state/*.js and its relative vendor import
+        // normalizes to the very URL the import map names — the browser then keys one module instance
+        // off that one URL. The bare specifier is not used here because these modules are also imported
+        // by node, which has no resolver for it, and their rules are proven at that tier. Nothing a
+        // running page can report distinguishes one graph from two, so the agreement is asserted here.
+        val relativeVendorImport = "\"../vendor/signals-core.module.js\""
+        for (module in STATE_MODULES) {
+            val body = ctx.get("/_v/$rev$module").bodyAsText()
+            assertTrue(
+                body.contains(relativeVendorImport),
+                "$module imports signals-core by the relative path, not the bare specifier",
+            )
+        }
+        assertTrue(
+            index.contains("\"@preact/signals-core\": \"/_v/$rev/vendor/signals-core.module.js\""),
+            "the relative import above resolves to exactly the import map's signals-core target",
+        )
     }
 
     @Test
@@ -165,7 +186,7 @@ class WebUiServingTest {
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js",
             "/components/Board.js", "/components/TaskCard.js", "/components/TaskDetail.js",
-        )) {
+        ) + STATE_MODULES) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.OK, resp.status, "GET $path (nested module) is served")
             assertContentTypeContains(resp, "javascript")
@@ -183,8 +204,31 @@ class WebUiServingTest {
         assertTrue(
             sessionHelpers.contains("export function upsertIfNewer") &&
                 sessionHelpers.contains("export function patchIfNewer"),
-            "the newest-rev-wins appliers are exported under the names app.js imports",
+            "the newest-rev-wins appliers are exported under the names the state modules import",
         )
+        // Every writer of the shared lists is a named export of its state module. A writer that is not
+        // here is a writer that kept its own copy, which is the defect class the modules exist to end.
+        val sessionState = ctx.get("/state/sessions.js").bodyAsText()
+        for (writer in listOf("replaceSessions", "mergeSessionRow", "mergeSessionPatch")) {
+            assertTrue(
+                sessionState.contains("export function $writer"),
+                "the session list has no writer outside $writer and its siblings",
+            )
+        }
+        val taskState = ctx.get("/state/tasks.js").bodyAsText()
+        for (writer in listOf("replaceTasks", "mergeTaskRow", "mergeTaskPatch", "dropTask")) {
+            assertTrue(
+                taskState.contains("export function $writer"),
+                "the task list has no writer outside $writer and its siblings",
+            )
+        }
+        val projectState = ctx.get("/state/projects.js").bodyAsText()
+        for (writer in listOf("replaceProjects", "applyProjectRow", "removeProjectRow")) {
+            assertTrue(
+                projectState.contains("export function $writer"),
+                "the project list has no writer outside $writer and its siblings",
+            )
+        }
     }
 
     @Test
@@ -796,6 +840,13 @@ private fun currentDir(): String = memScoped {
 private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 
 private const val MODE_0700: Int = 0b111_000_000
+
+// The signal-backed shared state: one module per concern, each the only writer of its list. They are
+// named once here because two tests need them — the served-module registry and the source-shape check
+// that pins their vendor import to the import map's own target.
+private val STATE_MODULES: List<String> = listOf(
+    "/state/sessions.js", "/state/tasks.js", "/state/projects.js",
+)
 
 private const val CLASS_ATTRIBUTE: String = "class="
 
