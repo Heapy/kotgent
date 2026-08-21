@@ -211,10 +211,21 @@ on `PATH` — and no build step, no package manager, and no `node_modules`. Thes
 served exactly as they are written, and that property is worth more than any convenience a bundler would buy.
 
 `WebUiLogicTests` in `webuitest` spawns the runner, so the aggregate suite covers this tier; the direct loop
-is `node --test 'webuitest/js/**/*.test.js'` from the repository root. Name the files through a pattern
+is `node --test 'webuitest/js/**/*.test.js'` from the repository root. The prerequisite is **Node v24 or
+newer**, the same floor `README.md` and `webuitest/module.yaml` state. Name the files through a pattern
 rather than by their directory: Node treats every positional argument as a glob, and a bare directory matches
 only itself and then fails to load as a module. A pattern that matches nothing exits zero, so the wrapper
 fails on an empty run and on a missing `node`, both of which are prerequisites rather than reasons to skip.
+The wrapper also passes `--test-timeout`: Node's runner has no per-test timeout of its own, so a promise
+that never settles would hang `./kotlin test` rather than fail it. A test cut off that way is reported as
+*cancelled* rather than failed, so the cancelled count is asserted alongside the failure count.
+
+What stays out of this tier is as deliberate as what is in it. A module belongs here once it neither touches
+a browser global at import time nor reaches a specifier Node cannot resolve. `lib/qr.js` is the one `lib/`
+module that fails the second test — it imports the bare specifier `"qrcode"`, which only the browser's
+import map resolves — so its rules are proven in the browser tier. `lib/commands.js`, `lib/paths.js` and
+`lib/unicode.js` pass both tests and are proven here only in part; extending their coverage is open work,
+recorded in the README backlog.
 
 ### Components and DOM behavior
 
@@ -253,7 +264,11 @@ The browser suite should cover a small set of high-value journeys:
 This layer exists. `webuitest` is a JVM module of tests only: it drives a real Chromium through Playwright
 for Java against `webuicheck`, a fixture binary that assembles the real server over the shared doubles in
 `fakes`, serves a terminal from a real PTY running a deterministic shell snippet instead of a provider, and
-takes scenario commands on standard input. Each test spawns its own harness on an ephemeral port, signs in
+takes scenario commands on standard input. `webuicheck` proves nothing and must keep proving nothing: its
+scenario files under `webuicheck/src/scenarios/` contain zero assertions, and its `--self-check` only
+verifies that the fixture itself can start. A gate that must *prove* something belongs in `webuitest`,
+where a failure is a red test rather than a binary that quietly exits zero — that is why, for instance, the
+vendored signals adapter is proven by `SignalsVendorTests` and not by a scenario. Each test spawns its own harness on an ephemeral port, signs in
 through the real login form with a single-use ticket, and leaves nothing behind outside the checkout.
 Journeys 1, 3, 4, 5, 8, and 9 are covered; 2, 6, and 7 are covered in part, as the dialogs and refusals that
 begin them rather than as the whole round trip; 10 is not covered at all, and neither is anything that needs
@@ -293,6 +308,12 @@ Real-device release checklist:
 - The picker's results list on a short phone viewport with the software keyboard raised. Its scroll port
   is a viewport fraction the keyboard does not resize, so the list must still scroll, an option must
   stay reachable and tappable, and the footer dismissal button must not be stranded under the keyboard.
+- The task link picker's search field with a real IME — Japanese, Chinese, or Korean — on a phone and on
+  a desktop engine. Typing a candidate and pressing Enter to *commit the candidate* must select text in
+  the field and link nothing; only an Enter pressed after the composition has ended may commit the link.
+  Chromium cannot reproduce this: an automated run can only synthesize a `KeyboardEvent` carrying
+  `isComposing`, which proves the branch is read, not that a real input method sets it. This is the one
+  picker behavior on this page with no faithful automated proof.
 - An installed PWA reaching the board and deleting a project from the palette button rather than `⌘K`.
 
 ### Static assets and source-shape checks
@@ -311,9 +332,22 @@ regression images. When it is interactive, execute the interaction.
 
 This is now the whole of `test/transport/WebUiServingTest.kt`: addresses, media types, cache headers,
 content revisions, path safety, precedence over the API, a registry that names every served module exactly
-once, and a short closed list of source-shape guards for the two claims a running page cannot make — an
-agreement between two files that never read each other, and the absence of a second implementation of
-something that must have one owner. The tier it replaced made 1181 substring assertions over served
+once, and a closed list of source-shape guards for the claims a running page cannot make. Those claims are
+of three kinds, and a new guard must be one of them:
+
+- **An agreement between two files that never read each other.** The service worker's hand-written API
+  prefix against the module that declares it; the deep-link parameter; the board's project-name cap
+  against the API's. Each side works alone, so nothing the page does distinguishes agreement from
+  coincidence.
+- **One graph, asserted from the outside.** Every module that holds a signal — the seven under `state/`
+  plus `lib/mutation.js` and `lib/readiness.js` — imports signals-core by a relative path that normalizes
+  to exactly the URL the import map names, because the bare specifier resolves in a browser and nowhere
+  else while these modules are also imported by Node. Two graphs render identically and share nothing, so
+  a running page cannot report the difference.
+- **The absence of a second implementation of something that must have one owner.** History reached only
+  through `lib/router.js`; the shared lists assigned only inside their state modules, resolved through
+  each file's own import statement so an aliased binding is caught too. A scan is the only thing that can
+  see an owner that does not exist yet. The tier it replaced made 1181 substring assertions over served
 JavaScript and CSS. One of them spelled out the exact line of a defect that the browser tier later found,
 so that suite had pinned the bug as a contract and broke when the bug was fixed. Keep the exception closed;
 a source scan cannot tell a fix from a regression.

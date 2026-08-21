@@ -1,12 +1,15 @@
 // The one mutation runner from resources/webui/lib/mutation.js. It replaced three unrelated idioms that
 // each expressed "is something already running": a status-sentence comparison, a boolean save-in-flight
-// ref, and a pending-action mirror ref. Everything it owns — the lock, the name it publishes, the
-// monotonic generation token — is browser-independent, so it is proven here instead of one level up.
+// ref, and a pending-action mirror ref. Everything it owns — the lock and the name it publishes — is
+// browser-independent, so it is proven here instead of one level up.
 //
 // The two properties worth stating twice, because the flows in app.js depend on both: the lock is taken
 // synchronously at the call, before the runner's first await, so a second flow entered in the same turn
 // is refused rather than interleaved; and the lock is released only when the whole callback settles, so
-// a mutation's own follow-up read still holds it.
+// a mutation's own follow-up read still holds it. Those two are also why the runner hands the callback
+// no currency token: with the lock exclusive, "is my mutation still the newest" has no reachable no.
+// Whether a late outcome may still speak is asked of state/status.js instead, and proven in
+// state-selection.test.js.
 
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +17,6 @@ import assert from "node:assert/strict";
 import { effect } from "../../resources/webui/vendor/signals-core.module.js";
 import {
   MUTATION_BUSY_MESSAGE,
-  isMutating,
   pendingMutation,
   runMutation,
 } from "../../resources/webui/lib/mutation.js";
@@ -49,7 +51,6 @@ describe("runMutation", () => {
     const run = runMutation("start", () => gate.promise);
 
     assert.equal(pendingMutation.value, "start");
-    assert.equal(isMutating(), true);
 
     gate.resolve(null);
     return run;
@@ -106,7 +107,6 @@ describe("runMutation", () => {
 
     assert.equal(failed.error, failure, "the runner reports the flow's own error, not its own");
     assert.equal(pendingMutation.value, null);
-    assert.equal(isMutating(), false);
     assert.equal(await runMutation("resume", () => Promise.resolve("ok")), "ok");
   });
 
@@ -119,43 +119,18 @@ describe("runMutation", () => {
     assert.equal(pendingMutation.value, null);
   });
 
-  test("a superseded run cannot write an outcome", async () => {
-    let firstIsCurrent = null;
-    await runMutation("link-task", ({ isCurrent }) => {
-      firstIsCurrent = isCurrent;
-      assert.equal(isCurrent(), true, "a run is current while it holds the lock");
+  // The runner passes the callback nothing, and that is the assertion: a currency token here would have
+  // to answer "did a newer mutation start while mine ran", and the two tests above are why it cannot —
+  // the second run is refused before it takes the lock, so no newer mutation exists to supersede the
+  // holder. A flow that has to protect a sentence it already announced asks state/status.js instead.
+  test("the callback is handed no currency token to mistake for one", async () => {
+    let handed = "untouched";
+    await runMutation("delete-project", (context) => {
+      handed = context;
       return Promise.resolve(null);
     });
 
-    assert.equal(firstIsCurrent(), true, "nothing newer has started yet");
-
-    const gate = deferred();
-    const second = runMutation("interrupt", () => gate.promise);
-
-    assert.equal(
-      firstIsCurrent(),
-      false,
-      "a later mutation supersedes the earlier run, whose late outcome must stay unwritten",
-    );
-
-    gate.resolve(null);
-    await second;
-    assert.equal(firstIsCurrent(), false, "supersession is permanent, not a property of the lock");
-  });
-
-  test("the generation is monotonic across refusals: a refused run supersedes nothing", async () => {
-    const gate = deferred();
-    let holderIsCurrent = null;
-    const held = runMutation("delete-project", ({ isCurrent }) => {
-      holderIsCurrent = isCurrent;
-      return gate.promise;
-    });
-
-    await settle(runMutation("start", () => Promise.resolve(null)));
-
-    assert.equal(holderIsCurrent(), true, "a refused attempt did nothing and cannot invalidate the holder");
-    gate.resolve(null);
-    await held;
+    assert.equal(handed, undefined);
   });
 
   test("the pending name is a signal, so a reader re-renders on both edges", async () => {

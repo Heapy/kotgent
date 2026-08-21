@@ -20,9 +20,11 @@ import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Collections
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.function.Consumer
 import java.util.regex.Pattern
 import kotlin.test.fail
 
@@ -347,9 +349,18 @@ fun Browser.fineContext(
 
 fun testResultsDir(): Path = repoRoot.resolve(TEST_RESULTS_RELATIVE).also { Files.createDirectories(it) }
 
+// An uncaught exception in the page is a defect this tier used to ship green. A handler that throws
+// after its visible effect has already committed leaves every DOM assertion true — a click on the New
+// Session mode toggle called a setter that no longer existed, the mode still switched, and the whole
+// suite stayed green. Watching here rather than per test closes the class: every browser test body runs
+// inside `traced`, on pages it opens itself and on the ones login already opened.
 fun BrowserContext.traced(name: String, block: () -> Unit) {
     val slug = name.map { if (it.isLetterOrDigit() || it == '.' || it == '-' || it == '_') it else '-' }
         .joinToString("")
+    val pageErrors = Collections.synchronizedList(mutableListOf<String>())
+    val watch = Consumer<Page> { page -> page.onPageError { pageErrors.add(it) } }
+    pages().forEach { watch.accept(it) }
+    onPage(watch)
     tracing().start(Tracing.StartOptions().setScreenshots(true).setSnapshots(true))
     var failed = false
     try {
@@ -365,6 +376,7 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
         }
         throw t
     } finally {
+        offPage(watch)
         runCatching {
             if (failed) {
                 tracing().stop(Tracing.StopOptions().setPath(testResultsDir().resolve("$slug.zip")))
@@ -372,6 +384,15 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
                 tracing().stop()
             }
         }
+    }
+    // Only after a passing body: a failure has its own diagnosis, and masking it with this one hides it.
+    val reported = synchronized(pageErrors) { pageErrors.toList() }
+    if (reported.isNotEmpty()) {
+        fail(
+            "the page reported ${reported.size} uncaught JavaScript error(s) during '$name', so the " +
+                "interaction it covers throws even though the assertions passed:\n" +
+                reported.joinToString("\n\n"),
+        )
     }
 }
 
@@ -394,6 +415,9 @@ val FRAME_RECORDER: String = """
       const Recording = function (url, protocols) {
         const socket = protocols === undefined ? new Native(url) : new Native(url, protocols);
         if (String(url).indexOf("/api/v1/events") >= 0) {
+          // The socket itself is exposed so a test can redeliver a frame the daemon really sent, on the
+          // real socket the app is listening to. Recording only tells a test what arrived.
+          window.__kotgentEventsSocket = socket;
           socket.addEventListener("message", (event) => {
             if (typeof event.data === "string") frames.push(event.data);
           });

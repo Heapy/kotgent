@@ -12,6 +12,8 @@ import io.kotgent.cli.TMUX_SOCKET
 import io.kotgent.core.SessionMeta
 import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
+import io.kotgent.daemon.isDirectory
+import io.kotgent.daemon.listDir
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
@@ -71,6 +73,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class WebUiServingTest {
 
@@ -209,29 +212,82 @@ class WebUiServingTest {
                 sessionHelpers.contains("export function patchIfNewer"),
             "the newest-rev-wins appliers are exported under the names the state modules import",
         )
-        // Every writer of the shared lists is a named export of its state module. A writer that is not
-        // here is a writer that kept its own copy, which is the defect class the modules exist to end.
-        val sessionState = ctx.get("/state/sessions.js").bodyAsText()
-        for (writer in listOf("replaceSessions", "mergeSessionRow", "mergeSessionPatch")) {
-            assertTrue(
-                sessionState.contains("export function $writer"),
-                "the session list has no writer outside $writer and its siblings",
-            )
+    }
+
+    // The shared lists have one writer each: the state module that holds them. Three loops used to stand
+    // here asserting that `state/sessions.js` contains "export function mergeSessionRow" and so on, under
+    // the message "the session list has no writer outside mergeSessionRow and its siblings" — a sentence
+    // no second writer could ever make false, while a renamed export already breaks app boot and every
+    // browser test. The contract runs the other way: nothing outside state/ assigns to those signals.
+    // Which name a module would assign through is not fixed — app.js imports `sessions as sessionsSignal`
+    // — so each file's own import statement is read for the local name it binds, and that name is what is
+    // looked for on the left of an assignment. Component-local `useSignal` values (`chosen`, `busyTask`)
+    // are bound by nobody's import and are correctly invisible here.
+    @Test
+    fun theSharedListsAreWrittenOnlyInsideTheirStateModules() {
+        val dir = locateWebUiDir()
+        val modules = webUiModules(dir)
+        assertTrue(
+            modules.size >= MIN_SCANNED_MODULES,
+            "only ${modules.size} modules were found under $dir; the scan below would prove almost nothing",
+        )
+        var bindings = 0
+        for (path in modules) {
+            val source = readFileTextOrNull("$dir/$path")
+                ?: fail("$path is served but could not be read from $dir")
+            for (state in STATE_SIGNAL_MODULES) {
+                for (binding in importedBindings(source, state)) {
+                    bindings++
+                    // The leading class keeps `foo.sessions.value` and `mysessions.value` out of it.
+                    val assignment = Regex("(^|[^\\w.])" + Regex.escape(binding) + "\\.value\\s*=[^=]")
+                    assertFalse(
+                        assignment.containsMatchIn(source),
+                        "$path assigns to $binding.value, but $state is the only writer of that list. " +
+                            "A second writer is the defect class the state modules exist to end: go " +
+                            "through the module's exported writer instead.",
+                    )
+                }
+            }
         }
-        val taskState = ctx.get("/state/tasks.js").bodyAsText()
-        for (writer in listOf("replaceTasks", "mergeTaskRow", "mergeTaskPatch", "dropTask")) {
-            assertTrue(
-                taskState.contains("export function $writer"),
-                "the task list has no writer outside $writer and its siblings",
-            )
+        assertTrue(
+            bindings > 0,
+            "no module outside state/ imports anything from ${STATE_SIGNAL_MODULES.joinToString()}, so " +
+                "the scan matched nothing — the import shape it reads must have changed",
+        )
+    }
+
+    /** Every served `.js` module outside `vendor/` (not ours) and `state/` (the owners themselves). */
+    private fun webUiModules(dir: String, rel: String = ""): List<String> {
+        val here = if (rel.isEmpty()) dir else "$dir/$rel"
+        val found = mutableListOf<String>()
+        for (name in listDir(here)) {
+            val childRel = if (rel.isEmpty()) name else "$rel/$name"
+            if (isDirectory("$dir/$childRel")) {
+                if (name != "vendor" && name != "state") found += webUiModules(dir, childRel)
+            } else if (name.endsWith(".js")) {
+                found += childRel
+            }
         }
-        val projectState = ctx.get("/state/projects.js").bodyAsText()
-        for (writer in listOf("replaceProjects", "applyProjectRow", "removeProjectRow")) {
-            assertTrue(
-                projectState.contains("export function $writer"),
-                "the project list has no writer outside $writer and its siblings",
-            )
-        }
+        return found
+    }
+
+    /**
+     * The local names [source] binds from [stateModule], `as` aliases resolved. Anything else in the
+     * import list is a function, and a function is exactly what this contract wants callers to use.
+     */
+    private fun importedBindings(source: String, stateModule: String): List<String> {
+        val statement = Regex(
+            "import\\s*\\{([^}]*)\\}\\s*from\\s*\"[^\"]*" + Regex.escape(stateModule) + "\"",
+        )
+        return statement.findAll(source).flatMap { match ->
+            // Line comments are stripped first: one sitting beside a specifier would otherwise swallow
+            // the next name into an unparsable token and quietly drop it from the scan.
+            val listed = match.groupValues[1].lines().joinToString(" ") { it.substringBefore("//") }
+            listed.split(',').mapNotNull { specifier ->
+                val name = specifier.substringAfter(" as ").trim()
+                name.takeIf { it.isNotEmpty() && it.all { ch -> ch.isLetterOrDigit() || ch == '_' } }
+            }
+        }.toList()
     }
 
     @Test
@@ -853,6 +909,16 @@ private val STATE_MODULES: List<String> = listOf(
     "/state/sessions.js", "/state/tasks.js", "/state/projects.js",
     "/state/selection.js", "/state/dialog.js", "/state/status.js", "/state/prefs.js",
 )
+
+// The three lists a component or app.js could plausibly reach for a writer of. The other four state
+// modules hold a single value each and are written through their own functions the same way.
+private val STATE_SIGNAL_MODULES: List<String> = listOf(
+    "state/sessions.js", "state/tasks.js", "state/projects.js",
+)
+
+// A floor under the module walk: if the tree stopped being found, or the filter stopped matching, the
+// scan would pass by reading nothing at all.
+private const val MIN_SCANNED_MODULES: Int = 20
 
 private const val CLASS_ATTRIBUTE: String = "class="
 

@@ -14,12 +14,16 @@
 //     second run start while the first was still settling and overwrite its result.
 //   * the name of the flow holding the lock, published as a signal so the palette's disabled reasons and
 //     the link picker's guard read one value rather than a copy each.
-//   * a monotonic generation token. `isCurrent()` answers "has a newer mutation started since mine",
-//     which is what a late outcome must ask before it writes anything the operator can see. A refused
-//     attempt never took the lock and never advances it, so it supersedes nobody.
 //
-// It is not a liveness guard and not a selection guard. A dialog that unmounted mid-request, and a
-// selection the operator moved during one, are different questions with their own answers.
+// It owns no currency token, and deliberately so. One was tried here and could only ever answer yes:
+// exclusivity means no newer mutation can start while an older one is running, so "has a newer mutation
+// superseded mine" has no reachable no. What a late outcome actually has to ask is whether the sentence
+// it is about to overwrite is still its own — an announcement is superseded by anything that speaks,
+// including the socket's connection-lost warning and a clipboard copy, neither of which is a mutation.
+// That question is answered by `announcementHolds` in state/status.js, which numbers the announcements.
+//
+// It is not a liveness guard and not a selection guard either. A dialog that unmounted mid-request, and
+// a selection the operator moved during one, are different questions with their own answers.
 //
 // signals-core is imported by relative path rather than through the "@preact/signals-core" bare
 // specifier the import map wires; see the comment at state/sessions.js for why the two resolve to one
@@ -37,19 +41,11 @@ export const MUTATION_BUSY_MESSAGE = "Another action is still in progress — tr
 // "preferences", "delete-project", "restore-project".
 export const pendingMutation = signal(null);
 
-let generation = 0;
-
-export function isMutating() {
-  return pendingMutation.value !== null;
-}
-
 export async function runMutation(name, fn) {
   if (pendingMutation.value !== null) throw new Error(MUTATION_BUSY_MESSAGE);
-  const token = ++generation;
-  const isCurrent = () => generation === token;
   pendingMutation.value = name;
   try {
-    return await fn({ isCurrent: isCurrent, name: name });
+    return await fn();
   } finally {
     pendingMutation.value = null;
   }

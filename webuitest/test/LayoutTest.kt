@@ -345,6 +345,55 @@ class LayoutTest {
         }
     }
 
+    // The device half of the preferences: a font step and a Unicode mode belong to this browser, carry no
+    // revision, and are stored in localStorage rather than on the daemon. Applying them is proven above;
+    // that they were *written* is only provable across a reload. The node tier cannot stand in — under
+    // Node the persistence functions catch their own `window is not defined` and become no-ops, so a
+    // write that never happened reads there exactly like one that did.
+    @Test
+    fun theDevicePreferencesAreStoredInThisBrowserAndSurviveAReload() {
+        Harness(TERMINAL_SCENARIO).use { harness ->
+            onDesktop(harness, "layout-device-prefs") { page ->
+                attachTerminal(page)
+                assertEquals(
+                    DEFAULT_TERMINAL_FONT_SIZE.toDouble(),
+                    measureTerminal(page).num("fontSize"),
+                    "the fixture starts on the default terminal font step",
+                )
+
+                page.locator("#palette-button").click()
+                assertThat(page.locator("#command-palette")).isVisible()
+                page.locator(".command-palette-leader-command:has-text(\"Preferences\")").click()
+                assertThat(page.locator("#prefs-dialog")).isVisible()
+                page.locator("#prefs-terminal-font-size").selectOption(LARGEST_TERMINAL_FONT_SIZE.toString())
+                page.locator("#prefs-terminal-unicode").selectOption(WIDER_TERMINAL_UNICODE)
+                page.locator("#prefs-submit").click()
+                assertThat(page.locator("#prefs-dialog")).hasCount(0)
+                page.waitForFunction(fontSizeApplied(LARGEST_TERMINAL_FONT_SIZE))
+
+                page.reload()
+                attachTerminal(page)
+
+                // A fresh page: nothing in memory carries these over, so the terminal it builds can only
+                // be this large because loadPrefs read back what the save wrote.
+                page.waitForFunction(fontSizeApplied(LARGEST_TERMINAL_FONT_SIZE))
+                assertEquals(
+                    LARGEST_TERMINAL_FONT_SIZE.toDouble(),
+                    measureTerminal(page).num("fontSize"),
+                    "the stored font step is the one the reloaded terminal was built with",
+                )
+
+                page.locator("#palette-button").click()
+                assertThat(page.locator("#command-palette")).isVisible()
+                page.locator(".command-palette-leader-command:has-text(\"Preferences\")").click()
+                assertThat(page.locator("#prefs-dialog")).isVisible()
+                assertThat(page.locator("#prefs-terminal-font-size"))
+                    .hasValue(LARGEST_TERMINAL_FONT_SIZE.toString())
+                assertThat(page.locator("#prefs-terminal-unicode")).hasValue(WIDER_TERMINAL_UNICODE)
+            }
+        }
+    }
+
     @Test
     fun theNotificationsToggleWearsTheShellsOwnAccentInBothStates() {
         Harness(SESSIONS_SCENARIO).use { harness ->
@@ -469,6 +518,9 @@ private const val SIDEBAR_SCROLL_VIEWPORT_HEIGHT = 200
 
 private const val DEFAULT_TERMINAL_FONT_SIZE = 13
 private const val LARGEST_TERMINAL_FONT_SIZE = 16
+
+// Any mode but the built-in one; the point is that a non-default choice is what comes back.
+private const val WIDER_TERMINAL_UNICODE = "11"
 
 private const val EPS = 2.0
 

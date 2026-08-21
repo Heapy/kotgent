@@ -309,7 +309,6 @@ export function NewSessionDialog({
     setCwd(next === "import" ? "" : (initialCwd || ""));
     setCompletionQuery(null);
     setSuggestions([]);
-    setActiveSuggestion(-1);
   };
 
   const submit = async (event) => {
@@ -810,20 +809,6 @@ function openTasksForProject(tasks) {
     });
 }
 
-/** Foreign-project frames keep this projection's identity, so they cannot re-sort the picker. */
-function useProjectTasks(tasks, projectId) {
-  const cacheRef = useRef({ projectId: null, rows: [] });
-  const next = [];
-  for (const task of tasks || []) {
-    if (task && task.project === projectId) next.push(task);
-  }
-  const cached = cacheRef.current;
-  const unchanged = cached.projectId === projectId && cached.rows.length === next.length &&
-    cached.rows.every((task, index) => task === next[index]);
-  if (!unchanged) cacheRef.current = { projectId: projectId, rows: next };
-  return cacheRef.current.rows;
-}
-
 function linkSessionChanged(initial, current) {
   if (!initial || !current || initial.id !== current.id) return true;
   return initial.projectId !== current.projectId ||
@@ -863,10 +848,16 @@ export function LinkTaskDialog({
   const readiness = combineReadiness(tasksStatus, projectsStatus);
   const ready = readiness.state === READY;
   const failure = readiness.state === FAILED ? readiness.error : null;
-  const projectTasks = useProjectTasks(tasks, initialSession && initialSession.projectId);
+  // Nothing downstream depends on this list's identity — `openTasksForProject` sorts deterministically
+  // and the typeahead resolves its active row by key value — so a foreign-project frame costs a filter
+  // and a sort, not a re-sorted picker. An identity cache here re-ran the filter on every render anyway
+  // and then compared the result element by element to keep the previous array alive.
+  const projectId = initialSession && initialSession.projectId;
   const rows = useMemo(
-    () => projectActive ? openTasksForProject(projectTasks) : [],
-    [projectTasks, projectActive],
+    () => (projectActive
+      ? openTasksForProject((tasks || []).filter((task) => task && task.project === projectId))
+      : []),
+    [tasks, projectId, projectActive],
   );
   const normalizedQuery = normalizeTaskQuery(query);
   const results = useMemo(() => {

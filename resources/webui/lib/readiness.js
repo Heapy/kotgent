@@ -46,10 +46,12 @@ function failureSentence(error) {
   return text.trim() !== "" ? text : UNKNOWN_FAILURE;
 }
 
-export function createReadiness(options = {}) {
+export function createReadiness() {
   const status = signal(IDLE_STATUS);
   let generation = 0;
-  let load = options.load || null;
+  // Registered through `setLoader` rather than passed in: the owner of the request is not the code that
+  // creates the readiness, and a second way in would be a second thing to keep in step.
+  let load = null;
 
   // Writing an identical status would re-render every subscriber for no news; refreshes are frequent.
   function publish(state, error) {

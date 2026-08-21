@@ -18,8 +18,8 @@
 //
 // The last block covers lib/commands.js, whose `toLocaleLowerCase()` fold made a command containing "I"
 // unfindable under a tr/az browser locale. Node's default locale cannot be changed per test, so the
-// fold itself is replaced for the duration of the check: that proves the palette no longer *calls* the
-// locale-sensitive method, which is the actual claim.
+// fold itself is replaced for the duration of the check by ./turkish-fold.js: that proves the palette no
+// longer *calls* the locale-sensitive method, which is the actual claim.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -36,6 +36,7 @@ import {
   typeaheadIntent,
 } from "../../resources/webui/lib/typeahead.js";
 import { filterCommands } from "../../resources/webui/lib/commands.js";
+import { underTurkishFold } from "./turkish-fold.js";
 
 const KEYS = ["local:1", "local:2", "local:3"];
 
@@ -184,23 +185,6 @@ describe("filterCommands folds case without a locale", () => {
     { id: "index", title: "Index the API", subtitle: null, group: "general", disabled: null },
     { id: "other", title: "Restart the daemon", subtitle: null, group: "general", disabled: null },
   ];
-
-  // A tr/az browser folds an uppercase "I" to a dotless "ı" and leaves a typed "i" dotted, so
-  // `toLocaleLowerCase()` turned "Index the API" into "ındex the apı" and a typed "index" matched
-  // nothing — for exactly the operators whose locale the palette never anticipated. Node runs under one
-  // default locale for the whole process, so the default fold is redirected to the real Turkish one
-  // here. The assertion is that filterCommands never reaches for it.
-  function underTurkishFold(run) {
-    const original = String.prototype.toLocaleLowerCase;
-    String.prototype.toLocaleLowerCase = function turkish() {
-      return original.call(this, "tr");
-    };
-    try {
-      return run();
-    } finally {
-      String.prototype.toLocaleLowerCase = original;
-    }
-  }
 
   test("a command containing I is findable under a Turkish fold", () => {
     const found = underTurkishFold(() => filterCommands(COMMANDS, "index"));

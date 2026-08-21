@@ -1,6 +1,7 @@
 package io.kotgent.webuitest
 
 import java.io.IOException
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
@@ -41,17 +42,35 @@ class WebUiLogicTests {
             "node --test matched no test at all under $jsDir (it exits 0 when its pattern " +
                 "'$TEST_PATTERN' matches nothing). Files seen there: ${testFiles.joinToString()}$report",
         )
+        // A floor, not a per-file count: TAP does not attribute a passing test to the file it came from,
+        // so a file that contributes nothing while another contributes extra stays invisible here. What
+        // it does catch is the whole tier collapsing — a rename, a bad pattern, a file that throws on
+        // import — which is the failure that would otherwise read as a clean pass.
         assertTrue(
             ran >= testFiles.size,
-            "node --test ran $ran tests but $jsDir holds ${testFiles.size} test files " +
-                "(${testFiles.joinToString()}), so at least one file contributed nothing$report",
+            "node --test ran $ran tests, fewer than the ${testFiles.size} test files $jsDir holds " +
+                "(${testFiles.joinToString()}), so at least one of them contributed nothing$report",
         )
         assertEquals(0, tapCount(result.stdout, FAIL_SUMMARY) ?: -1, "the JavaScript tier reported failures$report")
+        // A test that exceeds --test-timeout is cancelled, not failed, so the fail count alone would
+        // report a hung test as a clean tier.
+        assertEquals(
+            0,
+            tapCount(result.stdout, CANCELLED_SUMMARY) ?: -1,
+            "the JavaScript tier cancelled a test, which is how a test that never settles is reported " +
+                "once --test-timeout=${TEST_TIMEOUT_MILLIS}ms cuts it off$report",
+        )
         assertEquals(0, result.exitCode, "node --test exited non-zero$report")
     }
 
     private fun runNode(root: Path): NodeResult {
-        val command = listOf(NODE, "--test", "--test-reporter=tap", TEST_PATTERN)
+        // --test-timeout turns a test that never settles into a named TAP failure instead of a hang.
+        // Node's runner has no default per-test timeout, and no test in webuitest/js/ sets its own, so
+        // without this a single unresolved promise stalls `./kotlin test` itself. A timed-out test is
+        // reported as cancelled rather than failed, which is why the count is asserted separately above.
+        val command = listOf(
+            NODE, "--test", "--test-reporter=tap", "--test-timeout=$TEST_TIMEOUT_MILLIS", TEST_PATTERN,
+        )
         val process = try {
             ProcessBuilder(command).directory(root.toFile()).start()
         } catch (e: IOException) {
@@ -62,32 +81,52 @@ class WebUiLogicTests {
             )
         }
 
-        // Drain both pipes concurrently: a full stderr buffer would otherwise stall the child forever.
-        val stderrLines = Collections.synchronizedList(mutableListOf<String>())
-        val drain = Thread {
-            process.errorStream.bufferedReader().forEachLine { stderrLines.add(it) }
-        }
-        drain.isDaemon = true
-        drain.name = "node-test-stderr"
-        drain.start()
-
-        val stdout = process.inputStream.bufferedReader().readText()
+        // Both pipes are drained on their own threads and the watchdog runs before either is joined.
+        // Reading one of them inline would block until the child closed it, so the watchdog would only
+        // be reached after the child had already finished — no help at all against the failure it exists
+        // for, which is a child still alive with its stdout pipe open. A full pipe also stalls the child.
+        val out = drain("node-test-stdout", process.inputStream)
+        val err = drain("node-test-stderr", process.errorStream)
         if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             process.destroyForcibly()
-            fail("`${command.joinToString(" ")}` did not finish within ${TIMEOUT_SECONDS}s\n$stdout")
+            out.thread.join(DRAIN_JOIN_MILLIS)
+            err.thread.join(DRAIN_JOIN_MILLIS)
+            fail(
+                "`${command.joinToString(" ")}` did not finish within ${TIMEOUT_SECONDS}s. Every test " +
+                    "carries a ${TEST_TIMEOUT_MILLIS}ms timeout of its own, so this is the runner or a " +
+                    "module's top level hanging, not one test." +
+                    "\n--- partial node --test stdout ---\n${out.text()}" +
+                    "\n--- partial node --test stderr ---\n${err.text()}",
+            )
         }
-        drain.join(DRAIN_JOIN_MILLIS)
-        return NodeResult(process.exitValue(), stdout, stderrLines.joinToString("\n"))
+        out.thread.join(DRAIN_JOIN_MILLIS)
+        err.thread.join(DRAIN_JOIN_MILLIS)
+        return NodeResult(process.exitValue(), out.text(), err.text())
+    }
+
+    private fun drain(name: String, stream: InputStream): Drain {
+        val lines = Collections.synchronizedList(mutableListOf<String>())
+        val thread = Thread {
+            runCatching { stream.bufferedReader().forEachLine { lines.add(it) } }
+        }
+        thread.isDaemon = true
+        thread.name = name
+        thread.start()
+        return Drain(thread, lines)
     }
 
     private fun listTestFiles(jsDir: Path): List<String> {
         if (!Files.isDirectory(jsDir)) {
             fail("the browser-independent Web UI tier is missing: $jsDir is not a directory")
         }
-        return jsDir.toFile().listFiles().orEmpty()
-            .filter { it.isFile && it.name.endsWith(TEST_SUFFIX) }
-            .map { it.name }
-            .sorted()
+        // Recursive, because TEST_PATTERN is: a test file in a subdirectory would otherwise run without
+        // ever being counted, and the floor below would not notice it going missing.
+        return Files.walk(jsDir).use { paths ->
+            paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(TEST_SUFFIX) }
+                .map { jsDir.relativize(it).toString() }
+                .sorted()
+                .toList()
+        }
     }
 
     /** The summary sits at the end of the stream; a child's own output is re-emitted as a nested comment. */
@@ -126,6 +165,11 @@ class WebUiLogicTests {
 
     private class NodeResult(val exitCode: Int, val stdout: String, val stderr: String)
 
+    /** One pipe being read by its own thread, and whatever it has seen so far. */
+    private class Drain(val thread: Thread, private val lines: MutableList<String>) {
+        fun text(): String = synchronized(lines) { lines.joinToString("\n") }
+    }
+
     private companion object {
         const val NODE = "node"
         const val PROJECT_MANIFEST = "project.yaml"
@@ -138,6 +182,11 @@ class WebUiLogicTests {
 
         const val TESTS_SUMMARY = "# tests"
         const val FAIL_SUMMARY = "# fail"
+        const val CANCELLED_SUMMARY = "# cancelled"
+
+        // Per test, inside node. The whole tier runs in well under a second, so this is a hang detector
+        // rather than a budget.
+        const val TEST_TIMEOUT_MILLIS = 30_000L
 
         const val TIMEOUT_SECONDS = 120L
         const val DRAIN_JOIN_MILLIS = 2_000L

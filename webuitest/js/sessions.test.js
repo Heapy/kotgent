@@ -215,4 +215,42 @@ describe("out-of-order arrival", () => {
       );
     }
   });
+
+  // The case above settles on a full row, so it holds however the patches merge — none of their field
+  // values reaches the result. Here the newest frame is a patch, so convergence is a claim about what a
+  // patch merge produces. The upsert is pinned first rather than permuted because a patch for a row the
+  // list has never seen is dropped by design (the case above it), which is a different rule.
+  const LAST_PATCH = patchFrame({
+    rev: 6,
+    state: "needs_approval",
+    needsAttention: true,
+    lastSeq: 44,
+    unread: 7,
+    taskRef: "kotgent#12",
+    updatedAt: 600,
+  });
+
+  test("with the newest frame a patch, every arrival order still lands on that patch's fields", () => {
+    const tail = FRAMES.slice(1).concat([{ kind: "patch", frame: LAST_PATCH }]);
+    const orders = permutations(tail);
+    assert.equal(orders.length, 24, "all 4! orders of the frames that follow the snapshot");
+
+    for (const order of orders) {
+      const settled = [FRAMES[0], ...order].reduce(applyFrame, listOf());
+      assert.equal(settled.length, 1);
+      const row = settled[0];
+      assert.equal(row.rev, 6, `order ${order.map((e) => e.frame.rev).join(" -> ")} did not converge`);
+      assert.equal(row.state, "needs_approval");
+      assert.equal(row.needsAttention, true);
+      assert.equal(row.alive, true, "aliveness is derived from the patched state, not carried over");
+      assert.equal(row.lastSeq, 44);
+      assert.equal(row.unread, 7);
+      assert.equal(row.taskRef, "kotgent#12");
+      assert.equal(row.updatedAt, 600);
+      // A patch carries no identity fields, so the snapshot's are the only ones the row can have.
+      assert.equal(row.cwd, FIRST.cwd);
+      assert.equal(row.agent, FIRST.agent);
+      assert.equal(row.name, FIRST.name);
+    }
+  });
 });

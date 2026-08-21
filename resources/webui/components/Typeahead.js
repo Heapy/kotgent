@@ -64,6 +64,17 @@ export function useTypeahead({
   // keystroke or a pointer repaints the highlight without any state mirrored beside the signal.
   const activeKey = resolveActiveKey(list, chosen.value, rule);
 
+  // A ref callback per option key, cached so re-rendering does not remount every row. Keys the list has
+  // dropped are released here: `nodes` prunes itself when an element unmounts, `refs` has no such moment,
+  // and the two path pickers key on whatever the operator typed — a long editing session would otherwise
+  // hold a closure for every suggestion it ever showed.
+  if (store.current.refs.size > list.length) {
+    const live = new Set(list);
+    for (const key of Array.from(store.current.refs.keys())) {
+      if (!live.has(key)) store.current.refs.delete(key);
+    }
+  }
+
   // The element for every option, not only the active one: navigation scrolls the row it is moving to,
   // which does not become the active one until the next paint.
   const optionRef = (key) => {
@@ -87,6 +98,12 @@ export function useTypeahead({
   };
 
   const activate = (key) => {
+    // A fresh `chooseKey` object every time, and signal writes compare by identity, so an unconditional
+    // write notifies on every call. CommandPalette binds this to `onMouseMove`, which fires at pointer
+    // sample rate: re-rendering the whole option list while the pointer merely travels across the row it
+    // already activated is work nobody asked for.
+    const current = chosen.peek();
+    if (current && current.key === key && current.token === token) return;
     chosen.value = chooseKey(key, token);
   };
 

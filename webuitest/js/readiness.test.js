@@ -22,6 +22,7 @@ import {
   IDLE,
   LOADING,
   READY,
+  UNKNOWN_FAILURE,
   combineReadiness,
   createReadiness,
 } from "../../resources/webui/lib/readiness.js";
@@ -215,5 +216,40 @@ describe("combineReadiness", () => {
 
   test("combining nothing is idle rather than a vacuous ready", () => {
     assert.equal(combineReadiness().state, IDLE);
+  });
+
+  // A caller that has not created its readiness yet, or reads one through an optional prop, passes an
+  // absent status. It is read as idle rather than throwing on `.state`, which the picker relies on to
+  // draw "reading…" instead of nothing at all during its first frame.
+  test("an absent source is idle, not a crash and not a ready", () => {
+    assert.equal(combineReadiness(null).state, IDLE);
+    assert.equal(combineReadiness(undefined).state, IDLE);
+    assert.equal(combineReadiness(ready, null).state, IDLE, "an absent source is not a ready one");
+    assert.equal(combineReadiness(null, failed).state, FAILED, "a failure still dominates");
+  });
+});
+
+describe("the defensive branches", () => {
+  test("a failure with nothing quotable still carries a sentence", () => {
+    const readiness = createReadiness();
+
+    readiness.fail(readiness.begin(), { message: "   " });
+    assert.equal(readiness.status.value.error, UNKNOWN_FAILURE);
+  });
+
+  // The retry control is rendered from the status, not from whether a loader happens to be registered,
+  // so pressing it before or after the owner unregisters must be a no-op rather than a throw.
+  test("retrying with no loader registered resolves to nothing", async () => {
+    const readiness = createReadiness();
+    readiness.fail(readiness.begin(), "offline");
+
+    assert.equal(await readiness.retry(), null);
+
+    readiness.setLoader(() => "read");
+    assert.equal(await readiness.retry(), "read");
+
+    readiness.fail(readiness.begin(), "offline again");
+    readiness.setLoader(null);
+    assert.equal(await readiness.retry(), null, "unregistering is how an owner unmounts");
   });
 });

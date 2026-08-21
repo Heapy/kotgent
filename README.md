@@ -363,6 +363,14 @@ non-exclusive link as `kotgent task claim`, so a `todo` starts and another sessi
 same task. The command palette opens the board with `⌘K o` and its create form with `⌘K w`. Those bare
 paths are deep-linkable and installable, which is why the client-facing API lives under `/api/v1`.
 
+One action changes daemon state at a time, and the palette says so rather than queueing. While a start,
+an import, a lifecycle action, a preferences save, a task link, or a project delete or restore is in
+flight, the palette's session commands are disabled and name the flow holding the lock; a form submitted
+anyway is refused with *"Another action is still in progress — try again in a moment."* The wait is
+bounded by the request timeout (60 s), and a mutation holds the lock through its own follow-up read, so
+two links to the same session cannot overwrite each other. Reads that are not part of a mutation — the
+board, the project list, the terminal — are never blocked by it.
+
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
 embedded short Git hash (for example `0.8.0+81c37fe`), while published Homebrew builds show the release
 version alone (`0.8.0`).
@@ -587,6 +595,14 @@ Kotgent is deliberately focused. The current product boundary is:
 - A **diff viewer** and snapshots.
 - **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
   5-hour window and the weekly cap; Codex: the weekly cap).
+- **More of the Web UI's pure rules proven without a browser.** `lib/commands.js`, `lib/paths.js` and
+  `lib/unicode.js` already import cleanly under Node and are only partly covered by the tier in
+  `webuitest/js/`; `lib/qr.js` stays in the browser tier for as long as it is the one `lib/` module with
+  a bare specifier (`"qrcode"`), which only the import map resolves.
+- **Decomposing the remaining `app.js` flows.** Roughly sixty `useCallback` flows still live in one
+  module. Moving state into `state/` and async coordination into `lib/mutation.js` was deliberately kept
+  separate from splitting the component itself, which is still open and still not urgent.
+
 **Why some checks live in their own binary.** A Kotlin Toolchain issue
 ([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)) means **our own** raw-cinterop path cannot be
 called from a test binary at all — partial linkage turns every such call into a stub that throws

@@ -15,6 +15,7 @@ import {
   sessionTaskLinkSubmitBlocked,
   taskMatchesQuery,
 } from "../../resources/webui/lib/sessions.js";
+import { underTurkishFold } from "./turkish-fold.js";
 
 // Frozen inputs turn an accidental in-place write into a TypeError; ES modules are always strict mode.
 function sessionRow(overrides) {
@@ -213,9 +214,12 @@ describe("task query matching", () => {
   });
 
   // The finding: under a tr/az browser locale toLocaleLowerCase() folds "I" to dotless "ı", so a title
-  // typed in ASCII stops matching an ASCII query. The environment cannot stand in for that browser —
-  // Node's argument-less toLocaleLowerCase() keeps folding as en even under LC_ALL=tr_TR, verified on
-  // v24. So the buggy fold is named explicitly, and the fix is pinned to its exact bytes.
+  // typed in ASCII stops matching an ASCII query. Naming the buggy fold explicitly is not enough to
+  // prove anything: on any non-Turkish host "INDEX".toLocaleLowerCase() and "INDEX".toLowerCase() agree,
+  // so the byte assertions below hold under either implementation and reverting the fix stays green.
+  // The default fold is therefore redirected to the real Turkish one (./turkish-fold.js) around every
+  // call into the rule, which is the same technique the palette's fold uses in typeahead.test.js. What
+  // is asserted is that these rules never *call* the locale-sensitive method.
   test("a Turkish browser locale cannot break the match", () => {
     assert.notEqual(
       INDEX_TASK.title.toLocaleLowerCase("tr"),
@@ -229,13 +233,19 @@ describe("task query matching", () => {
     );
     assert.notEqual("INDEX".toLocaleLowerCase("tr"), "INDEX".toLowerCase());
 
-    // Byte-exact, not just "it matched": under a tr default locale a locale fold would return "ındex"
-    // here, and every match assertion in this file would still pass on an en host.
-    assert.equal(normalizeTaskQuery("INDEX"), "index");
-    assert.equal(normalizeTaskQuery(INDEX_TASK.title), "index the api");
+    // Byte-exact, not just "it matched": a locale fold would return "ındex" for both of these.
+    assert.equal(underTurkishFold(() => normalizeTaskQuery("INDEX")), "index");
+    assert.equal(underTurkishFold(() => normalizeTaskQuery(INDEX_TASK.title)), "index the api");
 
-    assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("index")), true);
-    assert.equal(taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("INDEX")), true);
+    // The query side and the task side fold separately, so both are exercised under the substitution.
+    assert.equal(
+      underTurkishFold(() => taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("index"))),
+      true,
+    );
+    assert.equal(
+      underTurkishFold(() => taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("INDEX"))),
+      true,
+    );
   });
 });
 

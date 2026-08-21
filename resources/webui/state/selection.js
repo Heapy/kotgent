@@ -12,8 +12,9 @@
 //     A→B→A hole is that an async flow which auto-selects on completion must be refused after the
 //     operator has moved away and back, and a comparison of *ids* cannot see that they moved at all.
 //
-// It is also not run currency. `runMutation`'s `isCurrent()` answers "has a newer mutation started",
-// which stays true across any amount of navigation, so it can never stand in for this.
+// It is also not the mutation lock and not the announcement counter. Neither of those can see a round
+// trip through the sidebar: the lock is held for one flow at a time regardless of navigation, and an
+// announcement is superseded by whatever speaks next, which navigating does not.
 
 import { computed, signal } from "../vendor/signals-core.module.js";
 import { findSession } from "./sessions.js";

@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   TASK_STATES,
   applyTasksSnapshot,
+  compareTasksByBoardOrder,
   isOpenTaskState,
   patchTaskIfNewer,
   removeTask,
@@ -202,5 +203,61 @@ describe("open-state classification", () => {
     assert.equal(taskStateLabel("in_progress"), "In progress");
     assert.equal(taskStateLabel("archived"), "archived");
     assert.equal(taskStateLabel(undefined), "unknown");
+  });
+});
+
+// The board's ordering rule. It is a pure comparator the tier already imports, and until now the only
+// thing proving it was a five-row assertion in the browser tier — one level above where it can be
+// answered. Zeroing the createdAt tiebreak passed the whole node tier before these cases existed.
+describe("compareTasksByBoardOrder", () => {
+  const sorted = (...rows) => rows.slice().sort(compareTasksByBoardOrder).map((row) => row.ref);
+
+  test("position comes first", () => {
+    const low = taskRow({ ref: "a#1", position: 10, createdAt: 99 });
+    const high = taskRow({ ref: "a#2", position: 20, createdAt: 1 });
+
+    assert.equal(compareTasksByBoardOrder(low, high), -1);
+    assert.equal(compareTasksByBoardOrder(high, low), 1);
+    assert.deepEqual(sorted(high, low), ["a#1", "a#2"]);
+  });
+
+  test("equal positions fall back to creation order", () => {
+    const older = taskRow({ ref: "b#2", position: 10, createdAt: 1 });
+    const newer = taskRow({ ref: "b#1", position: 10, createdAt: 2 });
+
+    assert.equal(compareTasksByBoardOrder(older, newer), -1);
+    assert.deepEqual(
+      sorted(newer, older),
+      ["b#2", "b#1"],
+      "the older row first, which the ref fallback alone would have reversed",
+    );
+  });
+
+  test("rows agreeing on both fall back to the ref, so the order is total", () => {
+    const first = taskRow({ ref: "c#1", position: 10, createdAt: 5 });
+    const second = taskRow({ ref: "c#2", position: 10, createdAt: 5 });
+
+    assert.equal(compareTasksByBoardOrder(first, second), -1);
+    assert.equal(compareTasksByBoardOrder(first, first), 0);
+    assert.deepEqual(sorted(second, first), ["c#1", "c#2"]);
+  });
+
+  test("a row missing a field sorts after one that has it, and never throws", () => {
+    const placed = taskRow({ ref: "d#1", position: 10 });
+    const unplaced = taskRow({ ref: "d#0", position: null });
+    const created = taskRow({ ref: "e#1", position: null, createdAt: 3 });
+    const uncreated = taskRow({ ref: "e#0", position: null, createdAt: undefined });
+
+    assert.deepEqual(sorted(unplaced, placed), ["d#1", "d#0"]);
+    assert.deepEqual(sorted(uncreated, created), ["e#1", "e#0"]);
+    assert.equal(compareTasksByBoardOrder(null, null), 0);
+    assert.equal(compareTasksByBoardOrder(placed, null), -1);
+  });
+
+  test("a non-finite position is not a position", () => {
+    const numbered = taskRow({ ref: "f#1", position: 10 });
+    const nan = taskRow({ ref: "f#0", position: Number.NaN });
+
+    assert.deepEqual(sorted(nan, numbered), ["f#1", "f#0"]);
   });
 });

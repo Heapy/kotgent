@@ -22,6 +22,11 @@ archive completed plans.
   would be served to browsers and would churn the asset revision.
 - Keep aggregate test runs serial across worktrees. Integration tests share the machine-global tmux
   socket label `kotgent-test`.
+- Never run two `./kotlin` invocations at once, in the same checkout or across worktrees, backgrounded
+  included. They share one build directory and clobber each other's output: a backgrounded
+  `webuicheck --self-check` overlapping a foreground run has failed on a `kotgent.klib` that the other
+  invocation was rewriting. This is a different cause from the tmux socket contention above, and holds
+  even for two commands that touch different modules.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
   automation. They start long-lived processes. `ptycheck` and `webuicheck --self-check` terminate safely.
 
@@ -60,9 +65,15 @@ archive completed plans.
   `resources/webui/state/`, one module per concern. Each module exports the current value plus every
   function that writes it, so no caller can bypass the merge and no second copy exists to go stale — the
   mirror refs those modules replaced were maintained by only some writers. `resources/webui/lib/` still
-  owns the merge arithmetic itself. Those modules import signals-core by relative path rather than the
-  `@preact/signals-core` bare specifier: it resolves to the same URL the import map names, so the browser
-  keeps one reactive graph, while node can still import them for the `webuitest/js/` tier.
+  owns the merge arithmetic itself.
+- **Every module that holds a signal and is imported by node imports signals-core by relative path**, not
+  through the `@preact/signals-core` bare specifier: the relative path resolves to exactly the URL the
+  import map names, so the browser keeps one reactive graph, while node — which resolves no bare
+  specifier — can still import the module for the `webuitest/js/` tier. That is the seven modules under
+  `resources/webui/state/` and also `lib/mutation.js` and `lib/readiness.js`, which own the pending lock
+  and the readiness statuses. A lock or a list living in a graph of its own is worthless, and nothing a
+  running page can report distinguishes one graph from two, so `WebUiServingTest` asserts the agreement
+  for every module in that list.
 - Reading `.value` in a render body is what subscribes a component to a signal. `app.js`'s bare
   `import "@preact/signals"` installs the Preact options hooks that make that subscription happen, so the
   import is load-bearing even though nothing is named from it: without it `.value` still answers
@@ -76,14 +87,20 @@ archive completed plans.
   or a second list; two records drift.
 - Preserve revision-based newest-wins merging for HTTP responses and WebSocket frames. Arrival timing is
   not an ordering guarantee.
-- `runMutation` in `resources/webui/lib/mutation.js` is the only mutation-currency idiom, covering the
-  six mutating flows. It holds one global lock across the whole of a flow, that flow's own follow-up read
-  included, and hands out a monotonic generation token whose `isCurrent()` a late outcome must ask before
-  writing anything the operator can see. One global lock is deliberate and has a price: `start`,
-  `preferences`, `delete-project` and `restore-project` now disable the palette's session commands, which
-  they previously did not.
-- Two guards look like run currency and are not; `isCurrent()` replaces neither. The selection generation
-  in `resources/webui/state/selection.js` counts user selection changes, closing the A→B→A hole when an
+- `runMutation` in `resources/webui/lib/mutation.js` owns the one lock the six mutating flows share. It
+  holds it across the whole of a flow, that flow's own follow-up read included, and publishes the name of
+  the holder as a signal. One global lock is deliberate and has a price: `start`, `preferences`,
+  `delete-project` and `restore-project` disable the palette's session commands, which they previously
+  did not.
+- It hands the callback no currency token, and must not be given one back. Exclusivity makes the question
+  unanswerable: a newer mutation cannot start while an older one holds the lock, so "has mine been
+  superseded" has no reachable yes. What a late outcome actually has to ask is whether the sentence it is
+  about to overwrite is still its own — `say` in `resources/webui/state/status.js` returns a token and
+  `announcementHolds` answers that. A flow that announces, awaits and then reports the result guards with
+  it; a flow whose first word is its result does not, and must not, because a warning it would suppress
+  is not an outcome the operator asked for.
+- Two more guards look like run currency and are not. The selection generation in
+  `resources/webui/state/selection.js` counts user selection changes, closing the A→B→A hole when an
   async flow conditionally auto-selects. `aliveRef` in `resources/webui/components/dialogs.js` is a
   component unmount guard. Do not fold either into `runMutation`.
 - `resources/webui/lib/readiness.js` answers `idle | loading | ready | failed` with `retry()`, and is
@@ -95,6 +112,12 @@ archive completed plans.
   reach Preact: `resources/webui/lib/typeahead.js` holds the selection rules framework-free for the node
   tier, and `resources/webui/components/Typeahead.js` binds them in `useTypeahead`. A new typeahead site
   consumes it rather than deriving an active row of its own.
+- Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
+  uppercase `I` to a dotless `ı` and leaves a typed `i` dotted, so a locale fold removes matches that
+  exist — for exactly the operators whose locale the code never anticipated. This has now been introduced
+  three times (`lib/sessions.js`, `lib/commands.js`, `lib/api.js`). Node cannot reproduce it by setting a
+  locale, so the node tier redirects the default fold to the Turkish one through
+  `webuitest/js/turkish-fold.js`; a case-folding rule with no such test is not covered.
 - Spell it `spellcheck=${false}` — lowercase name, interpolated boolean. Every other spelling leaves
   spellcheck **on**: `spellCheck=${false}` fails the vendored Preact's property test and removes an
   attribute that was never set, `spellcheck="false"` takes the property branch where the boolean IDL

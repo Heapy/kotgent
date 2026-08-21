@@ -41,6 +41,12 @@ export function replaceProjects(rows) {
 
 // A mutation response is the daemon's own confirmation of one row, so it is applied before the refetch:
 // a re-read that fails must not leave a deleted project selected and interactive against its tombstone.
+//
+// Neither writer reports what it did. The session and task merges do, because a revision can decline an
+// observation and their callers have follow-up work that depends on which row won; a verbatim apply
+// declines nothing, so the record these two returned was two constants and a value the caller already
+// held. Not writing when there is nothing to remove is still worth it: an identical list would re-render
+// every subscriber for no news.
 export function applyProjectRow(row) {
   const current = projects.value;
   const index = current.findIndex((project) => project.id === row.id);
@@ -48,15 +54,13 @@ export function applyProjectRow(row) {
   if (index < 0) next.push(row);
   else next[index] = row;
   projects.value = next;
-  return { changed: true, previous: index < 0 ? null : current[index], winner: row };
 }
 
 export function removeProjectRow(id) {
   const current = projects.value;
   const index = current.findIndex((project) => project.id === id);
-  if (index < 0) return { changed: false, previous: null, winner: null };
+  if (index < 0) return;
   const next = current.slice();
   next.splice(index, 1);
   projects.value = next;
-  return { changed: true, previous: current[index], winner: null };
 }

@@ -21,7 +21,6 @@ import { READY } from "./lib/readiness.js";
 import {
   loadSidebarCollapsed,
   persistSidebarCollapsed,
-  sanitizeServerPreferences,
 } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
 import {
@@ -90,8 +89,10 @@ import {
   dialog as dialogSignal,
   openDialog,
 } from "./state/dialog.js";
-import { say, status as statusSignal } from "./state/status.js";
+import { announcementHolds, say, status as statusSignal } from "./state/status.js";
 import {
+  PREFS_SUPERSEDED,
+  PREFS_UNREADABLE,
   applyDevicePreferences,
   applyServerPreferences,
   prefs as prefsSignal,
@@ -484,7 +485,7 @@ function App() {
       say((archived ? "Could not delete the project: " : "Could not restore the project: ") +
         errorMessage(e), true);
     };
-    return runMutation(archived ? "delete-project" : "restore-project", async ({ isCurrent }) => {
+    return runMutation(archived ? "delete-project" : "restore-project", async () => {
       let changed;
       try {
         changed = archived ? await deleteProject(id) : await restoreProject(id);
@@ -521,7 +522,6 @@ function App() {
         ? "Deleted " + label + ". Restore brings it back with its backlog."
         : "Restored " + label + ".";
       // Preserve the reload failure instead of reporting unqualified success.
-      if (!isCurrent()) return;
       say(rows ? done : done + " The project list could not be re-read — reload the page.", !rows);
     });
   }, [reloadProjects]);
@@ -647,9 +647,9 @@ function App() {
     // Equal and older revisions deliberately fall through to markReadIfViewing instead of returning
     // early, which is what this path used to do. The redundancy is the point: a redelivered
     // session_update is the only trigger a stalled read POST gets when unread and seq never change, and
-    // app.js:152 makes that retry the contract. It costs nothing — the merge above already declined to
-    // write the signal, so an unchanged frame subscribes nobody and renders nothing — and it makes this
-    // path uniform with applySessionRow, which has always poked the read on every observation.
+    // `markReadIfViewing` is written to be that retry. It costs nothing — the merge above already
+    // declined to write the signal, so an unchanged frame subscribes nobody and renders nothing — and it
+    // makes this path uniform with applySessionRow, which has always poked the read on every observation.
     if (winner.id === activeSessionId.value) {
       markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
     }
@@ -829,7 +829,7 @@ function App() {
     // Auto-select only if no selection event occurred during the request. Selection generation is not
     // run currency: the operator can navigate away and back while this one mutation stays current.
     const selectionUnmoved = markSelection();
-    return runMutation("start", async ({ isCurrent }) => {
+    return runMutation("start", async () => {
       let created;
       try {
         created = await apiRequest("/sessions", {
@@ -844,7 +844,7 @@ function App() {
       }
       mergeSessionRow(created);
       closeDialogFrom(submittedDialog);
-      if (isCurrent()) say("Started " + displayName(created) + ".");
+      say("Started " + displayName(created) + ".");
       if (selectionUnmoved()) showSession(created);
     });
   }, [showSession]);
@@ -855,7 +855,7 @@ function App() {
   const importSession = useCallback((body, registerOnly) => {
     const submittedDialog = dialogSignal.value;
     const selectionUnmoved = markSelection();
-    return runMutation("import", async ({ isCurrent }) => {
+    return runMutation("import", async () => {
       let created;
       try {
         created = await apiRequest("/sessions/import", {
@@ -874,7 +874,7 @@ function App() {
       if (!fetched) mergeSessionRow(created);
       closeDialogFrom(submittedDialog);
       if (registerOnly) {
-        if (fetched && isCurrent()) say("Imported " + displayName(registered) + " — registered only.");
+        if (fetched) say("Imported " + displayName(registered) + " — registered only.");
         if (selectionUnmoved()) showSession(registered);
         return;
       }
@@ -888,12 +888,12 @@ function App() {
         // The resume DTO is the best fallback; the pre-resume row would suppress attachment.
         const row = freshRow || (resumedDto && resumedDto.id ? resumedDto : registered);
         if (!freshRow && resumedDto && resumedDto.id) mergeSessionRow(resumedDto);
-        if (freshRow && isCurrent()) say("Imported and resumed " + displayName(row) + ".");
+        if (freshRow) say("Imported and resumed " + displayName(row) + ".");
         if (selectionUnmoved()) showSession(row);
       } catch (e) {
         const after = await fetchSessionRow(created.id);
         if (selectionUnmoved()) showSession(after || registered);
-        if (isCurrent()) say("Imported, but resume failed: " + errorMessage(e), true);
+        say("Imported, but resume failed: " + errorMessage(e), true);
       }
     });
   }, [fetchSessionRow, showSession]);
@@ -920,8 +920,8 @@ function App() {
     try {
       // The action is the lock's name: lib/commands.js reads it back to decide which controls a
       // stop/done/resume/import in flight may not share the attachment with.
-      await runMutation(action, async ({ isCurrent }) => {
-        say(capitalize(action) + " in progress…");
+      await runMutation(action, async () => {
+        const progress = say(capitalize(action) + " in progress…");
         const updated = await apiRequest(
           "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
           { method: "POST" },
@@ -942,7 +942,12 @@ function App() {
             setHint(null);
           }
         }
-        if (isCurrent()) say(capitalize(action) + " completed for " + displayName(s) + ".");
+        // The completion sentence replaces this flow's own "in progress…" and nothing else. Whatever
+        // the operator was told while the request was in flight — a lost connection, most reachably — is
+        // newer than a result they were already told was coming, and is the only notice they get of it.
+        if (announcementHolds(progress)) {
+          say(capitalize(action) + " completed for " + displayName(s) + ".");
+        }
       });
     } catch (e) {
       say(capitalize(action) + " failed: " + errorMessage(e), true);
@@ -1006,7 +1011,7 @@ function App() {
     const submittedDialog = dialogSignal.value;
     // Form revision distinguishes a remounted PreferencesDialog when routing late failures.
     const revisionAtSubmit = prefsSignal.value.revision;
-    return runMutation("preferences", async ({ isCurrent }) => {
+    return runMutation("preferences", async () => {
       try {
         const saved = await apiRequest("/preferences", {
           method: "PUT",
@@ -1015,23 +1020,21 @@ function App() {
             groupingLevel: next.groupingLevel,
           }),
         });
-        // An unreadable 2xx body cannot establish what the daemon committed.
-        if (!sanitizeServerPreferences(saved)) {
+        // A WS echo may beat this response: equal revision is this save, while strictly newer external
+        // state wins and keeps the refreshed form open. An unreadable 2xx body is the third answer and
+        // applies nothing — it cannot establish what the daemon committed, so the save is a failure.
+        const outcome = applyServerPreferences(saved);
+        if (outcome === PREFS_UNREADABLE) {
           throw new Error("the daemon answered the save with an unreadable preferences payload");
         }
-        // A WS echo may beat this response: equal revision is this save, while strictly newer external
-        // state wins and keeps the refreshed form open.
-        const applied = applyServerPreferences(saved);
         applyDevicePreferences(next);
-        if (!applied) {
-          if (!isCurrent()) return;
+        if (outcome === PREFS_SUPERSEDED) {
           say("Preferences were saved, but newer settings arrived. Review the current values.");
           return;
         }
         // Keep the apply decision and close in the same turn.
         closeDialogFrom(submittedDialog);
         const current = serverPrefs.value;
-        if (!isCurrent()) return;
         say(current.basePath.length > 0
           ? "Grouping by " + current.basePath + " (level " + current.groupingLevel + ")."
           : "Grouping off — no base path set.");
@@ -1110,7 +1113,7 @@ function App() {
 
     const submittedDialog = dialogSignal.value;
     const label = displayName(selected);
-    return runMutation("link-task", async ({ isCurrent }) => {
+    return runMutation("link-task", async () => {
       let failure = null;
       try {
         await linkTask(ref, sessionId);
@@ -1125,7 +1128,7 @@ function App() {
       }
 
       closeDialogFrom(submittedDialog);
-      say("Link request completed for " + label + "; refreshing the session…");
+      const refreshing = say("Link request completed for " + label + "; refreshing the session…");
 
       // The text-only link response cannot update the badge. Re-read the committed row and let the
       // normal revision merge arbitrate it against a racing WebSocket frame.
@@ -1138,8 +1141,10 @@ function App() {
       // API_REQUEST_TIMEOUT_MS (60 s, lib/api.js:4), so a stalled read cannot hold the lock longer than
       // one transport timeout. Reads that are not part of a mutation stay outside the lock entirely.
       const fresh = await fetchSessionRow(sessionId);
-      // A superseded run has nothing to announce: the newer mutation owns the operator's attention.
-      if (!isCurrent()) return;
+      // Do not overwrite feedback the operator received while this read was in flight. The lock keeps a
+      // second mutation out, but not the events socket announcing a lost connection, and that warning is
+      // worth more than the badge sentence it would be replaced by.
+      if (!announcementHolds(refreshing)) return;
       const winner = findSession(sessionId) || fresh;
       const outcome = sessionTaskLinkOutcome({ label: label, ref: ref, fresh: fresh, winner: winner });
       say(outcome.text, outcome.error);

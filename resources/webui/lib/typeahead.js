@@ -25,7 +25,7 @@ export const COMPOSING = "composing";
  * had just made, or kept one made against a list that no longer exists.
  */
 export function chooseKey(key, token = null) {
-  return { key: key, token: token === undefined ? null : token };
+  return { key: key, token: token };
 }
 
 /** Which row is active, answered during render and again at event time from the same inputs. */

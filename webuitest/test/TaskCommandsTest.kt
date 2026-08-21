@@ -402,6 +402,13 @@ class TaskCommandsTest {
             )
             assertThat(options.nth(1)).hasClass(ACTIVE_OPTION)
             val readsBeforeSubmit = targetedReads.get()
+            // Synthesized rather than driven, deliberately, and this is the exception the rule allows:
+            // what is being proven is that both keydowns compose *within one task* — the arrow moves the
+            // choice and the Enter that follows it in the same turn commits the row it just moved to,
+            // with no render in between. A real `press()` pair cannot state that, because Playwright
+            // lets the page paint between them and the defect this replaced (an active row reconciled in
+            // a post-paint effect) would pass. Everything else in this file drives real gestures; the
+            // routing of a plain ArrowUp and Enter to this field is proven by the presses above.
             query.evaluate(
                 """el => {
                   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));

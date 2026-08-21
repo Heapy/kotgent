@@ -408,12 +408,19 @@ describe("project writers", () => {
     assert.deepEqual(projects.value.map((p) => p.name), ["renamed", "two"]);
   });
 
-  test("removing a row drops it and is idempotent", () => {
+  test("removing a row drops it, and removing it again writes nothing at all", () => {
     replaceProjects([{ id: "p1" }, { id: "p2" }]);
 
-    assert.equal(removeProjectRow("p1").changed, true);
-    assert.equal(removeProjectRow("p1").changed, false);
+    removeProjectRow("p1");
+    const afterRemoval = projects.value;
+    removeProjectRow("p1");
+
     assert.deepEqual(projects.value.map((p) => p.id), ["p2"]);
+    assert.equal(
+      projects.value,
+      afterRemoval,
+      "the same list object, not merely an equal one: a rewrite would re-render every subscriber for no news",
+    );
   });
 
   test("liveness answers the question the link guard asks", () => {
