@@ -332,11 +332,11 @@ place it burns wall-clock in every subsequent validation run.
 **Files:**
 - Modify: `webuitest/test/TaskCommandsTest.kt`
 
-- [ ] make `openLinkTaskPicker()` wait for actual readiness (a `.link-picker-option` row, or
+- [x] make `openLinkTaskPicker()` wait for actual readiness (a `.link-picker-option` row, or
       `#link-task-status` detaching) instead of only dialog visibility and input focus
-- [ ] replace `tapped.evaluate("el => el.click()")` at `TaskCommandsTest.kt:650` with `tapped.tap()`,
+- [x] replace `tapped.evaluate("el => el.click()")` at `TaskCommandsTest.kt:650` with `tapped.tap()`,
       and the synthesized `MouseEvent` dispatches at 636-637 with `hover()`
-- [ ] verify the scroll assertion measures the populated option list, not the placeholder
+- [x] verify the scroll assertion measures the populated option list, not the placeholder
 
 ### Task 2: Закрытие волны 1
 
@@ -345,14 +345,14 @@ place it burns wall-clock in every subsequent validation run.
 The wave's commit deliberately includes the pre-existing uncommitted link-task feature alongside the two
 test fixes — that is what makes this wave the plan's baseline.
 
-- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block plus the pre-existing
+- [x] reconcile `git status --porcelain` against the participant's `FILES:` block plus the pre-existing
       link-task diff, and stop with a report on any path neither accounts for
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 3: Vendor @preact/signals and prove it in a real browser
 

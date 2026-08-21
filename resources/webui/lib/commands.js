@@ -1,6 +1,12 @@
 // The sole command and mnemonic registry; session actions are omitted on the task-board screen.
 
-import { displayName, isAliveState, isNeedsAttention, stateBadge } from "./sessions.js";
+import {
+  displayName,
+  isAliveState,
+  isNeedsAttention,
+  sessionTaskLinkDisabledReason,
+  stateBadge,
+} from "./sessions.js";
 
 function disabledWhenNoSession(session) {
   return session ? null : "no session is selected";
@@ -137,6 +143,14 @@ function sessionCommands(activeSession, attachedId, pendingAction, actions) {
       hint: "⌘K f",
       disabled: disabledWhenNoSession(activeSession),
       run: () => actions.uploadFiles(),
+    },
+    {
+      id: "session.link-task", group: "session", chord: "l",
+      title: "Link this session to a task…",
+      subtitle: "chooses an open task from this session's project",
+      hint: "⌘K l",
+      disabled: sessionTaskLinkDisabledReason(activeSession, pendingAction),
+      run: () => actions.linkSessionTask(),
     },
     {
       id: "session.open-task", group: "session", chord: "j",

@@ -27,6 +27,7 @@ fun boardScenarios(): List<Scenario> = listOf(
     boardProjectsScenario(),
     taskDetailScenario(),
     taskLinkedSessionScenario(),
+    taskLinkPickerScenario(),
     deepLinkScenario(),
 )
 

@@ -26,6 +26,7 @@ import {
   displayName,
   isAliveState,
   patchIfNewer,
+  sessionTaskLinkDisabledReason,
   stateBadge,
   tmuxAttachCommand,
   upsertIfNewer,
@@ -45,6 +46,8 @@ import {
   applyTasksSnapshot,
   deleteProject,
   fetchProjects,
+  isOpenTaskState,
+  linkTask,
   patchTaskIfNewer,
   removeTask,
   restoreProject,
@@ -58,6 +61,7 @@ import { TerminalPane } from "./components/TerminalPane.js";
 import {
   DeleteProjectDialog,
   HelpDialog,
+  LinkTaskDialog,
   NewSessionDialog,
   PhoneDialog,
   PreferencesDialog,
@@ -166,6 +170,7 @@ function App() {
   const [tasks, setTasks] = useState([]);
   const [tasksReady, setTasksReady] = useState(false);
   const [projects, setProjects] = useState([]);
+  const [projectsReady, setProjectsReady] = useState(false);
   const [projectId, setProjectId] = useState(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
@@ -209,6 +214,10 @@ function App() {
 
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
   const activeRef = useRef(activeId);
   activeRef.current = activeId;
   // A generation counter closes the A→B→A hole when async flows conditionally auto-select.
@@ -220,6 +229,8 @@ function App() {
   dialogRef.current = dialog;
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
+  const statusRef = useRef(status);
+  statusRef.current = status;
   // Persisted revisions order racing HTTP and WebSocket updates; refs advance synchronously.
   const preferencesRevisionRef = useRef(prefs.revision);
   const serverPreferencesRef = useRef({
@@ -334,7 +345,11 @@ function App() {
     }, 0);
   }, []);
 
-  const say = useCallback((text, error) => setStatus({ text: text, error: !!error }), []);
+  const say = useCallback((text, error) => {
+    const next = { text: text, error: !!error };
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
 
   const reloadProjects = useCallback((reportFailure = true) => {
     const refresh = projectRefreshRef.current;
@@ -368,7 +383,9 @@ function App() {
               say("Could not load projects: " + errorMessage(failure), true);
             }
           } else {
+            projectsRef.current = rows;
             setProjects(rows);
+            setProjectsReady(true);
           }
           refresh.settled = reading;
           for (const waiter of ready) waiter.resolve(failure ? null : rows);
@@ -491,11 +508,17 @@ function App() {
         if (index < 0) return current;
         const next = current.slice();
         next.splice(index, 1);
+        projectsRef.current = next;
         return next;
       }
-      if (index < 0) return current.concat([changed]);
+      if (index < 0) {
+        const next = current.concat([changed]);
+        projectsRef.current = next;
+        return next;
+      }
       const next = current.slice();
       next[index] = changed;
+      projectsRef.current = next;
       return next;
     });
     if (archived) setProjectId((current) => current === id ? null : current);
@@ -587,6 +610,7 @@ function App() {
       if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
     }
     // Reconnect snapshots are authoritative, including deletions.
+    sessionsRef.current = rows;
     setSessions(rows);
     const ids = new Set(rows.map((s) => s.id));
     setActiveId((id) => (id && !ids.has(id) ? null : id));
@@ -602,7 +626,7 @@ function App() {
         showSession(target);
       }
     }
-    // Judge unread from the frame; sessionsRef has not caught up with setSessions yet.
+    // Judge unread from the authoritative frame.
     const active = rows.find((s) => s.id === activeRef.current);
     if (active) markReadIfViewing(active.id, active.unread, active.lastSeq);
     disconnectAnnouncedRef.current = false;
@@ -615,36 +639,47 @@ function App() {
   }, [cancelReattach, say, showSession]);
 
   const applySessionRow = useCallback((row) => {
-    const prevRow = sessionsRef.current.find((s) => s.id === row.id);
-    if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
-    setSessions((prev) => upsertIfNewer(prev, row));
+    const current = sessionsRef.current;
+    const prevRow = current.find((s) => s.id === row.id);
+    const next = upsertIfNewer(current, row);
+    const winner = next.find((s) => s.id === row.id) || null;
+    if (next !== current) {
+      if (prevRow && !prevRow.needsAttention && row.needsAttention) notifyAttention(prevRow);
+      sessionsRef.current = next;
+      setSessions(next);
+    }
     if (deepLinkRef.current === row.id) {
       deepLinkRef.current = null;
       clearDeepLink();
-      showSession(row);
-      return;
+      if (winner) showSession(winner);
+      return winner;
     }
-    if (row.id === activeRef.current) markReadIfViewing(row.id, row.unread, row.lastSeq);
+    if (winner && winner.id === activeRef.current) {
+      markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
+    }
+    return winner;
   }, [showSession]);
 
   const applySessionPatch = useCallback((msg) => {
     const prevSession = sessionsRef.current.find((s) => s.id === msg.sessionId);
     if (!prevSession) return;
+    const next = patchIfNewer(sessionsRef.current, msg);
+    if (next === sessionsRef.current) return;
     if (!prevSession.needsAttention && msg.needsAttention) notifyAttention(prevSession);
-    setSessions((prev) => patchIfNewer(prev, msg));
-    // Judge unread from the frame; sessionsRef has not caught up with setSessions yet.
-    if (msg.sessionId === activeRef.current) {
-      markReadIfViewing(msg.sessionId, msg.unread, msg.lastSeq);
+    sessionsRef.current = next;
+    setSessions(next);
+    const winner = next.find((session) => session.id === msg.sessionId);
+    if (winner && winner.id === activeRef.current) {
+      markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
     }
   }, []);
 
-  // Targeted GETs merge by revision and return null so callers decide how to surface misses.
+  // Targeted GETs return the revision winner; null is reserved for an unavailable read.
   const fetchSessionRow = useCallback(async (id) => {
     try {
       const row = await apiRequest("/sessions/" + encodeURIComponent(id));
       if (row && row.id) {
-        applySessionRow(row);
-        return row;
+        return applySessionRow(row);
       }
     } catch (_) {}
     return null;
@@ -1087,6 +1122,66 @@ function App() {
     if (selected && selected.taskRef) navigate(taskPath(selected.taskRef));
   }, []);
 
+  const linkSessionToTask = useCallback(async (sessionId, ref, expectedProjectId) => {
+    const selected = sessionsRef.current.find((session) => session.id === sessionId);
+    const candidate = tasksRef.current.find((task) => task.ref === ref);
+    if (sessionTaskLinkDisabledReason(selected, pendingRef.current) ||
+        activeRef.current !== sessionId || selected.projectId !== expectedProjectId ||
+        !projectsRef.current.some((project) => project.id === expectedProjectId) ||
+        !candidate || candidate.project !== expectedProjectId || !isOpenTaskState(candidate.state)) {
+      throw new Error("The selected session or task changed. Close the picker and try again.");
+    }
+
+    const submittedDialog = dialogRef.current;
+    const label = displayName(selected);
+    pendingRef.current = "link-task";
+    setPendingAction("link-task");
+    let failure = null;
+    try {
+      await linkTask(ref, sessionId);
+    } catch (e) {
+      failure = e;
+    }
+    // Only the mutating POST owns the global session-action lock. The targeted read is revision-safe
+    // and must not make unrelated controls wait for its transport timeout.
+    if (pendingRef.current === "link-task") {
+      pendingRef.current = null;
+      setPendingAction(null);
+    }
+    if (failure) {
+      // A dismissed picker has nowhere local to report the request failure.
+      if (dialogRef.current === submittedDialog) throw failure;
+      say("Could not link " + label + " to " + ref + ": " + errorMessage(failure), true);
+      return;
+    }
+
+    closeDialogFrom(submittedDialog);
+    const refreshing = "Link request completed for " + label + "; refreshing the session…";
+    say(refreshing);
+
+    // The text-only link response cannot update the badge. Re-read the committed row and let the
+    // normal revision merge arbitrate it against a racing WebSocket frame.
+    const fresh = await fetchSessionRow(sessionId);
+    // Do not overwrite feedback from a command the user started while this read was in flight.
+    if (statusRef.current.text !== refreshing) return;
+    const winner = sessionsRef.current.find((session) => session.id === sessionId) || fresh;
+    if (!fresh) {
+      say(
+        "Linked " + label + " to " + ref +
+          ", but the session could not be re-read. A live update may still bring the badge in.",
+        true,
+      );
+    } else if (!winner || winner.taskRef !== ref) {
+      say(
+        "The link request completed, but " + (winner ? displayName(winner) : label) +
+          " is now linked to " + ((winner && winner.taskRef) || "no task") + ".",
+        true,
+      );
+    } else {
+      say("Linked " + displayName(winner) + " to " + ref + ".");
+    }
+  }, [closeDialogFrom, fetchSessionRow, say]);
+
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const toggleDrawer = useCallback(() => setDrawerOpen((open) => !open), []);
   const toggleSidebar = useCallback(() => setSidebarCollapsed((collapsed) => !collapsed), []);
@@ -1099,6 +1194,15 @@ function App() {
     const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
     if (selected) setDialog({ kind: "upload", session: selected });
   }, []);
+  const openLinkTask = useCallback(() => {
+    const selected = sessionsRef.current.find((session) => session.id === activeRef.current);
+    const disabled = sessionTaskLinkDisabledReason(selected, pendingRef.current);
+    if (disabled) {
+      say("Linking a task is no longer available: " + disabled + ".", true);
+      return;
+    }
+    setDialog({ kind: "link-task", session: selected });
+  }, [say]);
   const openDeleteProject = useCallback(() => {
     if (selectedProject) setDialog({ kind: "delete-project", project: selectedProject });
   }, [selectedProject]);
@@ -1131,6 +1235,7 @@ function App() {
       done: done,
       copyTmux: copyTmuxCommand,
       uploadFiles: openUpload,
+      linkSessionTask: openLinkTask,
       newSession: () => openNewSession(null),
       importSession: openImportSession,
       freeTerminal: openFreeTerminal,
@@ -1234,6 +1339,13 @@ function App() {
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "upload" && html`
       <${UploadFilesDialog} session=${dialog.session} onClose=${closeDialog} />`}
+    ${dialog && dialog.kind === "link-task" && html`
+      <${LinkTaskDialog} initialSession=${dialog.session} session=${activeSession}
+                         tasks=${tasks} tasksReady=${tasksReady}
+                         projectsReady=${projectsReady}
+                         projectActive=${projects.some((project) =>
+                           project.id === dialog.session.projectId)}
+                         onLink=${linkSessionToTask} onClose=${closeDialog} />`}
     ${/* Remount on server revision so an open draft cannot overwrite newer committed values. */ ""}
     ${dialog && dialog.kind === "prefs" && html`
       <${PreferencesDialog} key=${prefs.revision} prefs=${prefs} sessions=${sessions}

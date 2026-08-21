@@ -2,6 +2,50 @@
 
 import { apiRequest } from "./api.js";
 
+/** Mirrors `io.kotgent.task.TaskState` in board order. */
+export const TASK_STATES = ["todo", "in_progress", "review", "done"];
+
+export const TASK_STATE_LABELS = {
+  todo: "To do",
+  in_progress: "In progress",
+  review: "Review",
+  done: "Done",
+};
+
+const TASK_STATE_ORDER = new Map(TASK_STATES.map((state, index) => [state, index]));
+
+export function taskStateLabel(state) {
+  return TASK_STATE_LABELS[state] || state || "unknown";
+}
+
+export function taskStateRank(state) {
+  const rank = TASK_STATE_ORDER.get(state);
+  return rank === undefined ? Number.MAX_SAFE_INTEGER : rank;
+}
+
+export function isOpenTaskState(state) {
+  return state !== "done" && TASK_STATE_ORDER.has(state);
+}
+
+function compareFiniteNumbers(left, right) {
+  const leftFinite = typeof left === "number" && Number.isFinite(left);
+  const rightFinite = typeof right === "number" && Number.isFinite(right);
+  if (leftFinite && rightFinite) return left < right ? -1 : left > right ? 1 : 0;
+  if (leftFinite !== rightFinite) return leftFinite ? -1 : 1;
+  return 0;
+}
+
+/** Project-local board order: rank first, then creation order, then a stable ref fallback. */
+export function compareTasksByBoardOrder(left, right) {
+  const position = compareFiniteNumbers(left && left.position, right && right.position);
+  if (position !== 0) return position;
+  const created = compareFiniteNumbers(left && left.createdAt, right && right.createdAt);
+  if (created !== 0) return created;
+  const leftRef = left && typeof left.ref === "string" ? left.ref : "";
+  const rightRef = right && typeof right.ref === "string" ? right.ref : "";
+  return leftRef < rightRef ? -1 : leftRef > rightRef ? 1 : 0;
+}
+
 function taskPath(ref, suffix) {
   return "/tasks/" + encodeURIComponent(ref) + (suffix || "");
 }
@@ -67,6 +111,10 @@ export async function patchTask(ref, patch) {
 
 export async function moveTask(ref, target) {
   return apiRequest(taskPath(ref, "/move"), jsonBody("POST", target || {}));
+}
+
+export async function linkTask(ref, sessionId) {
+  return apiRequest(taskPath(ref, "/link"), jsonBody("POST", { sessionId: sessionId }));
 }
 
 export async function editTaskDependency(ref, action, on) {

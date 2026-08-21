@@ -79,11 +79,12 @@ class FakeTaskStore(
         body: String = "body of $title",
         state: TaskState = TaskState.todo,
         position: Double? = null,
+        createdAt: Long? = null,
     ) {
         tasks[ref] = Task(ref, title, body, url = null, updatedAt = now())
         entries[ref] = BacklogEntry(
             ref, project, position ?: endPosition(project), state, blocked = false,
-            createdAt = now(), updatedAt = now(), rev = ++revCounter,
+            createdAt = createdAt ?: now(), updatedAt = now(), rev = ++revCounter,
         )
         ref.key.toIntOrNull()?.let { if (it > nextKey) nextKey = it }
         reseedBlocked()

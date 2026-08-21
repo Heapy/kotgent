@@ -2,13 +2,20 @@
  * touch grabber and fail toward preserving drafts. htm copy interpolates literal `<` characters. */
 
 import { html } from "htm/preact";
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
+import { displayName, sessionTaskLinkDisabledReason } from "../lib/sessions.js";
 import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
 import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.js";
-import { fetchProjects } from "../lib/tasks.js";
+import {
+  compareTasksByBoardOrder,
+  fetchProjects,
+  isOpenTaskState,
+  taskStateLabel,
+  taskStateRank,
+} from "../lib/tasks.js";
 import { qrSvg } from "../lib/qr.js";
 
 const SWIPE_SLOP_PX = 8;
@@ -788,6 +795,238 @@ function restoreProjectBody(state, busyId, restore, reload) {
   `;
 }
 
+function openTasksForProject(tasks) {
+  return (tasks || [])
+    .filter((task) => task && isOpenTaskState(task.state))
+    .sort((left, right) => {
+      const state = taskStateRank(left.state) - taskStateRank(right.state);
+      return state !== 0 ? state : compareTasksByBoardOrder(left, right);
+    });
+}
+
+/** Foreign-project frames keep this projection's identity, so they cannot re-sort the picker. */
+function useProjectTasks(tasks, projectId) {
+  const cacheRef = useRef({ projectId: null, rows: [] });
+  const next = [];
+  for (const task of tasks || []) {
+    if (task && task.project === projectId) next.push(task);
+  }
+  const cached = cacheRef.current;
+  const unchanged = cached.projectId === projectId && cached.rows.length === next.length &&
+    cached.rows.every((task, index) => task === next[index]);
+  if (!unchanged) cacheRef.current = { projectId: projectId, rows: next };
+  return cacheRef.current.rows;
+}
+
+function linkSessionChanged(initial, current) {
+  if (!initial || !current || initial.id !== current.id) return true;
+  return initial.projectId !== current.projectId ||
+    sessionTaskLinkDisabledReason(current) !== null;
+}
+
+export function LinkTaskDialog({
+  initialSession,
+  session,
+  tasks = [],
+  tasksReady = false,
+  projectsReady = false,
+  projectActive = false,
+  onLink,
+  onClose,
+}) {
+  const [query, setQuery] = useState("");
+  const [activeTaskRef, setActiveTaskRef] = useState(null);
+  const [busyTaskRef, setBusyTaskRef] = useState(null);
+  const [error, setError] = useState(null);
+  const submittingRef = useRef(false);
+  const inputRef = useRef(null);
+  const activeOptionRef = useRef(null);
+  const aliveRef = useRef(true);
+  const activeTaskValueRef = useRef(null);
+  const keyboardScrollRef = useRef(false);
+  const lastQueryRef = useRef(null);
+  const busy = busyTaskRef !== null;
+  const changed = !busy && linkSessionChanged(initialSession, session);
+  const projectUnavailable = projectsReady && !projectActive;
+  const ready = tasksReady && projectsReady;
+  const projectTasks = useProjectTasks(tasks, initialSession && initialSession.projectId);
+  const rows = useMemo(
+    () => projectActive ? openTasksForProject(projectTasks) : [],
+    [projectTasks, projectActive],
+  );
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const results = useMemo(() => {
+    if (!normalizedQuery) return rows;
+    return rows.filter((task) =>
+      (task.ref + " " + (task.title || "")).toLocaleLowerCase().includes(normalizedQuery));
+  }, [rows, normalizedQuery]);
+  const activeIndex = results.findIndex((task) => task.ref === activeTaskRef);
+  const listId = !changed && !projectUnavailable && ready && results.length > 0
+    ? "link-task-list"
+    : null;
+
+  const activateTask = (ref, scroll = false, clearError = false) => {
+    activeTaskValueRef.current = ref;
+    if (scroll) keyboardScrollRef.current = true;
+    if (clearError) setError(null);
+    setActiveTaskRef(ref);
+  };
+
+  useEffect(() => () => { aliveRef.current = false; }, []);
+  useEffect(() => {
+    const first = results.length > 0 ? results[0].ref : null;
+    const current = activeTaskValueRef.current;
+    const queryChanged = lastQueryRef.current !== normalizedQuery;
+    lastQueryRef.current = normalizedQuery;
+    const next = !queryChanged && results.some((task) => task.ref === current) ? current : first;
+    if (next !== current) activateTask(next);
+  }, [results, normalizedQuery]);
+  useEffect(() => {
+    if (!keyboardScrollRef.current) return;
+    keyboardScrollRef.current = false;
+    if (activeOptionRef.current) activeOptionRef.current.scrollIntoView({ block: "nearest" });
+  }, [activeTaskRef]);
+  useEffect(() => {
+    if (!busy && error && inputRef.current) inputRef.current.focus();
+  }, [busy, error]);
+
+  const choose = async (task) => {
+    if (!task || submittingRef.current || changed || projectUnavailable || !ready) return;
+    submittingRef.current = true;
+    activateTask(task.ref, false, true);
+    setBusyTaskRef(task.ref);
+    try {
+      await onLink(initialSession.id, task.ref, initialSession.projectId);
+    } catch (e) {
+      if (!aliveRef.current) return;
+      setError(
+        "Could not link " + displayName(initialSession) + " to " + task.ref + ": " + errorMessage(e),
+      );
+      submittingRef.current = false;
+      setBusyTaskRef(null);
+    }
+  };
+
+  const moveActive = (delta) => {
+    if (results.length === 0) return;
+    const currentIndex = results.findIndex((task) => task.ref === activeTaskValueRef.current);
+    const at = currentIndex >= 0 ? currentIndex : 0;
+    activateTask(results[(at + delta + results.length) % results.length].ref, true, true);
+  };
+
+  const keyDown = (event) => {
+    if (changed || projectUnavailable || !ready) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActive(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActive(-1);
+    } else if (event.key === "Enter") {
+      const active = results.find((task) => task.ref === activeTaskValueRef.current);
+      if (active) {
+        event.preventDefault();
+        choose(active);
+      }
+    }
+  };
+
+  const listBody = changed
+    ? html`
+      <p id="link-task-changed" class="form-error" role="status">
+        The selected session changed while this picker was open. Close it and try again.
+      </p>`
+    : projectUnavailable
+      ? html`
+        <p id="link-task-project-missing" class="form-error" role="status">
+          This session's project is no longer active. Restore it before linking a task.
+        </p>`
+      : !ready
+      ? html`<p id="link-task-status" class="dialog-status">Reading open tasks…</p>`
+      : results.length === 0
+        ? html`
+          <p id="link-task-empty" class="dialog-empty">
+            ${rows.length === 0
+              ? "No open tasks in this session's project."
+              : "No open tasks match “" + query.trim() + "”."}
+          </p>`
+        : html`
+          <ul id="link-task-list" class="dialog-list link-picker-list" role="listbox">
+            ${results.map((task, index) => html`
+              <li key=${task.ref} role="presentation">
+                <button
+                  id=${"link-task-option-" + index}
+                  class=${"dialog-list-row link-picker-option" +
+                    (task.ref === activeTaskRef ? " active" : "")}
+                  type="button"
+                  role="option"
+                  aria-selected=${task.ref === activeTaskRef ? "true" : "false"}
+                  data-ref=${task.ref}
+                  data-state=${task.state}
+                  disabled=${busy}
+                  ref=${task.ref === activeTaskRef ? activeOptionRef : null}
+                  onMouseEnter=${() => activateTask(task.ref, false, true)}
+                  onFocus=${() => activateTask(task.ref, false, true)}
+                  onClick=${() => choose(task)}
+                >
+                  <span class="dialog-list-name">${task.title || task.ref}</span>
+                  <span class="dialog-list-sub link-picker-meta">
+                    <span>${task.ref}</span>
+                    ${task.blocked && html`
+                      <span class="link-picker-blocked"
+                            title="A dependency is not done yet">Blocked</span>`}
+                  </span>
+                  <span class="dialog-list-action link-picker-state">
+                    ${busyTaskRef === task.ref
+                      ? "Linking…"
+                      : taskStateLabel(task.state)}
+                  </span>
+                </button>
+              </li>
+            `)}
+          </ul>`;
+
+  return html`
+    <${Dialog} id="link-task-dialog" labelledBy="link-task-title" lightDismiss=${!busy}
+               onClose=${onClose}>
+      <div id="link-task-form" aria-busy=${busy ? "true" : "false"}>
+        <div class="dialog-head">
+          <div>
+            <h2 id="link-task-title">Link session to a task</h2>
+            <p>
+              ${initialSession ? displayName(initialSession) : "Selected session"} · open tasks in its project
+            </p>
+          </div>
+          <button id="link-task-close" class="icon-button" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+
+        <label class="field link-picker-search">
+          <span>Search by ref or title</span>
+          <input id="link-task-query" type="search" role="combobox" autoComplete="off"
+                 autoFocus spellCheck=${false} placeholder="local:42 or task title" ref=${inputRef}
+                 aria-autocomplete="list" aria-controls=${listId}
+                 aria-expanded=${listId ? "true" : "false"}
+                 aria-activedescendant=${listId && activeIndex >= 0
+                   ? "link-task-option-" + activeIndex
+                   : null}
+                 disabled=${busy || changed || projectUnavailable} value=${query}
+                 onInput=${(event) => { setError(null); setQuery(event.target.value); }}
+                 onKeyDown=${keyDown} />
+        </label>
+
+        <div class="link-picker-results">${listBody}</div>
+        ${error && html`<p id="link-task-error" class="form-error" role="alert">${error}</p>`}
+
+        <div class="dialog-actions">
+          <button id="link-task-cancel" class="button button-quiet" type="button"
+                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
+        </div>
+      </div>
+    <//>
+  `;
+}
+
 function groupingPreview(draft, sessions) {
   if (!draft.basePath) return "No base path — sessions are listed flat.";
   const base = normalizePath(draft.basePath);
@@ -1086,6 +1325,10 @@ const CONTROLS = [
   ["Attach",
     "Connects this browser to the session's terminal. It starts nothing — it only opens a view on an " +
     "agent that is already running."],
+  ["Link to task",
+    "For a live session that has no task yet, open the command palette and press L. Search the open " +
+    "tasks in that session's project by ref or title, then choose one. A to-do task moves to in " +
+    "progress; linking never prevents another session from working on the same task."],
   ["Interrupt",
     "Sends Ctrl-C to the pane and marks the session ready, clearing any pending approval. Use it for a " +
     "turn that is stuck or running away. The agent stays alive."],

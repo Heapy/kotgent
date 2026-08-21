@@ -7,21 +7,21 @@ import { apiRequest, errorMessage } from "../lib/api.js";
 import { joinPath, normalizePath } from "../lib/paths.js";
 import { navigate, sessionPath, taskPath } from "../lib/router.js";
 import {
+  TASK_STATES,
+  compareTasksByBoardOrder,
   createProject,
   createTask,
   moveTask,
   patchTask,
+  taskStateLabel,
 } from "../lib/tasks.js";
 import { Dialog } from "./dialogs.js";
 import { TaskCard } from "./TaskCard.js";
 
-/** Mirrors `io.kotgent.task.TaskState` in board order. */
-export const BOARD_COLUMNS = [
-  { state: "todo", label: "To do" },
-  { state: "in_progress", label: "In progress" },
-  { state: "review", label: "Review" },
-  { state: "done", label: "Done" },
-];
+export const BOARD_COLUMNS = TASK_STATES.map((state) => ({
+  state: state,
+  label: taskStateLabel(state),
+}));
 
 /** Show only the recent tail of the unbounded done column by default. */
 export const DONE_VISIBLE_LIMIT = 10;
@@ -295,8 +295,7 @@ export function Board({
   const entries = useMemo(() => tasks
     .filter((task) => task.project === shownProjectId)
     .slice()
-    .sort((a, b) => (a.position - b.position) || (a.createdAt - b.createdAt) ||
-      (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)), [tasks, shownProjectId]);
+    .sort(compareTasksByBoardOrder), [tasks, shownProjectId]);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
 

@@ -6,17 +6,14 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { errorMessage } from "../lib/api.js";
 import { SCREEN_TASKS, navigate, routePath, sessionPath, taskPath } from "../lib/router.js";
 import { displayName, stateBadge } from "../lib/sessions.js";
-import { deleteTask, editTaskDependency, fetchTaskDetail, patchTask } from "../lib/tasks.js";
-
-/** Mirrors `io.kotgent.task.TaskState` in board order. */
-export const TASK_STATES = ["todo", "in_progress", "review", "done"];
-
-export const TASK_STATE_LABELS = {
-  todo: "To do",
-  in_progress: "In progress",
-  review: "Review",
-  done: "Done",
-};
+import {
+  TASK_STATES,
+  deleteTask,
+  editTaskDependency,
+  fetchTaskDetail,
+  patchTask,
+  taskStateLabel,
+} from "../lib/tasks.js";
 
 const ACTIVITY_FALLBACK = {
   created: "created the task",
@@ -25,10 +22,6 @@ const ACTIVITY_FALLBACK = {
   linked: "linked a session",
   unlinked: "unlinked a session",
 };
-
-function stateLabel(state) {
-  return TASK_STATE_LABELS[state] || state || "unknown";
-}
 
 export function activityTime(ts) {
   if (typeof ts !== "number" || !Number.isFinite(ts)) return "";
@@ -46,7 +39,7 @@ export function activityTimestampAttr(ts) {
 export function activityText(row) {
   if (!row) return "";
   if (row.kind === "transition") {
-    const move = stateLabel(row.fromState) + " → " + stateLabel(row.toState);
+    const move = taskStateLabel(row.fromState) + " → " + taskStateLabel(row.toState);
     return row.text ? move + " — " + row.text : move;
   }
   if (row.text) return row.text;
@@ -208,7 +201,7 @@ export function TaskDetail({
     run("Could not move " + taskRef, async () => {
       const moved = await patchTask(taskRef, { state: next });
       publishRow(moved);
-      onAnnounce(taskRef + " → " + stateLabel(next) + ".");
+      onAnnounce(taskRef + " → " + taskStateLabel(next) + ".");
     });
   };
 
@@ -305,7 +298,7 @@ export function TaskDetail({
                   value=${entry.state} onChange=${changeState}>
             ${TASK_STATES.map((state) => html`
               <option key=${state} value=${state} selected=${state === entry.state}>
-                ${stateLabel(state)}
+                ${taskStateLabel(state)}
               </option>
             `)}
           </select>

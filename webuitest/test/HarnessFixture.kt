@@ -40,6 +40,7 @@ const val BOARD_EMPTY_SCENARIO: String = "board-empty"
 const val BOARD_PROJECTS_SCENARIO: String = "board-projects"
 const val TASK_DETAIL_SCENARIO: String = "task-detail"
 const val TASK_LINKED_SESSION_SCENARIO: String = "task-linked-session"
+const val TASK_LINK_PICKER_SCENARIO: String = "task-link-picker"
 const val DEEP_LINK_SCENARIO: String = "deep-link"
 
 const val PALETTE_OPENER: String = "Meta+KeyK" // The app matches macOS physical event codes.

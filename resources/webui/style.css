@@ -808,6 +808,7 @@ dialog::backdrop {
 #new-project-form,
 #delete-project-form,
 #restore-project-form,
+#link-task-form,
 #upload-form,
 #prefs-form,
 #phone-form { padding: 20px; }
@@ -1195,6 +1196,52 @@ dialog::backdrop {
   grid-column: 2;
   grid-row: 1 / span 2;
 }
+
+#link-task-dialog { width: 560px; }
+#link-task-form {
+  display: flex;
+  flex-direction: column;
+  max-height: min(78vh, 680px);
+}
+#link-task-form .dialog-head,
+#link-task-form .link-picker-search,
+#link-task-form .dialog-actions,
+#link-task-form > .form-error { flex: 0 0 auto; }
+.link-picker-search { margin-top: 0; }
+.link-picker-results {
+  flex: 1 1 auto;
+  margin-top: 14px;
+  min-height: 0;
+  overflow-y: auto;
+}
+.link-picker-list {
+  max-height: none;
+  overflow-y: visible;
+}
+.link-picker-option.active {
+  background: var(--pill-active);
+  border-color: var(--pill-active-border);
+}
+.link-picker-option:disabled { opacity: 0.62; }
+.link-picker-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.link-picker-blocked {
+  background: #4a3610;
+  border-radius: 9px;
+  color: #ffe0a3;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.link-picker-state { white-space: nowrap; }
+.link-picker-option[data-state="todo"] .link-picker-state { color: var(--muted); }
+.link-picker-option[data-state="review"] .link-picker-state { color: #d9a441; }
 
 .phone-status {
   color: var(--muted);
@@ -2145,6 +2192,7 @@ button.task-card-title:hover,
   #new-project-form,
   #delete-project-form,
   #restore-project-form,
+  #link-task-form,
   #upload-form,
   #prefs-form,
   #phone-form,

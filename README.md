@@ -350,9 +350,11 @@ The UI is a small router over four paths: `/` and `/s/{id}` for the session view
 between on a desktop, one column and a switcher on a phone. Each card shows its blocked marker, its
 dependency count and every session linked to it, and every change (a drag, a state move, a link, a
 deletion) reaches a second tab over the same events WebSocket without a reload. Sessions carry a badge
-linking to their task; the command palette opens the board with `⌘K o` and its create form with `⌘K w`.
-Those bare paths are deep-linkable and installable, which is why the client-facing API lives under
-`/api/v1`.
+linking to their task. For a selected live session with no task yet, `⌘K l` opens a searchable picker of
+that session's project's `todo`, `in_progress`, and `review` tasks; choosing one writes the same
+non-exclusive link as `kotgent task claim`, so a `todo` starts and another session may still choose the
+same task. The command palette opens the board with `⌘K o` and its create form with `⌘K w`. Those bare
+paths are deep-linkable and installable, which is why the client-facing API lives under `/api/v1`.
 
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
 embedded short Git hash (for example `0.8.0+81c37fe`), while published Homebrew builds show the release

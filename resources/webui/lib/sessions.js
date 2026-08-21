@@ -22,6 +22,14 @@ export function isAliveState(state) {
     state === "needs_approval" || state === "needs_answer";
 }
 
+export function sessionTaskLinkDisabledReason(session, pendingAction = null) {
+  if (pendingAction) return "another action is still in progress";
+  if (!session) return "no session is selected";
+  if (!isAliveState(session.state)) return "the selected session is not running";
+  if (session.taskRef) return "the selected session is already linked to " + session.taskRef;
+  return session.projectId ? null : "the selected session has no project";
+}
+
 export function displayName(s) {
   if (s.name && s.name.length > 0) return s.name;
   if (s.tmuxSession && s.tmuxSession.length > 0) return s.tmuxSession;
