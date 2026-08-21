@@ -26,14 +26,14 @@ import {
   mergeTaskRow,
   replaceTasks,
   tasks,
-  tasksReady,
+  tasksReadiness,
 } from "../../resources/webui/state/tasks.js";
 import {
   applyProjectRow,
   findProject,
   isLiveProject,
   projects,
-  projectsReady,
+  projectsReadiness,
   removeProjectRow,
   replaceProjects,
 } from "../../resources/webui/state/projects.js";
@@ -96,9 +96,9 @@ function resetState() {
   replaceSessions([]);
   sessionsReady.value = false;
   replaceTasks([]);
-  tasksReady.value = false;
+  tasksReadiness.reset();
   replaceProjects([]);
-  projectsReady.value = false;
+  projectsReadiness.reset();
 }
 
 // Count notifications the way a subscribed component would see them: the first run is the initial
@@ -319,18 +319,22 @@ describe("session lookup", () => {
 
 describe("task writers", () => {
   test("a snapshot replaces the list and establishes readiness", () => {
-    assert.equal(tasksReady.value, false, "a destructive confirmation must not read an unloaded list");
+    assert.equal(
+      tasksReadiness.status.value.state,
+      "idle",
+      "a destructive confirmation must not read an unloaded list",
+    );
 
     replaceTasks([taskRow({ ref: "KOT-1" })]);
 
-    assert.equal(tasksReady.value, true);
+    assert.equal(tasksReadiness.status.value.state, "ready");
     assert.deepEqual(tasks.value.map((t) => t.ref), ["KOT-1"]);
   });
 
   test("an empty snapshot is a loaded empty backlog", () => {
     replaceTasks([]);
 
-    assert.equal(tasksReady.value, true);
+    assert.equal(tasksReadiness.status.value.state, "ready");
     assert.deepEqual(tasks.value, []);
   });
 
@@ -387,11 +391,11 @@ describe("project writers", () => {
   // Project rows carry no revision — the daemon emits no project frame — so these writers apply a
   // confirmed response verbatim rather than arbitrating it.
   test("a refresh replaces the list and establishes readiness", () => {
-    assert.equal(projectsReady.value, false);
+    assert.equal(projectsReadiness.status.value.state, "idle");
 
     replaceProjects([{ id: "p1", name: "one" }]);
 
-    assert.equal(projectsReady.value, true);
+    assert.equal(projectsReadiness.status.value.state, "ready");
     assert.equal(findProject("p1").name, "one");
   });
 

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks"
 import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
 import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
 import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
+import { FAILED, IDLE_STATUS, READY, combineReadiness } from "../lib/readiness.js";
 import {
   displayName,
   normalizeTaskQuery,
@@ -833,9 +834,10 @@ export function LinkTaskDialog({
   initialSession,
   session,
   tasks = [],
-  tasksReady = false,
-  projectsReady = false,
+  tasksStatus = IDLE_STATUS,
+  projectsStatus = IDLE_STATUS,
   projectActive = false,
+  onRetryProjects,
   onLink,
   onClose,
 }) {
@@ -852,8 +854,14 @@ export function LinkTaskDialog({
   const lastQueryRef = useRef(null);
   const busy = busyTaskRef !== null;
   const changed = !busy && linkSessionChanged(initialSession, session);
-  const projectUnavailable = projectsReady && !projectActive;
-  const ready = tasksReady && projectsReady;
+  // Judged on the project read alone: once that list has answered, an archived project is a definite
+  // refusal and there is no reason to wait for the task snapshot before saying so.
+  const projectUnavailable = projectsStatus.state === READY && !projectActive;
+  // Both sources, one state. A failure carries the sentence the retry control is drawn beside; without
+  // it a 503 on either read was indistinguishable from a read still in flight, forever.
+  const readiness = combineReadiness(tasksStatus, projectsStatus);
+  const ready = readiness.state === READY;
+  const failure = readiness.state === FAILED ? readiness.error : null;
   const projectTasks = useProjectTasks(tasks, initialSession && initialSession.projectId);
   const rows = useMemo(
     () => projectActive ? openTasksForProject(projectTasks) : [],
@@ -947,6 +955,15 @@ export function LinkTaskDialog({
         <p id="link-task-project-missing" class="form-error" role="status">
           This session's project is no longer active. Restore it before linking a task.
         </p>`
+      : failure
+      ? html`
+        <div id="link-task-failed" role="alert">
+          <p class="form-error">${failure}</p>
+          <div class="dialog-actions">
+            <button id="link-task-retry" class="button" type="button"
+                    onClick=${onRetryProjects}>Try again</button>
+          </div>
+        </div>`
       : !ready
       ? html`<p id="link-task-status" class="dialog-status">Reading open tasks…</p>`
       : results.length === 0
@@ -1016,7 +1033,7 @@ export function LinkTaskDialog({
                  aria-activedescendant=${listId && activeIndex >= 0
                    ? "link-task-option-" + activeIndex
                    : null}
-                 disabled=${busy || changed || projectUnavailable} value=${query}
+                 disabled=${busy || changed || projectUnavailable || failure !== null} value=${query}
                  onInput=${(event) => { setError(null); setQuery(event.target.value); }}
                  onKeyDown=${keyDown} />
         </label>

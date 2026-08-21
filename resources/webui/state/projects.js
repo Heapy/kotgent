@@ -8,11 +8,14 @@
 // caller that owns the requests.
 
 import { computed, signal } from "../vendor/signals-core.module.js";
+import { READY, createReadiness } from "../lib/readiness.js";
 
 export const projects = signal([]);
 
-// Distinguishes "not read yet" from "no projects", which the link picker must not confuse.
-export const projectsReady = signal(false);
+// The list is read over HTTP and nothing pushes it, so "not read yet", "no projects", and "the read
+// failed" are three different answers the link picker must not confuse. The owner of the request
+// registers itself as the loader, which is what makes the picker's retry control reach the network.
+export const projectsReadiness = createReadiness();
 
 const projectIds = computed(() => new Set(projects.value.map((project) => project.id)));
 
@@ -30,8 +33,9 @@ export function isLiveProject(id) {
 export function replaceProjects(rows) {
   const previous = projects.value;
   projects.value = rows ? rows.slice() : [];
-  const first = !projectsReady.value;
-  if (first) projectsReady.value = true;
+  // A completed read is authoritative for the whole source, including over a later one still in flight.
+  const first = projectsReadiness.status.value.state !== READY;
+  projectsReadiness.succeed();
   return { previous: previous, first: first };
 }
 

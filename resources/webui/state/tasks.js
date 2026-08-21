@@ -3,6 +3,7 @@
 // state/sessions.js for why signals-core is imported by relative path rather than by bare specifier.
 
 import { computed, signal } from "../vendor/signals-core.module.js";
+import { READY, createReadiness } from "../lib/readiness.js";
 import {
   applyTasksSnapshot,
   patchTaskIfNewer,
@@ -12,8 +13,11 @@ import {
 
 export const tasks = signal([]);
 
-// A destructive confirmation must distinguish an unloaded snapshot from an empty backlog.
-export const tasksReady = signal(false);
+// A destructive confirmation must distinguish an unloaded snapshot from an empty backlog. The task list
+// arrives on the events socket rather than through a read of its own, so it never reaches `failed`: the
+// socket retries forever on its own and announces the outage itself. It uses the same vocabulary as the
+// project list so the link picker asks one question instead of two.
+export const tasksReadiness = createReadiness();
 
 const taskByRef = computed(() => {
   const index = new Map();
@@ -30,8 +34,8 @@ export function findTask(ref) {
 export function replaceTasks(rows) {
   const previous = tasks.value;
   tasks.value = applyTasksSnapshot(previous, rows);
-  const first = !tasksReady.value;
-  if (first) tasksReady.value = true;
+  const first = tasksReadiness.status.value.state !== READY;
+  tasksReadiness.succeed();
   return { previous: previous, first: first };
 }
 

@@ -528,6 +528,93 @@ class TaskCommandsTest {
             assertEquals(0, writes.get(), "an archived project's retained tasks are never submitted")
         }
 
+    // Finding app.js:388. Readiness used to be a boolean, so a failed GET /projects was indistinguishable
+    // from one still in flight: the picker read "Reading open tasks…" with no error, no retry and no
+    // timeout until a board round-trip or a reload repaired it.
+    @Test
+    fun aFailedProjectReadOffersARetryInThePickerAndTheRetryRecovers() {
+        val readFails = AtomicBoolean(true)
+        onScenario(
+            TASK_LINK_PICKER_SCENARIO,
+            "link-task-projects-unread",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API") { route ->
+                    if (route.request().method() == "GET" && readFails.get()) {
+                        route.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(503)
+                                .setContentType("text/plain")
+                                .setBody(PROJECTS_FAILURE),
+                        )
+                    } else {
+                        route.resume()
+                    }
+                }
+            },
+        ) { harness, page ->
+            val reads = AtomicInteger(0)
+            page.onRequest { request ->
+                if (request.method() == "GET" && request.url() == harness.baseUrl + PROJECTS_API) {
+                    reads.incrementAndGet()
+                }
+            }
+
+            page.navigate(harness.baseUrl + "/s/link-live")
+            page.awaitSessionView()
+            page.awaitSelectedSession()
+            page.openPalette()
+            page.pressMnemonic("KeyL")
+
+            assertThat(page.locator("#link-task-dialog")).isVisible()
+            // The mount read, plus the one opening the picker asks for. Nothing else starts a read on
+            // this screen, so what the assertions below settle on is the terminal state, and the retry
+            // control cannot be pressed while a read it would refuse to duplicate is still running.
+            page.waitForCondition { reads.get() >= 2 }
+            val failure = page.locator("#link-task-failed")
+            assertThat(failure).containsText(PROJECTS_FAILURE)
+            assertThat(page.locator("#link-task-status")).hasCount(0)
+            assertThat(page.locator("#link-task-query")).isDisabled()
+            assertThat(page.locator(".link-picker-option")).hasCount(0)
+
+            readFails.set(false)
+            page.locator("#link-task-retry").click()
+
+            assertThat(page.locator(".link-picker-option")).hasCount(5)
+            assertThat(failure).hasCount(0)
+            assertThat(page.locator("#link-task-query")).isEnabled()
+        }
+    }
+
+    // Finding app.js:403. Project rows carry no WebSocket frame and only mount and board entry refresh
+    // them, so the session screen judged every picker against the list it read at load: a project that
+    // became live afterwards stayed "no longer active" until the page was reloaded. The harness has no
+    // project-create command, and restoring an archived one exercises the same membership question.
+    @Test
+    fun aProjectRestoredAfterPageLoadIsLinkableWithoutAReload() =
+        onScenario(TASK_LINK_PICKER_SCENARIO, "link-task-live-project-list") { harness, page ->
+            harness.send("project-del $LINK_PICKER_PROJECT_ID")
+
+            page.navigate(harness.baseUrl + "/s/link-live")
+            page.awaitSessionView()
+            page.awaitSelectedSession()
+            page.openPalette()
+            page.pressMnemonic("KeyL")
+            assertThat(page.locator("#link-task-project-missing")).containsText(
+                "project is no longer active",
+            )
+            page.locator("#link-task-cancel").click()
+            assertThat(page.locator("#link-task-dialog")).hasCount(0)
+
+            harness.send("project-restore $LINK_PICKER_PROJECT_ID")
+
+            page.openPalette()
+            page.pressMnemonic("KeyL")
+            assertThat(page.locator("#link-task-dialog")).isVisible()
+            assertThat(page.locator(".link-picker-option")).hasCount(5)
+            assertThat(page.locator("#link-task-project-missing")).hasCount(0)
+            assertThat(page.locator("#link-task-query")).isEnabled()
+        }
+
     @Test
     fun linkTaskHoldsItsLockThroughTheReadAndAStaleRowCannotWriteTheSuccessMessage() {
         val linkPosted = AtomicBoolean(false)
@@ -810,6 +897,8 @@ class TaskCommandsTest {
 
     private companion object {
         const val TASKS_API = "/api/v1/tasks"
+        const val PROJECTS_API = "/api/v1/projects"
+        const val PROJECTS_FAILURE = "The project list read failed on purpose."
         const val LATE_FAILURE = "Task creation failed after dismissal."
         const val LINK_FAILURE = "Task link failed on purpose."
         const val LINK_TASK_COMMAND = "Link this session to a task"

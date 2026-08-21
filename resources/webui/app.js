@@ -17,6 +17,7 @@ import {
 import { writeClipboard } from "./lib/clipboard.js";
 import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
+import { READY } from "./lib/readiness.js";
 import {
   loadPrefs,
   loadSidebarCollapsed,
@@ -68,14 +69,14 @@ import {
   mergeTaskRow,
   replaceTasks,
   tasks as tasksSignal,
-  tasksReady as tasksReadySignal,
+  tasksReadiness,
 } from "./state/tasks.js";
 import {
   applyProjectRow,
   findProject,
   isLiveProject,
   projects as projectsSignal,
-  projectsReady as projectsReadySignal,
+  projectsReadiness,
   removeProjectRow,
   replaceProjects,
 } from "./state/projects.js";
@@ -197,9 +198,12 @@ function App() {
   const sessions = sessionsSignal.value;
   const sessionsReady = sessionsReadySignal.value;
   const tasks = tasksSignal.value;
-  const tasksReady = tasksReadySignal.value;
   const projects = projectsSignal.value;
-  const projectsReady = projectsReadySignal.value;
+  // Readiness is a state, not a flag. A boolean cannot tell "not read yet" from "the read failed", which
+  // is why one failed GET /projects used to strand the link picker on "Reading open tasks…" for the rest
+  // of the page's life. The two statuses travel to the picker as they are; it owns what to draw for each.
+  const taskListStatus = tasksReadiness.status.value;
+  const projectListStatus = projectsReadiness.status.value;
   // The name of the flow holding the mutation lock. Every disabled reason in the palette is derived from
   // it, and every async closure below reads the same signal rather than a mirror of this value.
   const pendingAction = pendingMutation.value;
@@ -368,6 +372,7 @@ function App() {
       void (async () => {
         while (refresh.settled < refresh.requested) {
           const reading = refresh.requested;
+          const attempt = projectsReadiness.begin();
           let rows = null;
           let failure = null;
           try {
@@ -384,9 +389,12 @@ function App() {
           const ready = refresh.waiters.filter((waiter) => waiter.request <= reading);
           refresh.waiters = refresh.waiters.filter((waiter) => waiter.request > reading);
           if (failure) {
-            if (ready.some((waiter) => waiter.reportFailure)) {
-              say("Could not load projects: " + errorMessage(failure), true);
-            }
+            const sentence = "Could not load projects: " + errorMessage(failure);
+            if (ready.some((waiter) => waiter.reportFailure)) say(sentence, true);
+            // Declined once the list has loaded at least once: a failed revalidation leaves the rows the
+            // operator is looking at alone. Only a source that has never answered fails visibly, with the
+            // retry control the picker draws from this state.
+            projectsReadiness.fail(attempt, sentence);
           } else {
             replaceProjects(rows);
           }
@@ -401,6 +409,8 @@ function App() {
 
   // Project changes have no event frame. Refresh on mount, board entry and foregrounding.
   useEffect(() => {
+    // The picker's retry control asks the readiness for another read; this is the read it gets.
+    projectsReadiness.setLoader(reloadProjects);
     const first = !projectRefreshStartedRef.current;
     projectRefreshStartedRef.current = true;
     if (first || onBoard) reloadProjects();
@@ -431,6 +441,14 @@ function App() {
       document.removeEventListener("visibilitychange", trackVisibility);
     };
   }, [onBoard, reloadProjects]);
+
+  // The project list is otherwise frozen for the session screen's lifetime — it carries no frame and
+  // only mount and board entry refresh it — so a project created after page load reads as "no longer
+  // active" and an archived one still passes the guard. Judge the picker against a live list instead.
+  const linkPickerOpen = dialog !== null && dialog.kind === "link-task";
+  useEffect(() => {
+    if (linkPickerOpen) reloadProjects(false);
+  }, [linkPickerOpen, reloadProjects]);
 
   useEffect(() => {
     if (projects.length === 0) return;
@@ -1312,9 +1330,10 @@ function App() {
       <${UploadFilesDialog} session=${dialog.session} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "link-task" && html`
       <${LinkTaskDialog} initialSession=${dialog.session} session=${activeSession}
-                         tasks=${tasks} tasksReady=${tasksReady}
-                         projectsReady=${projectsReady}
+                         tasks=${tasks} tasksStatus=${taskListStatus}
+                         projectsStatus=${projectListStatus}
                          projectActive=${isLiveProject(dialog.session.projectId)}
+                         onRetryProjects=${projectsReadiness.retry}
                          onLink=${linkSessionToTask} onClose=${closeDialog} />`}
     ${/* Remount on server revision so an open draft cannot overwrite newer committed values. */ ""}
     ${dialog && dialog.kind === "prefs" && html`
@@ -1322,7 +1341,7 @@ function App() {
                             onSave=${savePreferences} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "delete-project" && html`
       <${DeleteProjectDialog} project=${dialog.project}
-                              taskCount=${tasksReady
+                              taskCount=${taskListStatus.state === READY
                                 ? tasks.filter((task) => task.project === dialog.project.id).length
                                 : null}
                               onDelete=${removeProject} onClose=${closeDialog} />`}

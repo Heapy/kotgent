@@ -609,30 +609,33 @@ Removes the stuck-forever and stale-project classes: findings `app.js:388` and `
 - Modify: `resources/webui/components/dialogs.js`
 - Modify: `test/transport/WebUiServingTest.kt`
 - Modify: `webuitest/test/TaskCommandsTest.kt`
+- Modify: `resources/webui/state/projects.js`
+- Modify: `resources/webui/state/tasks.js`
+- Modify: `webuitest/js/state-sessions.test.js`
 
-- [ ] write failing tests first for the readiness transitions, including `loading → failed → loading`
+- [x] write failing tests first for the readiness transitions, including `loading → failed → loading`
       on retry, and that no path reaches a terminal state with no user-visible outcome
-- [ ] create `resources/webui/lib/readiness.js` with `idle | loading | ready | failed` plus `retry()`
-- [ ] replace `tasksReady`, `projectsReady`, and the derived `ready`/`projectUnavailable` booleans
-- [ ] refresh the project list when the link picker opens, so a project created or archived after page
+- [x] create `resources/webui/lib/readiness.js` with `idle | loading | ready | failed` plus `retry()`
+- [x] replace `tasksReady`, `projectsReady`, and the derived `ready`/`projectUnavailable` booleans
+- [x] refresh the project list when the link picker opens, so a project created or archived after page
       load is judged against live data
-- [ ] render an error with a retry control in the `failed` state instead of "Reading open tasks…"
-- [ ] register the new served module in `daemonServesTheComponentAndLibModules`
-- [ ] add a Playwright test: a failing `GET /projects` shows an error and a retry, and the retry recovers
-- [ ] add a Playwright test: a project created after page load is linkable without a reload
-- [ ] run `node --check` on changed modules
+- [x] render an error with a retry control in the `failed` state instead of "Reading open tasks…"
+- [x] register the new served module in `daemonServesTheComponentAndLibModules`
+- [x] add a Playwright test: a failing `GET /projects` shows an error and a retry, and the retry recovers
+- [x] add a Playwright test: a project created after page load is linkable without a reload
+- [x] run `node --check` on changed modules
 
 ### Task 14: Закрытие волны 6
 
 **Wave:** 6 · **Depends:** 13
 
-- [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
-- [ ] record that this wave needs no registry edit
-- [ ] run `## Validation Commands` in full, in order
-- [ ] on failure, attribute each error to the owning task rather than repairing broadly
-- [ ] mark `[x]` on every checkbox of every task in this wave, including this one
-- [ ] write the wave's progress block
-- [ ] make exactly one commit for the wave, including the plan file
+- [x] reconcile `git status --porcelain` against the participant's `FILES:` block
+- [x] record that this wave needs no registry edit
+- [x] run `## Validation Commands` in full, in order
+- [x] on failure, attribute each error to the owning task rather than repairing broadly
+- [x] mark `[x]` on every checkbox of every task in this wave, including this one
+- [x] write the wave's progress block
+- [x] make exactly one commit for the wave, including the plan file
 
 ### Task 15: One shared typeahead-listbox primitive
 
@@ -752,6 +755,22 @@ Documentation only; no tests, per the exemption in Development Approach.
 ### Task 20: Закрытие волны 9 — acceptance verification and plan retirement
 
 **Wave:** 9 · **Depends:** 19
+
+Wave 6 shipped three judgement calls the acceptance pass must verify against the code rather than
+against this plan's original wording:
+
+- Readiness is **sticky at `ready`**. `begin()` over an already-loaded list keeps it `ready`, and
+  `fail()` over a `ready` source is declined, so the picker never flickers its rows away on a
+  revalidation. The cost is that a project list which loaded once and then fails to refresh stays
+  silently stale. Finding `app.js:403` therefore survives, narrowed: the frozen-list class is gone for
+  the first read and for every successful refresh, and what remains is the failed-revalidation case.
+  Judge the finding against that, not against "the list is never stale".
+- The task list can never reach `failed`. It arrives on the events socket, which retries forever and
+  announces its own outage, so `tasksReadiness` only ever moves `idle → ready`. The `failed` arm of the
+  picker is reachable through the project read alone.
+- The Playwright test for "a project created after page load is linkable without a reload" uses
+  `project-restore` as its trigger, because the webuicheck harness has no project-create command. Same
+  live-list-versus-mount-time-list mechanism, different trigger.
 
 - [ ] reconcile `git status --porcelain` against the participant's `FILES:` block
 - [ ] verify all 15 review findings are addressed, by re-reading each cited line

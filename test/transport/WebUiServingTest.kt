@@ -162,10 +162,11 @@ class WebUiServingTest {
         // off that one URL. The bare specifier is not used here because these modules are also imported
         // by node, which has no resolver for it, and their rules are proven at that tier. Nothing a
         // running page can report distinguishes one graph from two, so the agreement is asserted here.
-        // lib/mutation.js is in this list for the same reason: it owns the pending-lock signal, node
-        // imports it directly, and its lock is worthless if it lives in a graph of its own.
+        // lib/mutation.js and lib/readiness.js are in this list for the same reason: they own the
+        // pending-lock signal and the readiness statuses, node imports them directly, and a lock or a
+        // readiness that lives in a graph of its own is worthless.
         val relativeVendorImport = "\"../vendor/signals-core.module.js\""
-        for (module in STATE_MODULES + listOf("/lib/mutation.js")) {
+        for (module in STATE_MODULES + listOf("/lib/mutation.js", "/lib/readiness.js")) {
             val body = ctx.get("/_v/$rev$module").bodyAsText()
             assertTrue(
                 body.contains(relativeVendorImport),
@@ -183,7 +184,7 @@ class WebUiServingTest {
         for (path in listOf(
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
-            "/lib/clipboard.js", "/lib/unicode.js", "/lib/mutation.js",
+            "/lib/clipboard.js", "/lib/unicode.js", "/lib/mutation.js", "/lib/readiness.js",
             "/lib/router.js", "/lib/tasks.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js",
