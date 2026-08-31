@@ -8,7 +8,7 @@ archive completed plans.
 
 ## Tooling
 
-- This is a Kotlin/Native project built with Kotlin Toolchain 0.11.1. Use the project-local `./kotlin`
+- This is a Kotlin/Native project built with Kotlin Toolchain 0.12.0. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
 - Run `./kotlin build` before `./kotlin test`: tests execute the `ptycheck` and `webuicheck` binaries,
   and the test command does not build them.

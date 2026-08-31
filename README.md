@@ -80,7 +80,7 @@ To build from source instead, see [Build & test](#build--test).
 - **macOS on Apple Silicon (arm64).** The build targets `macosArm64` and links against macOS system
   libraries; there is no other supported target.
 - **JetBrains Kotlin Toolchain** — invoked through the bundled `./kotlin` wrapper committed in the repo.
-  You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.11.1) on
+  You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.12.0) on
   first run. A JDK is required for the toolchain, for the build-time SQLDelight codegen plugin, and for
   the JVM-side browser tier (`webuitest`), whose first run additionally downloads Playwright's browser
   bundle — see [Build & test](#build--test).
