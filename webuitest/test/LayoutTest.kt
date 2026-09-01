@@ -50,6 +50,42 @@ class LayoutTest {
     }
 
     @Test
+    fun theLeftoverXtermViewportCanPaintNoScrollbarGutterBesideTheLastColumn() {
+        Harness(TERMINAL_SCENARIO).use { harness ->
+            onDesktop(harness, "layout-viewport-gutter") { page ->
+                attachTerminal(page)
+
+                val measured = measureTerminal(page)
+                assertEquals(
+                    1,
+                    measured.int("viewportPresent"),
+                    "xterm still creates .xterm-viewport, so the rule that tames it still has a target",
+                )
+                assertEquals(
+                    0,
+                    measured.int("viewportChildren"),
+                    "xterm 6 scrolls through .xterm-scrollable-element and puts nothing in .xterm-viewport; " +
+                        "once it holds content again, hiding that element's overflow would clip something " +
+                        "real and the rule needs rethinking rather than keeping",
+                )
+                assertEquals(
+                    "hidden",
+                    measured.str("viewportOverflowY"),
+                    "the empty viewport is stretched over .xterm's whole padding box, so the vendored " +
+                        "`overflow-y: scroll` paints a permanent scrollbar gutter down the right padding " +
+                        "wherever the operating system draws scrollbars always — beside the last column, " +
+                        "which is exactly where an operator reads",
+                )
+                assertEquals(
+                    0.0,
+                    measured.num("viewportGutter"),
+                    "and the element reserves no width for a scrollbar either",
+                )
+            }
+        }
+    }
+
+    @Test
     fun theMobileDrawerOpensAndClosesFromEachOfItsThreeControls() {
         Harness(SESSIONS_SCENARIO).use { harness ->
             onPhone(harness, "layout-drawer") { page ->
@@ -521,6 +557,7 @@ private val MEASURE_TERMINAL = """
       const host = document.querySelector("#terminal-host");
       const xterm = host && host.querySelector(".xterm");
       const screen = host && host.querySelector(".xterm-screen");
+      const viewport = host && host.querySelector(".xterm-viewport");
       const rowEls = host ? host.querySelectorAll(".xterm-rows > div") : [];
       const term = (window.__kotgentTerminals || []).slice(-1)[0];
       if (!host || !xterm || !screen || rowEls.length === 0 || !term) return { ready: 0 };
@@ -547,7 +584,11 @@ private val MEASURE_TERMINAL = """
         padTop: parseFloat(xs.paddingTop), padBottom: parseFloat(xs.paddingBottom),
         padLeft: parseFloat(xs.paddingLeft), padRight: parseFloat(xs.paddingRight),
         hostPadTop: parseFloat(hs.paddingTop), hostPadBottom: parseFloat(hs.paddingBottom),
-        hostPadLeft: parseFloat(hs.paddingLeft), hostPadRight: parseFloat(hs.paddingRight)
+        hostPadLeft: parseFloat(hs.paddingLeft), hostPadRight: parseFloat(hs.paddingRight),
+        viewportPresent: viewport ? 1 : 0,
+        viewportChildren: viewport ? viewport.childElementCount : -1,
+        viewportOverflowY: viewport ? getComputedStyle(viewport).overflowY : "",
+        viewportGutter: viewport ? viewport.offsetWidth - viewport.clientWidth : -1
       };
     }
 """.trimIndent()
