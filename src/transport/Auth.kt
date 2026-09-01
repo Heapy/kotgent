@@ -195,7 +195,7 @@ private fun existingToken(path: String): String? {
 @OptIn(ExperimentalForeignApi::class)
 fun writePrivateFile(path: String, bytes: ByteArray) {
     // A fully-written private sibling replaces the old secret atomically.
-    stagePrivateTemp(path, bytes) { tmp ->
+    val _ = stagePrivateTemp(path, bytes) { tmp ->
         if (rename(tmp, path) != 0) error("rename $tmp -> $path failed: ${errnoText(errno)}")
         true
     }

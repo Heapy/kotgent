@@ -711,7 +711,7 @@ class TaskWriteRoutesTest {
             Triple(a, elsewhere, DependencyRefusal.crossProject),
             Triple(a, b, DependencyRefusal.cycle),
         )
-        for ((ref, on, refusal) in refusals) {
+        for ([ref, on, refusal] in refusals) {
             val resp = env.post("/tasks/${ref.value}/deps", """{"action":"add","on":"${on.value}"}""")
             assertEquals(HttpStatusCode.BadRequest, resp.status, "$refusal must be a 400")
             assertTrue(
@@ -1280,7 +1280,7 @@ class TaskWriteRoutesTest {
             HttpMethod.Delete to "/projects/${alpha.value}",
             HttpMethod.Post to "/projects/${alpha.value}/restore",
         )
-        for ((method, path) in calls) {
+        for ([method, path] in calls) {
             assertEquals(
                 HttpStatusCode.Unauthorized,
                 env.request(method, path, body = "{}", bearer = null).status,
@@ -1352,7 +1352,7 @@ class TaskWriteRoutesTest {
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing {
                     authRoutes(tokens, TicketStore(now = { 0L }), null, TRANSPORT_JSON, now = { 0L })
-                    authenticated(tokens::current) {
+                    val _ = authenticated(tokens::current) {
                         route(API_PREFIX) { taskWriteRoutes(routing) }
                     }
                 }

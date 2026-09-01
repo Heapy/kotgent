@@ -149,8 +149,8 @@ class MobileFeaturesTest {
             )
             assertTrue(uploads.all { it.method() == "POST" }, "every upload is a POST")
             val picked = listOf(NOTES_NAME to NOTES_BYTES, DATA_NAME to DATA_BYTES)
-            for ((index, file) in picked.withIndex()) {
-                val (name, bytes) = file
+            for ([index, file] in picked.withIndex()) {
+                val [name, bytes] = file
                 val answer = answers[index]
                 assertEquals(201, answer.status(), "$name was stored")
                 val body = answer.text()

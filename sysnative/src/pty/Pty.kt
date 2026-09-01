@@ -303,7 +303,7 @@ class Pty private constructor(
                 val killRc = kill(pid, SIGKILL)
                 val killErrno = if (killRc == 0) 0 else errno
                 traceClose("signal-kill", "rc=$killRc${errnoDetail(killRc, killErrno)}")
-                waitFor()
+                val _ = waitFor()
             }
         } else {
             traceClose("child-already-reaped", "exitCode=$exitCode")
@@ -435,7 +435,7 @@ class Pty private constructor(
                 command.forEachIndexed { i, arg -> argv[i] = arg.cstr.getPointer(scope) }
                 argv[command.size] = null
 
-                val envEntries = env.map { (k, v) -> "$k=$v" }
+                val envEntries = env.map { (key, value) -> "$key=$value" }
                 val envp = allocArray<CPointerVar<ByteVar>>(envEntries.size + 1)
                 envEntries.forEachIndexed { i, e -> envp[i] = e.cstr.getPointer(scope) }
                 envp[envEntries.size] = null

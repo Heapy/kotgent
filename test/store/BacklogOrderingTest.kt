@@ -81,7 +81,7 @@ class BacklogOrderingTest {
             createdAt: Long = 10L,
             updatedAt: Long = 20L,
         ) {
-            queries.insertEntry(ref.value, project.value, position, state.name, createdAt, updatedAt, 0L)
+            val _ = queries.insertEntry(ref.value, project.value, position, state.name, createdAt, updatedAt, 0L)
         }
 
         fun order(project: ProjectId): List<TaskRef> =
@@ -104,7 +104,7 @@ class BacklogOrderingTest {
 
     private fun assertStrictlyOrdered(f: Fixture, project: ProjectId) {
         val ranks = f.positions(project)
-        for ((lower, upper) in ranks.zipWithNext()) {
+        for ([lower, upper] in ranks.zipWithNext()) {
             assertTrue(lower < upper, "ranks must stay strictly increasing, saw $lower then $upper in $ranks")
         }
     }
@@ -115,30 +115,30 @@ class BacklogOrderingTest {
         assertEquals(c, f.ordering.move(c, MoveTarget.Top)?.ref)
         assertEquals(listOf(c, a, b), f.order(alpha))
 
-        assertEquals(listOf(a, b, c), run { f.ordering.move(c, MoveTarget.Bottom); f.order(alpha) })
+        assertEquals(listOf(a, b, c), run { val _ = f.ordering.move(c, MoveTarget.Bottom); f.order(alpha) })
 
-        f.ordering.move(a, MoveTarget.Top)
-        f.ordering.move(c, MoveTarget.Bottom)
+        val _ = f.ordering.move(a, MoveTarget.Top)
+        val _ = f.ordering.move(c, MoveTarget.Bottom)
         assertEquals(listOf(a, b, c), f.order(alpha))
         assertStrictlyOrdered(f, alpha)
     }
 
     @Test
     fun movingBeforeOrAfterANeighbourLandsBetweenItAndItsOwnNeighbour() = test { f ->
-        assertEquals(listOf(c, a, b), run { f.ordering.move(c, MoveTarget.Before(a)); f.order(alpha) })
-        assertEquals(listOf(a, c, b), run { f.ordering.move(c, MoveTarget.After(a)); f.order(alpha) })
-        assertEquals(listOf(a, b, c), run { f.ordering.move(c, MoveTarget.After(b)); f.order(alpha) })
+        assertEquals(listOf(c, a, b), run { val _ = f.ordering.move(c, MoveTarget.Before(a)); f.order(alpha) })
+        assertEquals(listOf(a, c, b), run { val _ = f.ordering.move(c, MoveTarget.After(a)); f.order(alpha) })
+        assertEquals(listOf(a, b, c), run { val _ = f.ordering.move(c, MoveTarget.After(b)); f.order(alpha) })
 
-        assertEquals(listOf(b, a, c), run { f.ordering.move(b, MoveTarget.Before(a)); f.order(alpha) })
-        assertEquals(listOf(a, c, b), run { f.ordering.move(b, MoveTarget.After(c)); f.order(alpha) })
+        assertEquals(listOf(b, a, c), run { val _ = f.ordering.move(b, MoveTarget.Before(a)); f.order(alpha) })
+        assertEquals(listOf(a, c, b), run { val _ = f.ordering.move(b, MoveTarget.After(c)); f.order(alpha) })
         assertStrictlyOrdered(f, alpha)
     }
 
     @Test
     fun movingAnEntryOnePlaceEitherWayCrossesExactlyOneNeighbour() = test { f ->
-        assertEquals(listOf(b, a, c), run { f.ordering.move(a, MoveTarget.After(b)); f.order(alpha) })
-        assertEquals(listOf(b, c, a), run { f.ordering.move(a, MoveTarget.After(c)); f.order(alpha) })
-        assertEquals(listOf(b, a, c), run { f.ordering.move(a, MoveTarget.Before(c)); f.order(alpha) })
+        assertEquals(listOf(b, a, c), run { val _ = f.ordering.move(a, MoveTarget.After(b)); f.order(alpha) })
+        assertEquals(listOf(b, c, a), run { val _ = f.ordering.move(a, MoveTarget.After(c)); f.order(alpha) })
+        assertEquals(listOf(b, a, c), run { val _ = f.ordering.move(a, MoveTarget.Before(c)); f.order(alpha) })
         assertStrictlyOrdered(f, alpha)
     }
 
@@ -171,7 +171,7 @@ class BacklogOrderingTest {
 
     @Test
     fun aMoveEmitsOneUpdateCarryingTheStoredRankRevisionAndDerivedBlocked() = test { f ->
-        f.queries.insertDep(c.value, a.value)
+        val _ = f.queries.insertDep(c.value, a.value)
         val createdAt = f.row(c).created_at
 
         val moved = assertNotNull(f.ordering.move(c, MoveTarget.Top))
@@ -199,7 +199,7 @@ class BacklogOrderingTest {
             seed(c, alpha, 3.0)
         },
     ) { f ->
-        f.queries.insertDep(c.value, a.value)
+        val _ = f.queries.insertDep(c.value, a.value)
 
         val moved = assertNotNull(f.ordering.move(c, MoveTarget.Before(b)))
 
@@ -264,7 +264,7 @@ class BacklogOrderingTest {
             for (n in 1..60) seed(TaskRef("local:t$n"), alpha, 2.0 + n)
         },
     ) { f ->
-        for (n in 1..60) f.ordering.move(TaskRef("local:t$n"), MoveTarget.After(a))
+        for (n in 1..60) { val _ = f.ordering.move(TaskRef("local:t$n"), MoveTarget.After(a)) }
 
         val expected = listOf(a) + (60 downTo 1).map { TaskRef("local:t$it") } + listOf(b)
         assertEquals(expected, f.order(alpha), "sixty subdivisions of one gap still order exactly")
@@ -324,8 +324,8 @@ class BacklogOrderingTest {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteTaskStore.using(driver) { 42L }
             val queries = KotgentDatabase(driver).backlogQueries
-            queries.insertEntry(a.value, alpha.value, 1.0, TaskState.todo.name, 1L, 1L, 0L)
-            queries.insertEntry(b.value, alpha.value, 2.0, TaskState.todo.name, 1L, 1L, 0L)
+            val _ = queries.insertEntry(a.value, alpha.value, 1.0, TaskState.todo.name, 1L, 1L, 0L)
+            val _ = queries.insertEntry(b.value, alpha.value, 2.0, TaskState.todo.name, 1L, 1L, 0L)
 
             val seen = mutableListOf<TaskUpdate>()
             val collector = launch(start = CoroutineStart.UNDISPATCHED) {

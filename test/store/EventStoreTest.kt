@@ -62,7 +62,7 @@ class EventStoreTest {
                 AgentEvent.SessionBound(ProviderSessionId("22222222-2222-2222-2222-222222222222")),
                 AgentEvent.Exited(0),
             )
-            events.forEach { store.append(sid, it, EventSource.hook) }
+            events.forEach { val _ = store.append(sid, it, EventSource.hook) }
 
             val read = store.read(sid, Seq(1))
             assertEquals(events, read.map { it.event }, "every event round-trips through the payload column")
@@ -106,8 +106,8 @@ class EventStoreTest {
             val sid = SessionId("ctl")
             store.upsertSession(meta(sid))
             val pid = ProviderSessionId("33333333-3333-3333-3333-333333333333")
-            store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)
-            store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook)
             assertEquals(Seq(2), store.getSession(sid)!!.lastSeq)
 
             store.updateSessionState(sid, SessionState.ready, EventSource.user, PaneId("%7"), 9L)
@@ -128,13 +128,13 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("stopres")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook)
 
             store.updateSessionState(sid, SessionState.stopped, EventSource.user, PaneId("%1"), 5L)
             assertEquals(SessionState.stopped, store.getSession(sid)!!.state)
 
             val pid = ProviderSessionId("44444444-4444-4444-4444-444444444444")
-            store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)
             store.getSession(sid)!!.let { m ->
                 assertEquals(SessionState.stopped, m.state, "a stray append must not resurrect a stopped session")
                 assertEquals(Seq(2), m.lastSeq, "the event is still recorded (last_seq advances)")
@@ -153,7 +153,7 @@ class EventStoreTest {
             store.upsertSession(meta(sid, createdAt = 500L))
 
             clock = 1_001L
-            store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook)
             store.getSession(sid)!!.let { m ->
                 assertEquals(SessionState.needs_approval, m.state)
                 assertEquals(Seq(1), m.lastSeq)
@@ -165,7 +165,7 @@ class EventStoreTest {
             }
 
             clock = 1_002L
-            store.append(sid, AgentEvent.ToolCall("bash"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("bash"), EventSource.hook)
             store.getSession(sid)!!.let { m ->
                 assertEquals(SessionState.running, m.state)
                 assertEquals(Seq(2), m.lastSeq)
@@ -174,7 +174,7 @@ class EventStoreTest {
 
             val pid = ProviderSessionId("11111111-1111-1111-1111-111111111111")
             clock = 1_003L
-            store.append(sid, AgentEvent.SessionBound(pid), EventSource.system)
+            val _ = store.append(sid, AgentEvent.SessionBound(pid), EventSource.system)
             store.getSession(sid)!!.let { m ->
                 assertEquals(pid, m.providerSessionId)
                 assertEquals(SessionState.running, m.state)
@@ -198,7 +198,7 @@ class EventStoreTest {
                 AgentEvent.TurnCompleted,
                 AgentEvent.SessionBound(ProviderSessionId("33333333-3333-3333-3333-333333333333")),
             )
-            events.forEach { store1.append(sid, it, EventSource.hook) }
+            events.forEach { val _ = store1.append(sid, it, EventSource.hook) }
 
             val expected = replay(events)
 
@@ -218,7 +218,7 @@ class EventStoreTest {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteEventStore.using(driver, now = { 7L })
             val sid = SessionId("unknown-approval-decision")
-            KotgentDatabase(driver).eventsQueries.insert(
+            val _ = KotgentDatabase(driver).eventsQueries.insert(
                 sid.value,
                 1L,
                 7L,
@@ -240,7 +240,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("subscribe")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
 
             val received = CompletableDeferred<List<StoredEvent>>()
             val job = launch {
@@ -248,8 +248,8 @@ class EventStoreTest {
             }
             withTimeout(10.seconds) { while (store.activeSubscribers(sid) == 0) yield() }
 
-            store.append(sid, AgentEvent.ToolCall("a"), EventSource.hook)
-            store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("a"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
 
             val got = withTimeout(10.seconds) { received.await() }
             assertEquals(listOf(2L, 3L), got.map { it.seq.value })
@@ -266,9 +266,9 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("snapshot")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
-            store.append(sid, AgentEvent.ToolCall("a"), EventSource.hook)
-            store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("a"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
 
             val got = withTimeout(10.seconds) { store.subscribe(sid, Seq(2)).take(2).toList() }
             assertEquals(listOf(2L, 3L), got.map { it.seq.value })
@@ -281,7 +281,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("stale")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
 
             val ex = assertFailsWith<StaleCursorException> {
                 withTimeout(10.seconds) { store.subscribe(sid, Seq(3)).toList() }
@@ -300,7 +300,7 @@ class EventStoreTest {
             store.upsertSession(meta(sid))
             val n = 50
             coroutineScope {
-                repeat(n) { i -> launch { store.append(sid, AgentEvent.ToolCall("t$i"), EventSource.hook) } }
+                repeat(n) { i -> launch { val _ = store.append(sid, AgentEvent.ToolCall("t$i"), EventSource.hook) } }
             }
             val seqs = store.read(sid, Seq(0)).map { it.seq.value }
             assertEquals((1..n).map { it.toLong() }, seqs)
@@ -317,7 +317,7 @@ class EventStoreTest {
             store.upsertSession(meta(sid))
             coroutineScope {
                 val writer = launch {
-                    repeat(30) { store.append(sid, AgentEvent.ToolCall("w$it"), EventSource.hook) }
+                    repeat(30) { val _ = store.append(sid, AgentEvent.ToolCall("w$it"), EventSource.hook) }
                 }
                 val reader = launch {
                     repeat(30) {
@@ -451,7 +451,7 @@ class EventStoreTest {
             val second = store.getSession(sid)!!.rev
             assertTrue(second > first, "a targeted mutator advances the revision")
 
-            store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
             val third = store.getSession(sid)!!.rev
             assertTrue(third > second, "append's cache update advances the revision too")
 
@@ -477,11 +477,11 @@ class EventStoreTest {
             assertFalse(store.setModelForProvider(sid, scanned, "gpt-6"), "a NULL provider id never matches")
             assertNull(store.getSession(sid)!!.model)
 
-            store.append(sid, AgentEvent.SessionBound(scanned), EventSource.system)
+            val _ = store.append(sid, AgentEvent.SessionBound(scanned), EventSource.system)
             assertTrue(store.setModelForProvider(sid, scanned, "gpt-6"), "the held id matches: written")
             assertEquals("gpt-6", store.getSession(sid)!!.model)
 
-            store.append(sid, AgentEvent.SessionBound(hook), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(hook), EventSource.hook)
             store.setModel(sid, null)
             assertFalse(
                 store.setModelForProvider(sid, scanned, "gpt-6"),
@@ -502,8 +502,8 @@ class EventStoreTest {
             val sid = SessionId("rc01")
             store.upsertSession(meta(sid, createdAt = 100L))
             val pid = ProviderSessionId("55555555-5555-5555-5555-555555555555")
-            store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)
-            store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(pid), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ApprovalRequested("a1"), EventSource.hook)
             val before = store.getSession(sid)!!
             assertEquals(Seq(0), before.readCursor, "nothing is read until a client says so")
             assertEquals(2L, unread(before.lastSeq.value, before.readCursor.value), "the badge counts both events")
@@ -526,7 +526,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc02")
             store.upsertSession(meta(sid))
-            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(3) { val _ = store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
 
             store.markRead(sid, Seq(3))
             assertEquals(Seq(3), store.getSession(sid)!!.readCursor)
@@ -541,7 +541,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc08")
             store.upsertSession(meta(sid))
-            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(3) { val _ = store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
 
             coroutineScope {
                 launch { store.markRead(sid, Seq(3)) }
@@ -561,12 +561,12 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc03")
             store.upsertSession(meta(sid))
-            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(3) { val _ = store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
 
             store.markRead(sid, Seq(999))
             assertEquals(Seq(3), store.getSession(sid)!!.readCursor, "MIN() clamps the cursor to the log")
 
-            store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
             store.getSession(sid)!!.let { m ->
                 assertEquals(1L, unread(m.lastSeq.value, m.readCursor.value), "the next event raises the badge again")
             }
@@ -579,7 +579,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc04")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook)
             store.setArchived(sid, true, 2L)
 
             val seen = CompletableDeferred<SessionUpdate>()
@@ -602,16 +602,16 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc09")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("x"), EventSource.hook)
             store.setArchived(sid, true, 2L)
 
             val seen = CompletableDeferred<List<SessionUpdate>>()
             val collector = launch { seen.complete(store.sessionUpdates.take(2).toList()) }
             yield()
-            store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
             store.updateSessionState(sid, SessionState.stopped, EventSource.system, null, 3L)
 
-            val (appended, controlled) = seen.await()
+            val [appended, controlled] = seen.await()
             assertEquals(Seq(2), appended.lastSeq)
             assertEquals(2L, appended.unread, "the badge still counts the unread event")
             assertTrue(appended.archived, "an append on a done session must not un-hide it")
@@ -627,7 +627,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc05")
             store.upsertSession(meta(sid))
-            repeat(2) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(2) { val _ = store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
             store.markRead(sid, Seq(2))
 
             val seen = CompletableDeferred<SessionUpdate>()
@@ -648,7 +648,7 @@ class EventStoreTest {
             val store1 = SqliteEventStore.using(driver, now = { 1L })
             val sid = SessionId("rc07")
             store1.upsertSession(meta(sid))
-            repeat(3) { store1.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(3) { val _ = store1.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
             store1.markRead(sid, Seq(3))
 
             val store2 = SqliteEventStore.using(driver, now = { 1L })
@@ -656,7 +656,7 @@ class EventStoreTest {
                 assertEquals(Seq(3), m.readCursor, "the cursor is persisted, not in-memory state")
                 assertEquals(0L, unread(m.lastSeq.value, m.readCursor.value), "so the badge stays cleared")
             }
-            store2.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
+            val _ = store2.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
             store2.getSession(sid)!!.let { m ->
                 assertEquals(1L, unread(m.lastSeq.value, m.readCursor.value), "one new event, one unread")
             }
@@ -669,13 +669,13 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc10")
             store.upsertSession(meta(sid))
-            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(3) { val _ = store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
             store.markRead(sid, Seq(3))
 
             val seen = CompletableDeferred<SessionUpdate>()
             val collector = launch { store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it) } }
             yield()
-            store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
+            val _ = store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
 
             val update = seen.await()
             assertEquals(Seq(4), update.lastSeq)
@@ -707,7 +707,7 @@ class EventStoreTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc06")
             store.upsertSession(meta(sid))
-            repeat(3) { store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(3) { val _ = store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
             store.markRead(sid, Seq(3))
 
             val seen = CompletableDeferred<SessionUpdate>()

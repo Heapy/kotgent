@@ -76,7 +76,7 @@ class ServerLifecycleTest {
                 }
                 assertTrue(failure.message.orEmpty().contains("EADDRINUSE"), failure.message)
             } finally {
-                runCatching { contender?.stop() }
+                val _ = runCatching { contender?.stop() }
                 owner?.stop()
                 fixture.close()
             }

@@ -125,7 +125,7 @@ class ReconcilerTest {
                 ),
             )
 
-            Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 2L }).reconcile()
+            val _ = Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 2L }).reconcile()
 
             assertEquals(SessionState.resumable, store.getSession(SessionId("clsess"))!!.state)
             assertEquals(SessionState.resumable, store.getSession(SessionId("cxsess"))!!.state)
@@ -144,7 +144,7 @@ class ReconcilerTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('a')
             store.upsertSession(meta("intr", SessionState.running, providerId = id, paneId = PaneId("%5")))
-            store.append(SessionId("intr"), AgentEvent.ApprovalRequested("perm"), EventSource.hook)
+            val _ = store.append(SessionId("intr"), AgentEvent.ApprovalRequested("perm"), EventSource.hook)
             assertEquals(SessionState.needs_approval, store.projectionOf(SessionId("intr")).state, "log projection is needs_approval")
             store.updateSessionState(SessionId("intr"), SessionState.ready, EventSource.user, PaneId("%5"), 2L)
 
@@ -154,7 +154,7 @@ class ReconcilerTest {
                 ),
             )
             val reconciler = Reconciler(tmux, store, VendorStoreProbe { _, _, _ -> false }, PaneRegistry(), now = { 3L })
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
 
             assertEquals(
                 SessionState.ready,
@@ -171,14 +171,14 @@ class ReconcilerTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('a')
             store.upsertSession(meta("reinc", SessionState.running, providerId = id, paneId = PaneId("%7")))
-            store.append(SessionId("reinc"), AgentEvent.SessionBound(id), EventSource.system)
-            store.append(SessionId("reinc"), AgentEvent.Exited(0), EventSource.hook)
+            val _ = store.append(SessionId("reinc"), AgentEvent.SessionBound(id), EventSource.system)
+            val _ = store.append(SessionId("reinc"), AgentEvent.Exited(0), EventSource.hook)
             assertEquals(SessionState.stopped, store.projectionOf(SessionId("reinc")).state, "the log ends at stopped")
 
             store.updateSessionState(SessionId("reinc"), SessionState.ready, EventSource.user, PaneId("%8"), 2L)
 
             val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _, _ -> true }, PaneRegistry(), now = { 3L })
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
 
             assertEquals(
                 SessionState.resumable,
@@ -196,9 +196,9 @@ class ReconcilerTest {
             store.upsertSession(meta("stopd", SessionState.stopped, providerId = id, paneId = PaneId("%9")))
             val reconciler = Reconciler(FakeTmux(), store, VendorStoreProbe { _, _, _ -> true }, PaneRegistry(), now = { 3L })
 
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
             assertEquals(SessionState.stopped, store.getSession(SessionId("stopd"))!!.state, "a cached stop intent is honored")
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
             assertEquals(SessionState.stopped, store.getSession(SessionId("stopd"))!!.state, "and reconciliation is idempotent")
         }
     }

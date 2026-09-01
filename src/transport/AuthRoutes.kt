@@ -108,8 +108,8 @@ fun Route.authRoutes(
     afterExchangeAdmitted: suspend () -> Unit = {},
     exchangeBodyTimeoutMillis: Long = AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS,
 ) {
-    authenticated(tokens::current, publicUrl) {
-        loopbackOnly {
+    val _ = authenticated(tokens::current, publicUrl) {
+        val _ = loopbackOnly {
             for (path in AUTH_TICKET_PATHS) post(path) {
                 // Re-check one token snapshot and bind the ticket to that exact value: rotation between
                 // the outer gate and issuance must not launder an old credential onto the new token.

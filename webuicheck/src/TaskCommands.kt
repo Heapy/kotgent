@@ -47,7 +47,7 @@ private suspend fun addTask(ctx: HarnessContext, words: List<String>): Boolean {
     }
     val project = tasks.listProjects().firstOrNull()?.id
         ?: return reject("task-add: this scenario registers no project to file '${ref.value}' under")
-    tasks.addTask(ref, project, title = "Added ${ref.value}", position = position)
+    val _ = tasks.addTask(ref, project, title = "Added ${ref.value}", position = position)
     return true
 }
 

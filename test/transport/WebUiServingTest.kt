@@ -125,7 +125,7 @@ class WebUiServingTest {
             "@preact/signals" to "/_v/$rev/vendor/signals.module.js",
             "qrcode" to "/_v/$rev/vendor/qrcode.module.js",
         )
-        for ((specifier, path) in mapped) {
+        for ([specifier, path] in mapped) {
             assertTrue(
                 index.contains("\"$specifier\": \"$path\""),
                 "the import map wires '$specifier' to $path",
@@ -446,7 +446,7 @@ class WebUiServingTest {
 
     @Test
     fun strippingTheRevisionPrefixLeavesTraversalVisibleToTheGuard() {
-        val (rev, path) = stripRevPrefix("_v/0123456789ab/../../etc/passwd")
+        val [rev, path] = stripRevPrefix("_v/0123456789ab/../../etc/passwd")
         assertEquals("0123456789ab", rev, "the prefix is recognised")
         assertTrue(path.contains(".."), "the traversal stays in the path the guard inspects")
 
@@ -658,7 +658,7 @@ class WebUiServingTest {
             "TaskDetail.js" to ctx.get("/components/TaskDetail.js").bodyAsText(),
         )
         val emitted = mutableSetOf<String>()
-        for ((name, source) in sources) {
+        for ([name, source] in sources) {
             val tokens = vocabularyTokensIn(source)
             emitted += tokens
             for (className in tokens) {
@@ -780,7 +780,7 @@ class WebUiServingTest {
         val bytes = text.encodeToByteArray()
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }

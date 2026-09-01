@@ -155,7 +155,7 @@ class JunieHookConfigTest {
         val bytes = text.encodeToByteArray()
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }

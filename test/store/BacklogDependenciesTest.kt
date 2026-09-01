@@ -65,11 +65,11 @@ class BacklogDependenciesTest {
             createdAt: Long = 10L,
             updatedAt: Long = 20L,
         ) {
-            queries.insertEntry(ref.value, project.value, position, state.name, createdAt, updatedAt, 0L)
+            val _ = queries.insertEntry(ref.value, project.value, position, state.name, createdAt, updatedAt, 0L)
         }
 
         fun setState(ref: TaskRef, state: TaskState, updatedAt: Long = 20L) {
-            queries.setState(state.name, updatedAt, ++revCounter, ref.value)
+            val _ = queries.setState(state.name, updatedAt, ++revCounter, ref.value)
         }
 
         fun edgeCount(): Int =
@@ -207,7 +207,7 @@ class BacklogDependenciesTest {
 
     @Test
     fun anEdgeOntoARefWithNoRowIsReadTheWayTheSqlReadsIt() = test { f ->
-        f.queries.insertDep(b.value, absent.value)
+        val _ = f.queries.insertDep(b.value, absent.value)
 
         assertEquals(false, f.deps.entryLocked(b)?.blocked)
         assertEquals(false, f.blockedOf(alpha)[b])
@@ -277,7 +277,7 @@ class BacklogDependenciesTest {
         f.seed(d, beta, 1.0)
         f.deps.add(b, a)
         f.deps.add(c, a)
-        f.queries.insertDep(d.value, absent.value)
+        val _ = f.queries.insertDep(d.value, absent.value)
 
         assertEquals(listOf(a), f.deps.dependenciesOfLocked(b))
         assertEquals(listOf(b, c), f.deps.dependentsOfLocked(a), "the reverse lookup, in ref order")
@@ -372,8 +372,8 @@ class BacklogDependenciesTest {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteTaskStore.using(driver) { 0L }
             val queries = KotgentDatabase(driver).backlogQueries
-            queries.insertEntry(a.value, alpha.value, 1.0, TaskState.todo.name, 1L, 1L, 0L)
-            queries.insertEntry(b.value, alpha.value, 2.0, TaskState.todo.name, 1L, 1L, 0L)
+            val _ = queries.insertEntry(a.value, alpha.value, 1.0, TaskState.todo.name, 1L, 1L, 0L)
+            val _ = queries.insertEntry(b.value, alpha.value, 2.0, TaskState.todo.name, 1L, 1L, 0L)
 
             val seen = mutableListOf<TaskUpdate>()
             val collector = launch(start = CoroutineStart.UNDISPATCHED) {

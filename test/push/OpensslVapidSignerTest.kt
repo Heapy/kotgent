@@ -111,7 +111,7 @@ class OpensslVapidSignerTest {
     fun signsAnInputOpensslItselfThenVerifies() = runBlocking {
         withTimeout(30.seconds) {
             if (!opensslAvailable()) return@withTimeout
-            VapidKey(keyPath = keyPath).ensureKeyFile()
+            val _ = VapidKey(keyPath = keyPath).ensureKeyFile()
             val signer = OpensslVapidSigner(keyPath = keyPath)
 
             val raw = signer.sign(signingInput)
@@ -126,7 +126,7 @@ class OpensslVapidSignerTest {
     fun everySignatureIsFreshAndStillVerifies() = runBlocking {
         withTimeout(30.seconds) {
             if (!opensslAvailable()) return@withTimeout
-            VapidKey(keyPath = keyPath).ensureKeyFile()
+            val _ = VapidKey(keyPath = keyPath).ensureKeyFile()
             val signer = OpensslVapidSigner(keyPath = keyPath)
 
             val first = signer.sign(signingInput)
@@ -143,7 +143,7 @@ class OpensslVapidSignerTest {
     fun bindsAsTheTokenCachesSignLambda() = runBlocking {
         withTimeout(30.seconds) {
             if (!opensslAvailable()) return@withTimeout
-            VapidKey(keyPath = keyPath).ensureKeyFile()
+            val _ = VapidKey(keyPath = keyPath).ensureKeyFile()
             val cache = VapidTokenCache(subject = "mailto:a@b.c", sign = OpensslVapidSigner(keyPath)::sign)
 
             val jwt = cache.tokenFor("https://web.push.apple.com/12345")

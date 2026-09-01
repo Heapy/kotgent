@@ -11,3 +11,6 @@ test-dependencies:
 settings:
   kotlin:
     version: 2.4.10
+    freeCompilerArgs:
+      - -Xreturn-value-checker=full
+      - -Xname-based-destructuring=complete

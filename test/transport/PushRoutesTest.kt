@@ -126,7 +126,7 @@ class PushRoutesTest {
     fun reSubscribingTheSameEndpointReplacesTheRow() = withPushServer { env ->
         val endpoint = "https://web.push.apple.com/same"
         repeat(2) { i ->
-            env.client.req(
+            val _ = env.client.req(
                 env.port, PUSH_SUBSCRIBE_PATH, HttpMethod.Post, bearer = token,
                 jsonBody = """{"endpoint":"$endpoint","p256dh":"k$i","auth":"a$i"}""",
             )
@@ -200,7 +200,7 @@ class PushRoutesTest {
             """{"endpoint":"https://a.example/x","p256dh":"","auth":"a"}""" to "blank p256dh",
             """{"endpoint":"https://a.example/x","p256dh":"k","auth":""}""" to "blank auth",
         )
-        for ((body, why) in bad) {
+        for ([body, why] in bad) {
             assertEquals(
                 HttpStatusCode.BadRequest,
                 env.client.req(env.port, PUSH_SUBSCRIBE_PATH, HttpMethod.Post, bearer = token, jsonBody = body).status,
@@ -314,7 +314,7 @@ class PushRoutesTest {
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing {
                     authRoutes(tokens, TicketStore(now = { fixedNow }), publicUrl, TRANSPORT_JSON, now = { fixedNow })
-                    authenticated(tokens::current, publicUrl) {
+                    val _ = authenticated(tokens::current, publicUrl) {
                         pushRoutes(store, vapidPublicKey, TRANSPORT_JSON, now = { fixedNow })
                     }
                 }

@@ -41,7 +41,7 @@ fun main(args: Array<String>) {
     }
 
     val harness = Harness(scenario, options.webUiDir)
-    val (context, ticket) = runBlocking { harness.start() to harness.issueTicket() }
+    val [context, ticket] = runBlocking { harness.start() to harness.issueTicket() }
     writeStdoutLine("PORT=${context.port}")
     writeStdoutLine("TICKET=$ticket")
     writeStdoutLine(READY_LINE)

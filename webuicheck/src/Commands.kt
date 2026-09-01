@@ -43,7 +43,7 @@ private fun handleAppend(words: List<String>, ctx: HarnessContext): Boolean {
         if (ctx.fakes.events.getSession(id) == null) {
             reject("append: no session '${id.value}' in this scenario")
         } else {
-            ctx.fakes.events.append(id, AgentEvent.ToolCall(tool), EventSource.hook)
+            val _ = ctx.fakes.events.append(id, AgentEvent.ToolCall(tool), EventSource.hook)
             true
         }
     }

@@ -111,7 +111,7 @@ class AuthorizeWiringTest {
             val issued = cookie()
             assertEquals(HttpStatusCode.OK, client.probe(port, cookie = issued).status, "the cookie works")
 
-            holder.rotate(token)
+            val _ = holder.rotate(token)
 
             assertEquals(HttpStatusCode.Unauthorized, client.probe(port, cookie = issued).status)
         }
@@ -195,11 +195,11 @@ class AuthorizeWiringTest {
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             routing {
-                authenticated(tokenProvider, publicUrl) {
+                val _ = authenticated(tokenProvider, publicUrl) {
                     get("/ping") { call.respondText("pong") }
                     post("/ping") { call.respondText("posted") }
                 }
-                loopbackOnly {
+                val _ = loopbackOnly {
                     get("/local") { call.respondText("local") }
                 }
             }

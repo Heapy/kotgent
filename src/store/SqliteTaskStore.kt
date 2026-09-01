@@ -64,7 +64,7 @@ class SqliteTaskStore private constructor(
         revCounter = backlog.maxRev().executeAsOne()
         // The native driver sends transaction-less reads to a different connection; seed and read together.
         db.transaction {
-            tasks.raiseLocalKeyHighWater(tasks.maxLocalTaskKey().executeAsOne())
+            val _ = tasks.raiseLocalKeyHighWater(tasks.maxLocalTaskKey().executeAsOne())
             localKeyCounter = tasks.localKeyHighWater().executeAsOne()
         }
     }
@@ -94,11 +94,11 @@ class SqliteTaskStore private constructor(
                 // Keep the tombstone check atomic with insertion so project deletion cannot race creation.
                 if (projectIsArchivedLocked(project)) throw ArchivedProjectException(project)
                 val rev = nextRev()
-                tasks.raiseLocalKeyHighWater(key)
+                val _ = tasks.raiseLocalKeyHighWater(key)
                 val position = positionForEnd(backlog.maxPosition(project.value).executeAsOne().MAX)
-                tasks.insertTask(ref.value, title, body, ts, ts)
-                backlog.insertEntry(ref.value, project.value, position, TaskState.todo.name, ts, ts, rev)
-                appendActivityLocked(ref, ActivityKind.created, author, null, null, null, ts)
+                val _ = tasks.insertTask(ref.value, title, body, ts, ts)
+                val _ = backlog.insertEntry(ref.value, project.value, position, TaskState.todo.name, ts, ts, rev)
+                val _ = appendActivityLocked(ref, ActivityKind.created, author, null, null, null, ts)
                 outbox.stage(
                     TaskUpdate(
                         ref = ref,
@@ -126,7 +126,7 @@ class SqliteTaskStore private constructor(
             var updated: Task? = null
             db.transaction {
                 if (!existsLocked(ref)) return@transaction
-                tasks.updateTaskFields(title, body, now(), ref.value)
+                val _ = tasks.updateTaskFields(title, body, now(), ref.value)
                 updated = taskLocked(ref)
                 restampAndStageLocked(ref)
             }
@@ -141,10 +141,10 @@ class SqliteTaskStore private constructor(
                 if (!existsLocked(ref)) return@transaction
                 // Read reverse dependents before deleting the edges, then emit their newly derived state.
                 val dependents = dependencies.dependentsOfLocked(ref)
-                backlog.deleteDepsForTask(ref.value, ref.value)
-                backlog.deleteEntry(ref.value)
-                tasks.deleteActivityForTask(ref.value)
-                tasks.deleteTask(ref.value)
+                val _ = backlog.deleteDepsForTask(ref.value, ref.value)
+                val _ = backlog.deleteEntry(ref.value)
+                val _ = tasks.deleteActivityForTask(ref.value)
+                val _ = tasks.deleteTask(ref.value)
                 outbox.stage(TaskUpdate(ref, null, nextRev()))
                 for (dependent in dependents) restampAndStageLocked(dependent)
                 removed = true
@@ -207,8 +207,8 @@ class SqliteTaskStore private constructor(
         val rev = nextRev()
         var after: BacklogEntry? = null
         db.transaction {
-            backlog.setState(to.name, ts, rev, ref.value)
-            appendActivityLocked(ref, ActivityKind.transition, author, message, before.state, to, ts)
+            val _ = backlog.setState(to.name, ts, rev, ref.value)
+            val _ = appendActivityLocked(ref, ActivityKind.transition, author, message, before.state, to, ts)
             after = dependencies.entryLocked(ref)
             after?.let { outbox.stage(TaskUpdate(ref, it, it.rev)) }
             dependencies.restampDependentsLocked(ref)
@@ -283,7 +283,7 @@ class SqliteTaskStore private constructor(
                 if (projectIsArchivedLocked(id)) {
                     ProjectRegistration.refusedArchived
                 } else {
-                    projects.upsertProject(id.value, name, path, now())
+                    val _ = projects.upsertProject(id.value, name, path, now())
                     ProjectRegistration.registered
                 }
             }
@@ -337,7 +337,7 @@ class SqliteTaskStore private constructor(
         ts: Long,
     ): TaskActivityEntry {
         // Must remain inside the caller's transaction: last_insert_rowid is connection-local.
-        tasks.insertActivity(ref.value, ts, kind.name, author, text, fromState?.name, toState?.name)
+        val _ = tasks.insertActivity(ref.value, ts, kind.name, author, text, fromState?.name, toState?.name)
         return TaskActivityEntry(
             id = tasks.lastActivityId().executeAsOne(),
             ref = ref,
@@ -353,7 +353,7 @@ class SqliteTaskStore private constructor(
     private fun restampAndStageLocked(ref: TaskRef) {
         val entry = dependencies.entryLocked(ref) ?: return
         val rev = nextRev()
-        backlog.restamp(rev, ref.value)
+        val _ = backlog.restamp(rev, ref.value)
         outbox.stage(TaskUpdate(ref, entry.copy(rev = rev), rev))
     }
 

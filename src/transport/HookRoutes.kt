@@ -193,13 +193,13 @@ private fun Route.hookRoutes(
                     // Once the authoritative id commits, a retry no longer looks like a displacement. Keep
                     // append plus correction non-cancellable so a dropped hook connection cannot split them.
                     withContext(NonCancellable) {
-                        store.append(sessionId, normalized, EventSource.hook)
+                        val _ = store.append(sessionId, normalized, EventSource.hook)
                         runCatching { onProviderIdRebound(sessionId) }.onFailure { failure ->
                             eprintln("provider-id rebind correction failed for '${sessionId.value}': $failure")
                         }
                     }
                 } else {
-                    store.append(sessionId, normalized, EventSource.hook)
+                    val _ = store.append(sessionId, normalized, EventSource.hook)
                 }
                 call.respondText("ok", status = HttpStatusCode.OK)
             } else {

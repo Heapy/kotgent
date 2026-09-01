@@ -362,7 +362,7 @@ class DialogDismissTest {
                     "reached from a real press any more — this test has stopped testing it",
             )
         }
-        val (x, y) = found.split(",").map { it.toDouble() }
+        val [x, y] = found.split(",").map { it.toDouble() }
         return ViewportPoint(x, y)
     }
 

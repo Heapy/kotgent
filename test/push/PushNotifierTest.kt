@@ -165,7 +165,7 @@ class PushNotifierTest {
                         compensationObservedFinished.complete(watcherFinished.isCompleted)
                     },
                 ) {
-                    env.start(notifierScope)
+                    val _ = env.start(notifierScope)
                 }
             }
 

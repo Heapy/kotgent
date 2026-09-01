@@ -374,7 +374,7 @@ class CliTest {
 
     @Test
     fun importSessionOmittedCwdStaysAbsentForDaemonDiscovery() = withStub { stub, api ->
-        api.importSession("claude", PROVIDER_ID)
+        val _ = api.importSession("claude", PROVIDER_ID)
         val req = stub.requests.receive()
         val decoded = TRANSPORT_JSON.decodeFromString(ImportSessionRequest.serializer(), req.body)
         assertNull(decoded.cwd, "no cwd in the body → the daemon's VendorSessionLocator discovers it")
@@ -382,7 +382,7 @@ class CliTest {
 
     @Test
     fun aControlVerbHitsTheRightPath() = withStub { stub, api ->
-        api.stop("abc123")
+        val _ = api.stop("abc123")
         val req = stub.requests.receive()
         assertEquals("POST", req.method)
         assertEquals("$API_PREFIX/sessions/abc123/stop", req.path)

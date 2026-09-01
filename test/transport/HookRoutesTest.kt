@@ -57,7 +57,7 @@ class HookRoutesTest {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             routing {
                 // These tests exclude the launch/register race, so unknown panes must fail immediately.
-                claudeHookRoutes(
+                val _ = claudeHookRoutes(
                     tokenProvider, paneLookup, store, paneLookupGraceMillis = 0,
                     modelCapture = modelCapture ?: ClaudeModelCapture(store),
                 )
@@ -104,7 +104,7 @@ class HookRoutesTest {
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
-            routing { tmuxHookRoutes(tokenProvider, onSessionClosed) }
+            routing { val _ = tmuxHookRoutes(tokenProvider, onSessionClosed) }
         }
         try {
             withTimeout(20.seconds) {
@@ -417,7 +417,7 @@ class HookRoutesTest {
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             routing {
-                codexHookRoutes(
+                val _ = codexHookRoutes(
                     { token }, paneLookup, store, paneLookupGraceMillis = 0,
                     onProviderIdRebound = onProviderIdRebound,
                 )
@@ -555,12 +555,12 @@ class HookRoutesTest {
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
         withCodexIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
             val id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-            client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
+            val _ = client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
             store.appended.receive()
             assertTrue(rebounds.tryReceive().isFailure, "a first bind is not a displacement")
 
             store.sessionMeta = boundMeta(ProviderSessionId(id))
-            client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
+            val _ = client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
             store.appended.receive()
             assertTrue(rebounds.tryReceive().isFailure, "re-binding the same id displaces nothing")
         }
@@ -621,7 +621,7 @@ class HookRoutesTest {
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             routing {
-                junieHookRoutes(
+                val _ = junieHookRoutes(
                     { token }, paneLookup, store, paneLookupGraceMillis = 0,
                     onProviderIdRebound = onProviderIdRebound,
                 )

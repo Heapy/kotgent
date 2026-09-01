@@ -382,7 +382,7 @@ class CodexRolloutScanTest {
             assertTrue(captureCodexModelOnce(store, scan, launchMeta))
             assertEquals("gpt-6", store.getSession(sid)!!.model, "the neighbour's model was persisted")
 
-            store.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
             assertEquals(mine, store.getSession(sid)!!.providerSessionId, "the hook wins over the scan")
             assertEquals("gpt-6", store.getSession(sid)!!.model, "…but the suspect model survives the append")
 
@@ -411,7 +411,7 @@ class CodexRolloutScanTest {
                 createdAt = 0L, updatedAt = 0L,
             )
             real.upsertSession(launchMeta)
-            real.append(sid, AgentEvent.SessionBound(neighbour), EventSource.system)
+            val _ = real.append(sid, AgentEvent.SessionBound(neighbour), EventSource.system)
 
             val store = object : EventStore by real {
                 private var raced = false
@@ -419,7 +419,7 @@ class CodexRolloutScanTest {
                     val row = real.getSession(sessionId)
                     if (!raced) {
                         raced = true
-                        real.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
+                        val _ = real.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
                         real.setModel(sid, null)
                     }
                     return row
@@ -515,7 +515,7 @@ class CodexRolloutScanTest {
         val bytes = text.encodeToByteArray()
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }

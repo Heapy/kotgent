@@ -106,8 +106,8 @@ class JunieSessionScanTest {
     fun aSessionDirectoryWithoutItsEventStreamIsNotASession() {
         val junieDir = makeJunieDir()
         val empty = id("53-1j1h")
-        makeDir("$junieDir/sessions")
-        makeDir("$junieDir/sessions/${empty.value}")
+        val _ = makeDir("$junieDir/sessions")
+        val _ = makeDir("$junieDir/sessions/${empty.value}")
         assertFalse(JunieSessionScan(junieDir).hasSession(empty))
     }
 
@@ -186,8 +186,8 @@ class JunieSessionScanTest {
     @Test
     fun discoveryIgnoresANonSessionDirectory() {
         val junieDir = makeJunieDir()
-        makeDir("$junieDir/sessions")
-        makeDir("$junieDir/sessions/logs")
+        val _ = makeDir("$junieDir/sessions")
+        val _ = makeDir("$junieDir/sessions/logs")
         writeFile("$junieDir/sessions/logs/events.jsonl", "{}\n")
         assertNull(JunieSessionScan(junieDir).discoverSessionId("/work/repo", pastThreshold()))
     }
@@ -348,13 +348,13 @@ class JunieSessionScanTest {
         id: ProviderSessionId,
         events: String = """{"kind":"SystemMessageEvent","text":"hi","timestampMs":1785000000000}""" + "\n",
     ) {
-        makeDir("$junieDir/sessions")
+        val _ = makeDir("$junieDir/sessions")
         val session = makeDir("$junieDir/sessions/${id.value}")
         writeFile("$session/events.jsonl", events)
     }
 
     private fun placeIndex(junieDir: String, content: String) {
-        makeDir("$junieDir/sessions")
+        val _ = makeDir("$junieDir/sessions")
         writeFile("$junieDir/sessions/index.jsonl", content)
     }
 
@@ -384,7 +384,7 @@ class JunieSessionScanTest {
         val bytes = text.encodeToByteArray()
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }

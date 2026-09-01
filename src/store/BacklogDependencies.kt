@@ -127,7 +127,7 @@ class BacklogDependencies(
             )
         }
         queries.transaction {
-            queries.insertDep(ref.value, dependsOn.value)
+            val _ = queries.insertDep(ref.value, dependsOn.value)
             restampAfterEditLocked(ref)
         }
     }
@@ -139,7 +139,7 @@ class BacklogDependencies(
     private fun removeLocked(ref: TaskRef, dependsOn: TaskRef) {
         if (dependsOn !in dependenciesOfLocked(ref)) return
         queries.transaction {
-            queries.deleteDep(ref.value, dependsOn.value)
+            val _ = queries.deleteDep(ref.value, dependsOn.value)
             restampAfterEditLocked(ref)
         }
     }
@@ -154,7 +154,7 @@ class BacklogDependencies(
     private fun restampLocked(ref: TaskRef) {
         val entry = entryLocked(ref) ?: return
         val rev = nextRev()
-        queries.restamp(rev, ref.value)
+        val _ = queries.restamp(rev, ref.value)
         outbox.stage(TaskUpdate(ref, entry.copy(rev = rev), rev))
     }
 

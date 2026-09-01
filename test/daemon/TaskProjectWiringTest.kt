@@ -153,7 +153,7 @@ class TaskProjectWiringTest {
             assertNull(f.store.getSession(started.id)!!.projectId)
 
             f.tasks.upsertProjectFailure = null
-            f.reconciler().reconcile()
+            val _ = f.reconciler().reconcile()
 
             assertEquals(alpha, f.store.getSession(started.id)!!.projectId)
             assertEquals(listOf(RegisteredProject(alpha, "kotgent", "/repo")), f.tasks.registrations)
@@ -219,7 +219,7 @@ class TaskProjectWiringTest {
             f.seedSession("old00001", cwd = "/repo/sub")
             f.seedSession("stamped1", cwd = "/repo/sub", projectId = beta)
 
-            f.reconciler().reconcile()
+            val _ = f.reconciler().reconcile()
 
             assertEquals(alpha, f.store.getSession(SessionId("old00001"))!!.projectId)
             assertEquals(
@@ -244,7 +244,7 @@ class TaskProjectWiringTest {
             val registration = RegisteredProject(alpha, "kotgent", "/repo")
             val reconciler = f.reconciler()
 
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
 
             assertNull(
                 f.store.getSession(SessionId("tombed01"))!!.projectId,
@@ -261,7 +261,7 @@ class TaskProjectWiringTest {
             )
             assertTrue(f.tasks.registrations.isEmpty(), "and the task store wrote no project row")
 
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
 
             assertNull(
                 f.store.getSession(SessionId("tombed01"))!!.projectId,
@@ -276,7 +276,7 @@ class TaskProjectWiringTest {
             assertTrue(f.tasks.registrations.isEmpty(), "neither refused attempt resurrects the project")
 
             f.tasks.archiveProject(alpha, archived = false)
-            reconciler.reconcile()
+            val _ = reconciler.reconcile()
 
             assertEquals(
                 alpha,
@@ -311,7 +311,7 @@ class TaskProjectWiringTest {
             f.seedSession("holder01", cwd = "/repo", projectId = alpha, taskRef = live)
             f.seedSession("dangler1", cwd = "/repo", projectId = alpha, taskRef = gone)
 
-            f.reconciler().reconcile()
+            val _ = f.reconciler().reconcile()
 
             assertEquals(live, f.store.getSession(SessionId("holder01"))!!.taskRef)
             assertNull(f.store.getSession(SessionId("dangler1"))!!.taskRef)
@@ -329,7 +329,7 @@ class TaskProjectWiringTest {
             val f = Fixture(this)
             f.seedSession("dangler2", cwd = "/repo", taskRef = TaskRef("local:404"), state = SessionState.running)
 
-            f.reconciler().reconcile()
+            val _ = f.reconciler().reconcile()
 
             val row = f.store.getSession(SessionId("dangler2"))!!
             assertEquals(SessionState.crashed, row.state, "the pane is gone, so the state write did happen")
@@ -346,7 +346,7 @@ class TaskProjectWiringTest {
             f.tasks.entries[orphan] = before
             f.seedSession("worker01", cwd = "/repo/sub")
 
-            f.reconciler().reconcile()
+            val _ = f.reconciler().reconcile()
 
             assertEquals(before, f.tasks.entries[orphan], "an unlinked in_progress card is not a defect")
             assertEquals(alpha, f.store.getSession(SessionId("worker01"))!!.projectId, "the pass did run")

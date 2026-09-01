@@ -99,12 +99,12 @@ class SqliteEventStore private constructor(
         revCounter = sessions.maxRev().executeAsOne()
 
         driver.execute(null, CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS, 0)
-        preferenceQueries.seedDefaults()
+        val _ = preferenceQueries.seedDefaults()
         _preferences = MutableStateFlow(readPreferences())
     }
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
-        sessions.upsert(
+        val _ = sessions.upsert(
             meta.id.value,
             meta.name,
             encodeTags(meta.tags),
@@ -140,17 +140,17 @@ class SqliteEventStore private constructor(
         paneId: PaneId?,
         updatedAt: Long,
     ): Unit = mutex.withLock {
-        sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, ++revCounter, sessionId.value)
+        val _ = sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
     override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
-        sessions.setArchived(archived.toSqliteFlag(), updatedAt, ++revCounter, sessionId.value)
+        val _ = sessions.setArchived(archived.toSqliteFlag(), updatedAt, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
     override suspend fun setModel(sessionId: SessionId, model: String?): Unit = mutex.withLock {
-        sessions.setModel(model, ++revCounter, sessionId.value)
+        val _ = sessions.setModel(model, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
@@ -159,7 +159,7 @@ class SqliteEventStore private constructor(
         providerSessionId: ProviderSessionId,
         model: String,
     ): Boolean = mutex.withLock {
-        sessions.setModelForProvider(model, ++revCounter, sessionId.value, providerSessionId.value)
+        val _ = sessions.setModelForProvider(model, ++revCounter, sessionId.value, providerSessionId.value)
         val applied = sessions.get(sessionId.value).executeAsOneOrNull()
             ?.provider_session_id == providerSessionId.value
         if (applied) emitFromRow(sessionId)
@@ -168,7 +168,7 @@ class SqliteEventStore private constructor(
 
     override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?): Unit =
         mutex.withLock {
-            sessions.setTaskRef(taskRef?.value, ++revCounter, sessionId.value)
+            val _ = sessions.setTaskRef(taskRef?.value, ++revCounter, sessionId.value)
             emitFromRow(sessionId)
         }
 
@@ -184,7 +184,7 @@ class SqliteEventStore private constructor(
 
     override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?): Unit =
         mutex.withLock {
-            sessions.setProjectId(projectId?.value, ++revCounter, sessionId.value)
+            val _ = sessions.setProjectId(projectId?.value, ++revCounter, sessionId.value)
             emitFromRow(sessionId)
         }
 
@@ -193,7 +193,7 @@ class SqliteEventStore private constructor(
     }
 
     override suspend fun markRead(sessionId: SessionId, seq: Seq): Unit = mutex.withLock {
-        sessions.setReadCursor(seq.value, ++revCounter, sessionId.value)
+        val _ = sessions.setReadCursor(seq.value, ++revCounter, sessionId.value)
         emitFromRow(sessionId)
     }
 
@@ -207,7 +207,7 @@ class SqliteEventStore private constructor(
 
     override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
         mutex.withLock {
-            preferenceQueries.save(basePath, groupingLevel.toLong())
+            val _ = preferenceQueries.save(basePath, groupingLevel.toLong())
             readPreferences().also { _preferences.value = it }
         }
 
@@ -220,7 +220,7 @@ class SqliteEventStore private constructor(
                 "seq divergence for '${sessionId.value}': reducer=${next.lastSeq.value} db=$seq"
             }
             val ts = now()
-            val (type, payload) = serialize(event)
+            val [type, payload] = serialize(event)
 
             val cachedRow = sessions.get(sessionId.value).executeAsOneOrNull()
             val cachedState = cachedRow?.state?.let { SessionState.valueOf(it) }
@@ -234,8 +234,8 @@ class SqliteEventStore private constructor(
 
             val rev = ++revCounter
             db.transaction {
-                events.insert(sessionId.value, seq, ts, type, source.name, payload)
-                sessions.updateCache(
+                val _ = events.insert(sessionId.value, seq, ts, type, source.name, payload)
+                val _ = sessions.updateCache(
                     cacheState.name,
                     source.name,
                     next.lastSeq.value,

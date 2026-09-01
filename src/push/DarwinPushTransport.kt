@@ -16,7 +16,7 @@ class DarwinPushTransport(
 
     override suspend fun post(url: String, headers: Map<String, String>): Int {
         val response = client.post(url) {
-            for ((name, value) in headers) header(name, value)
+            for ([name, value] in headers) header(name, value)
         }
         return response.status.value
     }

@@ -51,8 +51,8 @@ class VapidKey(
         val dir = keyPath.substringBeforeLast('/', missingDelimiterValue = "")
         if (dir.isNotEmpty()) mkdir0700(dir)
         // A concurrent winner's persisted key becomes authoritative; never replace it.
-        createPrivateFileExclusive(keyPath, pem)
-        existingPem() ?: throw VapidKeyException(
+        val _ = createPrivateFileExclusive(keyPath, pem)
+        val _ = existingPem() ?: throw VapidKeyException(
             "VAPID key file $keyPath is missing immediately after being written",
         )
         return keyPath

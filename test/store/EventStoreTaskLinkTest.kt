@@ -47,8 +47,8 @@ class EventStoreTaskLinkTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link01")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.SessionBound(ProviderSessionId("prov-1")), EventSource.hook)
-            store.append(sid, AgentEvent.ToolCall("grep"), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(ProviderSessionId("prov-1")), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.ToolCall("grep"), EventSource.hook)
             val before = store.getSession(sid)!!
 
             val updates = mutableListOf<SessionUpdate>()
@@ -112,7 +112,7 @@ class EventStoreTaskLinkTest {
                 "no derived mutator may rewind the archive stamp: ${derivedRows.map { it.updatedAt }}",
             )
             assertTrue(
-                (listOf(archived.rev) + derivedRows.map { it.rev }).zipWithNext().all { (a, b) -> b > a },
+                (listOf(archived.rev) + derivedRows.map { it.rev }).zipWithNext().all { [a, b] -> b > a },
                 "every derived patch still carries a newer revision",
             )
         }
@@ -268,7 +268,7 @@ class EventStoreTaskLinkTest {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("proj01")
             store.upsertSession(meta(sid))
-            store.append(sid, AgentEvent.SessionBound(ProviderSessionId("prov-2")), EventSource.hook)
+            val _ = store.append(sid, AgentEvent.SessionBound(ProviderSessionId("prov-2")), EventSource.hook)
             val before = store.getSession(sid)!!
 
             val updates = mutableListOf<SessionUpdate>()
@@ -341,7 +341,7 @@ class EventStoreTaskLinkTest {
             val updates = mutableListOf<SessionUpdate>()
             val collector = launch { store.sessionUpdates.collect { updates.add(it) } }
             yield()
-            store.append(corrupt, AgentEvent.ToolCall("grep"), EventSource.hook)
+            val _ = store.append(corrupt, AgentEvent.ToolCall("grep"), EventSource.hook)
             repeat(20) { yield() }
             assertEquals(1, updates.size, "the append still emits: $updates")
             assertNull(updates.single().taskRef, "…carrying 'no task' rather than throwing")

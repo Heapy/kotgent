@@ -248,9 +248,9 @@ class SessionManager(
 
                 val prealloc = spec.preallocatedSessionId
                 if (prealloc != null) {
-                    idCapture.bind(sessionId, prealloc)
+                    val _ = idCapture.bind(sessionId, prealloc)
                 } else {
-                    idCapture.captureInBackground(sessionId) {
+                    val _ = idCapture.captureInBackground(sessionId) {
                         store.projectionOf(sessionId).providerSessionId ?: discoverProviderId(meta)
                     }
                 }
@@ -343,11 +343,11 @@ class SessionManager(
     private suspend fun closeLinkedTask(sessionId: SessionId) {
         val tasks = taskStore ?: return
         val ref = store.getSession(sessionId)?.taskRef ?: return
-        tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
+        val _ = tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
         for (holder in store.sessionsHoldingTask(ref)) {
             // Preserve a newer task link made after the holder snapshot.
             if (!store.clearTaskRefIf(holder.id, ref)) continue
-            tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
+            val _ = tasks.appendActivity(ref, ActivityKind.unlinked, author = holder.id.value)
         }
     }
 
@@ -489,7 +489,7 @@ class SessionManager(
             // Commit the resumable row first. If SessionBound append fails, resume still works from the
             // row; only replay of this imported session lacks its provider binding.
             store.upsertSession(meta)
-            idCapture.bind(sessionId, id)
+            val _ = idCapture.bind(sessionId, id)
             store.getSession(sessionId) ?: meta
         } finally {
             releaseSessionId(sessionId)
@@ -508,7 +508,7 @@ class SessionManager(
         )
         persistDerivedState(meta, terminal.state, EventSource.user)
         try {
-            tmux.killSession(sessionId.value)
+            val _ = tmux.killSession(sessionId.value)
         } catch (e: Throwable) {
             // A failed kill may leave the pane alive, so roll the armed intent back without cancellation.
             withContext(NonCancellable) {

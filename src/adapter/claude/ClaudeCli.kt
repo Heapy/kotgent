@@ -44,7 +44,7 @@ class ClaudeCli(
 
         fun parseVersion(output: String): ClaudeVersion? {
             val match = SEMVER.find(output) ?: return null
-            val (major, minor, patch) = match.destructured
+            val [major, minor, patch] = match.destructured
             return ClaudeVersion(major.toInt(), minor.toInt(), patch.toInt())
         }
 

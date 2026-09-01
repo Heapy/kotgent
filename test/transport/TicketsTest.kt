@@ -161,7 +161,7 @@ class TicketsTest {
     @Test
     fun anUnknownValueIsRefused() = runBlocking {
         val store = store()
-        store.issue("test-bound-token")
+        val _ = store.issue("test-bound-token")
 
         assertNull(store.redeem("ZZZZZZZZ"), "a well-formed code this store never minted")
         assertNull(store.redeem("f".repeat(64)), "a value of the wrong shape entirely")
@@ -178,7 +178,7 @@ class TicketsTest {
             "padded by the keyboard" to { code -> "  $code " },
             "mixed case with spaces" to { code -> code.take(2).lowercase() + " " + code.drop(2) },
         )
-        for ((label, mangle) in typed) {
+        for ([label, mangle] in typed) {
             val store = store()
             val ticket = store.issue("test-bound-token")
             assertNotNull(store.redeem(mangle(ticket.value)), "$label must redeem: ${mangle(ticket.value)}")
@@ -192,7 +192,7 @@ class TicketsTest {
             "l for 1, o for 0" to { code -> code.replace('1', 'l').replace('0', 'o') },
             "L for 1" to { code -> code.replace('1', 'L') },
         )
-        for ((label, mangle) in variants) {
+        for ([label, mangle] in variants) {
             val store = store()
             val ticket = issueWithBothDigits(store)
             assertNotNull(store.redeem(mangle(ticket.value)), "$label must redeem: ${mangle(ticket.value)}")
@@ -245,7 +245,7 @@ class TicketsTest {
     @Test
     fun expiredTicketsAreSweptOnTheNextAccess() = runBlocking {
         val store = store(ttlMillis = 60_000)
-        repeat(3) { store.issue("test-bound-token") }
+        repeat(3) { val _ = store.issue("test-bound-token") }
         assertEquals(3, store.outstandingCount())
 
         clock = start + 60_001
@@ -255,7 +255,7 @@ class TicketsTest {
     @Test
     fun issuingSweepsExpiredTicketsSoTheMapDoesNotGrowWithoutBound() = runBlocking<Unit> {
         val store = store(ttlMillis = 60_000)
-        repeat(5) { store.issue("test-bound-token") }
+        repeat(5) { val _ = store.issue("test-bound-token") }
 
         clock = start + 60_001
         val fresh = store.issue("test-bound-token")

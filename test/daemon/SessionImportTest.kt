@@ -155,9 +155,9 @@ class SessionImportTest {
             val tmux = FakeTmux()
             val probe = VendorStoreProbe { a, c, id -> a == "claude" && c == canonicalTmp && id == providerId }
             val mgr = manager(store, tmux, probe = probe)
-            mgr.importSession("claude", providerId, cwd = "/tmp")
+            val _ = mgr.importSession("claude", providerId, cwd = "/tmp")
 
-            Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            val _ = Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
 
             assertEquals(
                 SessionState.resumable,
@@ -191,7 +191,7 @@ class SessionImportTest {
         withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
-            mgr.importSession("claude", providerId, cwd = "/tmp")
+            val _ = mgr.importSession("claude", providerId, cwd = "/tmp")
 
             val again = assertFailsWith<DuplicateImportException> {
                 mgr.importSession("claude", providerId, cwd = "/tmp")
@@ -514,10 +514,10 @@ class SessionImportTest {
                 factory = catFactory,
                 capture = { meta -> captured.complete(meta) },
             )
-            mgr.importSession("codex", providerId, cwd = "/tmp")
+            val _ = mgr.importSession("codex", providerId, cwd = "/tmp")
             assertFalse(captured.isCompleted, "import itself must not run model capture — nothing launched yet")
 
-            mgr.resume(SessionId("imp00001"))
+            val _ = mgr.resume(SessionId("imp00001"))
 
             val meta = captured.await()
             assertEquals(SessionId("imp00001"), meta.id, "resume wires model capture for the revived session")

@@ -98,18 +98,18 @@ class KotgentServer(
                     }
                     install(WebSockets)
                     routing {
-                        claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
-                        codexHookRoutes(
+                        val _ = claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                        val _ = codexHookRoutes(
                             tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )
-                        junieHookRoutes(
+                        val _ = junieHookRoutes(
                             tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )
-                        tmuxHookRoutes(tokens::current, onTmuxSessionClosed)
+                        val _ = tmuxHookRoutes(tokens::current, onTmuxSessionClosed)
                         authRoutes(tokens, tickets, publicUrl, json)
-                        authenticated(tokens::current, publicUrl) {
+                        val _ = authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
                                 fileUploadRoutes(store, fileUploader, json)
                                 controlRoutes(
@@ -264,7 +264,7 @@ fun Route.staticWebUi(dir: String?) {
 
 private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: String, rel: String) {
     // Strip the cache prefix before traversal validation so `_v/<rev>/../../…` cannot bypass it.
-    val (rev, stripped) = stripRevPrefix(rel)
+    val [rev, stripped] = stripRevPrefix(rel)
     if (stripped.contains("..") || stripped.startsWith("/")) {
         call.respondText("bad path", status = HttpStatusCode.Forbidden)
         return

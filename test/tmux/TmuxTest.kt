@@ -24,11 +24,11 @@ class TmuxTest {
     }
 
     private fun killServer() {
-        ProcessRunner.run(listOf(tmux.tmuxPath, "-L", tmux.socket, "kill-server"))
+        val _ = ProcessRunner.run(listOf(tmux.tmuxPath, "-L", tmux.socket, "kill-server"))
     }
 
     private fun clearSessionClosedHook() {
-        ProcessRunner.run(tmuxCommand(tmux.tmuxPath, tmux.socket, listOf("set-hook", "-gu", "session-closed")))
+        val _ = ProcessRunner.run(tmuxCommand(tmux.tmuxPath, tmux.socket, listOf("set-hook", "-gu", "session-closed")))
     }
 
     private suspend fun killServerAndWait() {
@@ -101,7 +101,7 @@ class TmuxTest {
     fun capturePaneReturnsRenderedContent() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "cap", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "cap", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             tmux.sendKeys("cap", "KOTGENT-MARKER\n".encodeToByteArray())
             val out = captureUntil("cap", "KOTGENT-MARKER")
             assertTrue("KOTGENT-MARKER" in out, "capture-pane should return the echoed marker, got:\n<$out>")
@@ -112,7 +112,7 @@ class TmuxTest {
     fun sendKeysReachesTheProcessEvenFromCopyMode() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "cm1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "cm1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(rawOnTestSocket("copy-mode", "-t", "kt-cm1").isSuccess, "could not enter copy-mode")
             assertEquals("1", paneFormat("kt-cm1", "#{pane_in_mode}"), "the pane must be in copy-mode first")
 
@@ -130,7 +130,7 @@ class TmuxTest {
         withTimeout(30.seconds) {
             val dir = makeTempDir()
             try {
-                tmux.newSession(id = "cm2", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+                val _ = tmux.newSession(id = "cm2", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
                 assertTrue(rawOnTestSocket("copy-mode", "-t", "kt-cm2").isSuccess, "could not enter copy-mode")
                 assertEquals("1", paneFormat("kt-cm2", "#{pane_in_mode}"), "the pane must be in copy-mode first")
 
@@ -159,7 +159,7 @@ class TmuxTest {
         withTimeout(20.seconds) {
             assertTrue(tmux.leaveCopyMode("never-existed"), "no server at all: nothing to refuse over")
 
-            tmux.newSession(id = "lcm", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "lcm", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(tmux.leaveCopyMode("lcm"), "a pane in no mode is already clear")
             assertEquals("0", paneFormat("kt-lcm", "#{pane_in_mode}"), "and `copy-mode -q` left it alone")
 
@@ -249,7 +249,7 @@ class TmuxTest {
                 "session" to "echo \"can't find session: kt-send-session\" >&2\nexit 1\n",
                 "pane" to "echo \"can't find pane: kt-send-pane\" >&2\nexit 1\n",
             )
-            for ((shape, body) in absenceShapes) {
+            for ([shape, body] in absenceShapes) {
                 val absentSend = assertFailsWith<TmuxException> {
                     Tmux(
                         socket = tmux.socket,
@@ -275,7 +275,7 @@ class TmuxTest {
     fun killSessionRemovesTheSession() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "kill1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "kill1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(tmux.listPanes().any { it.session == "kt-kill1" }, "session exists before kill")
             assertTrue(tmux.killSession("kill1"), "killSession returns true when it removed a session")
             assertFalse(tmux.listPanes().any { it.session == "kt-kill1" }, "session is gone after kill")
@@ -297,8 +297,8 @@ class TmuxTest {
                     tmuxPath = tmux.tmuxPath,
                     hookScriptPath = script,
                 )
-                hooked.newSession(id = "hooka", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
-                hooked.newSession(id = "hookb", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+                val _ = hooked.newSession(id = "hooka", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+                val _ = hooked.newSession(id = "hookb", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
 
                 assertTrue(hooked.killSession("hooka"), "the first hooked session should close")
                 assertEquals(
@@ -326,7 +326,7 @@ class TmuxTest {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
             assertFalse(tmux.killSession("never-existed"), "killing a nonexistent session returns false")
-            tmux.newSession(id = "other", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "other", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertFalse(tmux.killSession("still-nope"), "unknown target on a live server returns false")
         }
     }
@@ -335,7 +335,7 @@ class TmuxTest {
     fun doubleKillIsGraceful() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "dbl", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "dbl", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(tmux.killSession("dbl"), "first kill removes the session")
             assertFalse(tmux.killSession("dbl"), "second kill of the same session returns false, not an error")
         }
@@ -387,7 +387,7 @@ class TmuxTest {
                 )
                 killServerAndWait()
 
-                Tmux(socket = tmux.socket, tmuxPath = writeTmuxWrapper(home))
+                val _ = Tmux(socket = tmux.socket, tmuxPath = writeTmuxWrapper(home))
                     .newSession(id = "isoprod", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
 
                 assertEquals(
@@ -407,7 +407,7 @@ class TmuxTest {
     fun newSessionForcesEveryServerOption() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "opt1", cwd = "/tmp", cmd = "cat", cols = 100, rows = 40)
+            val _ = tmux.newSession(id = "opt1", cwd = "/tmp", cmd = "cat", cols = 100, rows = 40)
             assertEquals(
                 emptyList(),
                 mismatchedOptions(),
@@ -420,14 +420,14 @@ class TmuxTest {
     fun aSecondSessionReAppliesTheOptions() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "opt3a", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "opt3a", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(rawOnTestSocket("set-option", "-g", "history-limit", "1").isSuccess, "could not perturb")
             assertTrue(
                 mismatchedOptions().any { "history-limit" in it },
                 "the perturbation must actually take, or the convergence assertion below is vacuous",
             )
 
-            tmux.newSession(id = "opt3b", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "opt3b", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
 
             assertEquals(emptyList(), mismatchedOptions(), "the re-applied chain converges, it does not drift")
         }
@@ -443,7 +443,7 @@ class TmuxTest {
                     if (it.name == "default-terminal") it.copy(value = "screen-256color") else it
                 },
             )
-            custom.newSession(id = "term1", cwd = "/tmp", cmd = "sh -c 'echo T=\$TERM; cat'", cols = 80, rows = 24)
+            val _ = custom.newSession(id = "term1", cwd = "/tmp", cmd = "sh -c 'echo T=\$TERM; cat'", cols = 80, rows = 24)
             val out = captureUntil("term1", "T=")
             assertTrue(
                 "T=screen-256color" in out,
@@ -456,7 +456,7 @@ class TmuxTest {
     fun aRejectedOptionFailsSessionCreationLoudly() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
         withTimeout(20.seconds) {
-            tmux.newSession(id = "rejctl", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.newSession(id = "rejctl", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             val probe = rawOnTestSocket("set-option", "-g", "kotgent-no-such-option", "on")
             assertFalse(probe.isSuccess, "the probe option must actually be rejected by this tmux build")
 
@@ -570,7 +570,7 @@ class TmuxTest {
     }
 
     private fun removeTempDir(dir: String) {
-        ProcessRunner.run(listOf("rm", "-rf", dir))
+        val _ = ProcessRunner.run(listOf("rm", "-rf", dir))
     }
 
     private fun makeFakeHome(): String {

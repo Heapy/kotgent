@@ -252,7 +252,7 @@ fun Route.taskWriteRoutes(routing: TaskRouting) {
                 return@post
             }
             // Adoption explicitly restores first, but a delete that wins before registration stays authoritative.
-            routing.tasks.setProjectArchived(owner.id, false)
+            val _ = routing.tasks.setProjectArchived(owner.id, false)
             if (routing.tasks.upsertProject(owner.id, owner.name, owner.root) == ProjectRegistration.refusedArchived) {
                 fail(HttpStatusCode.BadRequest, ArchivedProjectException(owner.id))
                 return@post

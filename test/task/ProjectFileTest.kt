@@ -320,8 +320,8 @@ class ProjectFileTest {
         val fs = PosixProjectFs()
         val base = makeBase()
         val repo = makeDir("$base/repo")
-        makeDir("$repo/.git")
-        makeDir("$repo/.git/worktrees")
+        val _ = makeDir("$repo/.git")
+        val _ = makeDir("$repo/.git/worktrees")
         val worktreeMeta = makeDir("$repo/.git/worktrees/feature")
         writeFile("$repo/$PROJECT_FILE_NAME", projectJson() + "\n")
         val src = makeDir("$repo/src")
@@ -386,7 +386,7 @@ class ProjectFileTest {
         val fp = fopen(path, "wb") ?: error("cannot create $path")
         try {
             val bytes = content.encodeToByteArray()
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }
@@ -423,7 +423,7 @@ private class FakeProjectFs(
 
     override fun canonicalize(path: String): String? {
         var resolved = normalize(path)
-        for ((from, to) in symlinks) {
+        for ([from, to] in symlinks) {
             if (resolved == from) resolved = to
             else if (resolved.startsWith("$from/")) resolved = to + resolved.removePrefix(from)
         }

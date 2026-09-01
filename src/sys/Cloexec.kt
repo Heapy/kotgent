@@ -14,6 +14,8 @@ import platform.posix.sysconf
  * already flagged, so that residual cannot block a daemon rebind.
  */
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+// No caller reads the count: every one sweeps for the effect and has no action for a partial sweep.
+@IgnorableReturnValue
 fun markOpenFdsCloexec(from: Int = FIRST_INHERITABLE_FD): Int {
     var flagged = 0
     for (fd in from until fdScanLimit()) {

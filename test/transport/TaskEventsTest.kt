@@ -179,7 +179,7 @@ class TaskEventsTest {
         assertEquals("local:1", row.task.ref, "a ref new to this socket arrives as a full row")
         assertEquals("fresh", row.task.title, "…carrying everything the client needs to render a card")
 
-        ws.tasks.transition(TaskRef("local:1"), TaskState.review, author = "s-1", message = null)
+        val _ = ws.tasks.transition(TaskRef("local:1"), TaskState.review, author = "s-1", message = null)
         val patch = ws.expectUpdate()
         assertEquals("review", patch.task.state)
         assertTrue(patch.task.rev > row.task.rev, "the patch's rev is newer than the row it follows")
@@ -192,7 +192,7 @@ class TaskEventsTest {
             tasks.seedTask(TaskRef("local:1"), alpha, "doomed", position = 1.0)
         },
     ) { ws ->
-        ws.expectSnapshot()
+        val _ = ws.expectSnapshot()
 
         assertTrue(ws.tasks.delete(TaskRef("local:1")), "the task went away")
         assertEquals("local:1", ws.expectRemoved().ref, "a null-entry update becomes task_removed")
@@ -223,7 +223,7 @@ class TaskEventsTest {
             "…carrying the renormalized ranks",
         )
         assertTrue(
-            seen.all { (ref, patch) -> patch.task.rev > before.getValue(ref) },
+            seen.all { [ref, patch] -> patch.task.rev > before.getValue(ref) },
             "…each with a fresh rev, or a connected board would hold stale positions",
         )
     }
@@ -345,14 +345,14 @@ class TaskEventsTest {
         TRANSPORT_JSON.decodeFromString(TaskRemovedDto.serializer(), expectTaskFrame("task_removed"))
 
     private suspend fun DefaultClientWebSocketSession.expectTaskFrame(type: String): String {
-        val (actual, text) = nextTaskFrame()
+        val [actual, text] = nextTaskFrame()
         assertEquals(type, actual, "expected a $type frame, got $actual: $text")
         return text
     }
 
     private suspend fun DefaultClientWebSocketSession.nextTaskFrame(): Pair<String, String> {
         while (true) {
-            val (type, text) = nextFrame()
+            val [type, text] = nextFrame()
             if (type.startsWith("task")) return type to text
         }
     }

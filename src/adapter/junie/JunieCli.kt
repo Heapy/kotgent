@@ -36,7 +36,7 @@ class JunieCli(
 
         fun parseVersion(output: String): JunieVersion? {
             val match = SEMVER.find(output) ?: return null
-            val (major, minor, patch) = match.destructured
+            val [major, minor, patch] = match.destructured
             return JunieVersion(major.toInt(), minor.toInt(), patch.toInt())
         }
     }

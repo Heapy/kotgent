@@ -98,7 +98,7 @@ class SessionDoneTaskTest {
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
             val mgr = managerOver(f, tasks)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             f.store.setTaskRef(worker, ref)
             f.seedNeighbour(neighbour, ref)
             f.journal.clear()
@@ -153,10 +153,10 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks)
             val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             f.store.setTaskRef(worker, ref)
 
-            service.transition(ref, TaskState.done, TaskService.BOARD_AUTHOR, message = null)
+            val _ = service.transition(ref, TaskState.done, TaskService.BOARD_AUTHOR, message = null)
 
             assertEquals(TaskState.done, tasks.entries.getValue(ref).state, "the board closed the task")
             val row = f.store.getSession(worker)!!
@@ -178,7 +178,7 @@ class SessionDoneTaskTest {
                 val mgr = managerOver(f, tasks)
                 val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
-                mgr.start("claude", "/tmp")
+                val _ = mgr.start("claude", "/tmp")
                 f.store.setTaskRef(worker, ref)
                 f.seedNeighbour(neighbour, ref)
                 f.journal.clear()
@@ -197,7 +197,7 @@ class SessionDoneTaskTest {
 
             val fromSession = closeWith { mgr, _ -> mgr.markDone(worker) }
             val fromBoard = closeWith { _, service ->
-                service.transition(ref, TaskState.done, author = worker.value, message = null)
+                val _ = service.transition(ref, TaskState.done, author = worker.value, message = null)
             }
 
             assertEquals(
@@ -232,7 +232,7 @@ class SessionDoneTaskTest {
             }
             val mgr = managerOver(f, tasks)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             f.store.setTaskRef(worker, ref)
             f.seedNeighbour(neighbour, ref)
             f.store.afterSessionsHoldingTask = {
@@ -276,10 +276,10 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks)
             val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
 
             service.link(worker, reviewed)
-            service.transition(reviewed, TaskState.review, author = worker.value, message = "summary")
+            val _ = service.transition(reviewed, TaskState.review, author = worker.value, message = "summary")
             assertEquals(
                 reviewed,
                 f.store.getSession(worker)!!.taskRef,
@@ -329,7 +329,7 @@ class SessionDoneTaskTest {
             val mgr = managerOver(f, tasks)
             val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             f.journal.clear()
             tasks.afterNextCandidate = {
                 tasks.afterNextCandidate = null
@@ -361,7 +361,7 @@ class SessionDoneTaskTest {
             val f = Fixture()
             val mgr = managerOver(f, RefusingTaskStore)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             mgr.markDone(worker)
 
             assertEquals(listOf("done01"), f.tmux.killed, "kill as before")
@@ -375,7 +375,7 @@ class SessionDoneTaskTest {
             val f = Fixture()
             val mgr = managerOver(f, tasks = null)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             f.store.setTaskRef(worker, ref)
 
             mgr.markDone(worker)
@@ -395,7 +395,7 @@ class SessionDoneTaskTest {
             f.store.yieldBeforeArchive = true
             val mgr = managerOver(f, tasks)
 
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             f.store.setTaskRef(worker, ref)
 
             val entered = CompletableDeferred<Unit>()

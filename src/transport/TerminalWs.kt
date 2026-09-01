@@ -59,7 +59,7 @@ fun Route.terminalWs(registry: TerminalRegistry, store: EventStore, json: Json =
             for (bytes in sub.output) {
                 ws.send(Frame.Binary(fin = true, data = bytes))
             }
-            runCatching { ws.close(CloseReason(CloseReason.Codes.NORMAL, "terminal ended")) }
+            val _ = runCatching { ws.close(CloseReason(CloseReason.Codes.NORMAL, "terminal ended")) }
         }
         try {
             // Interactive input intentionally preserves the scrolling viewer's tmux copy-mode; unlike

@@ -75,7 +75,7 @@ class PosixTty(private val fd: Int = STDIN_FILENO) : LocalTty {
     }
 
     override fun windowSize(): WinSize {
-        val (cols, rows) = NativeTty.windowSize(fd) ?: (DEFAULT_COLS to DEFAULT_ROWS)
+        val [cols, rows] = NativeTty.windowSize(fd) ?: (DEFAULT_COLS to DEFAULT_ROWS)
         return WinSize(cols, rows)
     }
 
@@ -158,7 +158,7 @@ class AttachClient(
                     stdinPump.cancel()
                 }
             } finally {
-                runCatching { session.close() }
+                val _ = runCatching { session.close() }
             }
         } finally {
             // Reset remote modes while stdout still belongs to this raw-terminal session.
@@ -170,7 +170,7 @@ class AttachClient(
     }
 
     private suspend fun DefaultClientWebSocketSession.sendResize(size: WinSize) {
-        runCatching { send(Frame.Text(resizeFrame(size.cols, size.rows))) }
+        val _ = runCatching { send(Frame.Text(resizeFrame(size.cols, size.rows))) }
     }
 
     @OptIn(ExperimentalForeignApi::class)

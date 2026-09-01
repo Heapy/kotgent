@@ -34,7 +34,7 @@ class BoardTest {
             assertEquals(listOf("local:7"), page.refsIn("review"))
             assertEquals(listOf("local:8", "local:9"), page.refsIn("done"))
 
-            for ((state, count) in listOf("todo" to "5", "in_progress" to "2", "review" to "1", "done" to "2")) {
+            for ([state, count] in listOf("todo" to "5", "in_progress" to "2", "review" to "1", "done" to "2")) {
                 assertThat(page.column(state).locator(".board-column-head span")).hasText(count)
             }
         }

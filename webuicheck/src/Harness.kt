@@ -133,7 +133,7 @@ class Harness(
         withContext(Dispatchers.Default) {
             current?.stop()
             val next = buildServer(port = boundPort)
-            next.start()
+            val _ = next.start()
             server = next
         }
         writeStdoutLine(READY_LINE)

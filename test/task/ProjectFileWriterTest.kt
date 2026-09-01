@@ -80,18 +80,18 @@ class ProjectFileWriterTest {
     fun theModeIs0666MinusTheUmaskRatherThanThe0600MkstempGaveIt() {
         runBlocking {
             val ordinary = makeDir("${makeBase()}/ordinary")
-            withUmask(S_IWGRP or S_IWOTH) { writerMinting(minted).ensureProjectFile(ordinary, "kotgent") }
+            val _ = withUmask(S_IWGRP or S_IWOTH) { writerMinting(minted).ensureProjectFile(ordinary, "kotgent") }
             assertEquals(
                 S_IRUSR or S_IWUSR or S_IRGRP or S_IROTH,
                 modeOf(joinPath(ordinary, PROJECT_FILE_NAME)),
             )
 
             val private = makeDir("${makeBase()}/private")
-            withUmask(S_IRWXG or S_IRWXO) { writerMinting(minted).ensureProjectFile(private, "kotgent") }
+            val _ = withUmask(S_IRWXG or S_IRWXO) { writerMinting(minted).ensureProjectFile(private, "kotgent") }
             assertEquals(S_IRUSR or S_IWUSR, modeOf(joinPath(private, PROJECT_FILE_NAME)))
 
             val shared = makeDir("${makeBase()}/shared")
-            withUmask(S_IWOTH) { writerMinting(minted).ensureProjectFile(shared, "kotgent") }
+            val _ = withUmask(S_IWOTH) { writerMinting(minted).ensureProjectFile(shared, "kotgent") }
             assertEquals(
                 S_IRUSR or S_IWUSR or S_IRGRP or S_IWGRP or S_IROTH,
                 modeOf(joinPath(shared, PROJECT_FILE_NAME)),
@@ -260,7 +260,7 @@ class ProjectFileWriterTest {
                 "be\u0007ll" to "a bell",
                 "de\u007Fl" to "DEL, which JSON does not escape at all",
             )
-            for ((name, why) in refused) {
+            for ([name, why] in refused) {
                 val dir = makeDir("${makeBase()}/repo")
                 val failure = assertFailsWith<ProjectPathException>(why) {
                     writerMinting(minted).ensureProjectFile(dir, name)
@@ -348,7 +348,7 @@ class ProjectFileWriterTest {
         val fp = fopen(path, "wb") ?: error("cannot create $path")
         try {
             val bytes = content.encodeToByteArray()
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }

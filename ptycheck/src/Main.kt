@@ -73,7 +73,7 @@ private fun ptyRoundTripThroughCat() = check("cat echoes a round-trip line") {
         val out = readUntil(pty, "hello-kotgent")
         expect("hello-kotgent" in out) { "expected the pty to echo our line, got: <$out>" }
     } finally {
-        pty.close()
+        val _ = pty.close()
     }
 }
 
@@ -82,7 +82,7 @@ private fun resizeSucceeds() = check("resize (TIOCSWINSZ) succeeds") {
     try {
         pty.resize(cols = 120, rows = 40)
     } finally {
-        pty.close()
+        val _ = pty.close()
     }
 }
 
@@ -97,13 +97,13 @@ private fun exitCodeIsCaptured() = check("child exit code is captured") {
         }
         expect(code == 7) { "child `sh -c 'exit 7'` should report exit code 7, got $code" }
     } finally {
-        pty.close()
+        val _ = pty.close()
     }
 }
 
 private fun spawnNonexistentCommandFails() = check("spawning a nonexistent command throws") {
     val thrown = try {
-        Pty.open(listOf("/nonexistent/kotgent-not-a-real-binary-xyz"))
+        val _ = Pty.open(listOf("/nonexistent/kotgent-not-a-real-binary-xyz"))
         null
     } catch (e: PtyException) {
         e
@@ -131,7 +131,7 @@ private fun spawnedChildInheritsOnlyTheTty() = check("spawned child inherits onl
             expect("1" in reported) { "child should report its stdout; got <$out>" }
             expect("$high" !in reported) { "fd $high leaked into the pty child; got <$out>" }
         } finally {
-            pty.close()
+            val _ = pty.close()
             close(high)
             close(fds[0])
             close(fds[1])
@@ -156,7 +156,7 @@ private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblock
     var childMayBeAlive = true
 
     try {
-        readUntil(pty, "READY")
+        val _ = readUntil(pty, "READY")
         val writeTask = writerScope.async {
             writeEntered.complete(Unit)
             runCatching { pty.write(payload) }
@@ -199,7 +199,7 @@ private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblock
                 preparing?.join()
             }
         }
-        pty.close()
+        val _ = pty.close()
         writerScope.cancel()
         prepareScope.cancel()
         writerContext.close()
@@ -254,7 +254,7 @@ private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
         } finally {
             if (heldSlaveFd >= 0) close(heldSlaveFd)
             runBlocking { withTimeout(5.seconds) { closing?.join() } }
-            pty.close()
+            val _ = pty.close()
             closeScope.cancel()
             closeContext.close()
         }
@@ -279,7 +279,7 @@ private fun concurrentCloseRunsTeardownExactlyOnce() = check("concurrent close r
     var closeCompleted = false
 
     try {
-        readUntil(pty, "READY", timeoutMs = 4_000)
+        val _ = readUntil(pty, "READY", timeoutMs = 4_000)
         val firstTask = firstScope.async {
             firstReady.complete(Unit)
             start.await()
@@ -336,7 +336,7 @@ private fun concurrentCloseRunsTeardownExactlyOnce() = check("concurrent close r
                 } ?: false
             }
             if (!closeCompleted && (workersFinished || firstClose == null && secondClose == null)) {
-                runCatching { pty.close() }
+                val _ = runCatching { pty.close() }
             }
         } finally {
             firstScope.cancel()
@@ -365,7 +365,7 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
     val session = "kt-ptycheck"
     val target = "${q(tmux)} -f /dev/null -L $socket"
 
-    sh("$target kill-session -t $session")
+    val _ = sh("$target kill-session -t $session")
     val created = sh("$target new-session -d -s $session -x 80 -y 24 /bin/cat")
     expect(created == 0) { "could not create the tmux fixture session (exit=$created)" }
 
@@ -384,13 +384,13 @@ private fun tmuxAttachRunsOnTheSpawnedPts() = check("tmux attach runs on the spa
             val out = readUntil(pty, "hello-fanout", timeoutMs = 10_000)
             expect("hello-fanout" in out) { "expected the attached pane to echo our line, got: <$out>" }
         } finally {
-            pty.close()
+            val _ = pty.close()
         }
 
         val alive = sh("$target has-session -t $session")
         expect(alive == 0) { "the tmux session should outlive the attach (has-session exit=$alive)" }
     } finally {
-        sh("$target kill-session -t $session")
+        val _ = sh("$target kill-session -t $session")
     }
 }
 
@@ -400,7 +400,7 @@ private fun resizeReachesARunningTmuxAttach() = check("a resize reaches a runnin
     val target = "${q(tmux)} -f /dev/null -L $TEST_SOCKET"
     val session = "kt-ptycheck-resize"
 
-    sh("$target kill-session -t $session")
+    val _ = sh("$target kill-session -t $session")
     val created = sh("$target new-session -d -s $session -x 80 -y 24 /bin/cat")
     expect(created == 0) { "could not create the tmux fixture session (exit=$created)" }
 
@@ -423,10 +423,10 @@ private fun resizeReachesARunningTmuxAttach() = check("a resize reaches a runnin
                     capture("$target display -p -t $session '#{window_width}x#{window_height}'")
             }
         } finally {
-            pty.close()
+            val _ = pty.close()
         }
     } finally {
-        sh("$target kill-session -t $session")
+        val _ = sh("$target kill-session -t $session")
     }
 }
 
@@ -439,8 +439,8 @@ private fun terminalBridgeFansOutRealTmuxAttach() = check("TerminalBridge fans o
     runBlocking {
         val readerScope = CoroutineScope(coroutineContext + Job())
         try {
-            tmux.killSession(id)
-            tmux.newSession(id = id, cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
+            val _ = tmux.killSession(id)
+            val _ = tmux.newSession(id = id, cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
 
             val bridge = terminalBridgeForSession(tmux, id, readerScope, realPtyFactory)
 
@@ -463,7 +463,7 @@ private fun terminalBridgeFansOutRealTmuxAttach() = check("TerminalBridge fans o
             }
         } finally {
             readerScope.cancel()
-            tmux.killSession(id)
+            val _ = tmux.killSession(id)
         }
     }
 }

@@ -251,10 +251,10 @@ object Commands {
         // only after this callback succeeds, so a partial failure leaves both memory and the CLI on the old
         // token instead of locking the control plane out. Hook headers heal on the next successful rotation.
         val tokenHolder = TokenHolder(readOrCreateToken()) { rotated ->
-            writeClaudeHookSettings(port, rotated)
-            writeCodexHookScript(port, rotated)
-            writeJunieHookConfig(port, rotated)
-            writeTmuxHookScript(port, rotated)
+            val _ = writeClaudeHookSettings(port, rotated)
+            val _ = writeCodexHookScript(port, rotated)
+            val _ = writeJunieHookConfig(port, rotated)
+            val _ = writeTmuxHookScript(port, rotated)
             writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
         }
         val token = tokenHolder.current()
@@ -388,7 +388,7 @@ object Commands {
         // Rebuild pane identity before reconciliation. An in-progress task without a linked session remains
         // valid because a human may have moved it on the board.
         manager.rebuildRegistryFromStore()
-        Reconciler(tmux, store, vendorProbe, registry, taskStore = taskStore, projectFs = projectFs)
+        val _ = Reconciler(tmux, store, vendorProbe, registry, taskStore = taskStore, projectFs = projectFs)
             .reconcile()
 
         // Push is optional. Table failure omits its routes; VAPID key and signer failures remain lazy so

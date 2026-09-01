@@ -172,7 +172,7 @@ class TaskReadRoutesTest {
 
     @Test
     fun theListReadsTheTrackerAndTheEdgeSetOncePerRequestNotOncePerCard() = withReadServer { env ->
-        env.get("/tasks?project=${project.value}", bearer = token)
+        val _ = env.get("/tasks?project=${project.value}", bearer = token)
         assertEquals(
             listOf("project", "listBacklog", "list", "dependencyEdges"),
             env.journal(),
@@ -562,7 +562,7 @@ class TaskReadRoutesTest {
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing {
                     authRoutes(tokens, TicketStore(now = { fixedNow }), null, TRANSPORT_JSON, now = { fixedNow })
-                    authenticated(tokens::current, null) {
+                    val _ = authenticated(tokens::current, null) {
                         route(API_PREFIX) { taskReadRoutes(routing) }
                     }
                 }

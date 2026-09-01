@@ -105,7 +105,7 @@ class TransportTest {
                     override suspend fun save(subscription: PushSubscription) {}
                     override suspend fun remove(endpoint: String) {}
                 }
-                PushNotifier(events, send = { sent.send(it) }).start(scope)
+                val _ = PushNotifier(events, send = { sent.send(it) }).start(scope)
                 assembled = true
                 DaemonPush(subscriptions, { "production-forwarded-vapid-key" }, close = {})
             },
@@ -125,7 +125,7 @@ class TransportTest {
             )
 
             val created = ctx.startSession()
-            ctx.store.append(
+            val _ = ctx.store.append(
                 SessionId(created.id),
                 AgentEvent.ApprovalRequested("production-push"),
                 EventSource.hook,
@@ -147,7 +147,7 @@ class TransportTest {
             val observed = CompletableDeferred<Throwable>()
             val startup = launch {
                 try {
-                    startDaemonServer(
+                    val _ = startDaemonServer(
                         assemblePush = {
                             currentCoroutineContext()[Job]!!.cancel()
                             DaemonPush(
@@ -349,7 +349,7 @@ class TransportTest {
             val snapshot = receiveSnapshot()
             assertTrue(snapshot.sessions.any { it.id == created.id }, "the snapshot covers the started session")
 
-            ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
+            val _ = ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
 
             val update = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
             assertTrue(update.needsAttention, "needs_approval is a needs-attention state")
@@ -366,7 +366,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            val (type, text) = receiveFirstSessionFrameJson()
+            val [type, text] = receiveFirstSessionFrameJson()
             assertEquals("sessions_snapshot", type, "the baseline is ONE snapshot frame")
             val snapshot = TRANSPORT_JSON.decodeFromString(SessionsSnapshotDto.serializer(), text)
             assertEquals(
@@ -393,7 +393,7 @@ class TransportTest {
             assertEquals(created.id, row.session.id, "a session new to this socket arrives as a full row")
             assertEquals("/tmp/late", row.session.cwd, "…carrying full metadata the client can render")
 
-            ctx.store.append(SessionId(created.id), AgentEvent.ApprovalRequested("p1"), EventSource.hook)
+            val _ = ctx.store.append(SessionId(created.id), AgentEvent.ApprovalRequested("p1"), EventSource.hook)
             val patch = awaitUpdate { it.sessionId == created.id && it.state == "needs_approval" }
             assertTrue(patch.rev > row.session.rev, "the patch's rev is newer than the row it follows")
         }
@@ -408,7 +408,7 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot()
+            val _ = receiveSnapshot()
 
             ctx.store.setModel(sid, "gpt-6")
             val captured = awaitUpdate { it.sessionId == created.id && it.model == "gpt-6" }
@@ -425,17 +425,17 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot()
+            val _ = receiveSnapshot()
 
             val sid = SessionId("ghost01")
-            ctx.store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+            val _ = ctx.store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
             ctx.store.upsertSession(
                 SessionMeta(
                     id = sid, name = "ghost", agent = "claude", cwd = "/tmp/ghost",
                     tmuxSession = "kt-ghost01", state = SessionState.running, createdAt = 5L, updatedAt = 5L,
                 ),
             )
-            val (type, text) = receiveFirstSessionFrameJson()
+            val [type, text] = receiveFirstSessionFrameJson()
             assertEquals(
                 "session_row", type,
                 "no frame for the row-less append, and the session still arrives WHOLE after its upsert",
@@ -454,9 +454,9 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot()
+            val _ = receiveSnapshot()
 
-            repeat(40) { ctx.store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
+            repeat(40) { val _ = ctx.store.append(sid, AgentEvent.ToolCall("t$it"), EventSource.hook) }
             val final = awaitUpdate { it.sessionId == created.id && it.lastSeq == 41L }
             assertEquals("running", final.state, "the final conflated state matches the last append")
         }
@@ -510,7 +510,7 @@ class TransportTest {
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
-            receiveBinary()
+            val _ = receiveBinary()
 
             val resp = ctx.postBody("/sessions/${created.id}/input", "rest-typed")
             assertEquals(HttpStatusCode.OK, resp.status)
@@ -653,7 +653,7 @@ class TransportTest {
             val row = snapshot.sessions.single { it.id == created.id }
             assertEquals(1L, row.unread, "the second client starts out showing the badge")
 
-            ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
+            val _ = ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
 
             val update = awaitUpdate { it.sessionId == created.id && it.unread == 0L }
             assertEquals(1L, update.lastSeq, "the cleared badge is reported against the same log position")
@@ -670,8 +670,8 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot()
-            ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
+            val _ = receiveSnapshot()
+            val _ = ctx.postBody("/sessions/${created.id}/read", """{"seq":1}""")
 
             val update = awaitUpdate { it.sessionId == created.id && it.unread == 0L }
             assertTrue(update.archived, "the mark-read signal carries archived=true, so the row stays hidden")
@@ -688,9 +688,9 @@ class TransportTest {
             "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
-            receiveSnapshot()
+            val _ = receiveSnapshot()
 
-            ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
+            val _ = ctx.store.append(sid, AgentEvent.ApprovalRequested("perm-1"), EventSource.hook)
             val appended = awaitUpdate { it.sessionId == created.id && it.lastSeq == 2L }
             assertTrue(appended.archived, "an append on a done session must not un-hide it")
             assertEquals(2L, appended.unread, "and the badge still counts the unread event")
@@ -710,7 +710,7 @@ class TransportTest {
             request = { header(HttpHeaders.Authorization, "Bearer $token") },
         ) {
             val upstream = ctx.ptyFactory.opened.receive()
-            receiveBinary()
+            val _ = receiveBinary()
 
             val ok = ctx.client.post("http://127.0.0.1:${ctx.port}$API_PREFIX/sessions/${created.id}/input") {
                 header(HttpHeaders.Authorization, "Bearer $token")
@@ -1134,13 +1134,13 @@ class TransportTest {
             suspend fun cacheAuthorityAnswers(store: EventStore): CacheAuthorityAnswers {
                 val dead = SessionId("contrct1")
                 store.upsertSession(contractMeta(dead, SessionState.resumable))
-                store.append(dead, AgentEvent.SessionBound(providerId), EventSource.system)
+                val _ = store.append(dead, AgentEvent.SessionBound(providerId), EventSource.system)
                 val afterDeadAppend = store.getSession(dead)!!
 
                 val alive = SessionId("contrct2")
                 store.upsertSession(contractMeta(alive, SessionState.running))
-                store.append(alive, AgentEvent.TurnStarted, EventSource.hook)
-                store.append(alive, AgentEvent.TurnCompleted, EventSource.hook)
+                val _ = store.append(alive, AgentEvent.TurnStarted, EventSource.hook)
+                val _ = store.append(alive, AgentEvent.TurnCompleted, EventSource.hook)
                 val afterAliveAppends = store.getSession(alive)!!
 
                 val updates = Channel<SessionUpdate>(Channel.UNLIMITED)
@@ -1265,9 +1265,9 @@ class TransportTest {
                 store.reliableSessionUpdates.collect { updates.send(it) }
             }
 
-            store.append(older, AgentEvent.TurnStarted, EventSource.hook)
+            val _ = store.append(older, AgentEvent.TurnStarted, EventSource.hook)
             val first = updates.receive()
-            store.append(older, AgentEvent.ToolCall("Read"), EventSource.hook)
+            val _ = store.append(older, AgentEvent.ToolCall("Read"), EventSource.hook)
             val second = updates.receive()
             collector.cancel()
 

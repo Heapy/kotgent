@@ -28,7 +28,7 @@ class SqlitePushStore(driver: SqlDriver) : PushStore {
     }
 
     override suspend fun save(subscription: PushSubscription): Unit = mutex.withLock {
-        queries.upsert(
+        val _ = queries.upsert(
             subscription.endpoint,
             subscription.p256dh,
             subscription.auth,
@@ -37,7 +37,7 @@ class SqlitePushStore(driver: SqlDriver) : PushStore {
     }
 
     override suspend fun remove(endpoint: String): Unit = mutex.withLock {
-        queries.deleteByEndpoint(endpoint)
+        val _ = queries.deleteByEndpoint(endpoint)
     }
 
     companion object {

@@ -32,7 +32,7 @@ class DarwinPushTransportTest {
                 MockEngine { request ->
                     assertEquals(HttpMethod.Post, request.method)
                     assertEquals(endpoint, request.url.toString())
-                    for ((name, value) in headers) {
+                    for ([name, value] in headers) {
                         assertEquals(value, request.headers[name], "the $name header reaches the engine")
                     }
                     assertIs<OutgoingContent.NoContent>(

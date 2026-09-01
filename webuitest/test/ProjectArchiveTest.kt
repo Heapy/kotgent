@@ -15,7 +15,7 @@ class ProjectArchiveTest {
             page.awaitSessionView()
 
             page.openPalette()
-            page.searchFor(PROJECT_QUERY)
+            val _ = page.searchFor(PROJECT_QUERY)
             assertThat(page.paletteOption(NEW_PROJECT)).hasCount(1)
             assertThat(page.paletteOption(DELETE_PROJECT)).hasCount(0)
             assertThat(page.paletteOption(RESTORE_PROJECT)).hasCount(0)
@@ -27,7 +27,7 @@ class ProjectArchiveTest {
             assertThat(page.locator(".board-project")).hasText("No project")
 
             page.openPalette()
-            page.searchFor(PROJECT_QUERY)
+            val _ = page.searchFor(PROJECT_QUERY)
             assertThat(page.paletteOption(NEW_PROJECT)).hasCount(1)
 
             val delete = page.paletteOption(DELETE_PROJECT)
@@ -95,7 +95,7 @@ class ProjectArchiveTest {
             assertThat(page.locator(".board-project")).hasText("No project")
 
             page.openPalette()
-            page.searchFor(DELETE_QUERY)
+            val _ = page.searchFor(DELETE_QUERY)
             val delete = page.paletteOption(DELETE_PROJECT)
             assertThat(delete).hasAttribute("aria-disabled", "true")
             assertThat(delete.locator(".command-palette-disabled-reason")).hasText("no project is selected")

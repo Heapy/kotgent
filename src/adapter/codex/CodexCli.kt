@@ -36,7 +36,7 @@ class CodexCli(
 
         fun parseVersion(output: String): CodexVersion? {
             val match = SEMVER.find(output) ?: return null
-            val (major, minor, patch) = match.destructured
+            val [major, minor, patch] = match.destructured
             return CodexVersion(major.toInt(), minor.toInt(), patch.toInt())
         }
     }

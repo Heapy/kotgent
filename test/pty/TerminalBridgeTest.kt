@@ -384,7 +384,7 @@ class TerminalBridgeTest {
 
     @Test
     fun anOverflowDisconnectOfTheLastSubscriberLetsAReattachOpenAFreshUpstream() = bridgeTest { bridge, factory ->
-        bridge.subscribe()
+        val _ = bridge.subscribe()
         val upstream1 = factory.current
 
         repeat(Broadcaster.SUBSCRIBER_BUFFER + 5) { upstream1.emit(byteArrayOf((it and 0xff).toByte())) }

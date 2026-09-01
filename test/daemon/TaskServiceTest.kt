@@ -388,7 +388,7 @@ class TaskServiceTest {
                 f.service.link(s2, t2)
             }
 
-            f.service.transition(t1, TaskState.done, author = TaskService.BOARD_AUTHOR)
+            val _ = f.service.transition(t1, TaskState.done, author = TaskService.BOARD_AUTHOR)
 
             assertNull(f.linkOf(s1), "the holder that stayed put is released")
             assertEquals(t2, f.linkOf(s2), "the one that moved on keeps its newer link")

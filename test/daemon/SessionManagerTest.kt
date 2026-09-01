@@ -501,8 +501,8 @@ class SessionManagerTest {
 
             val closing = async(start = CoroutineStart.UNDISPATCHED) { mgr.onTmuxSessionClosed(id) }
             probe.entered.await()
-            store.append(id, AgentEvent.SessionBound(authoritative), EventSource.hook)
-            store.append(id, AgentEvent.ToolCall("after-close-observation"), EventSource.hook)
+            val _ = store.append(id, AgentEvent.SessionBound(authoritative), EventSource.hook)
+            val _ = store.append(id, AgentEvent.ToolCall("after-close-observation"), EventSource.hook)
             probe.release.complete(Unit)
             closing.await()
 
@@ -551,7 +551,7 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            mgr.start("claude", "/tmp/work")
+            val _ = mgr.start("claude", "/tmp/work")
 
             val stored = store.getSession(SessionId("sess09"))!!
             assertEquals("2.1.218", stored.cliVersion, "start persisted the spec's cliVersion")
@@ -572,7 +572,7 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            mgr.start("claude", "/tmp/work")
+            val _ = mgr.start("claude", "/tmp/work")
 
             assertNull(store.getSession(SessionId("sess10"))!!.cliVersion, "no version in spec -> null, no crash")
         }
@@ -593,7 +593,7 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            mgr.start("codex", "/work/x")
+            val _ = mgr.start("codex", "/work/x")
 
             val meta = captured.await()
             assertEquals(SessionId("mdl01"), meta.id, "start wired model capture for the new session")
@@ -678,7 +678,7 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            mgr.start("codex", "/work/repo")
+            val _ = mgr.start("codex", "/work/repo")
 
             withTimeout(5.seconds) {
                 while (store.projectionOf(SessionId("cx0001")).providerSessionId == null) delay(5.milliseconds)
@@ -709,8 +709,8 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            mgr.start("codex", "/work/repo")
-            store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
+            val _ = mgr.start("codex", "/work/repo")
+            val _ = store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
 
             withTimeout(5.seconds) {
                 while (store.projectionOf(SessionId("cx0002")).providerSessionId == null) delay(5.milliseconds)
@@ -956,7 +956,7 @@ class SessionManagerTest {
                 newSessionId = { id },
                 now = { 1L },
             )
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
             tracing.stateWrites.clear()
             store.arm()
 
@@ -999,7 +999,7 @@ class SessionManagerTest {
             val updated = mgr.resume(SessionId("resu01"))
 
             assertEquals(SessionState.ready, updated.state, "resume revives a dead session to ready")
-            val (id, cmd) = tmux.newSessionCommands.single()
+            val [id, cmd] = tmux.newSessionCommands.single()
             assertEquals("resu01", id, "the fresh session reuses the logical id")
             assertTrue(cmd.contains("--resume") && cmd.contains(provider.value), "the resume launch carries --resume <providerId>: $cmd")
             val pane = updated.paneId!!
@@ -1154,7 +1154,7 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            val starting = launch { mgr.start("claude", "/tmp") }
+            val starting = launch { val _ = mgr.start("claude", "/tmp") }
             store.entered.await()
 
             val stopping = launch { mgr.stop(SessionId("strt01")) }
@@ -1247,7 +1247,7 @@ class SessionManagerTest {
                 now = { 1L },
             )
 
-            val starting = launch { runCatching { mgr.start("claude", "/tmp") } }
+            val starting = launch { val _ = runCatching { mgr.start("claude", "/tmp") } }
             store.entered.await()
             starting.cancel()
             store.release.complete(Unit)
@@ -1309,7 +1309,7 @@ class SessionManagerTest {
                 newSessionId = { SessionId("ordr01") },
                 now = { 1L },
             )
-            mgr.start("claude", "/tmp")
+            val _ = mgr.start("claude", "/tmp")
 
             mgr.stop(SessionId("ordr01"))
 
@@ -1355,7 +1355,7 @@ class SessionManagerTest {
             val registry = PaneRegistry()
             val tmux = FakeTmux()
             store.upsertSession(meta("dup00001", SessionState.crashed, providerId = null))
-            store.append(SessionId("dup00001"), AgentEvent.TurnStarted, EventSource.hook)
+            val _ = store.append(SessionId("dup00001"), AgentEvent.TurnStarted, EventSource.hook)
             val ids = ArrayDeque(listOf("dup00001", "dup00001", "fresh001"))
             val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             val mgr = SessionManager(
@@ -1442,7 +1442,7 @@ class SessionManagerTest {
             val factory = agentFactoryOf(
                 mapOf(
                     "claude" to { cwd: String ->
-                        requireAbsoluteBinary("claude", "claude")
+                        val _ = requireAbsoluteBinary("claude", "claude")
                         StubAgentFactory(cat, null).create("claude", cwd)
                     },
                 ),
@@ -1516,7 +1516,7 @@ class SessionManagerTest {
     fun startCreatesARealTmuxSessionThenAReconcilerRestoresItAndRebuildsTheRegistry() = runBlocking {
         val realTmux = Tmux(socket = "kotgent-test")
         if (!realTmux.isAvailable()) return@runBlocking
-        ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
+        val _ = ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
         try {
             withTimeout(30.seconds) {
                 val store = SqliteEventStore.inMemory()
@@ -1546,8 +1546,8 @@ class SessionManagerTest {
                 assertEquals(mapOf(pane to SessionId("itg01")), result.livePanes)
             }
         } finally {
-            realTmux.killSession("itg01")
-            ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
+            val _ = realTmux.killSession("itg01")
+            val _ = ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
         }
     }
 }

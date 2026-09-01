@@ -28,6 +28,10 @@ settings:
       format: json
       version: 1.11.0
     # Toolchain 0.11.x does not propagate sqliter's -lsqlite3 linker option to the final native link.
-    freeCompilerArgs: [-linker-option, -lsqlite3]
+    freeCompilerArgs:
+      - -linker-option
+      - -lsqlite3
+      - -Xreturn-value-checker=full
+      - -Xname-based-destructuring=complete
   native:
     entryPoint: io.kotgent.main

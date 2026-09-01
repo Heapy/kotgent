@@ -67,7 +67,7 @@ class Reconciler(
         val livePaneBySession: Map<String, TmuxPane> =
             tmux.listPanes().filter { !it.dead }
                 .groupBy { it.session }
-                .mapValues { (_, panes) -> panes.first() }
+                .mapValues { [_, panes] -> panes.first() }
 
         val livePanes = LinkedHashMap<PaneId, SessionId>()
         val reconciled = ArrayList<ReconciledSession>(sessions.size)

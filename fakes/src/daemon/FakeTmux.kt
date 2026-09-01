@@ -28,7 +28,7 @@ class FakeTmux(seedPanes: List<TmuxPane> = emptyList()) : TmuxControl {
     private fun <T> mutate(transform: (State) -> Pair<State, T>): T {
         while (true) {
             val current = state.load()
-            val (next, result) = transform(current)
+            val [next, result] = transform(current)
             if (state.compareAndSet(current, next)) return result
         }
     }

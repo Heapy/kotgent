@@ -134,7 +134,7 @@ object ProcessRunner {
             fseek(fp, 0, SEEK_SET)
             if (size <= 0L) return ByteArray(0)
             val buffer = ByteArray(size.toInt())
-            buffer.usePinned { pinned ->
+            val _ = buffer.usePinned { pinned ->
                 fread(pinned.addressOf(0), 1.convert(), size.convert(), fp)
             }
             return buffer

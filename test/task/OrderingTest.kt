@@ -60,7 +60,7 @@ class OrderingTest {
     fun aMidpointLandsStrictlyBetweenItsNeighbours() {
         assertEquals(1.5, positionBetween(1.0, 2.0), 0.0)
         assertEquals(3.0, positionBetween(2.0, 4.0), 0.0)
-        for ((lower, upper) in listOf(1.0 to 2.0, 41.0 to 42.0, 1e-6 to 2e-6, 1.0 to 1.0000001)) {
+        for ([lower, upper] in listOf(1.0 to 2.0, 41.0 to 42.0, 1e-6 to 2e-6, 1.0 to 1.0000001)) {
             val mid = positionBetween(lower, upper)
             assertTrue(mid > lower && mid < upper, "midpoint of $lower..$upper was $mid")
         }

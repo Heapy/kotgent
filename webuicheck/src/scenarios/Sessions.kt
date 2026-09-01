@@ -43,7 +43,7 @@ internal fun harnessSession(
 
 internal suspend fun seedSessionRow(fakes: HarnessFakes, meta: SessionMeta) {
     fakes.events.upsertSession(meta)
-    if (meta.state.isAlive) fakes.tmux.seedPane(meta.id.value)
+    if (meta.state.isAlive) { val _ = fakes.tmux.seedPane(meta.id.value) }
 }
 
 private val SESSION_ROWS: List<SessionMeta> = listOf(

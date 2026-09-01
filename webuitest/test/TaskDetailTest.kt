@@ -234,13 +234,13 @@ class TaskDetailTest {
                 "the feed" to page.panel(".task-activity").box(),
             )
 
-            for ((name, box) in blocks) {
+            for ([name, box] in blocks) {
                 assertTrue(box.x >= panel.x - 0.5, "$name starts inside the panel")
                 assertTrue(box.right() <= panel.right() + 0.5, "$name ends inside the panel")
             }
             for (i in 1 until blocks.size) {
-                val (above, aboveBox) = blocks[i - 1]
-                val (below, belowBox) = blocks[i]
+                val [above, aboveBox] = blocks[i - 1]
+                val [below, belowBox] = blocks[i]
                 assertTrue(
                     belowBox.y >= aboveBox.bottom() - 1.0,
                     "$below stacks under $above rather than beside or over it",

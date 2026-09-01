@@ -67,7 +67,7 @@ class ApiClientTaskTest {
 
     @Test
     fun noPaneMeansNoPaneHeaderAtAll() = withStub(paneId = null) { stub, api ->
-        api.whoami()
+        val _ = api.whoami()
         assertNull(
             stub.requests.receive().pane,
             "a fabricated pane id would resolve against kotgent's tmux server and attribute the call " +
@@ -77,15 +77,15 @@ class ApiClientTaskTest {
 
     @Test
     fun thePaneHeaderReachesTheWholeTaskSurfaceNotJustWhoami() = withStub(paneId = PaneId("%3")) { stub, api ->
-        api.listTasks(null)
+        val _ = api.listTasks(null)
         assertEquals("%3", stub.requests.receive().pane)
-        api.createTask("t")
+        val _ = api.createTask("t")
         assertEquals("%3", stub.requests.receive().pane)
-        api.taskDetail(REF)
+        val _ = api.taskDetail(REF)
         assertEquals("%3", stub.requests.receive().pane)
-        api.nextTask()
+        val _ = api.nextTask()
         assertEquals("%3", stub.requests.receive().pane)
-        api.listProjects()
+        val _ = api.listProjects()
         assertEquals("%3", stub.requests.receive().pane)
     }
 
@@ -118,13 +118,13 @@ class ApiClientTaskTest {
 
     @Test
     fun listTasksSendsTheProjectAsAQueryParameter() = withStub { stub, api ->
-        api.listTasks(PROJECT)
+        val _ = api.listTasks(PROJECT)
         assertEquals("project=$PROJECT", stub.requests.receive().query)
     }
 
     @Test
     fun aBlankProjectIsTreatedAsNoProject() = withStub { stub, api ->
-        api.listTasks("   ")
+        val _ = api.listTasks("   ")
         assertEquals("", stub.requests.receive().query, "a blank filter would ask the daemon for project ''")
     }
 
@@ -138,7 +138,7 @@ class ApiClientTaskTest {
 
     @Test
     fun aRefThatIsNotWellFormedStillReachesTheDaemon() = withStub { stub, api ->
-        api.taskDetail("no such ref")
+        val _ = api.taskDetail("no such ref")
         assertEquals(
             "no such ref",
             stub.requests.receive().ref,
@@ -156,7 +156,7 @@ class ApiClientTaskTest {
 
     @Test
     fun listProjectsAsksForTheDeletedSideOnlyWhenTold() = withStub { stub, api ->
-        api.listProjects(archived = true)
+        val _ = api.listProjects(archived = true)
         assertEquals("archived=true", stub.requests.receive().query, "the restore dialog's single request")
     }
 
@@ -173,7 +173,7 @@ class ApiClientTaskTest {
 
     @Test
     fun createTaskFromTheBoardSendsNeitherProjectNorSessionWhenItHasNone() = withStub { stub, api ->
-        api.createTask("just a title")
+        val _ = api.createTask("just a title")
         val body = TRANSPORT_JSON.decodeFromString(CreateTaskRequest.serializer(), stub.requests.receive().body)
         assertEquals(CreateTaskRequest("just a title", "", null, null), body)
     }
@@ -190,7 +190,7 @@ class ApiClientTaskTest {
 
     @Test
     fun patchLeavesUnnamedFieldsNull() = withStub { stub, api ->
-        api.patchTask(REF, title = "renamed")
+        val _ = api.patchTask(REF, title = "renamed")
         val body = TRANSPORT_JSON.decodeFromString(PatchTaskRequest.serializer(), stub.requests.receive().body)
         assertEquals("renamed", body.title)
         assertNull(body.body, "a null field means leave unchanged, never clear")
@@ -229,13 +229,13 @@ class ApiClientTaskTest {
         assertEquals("$API_PREFIX/tasks/$REF/move", top.path)
         assertEquals(MoveTaskRequest(top = true), decodeMove(top.body))
 
-        api.moveTask(REF, MoveTarget.Bottom)
+        val _ = api.moveTask(REF, MoveTarget.Bottom)
         assertEquals(MoveTaskRequest(bottom = true), decodeMove(stub.requests.receive().body))
 
-        api.moveTask(REF, MoveTarget.Before(TaskRef("local:7")))
+        val _ = api.moveTask(REF, MoveTarget.Before(TaskRef("local:7")))
         assertEquals(MoveTaskRequest(before = "local:7"), decodeMove(stub.requests.receive().body))
 
-        api.moveTask(REF, MoveTarget.After(TaskRef("local:9")))
+        val _ = api.moveTask(REF, MoveTarget.After(TaskRef("local:9")))
         assertEquals(MoveTaskRequest(after = "local:9"), decodeMove(stub.requests.receive().body))
     }
 

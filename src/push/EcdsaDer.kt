@@ -50,8 +50,8 @@ fun derToRawSignature(der: ByteArray): ByteArray {
         )
     }
 
-    val (r, afterR) = readCoordinate(der, offset = 2, name = "r")
-    val (s, afterS) = readCoordinate(der, offset = afterR, name = "s")
+    val [r, afterR] = readCoordinate(der, offset = 2, name = "r")
+    val [s, afterS] = readCoordinate(der, offset = afterR, name = "s")
     if (afterS != der.size) {
         throw EcdsaDerException("${der.size - afterS} trailing bytes after the ECDSA signature's s value")
     }

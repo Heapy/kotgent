@@ -159,7 +159,7 @@ class ClaudeAdapterTest {
             assertTrue(it[19] in "89ab", "variant nibble must be one of 8..b: $it")
         }
         assertEquals(ids.size, ids.toSet().size, "generated ids must be unique")
-        ids.forEach { ProviderSessionId(it) }
+        ids.forEach { val _ = ProviderSessionId(it) }
     }
 
     @Test

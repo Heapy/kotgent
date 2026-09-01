@@ -248,12 +248,12 @@ class ApiClient(
 
     suspend fun linkTask(ref: String, sessionId: String? = null) {
         val request = json.encodeToString(LinkRequest.serializer(), LinkRequest(sessionId = sessionId))
-        taskPost("/tasks/${refSegment(ref)}/link", request)
+        val _ = taskPost("/tasks/${refSegment(ref)}/link", request)
     }
 
     suspend fun unlinkTask(ref: String, sessionId: String? = null) {
         val request = json.encodeToString(LinkRequest.serializer(), LinkRequest(sessionId = sessionId))
-        taskPost("/tasks/${refSegment(ref)}/unlink", request)
+        val _ = taskPost("/tasks/${refSegment(ref)}/unlink", request)
     }
 
     /** Returns null, rather than failing, when no task is eligible. */

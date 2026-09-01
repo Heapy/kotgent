@@ -110,7 +110,7 @@ fun validateSubscribeRequest(req: SubscribeRequest): String? {
         return "endpoint must not contain whitespace or control characters"
     }
     try {
-        pushServiceOrigin(endpoint)
+        val _ = pushServiceOrigin(endpoint)
     } catch (_: VapidJwtException) {
         return "endpoint must be an absolute https:// URL with a valid host, port, and no userinfo"
     }

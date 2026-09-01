@@ -20,7 +20,7 @@ class FakeProjectFs(
 
     init {
         dirs.forEach { addDirectory(it) }
-        files.forEach { (path, body) -> writeFile(path, body) }
+        files.forEach { [path, body] -> writeFile(path, body) }
     }
 
     val written: Map<String, String> get() = tree.load().files
@@ -57,7 +57,7 @@ class FakeProjectFs(
 
     override fun canonicalize(path: String): String? {
         var resolved = normalize(path)
-        for ((from, to) in symlinks) {
+        for ([from, to] in symlinks) {
             if (resolved == from) resolved = to
             else if (resolved.startsWith("$from/")) resolved = to + resolved.removePrefix(from)
         }

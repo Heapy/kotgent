@@ -149,7 +149,7 @@ class CodexHookNormalizerTest {
             CodexHookConfig.SESSION_END to "{}",
         )
         var projection = Projection.EMPTY
-        for ((event, body) in bodies) {
+        for ([event, body] in bodies) {
             projection = reduce(projection, normalize(event, body)!!)
             assertEquals(
                 projection.pendingApprovals > 0,

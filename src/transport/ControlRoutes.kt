@@ -240,7 +240,7 @@ fun Route.controlRoutes(
         try {
             when (action) {
                 "stop" -> sessionManager.stop(id)
-                "resume" -> sessionManager.resume(id)
+                "resume" -> { val _ = sessionManager.resume(id) }
                 "interrupt" -> sessionManager.interrupt(id)
                 "detach" -> sessionManager.detach(id)
                 "done" -> sessionManager.markDone(id)

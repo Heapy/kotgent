@@ -53,7 +53,7 @@ private fun boardScenario(): Scenario = Scenario(
 private fun boardEmptyScenario(): Scenario = Scenario(
     name = "board-empty",
     seed = { fakes ->
-        fixtureProject(fakes, BOARD_EMPTY_PROJECT_ID, "Empty Fixture", "/repo/empty")
+        val _ = fixtureProject(fakes, BOARD_EMPTY_PROJECT_ID, "Empty Fixture", "/repo/empty")
     },
 )
 

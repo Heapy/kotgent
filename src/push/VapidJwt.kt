@@ -50,7 +50,7 @@ fun pushServiceOrigin(endpoint: String): String {
         throw VapidJwtException("push endpoint '$value' carries userinfo")
     }
 
-    val (host, port) = parsePushAuthority(authority, value)
+    val [host, port] = parsePushAuthority(authority, value)
     return buildString {
         append("https://")
         append(host)
@@ -238,7 +238,7 @@ private fun ipv6Units(value: String, allowIpv4Tail: Boolean): Int? {
     val groups = value.split(':')
     if (groups.any { it.isEmpty() }) return null
     var units = 0
-    for ((index, group) in groups.withIndex()) {
+    for ([index, group] in groups.withIndex()) {
         if ('.' in group) {
             if (!allowIpv4Tail || index != groups.lastIndex || !isValidIpv4Address(group)) return null
             units += 2

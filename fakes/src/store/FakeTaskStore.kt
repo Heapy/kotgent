@@ -211,7 +211,7 @@ class FakeTaskStore(
             val existing = entries[ref] ?: return@publishing false
             if (existing.state != TaskState.todo) return@publishing false
             if (!acceptsProject(existing.project)) return@publishing false
-            writeStateLocked(existing, TaskState.in_progress)
+            val _ = writeStateLocked(existing, TaskState.in_progress)
             true
         }
     }

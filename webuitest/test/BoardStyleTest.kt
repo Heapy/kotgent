@@ -160,7 +160,7 @@ class BoardStyleTest {
                     colour,
                     "the `$state` head is painted from its column's own accent property",
                 )
-                for ((other, seen) in headColours) {
+                for ([other, seen] in headColours) {
                     assertNotEquals(seen, colour, "`$state` and `$other` share a head colour")
                 }
                 headColours[state] = colour
@@ -288,7 +288,7 @@ class BoardStyleTest {
 
             val muted = page.resolved("var(--muted)")
             val measured = linkedMapOf<String, String>()
-            for ((state, badge) in DOT_STATES) {
+            for ([state, badge] in DOT_STATES) {
                 harness.send("emit s-linked-1 $state")
                 val onCard = page.locator(".task-card[data-ref='local:1'] .task-session-dot[data-state='$state']")
                 val inPanel = page.locator(".task-detail .task-sessions .task-session-dot[data-state='$badge']")
@@ -311,8 +311,8 @@ class BoardStyleTest {
                 "both attention states are one colour — `stateBadge` folds them onto one class",
             )
             val buckets = measured.filterKeys { it != "needs_answer" }
-            for ((state, colour) in buckets) {
-                for ((other, seen) in buckets) {
+            for ([state, colour] in buckets) {
+                for ([other, seen] in buckets) {
                     if (other == state) continue
                     assertNotEquals(seen, colour, "`$state` and `$other` are drawn in the same colour")
                 }
@@ -347,7 +347,7 @@ class BoardStyleTest {
                 for (kind in ACTIVITY_KINDS) {
                     probe.evaluate("(el, k) => { el.setAttribute('data-kind', k); }", kind)
                     val stripe = probe.style("border-left-color")
-                    for ((other, seen) in stripes) {
+                    for ([other, seen] in stripes) {
                         assertNotEquals(seen, stripe, "`$kind` and `$other` feed rows are indistinguishable")
                     }
                     stripes[kind] = stripe
@@ -359,7 +359,7 @@ class BoardStyleTest {
                     fallback,
                     "an unmatched kind falls back to the plain border — which is how the sweep above can fail",
                 )
-                for ((kind, stripe) in stripes) {
+                for ([kind, stripe] in stripes) {
                     assertNotEquals(fallback, stripe, "the `$kind` row is not distinguishable from an unknown one")
                 }
             } finally {
@@ -653,7 +653,7 @@ class BoardStyleTest {
                 "the title field" to page.locator("#new-task-title-input").locator("xpath=.."),
                 "the actions row" to page.locator("#new-task-form .dialog-actions"),
             )
-            for ((name, block) in blocks) {
+            for ([name, block] in blocks) {
                 val box = block.rect()
                 assertClose(DIALOG_INSET, box.left - form.left, "$name takes the form's left inset")
                 assertClose(DIALOG_INSET, form.right - box.right, "$name takes the same inset on the right")

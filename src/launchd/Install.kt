@@ -78,7 +78,7 @@ class LaunchdInstaller(
         )
 
         // A missing prior job is harmless; bootout also makes reinstall idempotent.
-        runner(listOf("launchctl", "bootout", domainTarget, plistPath))
+        val _ = runner(listOf("launchctl", "bootout", domainTarget, plistPath))
         val result = runner(listOf("launchctl", "bootstrap", domainTarget, plistPath))
         if (!result.isSuccess) {
             val detail = result.stderr.trim()
@@ -90,7 +90,7 @@ class LaunchdInstaller(
     }
 
     fun uninstall() {
-        runner(listOf("launchctl", "bootout", domainTarget, plistPath))
+        val _ = runner(listOf("launchctl", "bootout", domainTarget, plistPath))
         unlink(plistPath)
     }
 
@@ -112,7 +112,7 @@ class LaunchdInstaller(
         val fp = fopen(path, "wb") ?: throw LaunchdException("cannot write $path")
         try {
             if (bytes.isNotEmpty()) {
-                bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+                val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
             }
         } finally {
             fclose(fp)

@@ -67,7 +67,7 @@ class TokenHolderTest {
         var holder: TokenHolder? = null
         holder = TokenHolder(initial) { seenDuringPersist += holder!!.current() }
 
-        holder.rotate(expected = initial)
+        val _ = holder.rotate(expected = initial)
 
         assertEquals(listOf(initial), seenDuringPersist, "persist runs before the publish")
     }
@@ -123,7 +123,7 @@ class TokenHolderTest {
     fun anUnauthenticatedRequestIsStill401AfterARotation() {
         val holder = TokenHolder(initial)
         withPingServer(holder) { port, client ->
-            holder.rotate(expected = initial)
+            val _ = holder.rotate(expected = initial)
             assertEquals(HttpStatusCode.Unauthorized, client.ping(port, token = null).status)
         }
     }
@@ -135,7 +135,7 @@ class TokenHolderTest {
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             routing {
-                authenticated(holder::current) {
+                val _ = authenticated(holder::current) {
                     get("/ping") { call.respondText("pong") }
                 }
             }

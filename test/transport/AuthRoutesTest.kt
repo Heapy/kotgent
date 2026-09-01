@@ -207,7 +207,7 @@ class AuthRoutesTest {
         assertTrue(page.contentType()?.match(ContentType.Text.Html) == true, "as HTML")
         assertTrue(page.bodyAsText().contains(AUTH_EXCHANGE_PATH), "the page posts to the canonical exchange")
 
-        env.client.req(env.port, AUTH_PAGE_PATH)
+        val _ = env.client.req(env.port, AUTH_PAGE_PATH)
 
         assertEquals(
             HttpStatusCode.OK,
@@ -531,7 +531,7 @@ class AuthRoutesTest {
                 if (abortOnce.complete(Unit)) throw CancellationException("test abort after admission")
             },
         ) { env ->
-            runCatching { env.exchange(env.port, wrongCode) }
+            val _ = runCatching { env.exchange(env.port, wrongCode) }
             assertTrue(abortOnce.isCompleted, "the request reached the admitted section")
 
             val probe = assertNotNull(limit.begin(), "the cancelled handler returned its sole reservation")
@@ -569,7 +569,7 @@ class AuthRoutesTest {
         val limit = ExchangeRateLimit(now = { limiterClock })
         withAuthServer(exchangeLimit = limit) { env ->
             val ticket = env.issueTicket()
-            repeat(EXCHANGE_FAILURE_LIMIT) { env.exchange(env.port, wrongCode) }
+            repeat(EXCHANGE_FAILURE_LIMIT) { val _ = env.exchange(env.port, wrongCode) }
 
             val malformed = env.client.req(
                 env.port,
@@ -838,7 +838,7 @@ class AuthRoutesTest {
                             exchangeBodyTimeoutMillis = exchangeBodyTimeoutMillis,
                         )
                     }
-                    authenticated(tokens::current, publicUrl) {
+                    val _ = authenticated(tokens::current, publicUrl) {
                         get("/sessions") { call.respondText("[]") }
                     }
                 }

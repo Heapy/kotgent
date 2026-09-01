@@ -44,7 +44,7 @@ class InstallTest {
     @Test
     fun installWritesThePlistToTheExpectedPathAndBootstrapsIt() {
         val fake = FakeRunner()
-        val (installer, base) = newInstaller(fake, uid = 501u)
+        val [installer, base] = newInstaller(fake, uid = 501u)
         val binary = "/opt/kotgent/build/kotgent"
 
         val plistPath = installer.install(binary)
@@ -66,15 +66,15 @@ class InstallTest {
     @Test
     fun theDomainTargetUsesTheInjectedUid() {
         val fake = FakeRunner()
-        val (installer, _) = newInstaller(fake, uid = 777u)
-        installer.install("/bin/kotgent")
+        val [installer, _] = newInstaller(fake, uid = 777u)
+        val _ = installer.install("/bin/kotgent")
         assertTrue(fake.calls.all { it.contains("gui/777") }, "every launchctl call targets gui/777")
     }
 
     @Test
     fun installIsIdempotent_secondInstallOverwritesWithoutError() {
         val fake = FakeRunner()
-        val (installer, _) = newInstaller(fake, uid = 501u)
+        val [installer, _] = newInstaller(fake, uid = 501u)
 
         val first = installer.install("/v1/kotgent")
         val second = installer.install("/v2/kotgent")
@@ -93,7 +93,7 @@ class InstallTest {
             if (argv.getOrNull(1) == "bootstrap") ProcessResult(5, ByteArray(0), "Bootstrap failed: 5".encodeToByteArray())
             else ProcessResult(0, ByteArray(0), ByteArray(0))
         }
-        val (installer, _) = newInstaller(fake, uid = 501u)
+        val [installer, _] = newInstaller(fake, uid = 501u)
         val threw = runCatching { installer.install("/bin/kotgent") }.isFailure
         assertTrue(threw, "a non-zero bootstrap exit is surfaced (not swallowed)")
     }
@@ -101,7 +101,7 @@ class InstallTest {
     @Test
     fun uninstallBootsOutAndRemovesThePlist() {
         val fake = FakeRunner()
-        val (installer, _) = newInstaller(fake, uid = 501u)
+        val [installer, _] = newInstaller(fake, uid = 501u)
         val plistPath = installer.install("/bin/kotgent")
         assertTrue(fileExists(plistPath))
         fake.calls.clear()
@@ -116,7 +116,7 @@ class InstallTest {
     @Test
     fun uninstallIsIdempotent_whenNothingIsInstalled() {
         val fake = FakeRunner()
-        val (installer, _) = newInstaller(fake, uid = 501u)
+        val [installer, _] = newInstaller(fake, uid = 501u)
         installer.uninstall()
         assertEquals(1, fake.calls.size)
         assertEquals("bootout", fake.calls[0][1])
@@ -127,7 +127,7 @@ class InstallTest {
         val fake = FakeRunner()
         val customDir = "/Users/tester/.local/bin"
         val captured = "$customDir:/usr/local/bin"
-        val (installer, _) = newInstaller(fake, uid = 501u, pathProvider = { captured })
+        val [installer, _] = newInstaller(fake, uid = 501u, pathProvider = { captured })
 
         val plistPath = installer.install("/bin/kotgent")
         val content = readFile(plistPath)
@@ -142,7 +142,7 @@ class InstallTest {
     @Test
     fun installFallsBackToTheDefaultPathWhenNoPathIsCaptured() {
         val fake = FakeRunner()
-        val (installer, _) = newInstaller(fake, uid = 501u, pathProvider = { null })
+        val [installer, _] = newInstaller(fake, uid = 501u, pathProvider = { null })
 
         val plistPath = installer.install("/bin/kotgent")
         val content = readFile(plistPath)
@@ -153,7 +153,7 @@ class InstallTest {
     @Test
     fun installSnapshotsTheCallersUtf8LangIntoThePlist() {
         val fake = FakeRunner()
-        val (installer, _) = newInstaller(fake, uid = 501u, langProvider = { "ru_RU.UTF-8" })
+        val [installer, _] = newInstaller(fake, uid = 501u, langProvider = { "ru_RU.UTF-8" })
 
         val content = readFile(installer.install("/bin/kotgent"))
 
@@ -164,7 +164,7 @@ class InstallTest {
     fun installSubstitutesAUtf8LangWhenTheCallerHasNoneOrANonUtf8One() {
         for (captured in listOf(null, "C")) {
             val fake = FakeRunner()
-            val (installer, _) = newInstaller(fake, uid = 501u, langProvider = { captured })
+            val [installer, _] = newInstaller(fake, uid = 501u, langProvider = { captured })
 
             val content = readFile(installer.install("/bin/kotgent"))
 
@@ -226,7 +226,7 @@ class InstallTest {
             fseek(fp, 0, SEEK_SET)
             if (size <= 0L) return ""
             val buf = ByteArray(size.toInt())
-            buf.usePinned { fread(it.addressOf(0), 1.convert(), size.convert(), fp) }
+            val _ = buf.usePinned { fread(it.addressOf(0), 1.convert(), size.convert(), fp) }
             return buf.decodeToString()
         } finally {
             fclose(fp)

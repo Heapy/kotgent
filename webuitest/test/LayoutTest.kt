@@ -252,7 +252,7 @@ class LayoutTest {
                 attachTerminal(page)
 
                 val desktop = measureShell(page)
-                for ((edge, inset) in listOf(
+                for ([edge, inset] in listOf(
                     "left" to desktop.num("paneLeft") - desktop.num("appLeft"),
                     "top" to desktop.num("paneTop") - desktop.num("appTop"),
                     "right" to desktop.num("appRight") - desktop.num("paneRight"),
@@ -933,7 +933,7 @@ private fun assertNoGutterOnTheMeasuredParent(shell: PageValues, where: String) 
             "$where: the visible gutter belongs on .xterm, the element the addon subtracts padding from",
         )
     }
-    for ((edge, delta) in listOf(
+    for ([edge, delta] in listOf(
         "left" to shell.num("xtermLeft") - shell.num("hostLeft"),
         "top" to shell.num("xtermTop") - shell.num("hostTop"),
         "right" to shell.num("xtermRight") - shell.num("hostRight"),

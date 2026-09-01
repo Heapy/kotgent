@@ -36,7 +36,7 @@ class ApiPrefixTest {
                         openPhoneDialog(page)
 
                         val seen = urls.toList()
-                        for ((what, needle) in EXPECTED_CALLS) {
+                        for ([what, needle] in EXPECTED_CALLS) {
                             assertTrue(
                                 seen.any { needle in it },
                                 "the collector never saw $what, so the rule below would be vacuous.\n" +

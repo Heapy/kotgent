@@ -41,7 +41,7 @@ class Broadcaster(
         if (opened) {
             val up = openUpstream()
             try {
-                lastSize?.let { (cols, rows) -> up.resize(cols, rows) }
+                lastSize?.let { [cols, rows] -> up.resize(cols, rows) }
             } catch (e: Throwable) {
                 closeUpstream(up)
                 throw e
@@ -157,7 +157,7 @@ class Subscriber internal constructor(private val broadcaster: Broadcaster) {
 
     /** A subscriber keeps the upstream open, so it has no useful action for writeInput's Boolean. */
     suspend fun write(bytes: ByteArray) {
-        broadcaster.writeInput(bytes)
+        val _ = broadcaster.writeInput(bytes)
     }
 
     suspend fun resize(cols: Int, rows: Int): Unit = broadcaster.applyResize(cols, rows)

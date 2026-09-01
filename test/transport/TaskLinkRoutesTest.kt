@@ -189,8 +189,8 @@ class TaskLinkRoutesTest {
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
         env.seedSession(s2, pane2, alpha)
-        env.link(t1, pane = pane1)
-        env.link(t1, pane = pane2)
+        val _ = env.link(t1, pane = pane1)
+        val _ = env.link(t1, pane = pane2)
 
         assertEquals(HttpStatusCode.OK, env.unlink(t1, pane = pane1).status)
         assertNull(env.sessions.linkOf(s1), "the caller's link is gone")
@@ -207,7 +207,7 @@ class TaskLinkRoutesTest {
         env.seedTask(t1, alpha)
         env.seedTask(t2, alpha)
         env.seedSession(s1, pane1, alpha)
-        env.link(t2, pane = pane1)
+        val _ = env.link(t2, pane = pane1)
 
         val resp = env.unlink(t1, pane = pane1)
         assertEquals(
@@ -238,7 +238,7 @@ class TaskLinkRoutesTest {
         env.seedTask(t1, alpha)
         env.seedTask(t2, alpha)
         env.seedSession(s1, pane1, alpha)
-        env.link(t1, pane = pane1)
+        val _ = env.link(t1, pane = pane1)
 
         env.sessions.beforeConditionalClear = { env.sessions.setTaskRef(s1, t2) }
 
@@ -261,7 +261,7 @@ class TaskLinkRoutesTest {
     fun unlinkStillClearsALinkWhoseTaskIsGone() = withLinkServer { env ->
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
-        env.link(t1, pane = pane1)
+        val _ = env.link(t1, pane = pane1)
         env.tasks.forget(t1)
 
         assertEquals(
@@ -702,7 +702,7 @@ class TaskLinkRoutesTest {
             val tokens = TokenHolder(token)
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing {
-                    authenticated(tokens::current) {
+                    val _ = authenticated(tokens::current) {
                         route(API_PREFIX) {
                             controlRoutes(
                                 manager,
@@ -758,7 +758,7 @@ class TaskLinkRoutesTest {
         suspend fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double) =
             mutex.withLock {
                 entries[ref] = BacklogEntry(ref, project, position, state, false, 1_000L, 1_000L, ++rev)
-                projects.getOrPut(project) { ProjectRecord(project, project.value.take(8), "/repo", 0L) }
+                val _ = projects.getOrPut(project) { ProjectRecord(project, project.value.take(8), "/repo", 0L) }
                 Unit
             }
 

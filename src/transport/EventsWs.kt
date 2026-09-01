@@ -80,7 +80,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
                             banked
                         }
                     } ?: break
-                    val (id, update) = next
+                    val [id, update] = next
                     if (lock.withLock { id in sent }) {
                         ws.sendEventsFrame(json, update.toDto())
                     } else {
@@ -142,7 +142,7 @@ private fun CoroutineScope.launchTaskStream(
                         banked
                     }
                 } ?: break
-                val (ref, update) = next
+                val [ref, update] = next
                 val entry = update.entry
                 if (entry == null) {
                     // The row may have arrived over HTTP; deletion is harmless even if this socket never carried it.

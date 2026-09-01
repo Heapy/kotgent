@@ -17,7 +17,7 @@ class RealPtyHandle(private val pty: Pty) : PtyHandle {
     override fun resize(cols: Int, rows: Int) = pty.resize(cols, rows)
     override fun prepareClose() = pty.prepareClose()
     override fun close() {
-        pty.close()
+        val _ = pty.close()
     }
 }
 

@@ -97,9 +97,9 @@ class TaskStoreTest {
 
     @Test
     fun createMintsSequentialRefsAndAppendsAtTheEndOfTheColumn() = test { f ->
-        f.store.create(alpha, "one", "")
-        f.store.create(alpha, "two", "")
-        f.store.create(alpha, "three", "")
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
+        val _ = f.store.create(alpha, "three", "")
         val other = f.store.create(beta, "elsewhere", "")
 
         assertEquals(listOf("local:1", "local:2", "local:3"), f.store.listBacklog(alpha).map { it.ref.value })
@@ -110,7 +110,7 @@ class TaskStoreTest {
 
     @Test
     fun createWritesTheEntryTheActivityRowAndOneEmission() = test { f ->
-        val seen = recording(f.store, 1) { f.store.create(alpha, "Wire the board", "body") }
+        val seen = recording(f.store, 1) { val _ = f.store.create(alpha, "Wire the board", "body") }
 
         val update = seen.single()
         assertEquals(first, update.ref)
@@ -148,7 +148,7 @@ class TaskStoreTest {
 
     @Test
     fun updateLeavesUnnamedFieldsAloneAndBumpsTheRevision() = test { f ->
-        f.store.create(alpha, "old title", "old body")
+        val _ = f.store.create(alpha, "old title", "old body")
         val before = assertNotNull(f.store.entry(first))
         f.clock = 2_000L
 
@@ -172,10 +172,10 @@ class TaskStoreTest {
 
     @Test
     fun updateEmitsSoARenameReachesAConnectedBoard() = test { f ->
-        f.store.create(alpha, "old title", "")
+        val _ = f.store.create(alpha, "old title", "")
         val before = assertNotNull(f.store.entry(first))
 
-        val seen = recording(f.store, 1) { f.store.update(first, title = "new title", body = null) }
+        val seen = recording(f.store, 1) { val _ = f.store.update(first, title = "new title", body = null) }
 
         val entry = assertNotNull(seen.single().entry)
         assertEquals(first, seen.single().ref)
@@ -185,11 +185,11 @@ class TaskStoreTest {
 
     @Test
     fun updatingAnUnknownRefIsNullAndSilent() = test { f ->
-        f.store.create(alpha, "present", "")
+        val _ = f.store.create(alpha, "present", "")
 
         val seen = recording(f.store, 1) {
             assertNull(f.store.update(absent, title = "nope", body = null))
-            f.store.update(first, title = "renamed", body = null)
+            val _ = f.store.update(first, title = "renamed", body = null)
         }
 
         assertEquals(first, seen.single().ref, "the unknown-ref update emitted nothing")
@@ -198,9 +198,9 @@ class TaskStoreTest {
 
     @Test
     fun deleteRemovesTheTaskItsEntryItsFeedAndBothDirectionsOfItsEdges() = test { f ->
-        f.store.create(alpha, "one", "")
-        f.store.create(alpha, "two", "")
-        f.store.comment(first, author = "s-1", text = "a note")
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
+        val _ = f.store.comment(first, author = "s-1", text = "a note")
         f.store.addDependency(second, first)
 
         assertTrue(f.store.delete(first))
@@ -215,8 +215,8 @@ class TaskStoreTest {
 
     @Test
     fun deleteEmitsANullEntryAndReStampsWhatItUnblocked() = test { f ->
-        f.store.create(alpha, "one", "")
-        f.store.create(alpha, "two", "")
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
         f.store.addDependency(second, first)
         assertTrue(assertNotNull(f.store.entry(second)).blocked, "the dependency is not done yet")
 
@@ -234,15 +234,15 @@ class TaskStoreTest {
 
     @Test
     fun aMutatorWhoseTransactionThrowsPublishesNothingAndRetainsNothingForTheNextCall() = test { f ->
-        f.store.create(alpha, "one", "")
-        f.store.create(alpha, "two", "")
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
         f.store.addDependency(second, first)
 
         f.driver.execute(null, "UPDATE backlog_entries SET project = 'not-a-uuid' WHERE task_ref = '${second.value}'", 0)
 
         val seen = recording(f.store, 1) {
             assertFailsWith<IllegalArgumentException> { f.store.delete(first) }
-            f.store.update(first, title = "still here", body = null)
+            val _ = f.store.update(first, title = "still here", body = null)
         }
 
         val only = seen.single()
@@ -257,11 +257,11 @@ class TaskStoreTest {
 
     @Test
     fun deletingAnUnknownRefIsFalseAndSilent() = test { f ->
-        f.store.create(alpha, "present", "")
+        val _ = f.store.create(alpha, "present", "")
 
         val seen = recording(f.store, 1) {
             assertFalse(f.store.delete(absent))
-            f.store.update(first, title = "renamed", body = null)
+            val _ = f.store.update(first, title = "renamed", body = null)
         }
 
         assertEquals(first, seen.single().ref, "the unknown-ref delete emitted nothing")
@@ -271,7 +271,7 @@ class TaskStoreTest {
 
     @Test
     fun theFeedIsOrderedAppendOnlyAndCarriesNonZeroIds() = test { f ->
-        f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "one", "")
         f.clock = 2_000L
         val comment = assertNotNull(f.store.comment(first, author = "s-1", text = "first note"))
         f.clock = 3_000L
@@ -301,7 +301,7 @@ class TaskStoreTest {
                 )
                 try {
                     val store = SqliteTaskStore.using(driver) { 1_000L }
-                    store.create(alpha, "one", "")
+                    val _ = store.create(alpha, "one", "")
                     val comment = assertNotNull(store.comment(first, author = "s-1", text = "a note"))
 
                     assertTrue(comment.id > 0, "the id is the insert's own rowid, not the reader pool's 0")
@@ -333,7 +333,7 @@ class TaskStoreTest {
 
     @Test
     fun startIfTodoAdvancesExactlyOnceAndOnlyFromTodo() = test { f ->
-        f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "one", "")
         f.clock = 2_000L
 
         assertTrue(f.store.startIfTodo(first), "the first caller moves the row")
@@ -346,14 +346,14 @@ class TaskStoreTest {
 
     @Test
     fun startIfTodoReStampsItsReverseDependentsTheWayEveryOtherTransitionDoes() = test { f ->
-        f.store.create(alpha, "dependency", "")
-        f.store.create(alpha, "dependent", "")
+        val _ = f.store.create(alpha, "dependency", "")
+        val _ = f.store.create(alpha, "dependent", "")
         f.store.addDependency(second, first)
         val before = assertNotNull(f.store.entry(second))
 
         val seen = recording(f.store, 2) {
             assertTrue(f.store.startIfTodo(first))
-            f.store.update(first, title = "the loud one", body = null)
+            val _ = f.store.update(first, title = "the loud one", body = null)
         }
 
         assertEquals(listOf(first, second), seen.map { it.ref }, "the started row, then what depends on it")
@@ -368,8 +368,8 @@ class TaskStoreTest {
 
     @Test
     fun startIfTodoEmitsOnlyWhenItActuallyMovedTheRow() = test { f ->
-        f.store.create(alpha, "one", "")
-        f.store.create(alpha, "two", "")
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
 
         val seen = recording(f.store, 2) {
             assertTrue(f.store.startIfTodo(first))
@@ -385,7 +385,7 @@ class TaskStoreTest {
 
     @Test
     fun transitionWritesTheStateAndExactlyOneActivityRowCarryingItsMessage() = test { f ->
-        f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "one", "")
         f.clock = 2_000L
 
         val entry = assertNotNull(f.store.transition(first, TaskState.review, author = "s-1", message = "have a look"))
@@ -405,7 +405,7 @@ class TaskStoreTest {
 
     @Test
     fun aTransitionWithNoMessageStillRecordsTheMove() = test { f ->
-        f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "one", "")
         assertNotNull(f.store.transition(first, TaskState.done, author = "board", message = null))
 
         val row = f.store.activity(first).last()
@@ -416,13 +416,13 @@ class TaskStoreTest {
 
     @Test
     fun transitionEmitsTheMovedEntryAndReStampsEveryReverseDependent() = test { f ->
-        f.store.create(alpha, "dependency", "")
-        f.store.create(alpha, "dependent", "")
+        val _ = f.store.create(alpha, "dependency", "")
+        val _ = f.store.create(alpha, "dependent", "")
         f.store.addDependency(second, first)
         assertTrue(assertNotNull(f.store.entry(second)).blocked)
 
         val seen = recording(f.store, 2) {
-            f.store.transition(first, TaskState.done, author = "s-1", message = null)
+            val _ = f.store.transition(first, TaskState.done, author = "s-1", message = null)
         }
 
         val moved = seen.first { it.ref == first }
@@ -436,14 +436,14 @@ class TaskStoreTest {
 
     @Test
     fun aTransitionBackToTodoCanMakeAnEntryBlockedAgain() = test { f ->
-        f.store.create(alpha, "dependency", "")
-        f.store.create(alpha, "dependent", "")
+        val _ = f.store.create(alpha, "dependency", "")
+        val _ = f.store.create(alpha, "dependent", "")
         f.store.addDependency(second, first)
-        f.store.startIfTodo(second)
+        val _ = f.store.startIfTodo(second)
         assertFalse(assertNotNull(f.store.entry(second)).blocked, "only a `todo` entry is ever blocked")
 
         val seen = recording(f.store, 1) {
-            f.store.transition(second, TaskState.todo, author = "board", message = null)
+            val _ = f.store.transition(second, TaskState.todo, author = "board", message = null)
         }
 
         assertTrue(
@@ -454,11 +454,11 @@ class TaskStoreTest {
 
     @Test
     fun transitioningAnUnknownRefIsNullAndSilent() = test { f ->
-        f.store.create(alpha, "present", "")
+        val _ = f.store.create(alpha, "present", "")
 
         val seen = recording(f.store, 1) {
             assertNull(f.store.transition(absent, TaskState.done, author = "s-1", message = "x"))
-            f.store.update(first, title = "renamed", body = null)
+            val _ = f.store.update(first, title = "renamed", body = null)
         }
 
         assertEquals(first, seen.single().ref, "the unknown-ref transition emitted nothing")
@@ -468,8 +468,8 @@ class TaskStoreTest {
 
     @Test
     fun theBacklogAndDependencyMembersAnswerThroughTheCollaborator() = test { f ->
-        f.store.create(alpha, "one", "")
-        f.store.create(alpha, "two", "")
+        val _ = f.store.create(alpha, "one", "")
+        val _ = f.store.create(alpha, "two", "")
 
         f.store.addDependency(second, first)
         assertEquals(listOf(first), f.store.dependenciesOf(second))
@@ -487,13 +487,13 @@ class TaskStoreTest {
 
     @Test
     fun aProjectUpsertRefreshesTheNameAndKeepsTheLastSeenPathWhenNoneIsGiven() = test { f ->
-        f.store.upsertProject(alpha, "kotgent", "/repo")
+        val _ = f.store.upsertProject(alpha, "kotgent", "/repo")
         assertEquals("kotgent", assertNotNull(f.store.project(alpha)).name)
         assertEquals("/repo", assertNotNull(f.store.project(alpha)).path)
         assertEquals(1_000L, assertNotNull(f.store.project(alpha)).updatedAt)
 
         f.clock = 2_000L
-        f.store.upsertProject(alpha, "kotgent-renamed", "/repo-wt/feature")
+        val _ = f.store.upsertProject(alpha, "kotgent-renamed", "/repo-wt/feature")
         assertEquals("kotgent-renamed", assertNotNull(f.store.project(alpha)).name)
         assertEquals(
             "/repo-wt/feature",
@@ -502,7 +502,7 @@ class TaskStoreTest {
         )
         assertEquals(2_000L, assertNotNull(f.store.project(alpha)).updatedAt)
 
-        f.store.upsertProject(alpha, "kotgent", null)
+        val _ = f.store.upsertProject(alpha, "kotgent", null)
         assertEquals(
             "/repo-wt/feature",
             assertNotNull(f.store.project(alpha)).path,
@@ -512,8 +512,8 @@ class TaskStoreTest {
 
     @Test
     fun listProjectsIsByNameAndAnUnknownIdIsNull() = test { f ->
-        f.store.upsertProject(beta, "zulu", null)
-        f.store.upsertProject(alpha, "alfa", "/a")
+        val _ = f.store.upsertProject(beta, "zulu", null)
+        val _ = f.store.upsertProject(alpha, "alfa", "/a")
 
         assertEquals(listOf("alfa", "zulu"), f.store.listProjects().map { it.name })
         assertEquals(listOf(alpha, beta), f.store.listProjects().map { it.id })
@@ -522,8 +522,8 @@ class TaskStoreTest {
 
     @Test
     fun aProjectRowWhoseIdIsNotAUuidIsDroppedRatherThanThrownOutOfARead() = test { f ->
-        f.store.upsertProject(alpha, "alfa", "/a")
-        KotgentDatabase(f.driver).projectsQueries.upsertProject("not-a-uuid", "corrupt", "/c", 1L)
+        val _ = f.store.upsertProject(alpha, "alfa", "/a")
+        val _ = KotgentDatabase(f.driver).projectsQueries.upsertProject("not-a-uuid", "corrupt", "/c", 1L)
 
         assertEquals(listOf("alfa"), f.store.listProjects().map { it.name })
         assertEquals(listOf(alpha), f.store.listProjects().map { it.id })
@@ -551,7 +551,7 @@ class TaskStoreTest {
     @Test
     fun anArchivedProjectRefusesACreateInTheInsertsOwnTransactionAndWritesNothing() = test { f ->
         assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
-        f.store.create(alpha, "filed while it was live", "")
+        val _ = f.store.create(alpha, "filed while it was live", "")
         assertTrue(f.store.setProjectArchived(alpha, true))
 
         assertFailsWith<ArchivedProjectException>(
@@ -578,7 +578,7 @@ class TaskStoreTest {
     @Test
     fun anArchivedProjectOffersNoCandidateSoASelectionCannotRaceADelete() = test { f ->
         assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
-        f.store.create(alpha, "ready to be handed out", "")
+        val _ = f.store.create(alpha, "ready to be handed out", "")
         assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref, "live, it is offered")
 
         assertTrue(f.store.setProjectArchived(alpha, true))
@@ -601,7 +601,7 @@ class TaskStoreTest {
     @Test
     fun aSelectedCardIsStillRefusedByTheStartItselfWhenTheDeleteOvertookTheSelection() = test { f ->
         assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
-        f.store.create(alpha, "selected an instant before the delete", "")
+        val _ = f.store.create(alpha, "selected an instant before the delete", "")
         assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref, "live, it is offered")
 
         assertTrue(f.store.setProjectArchived(alpha, true), "the delete lands after the selection")
@@ -625,7 +625,7 @@ class TaskStoreTest {
     @Test
     fun aNamedRefStartsInADeletedProjectBecauseDeferenceIsNotSelection() = test { f ->
         assertEquals(ProjectRegistration.registered, f.store.upsertProject(alpha, "kotgent", "/repo"))
-        f.store.create(alpha, "held by an agent when the project was deleted", "")
+        val _ = f.store.create(alpha, "held by an agent when the project was deleted", "")
         assertTrue(f.store.setProjectArchived(alpha, true))
 
         assertTrue(
@@ -637,7 +637,7 @@ class TaskStoreTest {
 
     @Test
     fun aStartInAProjectWithNoRowAtAllIsNotRefusedEitherWay() = test { f ->
-        f.store.create(alpha, "no project row anywhere", "")
+        val _ = f.store.create(alpha, "no project row anywhere", "")
 
         assertNull(f.store.project(alpha), "nothing registered this project")
         assertTrue(f.store.startIfTodoInLiveProject(first))
@@ -645,7 +645,7 @@ class TaskStoreTest {
 
     @Test
     fun aBacklogWhoseProjectHasNoRowAtAllIsStillOffered() = test { f ->
-        f.store.create(alpha, "no project row anywhere", "")
+        val _ = f.store.create(alpha, "no project row anywhere", "")
 
         assertNull(f.store.project(alpha), "nothing registered this project")
         assertEquals(first, assertNotNull(f.store.nextCandidate(alpha)).ref)
@@ -653,7 +653,7 @@ class TaskStoreTest {
 
     @Test
     fun theProjectTombstoneRoundTripsAndAnUnknownUuidIsRefusedRatherThanInvented() = test { f ->
-        f.store.upsertProject(alpha, "kotgent", "/repo")
+        val _ = f.store.upsertProject(alpha, "kotgent", "/repo")
         assertFalse(assertNotNull(f.store.project(alpha)).archived, "a fresh project is live")
 
         assertTrue(f.store.setProjectArchived(alpha, true))
@@ -681,12 +681,12 @@ class TaskStoreTest {
 
     @Test
     fun theTwoProjectSelectionsSplitTheListAndNeitherSideSeesTheOther() = test { f ->
-        f.store.upsertProject(alpha, "alfa", "/a")
-        f.store.upsertProject(beta, "zulu", "/z")
+        val _ = f.store.upsertProject(alpha, "alfa", "/a")
+        val _ = f.store.upsertProject(beta, "zulu", "/z")
         assertEquals(listOf(alpha, beta), f.store.listProjects().map { it.id })
         assertEquals(emptyList(), f.store.listProjects(archived = true).map { it.id })
 
-        f.store.setProjectArchived(alpha, true)
+        val _ = f.store.setProjectArchived(alpha, true)
 
         assertEquals(listOf(beta), f.store.listProjects().map { it.id }, "the board reads the live ones")
         assertEquals(
@@ -699,9 +699,9 @@ class TaskStoreTest {
 
     @Test
     fun listAllProjectsAnswersBothSidesOfTheTombstoneAsOneObservation() = test { f ->
-        f.store.upsertProject(alpha, "alfa", "/a")
-        f.store.upsertProject(beta, "zulu", "/z")
-        f.store.setProjectArchived(alpha, true)
+        val _ = f.store.upsertProject(alpha, "alfa", "/a")
+        val _ = f.store.upsertProject(beta, "zulu", "/z")
+        val _ = f.store.setProjectArchived(alpha, true)
 
         val all = f.store.listAllProjects()
         assertEquals(
@@ -713,7 +713,7 @@ class TaskStoreTest {
         )
         assertEquals(listOf(true, false), all.map { it.archived }, "each record still carries its own mark")
 
-        f.store.setProjectArchived(alpha, false)
+        val _ = f.store.setProjectArchived(alpha, false)
         assertEquals(
             listOf(false, false),
             f.store.listAllProjects().map { it.archived },
@@ -770,8 +770,8 @@ class TaskStoreTest {
     fun aReOpenedStoreResumesTheRevisionAndTheLocalKeyCounter() = test { _ ->
         val driver = inMemoryDriver(KotgentDatabase.Schema)
         val store = SqliteTaskStore.using(driver) { 1L }
-        store.create(alpha, "one", "")
-        store.create(alpha, "two", "")
+        val _ = store.create(alpha, "one", "")
+        val _ = store.create(alpha, "two", "")
         val before = assertNotNull(store.entry(second))
 
         val reopened = SqliteTaskStore.using(driver) { 2L }
@@ -789,8 +789,8 @@ class TaskStoreTest {
     fun aRefFreedByADeleteIsNeverMintedAgainAfterARestart() = test { _ ->
         val driver = inMemoryDriver(KotgentDatabase.Schema)
         val store = SqliteTaskStore.using(driver) { 1L }
-        store.create(alpha, "one", "")
-        store.create(alpha, "two", "")
+        val _ = store.create(alpha, "one", "")
+        val _ = store.create(alpha, "two", "")
         assertTrue(store.delete(second), "the row carrying the high-water mark goes away")
 
         val reopened = SqliteTaskStore.using(driver) { 2L }
@@ -810,9 +810,9 @@ class TaskStoreTest {
     fun aDatabaseWhoseKeysPredateTheAllocatorIsSeededFromThem() = test { _ ->
         val driver = inMemoryDriver(KotgentDatabase.Schema)
         val tasks = KotgentDatabase(driver).tasksQueries
-        tasks.insertTask("local:1", "one", "", 1L, 1L)
-        tasks.insertTask("local:7", "seven", "", 1L, 1L)
-        tasks.insertTask("gh:1234", "an adopted ref", "", 1L, 1L)
+        val _ = tasks.insertTask("local:1", "one", "", 1L, 1L)
+        val _ = tasks.insertTask("local:7", "seven", "", 1L, 1L)
+        val _ = tasks.insertTask("gh:1234", "an adopted ref", "", 1L, 1L)
 
         assertEquals(
             TaskRef("local:8"),
@@ -826,8 +826,8 @@ class TaskStoreTest {
         val driver = inMemoryDriver(preTaskSchema)
         val store = SqliteTaskStore.using(driver) { 1L }
         val created = store.create(alpha, "one", "")
-        store.comment(created.ref, author = "s-1", text = "a note")
-        store.upsertProject(alpha, "kotgent", "/repo")
+        val _ = store.comment(created.ref, author = "s-1", text = "a note")
+        val _ = store.upsertProject(alpha, "kotgent", "/repo")
 
         val reopened = SqliteTaskStore.using(driver) { 2L }
         assertEquals(created, reopened.get(created.ref), "the second open is a no-op over the same tables")

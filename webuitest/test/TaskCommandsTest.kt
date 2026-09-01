@@ -76,7 +76,7 @@ class TaskCommandsTest {
             for (title in sessionCommandTitles) {
                 assertThat(page.leaderRow(title)).hasCount(1)
             }
-            page.searchFor(SHOW_DONE_QUERY)
+            val _ = page.searchFor(SHOW_DONE_QUERY)
             assertThat(page.paletteOptions()).hasCount(1)
             assertThat(page.paletteOptions().first()).containsText("Show or hide done sessions")
             page.closePalette()

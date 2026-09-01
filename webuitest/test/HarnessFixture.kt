@@ -101,7 +101,7 @@ class Harness(scenario: String) : AutoCloseable {
             readHandshake()
         } catch (t: Throwable) {
             // A constructor failure has no `use` scope available to close the process.
-            runCatching { process.destroyForcibly() }
+            val _ = runCatching { process.destroyForcibly() }
             throw t
         }
         port = handshake.first
@@ -158,7 +158,7 @@ class Harness(scenario: String) : AutoCloseable {
     }
 
     override fun close() {
-        runCatching { stdin.close() }
+        val _ = runCatching { stdin.close() }
         var killed = false
         if (!process.waitFor(SHUTDOWN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
             killed = true
@@ -213,7 +213,7 @@ class Harness(scenario: String) : AutoCloseable {
 
     private fun drain(name: String, stream: InputStream, onLine: (String) -> Unit): Thread =
         Thread {
-            runCatching {
+            val _ = runCatching {
                 stream.bufferedReader(StandardCharsets.UTF_8).forEachLine(onLine)
             }
         }.apply {
@@ -239,13 +239,12 @@ fun BrowserContext.loginWithTicket(ticket: String, baseUrl: String) {
     }
 }
 
-fun Page.openPalette(): Locator {
+fun Page.openPalette() {
     assertThat(locator("#command-palette")).hasCount(0)
     keyboard().press(PALETTE_OPENER)
     val shell = locator(".command-palette-shell.leader")
     assertThat(shell).isVisible()
     assertThat(shell).isFocused()
-    return shell
 }
 
 fun Page.closePalette() {
@@ -367,7 +366,7 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
         block()
     } catch (t: Throwable) {
         failed = true
-        runCatching {
+        val _ = runCatching {
             pages().lastOrNull()?.screenshot(
                 Page.ScreenshotOptions()
                     .setPath(testResultsDir().resolve("$slug.png"))
@@ -377,7 +376,7 @@ fun BrowserContext.traced(name: String, block: () -> Unit) {
         throw t
     } finally {
         offPage(watch)
-        runCatching {
+        val _ = runCatching {
             if (failed) {
                 tracing().stop(Tracing.StopOptions().setPath(testResultsDir().resolve("$slug.zip")))
             } else {

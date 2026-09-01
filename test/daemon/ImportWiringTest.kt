@@ -83,7 +83,7 @@ class ImportWiringTest {
             assertEquals(SessionState.resumable, meta.state)
             assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux side effects")
 
-            Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            val _ = Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
             assertEquals(
                 SessionState.resumable,
                 store.getSession(SessionId("wire0001"))!!.state,
@@ -112,7 +112,7 @@ class ImportWiringTest {
             assertEquals(SessionState.resumable, meta.state)
             assertEquals(id, meta.providerSessionId)
 
-            Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            val _ = Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
             assertEquals(
                 SessionState.resumable,
                 store.getSession(SessionId("wire0001"))!!.state,
@@ -137,7 +137,7 @@ class ImportWiringTest {
 
             assertEquals("/private/tmp", meta.cwd, "the row stores the canonical spelling, not the symlinked one")
             assertEquals(SessionState.resumable, meta.state)
-            Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            val _ = Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 43L }).reconcile()
             assertEquals(SessionState.resumable, store.getSession(SessionId("wire0001"))!!.state)
         }
     }
@@ -188,7 +188,7 @@ class ImportWiringTest {
             assertEquals(id, meta.providerSessionId, "a junie id is NOT a UUID and must survive verbatim")
             assertTrue(tmux.newSessionCommands.isEmpty(), "no tmux side effects")
 
-            Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
+            val _ = Reconciler(tmux, store, probe, PaneRegistry(), now = { 43L }).reconcile()
             assertEquals(
                 SessionState.resumable,
                 store.getSession(SessionId("wire0001"))!!.state,
@@ -203,7 +203,7 @@ class ImportWiringTest {
             val base = makeBase()
             val junieDir = makeDir("$base/.junie")
             val id = ProviderSessionId("session-260624-190541-1d97")
-            makeDir("$junieDir/sessions")
+            val _ = makeDir("$junieDir/sessions")
             writeFile("$junieDir/sessions/index.jsonl", junieIndexLine(id, projectDir = base))
             val probe = productionProbe(base, junieDir = junieDir)
             val locator = productionLocator(base, junieDir = junieDir)
@@ -258,7 +258,7 @@ class ImportWiringTest {
         id: ProviderSessionId,
         recordedCwd: String,
     ) {
-        makeDir("$claudeDir/projects")
+        val _ = makeDir("$claudeDir/projects")
         val projectDir = makeDir("$claudeDir/projects/$project")
         writeFile(
             "$projectDir/${id.value}.jsonl",
@@ -268,9 +268,9 @@ class ImportWiringTest {
     }
 
     private fun placeCodexRollout(codexDir: String, id: ProviderSessionId, recordedCwd: String) {
-        makeDir("$codexDir/sessions")
-        makeDir("$codexDir/sessions/2026")
-        makeDir("$codexDir/sessions/2026/07")
+        val _ = makeDir("$codexDir/sessions")
+        val _ = makeDir("$codexDir/sessions/2026")
+        val _ = makeDir("$codexDir/sessions/2026/07")
         val day = makeDir("$codexDir/sessions/2026/07/29")
         writeFile("$day/rollout-2026-07-29T10-00-00-${id.value}.jsonl", sessionMetaLine(id, recordedCwd))
     }
@@ -294,7 +294,7 @@ class ImportWiringTest {
         val bytes = text.encodeToByteArray()
         val fp = fopen(path, "wb") ?: error("cannot write $path")
         try {
-            bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
+            val _ = bytes.usePinned { fwrite(it.addressOf(0), 1.convert(), bytes.size.convert(), fp) }
         } finally {
             fclose(fp)
         }

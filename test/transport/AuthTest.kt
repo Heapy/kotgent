@@ -66,7 +66,7 @@ class AuthTest {
     @Test
     fun readOrCreateTokenRefusesATokenItCannotHarden() {
         unlink(path)
-        readOrCreateToken(path)
+        val _ = readOrCreateToken(path)
         chmod(path, 0b110_100_100.convert())
         // Some filesystems cannot set UF_IMMUTABLE; without it the chmod-failure precondition is absent.
         if (chflags(path, UF_IMMUTABLE.convert()) != 0) return

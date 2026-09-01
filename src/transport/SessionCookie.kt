@@ -28,7 +28,7 @@ fun verifySessionCookie(token: String, value: String?): Boolean {
     if (token.isEmpty() || value.isNullOrEmpty()) return false
     val fields = value.split(FIELD_SEPARATOR)
     if (fields.size != FIELD_COUNT) return false
-    val (version, issuedAt, mac) = fields
+    val [version, issuedAt, mac] = fields
     if (version != SESSION_COOKIE_VERSION) return false
     if (issuedAt.isEmpty() || !issuedAt.all { it in '0'..'9' }) return false
     return constantTimeEquals(mac, hmacSha256Hex(token, signedMessage(issuedAt)))

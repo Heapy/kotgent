@@ -40,7 +40,7 @@ class BacklogOrdering(
         }
 
         val rev = nextRev()
-        queries.setPosition(position, now(), rev, ref.value)
+        val _ = queries.setPosition(position, now(), rev, ref.value)
         val moved = dependencies.entryLocked(ref) ?: return null
         outbox.stage(TaskUpdate(ref, moved, rev))
         return moved
@@ -81,7 +81,7 @@ class BacklogOrdering(
         entries.forEachIndexed { index, entry ->
             val position = (index + 1).toDouble()
             val rev = nextRev()
-            queries.setPosition(position, stamped, rev, entry.ref.value)
+            val _ = queries.setPosition(position, stamped, rev, entry.ref.value)
             val renumbered = entry.copy(position = position, updatedAt = stamped, rev = rev)
             outbox.stage(TaskUpdate(entry.ref, renumbered, rev))
         }

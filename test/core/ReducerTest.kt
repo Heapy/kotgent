@@ -229,7 +229,7 @@ class ReducerTest {
         var acc = Projection.EMPTY
         representative.forEachIndexed { i, event ->
             acc = reduce(acc, event)
-            val (state, pending, seq) = expected[i]
+            val [state, pending, seq] = expected[i]
             assertEquals(state, acc.state, "state after event $i (${event::class.simpleName})")
             assertEquals(pending, acc.pendingApprovals, "pendingApprovals after event $i")
             assertEquals(Seq(seq), acc.lastSeq, "lastSeq after event $i")
