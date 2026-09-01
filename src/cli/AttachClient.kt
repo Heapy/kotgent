@@ -36,6 +36,7 @@ import platform.posix.read
 import platform.posix.signal
 import platform.posix.write
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration.Companion.milliseconds
 
 data class WinSize(val cols: Int, val rows: Int)
 
@@ -130,7 +131,7 @@ class AttachClient(
             // Limit only the handshake: an orphan can hold the listening socket without answering, while
             // an HttpTimeout request limit would also terminate a healthy long-lived WebSocket.
             val session = try {
-                withTimeout(HANDSHAKE_TIMEOUT_MS) {
+                withTimeout(HANDSHAKE_TIMEOUT_MS.milliseconds) {
                     client.webSocketSession(wsUrl) { header(HttpHeaders.Authorization, "Bearer $token") }
                 }
             } catch (e: TimeoutCancellationException) {
@@ -142,7 +143,7 @@ class AttachClient(
                     installSigwinch()
                     val resizeLoop = launch {
                         while (isActive) {
-                            delay(SIGWINCH_POLL_MS)
+                            delay(SIGWINCH_POLL_MS.milliseconds)
                             if (winchPending) {
                                 winchPending = false
                                 sendResize(tty.windowSize())

@@ -38,6 +38,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class HookRoutesTest {
 
@@ -63,7 +64,7 @@ class HookRoutesTest {
             }
         }
         try {
-            withTimeout(20_000) {
+            withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
                 val client = HttpClient(CIO)
@@ -106,7 +107,7 @@ class HookRoutesTest {
             routing { tmuxHookRoutes(tokenProvider, onSessionClosed) }
         }
         try {
-            withTimeout(20_000) {
+            withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
                 val client = HttpClient(CIO)
@@ -423,7 +424,7 @@ class HookRoutesTest {
             }
         }
         try {
-            withTimeout(20_000) {
+            withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
                 val client = HttpClient(CIO)
@@ -627,7 +628,7 @@ class HookRoutesTest {
             }
         }
         try {
-            withTimeout(20_000) {
+            withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
                 val client = HttpClient(CIO)

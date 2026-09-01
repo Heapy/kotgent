@@ -11,15 +11,6 @@ import kotlinx.serialization.Serializable
 // IDs stay Strings on the wire: value-class constructors throw IllegalArgumentException outside the
 // SerializationException route handlers map. Row revisions merge HTTP and WebSocket data newest-wins.
 @Serializable
-data class TaskDto(
-    val ref: String,
-    val title: String,
-    val body: String,
-    val url: String? = null,
-    val updatedAt: Long,
-)
-
-@Serializable
 data class BacklogEntryDto(
     val ref: String,
     val project: String,

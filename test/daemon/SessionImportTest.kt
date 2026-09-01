@@ -27,6 +27,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class SessionImportTest {
 
@@ -70,7 +71,7 @@ class SessionImportTest {
 
     @Test
     fun shellCanStartButCannotBeImportedAgainstTheSameManager() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             val shellId = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
@@ -102,7 +103,7 @@ class SessionImportTest {
 
     @Test
     fun importRegistersAFullResumableRowAndBindsTheProviderIdWithNoTmuxSideEffects() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             val probed = mutableListOf<Triple<String, String, ProviderSessionId>>()
@@ -149,7 +150,7 @@ class SessionImportTest {
 
     @Test
     fun anImportedSessionStaysResumableThroughReconcile() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             val probe = VendorStoreProbe { a, c, id -> a == "claude" && c == canonicalTmp && id == providerId }
@@ -168,7 +169,7 @@ class SessionImportTest {
 
     @Test
     fun importOfASupportedKindSucceedsEvenWhenTheAgentBinaryIsMissing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val factory = AgentFactory { kind, _ -> throw AgentBinaryNotFoundException(kind) }
             val mgr = manager(store, factory = factory)
@@ -187,7 +188,7 @@ class SessionImportTest {
 
     @Test
     fun aDuplicateProviderIdConflictsAndNamesTheExistingSessionIncludingArchived() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
             mgr.importSession("claude", providerId, cwd = "/tmp")
@@ -212,7 +213,7 @@ class SessionImportTest {
 
     @Test
     fun twoConcurrentImportsOfTheSameIdYieldExactlyOneRow() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
@@ -248,7 +249,7 @@ class SessionImportTest {
 
     @Test
     fun aConcurrentImportCannotTakeTheIdAStartHasDrawnButNotYetUpserted() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val real = SqliteEventStore.inMemory(now = { 42L })
             val startUpsertReached = CompletableDeferred<Unit>()
             val releaseStartUpsert = CompletableDeferred<Unit>()
@@ -301,7 +302,7 @@ class SessionImportTest {
 
     @Test
     fun anUnknownAgentKindIsRejectedBeforeAnythingElse() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             var probeAsked = false
@@ -322,7 +323,7 @@ class SessionImportTest {
 
     @Test
     fun aTranscriptTheProbeCannotSeeFailsNamingTheCwdFlagAndArchivedCodex() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store, probe = VendorStoreProbe { _, _, _ -> false })
 
@@ -340,7 +341,7 @@ class SessionImportTest {
 
     @Test
     fun discoveryFindingNoCwdFailsWithTheCwdHint() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store, locator = VendorSessionLocator { _, _ -> null })
 
@@ -355,7 +356,7 @@ class SessionImportTest {
 
     @Test
     fun anExplicitCwdWinsOverDiscovery() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             var locatorAsked = false
             val probedCwds = mutableListOf<String>()
@@ -375,7 +376,7 @@ class SessionImportTest {
 
     @Test
     fun anExplicitCwdIsCanonicalizedThroughTheFilesystemBeforeTheProbeAndTheRow() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val probedCwds = mutableListOf<String>()
             val mgr = manager(store, probe = VendorStoreProbe { _, c, _ -> probedCwds += c; true })
@@ -390,7 +391,7 @@ class SessionImportTest {
 
     @Test
     fun aDeletedProjectDirectoryFailsBeforeTheProbe() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             var probeAsked = false
             val mgr = manager(store, probe = VendorStoreProbe { _, _, _ -> probeAsked = true; true })
@@ -408,7 +409,7 @@ class SessionImportTest {
 
     @Test
     fun aRelativeCwdIsRejectedAtTheDaemon() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             var probeAsked = false
             val mgr = manager(store, probe = VendorStoreProbe { _, _, _ -> probeAsked = true; true })
@@ -425,7 +426,7 @@ class SessionImportTest {
 
     @Test
     fun aCwdThatIsAPlainFileIsRejected() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
 
@@ -440,7 +441,7 @@ class SessionImportTest {
 
     @Test
     fun anUppercaseIdVariantIsNormalizedAndConflictsWithItsLowercaseTwin() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(store)
             val upper = ProviderSessionId(providerId.value.uppercase())
@@ -458,7 +459,7 @@ class SessionImportTest {
 
     @Test
     fun aDiscoveredCwdThatFailsTheProbeFailsLoudlyNotSilently() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val mgr = manager(
                 store,
@@ -479,7 +480,7 @@ class SessionImportTest {
 
     @Test
     fun aBindFailureAfterTheRowCommitLeavesAFunctionalResumableRow() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val real = SqliteEventStore.inMemory(now = { 42L })
             val failing = object : EventStore by real {
                 override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
@@ -504,7 +505,7 @@ class SessionImportTest {
 
     @Test
     fun resumeInvokesTheBackgroundModelCaptureForTheRevivedSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val tmux = FakeTmux()
             val captured = CompletableDeferred<SessionMeta>()

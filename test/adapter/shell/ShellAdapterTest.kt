@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.time.Duration.Companion.seconds
 
 class ShellAdapterTest {
 
@@ -52,7 +53,7 @@ class ShellAdapterTest {
 
     @Test
     fun eventsCompletesWithoutEmittingAnything() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val events = ShellAdapter(cwd = "/work", shell = "/bin/zsh").events.toList()
             assertEquals(emptyList(), events)
         }

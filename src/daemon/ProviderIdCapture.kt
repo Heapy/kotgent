@@ -5,6 +5,7 @@ import io.kotgent.core.EventSource
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionId
 import io.kotgent.store.EventStore
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,7 +42,7 @@ class ProviderIdCapture(
                 bind(sessionId, discovered)
                 return CaptureResult.Bound(discovered)
             }
-            if (attempt < maxAttempts - 1) delay(retryDelayMillis)
+            if (attempt < maxAttempts - 1) delay(retryDelayMillis.milliseconds)
         }
         return CaptureResult.Pending
     }

@@ -24,6 +24,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class BacklogDependenciesTest {
 
@@ -86,7 +87,7 @@ class BacklogDependenciesTest {
     }
 
     private fun test(block: suspend (Fixture) -> Unit) = runBlocking {
-        withTimeout(20_000) { block(threeTodoTasks()) }
+        withTimeout(20.seconds) { block(threeTodoTasks()) }
     }
 
 
@@ -367,7 +368,7 @@ class BacklogDependenciesTest {
 
     @Test
     fun theStoresOwnCollaboratorEmitsOnTaskUpdates() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteTaskStore.using(driver) { 0L }
             val queries = KotgentDatabase(driver).backlogQueries

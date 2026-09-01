@@ -39,6 +39,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class SessionDoneTaskTest {
 
@@ -92,7 +93,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun doneOnALinkedSessionClosesTheTaskUnlinksEveryHolderAndArchivesIt() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
             val mgr = managerOver(f, tasks)
@@ -146,7 +147,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun closingFromTheBoardUnlinksTheSessionAndLeavesItAlive() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
             val mgr = managerOver(f, tasks)
@@ -168,7 +169,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun theSessionCloseAndTheBoardCloseWriteTheSameThingToTheTaskLayer() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             suspend fun closeWith(
                 close: suspend (SessionManager, TaskService) -> Unit,
             ): Triple<List<String>, List<TaskActivityEntry>, List<TaskRef?>> {
@@ -222,7 +223,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun doneCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val other = TaskRef("local:2")
             val tasks = RecordingTaskStore(f.journal).apply {
@@ -264,7 +265,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun reviewThenNextLeavesTheReviewedTaskStrandedAndMakesDoneCloseTheOtherOne() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val reviewed = ref
             val taken = TaskRef("local:2")
@@ -322,7 +323,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun linkNextRefusesASelectedCardWhenItsProjectIsTombstonedBeforeStart() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.todo) }
             val mgr = managerOver(f, tasks)
@@ -356,7 +357,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun doneOnAnUnlinkedSessionNeverConsultsTheTaskStore() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val mgr = managerOver(f, RefusingTaskStore)
 
@@ -370,7 +371,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun doneWithoutATaskLayerBehavesExactlyAsBefore() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val mgr = managerOver(f, tasks = null)
 
@@ -388,7 +389,7 @@ class SessionDoneTaskTest {
 
     @Test
     fun cancellationBetweenTheTwoWritesCannotHalfApplyDone() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture()
             val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
             f.store.yieldBeforeArchive = true

@@ -13,6 +13,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -176,7 +177,7 @@ suspend fun saveUploadedFile(
     if (expectedBytes != null && expectedBytes > maxBytes) return FileUploadResult.TooLarge
     if (expectedBytes != null && expectedBytes < 0L) return FileUploadResult.LengthMismatch
 
-    return withTimeoutOrNull(timeoutMillis) {
+    return withTimeoutOrNull(timeoutMillis.milliseconds) {
         saveUploadedFileBeforeDeadline(directory, fileName, body, expectedBytes, maxBytes)
     } ?: FileUploadResult.TimedOut
 }

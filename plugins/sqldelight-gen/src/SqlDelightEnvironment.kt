@@ -28,7 +28,6 @@ import app.cash.sqldelight.core.lang.SqlDelightFile
 import app.cash.sqldelight.core.lang.SqlDelightFileType
 import app.cash.sqldelight.core.lang.SqlDelightParserDefinition
 import app.cash.sqldelight.core.lang.SqlDelightQueriesFile
-import app.cash.sqldelight.core.lang.util.migrationFiles
 import app.cash.sqldelight.core.psi.SqlDelightImportStmt
 import app.cash.sqldelight.dialect.api.SqlDelightDialect
 import com.alecstrong.sql.psi.core.AnnotationException
@@ -46,11 +45,9 @@ import com.intellij.psi.FileTypeFileViewProviders
 import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiErrorElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiFileSystemItem
 import com.intellij.psi.PsiManager
-import com.intellij.psi.util.PsiTreeUtil
 import java.io.File
 import java.util.StringTokenizer
 import kotlin.math.log10
@@ -198,31 +195,6 @@ class SqlDelightEnvironment(
     }
 
     return CompilationStatus.Success
-  }
-
-  fun forMigrationFiles(body: (MigrationFile) -> Unit) {
-    val psiManager = PsiManager.getInstance(projectEnvironment.project)
-    val migrationFiles: Collection<MigrationFile> = sourceFolders
-      .map { localFileSystem.findFileByPath(it.absolutePath)!! }
-      .map { psiManager.findDirectory(it)!! }
-      .flatMap { directory: PsiDirectory -> directory.migrationFiles() }
-    migrationFiles.sortedBy { it.version }
-      .forEach {
-        val errorElements = ArrayList<PsiErrorElement>()
-        PsiTreeUtil.processElements(it) { element ->
-          when (element) {
-            is PsiErrorElement -> errorElements.add(element)
-          }
-          return@processElements true
-        }
-        if (errorElements.isNotEmpty()) {
-          throw SqlDelightException(
-            "Error Reading ${it.name}:\n\n" +
-              errorElements.joinToString(separator = "\n") { errorMessage(it, it.errorDescription) },
-          )
-        }
-        body(it)
-      }
   }
 
   private fun errorMessage(element: PsiElement, message: String): String = "${element.containingFile.virtualFile.path}:${element.lineStart}:${element.charPositionInLine} $message\n${detailText(element)}"

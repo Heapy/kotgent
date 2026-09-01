@@ -68,12 +68,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlinx.serialization.builtins.ListSerializer
@@ -84,6 +82,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class TransportTest {
 
@@ -141,7 +140,7 @@ class TransportTest {
 
     @Test
     fun failedServerStartupCompletesPushCleanupAndPreservesItsFailure() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val primary = IllegalStateException("server creation failed")
             val closeFailure = IllegalArgumentException("push close failed")
             val cleanupCompleted = CompletableDeferred<Unit>()
@@ -185,7 +184,7 @@ class TransportTest {
 
     @Test
     fun cancelledPushAssemblyCompensatesBeforeADaemonPushExists() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val primary = CancellationException("notifier startup cancelled")
             val closeFailure = IllegalStateException("transport close failed")
             val cleanupCompleted = CompletableDeferred<Unit>()
@@ -1131,7 +1130,7 @@ class TransportTest {
 
     @Test
     fun fakeEventStoreMirrorsTheRealStoresCacheStateAuthority() = runBlocking {
-        withTimeout(15_000) {
+        withTimeout(15.seconds) {
             suspend fun cacheAuthorityAnswers(store: EventStore): CacheAuthorityAnswers {
                 val dead = SessionId("contrct1")
                 store.upsertSession(contractMeta(dead, SessionState.resumable))
@@ -1248,7 +1247,7 @@ class TransportTest {
 
     @Test
     fun theFakeEventStoreDefaultClockMovesAppendsPastRealisticSeedsAndKeepsEmissionsMonotonic() = runBlocking {
-        withTimeout(15_000) {
+        withTimeout(15.seconds) {
             val store = FakeEventStore()
             val older = SessionId("clock001")
             val newer = SessionId("clock002")
@@ -1610,7 +1609,7 @@ class TransportTest {
         pushAssembler: (suspend (EventStore, CoroutineScope) -> DaemonPush?)? = null,
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
-        withTimeout(40_000) {
+        withTimeout(40.seconds) {
             val store = FakeEventStore()
             val tmux = FakeTmux()
             val registry = PaneRegistry()
@@ -1809,24 +1808,24 @@ class TransportTest {
     }
 
     // Channels provide happens-before across the CIO engine and test threads.
-    private class WsFakePty(val command: List<String>) : PtyHandle {
-        private val out = Channel<ByteArray>(Channel.UNLIMITED)
-        override val output: ReceiveChannel<ByteArray> get() = out
+    private class WsFakePty : PtyHandle {
+        override val output: ReceiveChannel<ByteArray>
+            field = Channel<ByteArray>(Channel.UNLIMITED)
 
         val writes = Channel<ByteArray>(Channel.UNLIMITED)
 
         val resizes = Channel<Pair<Int, Int>>(Channel.UNLIMITED)
 
-        fun emit(bytes: ByteArray) { out.trySend(bytes) }
+        fun emit(bytes: ByteArray) { output.trySend(bytes) }
         override fun write(bytes: ByteArray) { writes.trySend(bytes) }
         override fun resize(cols: Int, rows: Int) { resizes.trySend(cols to rows) }
         override fun prepareClose() = Unit
-        override fun close() { out.close() }
+        override fun close() { output.close() }
     }
 
     private class WsFakePtyFactory : PtyFactory {
         val opened = Channel<WsFakePty>(Channel.UNLIMITED)
         override fun invoke(command: List<String>, env: Map<String, String>): PtyHandle =
-            WsFakePty(command).also { opened.trySend(it) }
+            WsFakePty().also { opened.trySend(it) }
     }
 }

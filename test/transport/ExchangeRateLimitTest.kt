@@ -13,6 +13,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class ExchangeRateLimitTest {
 
@@ -72,7 +73,7 @@ class ExchangeRateLimitTest {
 
     @Test
     fun concurrentAttemptsCannotReservePastTheCap() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val limit = limiter()
             val start = CompletableDeferred<Unit>()
             val total = EXCHANGE_FAILURE_LIMIT * 5

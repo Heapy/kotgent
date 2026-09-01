@@ -18,7 +18,6 @@ import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openReadChannel
 import io.ktor.network.sockets.openWriteChannel
-import io.ktor.server.application.call
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
@@ -44,6 +43,8 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class AuthRoutesTest {
@@ -294,7 +295,7 @@ class AuthRoutesTest {
 
     @Test
     fun exchangeBodyIntakeIsByteBoundedAndTimeBounded() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val exact = "x".repeat(32)
             assertEquals(
                 AuthExchangeBodyRead.Received(exact),
@@ -733,14 +734,14 @@ class AuthRoutesTest {
     }
 
     private suspend fun ExchangeRateLimit.awaitReleasedCapacity() {
-        withTimeout(1_000) {
+        withTimeout(1.seconds) {
             while (true) {
                 val probe = begin()
                 if (probe != null) {
                     probe.finish(failed = false)
                     return@withTimeout
                 }
-                delay(5)
+                delay(5.milliseconds)
             }
         }
     }
@@ -749,7 +750,7 @@ class AuthRoutesTest {
     private fun groupedAndLowercased(code: String): String =
         (code.substring(0, code.length / 2) + " " + code.substring(code.length / 2)).lowercase()
 
-    private inner class Env(val port: Int, val client: HttpClient, val tokens: TokenHolder) {
+    private inner class Env(val port: Int, val client: HttpClient) {
         suspend fun issueTicket(): String {
             val resp = client.req(port, AUTH_TICKET_PATH, HttpMethod.Post, bearer = token)
             return TRANSPORT_JSON.decodeFromString(TicketResponse.serializer(), resp.bodyAsText()).ticket
@@ -765,7 +766,7 @@ class AuthRoutesTest {
             contentLength: Int,
             body: String = "",
             halfCloseRequest: Boolean = false,
-        ): String = withTimeout(2_000) {
+        ): String = withTimeout(2.seconds) {
             val selector = SelectorManager(Dispatchers.Default)
             val socket = aSocket(selector).tcp().connect("127.0.0.1", port)
             try {
@@ -811,7 +812,7 @@ class AuthRoutesTest {
         exchangeBodyTimeoutMillis: Long = AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS,
         block: suspend (Env) -> Unit,
     ) = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val tokens = TokenHolder(token)
             val tickets = TicketStore(now = { fixedNow })
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
@@ -846,7 +847,7 @@ class AuthRoutesTest {
             val port = server.engine.resolvedConnectors().first().port
             val client = HttpClient(CIO)
             try {
-                block(Env(port, client, tokens))
+                block(Env(port, client))
             } finally {
                 client.close()
                 server.stop(gracePeriodMillis = 100, timeoutMillis = 500)

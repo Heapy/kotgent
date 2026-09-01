@@ -28,6 +28,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class ImportWiringTest {
@@ -64,7 +65,7 @@ class ImportWiringTest {
 
     @Test
     fun aClaudeSessionIsDiscoveredByTheRealLocatorAndSurvivesTheRealProbeAndReconcile() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val base = makeBase()
             val claudeDir = makeDir("$base/.claude")
             val projectCwd = makeDir("$base/project")
@@ -93,7 +94,7 @@ class ImportWiringTest {
 
     @Test
     fun aCodexSessionIsDiscoveredFromItsRolloutByTheRealScan() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val base = makeBase()
             val codexDir = makeDir("$base/.codex")
             val projectCwd = makeDir("$base/repo")
@@ -122,7 +123,7 @@ class ImportWiringTest {
 
     @Test
     fun aSymlinkedRecordedCwdIsCanonicalizedIntoTheTranscriptKeyAndTheImportSucceeds() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val base = makeBase()
             val claudeDir = makeDir("$base/.claude")
             val id = uuid('c')
@@ -143,7 +144,7 @@ class ImportWiringTest {
 
     @Test
     fun anArchivedCodexRolloutIsNotDiscoverable() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val base = makeBase()
             val codexDir = makeDir("$base/.codex")
             val id = uuid('d')
@@ -168,7 +169,7 @@ class ImportWiringTest {
 
     @Test
     fun aJunieSessionIsDiscoveredFromItsIndexByTheRealScan() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val base = makeBase()
             val junieDir = makeDir("$base/.junie")
             val projectCwd = makeDir("$base/proj")
@@ -198,7 +199,7 @@ class ImportWiringTest {
 
     @Test
     fun aJunieSessionWhoseDirectoryWasPrunedIsNotDiscoverable() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val base = makeBase()
             val junieDir = makeDir("$base/.junie")
             val id = ProviderSessionId("session-260624-190541-1d97")

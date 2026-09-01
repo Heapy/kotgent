@@ -23,6 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class OpensslVapidSignerTest {
@@ -108,7 +109,7 @@ class OpensslVapidSignerTest {
 
     @Test
     fun signsAnInputOpensslItselfThenVerifies() = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             if (!opensslAvailable()) return@withTimeout
             VapidKey(keyPath = keyPath).ensureKeyFile()
             val signer = OpensslVapidSigner(keyPath = keyPath)
@@ -123,7 +124,7 @@ class OpensslVapidSignerTest {
 
     @Test
     fun everySignatureIsFreshAndStillVerifies() = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             if (!opensslAvailable()) return@withTimeout
             VapidKey(keyPath = keyPath).ensureKeyFile()
             val signer = OpensslVapidSigner(keyPath = keyPath)
@@ -140,7 +141,7 @@ class OpensslVapidSignerTest {
 
     @Test
     fun bindsAsTheTokenCachesSignLambda() = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             if (!opensslAvailable()) return@withTimeout
             VapidKey(keyPath = keyPath).ensureKeyFile()
             val cache = VapidTokenCache(subject = "mailto:a@b.c", sign = OpensslVapidSigner(keyPath)::sign)

@@ -49,7 +49,7 @@ import io.ktor.http.encodeURLPathPart
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-class MissingTokenException(val tokenPath: String) : RuntimeException(
+class MissingTokenException(tokenPath: String) : RuntimeException(
     "no kotgent token found at $tokenPath — is the daemon running? start it with: kotgent daemon",
 )
 

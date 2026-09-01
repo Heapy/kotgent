@@ -23,6 +23,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 // Filesystem fixtures use unique TMPDIR trees and never read the developer's ~/.claude.
@@ -88,7 +89,7 @@ class VendorSessionLocatorTest {
 
     @Test
     fun theTranscriptIsFoundInOneOfTheProjectDirs() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val claudeDir = makeClaudeDir()
             val id = uuid('a')
             placeTranscript(claudeDir, project = "-work-other", id = uuid('b'), recordedCwd = "/work/other")
@@ -100,7 +101,7 @@ class VendorSessionLocatorTest {
 
     @Test
     fun anUnknownIdYieldsNull() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val claudeDir = makeClaudeDir()
             placeTranscript(claudeDir, project = "-work-mine", id = uuid('c'), recordedCwd = "/work/mine")
 
@@ -110,7 +111,7 @@ class VendorSessionLocatorTest {
 
     @Test
     fun aMissingProjectsDirYieldsNull() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val claudeDir = makeClaudeDir()
             assertNull(claudeSessionLocator(claudeDir).cwdOf("claude", uuid('e')))
             assertNull(
@@ -122,7 +123,7 @@ class VendorSessionLocatorTest {
 
     @Test
     fun theScanReadsTheFullByteWindowNotTheDefaultHead() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val claudeDir = makeClaudeDir()
             val id = uuid('a')
             val pad = "x".repeat(180)
@@ -135,7 +136,7 @@ class VendorSessionLocatorTest {
 
     @Test
     fun aCwdPastTheByteWindowIsNotFound() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val claudeDir = makeClaudeDir()
             val id = uuid('b')
             val pad = "x".repeat(180)
@@ -150,7 +151,7 @@ class VendorSessionLocatorTest {
 
     @Test
     fun dispatchSelectsTheLocatorForTheAgentKind() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val id = uuid('f')
             val locator = byAgentVendorSessionLocator(
                 mapOf(

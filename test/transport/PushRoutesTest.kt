@@ -26,6 +26,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class PushRoutesTest {
@@ -307,7 +308,7 @@ class PushRoutesTest {
         vapidPublicKey: suspend () -> String = { vapidKey },
         block: suspend (Env) -> Unit,
     ) = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val tokens = TokenHolder(token)
             val store = FakePushStore()
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {

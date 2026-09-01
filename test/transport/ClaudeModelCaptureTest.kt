@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.time.Duration.Companion.seconds
 
 class ClaudeModelCaptureTest {
 
@@ -23,7 +24,7 @@ class ClaudeModelCaptureTest {
 
     @Test
     fun capturesTheModelFromTheTranscriptTailOnce() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             store.upsertSession(meta("s1"))
             var reads = 0
@@ -47,7 +48,7 @@ class ClaudeModelCaptureTest {
 
     @Test
     fun leavesModelNullOnAMissWithoutFailing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             store.upsertSession(meta("s2"))
             val capture = ClaudeModelCapture(store, readTranscriptTail = { "no model in here" })
@@ -62,7 +63,7 @@ class ClaudeModelCaptureTest {
 
     @Test
     fun aMissingSessionIsANoOp() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val capture = ClaudeModelCapture(store, readTranscriptTail = { """{"model":"x"}""" })
             capture.maybeCapture(SessionId("ghost"), payload("""{"transcript_path":"/t.jsonl"}"""))

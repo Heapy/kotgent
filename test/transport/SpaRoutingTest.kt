@@ -72,6 +72,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class SpaRoutingTest {
 
@@ -214,7 +215,7 @@ class SpaRoutingTest {
     }
 
     private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
-        withTimeout(40_000) {
+        withTimeout(40.seconds) {
             val store = NoopEventStore()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(

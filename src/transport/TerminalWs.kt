@@ -5,7 +5,6 @@ import io.kotgent.pty.Subscriber
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.store.EventStore
 import io.ktor.server.routing.Route
-import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame

@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class AdapterContractTest {
 
@@ -59,7 +60,7 @@ class AdapterContractTest {
 
     @Test
     fun foldingTheAdapterStreamThroughTheReducerVisitsTheExpectedStateTrajectory() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val adapter = FakeAdapter()
 
             val trajectory = mutableListOf<SessionState>()
@@ -97,7 +98,7 @@ class AdapterContractTest {
 
     @Test
     fun theContractRunCoversAllV1EventTypesAndTheFlowDeliversThemLosslesslyInOrder() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val adapter = FakeAdapter()
             adapter.emitAll(representative)
             adapter.close()
@@ -117,7 +118,7 @@ class AdapterContractTest {
 
     @Test
     fun anEmptyAdapterStreamReducesToTheInitialRunningProjection() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val adapter = FakeAdapter()
             adapter.close()
 

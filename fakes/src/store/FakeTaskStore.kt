@@ -13,7 +13,6 @@ import io.kotgent.task.ProjectRegistration
 import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskTracker
 import io.kotgent.task.TaskUpdate
 import io.kotgent.task.needsRenormalization
 import io.kotgent.task.positionBetween
@@ -127,11 +126,6 @@ class FakeTaskStore(
             row
         }
     }
-
-    suspend fun renormalize(project: ProjectId): Unit = mutex.withLock {
-        publishing { renormalizeLocked(project) }
-    }
-
 
     override suspend fun list(project: ProjectId): List<Task> = mutex.withLock {
         entries.values.filter { it.project == project }

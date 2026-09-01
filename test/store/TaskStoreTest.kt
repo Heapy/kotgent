@@ -44,6 +44,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class TaskStoreTest {
@@ -62,7 +63,7 @@ class TaskStoreTest {
     }
 
     private fun test(block: suspend CoroutineScope.(Fixture) -> Unit) = runBlocking {
-        withTimeout(20_000) { block(Fixture()) }
+        withTimeout(20.seconds) { block(Fixture()) }
     }
 
     private suspend fun CoroutineScope.recording(
@@ -291,7 +292,7 @@ class TaskStoreTest {
 
     @Test
     fun onAFileBackedDatabaseTheActivityIdStillComesFromTheInsertsOwnConnection() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             withTempDbDir { dir ->
                 val driver = NativeSqliteDriver(
                     schema = KotgentDatabase.Schema,
@@ -722,7 +723,7 @@ class TaskStoreTest {
 
     @Test
     fun aDatabaseWrittenBeforeTheArchivedColumnOpensMigratesAndAnswers() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             withTempDbDir { dir ->
                 val driver = NativeSqliteDriver(
                     schema = preProjectArchiveSchema,

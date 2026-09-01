@@ -107,7 +107,7 @@ class OrderingTest {
 
     @Test
     fun thirtyRepeatedMidpointsBetweenOnePairTripTheThreshold() {
-        var lower = 1.0
+        val lower = 1.0
         var upper = 2.0
         var inserts = 0
         while (!needsRenormalization(lower, upper)) {

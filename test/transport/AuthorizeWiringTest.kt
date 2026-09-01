@@ -9,7 +9,6 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.call
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
@@ -22,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class AuthorizeWiringTest {
 
@@ -205,7 +205,7 @@ class AuthorizeWiringTest {
             }
         }
         try {
-            withTimeout(20_000) {
+            withTimeout(20.seconds) {
                 server.start(wait = false)
                 val port = server.engine.resolvedConnectors().first().port
                 val client = HttpClient(CIO)

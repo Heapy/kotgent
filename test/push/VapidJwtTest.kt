@@ -7,6 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 class VapidJwtTest {
 
@@ -201,7 +202,7 @@ class VapidJwtTest {
 
     @Test
     fun aMintedTokenIsTheSigningInputPlusTheBase64UrlSignature() = runBlocking {
-        withTimeout(TEST_TIMEOUT_MILLIS) {
+        withTimeout(TEST_TIMEOUT_MILLIS.milliseconds) {
             var signed: String? = null
             val cache = VapidTokenCache(
                 subject = "https://kotgent.example.com",
@@ -218,7 +219,7 @@ class VapidJwtTest {
 
     @Test
     fun theSameOriginIsSignedOnceAndThenServedFromTheCache() = runBlocking {
-        withTimeout(TEST_TIMEOUT_MILLIS) {
+        withTimeout(TEST_TIMEOUT_MILLIS.milliseconds) {
             var signCount = 0
             var clock = fixedNow
             val cache = VapidTokenCache(
@@ -239,7 +240,7 @@ class VapidJwtTest {
 
     @Test
     fun aTokenInsideTheRefreshWindowIsReSignedExactlyOnce() = runBlocking {
-        withTimeout(TEST_TIMEOUT_MILLIS) {
+        withTimeout(TEST_TIMEOUT_MILLIS.milliseconds) {
             var signCount = 0
             var clock = fixedNow
             val cache = VapidTokenCache(
@@ -262,7 +263,7 @@ class VapidJwtTest {
 
     @Test
     fun eachPushServiceOriginGetsItsOwnToken() = runBlocking {
-        withTimeout(TEST_TIMEOUT_MILLIS) {
+        withTimeout(TEST_TIMEOUT_MILLIS.milliseconds) {
             val audiences = mutableListOf<String>()
             val cache = VapidTokenCache(
                 subject = VAPID_FALLBACK_SUBJECT,
@@ -282,7 +283,7 @@ class VapidJwtTest {
 
     @Test
     fun aFailingSignerPropagatesAndCachesNothing() = runBlocking {
-        withTimeout(TEST_TIMEOUT_MILLIS) {
+        withTimeout(TEST_TIMEOUT_MILLIS.milliseconds) {
             var fail = true
             val cache = VapidTokenCache(
                 subject = VAPID_FALLBACK_SUBJECT,
@@ -301,7 +302,7 @@ class VapidJwtTest {
 
     @Test
     fun aMalformedEndpointFailsBeforeAnythingIsSigned() = runBlocking {
-        withTimeout(TEST_TIMEOUT_MILLIS) {
+        withTimeout(TEST_TIMEOUT_MILLIS.milliseconds) {
             var signCount = 0
             val cache = VapidTokenCache(
                 subject = VAPID_FALLBACK_SUBJECT,

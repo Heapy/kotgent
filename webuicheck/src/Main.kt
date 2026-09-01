@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.system.exitProcess
+import kotlin.time.Duration.Companion.milliseconds
 import platform.posix.EINTR
 import platform.posix.FD_CLOEXEC
 import platform.posix.F_SETFD
@@ -73,7 +74,7 @@ private fun readCommands(context: HarnessContext): Int {
 // A crashed driver never closes stdin; force process exit so its port and pty cannot be orphaned.
 private fun startWatchdog(afterMs: Long) {
     watchdogScope.launch {
-        delay(afterMs)
+        delay(afterMs.milliseconds)
         eprintln("webuicheck: --exit-after-ms=$afterMs elapsed with no EOF on stdin; exiting")
         exitProcess(EXIT_WATCHDOG)
     }
@@ -149,7 +150,6 @@ const val EXIT_WATCHDOG: Int = 4
 
 private var handshakeFd: Int = STDOUT_FILENO
 
-@OptIn(ExperimentalForeignApi::class)
 // Save the protocol fd, mark it close-on-exec, then make ordinary stdout writes diagnostic stderr.
 private fun claimStdout() {
     val saved = dup(STDOUT_FILENO)

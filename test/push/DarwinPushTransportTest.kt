@@ -15,12 +15,13 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.time.Duration.Companion.seconds
 
 class DarwinPushTransportTest {
 
     @Test
     fun postSendsTheSuppliedHeadersWithAnEmptyBodyAndReturnsTheStatus() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val endpoint = "https://web.push.apple.com/3/device/test"
             val headers = mapOf(
                 PUSH_AUTHORIZATION_HEADER to "vapid t=jwt, k=public-key",

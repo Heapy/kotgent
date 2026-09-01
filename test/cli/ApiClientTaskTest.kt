@@ -28,7 +28,6 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.call
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.path
@@ -51,6 +50,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class ApiClientTaskTest {
 
@@ -359,11 +359,11 @@ class ApiClientTaskTest {
 
     @Test
     fun aSilentDaemonTimesOutInsteadOfHanging(): Unit = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
                 routing {
                     get("$API_PREFIX/projects") {
-                        delay(20_000)
+                        delay(20.seconds)
                         call.respondText("[]", ContentType.Application.Json)
                     }
                 }
@@ -505,7 +505,7 @@ class ApiClientTaskTest {
         paneId: PaneId? = null,
         block: suspend (Stub, ApiClient) -> Unit,
     ) = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val stub = Stub()
             stub.server.start(wait = false)
             val port = stub.server.engine.resolvedConnectors().first().port

@@ -63,6 +63,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class TaskIntegrationTest {
 
@@ -273,7 +274,7 @@ class TaskIntegrationTest {
     }
 
     private fun withStack(block: suspend (Ctx) -> Unit) = runBlocking {
-        withTimeout(60_000) {
+        withTimeout(60.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val events = SqliteEventStore.using(driver, now = { 1L })
             val tasks = SqliteTaskStore.using(driver, now = { 1L })

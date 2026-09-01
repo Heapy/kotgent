@@ -20,6 +20,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class ShellVendorStoreProbeTest {
@@ -35,7 +36,7 @@ class ShellVendorStoreProbeTest {
 
     @Test
     fun existingDirectoryIsResumableButMissingPathAndRegularFileAreNot() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val base = makeBase()
             val regularFile = "$base/not-a-directory"
             fclose(fopen(regularFile, "wb") ?: error("cannot create $regularFile"))
@@ -51,7 +52,7 @@ class ShellVendorStoreProbeTest {
 
     @Test
     fun productionDispatchRoutesShellToTheCwdProbeWithoutAVendorHome() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val base = makeBase()
             val probe = productionVendorStoreProbe(
                 claudeDir = "$base/no-claude",

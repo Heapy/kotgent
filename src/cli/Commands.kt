@@ -68,6 +68,7 @@ import io.kotgent.transport.defaultTokenPath
 import io.kotgent.transport.readOrCreateToken
 import io.kotgent.transport.readTokenOrNull
 import io.kotgent.transport.writePrivateFile
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -366,7 +367,7 @@ object Commands {
                             // Re-read the provider id each attempt: background discovery may land mid-poll.
                             // Never guess by cwd+mtime because a late first bind would not correct it.
                             if (captureCodexModelOnce(store, rolloutScan, meta)) return@launch
-                            delay(MODEL_CAPTURE_INTERVAL_MILLIS)
+                            delay(MODEL_CAPTURE_INTERVAL_MILLIS.milliseconds)
                         }
                     }
                 }
@@ -375,7 +376,7 @@ object Commands {
                     bgScope.launch {
                         repeat(MODEL_CAPTURE_ATTEMPTS) {
                             if (captureJunieModelOnce(store, junieScan, meta)) return@launch
-                            delay(MODEL_CAPTURE_INTERVAL_MILLIS)
+                            delay(MODEL_CAPTURE_INTERVAL_MILLIS.milliseconds)
                         }
                     }
                 }
@@ -428,7 +429,7 @@ object Commands {
         installShutdownSignals()
         var signo = pendingShutdownSignal()
         while (signo == 0) {
-            delay(SHUTDOWN_POLL_MILLIS)
+            delay(SHUTDOWN_POLL_MILLIS.milliseconds)
             signo = pendingShutdownSignal()
         }
 

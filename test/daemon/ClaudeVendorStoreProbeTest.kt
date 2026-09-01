@@ -25,6 +25,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 // Filesystem fixtures use unique TMPDIR trees and never read the developer's ~/.claude.
@@ -71,7 +72,7 @@ class ClaudeVendorStoreProbeTest {
 
     @Test
     fun transcriptPresentIsResumableEligible() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val claudeDir = makeClaudeDir()
             val cwd = "/work/my.proj"
             val id = uuid('a')
@@ -89,7 +90,7 @@ class ClaudeVendorStoreProbeTest {
 
     @Test
     fun transcriptAbsentIsNotResumable() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val claudeDir = makeClaudeDir()
             val cwd = "/work/my.proj"
             val id = uuid('b')
@@ -106,7 +107,7 @@ class ClaudeVendorStoreProbeTest {
 
     @Test
     fun probeIsKeyedOnCwd_transcriptUnderADifferentCwdDoesNotMatch() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val claudeDir = makeClaudeDir()
             val id = uuid('c')
             placeTranscript(claudeDir, "/work/other", id)

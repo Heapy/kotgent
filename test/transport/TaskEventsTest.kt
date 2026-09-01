@@ -53,6 +53,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.client.plugins.websocket.WebSockets as ClientWebSockets
 import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
@@ -131,7 +132,7 @@ class TaskEventsTest {
 
     @Test
     fun aDaemonWithoutATaskStoreSendsNoTaskFramesAtAll() = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             withServer(tasks = null) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") {
                     assertEquals(
@@ -140,7 +141,7 @@ class TaskEventsTest {
                         "the socket itself works",
                     )
                     assertNull(
-                        withTimeoutOrNull(1_000) { nextTaskFrame() },
+                        withTimeoutOrNull(1.seconds) { nextTaskFrame() },
                         "no task frame is produced without a task store",
                     )
                 }
@@ -229,7 +230,7 @@ class TaskEventsTest {
 
     @Test
     fun aBurstEmittedWhileTheBaselineIsBeingReadIsDeliveredAfterIt() = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val tasks = FakeTaskStore()
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
@@ -255,7 +256,7 @@ class TaskEventsTest {
 
     @Test
     fun theCollectorIsAlreadyDrainingWhileTheBaselineIsBeingRead() = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val tasks = FakeTaskStore(updatesBuffer = 0)
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
@@ -263,7 +264,7 @@ class TaskEventsTest {
             withServer(tasks) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") {
                     tasks.baselineEntered.await()
-                    withTimeout(5_000) {
+                    withTimeout(5.seconds) {
                         tasks.addTask(TaskRef("local:1"), alpha, "banked", position = 1.0)
                     }
                     tasks.baselineGate.complete(Unit)
@@ -293,7 +294,7 @@ class TaskEventsTest {
         seed: (FakeTaskStore) -> Unit = {},
         block: suspend (Env) -> Unit,
     ) = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val tasks = FakeTaskStore()
             seed(tasks)
             tasks.baselineGate.complete(Unit)

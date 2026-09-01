@@ -32,6 +32,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import platform.posix.SIGINT
 import platform.posix.raise
 
@@ -41,7 +43,7 @@ class ShutdownSignalsTest {
 
     @Test
     fun ourHandlerReplacesKtorsAndLeavesTheServerRunning() = runBlocking {
-        withTimeout(40_000) {
+        withTimeout(40.seconds) {
             val store = SqliteEventStore.inMemory()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
@@ -85,7 +87,7 @@ class ShutdownSignalsTest {
                 raise(SIGINT)
 
                 assertEquals(SIGINT, pendingShutdownSignal(), "SIGINT must reach OUR handler")
-                delay(SETTLE_MILLIS)
+                delay(SETTLE_MILLIS.milliseconds)
                 assertEquals(
                     HttpStatusCode.OK,
                     sessionsStatus(),

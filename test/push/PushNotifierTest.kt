@@ -34,6 +34,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class PushNotifierTest {
 
@@ -50,7 +51,7 @@ class PushNotifierTest {
 
     @Test
     fun aTransitionIntoAttentionSendsExactlyOnceForThatSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
             env.awaitSeeded()
 
@@ -67,7 +68,7 @@ class PushNotifierTest {
 
     @Test
     fun anUpdateThatIsNotATransitionSendsNothing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
             env.awaitSeeded()
 
@@ -85,7 +86,7 @@ class PushNotifierTest {
 
     @Test
     fun aSessionAlreadyWaitingAtSeedTimeSendsNothing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(
                 sessions = listOf(meta("s1", SessionState.needs_approval), meta("s2", SessionState.running)),
             ).start(this)
@@ -103,7 +104,7 @@ class PushNotifierTest {
 
     @Test
     fun startReturnsOnlyAfterTheBaselineAndSubscriptionAreReady() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val seedStarted = CompletableDeferred<Unit>()
             val gate = CompletableDeferred<Unit>()
             val env = Env(
@@ -135,7 +136,7 @@ class PushNotifierTest {
 
     @Test
     fun cancellingStartJoinsAnIndependentWatcherBeforeCompensation() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val seedStarted = CompletableDeferred<Unit>()
             val watcherCancelling = CompletableDeferred<Unit>()
             val allowWatcherToFinish = CompletableDeferred<Unit>()
@@ -189,7 +190,7 @@ class PushNotifierTest {
 
     @Test
     fun theBaselineIsTakenExactlyOnce() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(sessions = listOf(meta("s1", SessionState.running))).start(this)
             env.awaitSeeded()
 
@@ -205,7 +206,7 @@ class PushNotifierTest {
 
     @Test
     fun theNotifierConsumesTheReliableSignalInsteadOfTheLossyUiSignal() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(
                 sessions = listOf(
                     meta("ui-only", SessionState.running),
@@ -228,7 +229,7 @@ class PushNotifierTest {
 
     @Test
     fun blockedDeliveryRetainsOnlyTheLatestWakeAndLaterEdgesStillDeliver() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val firstDeliveryStarted = CompletableDeferred<Unit>()
             val releaseFirstDelivery = CompletableDeferred<Unit>()
             var first = true
@@ -269,7 +270,7 @@ class PushNotifierTest {
 
     @Test
     fun aThrowingSenderDoesNotStopTheCollector() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(sessions = emptyList(), failSendFor = setOf(SessionId("s1"))).start(this)
             env.awaitSeeded()
 
@@ -288,7 +289,7 @@ class PushNotifierTest {
 
     @Test
     fun anUnreadableSessionListDoesNotStopTheCollector() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(failListSessions = true).start(this)
             env.store.awaitSubscriber()
 
@@ -305,7 +306,7 @@ class PushNotifierTest {
 
     @Test
     fun cancellingTheScopeEndsTheCollector() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val parent = Job()
             val env = Env(sessions = emptyList()).start(CoroutineScope(parent))
             env.awaitSeeded()

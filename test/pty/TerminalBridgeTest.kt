@@ -20,11 +20,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 class TerminalBridgeTest {
 
-    private suspend fun ReceiveChannel<ByteArray>.receiveText(timeoutMs: Long = 5_000): String =
-        withTimeout(timeoutMs) { receive().decodeToString() }
+    private suspend fun ReceiveChannel<ByteArray>.receiveText(timeout: Duration = 5.seconds): String =
+        withTimeout(timeout) { receive().decodeToString() }
 
     @Test
     fun productionAttachUsesAPortableTermInsteadOfInheritingTheDaemonTerminal() {
@@ -40,7 +42,7 @@ class TerminalBridgeTest {
         command: List<String> = listOf("tmux", "-L", "kotgent", "attach", "-t", "kt-x"),
         body: suspend (bridge: TerminalBridge, factory: FakePtyFactory) -> Unit,
     ) = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val factory = FakePtyFactory()
             val readerScope = CoroutineScope(coroutineContext + Job())
             val bridge = TerminalBridge(command, seed, factory, readerScope)
@@ -55,7 +57,7 @@ class TerminalBridgeTest {
 
     @Test
     fun theUpstreamEnvIsThreadedThroughToThePtyFactory() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val factory = FakePtyFactory()
             val readerScope = CoroutineScope(coroutineContext + Job())
             val env = mapOf("TERM" to "xterm-256color", "HOME" to "/home/x", "PATH" to "/usr/bin")
@@ -170,7 +172,7 @@ class TerminalBridgeTest {
             ByteArray(TerminalBridge.MAX_COALESCED_FRAME) { 'x'.code.toByte() }
         factory.current.emit(oversized)
 
-        val received = withTimeout(5_000) { sub.output.receive() }
+        val received = withTimeout(5.seconds) { sub.output.receive() }
         assertEquals(oversized.size, received.size, "an over-limit read is sent as it came")
         sub.close()
     }
@@ -229,7 +231,7 @@ class TerminalBridgeTest {
         up.beforeWrite = {
             writeEntered.complete(Unit)
             runBlocking {
-                withTimeout(5_000) { prepareReleasedWrite.await() }
+                withTimeout(5.seconds) { prepareReleasedWrite.await() }
                 writeSawPrepare.complete(Unit)
                 allowWriteReturn.await()
             }
@@ -242,7 +244,7 @@ class TerminalBridgeTest {
                 writeEntered.await()
                 val closing = async(start = CoroutineStart.UNDISPATCHED) { sub.close() }
                 try {
-                    withTimeout(5_000) { writeSawPrepare.await() }
+                    withTimeout(5.seconds) { writeSawPrepare.await() }
                     assertFalse(closing.isCompleted, "last-detach must wait while the upstream write owns its fd")
                     assertTrue(up.closePrepared, "teardown first asks the child/slave to unblock the write")
                     assertFalse(up.closed, "the in-flight write's raw fd must not be closed or reusable")
@@ -367,11 +369,11 @@ class TerminalBridgeTest {
 
         repeat(Broadcaster.SUBSCRIBER_BUFFER + 5) { up.emit(byteArrayOf((it and 0xff).toByte())) }
 
-        withTimeout(10_000) { while (bridge.subscriberCount() != 0) yield() }
+        withTimeout(10.seconds) { while (bridge.subscriberCount() != 0) yield() }
         assertEquals(0, bridge.subscriberCount(), "the stalled subscriber was disconnected on sustained overflow")
 
         assertFailsWith<ClosedReceiveChannelException> {
-            withTimeout(10_000) { while (true) stalled.output.receive() }
+            withTimeout(10.seconds) { while (true) stalled.output.receive() }
         }
 
         assertTrue(up.closed, "an overflow disconnect of the LAST subscriber closes the upstream itself")
@@ -382,11 +384,11 @@ class TerminalBridgeTest {
 
     @Test
     fun anOverflowDisconnectOfTheLastSubscriberLetsAReattachOpenAFreshUpstream() = bridgeTest { bridge, factory ->
-        val stalled = bridge.subscribe()
+        bridge.subscribe()
         val upstream1 = factory.current
 
         repeat(Broadcaster.SUBSCRIBER_BUFFER + 5) { upstream1.emit(byteArrayOf((it and 0xff).toByte())) }
-        withTimeout(10_000) { while (bridge.subscriberCount() != 0) yield() }
+        withTimeout(10.seconds) { while (bridge.subscriberCount() != 0) yield() }
         assertTrue(upstream1.closed, "the overflow disconnect tore the idle upstream down")
 
         val fresh = bridge.subscribe()
@@ -411,7 +413,7 @@ class TerminalBridgeTest {
         upstream1.eof()
 
         assertFailsWith<ClosedReceiveChannelException> {
-            withTimeout(5_000) { while (true) a.output.receive() }
+            withTimeout(5.seconds) { while (true) a.output.receive() }
         }
         assertEquals(0, bridge.subscriberCount(), "a natural EOF detaches the remaining subscribers")
 

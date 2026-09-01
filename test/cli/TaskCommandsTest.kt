@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class TaskCommandsTest {
 
@@ -984,7 +985,7 @@ class TaskCommandsTest {
     }
 
     private fun runCommandTest(block: suspend () -> Unit) = runBlocking {
-        withTimeout(30_000) { block() }
+        withTimeout(30.seconds) { block() }
     }
 
     private fun entry(

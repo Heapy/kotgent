@@ -62,6 +62,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class TaskWriteRoutesTest {
@@ -1328,7 +1329,7 @@ class TaskWriteRoutesTest {
     }
 
     private fun withTaskServer(block: suspend (Env) -> Unit) = runBlocking {
-        withTimeout(60_000) {
+        withTimeout(60.seconds) {
             val tokens = TokenHolder(token)
             val tasks = FakeTaskStore()
             val sessions = FakeEventStore()

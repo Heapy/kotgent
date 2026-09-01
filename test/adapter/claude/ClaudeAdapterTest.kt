@@ -22,6 +22,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class ClaudeAdapterTest {
 
@@ -46,7 +47,7 @@ class ClaudeAdapterTest {
         assertEquals("/tmp/kt-hooks.json", spec.command[setIdx + 1])
 
         assertNotNull(spec.preallocatedSessionId, "New surfaces the preallocated id")
-        assertEquals(uuid, spec.preallocatedSessionId!!.value, "argv --session-id matches preallocatedSessionId")
+        assertEquals(uuid, spec.preallocatedSessionId.value, "argv --session-id matches preallocatedSessionId")
     }
 
     @Test
@@ -137,7 +138,7 @@ class ClaudeAdapterTest {
 
     @Test
     fun theInjectedEventStreamIsExposedUnchanged() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val injected = listOf<AgentEvent>(AgentEvent.TurnStarted, AgentEvent.ToolCall("Bash"), AgentEvent.Exited(0))
             val adapter = ClaudeAdapter(
                 cwd = "/w",

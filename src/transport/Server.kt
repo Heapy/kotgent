@@ -42,6 +42,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlin.concurrent.Volatile
+import kotlin.time.Duration.Companion.milliseconds
 import platform.posix.F_OK
 import platform.posix.access
 
@@ -163,7 +164,7 @@ class KotgentServer(
         try {
             server.start(wait = false)
             runBlocking {
-                withTimeout(BIND_TIMEOUT_MS) { server.engine.resolvedConnectors() }
+                withTimeout(BIND_TIMEOUT_MS.milliseconds) { server.engine.resolvedConnectors() }
             }
         } catch (e: TimeoutCancellationException) {
             throw ServerBindException("timed out after ${BIND_TIMEOUT_MS}ms waiting for the bind", e)

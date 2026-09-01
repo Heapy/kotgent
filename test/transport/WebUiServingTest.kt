@@ -74,6 +74,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.seconds
 
 class WebUiServingTest {
 
@@ -708,24 +709,24 @@ class WebUiServingTest {
     }
 
     private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
-        withTimeout(40_000) {
+        withTimeout(40.seconds) {
             val store = NoopEventStore()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
-                FakeTmux(),
-                store,
-                PaneRegistry(),
-                AgentFactory { _, cwd ->
+                tmux = FakeTmux(),
+                store = store,
+                registry = PaneRegistry(),
+                agentFactory = { _, cwd ->
                     object : AgentAdapter {
                         override val events: Flow<AgentEvent> = emptyFlow()
                         override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
                             LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
                     }
                 },
-                ProviderIdCapture(store, idScope),
-                VendorStoreProbe { _, _, _ -> false },
-                VendorSessionLocator { _, _ -> null },
-                setOf("claude", "codex"),
+                idCapture = ProviderIdCapture(store = store, scope = idScope),
+                vendorProbe = { _, _, _ -> false },
+                sessionLocator = { _, _ -> null },
+                supportedAgentKinds = setOf("claude", "codex"),
                 now = { 1L },
             )
             val server = KotgentServer(

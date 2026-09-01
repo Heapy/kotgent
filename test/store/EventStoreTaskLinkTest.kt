@@ -14,7 +14,6 @@ import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.db.KotgentDatabase
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -24,6 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class EventStoreTaskLinkTest {
 
@@ -43,7 +43,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun linkingATaskIsATargetedWriteThatBumpsTheRevisionAndEmitsTheNewRef() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link01")
             store.upsertSession(meta(sid))
@@ -80,7 +80,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aDerivedWriteCannotRewindNewerSessionActivity() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link-race")
             val provider = ProviderSessionId("provider-race")
@@ -120,7 +120,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aNullRefClearsTheLinkAndTheClearIsBroadcast() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link02")
             store.upsertSession(meta(sid))
@@ -142,7 +142,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun clearingTheRefTheRowStillHoldsAppliesAndIsBroadcast() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link0c")
             store.upsertSession(meta(sid))
@@ -168,7 +168,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aStaleClearCannotEraseANewerLinkToADifferentTask() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link0d")
             store.upsertSession(meta(sid))
@@ -197,7 +197,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aConditionalClearForASessionThatDoesNotExistIsFalse() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             assertFalse(
                 store.clearTaskRefIf(SessionId("ghost1"), TaskRef("local:1")),
@@ -208,7 +208,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aConditionalClearOnASessionHoldingNoLinkIsFalse() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link0e")
             store.upsertSession(meta(sid))
@@ -223,7 +223,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun pointingASessionAtAnotherTaskOverwritesTheLinkWithNoErrorCase() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link03")
             store.upsertSession(meta(sid))
@@ -241,7 +241,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aFullRowUpsertCarryingNullLinkColumnsNeverClearsThem() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("link04")
             store.upsertSession(meta(sid))
@@ -264,7 +264,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun theProjectIsATargetedWriteWithTheSameEmissionContract() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("proj01")
             store.upsertSession(meta(sid))
@@ -299,7 +299,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aProjectIdIsStoredLowerCasedAndAnUnreadableOneDegradesToNoProject() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteEventStore.using(driver, now = { 1L })
             val sid = SessionId("proj02")
@@ -319,7 +319,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun anUnreadableTaskRefDegradesToNoTaskInsteadOfBreakingEverySessionRead() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteEventStore.using(driver, now = { 1L })
             val healthy = SessionId("ref-ok")
@@ -351,7 +351,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun everySessionLinkedToATaskIsReturnedOldestFirst() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val younger = SessionId("hold-b")
             val older = SessionId("hold-a")
@@ -385,7 +385,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun aLinkWriteForASessionThatDoesNotExistIsASilentNoOp() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val missing = SessionId("ghost")
 
@@ -405,7 +405,7 @@ class EventStoreTaskLinkTest {
 
     @Test
     fun theInitMigrationAddsTheTaskLinkColumnsToAPreExistingTable() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(preTaskLinkSchema)
             val store = SqliteEventStore.using(driver, now = { 1L })
             val sid = SessionId("mig-task")

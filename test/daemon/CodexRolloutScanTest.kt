@@ -9,11 +9,11 @@ import io.kotgent.core.SessionState
 import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.S_IRUSR
@@ -33,6 +33,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 // Filesystem fixtures use unique TMPDIR trees and never read the developer's ~/.codex.
@@ -75,8 +76,8 @@ class CodexRolloutScanTest {
     @Test
     fun cwdIsReadOutOfTheSessionMetaLine() {
         val line = """{"timestamp":"2026-07-23T08:02:55.942Z","type":"session_meta","payload":""" +
-            """{"session_id":"019f8ea0-2548-7871-9835-947ff7623ccf","cwd":"/Users/yoda/dev/pet/kotgent",""" +
-            """"originator":"codex_exec"}}"""
+                """{"session_id":"019f8ea0-2548-7871-9835-947ff7623ccf","cwd":"/Users/yoda/dev/pet/kotgent",""" +
+                """"originator":"codex_exec"}}"""
         assertEquals("/Users/yoda/dev/pet/kotgent", rolloutCwd(line))
     }
 
@@ -98,7 +99,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun aPresentRolloutIsResumable() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val codexDir = makeCodexDir()
             val id = uuid('a')
             placeRollout(codexDir, "2026", "07", "23", id, cwd = "/work/repo")
@@ -120,7 +121,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun theProbeIgnoresCwdBecauseCodexNamesRolloutsByIdAlone() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val codexDir = makeCodexDir()
             val id = uuid('b')
             placeRollout(codexDir, "2026", "07", "23", id, cwd = "/work/one")
@@ -132,7 +133,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun aMissingRolloutIsNotResumable() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val codexDir = makeCodexDir()
             placeRollout(codexDir, "2026", "07", "23", uuid('c'), cwd = "/work/repo")
 
@@ -153,7 +154,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun anAbsentCodexHomeDegradesToNotResumable() = runBlocking {
-        withTimeout(10_000) {
+        withTimeout(10.seconds) {
             val probe = codexVendorStoreProbe("/nonexistent/kotgent-test-codex-home")
             assertFalse(probe.hasTranscript("codex", "/work", uuid('e')), "an unreadable home answers false")
         }
@@ -203,7 +204,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun cwdOfReadsTheRecordedCwdOutOfTheSessionMeta() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val codexDir = makeCodexDir()
             val id = uuid('a')
             placeRollout(codexDir, "2026", "07", "23", id, cwd = "/work/mine")
@@ -259,7 +260,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun captureCodexModelOnceReReadsTheProviderIdTheBackgroundBindLandedMidPoll() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val codexDir = makeCodexDir()
             val mine = uuid('a')
             val neighbour = uuid('b')
@@ -269,8 +270,7 @@ class CodexRolloutScanTest {
             val launchMeta = SessionMeta(
                 id = SessionId("cap00001"),
                 name = "kt-cap00001", tags = emptyList(), agent = CODEX_AGENT_KIND,
-                providerSessionId = null,
-                cwd = "/work/shared", tmuxSession = "kt-cap00001", paneId = null,
+                cwd = "/work/shared", tmuxSession = "kt-cap00001",
                 state = SessionState.running, stateSource = EventSource.system,
                 createdAt = 0L, updatedAt = 0L,
             )
@@ -289,7 +289,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun captureCodexModelOncePersistsNothingWhileTheIdIsUnknown() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val codexDir = makeCodexDir()
             val mine = uuid('a')
             val neighbour = uuid('b')
@@ -299,8 +299,7 @@ class CodexRolloutScanTest {
             val launchMeta = SessionMeta(
                 id = SessionId("cap00003"),
                 name = "kt-cap00003", tags = emptyList(), agent = CODEX_AGENT_KIND,
-                providerSessionId = null,
-                cwd = "/work/shared", tmuxSession = "kt-cap00003", paneId = null,
+                cwd = "/work/shared", tmuxSession = "kt-cap00003",
                 state = SessionState.running, stateSource = EventSource.system,
                 createdAt = 0L, updatedAt = 0L,
             )
@@ -324,15 +323,14 @@ class CodexRolloutScanTest {
 
     @Test
     fun captureCodexModelOnceNeverPersistsAGuessEvenWhenTheIdNeverBinds() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val codexDir = makeCodexDir()
             placeRolloutWithModel(codexDir, "2026", "07", "24", uuid('b'), cwd = "/work/solo", model = "gpt-6")
             val store = SqliteEventStore.inMemory(now = { 42L })
             val launchMeta = SessionMeta(
                 id = SessionId("cap00004"),
                 name = "kt-cap00004", tags = emptyList(), agent = CODEX_AGENT_KIND,
-                providerSessionId = null,
-                cwd = "/work/solo", tmuxSession = "kt-cap00004", paneId = null,
+                cwd = "/work/solo", tmuxSession = "kt-cap00004",
                 state = SessionState.running, stateSource = EventSource.system,
                 createdAt = 0L, updatedAt = 0L,
             )
@@ -349,7 +347,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun aHookRebindAfterAScanBoundNeighbourCorrectsThePersistedModel() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val codexDir = makeCodexDir()
             val mine = uuid('a')
             val neighbour = uuid('b')
@@ -360,8 +358,7 @@ class CodexRolloutScanTest {
             val sid = SessionId("rbnd0001")
             val launchMeta = SessionMeta(
                 id = sid, name = "kt-rbnd0001", agent = CODEX_AGENT_KIND,
-                providerSessionId = null,
-                cwd = "/work/shared", tmuxSession = "kt-rbnd0001", paneId = null,
+                cwd = "/work/shared", tmuxSession = "kt-rbnd0001",
                 state = SessionState.running, stateSource = EventSource.system,
                 createdAt = 0L, updatedAt = 0L,
             )
@@ -369,11 +366,14 @@ class CodexRolloutScanTest {
             val idCapture = ProviderIdCapture(store, this)
             val recapture = CompletableDeferred<SessionMeta>()
             val mgr = SessionManager(
-                FakeTmux(), store, PaneRegistry(),
-                AgentFactory { _, _ -> throw AssertionError("the chain never launches an adapter") },
-                idCapture,
-                VendorStoreProbe { _, _, _ -> false }, VendorSessionLocator { _, _ -> null },
-                setOf("claude", "codex"),
+                tmux = FakeTmux(),
+                store = store,
+                registry = PaneRegistry(),
+                agentFactory = { _, _ -> throw AssertionError("the chain never launches an adapter") },
+                idCapture = idCapture,
+                vendorProbe = { _, _, _ -> false },
+                sessionLocator = { _, _ -> null },
+                supportedAgentKinds = setOf("claude", "codex"),
                 captureModelInBackground = { m -> recapture.complete(m) },
                 now = { 43L },
             )
@@ -396,7 +396,7 @@ class CodexRolloutScanTest {
 
     @Test
     fun captureCodexModelOnceCannotRacePastTheRebindClearWithTheDisplacedIdsModel() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val codexDir = makeCodexDir()
             val mine = uuid('a')
             val neighbour = uuid('b')
@@ -406,8 +406,7 @@ class CodexRolloutScanTest {
             val sid = SessionId("race0001")
             val launchMeta = SessionMeta(
                 id = sid, name = "kt-race0001", agent = CODEX_AGENT_KIND,
-                providerSessionId = null,
-                cwd = "/work/shared", tmuxSession = "kt-race0001", paneId = null,
+                cwd = "/work/shared", tmuxSession = "kt-race0001",
                 state = SessionState.running, stateSource = EventSource.system,
                 createdAt = 0L, updatedAt = 0L,
             )
@@ -469,7 +468,7 @@ class CodexRolloutScanTest {
         writeFile(
             file,
             """{"timestamp":"$year-$month-${day}T10:00:00.000Z","type":"session_meta","payload":""" +
-                """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
+                    """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
         )
         files += file
     }
@@ -481,7 +480,7 @@ class CodexRolloutScanTest {
         writeFile(
             file,
             """{"timestamp":"2026-07-23T10:00:00.000Z","type":"session_meta","payload":""" +
-                """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
+                    """{"session_id":"${id.value}","cwd":"$cwd","cli_version":"0.145.0"}}""" + "\n",
         )
         files += file
     }
@@ -505,9 +504,9 @@ class CodexRolloutScanTest {
         val padding = "x".repeat(20_000)
         val file = "$path/rollout-$year-$month-${day}T10-00-00-${id.value}.jsonl"
         val meta = """{"timestamp":"$year-$month-${day}T10:00:00.000Z","type":"session_meta","payload":""" +
-            """{"session_id":"${id.value}","cwd":"$cwd","model_provider":"openai","base_instructions":"$padding"}}"""
+                """{"session_id":"${id.value}","cwd":"$cwd","model_provider":"openai","base_instructions":"$padding"}}"""
         val turn = """{"timestamp":"$year-$month-${day}T10:00:05.000Z","type":"turn_context","payload":""" +
-            """{"cwd":"$cwd","model":"$model"}}"""
+                """{"cwd":"$cwd","model":"$model"}}"""
         writeFile(file, meta + "\n" + turn + "\n")
         files += file
     }

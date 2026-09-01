@@ -28,6 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class VapidKeyTest {
@@ -65,7 +66,7 @@ class VapidKeyTest {
 
     @Test
     fun generatesA0600KeyOnceAndReusesIt() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             if (!opensslAvailable()) return@withTimeout
             val key = VapidKey(keyPath = keyPath)
 
@@ -93,7 +94,7 @@ class VapidKeyTest {
 
     @Test
     fun publicKeyBase64UrlEncodesThePoint() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             if (!opensslAvailable()) return@withTimeout
             val key = VapidKey(keyPath = keyPath)
 
@@ -110,7 +111,7 @@ class VapidKeyTest {
 
     @Test
     fun ensureKeyFileCreatesThePemAndIsIdempotent() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             if (!opensslAvailable()) return@withTimeout
             assertNull(readFileBytesOrNull(keyPath), "precondition: no key file yet")
 
@@ -125,7 +126,7 @@ class VapidKeyTest {
 
     @Test
     fun anExistingPemIsReHardenedTo0600BeforeUse() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             writeFile(
                 keyPath,
                 "-----BEGIN EC PRIVATE KEY-----\nexisting\n-----END EC PRIVATE KEY-----\n",
@@ -141,7 +142,7 @@ class VapidKeyTest {
 
     @Test
     fun anExistingPemReportsWhyItCannotBeHardened() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             writeFile(
                 keyPath,
                 "-----BEGIN EC PRIVATE KEY-----\nexisting\n-----END EC PRIVATE KEY-----\n",
@@ -165,7 +166,7 @@ class VapidKeyTest {
 
     @Test
     fun anEmptyPemFailsLoudlyInsteadOfBeingSilentlyReplaced() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             writeFile(keyPath, "")
             val failure = assertFailsWith<VapidKeyException> {
                 VapidKey(keyPath = keyPath).publicPoint()
@@ -177,7 +178,7 @@ class VapidKeyTest {
 
     @Test
     fun aNonPemFileFailsLoudly() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             writeFile(keyPath, "not a key at all\n")
             val failure = assertFailsWith<VapidKeyException> {
                 VapidKey(keyPath = keyPath).ensureKeyFile()
@@ -191,7 +192,7 @@ class VapidKeyTest {
 
     @Test
     fun aCorruptPemSurfacesOpensslsOwnDiagnostic() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             if (!opensslAvailable()) return@withTimeout
             writeFile(keyPath, "-----BEGIN EC PRIVATE KEY-----\nnot base64 at all\n-----END EC PRIVATE KEY-----\n")
 
@@ -208,7 +209,7 @@ class VapidKeyTest {
 
     @Test
     fun aBogusOpensslPathFailsWithoutLeavingAKeyBehind() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val key = VapidKey(keyPath = keyPath, opensslPath = "/nonexistent/bin/openssl")
 
             val failure = assertFailsWith<VapidKeyException> { key.ensureKeyFile() }
@@ -222,7 +223,7 @@ class VapidKeyTest {
 
     @Test
     fun aNonZeroOpensslIsReportedWithItsStderr() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val key = VapidKey(
                 keyPath = keyPath,
                 runner = runnerReturning(
@@ -239,7 +240,7 @@ class VapidKeyTest {
 
     @Test
     fun anOpensslThatPrintsNothingIsNotPersistedAsAKey() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val key = VapidKey(
                 keyPath = keyPath,
                 runner = runnerReturning(ProcessResult(0, ByteArray(0), ByteArray(0))),
@@ -251,7 +252,7 @@ class VapidKeyTest {
 
     @Test
     fun aRunnerLevelFailureBecomesAVapidKeyException() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val key = VapidKey(keyPath = keyPath, runner = { error("popen failed") })
             val failure = assertFailsWith<VapidKeyException> { key.ensureKeyFile() }
             assertTrue(failure.message!!.contains("popen failed"), "the cause is preserved: ${failure.message}")

@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class PushSenderTest {
 
@@ -27,7 +28,7 @@ class PushSenderTest {
 
     @Test
     fun aSuccessfulSendReachesEverySubscriptionAndKeepsEveryRow() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(statuses = mapOf(apple to 201, google to 200))
             env.store.seed(sub(apple), sub(google))
 
@@ -40,7 +41,7 @@ class PushSenderTest {
 
     @Test
     fun noSubscriptionsMeansNoRequestAndNoVapidKeyResolution() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             var keyCalls = 0
             val env = Env(publicKey = { keyCalls++; publicKey })
 
@@ -54,7 +55,7 @@ class PushSenderTest {
 
     @Test
     fun theOutgoingHeadersAreExactlyWhatRfc8030AndRfc8292Need() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(statuses = mapOf(apple to 201))
             env.store.seed(sub(apple))
             env.sender.send(session)
@@ -77,7 +78,7 @@ class PushSenderTest {
 
     @Test
     fun theTopicIsAShortUrlSafeDigestThatDiffersPerSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             assertEquals(sessionTopic, pushTopic(session), "pinned against an independent sha256/base64url")
             assertEquals(PUSH_TOPIC_LENGTH, pushTopic(session).length, "far under the RFC 8030 §5.4 cap of 32")
             assertNotEquals(
@@ -95,7 +96,7 @@ class PushSenderTest {
 
     @Test
     fun everyEndpointGetsItsOwnTokenAndTheKeyIsResolvedOnce() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             var keyCalls = 0
             val env = Env(
                 statuses = mapOf(apple to 201, google to 201),
@@ -122,7 +123,7 @@ class PushSenderTest {
 
     @Test
     fun aGoneSubscriptionIsPrunedAndTheRestStillGetTheirMessage() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(statuses = mapOf(apple to 410, google to 201))
             env.store.seed(sub(apple), sub(google))
 
@@ -139,7 +140,7 @@ class PushSenderTest {
 
     @Test
     fun aNotFoundSubscriptionIsPrunedToo() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(statuses = mapOf(apple to 404))
             env.store.seed(sub(apple))
 
@@ -150,7 +151,7 @@ class PushSenderTest {
 
     @Test
     fun aFailedPruneIsReportedAndDoesNotAbortTheFanOut() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = FakePushStore(failRemoveFor = setOf(apple))
             val env = Env(statuses = mapOf(apple to 410, google to 201), store = store)
             env.store.seed(sub(apple), sub(google))
@@ -176,7 +177,7 @@ class PushSenderTest {
 
     @Test
     fun aRateLimitOrServerErrorKeepsTheRowAndIsNotRetried() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(statuses = mapOf(apple to 429, google to 503))
             env.store.seed(sub(apple), sub(google))
 
@@ -194,7 +195,7 @@ class PushSenderTest {
 
     @Test
     fun aThrowingTransportIsSwallowedAndTheOtherSubscriptionsAreStillAttempted() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(statuses = mapOf(google to 201), throwFor = setOf(apple))
             env.store.seed(sub(apple), sub(google))
 
@@ -207,7 +208,7 @@ class PushSenderTest {
 
     @Test
     fun aFailingVapidKeyDisablesThisSendWithoutTouchingAnything() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(publicKey = { throw VapidKeyException("no openssl at /usr/bin/openssl") })
             env.store.seed(sub(apple))
 
@@ -223,7 +224,7 @@ class PushSenderTest {
 
     @Test
     fun aFailingTokenSkipsThatServiceAndKeepsGoing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(
                 statuses = mapOf(apple to 201, google to 201),
                 failTokenFor = setOf(google),
@@ -239,7 +240,7 @@ class PushSenderTest {
 
     @Test
     fun anUnreadableStoreDegradesToSilence() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val env = Env(store = FakePushStore(failList = true))
 
             env.sender.send(session)

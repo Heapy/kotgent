@@ -28,12 +28,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class ServerLifecycleTest {
 
     @Test
     fun stoppedServerCanImmediatelyRebindItsPortAfterServingAClient() = runBlocking {
-        withTimeout(40_000) {
+        withTimeout(40.seconds) {
             val fixture = Fixture()
             val firstClient = HttpClient(CIO)
             val secondClient = HttpClient(CIO)
@@ -61,7 +62,7 @@ class ServerLifecycleTest {
 
     @Test
     fun occupiedPortIsReportedAsServerBindException() = runBlocking {
-        withTimeout(40_000) {
+        withTimeout(40.seconds) {
             val fixture = Fixture()
             var owner: KotgentServer? = null
             var contender: KotgentServer? = null

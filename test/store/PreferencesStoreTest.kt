@@ -14,12 +14,13 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 class PreferencesStoreTest {
 
     @Test
     fun aFreshStoreStartsWithTheSeededDefaults() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             assertEquals(
                 UiPreferences(basePath = "", groupingLevel = 1, revision = 0),
                 SqliteEventStore.inMemory().preferences.value,
@@ -29,7 +30,7 @@ class PreferencesStoreTest {
 
     @Test
     fun saveThenReadRoundTripsEveryField() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory()
 
             val saved = store.savePreferences("/Users/me/dev", 3)
@@ -41,7 +42,7 @@ class PreferencesStoreTest {
 
     @Test
     fun everyAcceptedSaveIncrementsTheRevisionEvenWhenValuesMatch() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory()
 
             assertEquals(1L, store.savePreferences("/work", 2).revision)
@@ -52,7 +53,7 @@ class PreferencesStoreTest {
 
     @Test
     fun preferencesSurviveAStoreRestart() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val first = SqliteEventStore.using(driver)
             val saved = first.savePreferences("/persisted", 4)
@@ -66,7 +67,7 @@ class PreferencesStoreTest {
 
     @Test
     fun theStateFlowPublishesAnAcceptedSave() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory()
             val next = async(start = CoroutineStart.UNDISPATCHED) {
                 store.preferences.drop(1).first()
@@ -80,7 +81,7 @@ class PreferencesStoreTest {
 
     @Test
     fun initCreatesSeedsAndReopensTheTableOnALegacyDatabase() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(prePreferencesSchema)
             val first = SqliteEventStore.using(driver)
             assertEquals(

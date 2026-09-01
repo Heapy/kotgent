@@ -135,7 +135,7 @@ object TaskCommands {
         )
     }
 
-    fun move(ref: String, target: MoveTarget, session: String?): Int = withTaskApi { api ->
+    fun move(ref: String, target: MoveTarget): Int = withTaskApi { api ->
         runTaskMoveCommand(
             ref = ref,
             target = target,
@@ -145,7 +145,7 @@ object TaskCommands {
         )
     }
 
-    fun dep(ref: String, on: String, remove: Boolean, session: String?): Int = withTaskApi { api ->
+    fun dep(ref: String, on: String, remove: Boolean): Int = withTaskApi { api ->
         runTaskDepCommand(
             ref = ref,
             on = on,
@@ -156,7 +156,7 @@ object TaskCommands {
         )
     }
 
-    fun delete(ref: String, session: String?): Int = withTaskApi { api ->
+    fun delete(ref: String): Int = withTaskApi { api ->
         runTaskDeleteCommand(
             ref = ref,
             deleteTask = { r -> api.deleteTask(r) },

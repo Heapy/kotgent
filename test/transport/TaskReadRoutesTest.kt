@@ -54,6 +54,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class TaskReadRoutesTest {
@@ -530,7 +531,7 @@ class TaskReadRoutesTest {
         sessions: Map<SessionId, SessionMeta> = sessionRows(),
         block: suspend (Env) -> Unit,
     ) = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val tokens = TokenHolder(token)
             val tasks = FakeTaskStore(
                 entries = backlog(),

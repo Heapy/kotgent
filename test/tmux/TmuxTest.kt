@@ -10,6 +10,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 class TmuxTest {
 
@@ -36,7 +38,7 @@ class TmuxTest {
             val r = ProcessRunner.run(tmuxCommand(tmux.tmuxPath, tmux.socket, listOf("has-session", "-t", "kt-none")))
             last = r
             if ("no server running" in r.stderr) return
-            delay(50)
+            delay(50.milliseconds)
         }
         error("tmux server '${tmux.socket}' did not exit after 40 probes; last result: $last")
     }
@@ -59,7 +61,7 @@ class TmuxTest {
         repeat(20) {
             last = tmux.capturePane(id)
             if (needle in last) return last
-            delay(150)
+            delay(150.milliseconds)
         }
         return last
     }
@@ -67,7 +69,7 @@ class TmuxTest {
     @Test
     fun newSessionReturnsAPaneId() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.ensureServer()
             val pane = tmux.newSession(id = "new1", cwd = "/tmp", cmd = "cat", cols = 100, rows = 40)
             assertTrue(Regex("^%\\d+$").matches(pane.value), "pane id should look like %<n>, was <${pane.value}>")
@@ -78,7 +80,7 @@ class TmuxTest {
     @Test
     fun listPanesParse() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val paneA = tmux.newSession(id = "la", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             val paneB = tmux.newSession(id = "lb", cwd = "/tmp", cmd = "cat", cols = 90, rows = 30)
 
@@ -98,7 +100,7 @@ class TmuxTest {
     @Test
     fun capturePaneReturnsRenderedContent() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "cap", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             tmux.sendKeys("cap", "KOTGENT-MARKER\n".encodeToByteArray())
             val out = captureUntil("cap", "KOTGENT-MARKER")
@@ -109,7 +111,7 @@ class TmuxTest {
     @Test
     fun sendKeysReachesTheProcessEvenFromCopyMode() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "cm1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(rawOnTestSocket("copy-mode", "-t", "kt-cm1").isSuccess, "could not enter copy-mode")
             assertEquals("1", paneFormat("kt-cm1", "#{pane_in_mode}"), "the pane must be in copy-mode first")
@@ -125,7 +127,7 @@ class TmuxTest {
     @Test
     fun sendKeysFailsLoudlyWhenTheCopyModeCancelIsDefeated() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val dir = makeTempDir()
             try {
                 tmux.newSession(id = "cm2", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
@@ -140,7 +142,7 @@ class TmuxTest {
                     "copy-mode" in thrown.message.orEmpty(),
                     "the failure must name copy-mode as the reason, was <${thrown.message}>",
                 )
-                delay(300)
+                delay(300.milliseconds)
                 assertFalse(
                     "COPYMODE-LOST" in tmux.capturePane("cm2"),
                     "the positive control: with the cancel defeated the bytes really are swallowed",
@@ -154,7 +156,7 @@ class TmuxTest {
     @Test
     fun leaveCopyModeReportsWhetherThePaneIsClear() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             assertTrue(tmux.leaveCopyMode("never-existed"), "no server at all: nothing to refuse over")
 
             tmux.newSession(id = "lcm", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
@@ -272,7 +274,7 @@ class TmuxTest {
     @Test
     fun killSessionRemovesTheSession() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "kill1", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(tmux.listPanes().any { it.session == "kt-kill1" }, "session exists before kill")
             assertTrue(tmux.killSession("kill1"), "killSession returns true when it removed a session")
@@ -283,7 +285,7 @@ class TmuxTest {
     @Test
     fun sessionClosedHookReportsAnOrdinaryAndTheLastSession() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val dir = makeTempDir()
             try {
                 val log = "$dir/closed-sessions"
@@ -322,7 +324,7 @@ class TmuxTest {
     @Test
     fun killingANonexistentSessionIsGraceful() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             assertFalse(tmux.killSession("never-existed"), "killing a nonexistent session returns false")
             tmux.newSession(id = "other", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertFalse(tmux.killSession("still-nope"), "unknown target on a live server returns false")
@@ -332,7 +334,7 @@ class TmuxTest {
     @Test
     fun doubleKillIsGraceful() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "dbl", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(tmux.killSession("dbl"), "first kill removes the session")
             assertFalse(tmux.killSession("dbl"), "second kill of the same session returns false, not an error")
@@ -342,7 +344,7 @@ class TmuxTest {
     @Test
     fun listPanesOnAFreshSocketIsEmptyNotAnError() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             assertEquals(emptyList(), tmux.listPanes())
         }
     }
@@ -350,7 +352,7 @@ class TmuxTest {
     @Test
     fun theUserConfigLeaksWithoutIsolationAndIsSuppressedByIt() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val home = makeFakeHome()
             try {
                 assertEquals(
@@ -375,7 +377,7 @@ class TmuxTest {
     @Test
     fun productionNewSessionCarriesTheConfigIsolation() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val home = makeFakeHome()
             try {
                 assertEquals(
@@ -404,7 +406,7 @@ class TmuxTest {
     @Test
     fun newSessionForcesEveryServerOption() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "opt1", cwd = "/tmp", cmd = "cat", cols = 100, rows = 40)
             assertEquals(
                 emptyList(),
@@ -417,7 +419,7 @@ class TmuxTest {
     @Test
     fun aSecondSessionReAppliesTheOptions() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "opt3a", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             assertTrue(rawOnTestSocket("set-option", "-g", "history-limit", "1").isSuccess, "could not perturb")
             assertTrue(
@@ -434,7 +436,7 @@ class TmuxTest {
     @Test
     fun theForcedOptionsApplyBeforeThePaneExists() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val custom = Tmux(
                 socket = tmux.socket,
                 serverOptions = TMUX_SERVER_OPTIONS.map {
@@ -453,7 +455,7 @@ class TmuxTest {
     @Test
     fun aRejectedOptionFailsSessionCreationLoudly() = runBlocking {
         if (!tmuxAvailable()) return@runBlocking skipped()
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             tmux.newSession(id = "rejctl", cwd = "/tmp", cmd = "cat", cols = 80, rows = 24)
             val probe = rawOnTestSocket("set-option", "-g", "kotgent-no-such-option", "on")
             assertFalse(probe.isSuccess, "the probe option must actually be rejected by this tmux build")
@@ -506,7 +508,7 @@ class TmuxTest {
                 emptyList()
             }
             if (last.size >= count) return last
-            delay(50)
+            delay(50.milliseconds)
         }
         return last
     }

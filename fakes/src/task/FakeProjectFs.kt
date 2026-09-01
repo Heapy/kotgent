@@ -43,13 +43,6 @@ class FakeProjectFs(
         }
     }
 
-    fun deleteFile(path: String): Boolean {
-        val normalized = normalize(path)
-        if (normalized !in tree.load().files) return false
-        mutate { it.copy(files = it.files - normalized) }
-        return true
-    }
-
     override fun isDirectory(path: String): Boolean = normalize(path) in tree.load().directories
 
     override fun readFile(path: String, maxBytes: Int): String? {

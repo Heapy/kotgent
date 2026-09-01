@@ -20,7 +20,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -33,6 +32,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class EventStoreTest {
 
@@ -49,7 +49,7 @@ class EventStoreTest {
 
     @Test
     fun appendThenReadRoundTrips() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 42L })
             val sid = SessionId("round-trip")
             store.upsertSession(meta(sid))
@@ -79,7 +79,7 @@ class EventStoreTest {
 
     @Test
     fun seqIsMonotonicPerSessionAndIndependentAcrossSessions() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val a = SessionId("sess-a")
             val b = SessionId("sess-b")
@@ -101,7 +101,7 @@ class EventStoreTest {
 
     @Test
     fun updateSessionStateDoesNotClobberLastSeqOrProviderId() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 7L })
             val sid = SessionId("ctl")
             store.upsertSession(meta(sid))
@@ -124,7 +124,7 @@ class EventStoreTest {
 
     @Test
     fun aStrayAppendDoesNotResurrectAControlStoppedSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("stopres")
             store.upsertSession(meta(sid))
@@ -146,7 +146,7 @@ class EventStoreTest {
 
     @Test
     fun appendIsAtomicWithTheSessionCacheUpdate() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             var clock = 1_000L
             val store = SqliteEventStore.inMemory(now = { clock })
             val sid = SessionId("atomic")
@@ -186,7 +186,7 @@ class EventStoreTest {
 
     @Test
     fun replayFromTheStoreReconstructsTheProjectionAcrossARestart() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store1 = SqliteEventStore.using(driver, now = { 7L })
             val sid = SessionId("restart")
@@ -214,7 +214,7 @@ class EventStoreTest {
 
     @Test
     fun replaysAnApprovalResolvedWithoutAnObservedDecision() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteEventStore.using(driver, now = { 7L })
             val sid = SessionId("unknown-approval-decision")
@@ -236,7 +236,7 @@ class EventStoreTest {
 
     @Test
     fun subscribeLiveStreamsNewlyAppendedEvents() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("subscribe")
             store.upsertSession(meta(sid))
@@ -246,23 +246,23 @@ class EventStoreTest {
             val job = launch {
                 received.complete(store.subscribe(sid, Seq(2)).take(2).toList())
             }
-            withTimeout(10_000) { while (store.activeSubscribers(sid) == 0) yield() }
+            withTimeout(10.seconds) { while (store.activeSubscribers(sid) == 0) yield() }
 
             store.append(sid, AgentEvent.ToolCall("a"), EventSource.hook)
             store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
 
-            val got = withTimeout(10_000) { received.await() }
+            val got = withTimeout(10.seconds) { received.await() }
             assertEquals(listOf(2L, 3L), got.map { it.seq.value })
             assertTrue(got[0].event is AgentEvent.ToolCall)
             assertTrue(got[1].event is AgentEvent.TurnCompleted)
             job.join()
-            withTimeout(10_000) { while (store.activeSubscribers(sid) != 0) yield() }
+            withTimeout(10.seconds) { while (store.activeSubscribers(sid) != 0) yield() }
         }
     }
 
     @Test
     fun subscribeAlsoReplaysAlreadyStoredEventsFromTheCursor() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("snapshot")
             store.upsertSession(meta(sid))
@@ -270,21 +270,21 @@ class EventStoreTest {
             store.append(sid, AgentEvent.ToolCall("a"), EventSource.hook)
             store.append(sid, AgentEvent.TurnCompleted, EventSource.hook)
 
-            val got = withTimeout(10_000) { store.subscribe(sid, Seq(2)).take(2).toList() }
+            val got = withTimeout(10.seconds) { store.subscribe(sid, Seq(2)).take(2).toList() }
             assertEquals(listOf(2L, 3L), got.map { it.seq.value })
         }
     }
 
     @Test
     fun subscribeWithAStaleCursorFailsHard() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("stale")
             store.upsertSession(meta(sid))
             store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
 
             val ex = assertFailsWith<StaleCursorException> {
-                withTimeout(10_000) { store.subscribe(sid, Seq(3)).toList() }
+                withTimeout(10.seconds) { store.subscribe(sid, Seq(3)).toList() }
             }
             assertEquals(sid, ex.sessionId)
             assertEquals(Seq(3), ex.requested)
@@ -294,7 +294,7 @@ class EventStoreTest {
 
     @Test
     fun concurrentAppendsAreSerializedIntoAContiguousLog() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("concurrent")
             store.upsertSession(meta(sid))
@@ -311,7 +311,7 @@ class EventStoreTest {
 
     @Test
     fun concurrentReadersObserveOnlyCommittedContiguousState() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 0L })
             val sid = SessionId("read-write")
             store.upsertSession(meta(sid))
@@ -336,7 +336,7 @@ class EventStoreTest {
 
     @Test
     fun reliableSessionUpdatesPreserveCommittedOrderAndBackpressureWriters() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("reliable-updates")
 
@@ -384,7 +384,7 @@ class EventStoreTest {
 
     @Test
     fun archivedRoundTripsThroughUpsertAndGet() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("arch01")
             store.upsertSession(meta(sid))
@@ -400,7 +400,7 @@ class EventStoreTest {
 
     @Test
     fun setArchivedFlipsTheFlagAndEmitsAnUpdate() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("arch02")
             store.upsertSession(meta(sid))
@@ -422,7 +422,7 @@ class EventStoreTest {
 
     @Test
     fun theInitMigrationAddsArchivedToAPreExistingTable() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(preArchivedSchema)
             val store = SqliteEventStore.using(driver, now = { 1L })
             val sid = SessionId("mig01")
@@ -439,7 +439,7 @@ class EventStoreTest {
 
     @Test
     fun theRevisionIsMigratedStampedOnEveryWriteAndSurvivesReopen() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(preArchivedSchema)
             val store = SqliteEventStore.using(driver, now = { 1L })
             val sid = SessionId("rev01")
@@ -465,7 +465,7 @@ class EventStoreTest {
 
     @Test
     fun setModelForProviderWritesOnlyWhileTheRowStillHoldsThatId() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("model01")
             val scanned = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -497,7 +497,7 @@ class EventStoreTest {
 
     @Test
     fun markReadAdvancesTheCursorAndLeavesEverythingElseAlone() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 500L })
             val sid = SessionId("rc01")
             store.upsertSession(meta(sid, createdAt = 100L))
@@ -522,7 +522,7 @@ class EventStoreTest {
 
     @Test
     fun markReadIsMonotonicSoALateOrRetriedMarkCannotRegressTheBadge() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc02")
             store.upsertSession(meta(sid))
@@ -537,7 +537,7 @@ class EventStoreTest {
 
     @Test
     fun twoClientsMarkingReadConcurrentlyLeaveTheCursorAtTheHighestSeq() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc08")
             store.upsertSession(meta(sid))
@@ -557,7 +557,7 @@ class EventStoreTest {
 
     @Test
     fun markReadIsClampedToLastSeqSoABogusSeqCannotSilenceTheBadge() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc03")
             store.upsertSession(meta(sid))
@@ -575,7 +575,7 @@ class EventStoreTest {
 
     @Test
     fun markReadEmitsAnUpdateCarryingUnreadZeroAndTheRowsArchivedFlag() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc04")
             store.upsertSession(meta(sid))
@@ -598,7 +598,7 @@ class EventStoreTest {
 
     @Test
     fun anAppendAndAControlStateWriteOnAnArchivedSessionAlsoCarryArchived() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc09")
             store.upsertSession(meta(sid))
@@ -623,7 +623,7 @@ class EventStoreTest {
 
     @Test
     fun aNoOpMarkReadStillEmitsSoALostPostIsResynchronized() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc05")
             store.upsertSession(meta(sid))
@@ -643,7 +643,7 @@ class EventStoreTest {
 
     @Test
     fun aClearedBadgeSurvivesADaemonRestart() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store1 = SqliteEventStore.using(driver, now = { 1L })
             val sid = SessionId("rc07")
@@ -665,7 +665,7 @@ class EventStoreTest {
 
     @Test
     fun anAppendPastTheCursorBroadcastsTheRecomputedUnreadNotTheWholeLog() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc10")
             store.upsertSession(meta(sid))
@@ -686,7 +686,7 @@ class EventStoreTest {
 
     @Test
     fun markReadOnAnUnknownSessionIsASilentNoOp() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val missing = SessionId("no-such-session")
             val updates = ArrayList<SessionUpdate>()
@@ -703,7 +703,7 @@ class EventStoreTest {
 
     @Test
     fun aStaleFullRowUpsertNeitherRegressesTheCursorNorBroadcastsAStaleUnread() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val sid = SessionId("rc06")
             store.upsertSession(meta(sid))

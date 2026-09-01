@@ -71,6 +71,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class TaskLinkRoutesTest {
@@ -669,7 +670,7 @@ class TaskLinkRoutesTest {
         withTaskLayer: Boolean = true,
         block: suspend (Env) -> Unit,
     ) = runBlocking {
-        withTimeout(60_000) {
+        withTimeout(60.seconds) {
             val tasks = FakeTaskStore()
             val store = FakeEventStore()
             val registry = PaneRegistry()

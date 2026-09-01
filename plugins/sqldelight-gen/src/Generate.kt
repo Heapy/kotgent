@@ -12,7 +12,6 @@ import org.jetbrains.amper.plugins.TaskAction
 import java.io.File
 import java.nio.file.Path
 import java.util.ServiceLoader
-import kotlin.io.path.createDirectories
 
 // SQLDelight ships code generation only through Gradle; this Toolchain plugin drives its compiler
 // directly through the vendored, Gradle-free SqlDelightEnvironment.

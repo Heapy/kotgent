@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 class ReconcilerTest {
 
@@ -56,7 +57,7 @@ class ReconcilerTest {
 
     @Test
     fun reconcileClassifiesEachCombinationAndRebuildsRegistryFromLivePanes() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
 
             val idA = uuid('a')
@@ -109,7 +110,7 @@ class ReconcilerTest {
 
     @Test
     fun eachSessionIsProbedWithItsOwnProvidersStore() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val claudeId = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
             val codexId = ProviderSessionId("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb")
@@ -139,7 +140,7 @@ class ReconcilerTest {
 
     @Test
     fun reconcileClassifiesALiveSessionFromTheCacheAuthoritativeStateNotTheEventLog() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('a')
             store.upsertSession(meta("intr", SessionState.running, providerId = id, paneId = PaneId("%5")))
@@ -166,7 +167,7 @@ class ReconcilerTest {
 
     @Test
     fun aStopFromAPreviousIncarnationDoesNotMaskAResumableAfterAResume() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('a')
             store.upsertSession(meta("reinc", SessionState.running, providerId = id, paneId = PaneId("%7")))
@@ -189,7 +190,7 @@ class ReconcilerTest {
 
     @Test
     fun aCleanlyStoppedSessionStaysStoppedAcrossRepeatedReconciles() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val id = uuid('b')
             store.upsertSession(meta("stopd", SessionState.stopped, providerId = id, paneId = PaneId("%9")))

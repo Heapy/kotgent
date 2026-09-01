@@ -2,6 +2,7 @@ package io.kotgent.webuicheck
 
 import io.kotgent.cli.eprintln
 import io.kotgent.pty.Subscriber
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -12,7 +13,7 @@ fun runSelfCheck(cases: List<SelfCheckCase>): Int {
     for (case in cases) {
         val error = runBlocking {
             try {
-                withTimeout(SELF_CHECK_TIMEOUT_MS) { case.run() }
+                withTimeout(SELF_CHECK_TIMEOUT_MS.milliseconds) { case.run() }
                 null
             } catch (e: Throwable) {
                 e
@@ -91,7 +92,7 @@ private suspend fun receiveUntil(
     timeoutMs: Long = RECEIVE_TIMEOUT_MS,
 ): String {
     val received = StringBuilder()
-    withTimeout(timeoutMs) {
+    withTimeout(timeoutMs.milliseconds) {
         while (needle !in received) received.append(subscriber.output.receive().decodeToString())
     }
     return received.toString()

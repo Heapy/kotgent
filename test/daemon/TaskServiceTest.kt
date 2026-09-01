@@ -33,6 +33,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class TaskServiceTest {
 
@@ -96,7 +97,7 @@ class TaskServiceTest {
 
     @Test
     fun twoSessionsLinkTheSameTaskAndBothHoldIt() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
@@ -123,7 +124,7 @@ class TaskServiceTest {
 
     @Test
     fun aLinkToATaskAlreadyInProgressSucceedsAndLeavesItsStateAlone() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1, state = TaskState.in_progress)
             f.seedSession(s1, createdAt = 1_000L)
@@ -148,7 +149,7 @@ class TaskServiceTest {
 
     @Test
     fun pointingASessionAtAnotherTaskOverwritesTheLinkAndLeavesTheOldTaskAlone() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedTask(t2, position = 2.0)
@@ -167,7 +168,7 @@ class TaskServiceTest {
 
     @Test
     fun linkNextUnderContentionHandsTwoSessionsTwoDifferentTasks() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1, position = 1.0)
             f.seedTask(t2, position = 2.0)
@@ -211,7 +212,7 @@ class TaskServiceTest {
     @Test
     fun aDeleteLandingBetweenTheSelectionAndItsStartHandsOutNothingAndNeedsNoNewControlFlow() =
         runBlocking {
-            withTimeout(5_000) {
+            withTimeout(5.seconds) {
                 val f = Fixture()
                 f.seedSession(s1, createdAt = 1_000L)
                 f.seedTask(t1)
@@ -244,7 +245,7 @@ class TaskServiceTest {
 
     @Test
     fun linkNextOnAnEmptyBacklogReportsNothingEligibleAndWritesNothing() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedSession(s1, createdAt = 1_000L)
 
@@ -257,7 +258,7 @@ class TaskServiceTest {
 
     @Test
     fun linkNextWithEveryTaskAlreadyStartedReportsNothingEligible() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1, state = TaskState.in_progress)
             f.seedTask(t2, state = TaskState.done, position = 2.0)
@@ -271,7 +272,7 @@ class TaskServiceTest {
 
     @Test
     fun unlinkDropsOneSessionsLinkAndLeavesTheTasksStateAlone() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
@@ -293,7 +294,7 @@ class TaskServiceTest {
 
     @Test
     fun aReleaseThatRacedANewerClaimLeavesTheNewerLinkAlone() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedTask(t2, position = 2.0)
@@ -329,7 +330,7 @@ class TaskServiceTest {
 
     @Test
     fun unlinkOfASessionHoldingNoTaskWritesNothing() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
@@ -344,7 +345,7 @@ class TaskServiceTest {
 
     @Test
     fun transitionToDoneUnlinksEveryHolder() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
@@ -373,7 +374,7 @@ class TaskServiceTest {
 
     @Test
     fun closingATaskCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedTask(t2, position = 2.0)
@@ -402,7 +403,7 @@ class TaskServiceTest {
 
     @Test
     fun deleteCannotEraseAHoldersNewerLinkToADifferentTask() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedTask(t2, position = 2.0)
@@ -423,7 +424,7 @@ class TaskServiceTest {
 
     @Test
     fun transitionToReviewKeepsEveryLink() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
@@ -438,7 +439,7 @@ class TaskServiceTest {
 
     @Test
     fun transitionOfAnUnknownRefIsNullAndUnlinksNobody() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedSession(s1, createdAt = 1_000L)
 
@@ -451,7 +452,7 @@ class TaskServiceTest {
 
     @Test
     fun deleteUnlinksEveryHolderBeforeRemovingTheTask() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedTask(t1)
             f.seedSession(s1, createdAt = 1_000L)
@@ -479,7 +480,7 @@ class TaskServiceTest {
 
     @Test
     fun deleteClearsADanglingHolderEvenWhenTheTaskIsAlreadyGone() = runBlocking {
-        withTimeout(5_000) {
+        withTimeout(5.seconds) {
             val f = Fixture()
             f.seedSession(s1, createdAt = 1_000L)
             f.sessions.rows[s1] = f.sessions.rows.getValue(s1).copy(taskRef = absent)

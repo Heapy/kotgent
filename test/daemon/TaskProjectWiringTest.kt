@@ -35,6 +35,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class TaskProjectWiringTest {
 
@@ -59,7 +60,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun aStartInsideAProjectStampsTheRowAndRegistersTheProject() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
 
             val started = f.manager().start("claude", "/repo/sub")
@@ -80,7 +81,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun aStartOutsideAnyProjectLeavesTheProjectNullAndRegistersNothing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
 
             val started = f.manager().start("claude", "/elsewhere")
@@ -93,7 +94,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun anImportStampsTheSameProjectAStartInThatDirectoryWould() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             val real = canonicalPath("/tmp")!!
             val fs = FakeProjectFs(
@@ -115,7 +116,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun twoWorktreesOfOneRepositoryLandOnOneProject() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             val manager = f.manager(newIds = listOf(SessionId("main0001"), SessionId("wt000001")))
 
@@ -141,7 +142,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun aFailedProjectRegistrationLeavesTheRowUnstampedSoTheBackfillRetriesIt() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.tasks.upsertProjectFailure = IllegalStateException("disk is on fire")
 
@@ -161,7 +162,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun aStartInsideAnArchivedProjectIsNotStampedAndResurrectsNothing() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.tasks.archiveProject(alpha, archived = true)
 
@@ -176,7 +177,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun restoringTheProjectMakesTheNextStartBindItAgain() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.tasks.archiveProject(alpha, archived = true)
             val manager = f.manager(newIds = listOf(SessionId("while001"), SessionId("after001")))
@@ -196,7 +197,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun withNoTaskStoreToRegisterInTheProjectIsNotStampedEither() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
 
             val started = f.manager(taskStore = null).start("claude", "/repo/sub")
@@ -213,7 +214,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun startupReconciliationBackfillsAMissingProjectIdAndLeavesAnExistingOneAlone() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.seedSession("old00001", cwd = "/repo/sub")
             f.seedSession("stamped1", cwd = "/repo/sub", projectId = beta)
@@ -236,7 +237,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun aRefusedBackfillRetriesUntilRestoringTheProjectLetsTheNextPassBindIt() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.tasks.archiveProject(alpha, archived = true)
             f.seedSession("tombed01", cwd = "/repo/sub")
@@ -302,7 +303,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun startupReconciliationClearsADanglingTaskRefAndKeepsAValidOne() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             val live = TaskRef("local:1")
             val gone = TaskRef("local:404")
@@ -324,7 +325,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun aClearedTaskRefIsNotResurrectedByTheSameSessionsStateWrite() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.seedSession("dangler2", cwd = "/repo", taskRef = TaskRef("local:404"), state = SessionState.running)
 
@@ -338,7 +339,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun anInProgressEntryWithNoLinkedSessionSurvivesReconciliationUntouched() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             val orphan = TaskRef("local:7")
             val before = f.entry(orphan, TaskState.in_progress)
@@ -355,7 +356,7 @@ class TaskProjectWiringTest {
 
     @Test
     fun oneFailingRowDoesNotAbortTheRestOfTheTaskPass() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val f = Fixture(this)
             f.tasks.entryFailure = IllegalStateException("the task store is unreadable")
             f.seedSession("poison01", cwd = "/repo", taskRef = TaskRef("local:9"))

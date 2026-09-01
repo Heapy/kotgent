@@ -31,6 +31,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 // Filesystem fixtures use unique TMPDIR trees and never read the developer's ~/.junie.
@@ -264,7 +265,7 @@ class JunieSessionScanTest {
 
     @Test
     fun captureJunieModelOncePersistsTheIdKeyedModel() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val junieDir = makeJunieDir()
             val mine = id("53-1j1h")
             placeSession(junieDir, mine, events = modelUsageLine("claude-fable-5").repeat(3))
@@ -279,7 +280,7 @@ class JunieSessionScanTest {
 
     @Test
     fun captureJunieModelOncePersistsNothingWhileTheIdIsUnknown() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val junieDir = makeJunieDir()
             placeSession(junieDir, id("53-1j1h"), events = modelUsageLine("gpt-6").repeat(3))
             val store = SqliteEventStore.inMemory(now = { 42L })
@@ -298,7 +299,7 @@ class JunieSessionScanTest {
 
     @Test
     fun captureJunieModelOnceCannotRacePastARebindClear() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val junieDir = makeJunieDir()
             val displaced = id("30-1uhf")
             val authoritative = id("53-1j1h")

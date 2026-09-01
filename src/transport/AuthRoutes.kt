@@ -12,7 +12,6 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.cancel
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -25,6 +24,7 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.milliseconds
 
 
 const val AUTH_PAGE_PATH: String = "/auth"
@@ -82,7 +82,7 @@ suspend fun readAuthExchangeBody(
     require(maxBytes < Int.MAX_VALUE) { "the auth exchange body limit is too large to probe for overflow" }
     require(timeoutMillis > 0) { "the auth exchange body timeout must be positive, got $timeoutMillis ms" }
 
-    return withTimeoutOrNull(timeoutMillis) {
+    return withTimeoutOrNull(timeoutMillis.milliseconds) {
         val bytes = ByteArray(maxBytes + 1)
         var size = 0
         while (size < bytes.size) {
@@ -268,7 +268,7 @@ internal suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush(
     val requestHandlerJob = callJob.parent ?: return
     val connectionPipelineJob = requestHandlerJob.parent ?: return
     // Its response writer is a sibling, so allow the early 4xx bytes a bounded flush window.
-    delay(AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS)
+    delay(AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS.milliseconds)
     connectionPipelineJob.cancel(CancellationException(reason))
 }
 

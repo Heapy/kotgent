@@ -23,7 +23,6 @@ import io.kotgent.transport.normalizeTicketCode
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.call
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.path
@@ -46,6 +45,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class CliTest {
 
@@ -818,7 +818,7 @@ class CliTest {
     }
 
     private fun withStub(token: String? = "secret", block: suspend (Stub, ApiClient) -> Unit) = runBlocking {
-        withTimeout(30_000) {
+        withTimeout(30.seconds) {
             val stub = Stub()
             stub.server.start(wait = false)
             val port = stub.server.engine.resolvedConnectors().first().port

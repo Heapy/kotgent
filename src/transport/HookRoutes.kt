@@ -18,6 +18,7 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -226,7 +227,7 @@ private suspend fun resolvePane(
     paneLookup(paneId)?.let { return it }
     var waited = 0L
     while (waited < graceMillis) {
-        delay(PANE_LOOKUP_POLL_MILLIS)
+        delay(PANE_LOOKUP_POLL_MILLIS.milliseconds)
         paneLookup(paneId)?.let { return it }
         waited += PANE_LOOKUP_POLL_MILLIS
     }

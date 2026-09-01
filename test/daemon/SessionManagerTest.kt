@@ -47,6 +47,8 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class SessionManagerTest {
@@ -265,7 +267,7 @@ class SessionManagerTest {
 
     @Test
     fun startShellCreatesARunningBoundRowWithTheLoginShellArgv() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
@@ -294,7 +296,7 @@ class SessionManagerTest {
 
     @Test
     fun aDeadShellResumesWithTheSameArgvIntoAFreshReadyPane() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")
@@ -333,7 +335,7 @@ class SessionManagerTest {
 
     @Test
     fun aClosedShellWhoseCwdStillExistsBecomesResumableAndLosesItsPaneRegistration() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val cwd = makeClosedSessionTestDirectory()
             try {
                 val id = SessionId("close01")
@@ -362,7 +364,7 @@ class SessionManagerTest {
 
     @Test
     fun aClosedShellWhoseCwdWasDeletedBecomesCrashed() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val cwd = makeClosedSessionTestDirectory()
             assertEquals(0, rmdir(cwd), "the test models a cwd deleted before the shell exits")
             val id = SessionId("close02")
@@ -388,7 +390,7 @@ class SessionManagerTest {
 
     @Test
     fun aRepeatedCloseTriggerLeavesAnAlreadyStoppedRowUntouched() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val id = SessionId("close03")
             val pane = PaneId("%403")
             val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3")
@@ -413,7 +415,7 @@ class SessionManagerTest {
 
     @Test
     fun aDelayedCloseTriggerLeavesAStillAlivePaneAndRowUntouched() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val id = SessionId("close04")
             val pane = PaneId("%404")
             val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4")
@@ -441,7 +443,7 @@ class SessionManagerTest {
 
     @Test
     fun closeReclassificationCannotRaceAResumeIntoLeavingADeadRowOverALivePane() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val id = SessionId("close05")
             val oldPane = PaneId("%405")
             val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5")
@@ -484,7 +486,7 @@ class SessionManagerTest {
 
     @Test
     fun closeStateWritePreservesHooksThatAdvanceSeqAndReplaceTheProviderIdMidProbe() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val id = SessionId("close06")
             val pane = PaneId("%406")
             val provisional = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6")
@@ -517,7 +519,7 @@ class SessionManagerTest {
 
     @Test
     fun aCloseTriggerForAnUnknownIdIsASilentNoOp() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val mgr = shellManager(
@@ -538,7 +540,7 @@ class SessionManagerTest {
 
     @Test
     fun startPersistsTheCliVersionAndPathFromTheSpec() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val mgr = SessionManager(
                 FakeTmux(), store, PaneRegistry(),
@@ -559,7 +561,7 @@ class SessionManagerTest {
 
     @Test
     fun startLeavesCliVersionNullWhenTheSpecHasNone() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val mgr = SessionManager(
                 FakeTmux(), store, PaneRegistry(),
@@ -578,7 +580,7 @@ class SessionManagerTest {
 
     @Test
     fun startInvokesTheBackgroundModelCaptureForTheNewSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val captured = CompletableDeferred<SessionMeta>()
             val mgr = SessionManager(
@@ -601,7 +603,7 @@ class SessionManagerTest {
 
     @Test
     fun aProviderIdRebindClearsTheSuspectModelAndRetriggersTheCapture() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val captured = CompletableDeferred<SessionMeta>()
             val mgr = SessionManager(
@@ -630,7 +632,7 @@ class SessionManagerTest {
 
     @Test
     fun startBindsThePreallocatedProviderIdIntoTheLogImmediately() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -662,7 +664,7 @@ class SessionManagerTest {
 
     @Test
     fun startFallsBackToProviderDiscoveryWhenNothingIsPreallocated() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val discovered = ProviderSessionId("cccccccc-cccc-7ccc-8ccc-cccccccccccc")
             val seen = mutableListOf<SessionMeta>()
@@ -678,8 +680,8 @@ class SessionManagerTest {
 
             mgr.start("codex", "/work/repo")
 
-            withTimeout(5_000) {
-                while (store.projectionOf(SessionId("cx0001")).providerSessionId == null) delay(5)
+            withTimeout(5.seconds) {
+                while (store.projectionOf(SessionId("cx0001")).providerSessionId == null) delay(5.milliseconds)
             }
             val events = store.read(SessionId("cx0001"), Seq(0))
             assertEquals(1, events.size, "exactly one event: the discovered SessionBound")
@@ -693,7 +695,7 @@ class SessionManagerTest {
 
     @Test
     fun aHookDeliveredIdWinsOverProviderDiscovery() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val fromHook = ProviderSessionId("dddddddd-dddd-7ddd-8ddd-dddddddddddd")
             val fromDisk = ProviderSessionId("eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee")
@@ -710,8 +712,8 @@ class SessionManagerTest {
             mgr.start("codex", "/work/repo")
             store.append(SessionId("cx0002"), AgentEvent.SessionBound(fromHook), EventSource.hook)
 
-            withTimeout(5_000) {
-                while (store.projectionOf(SessionId("cx0002")).providerSessionId == null) delay(5)
+            withTimeout(5.seconds) {
+                while (store.projectionOf(SessionId("cx0002")).providerSessionId == null) delay(5.milliseconds)
             }
             assertEquals(fromHook, store.projectionOf(SessionId("cx0002")).providerSessionId)
         }
@@ -720,7 +722,7 @@ class SessionManagerTest {
 
     @Test
     fun providerIdCaptureRetriesAStallThenBindsOnDiscovery() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val idCapture = ProviderIdCapture(store, this, maxAttempts = 5, retryDelayMillis = 1)
             val provider = ProviderSessionId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
@@ -737,7 +739,7 @@ class SessionManagerTest {
 
     @Test
     fun providerIdCaptureStaysPendingWhenDiscoveryNeverSucceeds() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val idCapture = ProviderIdCapture(store, this, maxAttempts = 4, retryDelayMillis = 1)
             var calls = 0
@@ -751,7 +753,7 @@ class SessionManagerTest {
 
     @Test
     fun resumeIsBlockedWhileTheProviderIdIsPending() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -773,7 +775,7 @@ class SessionManagerTest {
 
     @Test
     fun markDoneKillsTheAgentAndArchivesTheSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -801,7 +803,7 @@ class SessionManagerTest {
 
     @Test
     fun undoneUnarchivesWithoutTouchingTmux() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val mgr = SessionManager(
@@ -823,7 +825,7 @@ class SessionManagerTest {
 
     @Test
     fun resumingADoneSessionBringsItBackToTheSidebar() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -852,7 +854,7 @@ class SessionManagerTest {
 
     @Test
     fun resumingAnArchivedSessionWhosePaneIsAliveStillUnarchivesIt() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux(
                 listOf(TmuxPane(session = "kt-done04", paneId = PaneId("%1"), pid = 4242, dead = false, width = 80, height = 24)),
@@ -882,7 +884,7 @@ class SessionManagerTest {
 
     @Test
     fun stopKillsTheTmuxSessionAndCachesStopped() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -910,7 +912,7 @@ class SessionManagerTest {
 
     @Test
     fun interruptSendsCtrlCAndCachesReadyKeepingThePaneRegistered() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -939,7 +941,7 @@ class SessionManagerTest {
 
     @Test
     fun cancellationAfterCtrlCStillPersistsTheInterruptStateExactlyOnce() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val id = SessionId("intr02")
             val tracing = TracingStore(SqliteEventStore.inMemory(now = { 1L }))
             val store = GatedStore(tracing, id)
@@ -980,7 +982,7 @@ class SessionManagerTest {
 
     @Test
     fun resumeSpawnsAFreshSessionForADeadSessionWithAProviderId() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1008,7 +1010,7 @@ class SessionManagerTest {
 
     @Test
     fun detachIsANoOpThatLeavesTheSessionRunning() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1037,7 +1039,7 @@ class SessionManagerTest {
 
     @Test
     fun anInterruptRacingAStopDoesNotResurrectTheStoppedSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = GatedStore(SqliteEventStore.inMemory(now = { 1L }), SessionId("race01"))
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1075,7 +1077,7 @@ class SessionManagerTest {
 
     @Test
     fun aStartThatFailsAfterTheRowIsWrittenLeavesNoPhantomRunningSession() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = FailingStore(SqliteEventStore.inMemory(now = { 1L }), failAppend = true)
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1105,7 +1107,7 @@ class SessionManagerTest {
 
     @Test
     fun aResumeThatFailsAfterTheStateWriteRestoresTheDeadRow() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = FailingStore(
                 SqliteEventStore.inMemory(now = { 1L }),
                 failAfterStateWrite = { it == SessionState.ready },
@@ -1138,7 +1140,7 @@ class SessionManagerTest {
 
     @Test
     fun aStopCannotInterleaveWithAStartThatHasAlreadyPublishedItsRow() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }), gateUpsertFor = SessionId("strt01"))
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1176,7 +1178,7 @@ class SessionManagerTest {
 
     @Test
     fun aStartWhoseLaunchFailsAfterTheTmuxSessionExistsKillsTheOrphan() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = ObservingTmux(failAfterCreate = true)
@@ -1200,7 +1202,7 @@ class SessionManagerTest {
 
     @Test
     fun aResumeWhoseLaunchFailsAfterTheTmuxSessionExistsKillsTheOrphan() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = ObservingTmux(failAfterCreate = true)
@@ -1231,7 +1233,7 @@ class SessionManagerTest {
 
     @Test
     fun aStartCancelledMidLaunchStillCompensatesTheRowItPublished() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }), gateUpsertFor = SessionId("cncl01"))
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1263,7 +1265,7 @@ class SessionManagerTest {
 
     @Test
     fun aCompensationThatItselfFailsIsSurfacedOnThePrimaryError() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = FailingStore(
                 SqliteEventStore.inMemory(now = { 1L }),
                 failAppend = true,
@@ -1294,7 +1296,7 @@ class SessionManagerTest {
 
     @Test
     fun stopPersistsTheStopIntentBeforeKillingTmux() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = TracingStore(SqliteEventStore.inMemory(now = { 1L }))
             var persistedAtKill: List<SessionState> = listOf(SessionState.needs_answer)
             val tmux = ObservingTmux(onKill = { persistedAtKill = store.stateWrites.toList() })
@@ -1318,7 +1320,7 @@ class SessionManagerTest {
 
     @Test
     fun aStopWhoseKillFailsRollsTheStopIntentBack() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = ObservingTmux(failKill = true)
@@ -1348,7 +1350,7 @@ class SessionManagerTest {
 
     @Test
     fun startRegeneratesTheSessionIdOnACollisionWithAnExistingSessionOrLog() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1375,7 +1377,7 @@ class SessionManagerTest {
 
     @Test
     fun agentFactoryRejectsUnsupportedAgentsBeforeAnyTmuxSideEffect() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val factory = agentFactoryOf(
@@ -1401,7 +1403,7 @@ class SessionManagerTest {
 
     @Test
     fun agentFactoryFailsFastWhenTheAgentBinaryIsNotFoundBeforeAnyTmuxSideEffect() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val factory = agentFactoryOf(
@@ -1428,7 +1430,7 @@ class SessionManagerTest {
 
     @Test
     fun agentFactoryFailsFastWhenTheResolvedBinaryPathIsNotAbsoluteBeforeAnyTmuxSideEffect() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val tmux = FakeTmux()
             val direct = assertFailsWith<AgentBinaryNotFoundException> { requireAbsoluteBinary("claude", "claude") }
@@ -1459,7 +1461,7 @@ class SessionManagerTest {
 
     @Test
     fun resumePropagatesAgentBinaryNotFoundBeforeAnyTmuxSideEffect() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1487,7 +1489,7 @@ class SessionManagerTest {
 
     @Test
     fun resumeRevivesASessionWhoseCacheSaysAliveButWhosePaneActuallyDied() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 1L })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
@@ -1516,7 +1518,7 @@ class SessionManagerTest {
         if (!realTmux.isAvailable()) return@runBlocking
         ProcessRunner.run(listOf(realTmux.tmuxPath, "-L", "kotgent-test", "kill-server"))
         try {
-            withTimeout(30_000) {
+            withTimeout(30.seconds) {
                 val store = SqliteEventStore.inMemory()
                 val registry = PaneRegistry()
                 val provider = ProviderSessionId("12345678-1234-4234-8234-1234567890ab")

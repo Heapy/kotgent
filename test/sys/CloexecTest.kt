@@ -6,7 +6,6 @@ import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import platform.posix.FD_CLOEXEC
 import platform.posix.F_DUPFD
 import platform.posix.F_GETFD

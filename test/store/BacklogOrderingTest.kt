@@ -23,6 +23,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 class BacklogOrderingTest {
 
@@ -99,7 +100,7 @@ class BacklogOrderingTest {
     }
 
     private fun test(fixture: Fixture = threeRankedTasks(), block: suspend (Fixture) -> Unit) =
-        runBlocking { withTimeout(60_000) { block(fixture) } }
+        runBlocking { withTimeout(60.seconds) { block(fixture) } }
 
     private fun assertStrictlyOrdered(f: Fixture, project: ProjectId) {
         val ranks = f.positions(project)
@@ -319,7 +320,7 @@ class BacklogOrderingTest {
 
     @Test
     fun theStoresOwnOrderingEmitsOnTaskUpdates() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(KotgentDatabase.Schema)
             val store = SqliteTaskStore.using(driver) { 42L }
             val queries = KotgentDatabase(driver).backlogQueries

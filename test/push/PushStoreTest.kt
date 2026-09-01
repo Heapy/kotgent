@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 class PushStoreTest {
 
@@ -24,7 +25,7 @@ class PushStoreTest {
 
     @Test
     fun saveThenListRoundTrips() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = freshStore()
             assertEquals(emptyList(), store.list(), "a fresh store has no subscriptions")
 
@@ -39,7 +40,7 @@ class PushStoreTest {
 
     @Test
     fun reSavingTheSameEndpointUpdatesInsteadOfDuplicating() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = freshStore()
             val endpoint = "https://web.push.apple.com/same"
             store.save(sub(endpoint, p256dh = "old-p256dh", auth = "old-auth", createdAt = 10L))
@@ -57,7 +58,7 @@ class PushStoreTest {
 
     @Test
     fun removeIsIdempotentAndOnlyTouchesTheNamedEndpoint() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val store = freshStore()
             val kept = sub("https://fcm.googleapis.com/fcm/send/kept", createdAt = 10L)
             val doomed = sub("https://web.push.apple.com/doomed", createdAt = 20L)
@@ -75,7 +76,7 @@ class PushStoreTest {
 
     @Test
     fun theInitCreateAddsTheTableToAPreExistingDatabase() = runBlocking {
-        withTimeout(20_000) {
+        withTimeout(20.seconds) {
             val driver = inMemoryDriver(prePushSchema)
             val store = SqlitePushStore(driver)
             val one = sub("https://web.push.apple.com/mig", createdAt = 5L)

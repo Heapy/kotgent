@@ -31,6 +31,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.system.exitProcess
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import platform.posix.F_DUPFD
 import platform.posix.O_NOCTTY
 import platform.posix.O_RDWR
@@ -88,7 +90,7 @@ private fun exitCodeIsCaptured() = check("child exit code is captured") {
     val pty = Pty.open(listOf("/bin/sh", "-c", "exit 7"))
     try {
         val code = runBlocking {
-            withTimeout(5_000) {
+            withTimeout(5.seconds) {
                 for (chunk in pty.output) {  }
                 pty.waitFor()
             }
@@ -161,15 +163,15 @@ private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblock
         }
         writing = writeTask
         val completedThroughPrepare = runBlocking {
-            withTimeout(5_000) { writeEntered.await() }
-            delay(200)
+            withTimeout(5.seconds) { writeEntered.await() }
+            delay(200.milliseconds)
             expect(!writeTask.isCompleted) {
                 "the positive control did not fill the tty input queue; the large write returned early"
             }
 
             val prepare = prepareScope.async { pty.prepareClose() }
             preparing = prepare
-            val completed = withTimeoutOrNull(5_000) {
+            val completed = withTimeoutOrNull(5.seconds) {
                 prepare.await()
                 writeTask.await()
                 true
@@ -178,7 +180,7 @@ private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblock
             if (!completed) {
                 // Unblock a broken implementation so the fixture can report failure instead of hanging.
                 kill(-pty.pid, SIGKILL)
-                withTimeout(5_000) {
+                withTimeout(5.seconds) {
                     prepare.await()
                     writeTask.await()
                 }
@@ -192,7 +194,7 @@ private fun prepareCloseUnblocksAFullMasterWrite() = check("prepareClose unblock
     } finally {
         if (childMayBeAlive) kill(-pty.pid, SIGKILL)
         runBlocking {
-            withTimeout(5_000) {
+            withTimeout(5.seconds) {
                 writing?.join()
                 preparing?.join()
             }
@@ -220,7 +222,7 @@ private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
             pty.prepareClose()
             val expectedExitCode = pty.waitFor()
             expect(expectedExitCode >= 0) { "prepareClose should record the child's exit code" }
-            runBlocking { delay(200) }
+            runBlocking { delay(200.milliseconds) }
             expect(!pty.output.isClosedForReceive) {
                 "the held slave did not keep the reader blocked for the teardown check"
             }
@@ -229,14 +231,14 @@ private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
             closing = closeTask
             var closeExitCode: Int? = null
             val stoppedBeforeRelease = runBlocking {
-                val completed = withTimeoutOrNull(2_000) {
+                val completed = withTimeoutOrNull(2.seconds) {
                     closeExitCode = closeTask.await()
                     true
                 } ?: false
                 if (!completed) {
                     close(heldSlaveFd)
                     heldSlaveFd = -1
-                    closeExitCode = withTimeout(5_000) { closeTask.await() }
+                    closeExitCode = withTimeout(5.seconds) { closeTask.await() }
                 }
                 completed
             }
@@ -251,7 +253,7 @@ private fun closeStopsTheReaderBeforeReleasingTheMasterDescriptor() =
             }
         } finally {
             if (heldSlaveFd >= 0) close(heldSlaveFd)
-            runBlocking { withTimeout(5_000) { closing?.join() } }
+            runBlocking { withTimeout(5.seconds) { closing?.join() } }
             pty.close()
             closeScope.cancel()
             closeContext.close()
@@ -292,18 +294,18 @@ private fun concurrentCloseRunsTeardownExactlyOnce() = check("concurrent close r
         secondClose = secondTask
 
         val results = runBlocking {
-            val bothReady = withTimeoutOrNull(5_000) {
+            val bothReady = withTimeoutOrNull(5.seconds) {
                 firstReady.await()
                 secondReady.await()
                 true
             } ?: false
             expect(bothReady) { "both dedicated close workers did not reach the start gate" }
             start.complete(Unit)
-            delay(200)
+            delay(200.milliseconds)
             expect(!firstTask.isCompleted && !secondTask.isCompleted) {
                 "the ignored-SIGTERM positive control did not keep both close callers overlapped"
             }
-            withTimeoutOrNull(CONCURRENT_CLOSE_TIMEOUT_MS) { firstTask.await() to secondTask.await() }
+            withTimeoutOrNull(CONCURRENT_CLOSE_TIMEOUT_MS.milliseconds) { firstTask.await() to secondTask.await() }
         }
         val completedResults = results
             ?: throw AssertionError(
@@ -327,7 +329,7 @@ private fun concurrentCloseRunsTeardownExactlyOnce() = check("concurrent close r
         try {
             if (childMayBeAlive) kill(-pty.pid, SIGKILL)
             val workersFinished = runBlocking {
-                withTimeoutOrNull(5_000) {
+                withTimeoutOrNull(5.seconds) {
                     firstClose?.join()
                     secondClose?.join()
                     true
@@ -444,8 +446,8 @@ private fun terminalBridgeFansOutRealTmuxAttach() = check("TerminalBridge fans o
 
             val a = bridge.subscribe()
             val b = bridge.subscribe()
-            withTimeout(5_000) { a.output.receive() }
-            withTimeout(5_000) { b.output.receive() }
+            withTimeout(5.seconds) { a.output.receive() }
+            withTimeout(5.seconds) { b.output.receive() }
             expect(bridge.subscriberCount() == 2) { "expected 2 subscribers, got ${bridge.subscriberCount()}" }
 
             a.write("hello-fanout\n".encodeToByteArray())
@@ -506,7 +508,7 @@ private const val CONCURRENT_CLOSE_TIMEOUT_MS = 6_000L
 
 private fun readUntil(pty: Pty, needle: String, timeoutMs: Long = 5_000): String = runBlocking {
     val sb = StringBuilder()
-    withTimeout(timeoutMs) {
+    withTimeout(timeoutMs.milliseconds) {
         while (needle !in sb) sb.append(pty.output.receive().decodeToString())
     }
     sb.toString()
@@ -514,7 +516,7 @@ private fun readUntil(pty: Pty, needle: String, timeoutMs: Long = 5_000): String
 
 private suspend fun receiveUntil(sub: Subscriber, needle: String, timeoutMs: Long = 10_000): String {
     val sb = StringBuilder()
-    withTimeout(timeoutMs) {
+    withTimeout(timeoutMs.milliseconds) {
         while (needle !in sb) sb.append(sub.output.receive().decodeToString())
     }
     return sb.toString()
@@ -555,7 +557,7 @@ private fun waitUntil(attempts: Int = 50, delayMs: Long = 100, condition: () -> 
     runBlocking {
         repeat(attempts) {
             if (condition()) return@runBlocking true
-            delay(delayMs)
+            delay(delayMs.milliseconds)
         }
         condition()
     }
