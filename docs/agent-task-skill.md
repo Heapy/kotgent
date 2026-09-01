@@ -133,8 +133,8 @@ no ref, the CLI resolves the subject through the daemon:
   container does not.
 - **`--session <id>` is the escape hatch, and it skips `/whoami` entirely.** When it is given the CLI
   already knows the id, sends it in the request body, and never asks about a pane it may not have. Every
-  `task` subcommand accepts it. This is the supported way to drive the backlog from outside a pane — a
-  wrapper, a test, a human at a laptop.
+  `task` subcommand that resolves a session accepts it. This is the supported way to drive the backlog
+  from outside a pane — a wrapper, a test, a human at a laptop.
 
 `task list` and `task next` behave the same way for the *project* rather than the task: inside a pane they
 need no argument (the project comes from the calling session's row), and `--project <uuid>` names it

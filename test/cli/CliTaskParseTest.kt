@@ -44,14 +44,14 @@ class CliTaskParseTest {
         )
         assertEquals(TaskUnlink("local:42", null), parseArgs(listOf("task", "unlink", "local:42"), neverReadsStdin))
         assertEquals(
-            TaskMove("local:42", MoveTarget.Top, null),
+            TaskMove("local:42", MoveTarget.Top),
             parseArgs(listOf("task", "move", "local:42", "--top"), neverReadsStdin),
         )
         assertEquals(
-            TaskDep("local:42", "local:7", remove = false, session = null),
+            TaskDep("local:42", "local:7", remove = false),
             parseArgs(listOf("task", "dep", "add", "local:42", "--on", "local:7"), neverReadsStdin),
         )
-        assertEquals(TaskDelete("local:42", null), parseArgs(listOf("task", "delete", "local:42"), neverReadsStdin))
+        assertEquals(TaskDelete("local:42"), parseArgs(listOf("task", "delete", "local:42"), neverReadsStdin))
     }
 
     @Test
@@ -66,15 +66,15 @@ class CliTaskParseTest {
     fun parsesEveryMoveTarget() {
         val ref = TaskRef("local:7")
         assertEquals(
-            TaskMove("local:42", MoveTarget.Bottom, null),
+            TaskMove("local:42", MoveTarget.Bottom),
             parseArgs(listOf("task", "move", "local:42", "--bottom"), neverReadsStdin),
         )
         assertEquals(
-            TaskMove("local:42", MoveTarget.Before(ref), null),
+            TaskMove("local:42", MoveTarget.Before(ref)),
             parseArgs(listOf("task", "move", "local:42", "--before", "local:7"), neverReadsStdin),
         )
         assertEquals(
-            TaskMove("local:42", MoveTarget.After(ref), null),
+            TaskMove("local:42", MoveTarget.After(ref)),
             parseArgs(listOf("task", "move", "local:42", "--after", "local:7"), neverReadsStdin),
         )
     }
@@ -82,7 +82,7 @@ class CliTaskParseTest {
     @Test
     fun parsesBothDependencyActions() {
         assertEquals(
-            TaskDep("local:42", "local:7", remove = true, session = null),
+            TaskDep("local:42", "local:7", remove = true),
             parseArgs(listOf("task", "dep", "rm", "local:42", "--on", "local:7"), neverReadsStdin),
         )
         assertEquals(
@@ -162,7 +162,7 @@ class CliTaskParseTest {
 
 
     @Test
-    fun sessionIsAcceptedOnEveryTaskSubcommand() {
+    fun sessionIsAcceptedOnEveryTaskSubcommandThatResolvesOne() {
         val s = "sess-1"
         assertEquals(TaskAdd("T", null, null, s), parseArgs(listOf("task", "add", "T", "--session", s), neverReadsStdin))
         assertEquals(TaskList(null, s), parseArgs(listOf("task", "list", "--session", s), neverReadsStdin))
@@ -179,18 +179,6 @@ class CliTaskParseTest {
         assertEquals(TaskReview(null, null, s), parseArgs(listOf("task", "review", "--session", s), neverReadsStdin))
         assertEquals(TaskDone(null, null, s), parseArgs(listOf("task", "done", "--session", s), neverReadsStdin))
         assertEquals(TaskUnlink(null, s), parseArgs(listOf("task", "unlink", "--session", s), neverReadsStdin))
-        assertEquals(
-            TaskMove("local:1", MoveTarget.Top, s),
-            parseArgs(listOf("task", "move", "local:1", "--top", "--session", s), neverReadsStdin),
-        )
-        assertEquals(
-            TaskDep("local:1", "local:2", remove = false, session = s),
-            parseArgs(listOf("task", "dep", "add", "local:1", "--on", "local:2", "--session", s), neverReadsStdin),
-        )
-        assertEquals(
-            TaskDelete("local:1", s),
-            parseArgs(listOf("task", "delete", "local:1", "--session", s), neverReadsStdin),
-        )
     }
 
     @Test

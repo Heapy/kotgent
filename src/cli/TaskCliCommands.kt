@@ -25,16 +25,11 @@ data class TaskDone(val ref: String?, val message: String?, val session: String?
 
 data class TaskUnlink(val ref: String?, val session: String?) : CliCommand
 
-data class TaskMove(val ref: String, val target: MoveTarget, val session: String?) : CliCommand
+data class TaskMove(val ref: String, val target: MoveTarget) : CliCommand
 
-data class TaskDep(
-    val ref: String,
-    val on: String,
-    val remove: Boolean,
-    val session: String?,
-) : CliCommand
+data class TaskDep(val ref: String, val on: String, val remove: Boolean) : CliCommand
 
-data class TaskDelete(val ref: String, val session: String?) : CliCommand
+data class TaskDelete(val ref: String) : CliCommand
 
 data class ProjectList(val archived: Boolean) : CliCommand
 

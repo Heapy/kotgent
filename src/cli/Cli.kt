@@ -108,8 +108,8 @@ val USAGE: String = """
       interrupt <id>                 send Ctrl-C to un-stick a session
       attach <id>                    attach a raw terminal to a session
 
-      The task backlog (JSON on stdout — written for an agent to parse). Every subcommand takes
-      [--session S] to name its session explicitly instead of resolving the calling tmux pane.
+      The task backlog (JSON on stdout — written for an agent to parse). Every subcommand that
+      resolves a session takes [--session S] to name it instead of the calling tmux pane.
 
       task add <title>               create a task            [--body B] [--project P]
       task list                      the project's backlog, in rank order        [--project P]
@@ -396,7 +396,7 @@ private fun parseTask(rest: List<String>, readStdin: () -> String): CliCommand {
         "unlink" -> parseOptionalRef("task unlink", args) { ref, session -> TaskUnlink(ref, session) }
         "move" -> parseTaskMove(args)
         "dep" -> parseTaskDep(args)
-        "delete" -> parseRequiredRef("task delete", args) { ref, session -> TaskDelete(ref, session) }
+        "delete" -> parseSoleRef("task delete", args) { ref -> TaskDelete(ref) }
         else -> CliCommand.Invalid("task: unknown subcommand '$sub' (use: kotgent task $TASK_SUBCOMMANDS)")
     }
 }
@@ -480,6 +480,22 @@ private fun parseRequiredRef(
     return make(ref, scan.values[SESSION_FLAG])
 }
 
+private fun parseSoleRef(
+    command: String,
+    rest: List<String>,
+    make: (ref: String) -> CliCommand,
+): CliCommand {
+    val scan = when (val s = scanFlags(command, rest)) {
+        is Scan.Bad -> return CliCommand.Invalid(s.message)
+        is Scan.Ok -> s
+    }
+    val ref = scan.positionals.getOrNull(0)
+        ?: return CliCommand.Invalid("$command requires a task ref: kotgent $command <ref>")
+    scan.positionals.getOrNull(1)?.let { return CliCommand.Invalid("$command: unexpected argument '$it'") }
+    if (TaskRef.parseOrNull(ref) == null) return CliCommand.Invalid(malformedRef(command, ref))
+    return make(ref)
+}
+
 private fun parseTaskComment(rest: List<String>, readStdin: () -> String): CliCommand {
     val command = "task comment"
     val scan = when (val s = scanFlags(command, rest, valueFlags(SESSION_FLAG) + messageSpellings())) {
@@ -521,7 +537,7 @@ private fun parseTaskMove(rest: List<String>): CliCommand {
         val s = scanFlags(
             command,
             rest,
-            valueFlags(BEFORE_FLAG, AFTER_FLAG, SESSION_FLAG),
+            valueFlags(BEFORE_FLAG, AFTER_FLAG),
             switchFlags = setOf(TOP_FLAG, BOTTOM_FLAG),
         )
     ) {
@@ -549,13 +565,13 @@ private fun parseTaskMove(rest: List<String>): CliCommand {
             if (before != null) MoveTarget.Before(parsed) else MoveTarget.After(parsed)
         }
     }
-    return TaskMove(ref, target, scan.values[SESSION_FLAG])
+    return TaskMove(ref, target)
 }
 
 private fun parseTaskDep(rest: List<String>): CliCommand {
     val command = "task dep"
     val usage = "kotgent task dep add|rm <ref> --on <other>"
-    val scan = when (val s = scanFlags(command, rest, valueFlags(ON_FLAG, SESSION_FLAG))) {
+    val scan = when (val s = scanFlags(command, rest, valueFlags(ON_FLAG))) {
         is Scan.Bad -> return CliCommand.Invalid(s.message)
         is Scan.Ok -> s
     }
@@ -573,7 +589,7 @@ private fun parseTaskDep(rest: List<String>): CliCommand {
     val on = scan.values[ON_FLAG]
         ?: return CliCommand.Invalid("$command $action requires --on <ref> — the task '$ref' depends on")
     if (TaskRef.parseOrNull(on) == null) return CliCommand.Invalid(malformedRef(command, on))
-    return TaskDep(ref, on, remove, scan.values[SESSION_FLAG])
+    return TaskDep(ref, on, remove)
 }
 
 private fun parseProject(rest: List<String>): CliCommand {

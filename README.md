@@ -198,8 +198,8 @@ kotgent <command> [args]
   interrupt <id>                send Ctrl-C to un-stick a session
   attach <id>                   attach a raw terminal to a session
 
-  The task backlog (JSON on stdout — written for an agent to parse). Every subcommand takes
-  [--session S] to name its session explicitly instead of resolving the calling tmux pane.
+  The task backlog (JSON on stdout — written for an agent to parse). Every subcommand that
+  resolves a session takes [--session S] to name it instead of the calling tmux pane.
 
   task add <title>              create a task            [--body B] [--project P]
   task list                     the project's backlog, in rank order        [--project P]
