@@ -33,3 +33,17 @@ data class SessionMeta(
     /** Upsert must not clear a newer targeted project link written after this snapshot. */
     val projectId: ProjectId? = null,
 )
+
+/**
+ * Counted in UTF-16 units so the server and the browser's `maxlength` measure the same thing; a
+ * code-point bound would be silently overridden by the stricter browser cap.
+ */
+const val MAX_SESSION_NAME_LENGTH: Int = 200
+
+fun sessionNameProblem(name: String): String? = when {
+    name.length > MAX_SESSION_NAME_LENGTH ->
+        "session name must be at most $MAX_SESSION_NAME_LENGTH characters, was ${name.length}"
+    name.any { it.isISOControl() } ->
+        "session name must not contain control characters"
+    else -> null
+}

@@ -10,6 +10,7 @@ import io.kotgent.cli.startDaemonServer
 import io.kotgent.cli.withStartupCompensation
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
+import io.kotgent.core.MAX_SESSION_NAME_LENGTH
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionState
@@ -912,6 +913,37 @@ class TransportTest {
             setBody("""{"agent":"aider","cwd":"/tmp"}""")
         }
         assertEquals(HttpStatusCode.BadRequest, resp.status)
+    }
+
+    @Test
+    fun startingASessionWithAnOverLongNameIs400AndStartsNothing() = withServer { ctx ->
+        val tooLong = "n".repeat(MAX_SESSION_NAME_LENGTH + 1)
+        val resp = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","name":"$tooLong"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue(
+            resp.bodyAsText().contains(MAX_SESSION_NAME_LENGTH.toString()),
+            "the refusal names the bound: ${resp.bodyAsText()}",
+        )
+        assertEquals(emptyList(), ctx.getSessions(), "no row was written")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched")
+    }
+
+    @Test
+    fun importingASessionWithAControlCharacterInTheNameIs400AndImportsNothing() = withServer(
+        probe = VendorStoreProbe { _, _, _ -> true },
+    ) { ctx ->
+        val resp = ctx.postBody(
+            "/sessions/import",
+            """{"agent":"claude","providerSessionId":"${providerId.value}","cwd":"/tmp","name":"two\nlines"}""",
+        )
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertEquals(
+            emptyList(),
+            ctx.getSessions(),
+            "import shares the bound with start, so neither path can write a name the other would refuse",
+        )
     }
 
     @Test

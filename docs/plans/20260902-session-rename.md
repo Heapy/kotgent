@@ -210,16 +210,17 @@ through the full-row path.
 - Modify: `src/transport/ControlRoutes.kt`
 - Modify: `test/core/` (new or existing test file for the validator)
 
-- [ ] add `MAX_SESSION_NAME_LENGTH = 200` and a pure `sessionNameProblem(name: String): String?`
+- [x] add `MAX_SESSION_NAME_LENGTH = 200` and a pure `sessionNameProblem(name: String): String?`
       returning null when valid, in `src/core/` so it stays host-free
-- [ ] reject names over the bound (counted in code points) and names containing an ISO control character
-- [ ] accept the empty string
-- [ ] apply the validator in the existing `POST /sessions` and `POST /sessions/import` handlers, before
+- [x] reject names over the bound (counted in UTF-16 units, per **Bound** above) and names
+      containing an ISO control character
+- [x] accept the empty string
+- [x] apply the validator in the existing `POST /sessions` and `POST /sessions/import` handlers, before
       they reach `SessionManager`
-- [ ] write tests for the validator: valid, empty, too long, control character, astral-plane name at the
+- [x] write tests for the validator: valid, empty, too long, control character, astral-plane name at the
       boundary
-- [ ] write a route test: `POST /sessions` with an over-long name answers 400 and creates nothing
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 3
+- [x] write a route test: `POST /sessions` with an over-long name answers 400 and creates nothing
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 3
 
 ### Task 3: Add `PATCH /api/v1/sessions/{id}`
 

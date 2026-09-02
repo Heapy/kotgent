@@ -5,6 +5,7 @@ import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.TaskRef
+import io.kotgent.core.sessionNameProblem
 import io.kotgent.core.unread
 import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.DuplicateImportException
@@ -74,6 +75,11 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
+        val nameProblem = req.name?.let { sessionNameProblem(it) }
+        if (nameProblem != null) {
+            call.respondText("cannot start session: $nameProblem", status = HttpStatusCode.BadRequest)
+            return@post
+        }
         val requestedTaskRef = req.taskRef?.takeIf { it.isNotBlank() }
         // Refuse every link error before launch so one bad body cannot leave an unlinked live agent.
         var linkTo: TaskRef? = null
@@ -132,6 +138,11 @@ fun Route.controlRoutes(
             json.decodeFromString(ImportSessionRequest.serializer(), call.receiveText())
         } catch (_: SerializationException) {
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+            return@post
+        }
+        val nameProblem = req.name?.let { sessionNameProblem(it) }
+        if (nameProblem != null) {
+            call.respondText("cannot import session: $nameProblem", status = HttpStatusCode.BadRequest)
             return@post
         }
         val importProviderId = try {
