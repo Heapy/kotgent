@@ -1039,8 +1039,9 @@ class SessionDialogsTest {
 
         const val RENAME_REFUSAL_BODY = "cannot rename session: session name must not contain control characters"
 
-        // This module cannot depend on the native core, so `MAX_SESSION_NAME_LENGTH` is copied here;
-        // `WebUiServingTest` guards the copy against the server's bound.
+        // This module cannot depend on the native core, so `MAX_SESSION_NAME_LENGTH` is copied here.
+        // `WebUiServingTest` pins the served cap to the server's bound, so a mismatch here means
+        // `MAX_SESSION_NAME_LENGTH` moved and this copy must follow.
         const val SESSION_NAME_MAXLENGTH = "200"
 
         const val RENAME_COMMAND = "rename"
