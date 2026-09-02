@@ -496,6 +496,50 @@ class EventStoreTest {
 
 
     @Test
+    fun setNameRewritesTheLabelAdvancesRevAndIsNotActivity() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 900L })
+            val sid = SessionId("name01")
+            store.upsertSession(meta(sid, createdAt = 100L))
+            val before = store.getSession(sid)!!
+
+            store.setName(sid, "release triage")
+            store.getSession(sid)!!.let { m ->
+                assertEquals("release triage", m.name, "the operator's label replaced the automatic one")
+                assertTrue(m.rev > before.rev, "a targeted mutator advances the revision")
+                assertEquals(before.updatedAt, m.updatedAt, "a rename is not activity: updated_at is NOT written")
+                assertEquals(before.createdAt, m.createdAt, "and created_at is untouched")
+            }
+
+            store.setName(sid, "")
+            assertEquals("", store.getSession(sid)!!.name, "an empty name is stored, meaning the automatic label")
+        }
+    }
+
+    @Test
+    fun aStaleSnapshotUpsertedAfterARenameDoesNotRestoreTheOldName() = runBlocking {
+        withTimeout(20.seconds) {
+            val stores = listOf<EventStore>(SqliteEventStore.inMemory(now = { 1L }), FakeEventStore(now = { 1L }))
+            for (store in stores) {
+                val sid = SessionId("name02")
+                store.upsertSession(meta(sid))
+                val snapshot = store.getSession(sid)!!
+
+                store.setName(sid, "renamed")
+                store.upsertSession(snapshot.copy(state = SessionState.ready))
+
+                store.getSession(sid)!!.let { m ->
+                    assertEquals("renamed", m.name, "${store::class.simpleName}: the rename outlives the stale row")
+                    assertEquals(
+                        SessionState.ready, m.state,
+                        "${store::class.simpleName}: the rest of the snapshot still applies",
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun markReadAdvancesTheCursorAndLeavesEverythingElseAlone() = runBlocking {
         withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 500L })

@@ -48,7 +48,10 @@ class StaleCursorException(
 /** Append-only event log plus its transactionally consistent session projection; writes are serialized. */
 interface EventStore {
 
-    /** Preserves createdAt, max-merges readCursor, and preserves targeted task/project values on null input. */
+    /**
+     * Preserves createdAt and the operator-owned name, max-merges readCursor, and preserves targeted
+     * task/project values on null input.
+     */
     suspend fun upsertSession(meta: SessionMeta)
 
     suspend fun updateSessionState(
@@ -97,6 +100,12 @@ interface EventStore {
     suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?): Unit =
         throw UnsupportedOperationException(
             "${this::class.simpleName} does not model session projects: override setProjectId",
+        )
+
+    /** Operator-owned label. Empty means "use the automatic label"; preserves activity ordering. */
+    suspend fun setName(sessionId: SessionId, name: String): Unit =
+        throw UnsupportedOperationException(
+            "${this::class.simpleName} does not support renaming: override setName",
         )
 
     suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =

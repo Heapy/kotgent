@@ -188,20 +188,20 @@ through the full-row path.
 - Modify: `fakes/src/store/FakeEventStore.kt`
 - Modify: `test/store/` (the existing event-store test file — grep for `setModel` to find it)
 
-- [ ] add `setName:` to `Sessions.sq` — `UPDATE sessions SET name = ?, rev = ? WHERE id = ?`, placed
+- [x] add `setName:` to `Sessions.sq` — `UPDATE sessions SET name = ?, rev = ? WHERE id = ?`, placed
       beside `setModel:` and under the existing "derived metadata mutators advance rev but leave
       updated_at" comment
-- [ ] change the `upsert` conflict clause from `name = excluded.name` to `name = sessions.name`, beside
+- [x] change the `upsert` conflict clause from `name = excluded.name` to `name = sessions.name`, beside
       `created_at`
-- [ ] add `suspend fun setName(sessionId: SessionId, name: String)` to `EventStore`
-- [ ] implement it in `SqliteEventStore` under `mutex.withLock`, advancing `revCounter` and calling
+- [x] add `suspend fun setName(sessionId: SessionId, name: String)` to `EventStore`
+- [x] implement it in `SqliteEventStore` under `mutex.withLock`, advancing `revCounter` and calling
       `emitFromRow` — copy `setModel` exactly
-- [ ] implement it in `FakeEventStore`
-- [ ] add `name = prior.name` to the `FakeEventStore.upsertSession` merge block, beside `createdAt`, so
+- [x] implement it in `FakeEventStore`
+- [x] add `name = prior.name` to the `FakeEventStore.upsertSession` merge block, beside `createdAt`, so
       the fake and the real store answer the same question
-- [ ] write a test: `setName` changes the name, advances `rev`, and leaves `updatedAt` unchanged
-- [ ] write a test: an `upsertSession` of a snapshot taken before a rename does not restore the old name
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 2
+- [x] write a test: `setName` changes the name, advances `rev`, and leaves `updatedAt` unchanged
+- [x] write a test: an `upsertSession` of a snapshot taken before a rename does not restore the old name
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 2
 
 ### Task 2: Add the shared name bound and validator
 

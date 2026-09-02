@@ -68,9 +68,11 @@ class FakeEventStore(private val now: () -> Long = increasingEpochClock()) : Eve
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
         val prior = metas[meta.id]
-        // Whole-row writers must not regress read progress or erase links owned by targeted setters.
+        // Whole-row writers must not regress read progress or erase the name and links owned by
+        // targeted setters.
         val merged = if (prior != null) {
             meta.copy(
+                name = prior.name,
                 createdAt = prior.createdAt,
                 readCursor = Seq(maxOf(prior.readCursor.value, meta.readCursor.value)),
                 taskRef = meta.taskRef ?: prior.taskRef,
@@ -107,6 +109,12 @@ class FakeEventStore(private val now: () -> Long = increasingEpochClock()) : Eve
     override suspend fun setModel(sessionId: SessionId, model: String?): Unit = mutex.withLock {
         val m = metas[sessionId] ?: return@withLock
         metas[sessionId] = m.copy(model = model, rev = ++revCounter)
+        emitFromMeta(sessionId)
+    }
+
+    override suspend fun setName(sessionId: SessionId, name: String): Unit = mutex.withLock {
+        val m = metas[sessionId] ?: return@withLock
+        metas[sessionId] = m.copy(name = name, rev = ++revCounter)
         emitFromMeta(sessionId)
     }
 

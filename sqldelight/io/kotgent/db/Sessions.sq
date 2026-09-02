@@ -26,7 +26,8 @@ CREATE TABLE sessions (
   project_id          TEXT
 );
 
--- Preserve UI-owned cursors and targeted task/project writes when a stale SessionMeta snapshot is upserted.
+-- Preserve UI-owned cursors, the operator-owned name and targeted task/project writes when a stale
+-- SessionMeta snapshot is upserted.
 upsert:
 INSERT INTO sessions(
   id, name, tags, agent, provider_session_id, model, cli_version, cli_path, cwd, repository,
@@ -35,7 +36,7 @@ INSERT INTO sessions(
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-  name                = excluded.name,
+  name                = sessions.name,
   tags                = excluded.tags,
   agent               = excluded.agent,
   provider_session_id = excluded.provider_session_id,
@@ -84,6 +85,11 @@ WHERE id = ?;
 setModel:
 UPDATE sessions
 SET model = ?, rev = ?
+WHERE id = ?;
+
+setName:
+UPDATE sessions
+SET name = ?, rev = ?
 WHERE id = ?;
 
 -- Atomic id check prevents a slow model scan from writing past a provider-id rebind.

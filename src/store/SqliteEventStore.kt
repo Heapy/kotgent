@@ -154,6 +154,11 @@ class SqliteEventStore private constructor(
         emitFromRow(sessionId)
     }
 
+    override suspend fun setName(sessionId: SessionId, name: String): Unit = mutex.withLock {
+        val _ = sessions.setName(name, ++revCounter, sessionId.value)
+        emitFromRow(sessionId)
+    }
+
     override suspend fun setModelForProvider(
         sessionId: SessionId,
         providerSessionId: ProviderSessionId,
