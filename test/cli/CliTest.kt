@@ -492,7 +492,39 @@ class CliTest {
         assertTrue("local:12345…" in out, "the cut is visible: $out")
         assertFalse("local:123456" in out, "a truncated ref must never read as a complete one: $out")
         assertTrue("local:42" in out, "a ref that fits is untouched")
-        assertTrue("-" in renderSessions(listOf(sampleDto("ccc33333", "running", needsAttention = false))))
+        val untasked = sampleDto("ccc33333", "running", needsAttention = false).copy(name = "plain")
+        assertTrue("-" in renderSessions(listOf(untasked)))
+    }
+
+    @Test
+    fun theNameColumnShowsTheLabelAndFallsBackToTheTmuxSessionWhenItIsEmpty() {
+        val named = sampleDto("aaa11111", "running", needsAttention = false).copy(name = "refactor-auth")
+        val cleared = sampleDto("bbb22222", "running", needsAttention = false).copy(name = "")
+        val out = renderSessions(listOf(named, cleared))
+        assertTrue("NAME" in out.lineSequence().first(), "the header names the column: $out")
+        assertTrue("refactor-auth" in out, "a named session shows its name: $out")
+        assertTrue("kt-bbb22222" in out, "a cleared name shows the automatic label: $out")
+    }
+
+    @Test
+    fun aLongNameIsTruncatedAndLeavesTheFollowingColumnsWhereTheHeaderSaysTheyAre() {
+        val long = sampleDto("aaa11111", "running", needsAttention = false)
+            .copy(name = "a-really-long-session-name-nobody-should-type")
+        val short = sampleDto("bbb22222", "running", needsAttention = false).copy(name = "short")
+        val lines = renderSessions(listOf(long, short)).trimEnd('\n').lines()
+        assertEquals(3, lines.size, "one header and two rows")
+        assertTrue("…" in lines[1], "the cut is visible: ${lines[1]}")
+        assertFalse(long.name in lines[1], "the full name must not survive: ${lines[1]}")
+        assertEquals(
+            lines[0].indexOf("AGENT"),
+            lines[1].indexOf("claude"),
+            "a truncated name leaves the agent under its header: ${lines[1]}",
+        )
+        assertEquals(
+            lines[1].indexOf("claude"),
+            lines[2].indexOf("claude"),
+            "and both rows agree: $lines",
+        )
     }
 
     @Test

@@ -370,17 +370,17 @@ seeing that finding, so it is in scope now and was not before.
 - Modify: `test/cli/` (the existing test covering `renderSessions` — grep for it; add a new file only if
   none exists)
 
-- [ ] add a `NAME` column between `ID` and `AGENT` in `renderSessions`, using the same
+- [x] add a `NAME` column between `ID` and `AGENT` in `renderSessions`, using the same
       ellipsis-truncating helper shape as `taskColumn` and its own width constant
-- [ ] render the automatic label for an empty name — `s.name.ifEmpty { s.tmuxSession }` — so a cleared
+- [x] render the automatic label for an empty name — `s.name.ifEmpty { s.tmuxSession }` — so a cleared
       name shows what every other client shows rather than a blank cell
-- [ ] keep the existing columns and their widths unchanged; only the header and each row gain the one
+- [x] keep the existing columns and their widths unchanged; only the header and each row gain the one
       new cell
-- [ ] write a test: a named session renders its name, and a session with an empty name renders its tmux
+- [x] write a test: a named session renders its name, and a session with an empty name renders its tmux
       session string
-- [ ] write a test: a name longer than the column width is truncated with the ellipsis, not wrapped, and
+- [x] write a test: a name longer than the column width is truncated with the ellipsis, not wrapped, and
       the following columns still line up
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 10
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 10
 
 ### Task 10: [Final] Fold durable intent into its authoritative homes
 

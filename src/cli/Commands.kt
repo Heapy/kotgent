@@ -703,10 +703,11 @@ suspend fun runImportCommand(
 fun renderSessions(sessions: List<SessionDto>): String {
     if (sessions.isEmpty()) return "no sessions\n"
     val sb = StringBuilder()
-    sb.append("ID        AGENT      STATE            ATTN  TASK          CWD\n")
+    sb.append("ID        NAME              AGENT      STATE            ATTN  TASK          CWD\n")
     for (s in sessions.sortedByDescending { it.updatedAt }) {
         val attn = if (s.needsAttention) " *  " else "    "
         sb.append(s.id.padEnd(10).take(10))
+        sb.append(nameColumn(s)).append("  ")
         sb.append(s.agent.padEnd(11).take(11))
         sb.append(s.state.padEnd(17).take(17))
         sb.append(attn)
@@ -720,12 +721,17 @@ fun renderSessions(sessions: List<SessionDto>): String {
 /**
  * Truncation uses an ellipsis because a plain prefix can itself be a valid ref naming another task.
  */
-private fun taskColumn(ref: String?): String {
-    val value = ref ?: "-"
-    val cell = if (value.length > TASK_COLUMN_WIDTH) value.take(TASK_COLUMN_WIDTH - 1) + "…" else value
-    return cell.padEnd(TASK_COLUMN_WIDTH)
-}
+private fun taskColumn(ref: String?): String =
+    ellipsized(ref ?: "-", TASK_COLUMN_WIDTH).padEnd(TASK_COLUMN_WIDTH)
+
+private fun nameColumn(s: SessionDto): String =
+    ellipsized(s.name.ifEmpty { s.tmuxSession }, NAME_COLUMN_WIDTH).padEnd(NAME_COLUMN_WIDTH)
+
+private fun ellipsized(value: String, width: Int): String =
+    if (value.length > width) value.take(width - 1) + "…" else value
 
 private const val TASK_COLUMN_WIDTH: Int = 12
+
+private const val NAME_COLUMN_WIDTH: Int = 16
 
 private const val HTTP_NOT_FOUND: Int = 404
