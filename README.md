@@ -11,6 +11,8 @@ phone, server-sent Web Push can wake the PWA's service worker when a session nee
 the app is closed. `tmux` is the transport and the process-survival mechanism, **not** the source of
 truth: state is derived by replaying an append-only event log, so it survives a daemon restart.
 
+![kotgent running on a MacBook, iPad, and iPhone](docs/images/devices.png)
+
 ```text
 IDE terminal ──────┐
 Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex | junie | shell
