@@ -31,6 +31,7 @@ data class SessionUpdate(
     val updatedAt: Long,
     val archived: Boolean = false,
     val model: String? = null,
+    val name: String? = null,
     val rev: Long = 0,
     val taskRef: TaskRef? = null,
     val projectId: ProjectId? = null,

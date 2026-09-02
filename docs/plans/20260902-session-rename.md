@@ -249,15 +249,15 @@ through the full-row path.
 - Modify: `fakes/src/store/FakeEventStore.kt` (`emitFromMeta`)
 - Modify: `test/transport/TransportTest.kt` or the nearest WS frame test
 
-- [ ] add `val name: String? = null` to `SessionUpdate`, after `model`
-- [ ] populate it in `emitFromRow` from the row
-- [ ] populate it in `FakeEventStore.emitFromMeta`, which builds the same value
-- [ ] add `val name: String? = null` to `SessionUpdateDto`, after `model`, and map it in `toDto`
-- [ ] write a test: a rename emits a `session_update` frame whose `name` is the new value and whose `rev`
+- [x] add `val name: String? = null` to `SessionUpdate`, after `model`
+- [x] populate it in `emitFromRow` from the row
+- [x] populate it in `FakeEventStore.emitFromMeta`, which builds the same value
+- [x] add `val name: String? = null` to `SessionUpdateDto`, after `model`, and map it in `toDto`
+- [x] write a test: a rename emits a `session_update` frame whose `name` is the new value and whose `rev`
       is higher than the previous frame's
-- [ ] write a test: the field is absent-tolerant — decoding a frame without `name` yields null, so an
+- [x] write a test: the field is absent-tolerant — decoding a frame without `name` yields null, so an
       older client and an older daemon both stay readable
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 5
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 5
 
 ### Task 5: Apply the renamed row in the browser merge
 

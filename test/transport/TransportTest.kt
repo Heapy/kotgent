@@ -286,6 +286,28 @@ class TransportTest {
     }
 
     @Test
+    fun thePatchDistinguishesAClearedNameFromAnAbsentOne() {
+        val cleared = TRANSPORT_JSON.encodeToString(
+            EventsFrame.serializer(),
+            SessionUpdate(SessionId("nam01"), SessionState.running, Seq(1), 0L, updatedAt = 1L, name = "").toDto(),
+        )
+        assertEquals(
+            "",
+            TRANSPORT_JSON.parseToJsonElement(cleared).jsonObject["name"]?.jsonPrimitive?.content,
+            "a reset to the automatic label rides the wire as an empty string, not as an omission",
+        )
+
+        val fromAnOlderDaemon = TRANSPORT_JSON.decodeFromString(
+            SessionUpdateDto.serializer(),
+            """{"sessionId":"nam01","state":"running","needsAttention":false,"lastSeq":1,"unread":0}""",
+        )
+        assertNull(
+            fromAnOlderDaemon.name,
+            "a frame that predates the field decodes to null, which the browser merge reads as 'keep'",
+        )
+    }
+
+    @Test
     fun everyGlobalFrameKindCarriesTheTypeDiscriminator() {
         fun typeOf(frame: EventsFrame): String? {
             val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frame)
@@ -417,6 +439,27 @@ class TransportTest {
             ctx.store.setModel(sid, null)
             val cleared = awaitUpdate { it.sessionId == created.id && it.rev > captured.rev }
             assertNull(cleared.model, "the clear rides the patch as an authoritative null")
+        }
+    }
+
+    @Test
+    fun aRenameReachesAConnectedClientWithoutAReload() = withServer { ctx ->
+        val created = ctx.startSession()
+        val sid = SessionId(created.id)
+
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            val seeded = receiveSnapshot().sessions.first { it.id == created.id }
+
+            ctx.store.setName(sid, "ship the parser")
+            val renamed = awaitUpdate { it.sessionId == created.id && it.name == "ship the parser" }
+            assertTrue(renamed.rev > seeded.rev, "the patch carries a higher rev than the snapshot row")
+
+            ctx.store.setName(sid, "")
+            val reset = awaitUpdate { it.sessionId == created.id && it.rev > renamed.rev }
+            assertEquals("", reset.name, "clearing the name rides the patch as an empty string")
         }
     }
 

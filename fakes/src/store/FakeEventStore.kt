@@ -61,7 +61,7 @@ class FakeEventStore(private val now: () -> Long = increasingEpochClock()) : Eve
             SessionUpdate(
                 sessionId, m.state, m.lastSeq, unread(m.lastSeq.value, m.readCursor.value),
                 m.updatedAt, m.archived,
-                model = m.model, rev = m.rev, taskRef = m.taskRef, projectId = m.projectId,
+                model = m.model, name = m.name, rev = m.rev, taskRef = m.taskRef, projectId = m.projectId,
             ),
         )
     }
@@ -206,7 +206,7 @@ class FakeEventStore(private val now: () -> Long = increasingEpochClock()) : Eve
             SessionUpdate(
                 sessionId, cached?.state ?: next.state, next.lastSeq,
                 unread(next.lastSeq.value, cached?.readCursor?.value ?: 0L), ts, cached?.archived ?: false,
-                model = cached?.model, rev = cached?.rev ?: 0,
+                model = cached?.model, name = cached?.name, rev = cached?.rev ?: 0,
                 taskRef = cached?.taskRef, projectId = cached?.projectId,
             ),
         )
