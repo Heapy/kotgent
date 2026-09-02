@@ -194,6 +194,21 @@ class WebUiServingTest {
         assertEquals(listOf("$MAX_SESSION_NAME_LENGTH", "$MAX_SESSION_NAME_LENGTH"), caps, "both name inputs")
     }
 
+    // Dialog padding is an enumeration of form ids, not a rule on a shared class, so a new dialog is
+    // unstyled until its id is added and no test that asserts markup or behavior can see it.
+    @Test
+    fun everyDialogFormIdCarriesAPaddingRule() = withServer { ctx ->
+        val markup = ctx.get("/components/dialogs.js").bodyAsText() + ctx.get("/components/Board.js").bodyAsText()
+        val css = ctx.get("/style.css").bodyAsText()
+        val ids = Regex("id=\"([a-z-]+-form)\"").findAll(markup).map { it.groupValues[1] }.toSet()
+        assertTrue(ids.contains("rename-session-form"), "the scan reaches the dialogs it is meant to close")
+        for (id in ids) {
+            val padded = Regex("#$id[^{]*\\{[^}]*\\bpadding:").containsMatchIn(css) ||
+                Regex("#$id,[^{]*\\{[^}]*\\bpadding:").containsMatchIn(css)
+            assertTrue(padded, "#$id has no padding rule in style.css — the dialog would render edge to edge")
+        }
+    }
+
     @Test
     fun daemonServesTheComponentAndLibModules() = withServer { ctx ->
         for (path in listOf(

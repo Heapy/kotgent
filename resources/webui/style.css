@@ -804,6 +804,7 @@ dialog::backdrop {
 }
 /* Form padding leaves the swipe grabber full-width. */
 #new-session-form,
+#rename-session-form,
 #new-task-form,
 #new-project-form,
 #delete-project-form,
@@ -2188,6 +2189,7 @@ button.task-card-title:hover,
     width: 38px;
   }
   #new-session-form,
+  #rename-session-form,
   #new-task-form,
   #new-project-form,
   #delete-project-form,
