@@ -5,7 +5,12 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { displayName, patchIfNewer, upsertIfNewer } from "../../resources/webui/lib/sessions.js";
+import {
+  byRecentChange,
+  displayName,
+  patchIfNewer,
+  upsertIfNewer,
+} from "../../resources/webui/lib/sessions.js";
 import { listOf, patchFrame, sessionRow } from "./fixtures.js";
 
 describe("upsertIfNewer", () => {
@@ -241,5 +246,25 @@ describe("out-of-order arrival", () => {
       assert.equal(row.agent, FIRST.agent);
       assert.equal(row.name, FIRST.name);
     }
+  });
+});
+
+// The done list sorts by `updatedAt`, and a rename is metadata rather than session activity: the daemon
+// leaves `updated_at` alone, so the frame it emits must not reorder the list either.
+describe("a rename and the done-list ordering", () => {
+  test("a renamed done session keeps its place in the list", () => {
+    const list = listOf(
+      sessionRow({ id: "older", rev: 2, name: "older", archived: true, updatedAt: 100 }),
+      sessionRow({ id: "newer", rev: 2, name: "newer", archived: true, updatedAt: 200 }),
+    );
+
+    const merged = patchIfNewer(
+      list,
+      patchFrame({ sessionId: "older", rev: 4, archived: true, name: "renamed", updatedAt: 100 }),
+    );
+    const ordered = byRecentChange(merged);
+
+    assert.deepEqual(ordered.map((s) => s.id), ["newer", "older"]);
+    assert.equal(ordered[1].name, "renamed", "the row moved nowhere, but it did take the new name");
   });
 });

@@ -585,6 +585,48 @@ class CliTest {
 
 
     @Test
+    fun renameCommandPrintsTheNewName() = runBlocking {
+        val stdout = mutableListOf<String>()
+        val exit = runRenameCommand(
+            "abc12345",
+            rename = { sampleDto("abc12345", "running", needsAttention = false).copy(name = "the rewrite") },
+            stdout = stdout::add,
+            stderr = { error("no stderr expected: $it") },
+        )
+        assertEquals(0, exit)
+        assertTrue(stdout.single().contains("the rewrite"), "the new name is printed: $stdout")
+    }
+
+    @Test
+    fun aClearedNameFallsBackToTheTmuxSessionStringRatherThanPrintingNothing() = runBlocking {
+        val stdout = mutableListOf<String>()
+        val exit = runRenameCommand(
+            "abc12345",
+            rename = { sampleDto("abc12345", "running", needsAttention = false).copy(name = "") },
+            stdout = stdout::add,
+            stderr = { error("no stderr expected: $it") },
+        )
+        assertEquals(0, exit)
+        assertTrue(
+            stdout.single().endsWith("kt-abc12345"),
+            "an emptied name reads back as the automatic label, exactly as the Web UI shows it: $stdout",
+        )
+    }
+
+    @Test
+    fun renamingAnUnknownSessionSaysSoAndFails() = runBlocking {
+        val stderr = mutableListOf<String>()
+        val exit = runRenameCommand(
+            "abc12345",
+            rename = { throw ApiException(404, "no such session") },
+            stdout = { error("no stdout expected: $it") },
+            stderr = stderr::add,
+        )
+        assertEquals(1, exit)
+        assertTrue(stderr.single().contains("abc12345"), "the refusal names the session: $stderr")
+    }
+
+    @Test
     fun importCommandRegistersThenResumesByDefault() = runBlocking {
         val stdout = mutableListOf<String>()
         val resumedIds = mutableListOf<String>()

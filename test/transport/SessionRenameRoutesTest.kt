@@ -19,6 +19,7 @@ import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.store.FakeEventStore
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.patch
 import io.ktor.client.request.setBody
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.builtins.ListSerializer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -85,6 +87,27 @@ class SessionRenameRoutesTest {
         assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
         val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
         assertEquals("", dto.name)
+    }
+
+    // `kotgent list` renders whatever GET /sessions answers, so the renamed row has to reach that list and
+    // not only the PATCH response the renaming client already holds.
+    @Test
+    fun theSessionListShowsTheRenamedNameAndTheClearedOneFallsBackToTmux() = withRenameServer { env ->
+        assertEquals(HttpStatusCode.OK, env.rename(seeded.value, """{"name":"ship the parser"}""").status)
+
+        val listed = assertNotNull(env.sessions().firstOrNull { it.id == seeded.value })
+        assertEquals("ship the parser", listed.name)
+        assertEquals(seededAt, listed.updatedAt, "the list orders by updatedAt, which a rename does not touch")
+
+        assertEquals(HttpStatusCode.OK, env.rename(seeded.value, """{"name":""}""").status)
+
+        val cleared = assertNotNull(env.sessions().firstOrNull { it.id == seeded.value })
+        assertEquals("", cleared.name)
+        assertEquals(
+            "kotgent-seeded",
+            cleared.tmuxSession,
+            "a cleared name leaves the automatic label every client falls back to",
+        )
     }
 
     @Test
@@ -135,6 +158,17 @@ class SessionRenameRoutesTest {
         val client: HttpClient,
         val store: FakeEventStore,
     ) {
+        suspend fun sessions(): List<SessionDto> {
+            val resp = client.get("http://127.0.0.1:$port$API_PREFIX/sessions") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+            }
+            assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+            return TRANSPORT_JSON.decodeFromString(
+                ListSerializer(SessionDto.serializer()),
+                resp.bodyAsText(),
+            )
+        }
+
         suspend fun rename(id: String, body: String): HttpResponse =
             client.patch("http://127.0.0.1:$port$API_PREFIX/sessions/$id") {
                 header(HttpHeaders.Authorization, "Bearer $token")

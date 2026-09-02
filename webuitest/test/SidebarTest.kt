@@ -584,6 +584,22 @@ class SidebarTest {
             assertThat(subline).hasText("claude · 2.1.218")
         }
     }
+
+    // The rename half of what the live frame buys: a rename made anywhere else — the CLI's PATCH, a second
+    // tab — reaches this page as a session_update, so the row relabels with no reload and no refetch.
+    @Test
+    fun aRenameMadeElsewhereRelabelsTheRowWithoutAReload() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-rename-live") { harness, _, page ->
+            val name = page.locator("#session-list .session-row[data-id='s-alpha'] .session-name")
+            assertThat(name).hasText("alpha")
+
+            harness.send("rename s-alpha regrind")
+            assertThat(name).hasText("regrind")
+
+            harness.send("rename s-alpha -")
+            assertThat(name).hasText("kt-s-alpha")
+        }
+    }
 }
 
 private val CLIPBOARD_RECORDER: String = """

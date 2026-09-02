@@ -119,15 +119,7 @@ object Commands {
     fun interrupt(id: String): Int = withApi { api -> report("interrupted", id, api.interrupt(id)) }
 
     fun renameSession(id: String, name: String): Int = withApi { api ->
-        try {
-            val renamed = api.renameSession(id, name)
-            println("renamed ${renamed.id} → ${renamed.name.ifEmpty { renamed.tmuxSession }}")
-            0
-        } catch (e: ApiException) {
-            if (e.status != HTTP_NOT_FOUND) throw e
-            eprintln("no such session: $id")
-            1
-        }
+        runRenameCommand(id, { api.renameSession(id, name) }, ::println, ::eprintln)
     }
 
     private fun report(verb: String, id: String, updated: SessionDto?): Int {
@@ -653,6 +645,24 @@ val DUPLICATE_IMPORT_ID_IN_BODY: Regex = Regex("kotgent session '([^']+)'")
  * Imports then resumes unless [noStart]. A resume failure leaves the row truthfully resumable; duplicate
  * 409 responses produce a concrete resume or restore hint from the server's existing-session id.
  */
+/** An emptied name prints the tmux session string — the automatic label the Web UI's `displayName` also picks. */
+suspend fun runRenameCommand(
+    id: String,
+    rename: suspend () -> SessionDto,
+    stdout: (String) -> Unit,
+    stderr: (String) -> Unit,
+): Int {
+    val renamed = try {
+        rename()
+    } catch (e: ApiException) {
+        if (e.status != HTTP_NOT_FOUND) throw e
+        stderr("no such session: $id")
+        return 1
+    }
+    stdout("renamed ${renamed.id} → ${renamed.name.ifEmpty { renamed.tmuxSession }}")
+    return 0
+}
+
 suspend fun runImportCommand(
     noStart: Boolean,
     importSession: suspend () -> SessionDto,

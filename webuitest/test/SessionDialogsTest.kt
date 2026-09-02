@@ -736,6 +736,50 @@ class SessionDialogsTest {
     }
 
 
+    // The forward direction of the same lock. The palette shortcut is suppressed while any dialog is open,
+    // so the dialog's busy-state "Close" is what makes the palette reachable at all with the PATCH still
+    // in flight — and rename must then close the other session commands exactly as the six flows do.
+    @Test
+    fun theOtherSessionCommandsAreUnavailableForAsLongAsARenameHoldsTheLock() {
+        val held = AtomicReference<Route?>(null)
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.route("**$API/sessions/$BADGE_SESSION") { route ->
+                        if (route.request().method() != "PATCH" || !held.compareAndSet(null, route)) route.resume()
+                    }
+                    context.traced("rename-holds-lock") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+                        openRename(page)
+
+                        page.locator("#rename-session-name").fill(RENAMED_ALPHA)
+                        page.locator("#rename-session-submit").click()
+                        page.waitForCondition { held.get() != null }
+                        page.locator("#rename-session-cancel").click()
+                        assertThat(page.locator("#rename-session-dialog")).hasCount(0)
+
+                        openPaletteSearch(page, "Interrupt current")
+                        val blocked = interruptOption(page)
+                        assertThat(blocked).hasCount(1)
+                        assertThat(blocked).hasAttribute("aria-disabled", "true")
+                        assertThat(blocked.locator(".command-palette-disabled-reason")).hasText(PENDING_REASON)
+                        page.locator("#command-palette-close").click()
+                        assertThat(page.locator("#command-palette")).hasCount(0)
+
+                        held.get()!!.resume()
+                        assertThat(page.locator("#status-line")).containsText("Renamed to $RENAMED_ALPHA")
+
+                        openPaletteSearch(page, "Interrupt current")
+                        val released = interruptOption(page)
+                        assertThat(released).hasCount(1)
+                        assertThat(released).not().hasAttribute("aria-disabled", "true")
+                    }
+                }
+            }
+        }
+    }
+
     private fun signIn(context: BrowserContext, harness: Harness): Page {
         context.loginWithTicket(harness.ticket, harness.baseUrl)
         val page = context.newPage()
@@ -817,6 +861,11 @@ class SessionDialogsTest {
         renameOption(page).click()
         assertThat(page.locator("#rename-session-dialog")).isVisible()
     }
+
+    private fun interruptOption(page: Page): Locator = page.locator(
+        "#command-palette-results li",
+        Page.LocatorOptions().setHasText("Interrupt current session"),
+    )
 
     private fun renameOption(page: Page): Locator = page.locator(
         "#command-palette-results li",

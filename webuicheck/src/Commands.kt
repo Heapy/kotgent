@@ -22,6 +22,7 @@ fun handleCommand(line: String, ctx: HarnessContext): Boolean {
         "emit" -> handleEmit(words, ctx)
         "done" -> handleDone(words, ctx)
         "model" -> handleModel(words, ctx)
+        "rename" -> handleRename(words, ctx)
         "append" -> handleAppend(words, ctx)
         else -> handleTaskCommand(words, ctx)
     }
@@ -58,6 +59,21 @@ private fun handleModel(words: List<String>, ctx: HarnessContext): Boolean {
             reject("model: no session '${id.value}' in this scenario")
         } else {
             ctx.fakes.events.setModel(id, model)
+            true
+        }
+    }
+}
+
+/** Renames in the store, so the browser learns it from the patch alone, exactly as a CLI rename would. */
+private fun handleRename(words: List<String>, ctx: HarnessContext): Boolean {
+    if (words.size != 3) return reject("usage: rename <session-id> <name|-> ('-' restores the automatic label)")
+    val id = SessionId(words[1])
+    val name = if (words[2] == "-") "" else words[2]
+    return runBlocking {
+        if (ctx.fakes.events.getSession(id) == null) {
+            reject("rename: no session '${id.value}' in this scenario")
+        } else {
+            ctx.fakes.events.setName(id, name)
             true
         }
     }

@@ -330,14 +330,33 @@ through the full-row path.
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] rename from the CLI, confirm an open browser updates without a reload (this is what Task 4 buys)
-- [ ] rename from the Web UI, confirm `kotgent list` shows the new name
-- [ ] clear the name, confirm both clients fall back to the tmux session string
-- [ ] confirm a rename does not move the session in the done-list ordering
-- [ ] confirm the palette's session commands are disabled for the duration of a rename, as they are for
-      the other six flows
-- [ ] run the full suite: `./kotlin build && ./kotlin test`
-- [ ] run `node --test 'webuitest/js/**/*.test.js'` from the repository root
+- [x] rename from the CLI, confirm an open browser updates without a reload (this is what Task 4 buys) —
+      proven as a chain, not by inspection: `ApiClientSessionTest.renameSendsAPatchToTheSessionAndReadsTheRenamedRowBack`
+      (CLI → PATCH), `TransportTest.aRenameReachesAConnectedClientWithoutAReload` (PATCH → `session_update`),
+      and the new `SidebarTest.aRenameMadeElsewhereRelabelsTheRowWithoutAReload`, which renames in the
+      store through the new `rename` harness command and watches the open page relabel its row
+- [x] rename from the Web UI, confirm `kotgent list` shows the new name — ⚠️ the criterion's premise is
+      wrong: `renderSessions` has never had a name column (`ID AGENT STATE ATTN TASK CWD`). What the CLI
+      reads is proven instead by `SessionRenameRoutesTest.theSessionListShowsTheRenamedNameAndTheClearedOneFallsBackToTmux`
+      (GET `/sessions`, the list `Commands.list()` renders, answers the renamed row). Whether the table
+      should grow a name column is a separate, unplanned question.
+- [x] clear the name, confirm both clients fall back to the tmux session string — browser:
+      `sessions.test.js` "a patch carrying an empty name clears it back to the automatic label" and the
+      `rename s-alpha -` leg of `SidebarTest.aRenameMadeElsewhereRelabelsTheRowWithoutAReload`; CLI:
+      `runRenameCommand` extracted out of `Commands.renameSession` for the same reason `runImportCommand`
+      was, and covered by `CliTest.aClearedNameFallsBackToTheTmuxSessionStringRatherThanPrintingNothing`
+- [x] confirm a rename does not move the session in the done-list ordering —
+      `EventStoreTest` (`updated_at` is not written, over both stores), `SessionRenameRoutesTest.renamingLeavesUpdatedAtAlone`,
+      and the new `sessions.test.js` "a renamed done session keeps its place in the list", which runs the
+      frame through `patchIfNewer` and then `byRecentChange`
+- [x] confirm the palette's session commands are disabled for the duration of a rename, as they are for
+      the other six flows — the existing browser test covered the reverse direction only (rename disabled
+      while another flow holds the lock). The forward direction is now
+      `SessionDialogsTest.theOtherSessionCommandsAreUnavailableForAsLongAsARenameHoldsTheLock` and, at the
+      registry level, `mutation.test.js` "a rename closes exactly the session commands the flows before it
+      close"
+- [x] run the full suite: `./kotlin build && ./kotlin test`
+- [x] run `node --test 'webuitest/js/**/*.test.js'` from the repository root
 
 ### Task 9: [Final] Fold durable intent into its authoritative homes
 

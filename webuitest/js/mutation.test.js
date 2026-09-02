@@ -20,6 +20,7 @@ import {
   pendingMutation,
   runMutation,
 } from "../../resources/webui/lib/mutation.js";
+import { buildCommands } from "../../resources/webui/lib/commands.js";
 import { deferred } from "./fixtures.js";
 
 async function settle(promise) {
@@ -140,5 +141,40 @@ describe("runMutation", () => {
       await runMutation("restore-project", () => Promise.resolve({ id: "p1", archived: false })),
       { id: "p1", archived: false },
     );
+  });
+});
+
+// The palette reads the holder name this module publishes, and gates on its presence rather than on its
+// value. `rename` is the seventh flow to take the lock, so the set of commands it closes must be the same
+// set every earlier flow closes — a new flow that gated fewer commands would be the bug worth catching.
+describe("the palette while a flow holds the lock", () => {
+  const BUSY_REASON = "another action is still in progress";
+  const active = {
+    id: "s1", name: "one", state: "running", tmuxSession: "kotgent-one", agent: "claude", cwd: "/work/one",
+    tags: [],
+  };
+
+  function gatedIds(pendingAction) {
+    return buildCommands({
+      sessions: [active],
+      activeSession: active,
+      attachedId: active.id,
+      pendingAction: pendingAction,
+      actions: {},
+    })
+      .filter((command) => command.group === "session" && command.disabled === BUSY_REASON)
+      .map((command) => command.id);
+  }
+
+  test("a rename closes exactly the session commands the flows before it close", () => {
+    const underRename = gatedIds("rename");
+
+    assert.ok(underRename.includes("session.stop"), "the gated set is not empty: " + underRename.join(" "));
+    assert.deepEqual(underRename, gatedIds("start"));
+    assert.deepEqual(underRename, gatedIds("link"));
+  });
+
+  test("with nothing in flight no session command names the wait", () => {
+    assert.deepEqual(gatedIds(null), []);
   });
 });
