@@ -285,26 +285,26 @@ through the full-row path.
 - Modify: `resources/webui/style.css` (only if the dialog needs a rule the existing ones do not give)
 - Modify: `webuitest/test/` (the browser-tier suite covering dialogs)
 
-- [ ] add a `RenameSessionDialog` to `components/dialogs.js`: one text input prefilled with the session's
+- [x] add a `RenameSessionDialog` to `components/dialogs.js`: one text input prefilled with the session's
       current `name`, a Save button and a Cancel button
-- [ ] spell the input's attribute `spellcheck=${false}` — lowercase name, interpolated boolean
-- [ ] set `maxlength` to the same 200 the server enforces, and say in the empty-field placeholder that
+- [x] spell the input's attribute `spellcheck=${false}` — lowercase name, interpolated boolean
+- [x] set `maxlength` to the same 200 the server enforces, and say in the empty-field placeholder that
       clearing it restores the automatic name
-- [ ] add a `session.rename` entry to `lib/commands.js` with `group: "session"`, `chord: null`, and
+- [x] add a `session.rename` entry to `lib/commands.js` with `group: "session"`, `chord: null`, and
       `disabled: disabledWhilePending(pendingAction) || disabledWhenNoSession(activeSession)`
-- [ ] add `openRename` in `app.js` writing `openDialog({ kind: "rename", session: selected })`, and
+- [x] add `openRename` in `app.js` writing `openDialog({ kind: "rename", session: selected })`, and
       render the dialog beside the others at `app.js:1302-1330`
-- [ ] add the `renameSession` flow in `app.js` wrapped in `runMutation("rename", …)`, copying
+- [x] add the `renameSession` flow in `app.js` wrapped in `runMutation("rename", …)`, copying
       `startSession` (`app.js:827`): capture `dialogSignal.value` before the request, `closeDialogFrom`
       the captured instance, and route a late failure to `say(..., true)` when the dialog has since
       changed
-- [ ] append `"rename"` to the flow-name vocabulary comment in `lib/mutation.js` and change its header's
+- [x] append `"rename"` to the flow-name vocabulary comment in `lib/mutation.js` and change its header's
       "all six at once" to seven
-- [ ] run `node --check` on every changed JavaScript file
-- [ ] write a browser test: the served rename input carries `spellcheck="false"`
-- [ ] write a browser test: submitting the dialog renames the row in the sidebar
-- [ ] write a browser test: the palette's rename entry is disabled while another mutation holds the lock
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 7
+- [x] run `node --check` on every changed JavaScript file
+- [x] write a browser test: the served rename input carries `spellcheck="false"`
+- [x] write a browser test: submitting the dialog renames the row in the sidebar
+- [x] write a browser test: the palette's rename entry is disabled while another mutation holds the lock
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 7
 
 ### Task 7: Add `kotgent session rename`
 

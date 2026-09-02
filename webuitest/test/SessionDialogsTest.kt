@@ -650,6 +650,92 @@ class SessionDialogsTest {
     }
 
 
+    @Test
+    fun theRenameFieldOpensOnTheStoredNameAndTurnsSpellcheckOff() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.traced("rename-session-field") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+                        openRename(page)
+
+                        val field = page.locator("#rename-session-name")
+                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+                        assertThat(field).hasAttribute("spellcheck", "false")
+                        assertThat(field).hasAttribute("maxlength", "200")
+                        assertThat(field).isFocused()
+                        assertThat(field).hasValue("alpha")
+                        assertThat(field)
+                            .hasAttribute("placeholder", "leave empty for the automatic name")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun savingTheRenameDialogRelabelsTheSidebarRow() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.traced("rename-session-save") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+                        openRename(page)
+
+                        page.locator("#rename-session-name").fill(RENAMED_ALPHA)
+                        page.locator("#rename-session-submit").click()
+
+                        assertThat(page.locator("#rename-session-dialog")).hasCount(0)
+                        assertThat(alphaRow(page).locator(".session-name")).hasText(RENAMED_ALPHA)
+                        assertThat(page.locator("#status-line"))
+                            .containsText("Renamed to $RENAMED_ALPHA")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun theRenameCommandIsUnavailableForAsLongAsAnotherMutationHoldsTheLock() {
+        val held = AtomicReference<Route?>(null)
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.route("**$API/sessions/$BADGE_SESSION/interrupt") { route ->
+                        if (!held.compareAndSet(null, route)) route.resume()
+                    }
+                    context.traced("rename-session-pending") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+
+                        runFromPalette(page, "Interrupt current session")
+                        page.waitForCondition { held.get() != null }
+
+                        openPaletteSearch(page, RENAME_COMMAND)
+                        val blocked = renameOption(page)
+                        assertThat(blocked).hasCount(1)
+                        assertThat(blocked).hasAttribute("aria-disabled", "true")
+                        assertThat(blocked.locator(".command-palette-disabled-reason"))
+                            .hasText(PENDING_REASON)
+                        page.locator("#command-palette-close").click()
+                        assertThat(page.locator("#command-palette")).hasCount(0)
+
+                        held.get()!!.resume()
+                        assertThat(page.locator("#status-line")).containsText("Interrupt completed")
+
+                        openPaletteSearch(page, RENAME_COMMAND)
+                        val released = renameOption(page)
+                        assertThat(released).hasCount(1)
+                        assertThat(released).not().hasAttribute("aria-disabled", "true")
+                    }
+                }
+            }
+        }
+    }
+
+
     private fun signIn(context: BrowserContext, harness: Harness): Page {
         context.loginWithTicket(harness.ticket, harness.baseUrl)
         val page = context.newPage()
@@ -719,6 +805,24 @@ class SessionDialogsTest {
          "archived":false,"rev":1,"taskRef":null,"projectId":null}
     """.trimIndent()
 
+    private fun alphaRow(page: Page): Locator =
+        page.locator("#session-list .session-row[data-id=\"$BADGE_SESSION\"]")
+
+    private fun selectAlpha(page: Page) {
+        alphaRow(page).click()
+    }
+
+    private fun openRename(page: Page) {
+        openPaletteSearch(page, RENAME_COMMAND)
+        renameOption(page).click()
+        assertThat(page.locator("#rename-session-dialog")).isVisible()
+    }
+
+    private fun renameOption(page: Page): Locator = page.locator(
+        "#command-palette-results li",
+        Page.LocatorOptions().setHasText("Rename this session"),
+    )
+
     private companion object {
         const val API = "/api/v1"
 
@@ -758,6 +862,9 @@ class SessionDialogsTest {
         const val IMPORTED_ID = "imp-1"
         const val IMPORTED_NAME = "adopted-codex"
         const val IMPORTED_PROVIDER_ID = "5f2b1d64-2c8a-4d21-9f0e-7a63c1d4b8e2"
+
+        const val RENAME_COMMAND = "rename"
+        const val RENAMED_ALPHA = "alpha, renamed"
 
         const val PENDING_REASON = "another action is still in progress"
         const val APP_PENDING_REASON = "Another action is still in progress — try again in a moment."

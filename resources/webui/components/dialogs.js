@@ -437,6 +437,67 @@ export function NewSessionDialog({
   `;
 }
 
+export function RenameSessionDialog({ session, onRename, onClose }) {
+  const [name, setName] = useState(session.name || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    const field = inputRef.current;
+    if (field) {
+      field.focus();
+      field.select();
+    }
+  }, []);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onRename(session.id, name.trim());
+    } catch (e) {
+      setError("Could not rename the session: " + errorMessage(e));
+      setBusy(false);
+    }
+  };
+
+  return html`
+    <${Dialog} id="rename-session-dialog" labelledBy="rename-session-title" lightDismiss=${!busy}
+               onClose=${onClose}>
+      <form id="rename-session-form" onSubmit=${submit}>
+        <div class="dialog-head">
+          <div>
+            <h2 id="rename-session-title">Rename session</h2>
+            <p>Changes the label only. The conversation, its terminal and its history are untouched.</p>
+          </div>
+          <button id="rename-session-close" class="icon-button" type="button"
+                  aria-label="Close" onClick=${onClose}>×</button>
+        </div>
+
+        <label class="field">
+          <span>Name</span>
+          <input id="rename-session-name" type="text" maxlength="200"
+                 spellcheck=${false} autocomplete="off"
+                 placeholder="leave empty for the automatic name" ref=${inputRef}
+                 value=${name} onInput=${(e) => setName(e.target.value)} />
+        </label>
+
+        ${error && html`<p id="rename-session-error" class="form-error" role="alert">${error}</p>`}
+
+        <div class="dialog-actions">
+          <button id="rename-session-cancel" class="button button-quiet" type="button"
+                  onClick=${onClose}>${busy ? "Close" : "Cancel"}</button>
+          <button id="rename-session-submit" class="button button-primary" type="submit"
+                  disabled=${busy}>${busy ? "Saving…" : "Save name"}</button>
+        </div>
+      </form>
+    <//>
+  `;
+}
+
 export function UploadFilesDialog({ session, onClose }) {
   const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(false);

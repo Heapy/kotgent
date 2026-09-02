@@ -123,6 +123,14 @@ function sessionCommands(activeSession, attachedId, pendingAction, actions) {
       run: () => actions.done(),
     },
     {
+      id: "session.rename", group: "session", chord: null,
+      title: "Rename this session…",
+      subtitle: "changes the label; empty restores the automatic name",
+      hint: null,
+      disabled: disabledWhilePending(pendingAction) || disabledWhenNoSession(activeSession),
+      run: () => actions.rename(),
+    },
+    {
       id: "session.copy-tmux", group: "session", chord: "c",
       title: "Copy tmux command",
       subtitle: "copies a local command for the selected live session",

@@ -1,5 +1,5 @@
 // One runner for every flow in the Web UI that changes daemon state, so that "is something already
-// running" has one answer rather than one per flow. The command palette has to ask it about all six at
+// running" has one answer rather than one per flow. The command palette has to ask it about all seven at
 // once, which a per-flow flag — or, for two of them, no flag at all — cannot answer.
 //
 // The runner owns three things and nothing else:
@@ -35,7 +35,7 @@ import { signal } from "../vendor/signals-core.module.js";
 export const MUTATION_BUSY_MESSAGE = "Another action is still in progress — try again in a moment.";
 
 // The name of the flow holding the lock, or null. Names are the vocabulary lib/commands.js already
-// speaks: "interrupt", "resume", "stop", "done", "undone", "import", "start", "link-task",
+// speaks: "interrupt", "resume", "stop", "done", "undone", "import", "start", "rename", "link-task",
 // "preferences", "delete-project", "restore-project".
 export const pendingMutation = signal(null);
 

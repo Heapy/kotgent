@@ -110,6 +110,7 @@ import {
   NewSessionDialog,
   PhoneDialog,
   PreferencesDialog,
+  RenameSessionDialog,
   RestoreProjectDialog,
   UploadFilesDialog,
 } from "./components/dialogs.js";
@@ -849,6 +850,27 @@ function App() {
     });
   }, [showSession]);
 
+  const renameSession = useCallback((sessionId, name) => {
+    const submittedDialog = dialogSignal.value;
+    return runMutation("rename", async () => {
+      let renamed;
+      try {
+        renamed = await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
+          method: "PATCH",
+          body: JSON.stringify({ name: name }),
+        });
+      } catch (e) {
+        // Late failures surface globally if the submitting form has unmounted.
+        if (dialogSignal.value === submittedDialog) throw e;
+        say("Could not rename the session: " + errorMessage(e), true);
+        return;
+      }
+      mergeSessionRow(renamed);
+      closeDialogFrom(submittedDialog);
+      say("Renamed to " + displayName(renamed) + ".");
+    });
+  }, []);
+
   // Import and optional resume are serialized as one action. HTTP rows merge by revision, targeted
   // GETs decide attachment from fresh state, and generation guards prevent late auto-selection.
   // Registration success closes the dialog even when its follow-up resume fails.
@@ -1162,6 +1184,10 @@ function App() {
     const selected = activeSessionSignal.value;
     if (selected) openDialog({ kind: "upload", session: selected });
   }, []);
+  const openRename = useCallback(() => {
+    const selected = activeSessionSignal.value;
+    if (selected) openDialog({ kind: "rename", session: selected });
+  }, []);
   const openLinkTask = useCallback(() => {
     const selected = activeSessionSignal.value;
     const disabled = sessionTaskLinkDisabledReason(selected, pendingMutation.value);
@@ -1203,6 +1229,7 @@ function App() {
       done: done,
       copyTmux: copyTmuxCommand,
       uploadFiles: openUpload,
+      rename: openRename,
       linkSessionTask: openLinkTask,
       newSession: () => openNewSession(null),
       importSession: openImportSession,
@@ -1307,6 +1334,9 @@ function App() {
                            onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "upload" && html`
       <${UploadFilesDialog} session=${dialog.session} onClose=${closeDialog} />`}
+    ${dialog && dialog.kind === "rename" && html`
+      <${RenameSessionDialog} session=${dialog.session} onRename=${renameSession}
+                              onClose=${closeDialog} />`}
     ${dialog && dialog.kind === "link-task" && html`
       <${LinkTaskDialog} initialSession=${dialog.session} session=${activeSession}
                          tasks=${tasks} tasksStatus=${taskListStatus}
