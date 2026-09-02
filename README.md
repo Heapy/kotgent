@@ -3,24 +3,23 @@
 [![CI](https://github.com/Heapy/kotgent/actions/workflows/ci.yml/badge.svg)](https://github.com/Heapy/kotgent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**kotgent** is a local-first, restart-safe control plane for coding-agent sessions.
+## What kotgent is
 
-Agent processes (Claude, Codex, Junie and plain login shells today) run inside `tmux`, independent of any user
-interface. The IDE terminal, desktop Web UI, and installable mobile PWA are interchangeable clients over one daemon. On a
-phone, server-sent Web Push can wake the PWA's service worker when a session needs attention, even after
-the app is closed. `tmux` is the transport and the process-survival mechanism, **not** the source of
-truth: state is derived by replaying an append-only event log, so it survives a daemon restart.
+**kotgent** is a local-first control plane for running Claude, Codex, Junie, or a login shell inside
+`tmux` and supervising those sessions from a terminal, a desktop browser, or an installed PWA.
+
+It is for developers who want long-running coding work to continue after the IDE or browser closes, and
+who want to move between Mac, iPad, and iPhone without moving the process itself. Kotgent provides:
+
+- durable agent processes in an isolated `tmux` server;
+- one live session list and terminal shared by every client;
+- attention notifications when an agent needs a human response;
+- restart-safe session state and a project task backlog stored locally on the Mac.
+
+Kotgent does not replace a provider's conversation storage. Claude, Codex, and Junie still own their
+transcripts and resume behavior; kotgent records enough state to reconnect the right process and client.
 
 ![kotgent running on a MacBook, iPad, and iPhone](docs/images/devices.png)
-
-```text
-IDE terminal ──────┐
-Desktop Web UI ────┼──▶ kotgent daemon ──▶ tmux ──▶ claude | codex | junie | shell
-Mobile PWA ────────┘          │        │
-                              │        └──▶ browser push service ──▶ service worker
-                              ├── SQLite (event log, session cache, push subscriptions)
-                              └── provider adapter (hooks → canonical events, approvals)
-```
 
 There are two distinct kinds of durability, and kotgent leans on both instead of trying to make `tmux`
 immortal:
@@ -33,55 +32,166 @@ immortal:
 
 ## Contents
 
-- [Quick start](#quick-start)
+- [What kotgent is](#what-kotgent-is)
+- [Install with Homebrew](#install-with-homebrew)
+- [Cloudflare Tunnel](#cloudflare-tunnel)
+- [Install the PWA in Safari](#install-the-pwa-in-safari)
+- [Architecture](#architecture)
 - [Requirements](#requirements)
 - [Build & test](#build--test)
 - [The CLI](#the-cli) — [the task backlog](#the-task-backlog),
-  [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web),
-  [sign in from your phone](#sign-in-from-your-phone)
+  [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web)
 - [Troubleshooting](#troubleshooting)
 - [How a session stays available](#how-a-session-stays-available)
-- [Architecture at a glance](#architecture-at-a-glance)
 - [Status & limitations](#status--limitations)
 - [Contributing](#contributing)
 - [License](#license)
 
-## Quick start
+## Install with Homebrew
 
-Install from the Homebrew tap (macOS on Apple Silicon; the formula pulls in `tmux`):
+Kotgent supports macOS on Apple Silicon. Install it from the Homebrew tap; the formula also installs
+`tmux`:
 
 ```shell
 brew install Heapy/tap/kotgent
 ```
 
-The formula installs kotgent itself, **not** the agent CLIs: `claude`, `codex` and/or `junie` have to be on
-your `PATH` already (see [Requirements](#requirements)); the `shell` kind uses your existing login shell.
-Then run the rest **from a normal login shell** —
-`kotgent install` snapshots that shell's environment (`PATH`, so the daemon can find the agent binaries,
-and `LANG`, so the TUI renders as UTF-8) into the launchd plist, and launchd would otherwise start the
-daemon with a minimal env and no locale at all:
+Run the setup from a normal login shell. `kotgent install` creates and starts a per-user launchd agent,
+capturing that shell's `PATH` and UTF-8 locale. Start a plain shell for the provider-free first run, then
+open the Web UI:
 
 ```shell
-kotgent install            # install + boot the daemon as a launchd agent (RunAtLoad + KeepAlive)
-kotgent start claude       # launch a Claude session inside tmux, in the current directory
-kotgent start shell        # launch a plain login shell in the same managed terminal surface
-kotgent web                # open the sign-in form and print its one-time code
+kotgent install
+kotgent start shell
+kotgent web
 ```
 
-That's the whole loop. From there, `kotgent list` shows every session and its state, `kotgent attach <id>`
-drops the terminal straight into your shell, and closing either client just detaches — the agent keeps
-running in `tmux`.
+To run a coding agent instead, its CLI must already be on that login shell's `PATH`:
+
+```shell
+kotgent start claude       # or: codex, junie
+```
+
+`kotgent list` shows every session and its state. `kotgent attach <id>` opens its terminal, and closing a
+terminal or browser only detaches that client—the process keeps running in `tmux`.
 
 Upgrades are `brew upgrade kotgent`, followed by **`kotgent install` again**: the plist records the
 binary's real (version-qualified) Cellar path, which a new release invalidates.
 
 To build from source instead, see [Build & test](#build--test).
 
+## Cloudflare Tunnel
+
+Remote browser and PWA access is optional. The native daemon deliberately binds only to
+`127.0.0.1:27508` and does not terminate TLS, so **never publish that port directly**. Use a named
+[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/) with a
+[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/setup/secure-private-apps/private-web-app/)
+policy in front of it. This boundary matters: the Web UI exposes a terminal that can run arbitrary
+commands on the Mac.
+
+1. Put a domain on Cloudflare and install [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/)
+   on the Mac:
+
+   ```shell
+   brew install cloudflared
+   ```
+
+2. In **Cloudflare Dashboard → Networking → Tunnels**, create a named tunnel. Use the macOS connector
+   command shown by the dashboard so `cloudflared` runs as a service, then add one **Published
+   application** route:
+
+   | Setting | Value |
+   |---|---|
+   | Public hostname | `kotgent.example.com` |
+   | Service | `http://127.0.0.1:27508` |
+
+3. In **Zero Trust → Access controls → Applications**, protect that exact hostname with a self-hosted
+   application and an Allow policy restricted to your identity. Do not use an `Everyone` or `Bypass`
+   policy.
+
+4. Tell kotgent which public origin it may accept, then restart the daemon so the allowlist takes effect:
+
+   ```shell
+   kotgent config set public-url https://kotgent.example.com
+   launchctl kickstart -k "gui/$(id -u)/io.kotgent.daemon"
+   ```
+
+Use your own hostname in both places. A stable named tunnel is required; a temporary `trycloudflare.com`
+URL cannot be configured as the durable PWA origin. Only the browser surface crosses the tunnel—CLI and
+provider-hook credentials remain loopback-only. Finally, open the public hostname in a private Safari
+window and verify that Cloudflare Access appears **before** kotgent's sign-in form; if it does not, fix the
+Access policy before installing the PWA.
+
+## Install the PWA in Safari
+
+Open Kotgent in Safari before installing it:
+
+- on the host Mac, use `http://127.0.0.1:27508/auth`;
+- on another Mac, an iPad, or an iPhone, use `https://kotgent.example.com/auth` and complete Cloudflare
+  Access first.
+
+Install the app **before** redeeming a kotgent sign-in code. Safari and an installed web app have separate
+cookie storage, so a login completed in the browser does not reliably sign in the installed app.
+
+### macOS
+
+Safari web apps require macOS Sonoma 14 or later. In Safari, choose **File → Add to Dock** (or
+**Share → Add to Dock**), choose the name, and click **Add**. Launch Kotgent from the Dock or Spotlight.
+See [Apple's Safari web-app guide](https://support.apple.com/104996).
+
+### iPhone
+
+In Safari, tap **More → Share** (or the Share button, depending on the tab layout), choose
+**Add to Home Screen**, enable **Open as Web App**, and tap **Add**. Launch Kotgent from its Home Screen
+icon. See [Apple's iPhone guide](https://support.apple.com/guide/iphone/iphea86e5236/ios).
+
+### iPad
+
+In Safari, tap **Share → More → Add to Home Screen**, enable **Open as Web App**, and tap **Add**. Launch
+Kotgent from its Home Screen icon. See [Apple's iPad guide](https://support.apple.com/guide/ipad/ipad8f1f7a29/ipados).
+
+After launching the installed app, complete Cloudflare Access again if prompted. Generate a fresh,
+single-use kotgent code with `kotgent web`, or with the phone button in an already signed-in desktop Web
+UI opened on the host Mac, and type that code into the installed app. On iPhone and iPad, server-sent Web
+Push requires iOS or iPadOS 16.4 or later and notifications must be enabled from the installed app.
+
+## Architecture
+
+```text
+IDE terminal / CLI ────────────────────────────┐
+Local browser / Safari web app ────────────────┼──▶ kotgent daemon ──▶ tmux ──▶ agent | shell
+Remote Safari / PWA ─▶ Access ─▶ Tunnel ───────┘          │     │
+                                                         │     └──▶ Web Push service
+                                                         ├──▶ SQLite event log + task backlog
+                                                         └──▶ provider adapters + hooks
+```
+
+The daemon is the control plane, while `tmux` owns the live process and each provider owns its
+conversation history. Adapters normalize provider-specific hooks into canonical events; a pure reducer
+folds the append-only event log into the current session projection. One upstream `tmux attach` per
+session is fanned out to every terminal client.
+
+| Layer | Responsibility |
+|---|---|
+| `core/` | Host-free events, session states, reducer, and projection. |
+| `adapter/` | Claude, Codex, Junie, and shell launch/resume behavior plus event normalization. |
+| `daemon/` | Session lifecycle, reconciliation, provider-id capture, and task coordination. |
+| `tmux/`, `pty/` | Isolated process hosting and the single-upstream terminal fan-out. |
+| `store/`, `task/` | SQLite event/session persistence and the project backlog. |
+| `transport/` | Ktor REST, WebSocket, authentication, and static PWA endpoints. |
+| `push/` | Attention-edge tracking, subscriptions, VAPID signing, and Web Push delivery. |
+| `launchd/` | Per-user daemon installation and environment capture. |
+
+State is local and restart-safe; remote access publishes only the authenticated browser surface. See
+[docs/INTENT.md](docs/INTENT.md) for product boundaries, [CLAUDE.md](CLAUDE.md) for architecture
+invariants, and [docs/TESTING.md](docs/TESTING.md) for the verification strategy.
+
 ## Requirements
 
 - **macOS on Apple Silicon (arm64).** The build targets `macosArm64` and links against macOS system
   libraries; there is no other supported target.
-- **JetBrains Kotlin Toolchain** — invoked through the bundled `./kotlin` wrapper committed in the repo.
+- **Source builds only: JetBrains Kotlin Toolchain** — invoked through the bundled `./kotlin` wrapper
+  committed in the repo.
   You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.12.0) on
   first run. A JDK is required for the toolchain, for the build-time SQLDelight codegen plugin, and for
   the JVM-side browser tier (`webuitest`), whose first run additionally downloads Playwright's browser
@@ -143,18 +253,17 @@ To build from source instead, see [Build & test](#build--test).
 `./kotlin test` runs every tier and the suite has no skips: the native suite (`test/`), the browser tier
 (`webuitest/`, a real Chromium driven through Playwright), the browser-independent JavaScript tier
 (`webuitest/js/` under `node --test`, spawned by `WebUiLogicTest`), 7 JVM tests for the build-info
-plugin, the 11 real-PTY checks `ptycheck` runs (see below) and the 2 self-checks `webuicheck` runs. The
+plugin, the 11 real-PTY tests under `test/pty/` and the 2 harness self-checks in `webuicheck/test/`. The
 two module tasks — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops;
 neither replaces the aggregate. **The counts are deliberately not written here**: they move with every
 change, and the run itself is the only source of truth that cannot go stale (`AGENTS.md` carries the
 current baseline for the one purpose a number serves — noticing that a change moved it by more than it
 meant to).
 
-Run `build` before `test`, now for **two** fixture binaries rather than one. `./kotlin test` never links a
-main binary, and the suite execs two: `PtyTest` runs `ptycheck`, while `WebUiCheckTest` **and every browser
-test** run `webuicheck`. A missing `ptycheck` reddens one test; a missing `webuicheck` reddens the whole
-browser tier. Both say so explicitly rather than passing quietly. See
-[Status & limitations](#status--limitations) for why they are separate binaries at all.
+Run `build` before `test`, for one fixture binary. `./kotlin test` never links a main binary, and every
+browser test execs `webuicheck`, so a missing `webuicheck` reddens the whole browser tier — explicitly,
+rather than passing quietly. See [Status & limitations](#status--limitations) for why it is a separate
+binary at all.
 
 **The first `test` run downloads browsers, and needs the network for it.** Playwright provisions its
 browser bundle into `~/Library/Caches/ms-playwright` — measured at about **1.1 GB**, because
@@ -182,6 +291,15 @@ along with everything else, and a failed lookup deletes it rather than leaving a
 ./kotlin do kexePath
 kexe=$(cat build/kexe-path)
 ```
+
+To install the current checkout as the `kotgent` on your `PATH`, stage its binary and Web UI together,
+and restart the launchd agent, use the repository's installer (with `~/.local/bin` on your `PATH`):
+
+```shell
+./install-local.sh
+```
+
+Pass `--no-daemon` when you want to stage the source build without replacing the running daemon.
 
 ## The CLI
 
@@ -394,36 +512,6 @@ to ordinary in-tab notifications.
 ![The kotgent Web UI: the sidebar's "Needs attention" queue and session list on the left, a live Claude
 session's terminal on the right, with Interrupt / Detach / Stop / Done controls.](docs/images/web-ui.png)
 
-### Sign in from your phone
-
-There is no TLS on the native build (`ktor-server-cio` for `macosArm64` has no `sslConnector` — that is a
-JVM-only API), so the phone reaches the daemon through a **cloudflared named tunnel** in front of
-Cloudflare Access, not by exposing the port. Point kotgent at the public host:
-
-```shell
-kotgent config set public-url https://kotgent.example.com
-```
-
-The Web UI's **phone** button (📱) then issues a code and renders a credential-free QR for
-`https://kotgent.example.com/auth`. Scan it on a phone that has passed Access, choose **Add to Home
-Screen**, launch Kotgent, and type the displayed code into that form. The `/auth` landing page carries the
-PWA install metadata but the QR intentionally does not carry or spend the credential: Safari and an
-installed iOS PWA have separate cookie jars, so signing Safari in would not sign in the home-screen app.
-An unsigned PWA that launches at `/` also routes its first `/api/v1/sessions` `401` to the same form; a later
-expired credential leaves the live terminal visible and reports the error instead.
-
-Without a configured `public-url` the dialog prints the `cloudflared` ingress snippet to add instead of a
-QR. Setting up the tunnel and the Access policy is a one-time host-side step (ingress rule →
-`http://127.0.0.1:27508`, DNS route, a strict Access policy on your own identity — the host fronts a
-terminal that can run anything on the Mac).
-
-Authorization is one rule for both surfaces: the `Host` must be in the allowlist (loopback or the
-configured public host), and an `Origin`, **required on any non-GET request and on every WebSocket
-handshake and checked for a match whenever it is present**, keeps a cookie from being replayed cross-site
-(`SameSite` alone would not — sibling `*.example.com` hosts are the same site). Hook ingress, ticket
-issuance and token rotation are additionally **loopback-only**: only the browser surface is ever published
-outward.
-
 ## Troubleshooting
 
 Most real-world breakage traces back to the daemon's launchd environment, which is minimal by design — so
@@ -508,40 +596,6 @@ Concretely:
    into an `ApprovalRequested` event; the reducer moves the session to `needs_approval`, and the events
    WebSocket lights the session up in the browser's "Needs attention" queue.
 
-## Architecture at a glance
-
-State is **event-sourced**. Adapters normalize provider signals into a canonical `AgentEvent`; a pure
-reducer folds the append-only log into a `Projection` (the derived state). Restart-safety is just
-`replay`. The code is split into a host-free core and thin edges:
-
-| Layer | What it does |
-|-------|--------------|
-| `core/` | Host-free domain: `AgentEvent`, `SessionState`, `SessionMeta`, `Reducer`, `Projection`. No I/O. |
-| `store/` | `EventStore` interface + SQLDelight-backed `SqliteEventStore` (single-writer, WAL, append+cache in one transaction); `TaskStore` + `SqliteTaskStore` beside it, which never writes the `sessions` table. |
-| `task/` | Host-free backlog domain: the tracker seam, ordering, the dependency graph, and `.kotgent.json` project resolution (pure filesystem — no `git` subprocess). No I/O beyond an injected filesystem. |
-| `pty/` | `TerminalBridge` + `Broadcaster` — the lazy single-upstream `tmux attach` fan-out. |
-| `tmux/` | Thin wrapper over `tmux -f /dev/null -L kotgent` via a `popen`-based `ProcessRunner`: one argv builder that isolates the server from `~/.tmux.conf`, plus the small option set kotgent forces in its place. |
-| `adapter/` | `AgentAdapter` contract + the Claude, Codex and Junie adapters (launch/resume spec, hook config, event normalization). |
-| `daemon/` | Session manager, start-up reconciliation, provider-id capture, stop modes, and `TaskService` — the two stores called sequentially, never nested. |
-| `push/` | Attention-edge tracking, SQLite subscription store, VAPID key/JWT signing, Darwin/NSURLSession delivery, and notifier lifecycle. |
-| `transport/` | Ktor CIO server: control REST, events WS, terminal WS, `Bearer`/cookie auth (`authorize`), `/auth` exchange, push/auth/control/hook routes, static PWA. Every programmatic endpoint has a canonical `/api/v1` path; `GET /auth` stays at root, while `/hooks/*` and `/auth/{ticket,exchange,rotate}` remain compatibility aliases. |
-| `cli/` | Subcommands + the raw `attach` passthrough, and the JSON-only `task`/`project` family (which resolves its own tmux pane through `/whoami`). |
-| `launchd/` | `plist` generation + install/uninstall. |
-| `sysnative/` (module) | Owns **all** raw POSIX/cinterop bindings (PTY via `openpty`+`posix_spawn`, tty raw, executable-path). |
-| `ptycheck/` (module) | Test fixture, not a product: a **main** binary running the real-PTY checks a test binary cannot link (KT-78062), driven from the suite by `PtyTest`. |
-| `fakes/` (module) | The shared test doubles (`FakeTmux`, `FakeEventStore`, `FakeTaskStore`, `FakeProjectFs`, `MemoryProjectFileWriter`) — a module because the root test fragment and the `webuicheck` main binary both consume them. |
-| `webuicheck/` (module) | The browser tier's fixture: a **main** binary (KT-78062 again — it serves a real PTY) that assembles the real server over those doubles, replaces the writing edges with in-memory ones, and takes scenario commands on stdin. |
-| `webuitest/` (module) | Both browser-facing test tiers: JVM tests driving a real Chromium through Playwright against the pages `webuicheck` serves, plus the browser-independent JavaScript tier in `webuitest/js/`, which `WebUiLogicTest` runs through `node --test` against the shipped ES modules. |
-| `plugins/sqldelight-gen/` (build plugin) | Runs SQLDelight codegen from `sqldelight/*.sq` at build time. |
-
-The authenticated push HTTP surface is `GET /api/v1/push/vapid-key`, `POST /api/v1/push/subscribe`, and
-`POST /api/v1/push/unsubscribe`. The GET returns the VAPID application-server key; the POSTs persist or remove
-the browser endpoint and its keys. Both POST routes inherit the transport's required, same-origin
-`Origin` check. They are not loopback-only, because a PWA must register through the configured public
-host.
-
-For deeper conventions and the toolchain gotchas, see [CLAUDE.md](CLAUDE.md).
-
 ## Status & limitations
 
 Kotgent is deliberately focused. The current product boundary is:
@@ -608,11 +662,9 @@ Kotgent is deliberately focused. The current product boundary is:
   module. Moving state into `state/` and async coordination into `lib/mutation.js` was deliberately kept
   separate from splitting the component itself, which is still open and still not urgent.
 
-**Why some checks live in their own binary.** A Kotlin Toolchain issue
-([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062)) means **our own** raw-cinterop path cannot be
-called from a test binary at all — partial linkage turns every such call into a stub that throws
-`IrLinkageError`, and nothing in the YAML works around it. Main binaries *do* link the cinterop, so the
-affected assertions live in the **`ptycheck`** module, whose `main()` runs all 11 for real:
+**The real-PTY tests.** Kotlin Toolchain 0.12 links our own cinterop into test binaries
+([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062) is fixed), so these 11 assertions are ordinary
+tests under `test/pty/`, one `@Test` each:
 
 1. a `cat` round-trip through the pty,
 2. `resize` (`TIOCSWINSZ`) succeeds,
@@ -629,19 +681,14 @@ affected assertions live in the **`ptycheck`** module, whose `main()` runs all 1
     must deliver `SIGWINCH` itself — see [CLAUDE.md](CLAUDE.md)),
 11. `TerminalBridge` fans out over that real attach.
 
-The suite runs them through `PtyTest`, which executes that binary and asserts it exits 0 — so these are
-real, non-skipped tests. **`webuicheck` is the second fixture binary, for the same reason**: it serves the
-browser tier a terminal from a real PTY, which no test binary can open, so it too is a `main()` — and it
-carries its own `--self-check` mode with the 2 checks that need that cinterop directly, driven from the
-suite by `WebUiCheckTest` exactly as `PtyTest` drives `ptycheck`. That precedent reaches as far as
-KT-78062 does and no further: everything a browser can observe is a named assertion in `webuitest`, not
-another entry in a `SUMMARY total=N`.
+**`webuicheck` stays a separate binary**, for a different reason: the browser tier is JVM (Playwright
+cannot drive Kotlin/Native in-process), so the harness it talks to must be a process of its own. No test
+task links a main binary, which is why `./kotlin build` still has to run before `./kotlin test`. Its own
+two self-checks now live in `webuicheck/test/`; everything a browser can observe is a named assertion in
+`webuitest`.
 
-Everything around the cinterop is still tested directly via interface fakes
-(`FakePtyHandle`, `FakeTty`). Third-party klibs that happen to contain cinterop (Ktor, the SQLite
-`native-driver`) and the stock `platform.posix` bindings are **not** affected — they link into test
-binaries normally — so the transport, store, and `tmux` layers are fully tested in CI. The full root-cause
-write-up is in [CLAUDE.md](CLAUDE.md).
+Everything around the cinterop is still tested directly via interface fakes (`FakePtyHandle`, `FakeTty`)
+where the behavior is platform-independent.
 
 ## Contributing
 
