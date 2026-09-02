@@ -118,6 +118,18 @@ object Commands {
     fun resume(id: String): Int = withApi { api -> report("resumed", id, api.resume(id)) }
     fun interrupt(id: String): Int = withApi { api -> report("interrupted", id, api.interrupt(id)) }
 
+    fun renameSession(id: String, name: String): Int = withApi { api ->
+        try {
+            val renamed = api.renameSession(id, name)
+            println("renamed ${renamed.id} → ${renamed.name.ifEmpty { renamed.tmuxSession }}")
+            0
+        } catch (e: ApiException) {
+            if (e.status != HTTP_NOT_FOUND) throw e
+            eprintln("no such session: $id")
+            1
+        }
+    }
+
     private fun report(verb: String, id: String, updated: SessionDto?): Int {
         println(if (updated != null) "$verb ${updated.id} → ${updated.state}" else "$verb $id")
         return 0
@@ -705,3 +717,5 @@ private fun taskColumn(ref: String?): String {
 }
 
 private const val TASK_COLUMN_WIDTH: Int = 12
+
+private const val HTTP_NOT_FOUND: Int = 404

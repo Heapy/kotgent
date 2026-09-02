@@ -313,6 +313,46 @@ class CliTest {
     }
 
     @Test
+    fun parsesSessionRenameWithItsIdAndName() {
+        assertEquals(
+            CliCommand.SessionRename("abc12345", "the rewrite"),
+            parseArgs(listOf("session", "rename", "abc12345", "the rewrite")),
+        )
+        assertEquals(
+            CliCommand.SessionRename("abc12345", ""),
+            parseArgs(listOf("session", "rename", "abc12345", "")),
+            "an empty name is the reset to the automatic label, not a missing argument",
+        )
+    }
+
+    @Test
+    fun aRenameNameThatLooksLikeAFlagIsStillTheName() {
+        assertEquals(
+            CliCommand.SessionRename("abc12345", "--name"),
+            parseArgs(listOf("session", "rename", "abc12345", "--name")),
+            "the name is positional; a flag scan would swallow this one",
+        )
+    }
+
+    @Test
+    fun sessionRenameWithoutItsArgumentsIsInvalid() {
+        assertTrue(parseArgs(listOf("session")) is CliCommand.Invalid, "bare `session` needs a subcommand")
+        assertTrue(parseArgs(listOf("session", "rename")) is CliCommand.Invalid, "rename without an id")
+        assertTrue(parseArgs(listOf("session", "rename", "abc12345")) is CliCommand.Invalid, "rename without a name")
+        assertTrue(
+            parseArgs(listOf("session", "rename", "abc12345", "two", "words")) is CliCommand.Invalid,
+            "an unquoted multi-word name would silently rename to its first word",
+        )
+    }
+
+    @Test
+    fun unknownSessionSubcommandsAnswerWithTheRenameUsage() {
+        val invalid = assertIs<CliCommand.Invalid>(parseArgs(listOf("session", "stop", "abc12345")))
+        assertTrue("session rename" in invalid.message, "the message names what `session` can do: ${invalid.message}")
+        assertTrue("session rename <id> <name>" in USAGE, "the help lists the verb: $USAGE")
+    }
+
+    @Test
     fun parsesTokenRotateAndRejectsABareToken() {
         assertEquals(CliCommand.TokenRotate, parseArgs(listOf("token", "rotate")))
         assertTrue(parseArgs(listOf("token")) is CliCommand.Invalid, "bare `token` needs a subcommand")

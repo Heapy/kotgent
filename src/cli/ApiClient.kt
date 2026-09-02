@@ -17,6 +17,7 @@ import io.kotgent.transport.LinkRequest
 import io.kotgent.transport.MoveTaskRequest
 import io.kotgent.transport.NextTaskRequest
 import io.kotgent.transport.NextTaskResponse
+import io.kotgent.transport.PatchSessionRequest
 import io.kotgent.transport.PatchTaskRequest
 import io.kotgent.transport.ProjectDto
 import io.kotgent.transport.RotateResponse
@@ -131,6 +132,19 @@ class ApiClient(
     suspend fun resume(id: String): SessionDto? = control(id, "resume")
 
     suspend fun interrupt(id: String): SessionDto? = control(id, "interrupt")
+
+    /** An empty [name] is a deliberate reset to the automatic label, not a no-op. */
+    suspend fun renameSession(id: String, name: String): SessionDto {
+        val request = json.encodeToString(PatchSessionRequest.serializer(), PatchSessionRequest(name = name))
+        val resp = client.patch(url("/sessions/${id.encodeURLPathPart()}")) {
+            bearer()
+            paneHeader()
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+        ensureSuccess(resp)
+        return json.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+    }
 
     private suspend fun control(id: String, action: String): SessionDto? {
         val resp = client.post(url("/sessions/$id/$action")) { bearer() }

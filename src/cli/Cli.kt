@@ -75,6 +75,8 @@ sealed interface CliCommand {
 
     data class Attach(val id: String) : CliCommand
 
+    data class SessionRename(val id: String, val name: String) : CliCommand
+
     data object Install : CliCommand
 
     data object Uninstall : CliCommand
@@ -107,6 +109,7 @@ val USAGE: String = """
       resume <id>                    resume a stopped/crashed/resumable session
       interrupt <id>                 send Ctrl-C to un-stick a session
       attach <id>                    attach a raw terminal to a session
+      session rename <id> <name>     rename a session (an empty name restores the automatic label)
 
       The task backlog (JSON on stdout — written for an agent to parse). Every subcommand that
       resolves a session takes [--session S] to name it instead of the calling tmux pane.
@@ -154,6 +157,7 @@ fun parseArgs(args: List<String>, readMessageStdin: () -> String = ::readStdinTe
         "resume" -> requireId("resume", rest) { CliCommand.Resume(it) }
         "interrupt" -> requireId("interrupt", rest) { CliCommand.Interrupt(it) }
         "attach" -> requireId("attach", rest) { CliCommand.Attach(it) }
+        "session" -> parseSession(rest)
         "install" -> CliCommand.Install
         "uninstall" -> CliCommand.Uninstall
         "web" -> parseWeb(rest)
@@ -170,6 +174,28 @@ private fun parseWeb(rest: List<String>): CliCommand {
     if (unknown != null) return CliCommand.Invalid("web: unexpected argument '$unknown' (usage: kotgent web [--print])")
     return CliCommand.Web(print = rest.contains("--print"))
 }
+
+private fun parseSession(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
+    "rename" -> parseSessionRename(rest.drop(1))
+    null -> CliCommand.Invalid("session requires a subcommand: $SESSION_RENAME_USAGE")
+    else -> CliCommand.Invalid("session: unknown subcommand '$sub' (use: $SESSION_RENAME_USAGE)")
+}
+
+/**
+ * Positional, so a name beginning with '-' is a name; no flag scan can mistake it for one.
+ */
+private fun parseSessionRename(rest: List<String>): CliCommand {
+    val id = rest.getOrNull(0)
+    if (id.isNullOrBlank()) return CliCommand.Invalid("session rename requires a session id: $SESSION_RENAME_USAGE")
+    val name = rest.getOrNull(1)
+        ?: return CliCommand.Invalid("session rename requires a name: $SESSION_RENAME_USAGE")
+    rest.getOrNull(2)?.let {
+        return CliCommand.Invalid("session rename: unexpected argument '$it' — quote the name if it contains spaces")
+    }
+    return CliCommand.SessionRename(id, name)
+}
+
+private const val SESSION_RENAME_USAGE: String = "kotgent session rename <id> <name>"
 
 private fun parseToken(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
     "rotate" -> CliCommand.TokenRotate
@@ -657,6 +683,7 @@ fun runCli(args: Array<String>): Int = when (val command = parseArgs(args.toList
     is CliCommand.Resume -> Commands.resume(command.id)
     is CliCommand.Interrupt -> Commands.interrupt(command.id)
     is CliCommand.Attach -> Commands.attach(command.id)
+    is CliCommand.SessionRename -> Commands.renameSession(command.id, command.name)
     is CliCommand.Install -> Commands.install()
     is CliCommand.Uninstall -> Commands.uninstall()
     is CliCommand.Web -> Commands.web(command.print)

@@ -315,18 +315,18 @@ through the full-row path.
 - Modify: `test/cli/CliTest.kt`
 - Create or modify: `test/cli/ApiClientSessionTest.kt`
 
-- [ ] add `renameSession(id, name): SessionDto` to `ApiClient`, copying `patchTask`
+- [x] add `renameSession(id, name): SessionDto` to `ApiClient`, copying `patchTask`
       (`ApiClient.kt:188`) — bearer, pane header, JSON content type, `ensureSuccess`
-- [ ] add `CliCommand.SessionRename(val id: String, val name: String)` to the sealed interface
-- [ ] add `"session" -> parseSession(rest)` to the top-level dispatch, with `parseSession` handling only
+- [x] add `CliCommand.SessionRename(val id: String, val name: String)` to the sealed interface
+- [x] add `"session" -> parseSession(rest)` to the top-level dispatch, with `parseSession` handling only
       `"rename"` today and answering `CliCommand.Invalid` with a usage line for anything else
-- [ ] add the `Commands` function printing the new name on success and mapping a 404 to a clear message
-- [ ] add `session rename` to the CLI help text
-- [ ] write parser tests: valid form; missing id; missing name; unknown sub-verb; a name that begins with
+- [x] add the `Commands` function printing the new name on success and mapping a 404 to a clear message
+- [x] add `session rename` to the CLI help text
+- [x] write parser tests: valid form; missing id; missing name; unknown sub-verb; a name that begins with
       `-` is taken as the name, not a flag
-- [ ] write an ApiClient test against a stub server: the request is a `PATCH` to `/sessions/{id}` with the
+- [x] write an ApiClient test against a stub server: the request is a `PATCH` to `/sessions/{id}` with the
       expected body, and a non-2xx answer throws `ApiException`
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 8
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 8
 
 ### Task 8: Verify acceptance criteria
 
