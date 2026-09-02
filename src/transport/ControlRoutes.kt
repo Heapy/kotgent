@@ -29,6 +29,7 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
@@ -190,6 +191,42 @@ fun Route.controlRoutes(
         call.respondText(json.encodeToString(SessionDto.serializer(), meta.toDto()), ContentType.Application.Json)
     }
 
+    patch("/sessions/{id}") {
+        val id = sessionId(call.parameters["id"]) ?: run {
+            call.respondText("malformed session id", status = HttpStatusCode.BadRequest)
+            return@patch
+        }
+        if (store.getSession(id) == null) {
+            call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
+            return@patch
+        }
+        val req = try {
+            json.decodeFromString(PatchSessionRequest.serializer(), call.receiveText())
+        } catch (_: SerializationException) {
+            call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
+            return@patch
+        }
+        if (req.name == null) {
+            call.respondText(
+                "nothing to change — a patch carries a name",
+                status = HttpStatusCode.BadRequest,
+            )
+            return@patch
+        }
+        val nameProblem = sessionNameProblem(req.name)
+        if (nameProblem != null) {
+            call.respondText("cannot rename session: $nameProblem", status = HttpStatusCode.BadRequest)
+            return@patch
+        }
+        store.setName(id, req.name)
+        val renamed = store.getSession(id)
+        if (renamed != null) {
+            call.respondText(json.encodeToString(SessionDto.serializer(), renamed.toDto()), ContentType.Application.Json)
+        } else {
+            call.respondText("ok")
+        }
+    }
+
     post("/sessions/{id}/input") {
         val id = sessionId(call.parameters["id"]) ?: run {
             call.respondText("malformed session id", status = HttpStatusCode.BadRequest)
@@ -321,6 +358,9 @@ data class ImportSessionRequest(
 
 @Serializable
 data class MarkReadRequest(val seq: Long)
+
+@Serializable
+data class PatchSessionRequest(val name: String? = null)
 
 @Serializable
 data class SessionDto(

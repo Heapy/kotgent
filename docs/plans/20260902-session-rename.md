@@ -228,17 +228,17 @@ through the full-row path.
 - Modify: `src/transport/ControlRoutes.kt`
 - Create: `test/transport/SessionRenameRoutesTest.kt`
 
-- [ ] add `PatchSessionRequest(val name: String? = null)` beside the other request DTOs
-- [ ] add the `patch("/sessions/{id}")` handler, copying the structure of `patch("/tasks/{ref}")`:
+- [x] add `PatchSessionRequest(val name: String? = null)` beside the other request DTOs
+- [x] add the `patch("/sessions/{id}")` handler, copying the structure of `patch("/tasks/{ref}")`:
       malformed id → 400, unknown session → 404, body carrying no field → 400 with a sentence naming what
       a patch may carry, invalid name → 400
-- [ ] call `store.setName` and answer the refreshed `SessionDto`, matching the action route's tail
+- [x] call `store.setName` and answer the refreshed `SessionDto`, matching the action route's tail
       (`ControlRoutes.kt:276-281`)
-- [ ] register the route inside the same authorized block as the other session routes
-- [ ] write tests: successful rename returns the new name and a higher `rev`; empty name is accepted;
+- [x] register the route inside the same authorized block as the other session routes
+- [x] write tests: successful rename returns the new name and a higher `rev`; empty name is accepted;
       unknown id is 404; malformed id is 400; empty body is 400; over-long name is 400
-- [ ] write a test asserting `updatedAt` is unchanged across a rename
-- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 4
+- [x] write a test asserting `updatedAt` is unchanged across a rename
+- [x] run `./kotlin build && ./kotlin test` — must pass before Task 4
 
 ### Task 4: Carry `name` on the live WebSocket update
 
