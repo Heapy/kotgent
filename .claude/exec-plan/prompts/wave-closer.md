@@ -89,6 +89,6 @@ theirs, not yours.
 ## Step 6 — report
 
 Return a short plain-text report: which tasks closed, the validation numbers (native tests, skipped,
-JVM tests, ptycheck checks), the commit subject, and anything the next wave should know — especially a
+JVM tests, real-PTY tests), the commit subject, and anything the next wave should know — especially a
 frozen contract that turned out to be wrong, since the next wave's participants will code against the
 plan's text without being able to read this wave's files.

@@ -1,5 +1,4 @@
-# Owns native POSIX/cinterop bindings. Toolchain 0.11 links custom cinterop only into main binaries
-# (KT-78062), so real-PTY assertions run through the `ptycheck` main app.
+# Owns native POSIX/cinterop bindings.
 product:
   type: kmp/lib
   platforms: [macosArm64]

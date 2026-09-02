@@ -1,4 +1,4 @@
-# Browser fixture main binary: Toolchain 0.11 cannot link custom cinterop into tests (KT-78062).
+# Browser fixture main binary driven by the `webuitest` Playwright tier.
 # It may use only an ephemeral loopback port and scenario PTYs; tokens, tmux, stores, uploads,
 # directory completion, and project-file writes must remain in memory.
 product:

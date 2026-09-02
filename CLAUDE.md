@@ -10,8 +10,8 @@ archive completed plans.
 
 - This is a Kotlin/Native project built with Kotlin Toolchain 0.12.0. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
-- Run `./kotlin build` before `./kotlin test`: tests execute the `ptycheck` and `webuicheck` binaries,
-  and the test command does not build them.
+- Run `./kotlin build` before `./kotlin test`: the `webuitest` browser tier executes the `webuicheck`
+  binary, and no test task builds it. Every other tier runs from `./kotlin test` alone.
 - Run `node --check <file>` for every changed JavaScript module. The Web UI deliberately has no npm
   build; browser behavior is tested in `webuitest`.
 - Browser-independent Web UI rules are proven under `node --test 'webuitest/js/**/*.test.js'`, run from
@@ -24,11 +24,11 @@ archive completed plans.
   socket label `kotgent-test`.
 - Never run two `./kotlin` invocations at once, in the same checkout or across worktrees, backgrounded
   included. They share one build directory and clobber each other's output: a backgrounded
-  `webuicheck --self-check` overlapping a foreground run has failed on a `kotgent.klib` that the other
-  invocation was rewriting. This is a different cause from the tmux socket contention above, and holds
+  `./kotlin test -m webuicheck` overlapping a foreground run has failed on a `kotgent.klib` that the
+  other invocation was rewriting. This is a different cause from the tmux socket contention above, and holds
   even for two commands that touch different modules.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
-  automation. They start long-lived processes. `ptycheck` and `webuicheck --self-check` terminate safely.
+  automation. They start long-lived processes. `./kotlin test` terminates safely.
 
 ## Architecture boundaries
 
@@ -40,9 +40,9 @@ archive completed plans.
   only at provider boundaries where the provider guarantees one.
 - The daemon owns one upstream `tmux attach` per session and fans it out to subscribers. Runtime identity
   comes from the live pane id, never an inherited environment variable.
-- Keep raw POSIX/cinterop in `sysnative`. Kotlin Toolchain does not link custom cinterop into test
-  binaries (KT-78062), so platform-independent behavior needs an interface and fake; true cinterop checks
-  run through a main fixture such as `ptycheck`.
+- Keep raw POSIX/cinterop in `sysnative`. Toolchain 0.12 links custom cinterop into test binaries, so
+  real-PTY checks are ordinary tests under `test/pty/`; platform-independent behavior still needs an
+  interface and fake.
 - Every spawned child must inherit stdio and no unrelated file descriptors. Preserve the CLOEXEC handling
   in both process-launch paths.
 - `SqliteEventStore` is the only writer of `sessions`; it owns the monotonic `sessions.rev` sequence and

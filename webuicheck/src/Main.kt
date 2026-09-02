@@ -25,13 +25,12 @@ import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.write
 
-// Driver protocol: only PORT, TICKET, READY (and self-check SUMMARY) reach stdout. Diagnostics and
-// stray println calls are redirected to stderr before any other work begins.
+// Driver protocol: only PORT, TICKET and READY reach stdout. Diagnostics and stray println calls are
+// redirected to stderr before any other work begins.
 fun main(args: Array<String>) {
     claimStdout()
 
     val options = parseArgs(args) ?: exitProcess(EXIT_USAGE)
-    if (options.selfCheck) exitProcess(runSelfCheck(selfCheckCases()))
 
     val scenario = scenarioByName(options.scenario)
     if (scenario == null) {
@@ -83,21 +82,18 @@ private fun startWatchdog(afterMs: Long) {
 private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 private class Options(
-    val selfCheck: Boolean,
     val scenario: String,
     val webUiDir: String?,
     val exitAfterMs: Long?,
 )
 
 private fun parseArgs(args: Array<String>): Options? {
-    var selfCheck = false
     var scenario: String? = null
     var webUiDir: String? = null
     var exitAfterMs: Long? = null
 
     for (arg in args) {
         when {
-            arg == "--self-check" -> selfCheck = true
             arg.startsWith(SCENARIO_FLAG) -> scenario = arg.removePrefix(SCENARIO_FLAG)
             arg.startsWith(WEBUI_DIR_FLAG) -> webUiDir = arg.removePrefix(WEBUI_DIR_FLAG)
             arg.startsWith(EXIT_AFTER_FLAG) -> {
@@ -112,25 +108,17 @@ private fun parseArgs(args: Array<String>): Options? {
         }
     }
 
-    if (selfCheck) {
-        if (scenario != null || webUiDir != null || exitAfterMs != null) {
-            return usage("--self-check runs alone; it reads no stdin and serves no scenario")
-        }
-        return Options(selfCheck = true, scenario = "", webUiDir = null, exitAfterMs = null)
-    }
-
     if (scenario.isNullOrBlank()) return usage("$SCENARIO_FLAG<name> is required")
     if (webUiDir.isNullOrBlank()) return usage("$WEBUI_DIR_FLAG<abs> is required")
     // The harness cannot call the root module's internal path resolver.
     if (!webUiDir.startsWith("/")) return usage("$WEBUI_DIR_FLAG must be ABSOLUTE, got '$webUiDir'")
 
-    return Options(selfCheck = false, scenario = scenario, webUiDir = webUiDir, exitAfterMs = exitAfterMs)
+    return Options(scenario = scenario, webUiDir = webUiDir, exitAfterMs = exitAfterMs)
 }
 
 private fun usage(problem: String): Options? {
     eprintln("webuicheck: $problem")
-    eprintln("usage: webuicheck --self-check")
-    eprintln("       webuicheck $SCENARIO_FLAG<name> $WEBUI_DIR_FLAG<abs> [$EXIT_AFTER_FLAG<n>]")
+    eprintln("usage: webuicheck $SCENARIO_FLAG<name> $WEBUI_DIR_FLAG<abs> [$EXIT_AFTER_FLAG<n>]")
     return null
 }
 
@@ -139,8 +127,6 @@ private const val WEBUI_DIR_FLAG = "--webui-dir="
 private const val EXIT_AFTER_FLAG = "--exit-after-ms="
 
 const val EXIT_OK: Int = 0
-
-const val EXIT_SELF_CHECK_FAILED: Int = 1
 
 const val EXIT_USAGE: Int = 2
 

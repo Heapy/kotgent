@@ -265,8 +265,8 @@ This layer exists. `webuitest` is a JVM module of tests only: it drives a real C
 for Java against `webuicheck`, a fixture binary that assembles the real server over the shared doubles in
 `fakes`, serves a terminal from a real PTY running a deterministic shell snippet instead of a provider, and
 takes scenario commands on standard input. `webuicheck` proves nothing and must keep proving nothing: its
-scenario files under `webuicheck/src/scenarios/` contain zero assertions, and its `--self-check` only
-verifies that the fixture itself can start. A gate that must *prove* something belongs in `webuitest`,
+scenario files under `webuicheck/src/scenarios/` contain zero assertions, and its own native tests only
+verify that the fixture itself can start. A gate that must *prove* something belongs in `webuitest`,
 where a failure is a red test rather than a binary that quietly exits zero — that is why, for instance, the
 vendored signals adapter is proven by `SignalsVendorTest` and not by a scenario. Each test spawns its own
 harness on an ephemeral port, signs in through the real login form with a single-use ticket, and leaves
@@ -508,11 +508,11 @@ Use layered gates so feedback is both fast and representative.
 Machine-global integration resources must be serialized or namespaced. Independent pure and component tests
 should remain parallelizable.
 
-Two mechanics of the current gate are worth stating, because both are easy to get backwards. The fixtures
-are separate executables — `ptycheck` for the real-PTY checks, `webuicheck` for the browser tier — so a
-build must run before a test run; a missing binary is designed to fail loudly rather than skip, and no test
-task links one. And the tiers already run concurrently, so the browser tier's cost to the gate is the
-difference between it and the native suite rather than its own duration. Per-module test tasks remain the
+Two mechanics of the current gate are worth stating, because both are easy to get backwards. The browser
+tier drives `webuicheck`, a separate executable that no test task links, so `./kotlin build` must run before
+`./kotlin test`; a missing binary is designed to fail loudly rather than skip. And the tiers already run
+concurrently, so the browser tier's cost to the gate is the difference between it and the native suite
+rather than its own duration. Per-module test tasks remain the
 fast local loop, and neither replaces the aggregate.
 
 ## Definition of done for a behavior change

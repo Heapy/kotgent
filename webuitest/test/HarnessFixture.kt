@@ -28,7 +28,7 @@ import java.util.function.Consumer
 import java.util.regex.Pattern
 import kotlin.test.fail
 
-// The JVM browser tests spawn a native harness because KT-78062 prevents linking its cinterop here.
+// The JVM browser tests spawn the native harness because Playwright cannot drive Kotlin/Native in-process.
 // Each login needs a fresh context: cookies are host-scoped, not port-scoped, but harness tokens differ.
 const val EMPTY_SCENARIO: String = "empty"
 const val SESSIONS_SCENARIO: String = "sessions"

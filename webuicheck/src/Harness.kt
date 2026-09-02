@@ -101,7 +101,7 @@ class Harness(
         projectFs = fakes.projectFs,
     )
 
-    // Exposed for self-check so it exercises the same real-pty factory as the server.
+    // Exposed to SelfCheckTest so it exercises the same real-pty factory as the server.
     val terminalBridgeFactory: (String, CoroutineScope) -> TerminalBridge = { _, scope ->
         TerminalBridge(
             upstreamCommand = scenario.terminalUpstream ?: DEFAULT_TERMINAL_UPSTREAM,

@@ -102,7 +102,7 @@ class Pty private constructor(
     private var reaped = false
     private var exitCode = -1
 
-    // Integration seam for KT-78062: production never branches on this teardown-order observation.
+    // Test seam: production never branches on this teardown-order observation.
     public var readerCompletedBeforeMasterFdRelease: Boolean = false
         private set
 
@@ -171,7 +171,7 @@ class Pty private constructor(
         }
     }
 
-    // Keep the reader-state snapshot at the exact descriptor-release operation for ptycheck.
+    // Keep the reader-state snapshot at the exact descriptor-release operation.
     private fun releaseMasterFd() {
         readerCompletedBeforeMasterFdRelease = readerJob.isCompleted
         val rc = posixClose(masterFd)
@@ -182,7 +182,7 @@ class Pty private constructor(
         )
     }
 
-    // Opt-in, flush-on-write diagnostics let a timed-out ptycheck identify the last completed syscall.
+    // Opt-in, flush-on-write diagnostics let a timed-out close check identify the last completed syscall.
     private fun traceClose(stage: String, detail: String = "") {
         if (!closeTraceEnabled) return
         val suffix = if (detail.isEmpty()) "" else " $detail"

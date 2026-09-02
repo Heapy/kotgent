@@ -37,7 +37,7 @@ jobs:
           path: ~/Library/Caches/ms-playwright
           key: playwright-${{ runner.os }}-1.62.0
 
-      # Tests execute ptycheck and webuicheck but do not build those main binaries.
+      # The browser tier executes the webuicheck binary, which no test task builds.
       - name: Build
         run: ./kotlin build
 

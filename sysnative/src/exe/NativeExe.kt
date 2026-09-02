@@ -8,7 +8,6 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
 
-/** Main-binary-only cinterop (KT-78062); tests must inject the executable path instead. */
 @OptIn(ExperimentalForeignApi::class)
 object NativeExe {
     fun path(): String? = memScoped {

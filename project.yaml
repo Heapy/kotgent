@@ -2,7 +2,6 @@ modules:
   - ./fakes
   - ./plugins/build-info
   - ./plugins/sqldelight-gen
-  - ./ptycheck
   - ./sysnative
   - ./webuicheck
   - ./webuitest

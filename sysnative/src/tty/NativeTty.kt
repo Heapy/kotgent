@@ -10,7 +10,6 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
 
-/** Main-binary-only cinterop (KT-78062); attach tests use a pure-Kotlin tty fake. */
 @OptIn(ExperimentalForeignApi::class)
 object NativeTty {
     fun enterRaw(fd: Int): Boolean = kotgent_tty_enter_raw(fd) == 0
