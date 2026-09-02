@@ -387,7 +387,7 @@ export function NewSessionDialog({
 
         <label class="field">
           <span>Name <small>optional</small></span>
-          <input id="session-name" type="text" maxlength="80" placeholder="Feature or task"
+          <input id="session-name" type="text" maxlength="200" placeholder="Feature or task"
                  value=${name} onInput=${(e) => setName(e.target.value)} />
         </label>
 

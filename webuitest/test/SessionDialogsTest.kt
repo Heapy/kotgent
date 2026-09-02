@@ -663,12 +663,10 @@ class SessionDialogsTest {
                         val field = page.locator("#rename-session-name")
                         // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
                         assertThat(field).hasAttribute("spellcheck", "false")
-                        // Spelled `autoCorrect` in the source: no DOM property carries that name, so
-                        // Preact sets a plain attribute, which iOS reads. The lowercase spelling would
-                        // hit Safari's boolean `autocorrect` IDL and coerce "off" to true.
+                        // Served DOM again: only the source's `autoCorrect` spelling survives (CLAUDE.md).
                         assertThat(field).hasAttribute("autocorrect", "off")
                         assertThat(field).hasAttribute("autocapitalize", "off")
-                        assertThat(field).hasAttribute("maxlength", "200")
+                        assertThat(field).hasAttribute("maxlength", SESSION_NAME_MAXLENGTH)
                         assertThat(field).isFocused()
                         assertThat(field).hasValue("alpha")
                         assertThat(field)
@@ -865,7 +863,7 @@ class SessionDialogsTest {
 
     // The forward direction of the same lock. The palette shortcut is suppressed while any dialog is open,
     // so the dialog's busy-state "Close" is what makes the palette reachable at all with the PATCH still
-    // in flight — and rename must then close the other session commands exactly as the six flows do.
+    // in flight — and rename must then close the other session commands exactly as the other six flows do.
     @Test
     fun theOtherSessionCommandsAreUnavailableForAsLongAsARenameHoldsTheLock() {
         val held = AtomicReference<Route?>(null)
@@ -1040,6 +1038,10 @@ class SessionDialogsTest {
         const val IMPORTED_PROVIDER_ID = "5f2b1d64-2c8a-4d21-9f0e-7a63c1d4b8e2"
 
         const val RENAME_REFUSAL_BODY = "cannot rename session: session name must not contain control characters"
+
+        // This module cannot depend on the native core, so `MAX_SESSION_NAME_LENGTH` is copied here;
+        // `WebUiServingTest` guards the copy against the server's bound.
+        const val SESSION_NAME_MAXLENGTH = "200"
 
         const val RENAME_COMMAND = "rename"
         const val RENAMED_ALPHA = "alpha, renamed"

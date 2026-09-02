@@ -177,22 +177,22 @@ private fun parseWeb(rest: List<String>): CliCommand {
 
 private fun parseSession(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
     "rename" -> parseSessionRename(rest.drop(1))
-    null -> CliCommand.Invalid("session requires a subcommand: $SESSION_RENAME_USAGE")
-    else -> CliCommand.Invalid("session: unknown subcommand '$sub' (use: $SESSION_RENAME_USAGE)")
+    null -> CliCommand.Invalid("session requires a subcommand: kotgent session $SESSION_SUBCOMMANDS")
+    else -> CliCommand.Invalid("session: unknown subcommand '$sub' (use: kotgent session $SESSION_SUBCOMMANDS)")
 }
 
 private fun parseSessionRename(rest: List<String>): CliCommand {
     val id = rest.getOrNull(0)
-    if (id.isNullOrBlank()) return CliCommand.Invalid("session rename requires a session id: $SESSION_RENAME_USAGE")
+    if (id.isNullOrBlank()) {
+        return CliCommand.Invalid("session rename requires a session id: kotgent session $SESSION_SUBCOMMANDS")
+    }
     val name = rest.getOrNull(1)
-        ?: return CliCommand.Invalid("session rename requires a name: $SESSION_RENAME_USAGE")
+        ?: return CliCommand.Invalid("session rename requires a name: kotgent session $SESSION_SUBCOMMANDS")
     rest.getOrNull(2)?.let {
         return CliCommand.Invalid("session rename: unexpected argument '$it' — quote the name if it contains spaces")
     }
     return CliCommand.SessionRename(id, name)
 }
-
-private const val SESSION_RENAME_USAGE: String = "kotgent session rename <id> <name>"
 
 private fun parseToken(rest: List<String>): CliCommand = when (val sub = rest.firstOrNull()) {
     "rotate" -> CliCommand.TokenRotate
@@ -332,6 +332,8 @@ private const val TASK_SUBCOMMANDS =
     "add | list | show | next | claim | comment | review | done | unlink | move | dep | delete"
 
 private const val PROJECT_SUBCOMMANDS = "list | init | delete | restore"
+
+private const val SESSION_SUBCOMMANDS = "rename <id> <name>"
 
 private sealed interface Scan {
     data class Ok(

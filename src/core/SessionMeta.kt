@@ -40,10 +40,7 @@ data class SessionMeta(
  */
 const val MAX_SESSION_NAME_LENGTH: Int = 200
 
-/**
- * Applied at every write boundary so a name reads back the same whichever client set it, and so a
- * whitespace-only name becomes the empty one every reader already renders as the automatic label.
- */
+/** Applied at every write boundary so a name reads back the same whichever client set it. */
 fun normalizeSessionName(name: String): String = name.trim()
 
 fun sessionNameProblem(name: String): String? = when {

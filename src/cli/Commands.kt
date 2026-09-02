@@ -641,7 +641,8 @@ suspend fun runWebCommand(
  */
 val DUPLICATE_IMPORT_ID_IN_BODY: Regex = Regex("kotgent session '([^']+)'")
 
-/** An emptied name prints the tmux session string — the automatic label the Web UI's `displayName` also picks. */
+private const val HTTP_NOT_FOUND: Int = 404
+
 suspend fun runRenameCommand(
     id: String,
     rename: suspend () -> SessionDto,
@@ -657,7 +658,7 @@ suspend fun runRenameCommand(
         stderr("no such session: $id")
         return 1
     }
-    stdout("renamed ${renamed.id} → ${renamed.name.ifEmpty { renamed.tmuxSession }}")
+    stdout("renamed ${renamed.id} → ${renamed.displayName}")
     return 0
 }
 
@@ -709,7 +710,7 @@ fun renderSessions(sessions: List<SessionDto>): String {
     for (s in sessions.sortedByDescending { it.updatedAt }) {
         val attn = if (s.needsAttention) " *  " else "    "
         sb.append(s.id.padEnd(10).take(10))
-        sb.append(nameColumn(s)).append("  ")
+        sb.append(nameColumn(s.displayName)).append("  ")
         sb.append(s.agent.padEnd(11).take(11))
         sb.append(s.state.padEnd(17).take(17))
         sb.append(attn)
@@ -726,8 +727,10 @@ fun renderSessions(sessions: List<SessionDto>): String {
 private fun taskColumn(ref: String?): String =
     ellipsized(ref ?: "-", TASK_COLUMN_WIDTH).padEnd(TASK_COLUMN_WIDTH)
 
-private fun nameColumn(s: SessionDto): String =
-    ellipsized(s.name.ifEmpty { s.tmuxSession }, NAME_COLUMN_WIDTH).padEnd(NAME_COLUMN_WIDTH)
+private fun nameColumn(name: String): String =
+    ellipsized(name, NAME_COLUMN_WIDTH).padEnd(NAME_COLUMN_WIDTH)
+
+private val SessionDto.displayName: String get() = name.ifEmpty { tmuxSession }
 
 private fun ellipsized(value: String, width: Int): String {
     if (value.length <= width) return value
@@ -739,5 +742,3 @@ private fun ellipsized(value: String, width: Int): String {
 private const val TASK_COLUMN_WIDTH: Int = 12
 
 private const val NAME_COLUMN_WIDTH: Int = 16
-
-private const val HTTP_NOT_FOUND: Int = 404

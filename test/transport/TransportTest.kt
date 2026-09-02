@@ -972,7 +972,7 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched")
     }
 
-    // The upsert conflict clause now keeps `sessions.name`, so the only path that may write one is the
+    // The upsert conflict clause keeps `sessions.name`, so the only path that may write one is the
     // INSERT a start performs. Nothing else proves a started session keeps the name the operator gave.
     @Test
     fun startingASessionPersistsTheOperatorsNameAndTrimsIt() = withServer { ctx ->

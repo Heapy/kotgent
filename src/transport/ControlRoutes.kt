@@ -29,6 +29,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
@@ -77,12 +78,7 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
-        val startName = req.name?.let { normalizeSessionName(it) }
-        val nameProblem = startName?.let { sessionNameProblem(it) }
-        if (nameProblem != null) {
-            call.respondText("cannot start session: $nameProblem", status = HttpStatusCode.BadRequest)
-            return@post
-        }
+        val startName = req.name?.let { validatedName(it, "cannot start session") ?: return@post }
         val requestedTaskRef = req.taskRef?.takeIf { it.isNotBlank() }
         // Refuse every link error before launch so one bad body cannot leave an unlinked live agent.
         var linkTo: TaskRef? = null
@@ -143,12 +139,7 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
-        val importName = req.name?.let { normalizeSessionName(it) }
-        val nameProblem = importName?.let { sessionNameProblem(it) }
-        if (nameProblem != null) {
-            call.respondText("cannot import session: $nameProblem", status = HttpStatusCode.BadRequest)
-            return@post
-        }
+        val importName = req.name?.let { validatedName(it, "cannot import session") ?: return@post }
         val importProviderId = try {
             // Keep the DTO a String: value-class construction throws IllegalArgumentException, not a
             // SerializationException the body decoder would map to 400.
@@ -199,8 +190,7 @@ fun Route.controlRoutes(
             call.respondText("malformed session id", status = HttpStatusCode.BadRequest)
             return@patch
         }
-        val meta = store.getSession(id)
-        if (meta == null) {
+        if (store.getSession(id) == null) {
             call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
             return@patch
         }
@@ -217,14 +207,16 @@ fun Route.controlRoutes(
             )
             return@patch
         }
-        val name = normalizeSessionName(req.name)
-        val nameProblem = sessionNameProblem(name)
-        if (nameProblem != null) {
-            call.respondText("cannot rename session: $nameProblem", status = HttpStatusCode.BadRequest)
+        val name = validatedName(req.name, "cannot rename session") ?: return@patch
+        store.setName(id, name)
+        val renamed = store.getSession(id)
+        if (renamed == null) {
+            call.respondText(
+                "session ${id.value} vanished while it was being renamed",
+                status = HttpStatusCode.InternalServerError,
+            )
             return@patch
         }
-        store.setName(id, name)
-        val renamed = store.getSession(id) ?: meta
         call.respondText(json.encodeToString(SessionDto.serializer(), renamed.toDto()), ContentType.Application.Json)
     }
 
@@ -330,6 +322,16 @@ fun Route.controlRoutes(
             call.respondText("ok")
         }
     }
+}
+
+private suspend fun RoutingContext.validatedName(raw: String, action: String): String? {
+    val name = normalizeSessionName(raw)
+    val problem = sessionNameProblem(name)
+    if (problem != null) {
+        call.respondText("$action: $problem", status = HttpStatusCode.BadRequest)
+        return null
+    }
+    return name
 }
 
 private fun sessionId(raw: String?): SessionId? =

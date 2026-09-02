@@ -184,14 +184,14 @@ class WebUiServingTest {
         )
     }
 
-    // The rename input's cap is a hand-copied mirror of the server's bound. Nothing else notices a drift:
-    // a browser that accepted more would post a name the route refuses.
+    // The name inputs' caps are hand-copied mirrors of the server's bound, and creation must not be
+    // stricter than rename. Nothing else notices a drift: a browser that accepted more would post a name
+    // the route refuses, and one that accepted less would silently truncate what the operator typed.
     @Test
-    fun theRenameFieldsMaxlengthMirrorsTheServersNameBound() = withServer { ctx ->
-        assertTrue(
-            ctx.get("/components/dialogs.js").bodyAsText().contains("maxlength=\"$MAX_SESSION_NAME_LENGTH\""),
-            "the rename input's maxlength is $MAX_SESSION_NAME_LENGTH, matching MAX_SESSION_NAME_LENGTH",
-        )
+    fun bothSessionNameFieldsMaxlengthMirrorsTheServersNameBound() = withServer { ctx ->
+        val caps = Regex("maxlength=\"(\\d+)\"").findAll(ctx.get("/components/dialogs.js").bodyAsText())
+            .map { it.groupValues[1] }.toList()
+        assertEquals(listOf("$MAX_SESSION_NAME_LENGTH", "$MAX_SESSION_NAME_LENGTH"), caps, "both name inputs")
     }
 
     @Test

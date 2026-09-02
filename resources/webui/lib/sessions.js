@@ -132,7 +132,8 @@ export function upsertIfNewer(list, row) {
   return next;
 }
 
-// Stamp the patch revision and apply nullable fields verbatim; null is an authoritative clear.
+// Stamp the patch revision and apply nullable fields verbatim; null is an authoritative clear. `name`
+// is the exception: an absent one keeps the value the row already holds.
 export function patchIfNewer(list, msg) {
   const index = list.findIndex((s) => s.id === msg.sessionId);
   if (index < 0) return list;
@@ -149,8 +150,7 @@ export function patchIfNewer(list, msg) {
     model: msg.model,
     taskRef: msg.taskRef,
     projectId: msg.projectId,
-    // A daemon older than these two fields omits them, and the snapshot's value stays authoritative
-    // then; see the wire contract on `SessionUpdateDto` in src/transport/EventsWs.kt.
+    // See the wire contract on `SessionUpdateDto` in src/transport/EventsWs.kt.
     name: msg.name != null ? msg.name : prev.name,
     updatedAt: msg.updatedAt || prev.updatedAt,
     rev: msg.rev,
