@@ -153,6 +153,51 @@ class SessionRenameRoutesTest {
         )
     }
 
+    @Test
+    fun aControlCharacterInTheNameIs400AndChangesNothing() = withRenameServer { env ->
+        val resp = env.rename(seeded.value, """{"name":"two\nlines"}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue(resp.bodyAsText().contains("control"), "the refusal says why: ${resp.bodyAsText()}")
+        assertEquals(
+            "seeded",
+            assertNotNull(env.store.getSession(seeded)).name,
+            "an ESC reaching the row would inject ANSI into every CLI table that prints it",
+        )
+    }
+
+    @Test
+    fun aBodyThatIsNotJsonIs400RatherThanA500() = withRenameServer { env ->
+        val resp = env.rename(seeded.value, "not json at all")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue(resp.bodyAsText().contains("invalid request body"), "the refusal names the body: ${resp.bodyAsText()}")
+        assertEquals("seeded", assertNotNull(env.store.getSession(seeded)).name, "nothing changed")
+    }
+
+    @Test
+    fun aWhitespaceOnlyNameIsStoredAsTheEmptyOneSoNoClientShowsABlankLabel() = withRenameServer { env ->
+        val resp = env.rename(seeded.value, """{"name":"   "}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("", dto.name, "blank normalizes to the automatic label, not to an empty cell")
+        assertEquals("", assertNotNull(env.store.getSession(seeded)).name)
+        assertEquals(
+            "kotgent-seeded",
+            env.sessions().single { it.id == seeded.value }.tmuxSession,
+            "which is what every reader falls back to",
+        )
+    }
+
+    @Test
+    fun surroundingWhitespaceIsTrimmedSoTheCliAndTheBrowserStoreTheSameName() = withRenameServer { env ->
+        val resp = env.rename(seeded.value, """{"name":"  padded  "}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        assertEquals("padded", assertNotNull(env.store.getSession(seeded)).name)
+    }
+
     private inner class Env(
         val port: Int,
         val client: HttpClient,

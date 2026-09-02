@@ -181,9 +181,6 @@ private fun parseSession(rest: List<String>): CliCommand = when (val sub = rest.
     else -> CliCommand.Invalid("session: unknown subcommand '$sub' (use: $SESSION_RENAME_USAGE)")
 }
 
-/**
- * Positional, so a name beginning with '-' is a name; no flag scan can mistake it for one.
- */
 private fun parseSessionRename(rest: List<String>): CliCommand {
     val id = rest.getOrNull(0)
     if (id.isNullOrBlank()) return CliCommand.Invalid("session rename requires a session id: $SESSION_RENAME_USAGE")

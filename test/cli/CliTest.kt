@@ -478,7 +478,12 @@ class CliTest {
                 sampleDto("bbb22222", "needs_approval", needsAttention = true),
             ),
         )
-        assertTrue("aaa11111" in out && "bbb22222" in out, "both ids render")
+        val rows = out.trimEnd('\n').lines().drop(1)
+        assertEquals(
+            listOf("aaa11111", "bbb22222"),
+            rows.map { it.take(10).trim() },
+            "each id renders in the ID cell, not merely somewhere on its row: $out",
+        )
         assertTrue("needs_approval" in out, "state renders")
         assertTrue("*" in out, "a needs-attention session is flagged")
         assertEquals("no sessions\n", renderSessions(emptyList()))
@@ -630,6 +635,18 @@ class CliTest {
     }
 
     @Test
+    fun aTruncatedAstralNameKeepsItsLastEmojiWholeRatherThanPrintingHalfOfOne() {
+        val out = renderSessions(
+            listOf(sampleDto("aaa11111", "running", needsAttention = false).copy(name = "\uD83D\uDE00".repeat(20))),
+        )
+        assertTrue("\uD83D\uDE00".repeat(7) + "…" in out, "the cut falls between pairs, not inside one: $out")
+        assertTrue(
+            out.indices.none { out[it].isHighSurrogate() && (it + 1 == out.length || !out[it + 1].isLowSurrogate()) },
+            "no half of a surrogate pair survives the cut: $out",
+        )
+    }
+
+    @Test
     fun aClearedNameFallsBackToTheTmuxSessionStringRatherThanPrintingNothing() = runBlocking {
         val stdout = mutableListOf<String>()
         val exit = runRenameCommand(
@@ -656,6 +673,34 @@ class CliTest {
         )
         assertEquals(1, exit)
         assertTrue(stderr.single().contains("abc12345"), "the refusal names the session: $stderr")
+    }
+
+    @Test
+    fun aRefusedRenameKeepsTheDaemonsOwnReasonInsteadOfReadingAsAMissingSession() = runBlocking {
+        val thrown = assertFailsWith<ApiException> {
+            val _ = runRenameCommand(
+                "abc12345",
+                rename = { throw ApiException(400, "cannot rename session: session name must be at most 200 characters, was 201") },
+                stdout = { error("no stdout expected: $it") },
+                stderr = { error("no stderr expected: $it") },
+            )
+        }
+        assertTrue(
+            thrown.message.orEmpty().contains("200 characters"),
+            "withApi prints this message, so the operator must read the bound: ${thrown.message}",
+        )
+    }
+
+    @Test
+    fun anEmptyBodied404IsARouteMissFromAnOlderDaemonNotAMissingSession() = runBlocking {
+        val _ = assertFailsWith<ApiException> {
+            val _ = runRenameCommand(
+                "abc12345",
+                rename = { throw ApiException(404, "") },
+                stdout = { error("no stdout expected: $it") },
+                stderr = { error("no stderr expected: $it") },
+            )
+        }
     }
 
     @Test

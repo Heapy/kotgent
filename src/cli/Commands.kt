@@ -641,10 +641,6 @@ suspend fun runWebCommand(
  */
 val DUPLICATE_IMPORT_ID_IN_BODY: Regex = Regex("kotgent session '([^']+)'")
 
-/**
- * Imports then resumes unless [noStart]. A resume failure leaves the row truthfully resumable; duplicate
- * 409 responses produce a concrete resume or restore hint from the server's existing-session id.
- */
 /** An emptied name prints the tmux session string — the automatic label the Web UI's `displayName` also picks. */
 suspend fun runRenameCommand(
     id: String,
@@ -655,7 +651,9 @@ suspend fun runRenameCommand(
     val renamed = try {
         rename()
     } catch (e: ApiException) {
-        if (e.status != HTTP_NOT_FOUND) throw e
+        // The handler's own 404 carries a body; an empty one is Ktor's route miss from a daemon that
+        // predates the PATCH route, which is not a missing session.
+        if (e.status != HTTP_NOT_FOUND || e.body.isEmpty()) throw e
         stderr("no such session: $id")
         return 1
     }
@@ -663,6 +661,10 @@ suspend fun runRenameCommand(
     return 0
 }
 
+/**
+ * Imports then resumes unless [noStart]. A resume failure leaves the row truthfully resumable; duplicate
+ * 409 responses produce a concrete resume or restore hint from the server's existing-session id.
+ */
 suspend fun runImportCommand(
     noStart: Boolean,
     importSession: suspend () -> SessionDto,
@@ -727,8 +729,12 @@ private fun taskColumn(ref: String?): String =
 private fun nameColumn(s: SessionDto): String =
     ellipsized(s.name.ifEmpty { s.tmuxSession }, NAME_COLUMN_WIDTH).padEnd(NAME_COLUMN_WIDTH)
 
-private fun ellipsized(value: String, width: Int): String =
-    if (value.length > width) value.take(width - 1) + "…" else value
+private fun ellipsized(value: String, width: Int): String {
+    if (value.length <= width) return value
+    // Cutting between the halves of a surrogate pair would print a lone high surrogate; names are astral-capable.
+    val kept = if (value[width - 2].isHighSurrogate()) width - 2 else width - 1
+    return value.take(kept) + "…"
+}
 
 private const val TASK_COLUMN_WIDTH: Int = 12
 

@@ -972,6 +972,18 @@ class TransportTest {
         assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and nothing was launched")
     }
 
+    // The upsert conflict clause now keeps `sessions.name`, so the only path that may write one is the
+    // INSERT a start performs. Nothing else proves a started session keeps the name the operator gave.
+    @Test
+    fun startingASessionPersistsTheOperatorsNameAndTrimsIt() = withServer { ctx ->
+        val resp = ctx.postBody("/sessions", """{"agent":"claude","cwd":"/tmp","name":"  refactor auth  "}""")
+
+        assertEquals(HttpStatusCode.Created, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("refactor auth", dto.name, "the started row carries the name the caller asked for")
+        assertEquals("refactor auth", ctx.getSessions().single { it.id == dto.id }.name, "and reads back the same")
+    }
+
     @Test
     fun importingASessionWithAControlCharacterInTheNameIs400AndImportsNothing() = withServer(
         probe = VendorStoreProbe { _, _, _ -> true },

@@ -5,6 +5,7 @@ import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
+import io.kotgent.core.MAX_SESSION_NAME_LENGTH
 import io.kotgent.core.Projection
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -180,6 +181,16 @@ class WebUiServingTest {
         assertTrue(
             index.contains("\"@preact/signals-core\": \"/_v/$rev/vendor/signals-core.module.js\""),
             "the relative import above resolves to exactly the import map's signals-core target",
+        )
+    }
+
+    // The rename input's cap is a hand-copied mirror of the server's bound. Nothing else notices a drift:
+    // a browser that accepted more would post a name the route refuses.
+    @Test
+    fun theRenameFieldsMaxlengthMirrorsTheServersNameBound() = withServer { ctx ->
+        assertTrue(
+            ctx.get("/components/dialogs.js").bodyAsText().contains("maxlength=\"$MAX_SESSION_NAME_LENGTH\""),
+            "the rename input's maxlength is $MAX_SESSION_NAME_LENGTH, matching MAX_SESSION_NAME_LENGTH",
         )
     }
 

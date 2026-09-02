@@ -5,6 +5,7 @@ import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.TaskRef
+import io.kotgent.core.normalizeSessionName
 import io.kotgent.core.sessionNameProblem
 import io.kotgent.core.unread
 import io.kotgent.daemon.AgentBinaryNotFoundException
@@ -76,7 +77,8 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
-        val nameProblem = req.name?.let { sessionNameProblem(it) }
+        val startName = req.name?.let { normalizeSessionName(it) }
+        val nameProblem = startName?.let { sessionNameProblem(it) }
         if (nameProblem != null) {
             call.respondText("cannot start session: $nameProblem", status = HttpStatusCode.BadRequest)
             return@post
@@ -110,7 +112,7 @@ fun Route.controlRoutes(
             }
         }
         val meta = try {
-            sessionManager.start(req.agent, req.cwd, req.name, req.tags)
+            sessionManager.start(req.agent, req.cwd, startName, req.tags)
         } catch (e: UnsupportedAgentException) {
             call.respondText("cannot start session: ${e.message}", status = HttpStatusCode.BadRequest)
             return@post
@@ -141,7 +143,8 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
-        val nameProblem = req.name?.let { sessionNameProblem(it) }
+        val importName = req.name?.let { normalizeSessionName(it) }
+        val nameProblem = importName?.let { sessionNameProblem(it) }
         if (nameProblem != null) {
             call.respondText("cannot import session: $nameProblem", status = HttpStatusCode.BadRequest)
             return@post
@@ -157,7 +160,7 @@ fun Route.controlRoutes(
         suspend fun importFailure(e: RuntimeException, status: HttpStatusCode) =
             call.respondText("cannot import session: ${e.message}", status = status)
         val meta = try {
-            sessionManager.importSession(req.agent, importProviderId, req.cwd, req.name, req.tags)
+            sessionManager.importSession(req.agent, importProviderId, req.cwd, importName, req.tags)
         } catch (e: UnknownAgentKindException) {
             importFailure(e, HttpStatusCode.BadRequest)
             return@post
@@ -196,7 +199,8 @@ fun Route.controlRoutes(
             call.respondText("malformed session id", status = HttpStatusCode.BadRequest)
             return@patch
         }
-        if (store.getSession(id) == null) {
+        val meta = store.getSession(id)
+        if (meta == null) {
             call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)
             return@patch
         }
@@ -213,18 +217,15 @@ fun Route.controlRoutes(
             )
             return@patch
         }
-        val nameProblem = sessionNameProblem(req.name)
+        val name = normalizeSessionName(req.name)
+        val nameProblem = sessionNameProblem(name)
         if (nameProblem != null) {
             call.respondText("cannot rename session: $nameProblem", status = HttpStatusCode.BadRequest)
             return@patch
         }
-        store.setName(id, req.name)
-        val renamed = store.getSession(id)
-        if (renamed != null) {
-            call.respondText(json.encodeToString(SessionDto.serializer(), renamed.toDto()), ContentType.Application.Json)
-        } else {
-            call.respondText("ok")
-        }
+        store.setName(id, name)
+        val renamed = store.getSession(id) ?: meta
+        call.respondText(json.encodeToString(SessionDto.serializer(), renamed.toDto()), ContentType.Application.Json)
     }
 
     post("/sessions/{id}/input") {

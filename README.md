@@ -197,6 +197,7 @@ kotgent <command> [args]
   resume <id>                   resume a stopped/crashed/resumable session
   interrupt <id>                send Ctrl-C to un-stick a session
   attach <id>                   attach a raw terminal to a session
+  session rename <id> <name>    rename a session (an empty name restores the automatic label)
 
   The task backlog (JSON on stdout — written for an agent to parse). Every subcommand that
   resolves a session takes [--session S] to name it instead of the calling tmux pane.
@@ -364,8 +365,8 @@ same task. The command palette opens the board with `⌘K o` and its create form
 paths are deep-linkable and installable, which is why the client-facing API lives under `/api/v1`.
 
 One action changes daemon state at a time, and the palette says so rather than queueing. While a start,
-an import, a lifecycle action, a preferences save, a task link, or a project delete or restore is in
-flight, the palette's session commands are disabled and name the flow holding the lock; a form submitted
+an import, a lifecycle action, a rename, a preferences save, a task link, or a project delete or restore
+is in flight, the palette's session commands are disabled and name the flow holding the lock; a form submitted
 anyway is refused with *"Another action is still in progress — try again in a moment."* The wait is
 bounded by the request timeout (60 s), and a mutation holds the lock through its own follow-up read, so
 two links to the same session cannot overwrite each other. Reads that are not part of a mutation — the
@@ -559,9 +560,11 @@ Kotgent is deliberately focused. The current product boundary is:
   restart (`running` / `stopped` / `crashed` / `resumable` classification), provider-id capture, and
   launchd install.
 - **Session metadata & lifecycle polish.** Each session shows its agent CLI version and, best-effort, the
-  model it is running; **Done** stops an agent and archives it off the sidebar (restorable, history kept);
-  and an opt-in, per-device **notification toggle** registers server-sent Web Push for attention edges,
-  with live-tab notification fallback.
+  model it is running; its name is an editable label (`kotgent session rename`, or the palette's rename
+  dialog) that reaches every open client live and falls back to the automatic one when cleared; **Done**
+  stops an agent and archives it off the sidebar (restorable, history kept); and an opt-in, per-device
+  **notification toggle** registers server-sent Web Push for attention edges, with live-tab notification
+  fallback.
 - **Installable mobile PWA.** The manifest, root service worker, home-screen icons, responsive drawer,
   visual-viewport terminal sizing, software-keyboard focus handling, special-key toolbar, foreground
   terminal reattachment, and notification deep links are all shipped. The service worker is network-only:

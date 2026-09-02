@@ -663,6 +663,11 @@ class SessionDialogsTest {
                         val field = page.locator("#rename-session-name")
                         // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
                         assertThat(field).hasAttribute("spellcheck", "false")
+                        // Spelled `autoCorrect` in the source: no DOM property carries that name, so
+                        // Preact sets a plain attribute, which iOS reads. The lowercase spelling would
+                        // hit Safari's boolean `autocorrect` IDL and coerce "off" to true.
+                        assertThat(field).hasAttribute("autocorrect", "off")
+                        assertThat(field).hasAttribute("autocapitalize", "off")
                         assertThat(field).hasAttribute("maxlength", "200")
                         assertThat(field).isFocused()
                         assertThat(field).hasValue("alpha")
@@ -691,6 +696,128 @@ class SessionDialogsTest {
                         assertThat(alphaRow(page).locator(".session-name")).hasText(RENAMED_ALPHA)
                         assertThat(page.locator("#status-line"))
                             .containsText("Renamed to $RENAMED_ALPHA")
+                    }
+                }
+            }
+        }
+    }
+
+    // The dialog prefills `session.name`, not the label the sidebar shows: prefilling the automatic label
+    // would write the tmux string back as a real name on the first Save.
+    @Test
+    fun theRenameFieldOpensEmptyOnASessionWhoseNameWasCleared() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.traced("rename-session-cleared-prefill") {
+                        val page = signIn(context, harness)
+                        harness.send("rename $BADGE_SESSION -")
+                        assertThat(alphaRow(page).locator(".session-name")).hasText("kt-$BADGE_SESSION")
+
+                        selectAlpha(page)
+                        openRename(page)
+
+                        assertThat(page.locator("#rename-session-name")).hasValue("")
+                    }
+                }
+            }
+        }
+    }
+
+    // The placeholder promises that an empty field restores the automatic name, and the server is what
+    // trims: a field holding only spaces must reach the same outcome as an empty one.
+    @Test
+    fun submittingABlankNameRestoresTheAutomaticLabel() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.traced("rename-session-blank") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+                        openRename(page)
+
+                        page.locator("#rename-session-name").fill("   ")
+                        page.locator("#rename-session-submit").click()
+
+                        assertThat(page.locator("#rename-session-dialog")).hasCount(0)
+                        assertThat(alphaRow(page).locator(".session-name")).hasText("kt-$BADGE_SESSION")
+                        assertThat(page.locator("#status-line")).containsText("Renamed to kt-$BADGE_SESSION")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aRefusedRenameIsReportedInTheDialogWhichStaysOpenAndSubmittable() {
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.route("**$API/sessions/$BADGE_SESSION") { route ->
+                        if (route.request().method() != "PATCH") {
+                            route.resume()
+                            return@route
+                        }
+                        route.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(400)
+                                .setContentType("text/plain; charset=utf-8")
+                                .setBody(RENAME_REFUSAL_BODY),
+                        )
+                    }
+                    context.traced("rename-session-refused") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+                        openRename(page)
+
+                        page.locator("#rename-session-name").fill(RENAMED_ALPHA)
+                        page.locator("#rename-session-submit").click()
+
+                        val error = page.locator("#rename-session-error")
+                        assertThat(error).containsText("Could not rename the session")
+                        assertThat(error).hasAttribute("role", "alert")
+                        assertThat(page.locator("#rename-session-dialog")).isVisible()
+                        val submit = page.locator("#rename-session-submit")
+                        assertThat(submit).isEnabled()
+                        assertThat(submit).hasText("Save name")
+                        assertThat(alphaRow(page).locator(".session-name")).hasText("alpha")
+                    }
+                }
+            }
+        }
+    }
+
+    // The other half of the same failure: the dialog the operator dismissed while the PATCH was in flight
+    // is gone, so the refusal has to reach the status line instead of a form nobody is looking at.
+    @Test
+    fun aRenameRefusedAfterItsDialogClosedIsAnnouncedGlobally() {
+        val held = AtomicReference<Route?>(null)
+        Harness(SESSIONS_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.route("**$API/sessions/$BADGE_SESSION") { route ->
+                        if (route.request().method() != "PATCH" || !held.compareAndSet(null, route)) route.resume()
+                    }
+                    context.traced("rename-session-late-failure") {
+                        val page = signIn(context, harness)
+                        selectAlpha(page)
+                        openRename(page)
+
+                        page.locator("#rename-session-name").fill(RENAMED_ALPHA)
+                        page.locator("#rename-session-submit").click()
+                        page.waitForCondition { held.get() != null }
+                        page.locator("#rename-session-cancel").click()
+                        assertThat(page.locator("#rename-session-dialog")).hasCount(0)
+
+                        held.get()!!.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(400)
+                                .setContentType("text/plain; charset=utf-8")
+                                .setBody(RENAME_REFUSAL_BODY),
+                        )
+
+                        assertThat(page.locator("#status-line")).containsText("Could not rename the session")
+                        assertThat(alphaRow(page).locator(".session-name")).hasText("alpha")
                     }
                 }
             }
@@ -911,6 +1038,8 @@ class SessionDialogsTest {
         const val IMPORTED_ID = "imp-1"
         const val IMPORTED_NAME = "adopted-codex"
         const val IMPORTED_PROVIDER_ID = "5f2b1d64-2c8a-4d21-9f0e-7a63c1d4b8e2"
+
+        const val RENAME_REFUSAL_BODY = "cannot rename session: session name must not contain control characters"
 
         const val RENAME_COMMAND = "rename"
         const val RENAMED_ALPHA = "alpha, renamed"

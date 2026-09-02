@@ -144,9 +144,9 @@ describe("runMutation", () => {
   });
 });
 
-// The palette reads the holder name this module publishes, and gates on its presence rather than on its
-// value. `rename` is the seventh flow to take the lock, so the set of commands it closes must be the same
-// set every earlier flow closes — a new flow that gated fewer commands would be the bug worth catching.
+// The palette gates on the presence of a holder name, not on its value, so the sets below can only agree.
+// What that buys is the registry-level fact that `session.rename` carries the pending guard at all; the
+// per-flow direction is proven in the browser, by SessionDialogsTest.
 describe("the palette while a flow holds the lock", () => {
   const BUSY_REASON = "another action is still in progress";
   const active = {
@@ -166,12 +166,13 @@ describe("the palette while a flow holds the lock", () => {
       .map((command) => command.id);
   }
 
-  test("a rename closes exactly the session commands the flows before it close", () => {
+  test("a rename closes the session commands, its own included, exactly as the flows before it do", () => {
     const underRename = gatedIds("rename");
 
     assert.ok(underRename.includes("session.stop"), "the gated set is not empty: " + underRename.join(" "));
+    assert.ok(underRename.includes("session.rename"), "a rename gates itself: " + underRename.join(" "));
     assert.deepEqual(underRename, gatedIds("start"));
-    assert.deepEqual(underRename, gatedIds("link"));
+    assert.deepEqual(underRename, gatedIds("link-task"));
   });
 
   test("with nothing in flight no session command names the wait", () => {

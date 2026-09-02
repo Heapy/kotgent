@@ -457,7 +457,7 @@ export function RenameSessionDialog({ session, onRename, onClose }) {
     setBusy(true);
     setError(null);
     try {
-      await onRename(session.id, name.trim());
+      await onRename(session.id, name);
     } catch (e) {
       setError("Could not rename the session: " + errorMessage(e));
       setBusy(false);
@@ -481,6 +481,7 @@ export function RenameSessionDialog({ session, onRename, onClose }) {
           <span>Name</span>
           <input id="rename-session-name" type="text" maxlength="200"
                  spellcheck=${false} autocomplete="off"
+                 autocapitalize="off" autoCorrect="off"
                  placeholder="leave empty for the automatic name" ref=${inputRef}
                  value=${name} onInput=${(e) => setName(e.target.value)} />
         </label>

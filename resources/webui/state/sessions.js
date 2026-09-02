@@ -56,7 +56,7 @@ export function mergeSessionRow(row) {
   return { changed: changed, previous: previous, winner: findSession(row.id) };
 }
 
-// A patch frame carries no cwd, agent, or name, so a patch for a row the list has never seen is dropped
+// A patch frame carries no cwd or agent, so a patch for a row the list has never seen is dropped
 // rather than published as a half-row.
 export function mergeSessionPatch(msg) {
   const current = sessions.value;

@@ -157,7 +157,7 @@ describe("the equal-revision rule", () => {
   });
 
   test("the winner of an equal-revision frame is the row on hand, not the frame", () => {
-    // A patch frame carries no cwd, agent, or name. Reporting the frame would hand the caller a row
+    // A patch frame carries no cwd or agent. Reporting the frame would hand the caller a row
     // that cannot be displayed and whose unread could disagree with the authoritative one.
     mergeSessionRow(sessionRow({ rev: 4, unread: 5, cwd: "/work/one" }));
 

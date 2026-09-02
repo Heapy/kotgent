@@ -1,6 +1,7 @@
 package io.kotgent.core
 
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -49,6 +50,18 @@ class SessionNameTest {
             assertNotNull(problem, "a control character misrenders in a sidebar row and a CLI table")
             assertTrue(problem.contains("control"), "the refusal says why: $problem")
         }
+    }
+
+    @Test
+    fun aWhitespaceOnlyNameNormalizesToTheEmptyOneRatherThanToABlankLabel() {
+        assertEquals("", normalizeSessionName("   "), "a blank name is the automatic label, not a blank row")
+        assertNull(sessionNameProblem(normalizeSessionName("   ")))
+    }
+
+    @Test
+    fun surroundingWhitespaceIsTrimmedSoEveryClientStoresTheSameName() {
+        assertEquals("x", normalizeSessionName("  x  "))
+        assertEquals("two words", normalizeSessionName("\ttwo words\n"), "the CLI and the browser agree")
     }
 
     @Test
