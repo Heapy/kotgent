@@ -482,7 +482,7 @@ class EventStoreTest {
             assertEquals("gpt-6", store.getSession(sid)!!.model)
 
             val _ = store.append(sid, AgentEvent.SessionBound(hook), EventSource.hook)
-            store.setModel(sid, null)
+            store.setModel(sessionId = sid, null)
             assertFalse(
                 store.setModelForProvider(sid, scanned, "gpt-6"),
                 "a write conditioned on the displaced id is refused",

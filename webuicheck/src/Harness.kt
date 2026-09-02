@@ -4,7 +4,6 @@ import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
-import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.FakeTmux
@@ -13,12 +12,11 @@ import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
-import io.kotgent.daemon.VendorSessionLocator
-import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalAttachEnv
 import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.FakeTaskStore
 import io.kotgent.task.FakeProjectFs
 import io.kotgent.task.MemoryProjectFileWriter
@@ -37,10 +35,11 @@ import kotlinx.coroutines.withContext
 /** `projectFiles` must publish into this same `projectFs` so concurrent creates converge. */
 class HarnessFakes(
     val tmux: FakeTmux,
-    val events: FakeEventStore,
-    val tasks: FakeTaskStore,
+    val eventStore: FakeEventStore,
+    val preferencesStore: FakePreferencesStore,
+    val taskStore: FakeTaskStore,
     val projectFs: FakeProjectFs,
-    val projectFiles: MemoryProjectFileWriter,
+    val projectFileWriter: MemoryProjectFileWriter,
 )
 
 /** Seed runs before bind; terminal argv is declared here so Harness remains the bridge's only owner. */
@@ -77,28 +76,28 @@ class Harness(
     val background: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val taskService = TaskService(
-        tasks = fakes.tasks,
-        sessions = fakes.events,
+        tasks = fakes.taskStore,
+        sessions = fakes.eventStore,
         projectFs = fakes.projectFs,
-        projectFiles = fakes.projectFiles,
+        projectFiles = fakes.projectFileWriter,
     )
 
     private val sessionManager = SessionManager(
         tmux = fakes.tmux,
-        store = fakes.events,
+        store = fakes.eventStore,
         registry = PaneRegistry(),
-        agentFactory = AgentFactory { _, cwd ->
+        agentFactory = { _, cwd ->
             object : AgentAdapter {
                 override val events: Flow<AgentEvent> = emptyFlow()
                 override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
                     LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
             }
         },
-        idCapture = ProviderIdCapture(fakes.events, background),
-        vendorProbe = VendorStoreProbe { _, _, _ -> true },
-        sessionLocator = VendorSessionLocator { _, _ -> null },
+        idCapture = ProviderIdCapture(fakes.eventStore, background),
+        vendorProbe = { _, _, _ -> true },
+        sessionLocator = { _, _ -> null },
         supportedAgentKinds = setOf(CLAUDE_AGENT_KIND, CODEX_AGENT_KIND, JUNIE_AGENT_KIND),
-        taskStore = fakes.tasks,
+        taskStore = fakes.taskStore,
         projectFs = fakes.projectFs,
     )
 
@@ -148,15 +147,15 @@ class Harness(
 
     private fun buildServer(port: Int): KotgentServer = KotgentServer(
         sessionManager = sessionManager,
-        store = fakes.events,
-        preferencesStore = fakes.events,
+        eventStore = fakes.eventStore,
+        preferencesStore = fakes.preferencesStore,
         tokens = tokens,
         terminalBridgeFactory = terminalBridgeFactory,
         directoryCompleter = harnessDirectoryCompleter(fakes.projectFs),
         fileUploader = uploads,
         webUiDir = webUiDir,
         tickets = tickets,
-        taskStore = fakes.tasks,
+        taskStore = fakes.taskStore,
         taskService = taskService,
         port = port,
     )

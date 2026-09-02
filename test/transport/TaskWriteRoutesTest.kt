@@ -3,8 +3,8 @@ package io.kotgent.transport
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
-import io.kotgent.core.Projection
 import io.kotgent.core.ProjectId
+import io.kotgent.core.Projection
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
@@ -1674,6 +1674,10 @@ class TaskWriteRoutesTest {
                 rows[sessionId]?.let { rows[sessionId] = it.copy(projectId = projectId) }
             }
         }
+
+        override suspend fun setName(sessionId: SessionId, name: String) {
+        }
+
         override suspend fun listSessions(): List<SessionMeta> = unused("listSessions")
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
             unused("append")

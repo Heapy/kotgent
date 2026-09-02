@@ -42,7 +42,7 @@ internal fun harnessSession(
 )
 
 internal suspend fun seedSessionRow(fakes: HarnessFakes, meta: SessionMeta) {
-    fakes.events.upsertSession(meta)
+    fakes.eventStore.upsertSession(meta)
     if (meta.state.isAlive) { val _ = fakes.tmux.seedPane(meta.id.value) }
 }
 

@@ -17,9 +17,9 @@ internal fun deepLinkScenario(): Scenario = Scenario(
     seed = { fakes ->
         val project = fixtureProject(fakes, DEEP_LINK_PROJECT_ID, "Deep Link Fixture", "/repo/deep")
         val ref = TaskRef(DEEP_LINK_TASK_REF)
-        fakes.tasks.seedTask(ref, project, "Route straight to me", state = TaskState.review)
-        fakes.tasks.seedTask(TaskRef("local:8"), project, "The card behind it")
-        fakes.tasks.seedActivity(ref, ActivityKind.created, author = BOARD_ACTOR)
+        fakes.taskStore.seedTask(ref, project, "Route straight to me", state = TaskState.review)
+        fakes.taskStore.seedTask(TaskRef("local:8"), project, "The card behind it")
+        fakes.taskStore.seedActivity(ref, ActivityKind.created, author = BOARD_ACTOR)
 
         fixtureSession(
             fakes, id = DEEP_LINK_SESSION_ID, name = "deep-link", agent = "claude", cwd = "/repo/deep",

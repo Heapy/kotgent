@@ -1,15 +1,15 @@
 package io.kotgent.transport
 
-import io.kotgent.currentUiVersion
 import io.kotgent.core.SessionId
+import io.kotgent.currentUiVersion
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
 import io.kotgent.exe.NativeExe
-import io.kotgent.push.PushStore
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.TerminalBridge
 import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
+import io.kotgent.push.PushStore
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.TaskStore
@@ -41,17 +41,17 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
-import kotlin.concurrent.Volatile
-import kotlin.time.Duration.Companion.milliseconds
 import platform.posix.F_OK
 import platform.posix.access
+import kotlin.concurrent.Volatile
+import kotlin.time.Duration.Companion.milliseconds
 
 // Programmatic endpoints are versioned; hook and auth handlers also expose root aliases for older clients.
 const val API_PREFIX: String = "/api/v1"
 
 class KotgentServer(
     private val sessionManager: SessionManager,
-    private val store: EventStore,
+    private val eventStore: EventStore,
     private val preferencesStore: PreferencesStore,
     private val tokens: TokenHolder,
     private val terminalBridgeFactory: (id: String, scope: CoroutineScope) -> TerminalBridge,
@@ -98,23 +98,23 @@ class KotgentServer(
                     }
                     install(WebSockets)
                     routing {
-                        val _ = claudeHookRoutes(tokens::current, sessionManager.paneLookup, store, HOOK_JSON)
+                        val _ = claudeHookRoutes(tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON)
                         val _ = codexHookRoutes(
-                            tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
+                            tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )
                         val _ = junieHookRoutes(
-                            tokens::current, sessionManager.paneLookup, store, HOOK_JSON,
+                            tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
                         )
                         val _ = tmuxHookRoutes(tokens::current, onTmuxSessionClosed)
                         authRoutes(tokens, tickets, publicUrl, json)
                         val _ = authenticated(tokens::current, publicUrl) {
                             route(API_PREFIX) {
-                                fileUploadRoutes(store, fileUploader, json)
+                                fileUploadRoutes(eventStore, fileUploader, json)
                                 controlRoutes(
                                     sessionManager,
-                                    store,
+                                    eventStore,
                                     inputSink,
                                     currentVersion,
                                     taskService,
@@ -123,8 +123,8 @@ class KotgentServer(
                                 )
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
-                                eventsWs(store, preferencesStore, taskStore, json)
-                                terminalWs(registry, store, json)
+                                eventsWs(eventStore, preferencesStore, taskStore, json)
+                                terminalWs(registry, eventStore, json)
                                 val backlog = taskStore
                                 val coordinator = taskService
                                 if (backlog != null && coordinator != null) {
@@ -132,7 +132,7 @@ class KotgentServer(
                                         TaskRouting(
                                             tasks = backlog,
                                             service = coordinator,
-                                            sessions = store,
+                                            sessions = eventStore,
                                             paneLookup = sessionManager.paneLookup,
                                             json = json,
                                         ),
@@ -197,7 +197,7 @@ class KotgentServer(
 
         fun production(
             sessionManager: SessionManager,
-            store: EventStore,
+            eventStore: EventStore,
             preferencesStore: PreferencesStore,
             tokens: TokenHolder,
             tmux: Tmux,
@@ -215,7 +215,7 @@ class KotgentServer(
             port: Int = 0,
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
-            store = store,
+            eventStore = eventStore,
             preferencesStore = preferencesStore,
             tokens = tokens,
             terminalBridgeFactory = { id, scope -> terminalBridgeForSession(tmux, id, scope, ptyFactory) },

@@ -53,7 +53,9 @@ interface EventStore {
      * Preserves createdAt and the operator-owned name, max-merges readCursor, and preserves targeted
      * task/project values on null input.
      */
-    suspend fun upsertSession(meta: SessionMeta)
+    suspend fun upsertSession(
+        meta: SessionMeta,
+    )
 
     suspend fun updateSessionState(
         sessionId: SessionId,
@@ -63,10 +65,17 @@ interface EventStore {
         updatedAt: Long,
     )
 
-    suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long)
+    suspend fun setArchived(
+        sessionId: SessionId,
+        archived: Boolean,
+        updatedAt: Long,
+    )
 
     /** Derived metadata write: advances rev and emits while preserving the committed activity timestamp. */
-    suspend fun setModel(sessionId: SessionId, model: String?)
+    suspend fun setModel(
+        sessionId: SessionId,
+        model: String?,
+    )
 
     /** Atomically writes only while the row still holds the provider id used for the model lookup. */
     suspend fun setModelForProvider(
@@ -79,52 +88,71 @@ interface EventStore {
      * Monotonically advances the cursor, clamps it to lastSeq, and does not count viewing as activity.
      * Emits even for a no-op so a client can use a repeated mark as a resynchronization signal.
      */
-    suspend fun markRead(sessionId: SessionId, seq: Seq)
+    suspend fun markRead(
+        sessionId: SessionId,
+        seq: Seq,
+    )
 
     /** Unconditional by design: several sessions may work the same task; preserves activity ordering. */
-    suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?): Unit =
-        throw UnsupportedOperationException(
-            "${this::class.simpleName} does not model session task links: override setTaskRef",
-        )
+    suspend fun setTaskRef(
+        sessionId: SessionId,
+        taskRef: TaskRef?,
+    )
 
     /**
      * Prevents a clear from erasing a newer link. This default is non-atomic and is suitable only for
      * single-threaded fakes; concurrent stores must override it with one check-and-write.
      */
-    suspend fun clearTaskRefIf(sessionId: SessionId, expectedRef: TaskRef): Boolean {
+    suspend fun clearTaskRefIf(
+        sessionId: SessionId,
+        expectedRef: TaskRef,
+    ): Boolean {
         if (getSession(sessionId)?.taskRef != expectedRef) return false
         setTaskRef(sessionId, null)
         return true
     }
 
     /** Derived metadata write that preserves activity ordering. */
-    suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?): Unit =
-        throw UnsupportedOperationException(
-            "${this::class.simpleName} does not model session projects: override setProjectId",
-        )
+    suspend fun setProjectId(
+        sessionId: SessionId,
+        projectId: ProjectId?,
+    )
 
     /** Operator-owned label. Empty means "use the automatic label"; preserves activity ordering. */
-    suspend fun setName(sessionId: SessionId, name: String): Unit =
-        throw UnsupportedOperationException(
-            "${this::class.simpleName} does not support renaming: override setName",
-        )
+    suspend fun setName(
+        sessionId: SessionId,
+        name: String,
+    )
 
-    suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
-        throw UnsupportedOperationException(
-            "${this::class.simpleName} does not model session task links: override sessionsHoldingTask",
-        )
+    suspend fun sessionsHoldingTask(
+        taskRef: TaskRef,
+    ): List<SessionMeta>
 
-    suspend fun getSession(sessionId: SessionId): SessionMeta?
+    suspend fun getSession(
+        sessionId: SessionId,
+    ): SessionMeta?
 
     suspend fun listSessions(): List<SessionMeta>
 
-    suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq
+    suspend fun append(
+        sessionId: SessionId,
+        event: AgentEvent,
+        source: EventSource,
+    ): Seq
 
-    suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent>
+    suspend fun read(
+        sessionId: SessionId,
+        fromSeq: Seq,
+    ): List<StoredEvent>
 
-    suspend fun projectionOf(sessionId: SessionId): Projection
+    suspend fun projectionOf(
+        sessionId: SessionId,
+    ): Projection
 
-    fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent>
+    fun subscribe(
+        sessionId: SessionId,
+        fromSeq: Seq,
+    ): Flow<StoredEvent>
 
     val sessionUpdates: SharedFlow<SessionUpdate>
 

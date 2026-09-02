@@ -420,7 +420,7 @@ class CodexRolloutScanTest {
                     if (!raced) {
                         raced = true
                         val _ = real.append(sid, AgentEvent.SessionBound(mine), EventSource.hook)
-                        real.setModel(sid, null)
+                        real.setModel(sessionId = sid, null)
                     }
                     return row
                 }

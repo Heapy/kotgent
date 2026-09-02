@@ -13,9 +13,9 @@ import io.kotgent.core.EventSource
 import io.kotgent.core.MAX_SESSION_NAME_LENGTH
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
-import io.kotgent.core.SessionState
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.AgentBinaryNotFoundException
 import io.kotgent.daemon.AgentFactory
@@ -27,16 +27,17 @@ import io.kotgent.daemon.VendorSessionLocator
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.daemon.canonicalPath
-import io.kotgent.push.PushStore
-import io.kotgent.push.PushSubscription
-import io.kotgent.push.PushNotifier
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
+import io.kotgent.push.PushNotifier
+import io.kotgent.push.PushStore
+import io.kotgent.push.PushSubscription
 import io.kotgent.store.EventStore
 import io.kotgent.store.FakeEventStore
-import io.kotgent.store.SqliteEventStore
+import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.SessionUpdate
+import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.UiPreferences
 import io.kotgent.tmux.Tmux
 import io.ktor.client.HttpClient
@@ -68,9 +69,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -1697,17 +1698,20 @@ class TransportTest {
         block: suspend (Ctx) -> Unit,
     ) = runBlocking {
         withTimeout(40.seconds) {
-            val store = FakeEventStore()
+            val eventStore = FakeEventStore()
+            val preferencesStore = FakePreferencesStore()
             val tmux = FakeTmux()
             val registry = PaneRegistry()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
-                tmux, store, registry,
-                factory,
-                ProviderIdCapture(store, idScope),
-                probe,
-                locator,
-                setOf("claude", "codex"),
+                tmux = tmux,
+                store = eventStore,
+                registry = registry,
+                agentFactory = factory,
+                idCapture = ProviderIdCapture(eventStore, idScope),
+                vendorProbe = probe,
+                sessionLocator = locator,
+                supportedAgentKinds = setOf("claude", "codex"),
                 now = { 1L },
             )
             val ptyFactory = WsFakePtyFactory()
@@ -1717,14 +1721,14 @@ class TransportTest {
             var push: DaemonPush? = null
             val server = if (productionFactory) {
                 startDaemonServer(
-                    assemblePush = { pushAssembler?.invoke(store, idScope) },
+                    assemblePush = { pushAssembler?.invoke(eventStore, idScope) },
                     createServer = { assembled ->
                         KotgentServer.production(
-                            manager,
-                            store,
-                            store,
-                            TokenHolder(token),
-                            Tmux(socket = "kotgent-production-factory-test", tmuxPath = "/usr/bin/false"),
+                            sessionManager = manager,
+                            eventStore = eventStore,
+                            preferencesStore = preferencesStore,
+                            tokens = TokenHolder(token),
+                            tmux = Tmux(socket = "kotgent-production-factory-test", tmuxPath = "/usr/bin/false"),
                             ptyFactory = ptyFactory,
                             fileUploader = fileUploader,
                             webUiDir = null,
@@ -1738,8 +1742,8 @@ class TransportTest {
             } else {
                 KotgentServer(
                     sessionManager = manager,
-                    store = store,
-                    preferencesStore = store,
+                    eventStore = eventStore,
+                    preferencesStore = preferencesStore,
                     tokens = TokenHolder(token),
                     terminalBridgeFactory = bridgeFactory,
                     directoryCompleter = directoryCompleter,
@@ -1751,7 +1755,7 @@ class TransportTest {
             }
             val client = HttpClient(CIO) { install(WebSockets) }
             try {
-                block(Ctx(server.port(), client, store, ptyFactory, tmux))
+                block(Ctx(server.port(), client, eventStore, ptyFactory, tmux))
             } finally {
                 client.close()
                 server.stop()

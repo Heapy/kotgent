@@ -41,10 +41,10 @@ private fun handleAppend(words: List<String>, ctx: HarnessContext): Boolean {
     val id = SessionId(words[1])
     val tool = words.getOrElse(2) { "Read" }
     return runBlocking {
-        if (ctx.fakes.events.getSession(id) == null) {
+        if (ctx.fakes.eventStore.getSession(id) == null) {
             reject("append: no session '${id.value}' in this scenario")
         } else {
-            val _ = ctx.fakes.events.append(id, AgentEvent.ToolCall(tool), EventSource.hook)
+            val _ = ctx.fakes.eventStore.append(id, AgentEvent.ToolCall(tool), EventSource.hook)
             true
         }
     }
@@ -55,10 +55,10 @@ private fun handleModel(words: List<String>, ctx: HarnessContext): Boolean {
     val id = SessionId(words[1])
     val model = words[2].takeUnless { it == "-" }
     return runBlocking {
-        if (ctx.fakes.events.getSession(id) == null) {
+        if (ctx.fakes.eventStore.getSession(id) == null) {
             reject("model: no session '${id.value}' in this scenario")
         } else {
-            ctx.fakes.events.setModel(id, model)
+            ctx.fakes.eventStore.setModel(id, model)
             true
         }
     }
@@ -70,10 +70,10 @@ private fun handleRename(words: List<String>, ctx: HarnessContext): Boolean {
     val id = SessionId(words[1])
     val name = if (words[2] == "-") "" else words[2]
     return runBlocking {
-        if (ctx.fakes.events.getSession(id) == null) {
+        if (ctx.fakes.eventStore.getSession(id) == null) {
             reject("rename: no session '${id.value}' in this scenario")
         } else {
-            ctx.fakes.events.setName(id, name)
+            ctx.fakes.eventStore.setName(id, name)
             true
         }
     }
@@ -89,10 +89,10 @@ private fun handleDone(words: List<String>, ctx: HarnessContext): Boolean {
         daemonEpochMillis()
     }
     return runBlocking {
-        if (ctx.fakes.events.getSession(id) == null) {
+        if (ctx.fakes.eventStore.getSession(id) == null) {
             reject("done: no session '${id.value}' in this scenario")
         } else {
-            ctx.fakes.events.setArchived(id, true, stamp)
+            ctx.fakes.eventStore.setArchived(id, true, stamp)
             true
         }
     }
@@ -109,11 +109,11 @@ private fun handleEmit(words: List<String>, ctx: HarnessContext): Boolean {
                 SessionState.entries.joinToString(" "),
         )
     return runBlocking {
-        val meta = ctx.fakes.events.getSession(id)
+        val meta = ctx.fakes.eventStore.getSession(id)
         if (meta == null) {
             reject("emit: no session '${id.value}' in this scenario")
         } else {
-            ctx.fakes.events.updateSessionState(
+            ctx.fakes.eventStore.updateSessionState(
                 sessionId = id,
                 state = state,
                 stateSource = EventSource.hook,

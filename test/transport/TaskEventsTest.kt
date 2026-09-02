@@ -1,22 +1,10 @@
 package io.kotgent.transport
 
-import io.kotgent.core.AgentEvent
-import io.kotgent.core.EventSource
-import io.kotgent.core.PaneId
 import io.kotgent.core.ProjectId
-import io.kotgent.core.Projection
-import io.kotgent.core.ProviderSessionId
-import io.kotgent.core.Seq
-import io.kotgent.core.SessionId
-import io.kotgent.core.SessionMeta
-import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
-import io.kotgent.store.EventStore
-import io.kotgent.store.PreferencesStore
-import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
+import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.TaskStore
-import io.kotgent.store.UiPreferences
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MoveTarget
@@ -36,12 +24,8 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -59,10 +43,8 @@ import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.websocket.WebSockets as ServerWebSockets
 
 class TaskEventsTest {
-
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
     private val beta = ProjectId.of("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
-
 
     @Test
     fun everyTaskFrameKindCarriesTheTypeDiscriminator() {
@@ -310,7 +292,7 @@ class TaskEventsTest {
     ) {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             install(ServerWebSockets)
-            routing { eventsWs(EmptyEventStore(), FixedPreferencesStore(), tasks, TRANSPORT_JSON) }
+            routing { eventsWs(FakeEventStore(), FakePreferencesStore(), tasks, TRANSPORT_JSON) }
         }
         server.start(wait = false)
         val port = server.engine.resolvedConnectors().first().port
@@ -565,46 +547,5 @@ class TaskEventsTest {
 
         private fun unused(name: String): Nothing =
             error("the events socket is not expected to call TaskStore.$name")
-    }
-
-    private class EmptyEventStore : EventStore {
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
-
-        override suspend fun listSessions(): List<SessionMeta> = emptyList()
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = emptyFlow()
-
-        override suspend fun upsertSession(meta: SessionMeta) = unused("upsertSession")
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) = unused("updateSessionState")
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
-            unused("setArchived")
-        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: ProviderSessionId,
-            model: String,
-        ): Boolean = unused("setModelForProvider")
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
-            unused("append")
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = unused("read")
-        override suspend fun projectionOf(sessionId: SessionId): Projection = unused("projectionOf")
-
-        private fun unused(name: String): Nothing =
-            error("the events socket is not expected to call EventStore.$name")
-    }
-
-    private class FixedPreferencesStore : PreferencesStore {
-        override val preferences: StateFlow<UiPreferences> =
-            MutableStateFlow(UiPreferences("/tmp", 1, 1))
-
-        override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
-            error("the events socket is not expected to save preferences")
     }
 }

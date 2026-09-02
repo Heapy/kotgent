@@ -4,11 +4,13 @@ import io.kotgent.cli.withStartupCompensation
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.ProjectId
 import io.kotgent.core.Projection
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StoredEvent
@@ -325,35 +327,34 @@ class PushNotifierTest {
         private val beforeListSessions: suspend () -> Unit,
         private val failListSessions: Boolean,
     ) : EventStore {
-
         // Mirrors the lossy UI signal; the notifier must not consume this one.
-        private val updates = MutableSharedFlow<SessionUpdate>(
-            replay = 0,
-            extraBufferCapacity = 64,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST,
-        )
-        override val sessionUpdates: SharedFlow<SessionUpdate> get() = updates
+        override val sessionUpdates: SharedFlow<SessionUpdate>
+            field = MutableSharedFlow<SessionUpdate>(
+                replay = 0,
+                extraBufferCapacity = 64,
+                onBufferOverflow = BufferOverflow.DROP_OLDEST,
+            )
 
         // Mirrors the unbuffered reliable signal and its producer backpressure.
-        private val reliableUpdates = MutableSharedFlow<SessionUpdate>()
-        override val reliableSessionUpdates: SharedFlow<SessionUpdate> get() = reliableUpdates
+        override val reliableSessionUpdates: SharedFlow<SessionUpdate>
+            field = MutableSharedFlow<SessionUpdate>()
 
         var listCalls = 0
             private set
 
         suspend fun emit(update: SessionUpdate) {
-            updates.tryEmit(update)
-            reliableUpdates.emit(update)
+            sessionUpdates.tryEmit(update)
+            reliableSessionUpdates.emit(update)
         }
 
-        suspend fun emitUiOnly(update: SessionUpdate) = updates.emit(update)
-        suspend fun emitReliableOnly(update: SessionUpdate) = reliableUpdates.emit(update)
+        suspend fun emitUiOnly(update: SessionUpdate) = sessionUpdates.emit(update)
+        suspend fun emitReliableOnly(update: SessionUpdate) = reliableSessionUpdates.emit(update)
 
         suspend fun awaitSubscriber() {
-            reliableUpdates.subscriptionCount.first { it > 0 }
+            reliableSessionUpdates.subscriptionCount.first { it > 0 }
         }
 
-        fun subscriberCount(): Int = reliableUpdates.subscriptionCount.value
+        fun subscriberCount(): Int = reliableSessionUpdates.subscriptionCount.value
 
         override suspend fun listSessions(): List<SessionMeta> {
             listCalls++
@@ -378,6 +379,19 @@ class PushNotifierTest {
             model: String,
         ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
+        }
+
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
+        }
+
+        override suspend fun setName(sessionId: SessionId, name: String) {
+        }
+
+        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
+            return emptyList()
+        }
+
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
         override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = Seq(0L)
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()

@@ -6,15 +6,17 @@ import io.kotgent.adapter.junie.JunieHookConfig
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
+import io.kotgent.core.ProjectId
 import io.kotgent.core.Projection
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
-import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SessionUpdate
+import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.StoredEvent
 import io.kotgent.tmux.TmuxHookConfig
 import io.ktor.client.HttpClient
@@ -25,7 +27,6 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.cio.CIO as ServerCIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.channels.Channel
@@ -39,6 +40,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import io.ktor.server.cio.CIO as ServerCIO
 
 class HookRoutesTest {
 
@@ -831,9 +833,9 @@ class HookRoutesTest {
         override suspend fun upsertSession(meta: SessionMeta) = Unit
         override suspend fun updateSessionState(
             sessionId: SessionId,
-            state: io.kotgent.core.SessionState,
+            state: SessionState,
             stateSource: EventSource,
-            paneId: io.kotgent.core.PaneId?,
+            paneId: PaneId?,
             updatedAt: Long,
         ) = Unit
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
@@ -844,6 +846,18 @@ class HookRoutesTest {
             model: String,
         ): Boolean = false
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = Unit
+        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
+        }
+
+        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
+        }
+
+        override suspend fun setName(sessionId: SessionId, name: String) {
+        }
+
+        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
+            return emptyList()
+        }
 
         var sessionMeta: SessionMeta? = null
         override suspend fun getSession(sessionId: SessionId): SessionMeta? = sessionMeta

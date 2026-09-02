@@ -9,8 +9,10 @@ data class UiPreferences(
 )
 
 interface PreferencesStore {
-
     val preferences: StateFlow<UiPreferences>
 
-    suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences
+    suspend fun savePreferences(
+        basePath: String,
+        groupingLevel: Int,
+    ): UiPreferences
 }

@@ -4,30 +4,16 @@ import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
-import io.kotgent.core.EventSource
-import io.kotgent.core.PaneId
 import io.kotgent.core.ProjectId
-import io.kotgent.core.Projection
-import io.kotgent.core.ProviderSessionId
-import io.kotgent.core.Seq
-import io.kotgent.core.SessionId
-import io.kotgent.core.SessionMeta
-import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
-import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
-import io.kotgent.daemon.VendorSessionLocator
-import io.kotgent.daemon.VendorStoreProbe
-import io.kotgent.store.EventStore
-import io.kotgent.store.PreferencesStore
-import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
+import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.TaskStore
-import io.kotgent.store.UiPreferences
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.MoveTarget
@@ -59,9 +45,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -75,9 +59,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class SpaRoutingTest {
-
     private val token = "spa-routing-token"
-
 
     @Test
     fun theGrammarAcceptsExactlyTheThreeHistoryApiRoutes() {
@@ -216,35 +198,36 @@ class SpaRoutingTest {
 
     private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
         withTimeout(40.seconds) {
-            val store = NoopEventStore()
+            val eventStore = FakeEventStore()
+            val preferencesStore = FakePreferencesStore()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
-                FakeTmux(),
-                store,
-                PaneRegistry(),
-                AgentFactory { _, cwd ->
+                tmux = FakeTmux(),
+                store = eventStore,
+                registry = PaneRegistry(),
+                agentFactory = { _, cwd ->
                     object : AgentAdapter {
                         override val events: Flow<AgentEvent> = emptyFlow()
                         override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
                             LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
                     }
                 },
-                ProviderIdCapture(store, idScope),
-                VendorStoreProbe { _, _, _ -> false },
-                VendorSessionLocator { _, _ -> null },
-                setOf("claude", "codex"),
+                idCapture = ProviderIdCapture(eventStore, idScope),
+                vendorProbe = { _, _, _ -> false },
+                sessionLocator = { _, _ -> null },
+                supportedAgentKinds = setOf("claude", "codex"),
                 now = { 1L },
             )
             val tasks = UnusedTaskStore()
             val server = KotgentServer(
                 sessionManager = manager,
-                store = store,
-                preferencesStore = store,
+                eventStore = eventStore,
+                preferencesStore = preferencesStore,
                 tokens = TokenHolder(token),
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the SPA routing test") },
                 webUiDir = locateSpaWebUiDir(),
                 taskStore = tasks,
-                taskService = TaskService(tasks, store, UnusedProjectFs(), UnusedProjectFileWriter()),
+                taskService = TaskService(tasks, eventStore, UnusedProjectFs(), UnusedProjectFileWriter()),
                 port = 0,
             ).start()
             val client = HttpClient(CIO)
@@ -258,7 +241,7 @@ class SpaRoutingTest {
         }
     }
 
-    private suspend fun assertContentTypeContains(resp: HttpResponse, needle: String) {
+    private fun assertContentTypeContains(resp: HttpResponse, needle: String) {
         val ct = resp.headers[HttpHeaders.ContentType].orEmpty()
         assertTrue(ct.contains(needle, ignoreCase = true), "content-type '$ct' should mention '$needle'")
     }
@@ -279,13 +262,13 @@ class SpaRoutingTest {
         override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
         override val id: String get() = unused()
         override suspend fun list(project: ProjectId): List<Task> = unused()
-        override suspend fun get(ref: TaskRef): Task? = unused()
+        override suspend fun get(ref: TaskRef): Task = unused()
         override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task = unused()
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused()
+        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task = unused()
         override suspend fun delete(ref: TaskRef): Boolean = unused()
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = unused()
+        override suspend fun entry(ref: TaskRef): BacklogEntry = unused()
         override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused()
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused()
+        override suspend fun nextCandidate(project: ProjectId): BacklogEntry = unused()
         override suspend fun startIfTodo(ref: TaskRef): Boolean = unused()
         override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = unused()
         override suspend fun transition(
@@ -293,14 +276,14 @@ class SpaRoutingTest {
             to: TaskState,
             author: String,
             message: String?,
-        ): BacklogEntry? = unused()
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused()
+        ): BacklogEntry = unused()
+        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry = unused()
         override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = unused()
         override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused()
         override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> = unused()
         override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef): Unit = unused()
         override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef): Unit = unused()
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? = unused()
+        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry = unused()
         override suspend fun appendActivity(
             ref: TaskRef,
             kind: ActivityKind,
@@ -308,55 +291,23 @@ class SpaRoutingTest {
             text: String?,
             fromState: TaskState?,
             toState: TaskState?,
-        ): TaskActivityEntry? = unused()
+        ): TaskActivityEntry = unused()
         override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused()
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Nothing = unused()
         override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Nothing = unused()
         override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused()
         override suspend fun listAllProjects(): List<ProjectRecord> = unused()
-        override suspend fun project(id: ProjectId): ProjectRecord? = unused()
+        override suspend fun project(id: ProjectId): ProjectRecord = unused()
     }
 
     private class UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = unused()
-        override fun readFile(path: String, maxBytes: Int): String? = unused()
-        override fun canonicalize(path: String): String? = unused()
+        override fun readFile(path: String, maxBytes: Int): String = unused()
+        override fun canonicalize(path: String): String = unused()
     }
 
     private class UnusedProjectFileWriter : ProjectFileWriter {
         override suspend fun ensureProjectFile(dir: String, name: String): ProjectFile = unused()
-    }
-
-    private class NoopEventStore : EventStore, PreferencesStore {
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
-        private val preferenceState = MutableStateFlow(UiPreferences("", 1, 0))
-        override val preferences: StateFlow<UiPreferences> get() = preferenceState
-        override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
-            UiPreferences(basePath, groupingLevel, preferenceState.value.revision + 1).also {
-                preferenceState.value = it
-            }
-        override suspend fun upsertSession(meta: SessionMeta) {}
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) {}
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
-        override suspend fun setModel(sessionId: SessionId, model: String?) {}
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: ProviderSessionId,
-            model: String,
-        ): Boolean = false
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
-        override suspend fun listSessions(): List<SessionMeta> = emptyList()
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = Seq(0L)
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
-        override suspend fun projectionOf(sessionId: SessionId): Projection = Projection.EMPTY
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = emptyFlow()
     }
 }
 

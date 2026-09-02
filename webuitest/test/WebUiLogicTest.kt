@@ -4,7 +4,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.Collections
+import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -131,7 +131,7 @@ class WebUiLogicTest {
     private fun drain(name: String, stream: InputStream): Drain {
         val lines = Collections.synchronizedList(mutableListOf<String>())
         val thread = Thread {
-            runCatching { stream.bufferedReader().forEachLine { lines.add(it) } }
+            val _ = runCatching { stream.bufferedReader().forEachLine { lines.add(it) } }
         }
         thread.isDaemon = true
         thread.name = name

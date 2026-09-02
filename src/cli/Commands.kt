@@ -402,11 +402,11 @@ object Commands {
                 assemblePush = { startPush(driver, config.publicUrl, bgScope, store) },
                 createServer = { push ->
                     KotgentServer.production(
-                        manager,
-                        store,
-                        store,
-                        tokenHolder,
-                        tmux,
+                        sessionManager = manager,
+                        eventStore = store,
+                        preferencesStore = store,
+                        tokens = tokenHolder,
+                        tmux = tmux,
                         currentVersion = currentUiVersion(),
                         publicUrl = config.publicUrl,
                         pushStore = push?.store,

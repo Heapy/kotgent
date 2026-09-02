@@ -45,7 +45,6 @@ class SqliteEventStore private constructor(
     private val json: Json,
     private val now: () -> Long,
 ) : EventStore, PreferencesStore {
-
     private val db: KotgentDatabase = KotgentDatabase(driver)
     private val events get() = db.eventsQueries
     private val sessions get() = db.sessionsQueries
@@ -55,22 +54,22 @@ class SqliteEventStore private constructor(
 
     private var revCounter: Long = 0
 
-    private val _preferences: MutableStateFlow<UiPreferences>
-    override val preferences: StateFlow<UiPreferences> get() = _preferences
+    override val preferences: StateFlow<UiPreferences>
+        field: MutableStateFlow<UiPreferences>
 
     private val projections = HashMap<SessionId, Projection>()
 
     private val subscribers = HashMap<SessionId, MutableList<SendChannel<StoredEvent>>>()
 
-    private val _sessionUpdates = MutableSharedFlow<SessionUpdate>(
-        replay = 0,
-        extraBufferCapacity = 1024,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    override val sessionUpdates: SharedFlow<SessionUpdate> get() = _sessionUpdates
+    override val sessionUpdates: SharedFlow<SessionUpdate>
+        field = MutableSharedFlow(
+            replay = 0,
+            extraBufferCapacity = 1024,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
 
-    private val _reliableSessionUpdates = MutableSharedFlow<SessionUpdate>()
-    override val reliableSessionUpdates: SharedFlow<SessionUpdate> get() = _reliableSessionUpdates
+    override val reliableSessionUpdates: SharedFlow<SessionUpdate>
+        field = MutableSharedFlow()
 
     init {
         // journal_mode returns a row, so SQLiter requires executeQuery rather than execute.
@@ -100,35 +99,35 @@ class SqliteEventStore private constructor(
 
         driver.execute(null, CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS, 0)
         val _ = preferenceQueries.seedDefaults()
-        _preferences = MutableStateFlow(readPreferences())
+        preferences = MutableStateFlow(readPreferences())
     }
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = mutex.withLock {
         val _ = sessions.upsert(
-            meta.id.value,
-            meta.name,
-            encodeTags(meta.tags),
-            meta.agent,
-            meta.providerSessionId?.value,
-            meta.model,
-            meta.cliVersion,
-            meta.cliPath,
-            meta.cwd,
-            meta.repository,
-            meta.worktree,
-            meta.branch,
-            meta.tmuxSession,
-            meta.paneId?.value,
-            meta.state.name,
-            meta.stateSource?.name,
-            meta.lastSeq.value,
-            meta.readCursor.value,
-            meta.createdAt,
-            meta.updatedAt,
-            meta.archived.toSqliteFlag(),
-            ++revCounter,
-            meta.taskRef?.value,
-            meta.projectId?.value,
+            id = meta.id.value,
+            name = meta.name,
+            tags = encodeTags(meta.tags),
+            agent = meta.agent,
+            provider_session_id = meta.providerSessionId?.value,
+            model = meta.model,
+            cli_version = meta.cliVersion,
+            cli_path = meta.cliPath,
+            cwd = meta.cwd,
+            repository = meta.repository,
+            worktree = meta.worktree,
+            branch = meta.branch,
+            tmux_session = meta.tmuxSession,
+            pane_id = meta.paneId?.value,
+            state = meta.state.name,
+            state_source = meta.stateSource?.name,
+            last_seq = meta.lastSeq.value,
+            read_cursor = meta.readCursor.value,
+            created_at = meta.createdAt,
+            updated_at = meta.updatedAt,
+            archived = meta.archived.toSqliteFlag(),
+            rev = ++revCounter,
+            task_ref = meta.taskRef?.value,
+            project_id = meta.projectId?.value,
         )
         emitFromRow(meta.id)
     }
@@ -140,22 +139,56 @@ class SqliteEventStore private constructor(
         paneId: PaneId?,
         updatedAt: Long,
     ): Unit = mutex.withLock {
-        val _ = sessions.updateControlState(state.name, stateSource.name, paneId?.value, updatedAt, ++revCounter, sessionId.value)
+        val _ = sessions
+            .updateControlState(
+                state = state.name,
+                state_source = stateSource.name,
+                pane_id = paneId?.value,
+                updated_at = updatedAt,
+                rev = ++revCounter,
+                id = sessionId.value,
+            )
         emitFromRow(sessionId)
     }
 
-    override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long): Unit = mutex.withLock {
-        val _ = sessions.setArchived(archived.toSqliteFlag(), updatedAt, ++revCounter, sessionId.value)
+    override suspend fun setArchived(
+        sessionId: SessionId,
+        archived: Boolean,
+        updatedAt: Long,
+    ): Unit = mutex.withLock {
+        val _ = sessions
+            .setArchived(
+                archived = archived.toSqliteFlag(),
+                updated_at = updatedAt,
+                rev = ++revCounter,
+                id = sessionId.value,
+            )
         emitFromRow(sessionId)
     }
 
-    override suspend fun setModel(sessionId: SessionId, model: String?): Unit = mutex.withLock {
-        val _ = sessions.setModel(model, ++revCounter, sessionId.value)
+    override suspend fun setModel(
+        sessionId: SessionId,
+        model: String?,
+    ): Unit = mutex.withLock {
+        val _ = sessions
+            .setModel(
+                model = model,
+                rev = ++revCounter,
+                id = sessionId.value,
+            )
         emitFromRow(sessionId)
     }
 
-    override suspend fun setName(sessionId: SessionId, name: String): Unit = mutex.withLock {
-        val _ = sessions.setName(name, ++revCounter, sessionId.value)
+    override suspend fun setName(
+        sessionId: SessionId,
+        name: String,
+    ): Unit = mutex.withLock {
+        val _ = sessions
+            .setName(
+                name = name,
+                rev = ++revCounter,
+                id = sessionId.value,
+            )
         emitFromRow(sessionId)
     }
 
@@ -213,7 +246,7 @@ class SqliteEventStore private constructor(
     override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
         mutex.withLock {
             val _ = preferenceQueries.save(basePath, groupingLevel.toLong())
-            readPreferences().also { _preferences.value = it }
+            readPreferences().also { preferences.value = it }
         }
 
     override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
@@ -329,23 +362,25 @@ class SqliteEventStore private constructor(
     }
 
     private suspend fun emitSessionUpdate(update: SessionUpdate) {
-        _sessionUpdates.tryEmit(update)
+        sessionUpdates.tryEmit(update)
         // Notification edge tracking cannot tolerate DROP_OLDEST; cancellation must not split committed order.
         withContext(NonCancellable) {
-            _reliableSessionUpdates.emit(update)
+            reliableSessionUpdates.emit(update)
         }
     }
 
     private fun readLocked(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> =
-        events.selectFromSeq(sessionId.value, fromSeq.value) { session_id, seq, ts, _, source, payload ->
-            StoredEvent(
-                sessionId = SessionId(session_id),
-                seq = Seq(seq),
-                ts = ts,
-                source = EventSource.valueOf(source),
-                event = deserialize(payload),
-            )
-        }.executeAsList()
+        events
+            .selectFromSeq(sessionId.value, fromSeq.value) { sessionId, seq, ts, _, source, payload ->
+                StoredEvent(
+                    sessionId = SessionId(sessionId),
+                    seq = Seq(seq),
+                    ts = ts,
+                    source = EventSource.valueOf(source),
+                    event = deserialize(payload),
+                )
+            }
+            .executeAsList()
 
     private fun projectionLocked(sessionId: SessionId): Projection =
         projections.getOrPut(sessionId) {
@@ -368,9 +403,15 @@ class SqliteEventStore private constructor(
         json.decodeFromString(ListSerializer(String.serializer()), text)
 
     private fun readPreferences(): UiPreferences =
-        preferenceQueries.selectCurrent { basePath, groupingLevel, revision ->
-            UiPreferences(basePath, groupingLevel.toInt(), revision)
-        }.executeAsOne()
+        preferenceQueries
+            .selectCurrent { basePath, groupingLevel, revision ->
+                UiPreferences(
+                    basePath = basePath,
+                    groupingLevel = groupingLevel.toInt(),
+                    revision = revision,
+                )
+            }
+            .executeAsOne()
 
     private fun Sessions.toMeta(): SessionMeta = SessionMeta(
         id = SessionId(id),
@@ -402,10 +443,10 @@ class SqliteEventStore private constructor(
     companion object {
         const val CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS: String =
             "CREATE TABLE IF NOT EXISTS ui_preferences (" +
-                "singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1), " +
-                "base_path TEXT NOT NULL, " +
-                "grouping_level INTEGER NOT NULL, " +
-                "revision INTEGER NOT NULL)"
+                    "singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1), " +
+                    "base_path TEXT NOT NULL, " +
+                    "grouping_level INTEGER NOT NULL, " +
+                    "revision INTEGER NOT NULL)"
 
         val DEFAULT_JSON: Json = Json {
             classDiscriminator = "type"
@@ -416,13 +457,21 @@ class SqliteEventStore private constructor(
         fun inMemory(
             now: () -> Long = ::systemEpochMillis,
             json: Json = DEFAULT_JSON,
-        ): SqliteEventStore = SqliteEventStore(inMemoryDriver(KotgentDatabase.Schema), json, now)
+        ): SqliteEventStore = SqliteEventStore(
+            driver = inMemoryDriver(schema = KotgentDatabase.Schema),
+            json = json,
+            now = now,
+        )
 
         fun using(
             driver: SqlDriver,
             now: () -> Long = ::systemEpochMillis,
             json: Json = DEFAULT_JSON,
-        ): SqliteEventStore = SqliteEventStore(driver, json, now)
+        ): SqliteEventStore = SqliteEventStore(
+            driver = driver,
+            json = json,
+            now = now,
+        )
     }
 }
 

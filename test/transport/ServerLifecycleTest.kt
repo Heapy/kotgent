@@ -4,13 +4,10 @@ import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.AgentEvent
-import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
-import io.kotgent.daemon.VendorSessionLocator
-import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.store.SqliteEventStore
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -88,26 +85,26 @@ class ServerLifecycleTest {
         private val store = SqliteEventStore.inMemory()
         private val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private val manager = SessionManager(
-            FakeTmux(),
-            store,
-            PaneRegistry(),
-            AgentFactory { _, cwd ->
+            tmux = FakeTmux(),
+            store = store,
+            registry = PaneRegistry(),
+            agentFactory = { _, cwd ->
                 object : AgentAdapter {
                     override val events: Flow<AgentEvent> = emptyFlow()
                     override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
                         LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
                 }
             },
-            ProviderIdCapture(store, idScope),
-            VendorStoreProbe { _, _, _ -> false },
-            VendorSessionLocator { _, _ -> null },
-            setOf("claude", "codex"),
+            idCapture = ProviderIdCapture(store, idScope),
+            vendorProbe = { _, _, _ -> false },
+            sessionLocator = { _, _ -> null },
+            supportedAgentKinds = setOf("claude", "codex"),
             now = { 1L },
         )
 
         fun server(port: Int): KotgentServer = KotgentServer(
             sessionManager = manager,
-            store = store,
+            eventStore = store,
             preferencesStore = store,
             tokens = TokenHolder("server-lifecycle-test-token"),
             terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in this test") },

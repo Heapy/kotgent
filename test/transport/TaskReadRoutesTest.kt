@@ -1,19 +1,13 @@
 package io.kotgent.transport
 
-import io.kotgent.core.AgentEvent
-import io.kotgent.core.EventSource
 import io.kotgent.core.PaneId
 import io.kotgent.core.ProjectId
-import io.kotgent.core.Projection
-import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
-import io.kotgent.store.EventStore
-import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
+import io.kotgent.store.FakeEventStore
 import io.kotgent.store.TaskStore
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
@@ -42,7 +36,6 @@ import io.ktor.http.parseServerSetCookieHeader
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.runBlocking
@@ -460,10 +453,27 @@ class TaskReadRoutesTest {
     )
 
     private fun sessionRows(): Map<SessionId, SessionMeta> = mapOf(
-        paneSession to session(paneSession, "the caller", SessionState.ready, second, createdAt = 1),
-        liveHolder to session(liveHolder, "worker", SessionState.needs_approval, first, createdAt = 2),
+        paneSession to session(
+            id = paneSession,
+            name = "the caller",
+            state = SessionState.ready,
+            taskRef = second,
+            createdAt = 1,
+        ),
+        liveHolder to session(
+            id = liveHolder,
+            name = "worker",
+            state = SessionState.needs_approval,
+            taskRef = first,
+            createdAt = 2,
+        ),
         deadHolder to session(
-            deadHolder, "an earlier attempt", SessionState.resumable, first, createdAt = 3, archived = true,
+            id = deadHolder,
+            name = "an earlier attempt",
+            state = SessionState.resumable,
+            taskRef = first,
+            createdAt = 3,
+            archived = true,
         ),
     )
 
@@ -551,7 +561,9 @@ class TaskReadRoutesTest {
                     ),
                 ),
             )
-            val store = FakeEventStore(sessions)
+            val store = FakeEventStore(
+                sessionMetadata = sessions,
+            )
             val routing = TaskRouting(
                 tasks = tasks,
                 service = TaskService(tasks, store, UnusedProjectFs, UnusedProjectFileWriter),
@@ -637,10 +649,10 @@ class TaskReadRoutesTest {
 
         override suspend fun project(id: ProjectId): ProjectRecord? = record("project", projects[id])
 
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = readOnly("nextCandidate")
+        override suspend fun nextCandidate(project: ProjectId): BacklogEntry = readOnly("nextCandidate")
         override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
             readOnly("create")
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = readOnly("update")
+        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task = readOnly("update")
         override suspend fun delete(ref: TaskRef): Boolean = readOnly("delete")
         override suspend fun startIfTodo(ref: TaskRef): Boolean =
             readOnly("startIfTodo")
@@ -651,12 +663,12 @@ class TaskReadRoutesTest {
             to: TaskState,
             author: String,
             message: String?,
-        ): BacklogEntry? = readOnly("transition")
+        ): BacklogEntry = readOnly("transition")
 
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = readOnly("move")
+        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry = readOnly("move")
         override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = readOnly("addDependency")
         override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = readOnly("removeDependency")
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
+        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry =
             readOnly("comment")
 
         override suspend fun appendActivity(
@@ -666,7 +678,7 @@ class TaskReadRoutesTest {
             text: String?,
             fromState: TaskState?,
             toState: TaskState?,
-        ): TaskActivityEntry? = readOnly("appendActivity")
+        ): TaskActivityEntry = readOnly("appendActivity")
 
         override suspend fun upsertProject(id: ProjectId, name: String, path: String?) =
             readOnly("upsertProject")
@@ -678,58 +690,12 @@ class TaskReadRoutesTest {
             error("the read routes must not call TaskStore.$name")
     }
 
-    private class FakeEventStore(private val rows: Map<SessionId, SessionMeta>) : EventStore {
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = rows[sessionId]
-
-        override suspend fun listSessions(): List<SessionMeta> = rows.values.sortedBy { it.createdAt }
-
-        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> =
-            rows.values.filter { it.taskRef == taskRef }.sortedBy { it.createdAt }
-
-        override suspend fun upsertSession(meta: SessionMeta) = unused("upsertSession")
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) = unused("updateSessionState")
-
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
-            unused("setArchived")
-
-        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: io.kotgent.core.ProviderSessionId,
-            model: String,
-        ): Boolean = unused("setModelForProvider")
-
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) =
-            unused("setTaskRef")
-
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
-            unused("setProjectId")
-
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
-            unused("append")
-
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = unused("read")
-        override suspend fun projectionOf(sessionId: SessionId): Projection = unused("projectionOf")
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = unused("subscribe")
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
-
-        private fun unused(name: String): Nothing =
-            error("the read routes must not call EventStore.$name")
-    }
-
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("the read routes must not touch the filesystem")
-        override fun readFile(path: String, maxBytes: Int): String? =
+        override fun readFile(path: String, maxBytes: Int): String =
             error("the read routes must not touch the filesystem")
 
-        override fun canonicalize(path: String): String? =
+        override fun canonicalize(path: String): String =
             error("the read routes must not touch the filesystem")
     }
 

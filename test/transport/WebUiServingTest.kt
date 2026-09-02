@@ -3,28 +3,17 @@ package io.kotgent.transport
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
-import io.kotgent.core.AgentEvent
-import io.kotgent.core.EventSource
-import io.kotgent.core.MAX_SESSION_NAME_LENGTH
-import io.kotgent.core.Projection
-import io.kotgent.core.Seq
-import io.kotgent.core.SessionId
 import io.kotgent.cli.TMUX_SOCKET
-import io.kotgent.core.SessionMeta
-import io.kotgent.daemon.AgentFactory
+import io.kotgent.core.AgentEvent
+import io.kotgent.core.MAX_SESSION_NAME_LENGTH
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
-import io.kotgent.daemon.VendorSessionLocator
-import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.isDirectory
 import io.kotgent.daemon.listDir
-import io.kotgent.store.EventStore
-import io.kotgent.store.PreferencesStore
-import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
-import io.kotgent.store.UiPreferences
+import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakePreferencesStore
 import io.kotgent.task.PROJECT_NAME_MAX_LENGTH
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -49,10 +38,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -729,18 +714,19 @@ class WebUiServingTest {
     }
 
 
-    private inner class Ctx(val port: Int, val client: HttpClient) {
+    private class Ctx(val port: Int, val client: HttpClient) {
         suspend fun get(path: String, block: io.ktor.client.request.HttpRequestBuilder.() -> Unit = {}): HttpResponse =
             client.get("http://127.0.0.1:$port$path", block)
     }
 
     private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
         withTimeout(40.seconds) {
-            val store = NoopEventStore()
+            val eventStore = FakeEventStore()
+            val preferencesStore = FakePreferencesStore()
             val idScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val manager = SessionManager(
                 tmux = FakeTmux(),
-                store = store,
+                store = eventStore,
                 registry = PaneRegistry(),
                 agentFactory = { _, cwd ->
                     object : AgentAdapter {
@@ -749,7 +735,7 @@ class WebUiServingTest {
                             LaunchSpec(listOf("cat"), emptyMap(), cwd, null)
                     }
                 },
-                idCapture = ProviderIdCapture(store = store, scope = idScope),
+                idCapture = ProviderIdCapture(store = eventStore, scope = idScope),
                 vendorProbe = { _, _, _ -> false },
                 sessionLocator = { _, _ -> null },
                 supportedAgentKinds = setOf("claude", "codex"),
@@ -757,8 +743,8 @@ class WebUiServingTest {
             )
             val server = KotgentServer(
                 sessionManager = manager,
-                store = store,
-                preferencesStore = store,
+                eventStore = eventStore,
+                preferencesStore = preferencesStore,
                 tokens = TokenHolder(token),
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the serving test") },
                 currentVersion = currentVersion,
@@ -880,38 +866,6 @@ class WebUiServingTest {
             at++
         }
         return source.substring(from)
-    }
-
-    private class NoopEventStore : EventStore, PreferencesStore {
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow<SessionUpdate>()
-        private val preferenceState = MutableStateFlow(UiPreferences("", 1, 0))
-        override val preferences: StateFlow<UiPreferences> get() = preferenceState
-        override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
-            UiPreferences(basePath, groupingLevel, preferenceState.value.revision + 1).also {
-                preferenceState.value = it
-            }
-        override suspend fun upsertSession(meta: SessionMeta) {}
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: io.kotgent.core.SessionState,
-            stateSource: EventSource,
-            paneId: io.kotgent.core.PaneId?,
-            updatedAt: Long,
-        ) {}
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
-        override suspend fun setModel(sessionId: SessionId, model: String?) {}
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: io.kotgent.core.ProviderSessionId,
-            model: String,
-        ): Boolean = false
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
-        override suspend fun listSessions(): List<SessionMeta> = emptyList()
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = Seq(0L)
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
-        override suspend fun projectionOf(sessionId: SessionId): Projection = Projection.EMPTY
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = emptyFlow()
     }
 }
 

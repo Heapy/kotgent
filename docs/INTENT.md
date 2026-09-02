@@ -10,8 +10,6 @@ restarting the daemon—must not discard the work.
   any client without losing its terminal or history.
 - Leave the machine and receive a notification only when a session needs human attention.
 - See what every session is doing, organize sessions by project, and recover stopped conversations.
-- Rename a session at any time, from the terminal or the browser, or clear the label to fall back to the
-  automatic one; every open client and `kotgent list` show the new name without a reload.
 - Keep an ordered, dependency-aware backlog per project so ideas become explicit work rather than context
   remembered by the operator or trapped in one session.
 - Use the full terminal and backlog comfortably from an installable phone or tablet PWA.

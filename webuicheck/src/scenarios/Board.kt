@@ -35,7 +35,7 @@ private fun boardScenario(): Scenario = Scenario(
     name = "board",
     seed = { fakes ->
         val project = fixtureProject(fakes, BOARD_PROJECT_ID, "Board Fixture", "/repo/board")
-        val tasks = fakes.tasks
+        val tasks = fakes.taskStore
         tasks.seedTask(TaskRef("local:1"), project, "Write the drag handler")
         tasks.seedTask(TaskRef("local:2"), project, "Wire the socket frames")
         tasks.seedTask(TaskRef("local:3"), project, "Measure the swipe")
@@ -65,7 +65,7 @@ private fun boardProjectsScenario(): Scenario = Scenario(
         val spare = fixtureProject(fakes, BOARD_PROJECTS_SPARE_ID, "Beta Fixture", "/repo/beta")
         val deleted =
             fixtureProject(fakes, BOARD_PROJECTS_DELETED_ID, "Gamma Fixture", "/repo/gamma", archived = true)
-        val tasks = fakes.tasks
+        val tasks = fakes.taskStore
         tasks.seedTask(TaskRef("local:1"), selected, "Rename the release branch")
         tasks.seedTask(TaskRef("local:2"), selected, "Sweep the descriptors")
         tasks.seedTask(TaskRef("local:3"), selected, "Bound the reader join", state = TaskState.in_progress)
@@ -84,7 +84,7 @@ internal fun fixtureProject(
     archived: Boolean = false,
 ): ProjectId {
     val id = ProjectId.of(uuid)
-    fakes.tasks.seedProject(id, name, path, archived)
+    fakes.taskStore.seedProject(id, name, path, archived)
     fakes.projectFs.writeFile("$path/$PROJECT_FILE_NAME", projectFileText(ProjectFile(id, name)))
     return id
 }

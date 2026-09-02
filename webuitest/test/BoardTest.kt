@@ -9,10 +9,8 @@ import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.AriaRole
 import com.microsoft.playwright.options.KeyboardModifier
 import com.microsoft.playwright.options.MouseButton
-import java.util.Collections
+import java.util.*
 import java.util.concurrent.atomic.AtomicReference
-import java.util.function.Consumer
-import java.util.function.Predicate
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -91,7 +89,7 @@ class BoardTest {
     fun aPressUnderTheSlopOrOnTheWrongButtonNeverBecomesADrag() =
         onTheBoard("aPressUnderTheSlopOrOnTheWrongButtonNeverBecomesADrag") { _, page ->
             val writes = page.recordTaskWrites()
-            page.watchDragClaims()
+            val _ = page.watchDragClaims()
             val handle = page.handleOf("local:1")
             val start = handle.centre()
 
@@ -373,7 +371,7 @@ class BoardTest {
     fun aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite() =
         onTheBoard("aCancelledDragMutatesNothingAndTheDropAfterItIsTheFirstWrite") { _, page ->
             val writes = page.recordTaskWrites()
-            page.watchPointerIds()
+            val _ = page.watchPointerIds()
 
             page.pressHandleOf("local:2")
             page.travelTo(page.card("local:6").topHalf())
@@ -515,8 +513,8 @@ class BoardTest {
         ) { harness, page ->
             val held = AtomicReference<Route?>(null)
             page.route(
-                Predicate<String> { url -> url.endsWith("$API_PREFIX/tasks/local%3A3") },
-                Consumer<Route> { route -> if (!held.compareAndSet(null, route)) route.resume() },
+                { url -> url.endsWith("$API_PREFIX/tasks/local%3A3") },
+                { route -> if (!held.compareAndSet(null, route)) route.resume() },
             )
 
             page.navigate(harness.baseUrl + "/tasks/local%3A3")

@@ -30,12 +30,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.SIGINT
+import platform.posix.raise
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
-import platform.posix.SIGINT
-import platform.posix.raise
 
 class ShutdownSignalsTest {
 
@@ -50,7 +50,7 @@ class ShutdownSignalsTest {
                 FakeTmux(),
                 store,
                 PaneRegistry(),
-                AgentFactory { _, cwd ->
+                { _, cwd ->
                     object : AgentAdapter {
                         override val events: Flow<AgentEvent> = emptyFlow()
                         override fun buildLaunchSpec(mode: LaunchMode): LaunchSpec =
@@ -58,14 +58,14 @@ class ShutdownSignalsTest {
                     }
                 },
                 ProviderIdCapture(store, idScope),
-                VendorStoreProbe { _, _, _ -> false },
-                VendorSessionLocator { _, _ -> null },
+                { _, _, _ -> false },
+                { _, _ -> null },
                 setOf("claude", "codex"),
                 now = { 1L },
             )
             val server = KotgentServer(
                 sessionManager = manager,
-                store = store,
+                eventStore = store,
                 preferencesStore = store,
                 tokens = TokenHolder(token),
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in this test") },

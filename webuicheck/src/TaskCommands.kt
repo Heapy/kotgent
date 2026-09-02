@@ -38,7 +38,7 @@ private suspend fun addTask(ctx: HarnessContext, words: List<String>): Boolean {
     } else {
         null
     }
-    val tasks = ctx.fakes.tasks
+    val tasks = ctx.fakes.taskStore
     if (tasks.entry(ref) != null) {
         return reject(
             "task-add: '${ref.value}' already exists — the socket has carried it in its opening " +
@@ -62,10 +62,10 @@ private suspend fun deleteTask(ctx: HarnessContext, words: List<String>): Boolea
 private suspend fun raceTask(ctx: HarnessContext, words: List<String>): Boolean {
     if (words.size != 2) return reject("usage: task-race <ref>")
     val ref = TaskRef.parseOrNull(words[1]) ?: return rejectRef(words[1])
-    val current = ctx.fakes.tasks.entry(ref)
+    val current = ctx.fakes.taskStore.entry(ref)
         ?: return reject("task-race: no task '${ref.value}' in this scenario")
     val next = TaskState.entries[(current.state.ordinal + 1) % TaskState.entries.size]
-    return ctx.fakes.tasks.transition(ref, next, TASK_COMMAND_AUTHOR, message = null) != null ||
+    return ctx.fakes.taskStore.transition(ref, next, TASK_COMMAND_AUTHOR, message = null) != null ||
         reject("task-race: '${ref.value}' refused the step to ${next.name}")
 }
 
@@ -75,7 +75,7 @@ private suspend fun archiveProject(ctx: HarnessContext, words: List<String>, arc
     if (words.size != 2) return reject("usage: $verb <project-uuid>")
     val id = ProjectId.parseOrNull(words[1])
         ?: return reject("$verb: '${words[1]}' is not a project id; expected a canonical uuid")
-    if (!ctx.fakes.tasks.setProjectArchived(id, archived)) {
+    if (!ctx.fakes.taskStore.setProjectArchived(id, archived)) {
         return reject("$verb: no project '${words[1]}' in this scenario")
     }
     writeStdoutLine("$COMMAND_ACK_PREFIX$verb")

@@ -9,18 +9,16 @@ import io.kotgent.core.PaneId
 import io.kotgent.core.ProjectId
 import io.kotgent.core.Projection
 import io.kotgent.core.ProviderSessionId
+import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
-import io.kotgent.core.Seq
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
-import io.kotgent.daemon.VendorSessionLocator
-import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.store.EventStore
 import io.kotgent.store.SessionUpdate
@@ -682,8 +680,8 @@ class TaskLinkRoutesTest {
                 registry,
                 agentFactoryOf(mapOf("claude" to { cwd: String -> CannedAdapter(cwd) })),
                 ProviderIdCapture(store, scope),
-                VendorStoreProbe { _, _, _ -> false },
-                VendorSessionLocator { _, _ -> null },
+                { _, _, _ -> false },
+                { _, _ -> null },
                 setOf("claude"),
                 now = { fixedNow },
             )
@@ -973,6 +971,10 @@ class TaskLinkRoutesTest {
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
         override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
             unused("setProjectId")
+
+        override suspend fun setName(sessionId: SessionId, name: String) {
+        }
+
         override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
 
         override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = unused("subscribe")
@@ -983,9 +985,9 @@ class TaskLinkRoutesTest {
 
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("the link routes must not touch the filesystem")
-        override fun readFile(path: String, maxBytes: Int): String? =
+        override fun readFile(path: String, maxBytes: Int): String =
             error("the link routes must not touch the filesystem")
-        override fun canonicalize(path: String): String? =
+        override fun canonicalize(path: String): String =
             error("the link routes must not touch the filesystem")
     }
 

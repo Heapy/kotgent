@@ -92,7 +92,7 @@ class EventStoreTaskLinkTest {
             assertTrue(staleActivity < archived.updatedAt, "the test establishes the stale-read interleaving")
 
             val derivedRows = mutableListOf<SessionMeta>()
-            store.setModel(sid, "gpt-6")
+            store.setModel(sessionId = sid, "gpt-6")
             derivedRows += store.getSession(sid)!!
             assertTrue(store.setModelForProvider(sid, provider, "gpt-5.5"))
             derivedRows += store.getSession(sid)!!

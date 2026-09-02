@@ -3,6 +3,7 @@ package io.kotgent.webuicheck
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.daemonEpochMillis
 import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakePreferencesStore
 import io.kotgent.store.FakeTaskStore
 import io.kotgent.task.FakeProjectFs
 import io.kotgent.task.MemoryProjectFileWriter
@@ -31,10 +32,11 @@ fun newHarnessFakes(): HarnessFakes {
     val projectFs = FakeProjectFs(dirs = HARNESS_DIRECTORIES)
     return HarnessFakes(
         tmux = FakeTmux(),
-        events = FakeEventStore(now = ::daemonEpochMillis),
-        tasks = FakeTaskStore(now = ::daemonEpochMillis),
+        eventStore = FakeEventStore(now = ::daemonEpochMillis),
+        preferencesStore = FakePreferencesStore(),
+        taskStore = FakeTaskStore(now = ::daemonEpochMillis),
         projectFs = projectFs,
-        projectFiles = MemoryProjectFileWriter(projectFs),
+        projectFileWriter = MemoryProjectFileWriter(projectFs),
     )
 }
 

@@ -309,7 +309,7 @@ class TaskIntegrationTest {
             )
             val server = KotgentServer(
                 sessionManager = manager,
-                store = events,
+                eventStore = events,
                 preferencesStore = events,
                 tokens = TokenHolder(token),
                 terminalBridgeFactory = { _, _ -> error("the task integration test never attaches a terminal") },

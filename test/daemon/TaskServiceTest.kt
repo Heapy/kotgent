@@ -2,10 +2,10 @@ package io.kotgent.daemon
 
 import io.kotgent.core.EventSource
 import io.kotgent.core.ProjectId
+import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
-import io.kotgent.core.Seq
 import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
 import io.kotgent.store.SessionUpdate
@@ -738,6 +738,10 @@ class TaskServiceTest {
         override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
         override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
             unused("setProjectId")
+
+        override suspend fun setName(sessionId: SessionId, name: String) {
+        }
+
         override suspend fun listSessions(): List<SessionMeta> = unused("listSessions")
         override suspend fun append(
             sessionId: SessionId,
@@ -758,9 +762,9 @@ class TaskServiceTest {
 
     private object UnusedProjectFs : ProjectFs {
         override fun isDirectory(path: String): Boolean = error("TaskService must not touch the filesystem")
-        override fun readFile(path: String, maxBytes: Int): String? =
+        override fun readFile(path: String, maxBytes: Int): String =
             error("TaskService must not touch the filesystem")
-        override fun canonicalize(path: String): String? = error("TaskService must not touch the filesystem")
+        override fun canonicalize(path: String): String = error("TaskService must not touch the filesystem")
     }
 
     private object UnusedProjectFileWriter : ProjectFileWriter {

@@ -21,7 +21,7 @@ internal fun taskDetailScenario(): Scenario = Scenario(
     name = "task-detail",
     seed = { fakes ->
         val project = fixtureProject(fakes, TASK_DETAIL_PROJECT_ID, "Detail Fixture", "/repo/detail")
-        val tasks = fakes.tasks
+        val tasks = fakes.taskStore
         tasks.seedTask(TaskRef("local:1"), project, "Design the schema", state = TaskState.done)
         tasks.seedTask(TaskRef("local:2"), project, "Provision the runner", state = TaskState.in_progress)
         tasks.seedTask(TaskRef("local:3"), project, "Wire the detail panel")
@@ -52,10 +52,10 @@ internal fun taskLinkedSessionScenario(): Scenario = Scenario(
     name = "task-linked-session",
     seed = { fakes ->
         val project = fixtureProject(fakes, TASK_LINKED_PROJECT_ID, "Linked Fixture", "/repo/linked")
-        fakes.tasks.seedTask(
+        fakes.taskStore.seedTask(
             TaskRef("local:1"), project, "Land the push worker", state = TaskState.in_progress,
         )
-        fakes.tasks.seedTask(TaskRef("local:2"), project, "Sweep the fixtures")
+        fakes.taskStore.seedTask(TaskRef("local:2"), project, "Sweep the fixtures")
 
         fixtureSession(
             fakes, id = "s-linked-1", name = "push-worker", agent = "claude", cwd = "/repo/linked",
@@ -93,7 +93,7 @@ internal fun taskLinkPickerScenario(): Scenario = Scenario(
             "Foreign Link Fixture",
             "/repo/link-foreign",
         )
-        val tasks = fakes.tasks
+        val tasks = fakes.taskStore
         tasks.seedTask(TaskRef("local:3"), project, "Zulu queued task", position = 3.0)
         tasks.seedTask(
             TaskRef("local:2"), project, "Beta same-rank task", position = 1.0,
