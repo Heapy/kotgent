@@ -5,7 +5,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { patchIfNewer, upsertIfNewer } from "../../resources/webui/lib/sessions.js";
+import { displayName, patchIfNewer, upsertIfNewer } from "../../resources/webui/lib/sessions.js";
 import { listOf, patchFrame, sessionRow } from "./fixtures.js";
 
 describe("upsertIfNewer", () => {
@@ -93,6 +93,38 @@ describe("patchIfNewer", () => {
 
     assert.equal(merged[0].name, "one");
     assert.equal(merged[0].cwd, "/work/one");
+  });
+
+  test("a patch carrying a new name renames the row", () => {
+    const list = listOf(sessionRow({ rev: 2, name: "one" }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, name: "two" }));
+
+    assert.equal(merged[0].name, "two");
+  });
+
+  test("a patch from a daemon that omits name keeps the previous name", () => {
+    const list = listOf(sessionRow({ rev: 2, name: "one" }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, name: undefined }));
+
+    assert.equal(merged[0].name, "one");
+  });
+
+  test("a patch carrying an empty name clears it back to the automatic label", () => {
+    const list = listOf(sessionRow({ rev: 2, name: "one", tmuxSession: "kotgent-one" }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, name: "" }));
+
+    assert.equal(merged[0].name, "");
+    assert.equal(displayName(merged[0]), "kotgent-one");
+  });
+
+  test("a stale patch is ignored, the name it carries included", () => {
+    const list = listOf(sessionRow({ rev: 4, name: "one" }));
+
+    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: 2, name: "two" })), list);
+    assert.equal(list[0].name, "one");
   });
 
   test("a patch from a daemon that omits updatedAt keeps the snapshot's stamp", () => {

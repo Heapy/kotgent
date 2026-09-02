@@ -147,6 +147,8 @@ export function patchIfNewer(list, msg) {
     unread: msg.unread,
     archived: msg.archived,
     model: msg.model,
+    // An older daemon omits `name`; an absent field keeps the snapshot's value rather than clearing it.
+    name: msg.name != null ? msg.name : prev.name,
     taskRef: msg.taskRef,
     projectId: msg.projectId,
     // A daemon older than this field omits it; the snapshot's stamp stays authoritative then.

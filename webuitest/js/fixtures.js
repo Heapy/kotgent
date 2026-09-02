@@ -33,7 +33,7 @@ export function sessionRow(overrides) {
   });
 }
 
-/** A `session_update` patch frame: no cwd, agent or name, which is why a patch cannot create a row. */
+/** A `session_update` patch frame: no cwd or agent, which is why a patch cannot create a row. */
 export function patchFrame(overrides) {
   return Object.freeze({
     sessionId: "s1",

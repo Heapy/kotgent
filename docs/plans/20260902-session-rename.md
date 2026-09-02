@@ -265,15 +265,15 @@ through the full-row path.
 - Modify: `resources/webui/lib/sessions.js`
 - Modify: `webuitest/js/sessions.test.js`
 
-- [ ] add `name: msg.name != null ? msg.name : prev.name` to the `patchIfNewer` object, with a one-line
+- [x] add `name: msg.name != null ? msg.name : prev.name` to the `patchIfNewer` object, with a one-line
       comment saying an older daemon omits the field and `undefined` must not wipe the snapshot's name
-- [ ] run `node --check resources/webui/lib/sessions.js`
-- [ ] write a node-tier test: a patch carrying a new `name` updates the row
-- [ ] write a node-tier test: a patch omitting `name` leaves the previous name
-- [ ] write a node-tier test: a patch carrying `""` clears the name, and `displayName` then answers the
+- [x] run `node --check resources/webui/lib/sessions.js`
+- [x] write a node-tier test: a patch carrying a new `name` updates the row
+- [x] write a node-tier test: a patch omitting `name` leaves the previous name
+- [x] write a node-tier test: a patch carrying `""` clears the name, and `displayName` then answers the
       tmux session string
-- [ ] write a node-tier test: a patch with a `rev` no higher than the row's is ignored, name included
-- [ ] run `node --test 'webuitest/js/**/*.test.js'` from the repository root, then
+- [x] write a node-tier test: a patch with a `rev` no higher than the row's is ignored, name included
+- [x] run `node --test 'webuitest/js/**/*.test.js'` from the repository root, then
       `./kotlin build && ./kotlin test` — must pass before Task 6
 
 ### Task 6: Add the rename dialog and its palette command
