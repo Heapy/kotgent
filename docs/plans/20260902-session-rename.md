@@ -387,15 +387,15 @@ seeing that finding, so it is in scope now and was not before.
 CLAUDE.md requires durable intent to move to its permanent home and the plan to be **deleted**, not
 archived. Do not create `docs/plans/completed/`.
 
-- [ ] add the rename outcome to `docs/INTENT.md` under "User outcomes"
-- [ ] add to `CLAUDE.md`, under Transport and Web UI: `SessionUpdateDto` carries `name`, and
+- [x] add the rename outcome to `docs/INTENT.md` under "User outcomes"
+- [x] add to `CLAUDE.md`, under Transport and Web UI: `SessionUpdateDto` carries `name`, and
       `patchIfNewer` treats an absent `name` as "keep", not "clear"
-- [ ] add to `CLAUDE.md`, under Architecture boundaries: `upsert` no longer overwrites `name` on
+- [x] add to `CLAUDE.md`, under Architecture boundaries: `upsert` no longer overwrites `name` on
       conflict; a rename goes through the targeted mutator, and `updated_at` stays owned by activity
-- [ ] change "the six mutating flows" to seven in the `runMutation` paragraph of `CLAUDE.md`
-- [ ] add the real-device rename checks to `docs/TESTING.md`
-- [ ] add to `docs/INTENT.md` that `kotgent list` shows the session name
-- [ ] delete `docs/plans/20260902-session-rename.md`
+- [x] change "the six mutating flows" to seven in the `runMutation` paragraph of `CLAUDE.md`
+- [x] add the real-device rename checks to `docs/TESTING.md`
+- [x] add to `docs/INTENT.md` that `kotgent list` shows the session name
+- [x] delete `docs/plans/20260902-session-rename.md`
 
 ## Post-Completion
 

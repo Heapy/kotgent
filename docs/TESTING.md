@@ -315,6 +315,10 @@ Real-device release checklist:
   Chromium cannot reproduce this: an automated run can only synthesize a `KeyboardEvent` carrying
   `isComposing`, which proves the branch is read, not that a real input method sets it. This is the one
   picker behavior on this page with no faithful automated proof.
+- The rename dialog on a phone: the name input must stay visible above the raised software keyboard, and
+  the dialog's bottom safe-area inset must still hold while the keyboard covers part of the viewport.
+- The name field with a real mobile keyboard on iOS and Android. It must offer neither autocorrect nor
+  automatic capitalisation, so a name is stored exactly as typed.
 - An installed PWA reaching the board and deleting a project from the palette button rather than `⌘K`.
 
 ### Static assets and source-shape checks

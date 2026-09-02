@@ -712,7 +712,7 @@ class TaskCommandsTest {
             page.awaitSelectedSession()
             page.waitForCondition { heldPreferences.get() != null }
 
-            // Scope discipline, the other half of the decision above: only the six mutating flows take
+            // Scope discipline, the other half of the decision above: only the seven mutating flows take
             // the lock. A read that belongs to none of them disables nothing, so an unrelated control is
             // offered and runs to completion while that read is still stalled on its own transport.
             page.openPalette()
