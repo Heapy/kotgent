@@ -358,7 +358,31 @@ through the full-row path.
 - [x] run the full suite: `./kotlin build && ./kotlin test`
 - [x] run `node --test 'webuitest/js/**/*.test.js'` from the repository root
 
-### Task 9: [Final] Fold durable intent into its authoritative homes
+### Task 9: Show the session name in `kotgent list`
+
+Task 8 found that `renderSessions` has never rendered a name: the table is
+`ID AGENT STATE ATTN TASK CWD` (`src/cli/Commands.kt:703`). Without a column the CLI can set a name and
+never show it, which makes `kotgent session rename` write-only. The user asked for the column after
+seeing that finding, so it is in scope now and was not before.
+
+**Files:**
+- Modify: `src/cli/Commands.kt`
+- Modify: `test/cli/` (the existing test covering `renderSessions` — grep for it; add a new file only if
+  none exists)
+
+- [ ] add a `NAME` column between `ID` and `AGENT` in `renderSessions`, using the same
+      ellipsis-truncating helper shape as `taskColumn` and its own width constant
+- [ ] render the automatic label for an empty name — `s.name.ifEmpty { s.tmuxSession }` — so a cleared
+      name shows what every other client shows rather than a blank cell
+- [ ] keep the existing columns and their widths unchanged; only the header and each row gain the one
+      new cell
+- [ ] write a test: a named session renders its name, and a session with an empty name renders its tmux
+      session string
+- [ ] write a test: a name longer than the column width is truncated with the ellipsis, not wrapped, and
+      the following columns still line up
+- [ ] run `./kotlin build && ./kotlin test` — must pass before Task 10
+
+### Task 10: [Final] Fold durable intent into its authoritative homes
 
 CLAUDE.md requires durable intent to move to its permanent home and the plan to be **deleted**, not
 archived. Do not create `docs/plans/completed/`.
@@ -370,6 +394,7 @@ archived. Do not create `docs/plans/completed/`.
       conflict; a rename goes through the targeted mutator, and `updated_at` stays owned by activity
 - [ ] change "the six mutating flows" to seven in the `runMutation` paragraph of `CLAUDE.md`
 - [ ] add the real-device rename checks to `docs/TESTING.md`
+- [ ] add to `docs/INTENT.md` that `kotgent list` shows the session name
 - [ ] delete `docs/plans/20260902-session-rename.md`
 
 ## Post-Completion
