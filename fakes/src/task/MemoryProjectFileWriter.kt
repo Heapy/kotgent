@@ -14,10 +14,17 @@ class MemoryProjectFileWriter(
 
     val failOn: MutableSet<String> = mutableSetOf()
 
+    val calls: MutableList<Pair<String, String>> = mutableListOf()
+
+    /** Runs before the existing-file read, so a test can land a competing file inside the window. */
+    var beforeEnsure: (suspend (String, String) -> Unit)? = null
+
     override suspend fun ensureProjectFile(dir: String, name: String): ProjectFile = mutex.withLock {
+        calls += dir to name
         val directory = directoryOrRefuse(dir)
         val projectName = validatedName(dir, name)
         val target = childPath(directory, PROJECT_FILE_NAME)
+        beforeEnsure?.invoke(dir, name)
         // Existing content wins before writability checks, matching the real writer's `link(2)` race.
         val existing = readExisting(dir, target)
         if (existing != null) return@withLock existing

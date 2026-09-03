@@ -13,18 +13,12 @@ import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePreferencesStore
-import io.kotgent.store.TaskStore
-import io.kotgent.task.ActivityKind
-import io.kotgent.task.BacklogEntry
-import io.kotgent.task.MoveTarget
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
+import io.kotgent.store.TASK_STORE_METHODS
 import io.kotgent.task.ProjectFile
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
-import io.kotgent.task.ProjectRecord
-import io.kotgent.task.Task
-import io.kotgent.task.TaskActivityEntry
-import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
@@ -218,7 +212,7 @@ class SpaRoutingTest {
                 supportedAgentKinds = setOf("claude", "codex"),
                 now = { 1L },
             )
-            val tasks = UnusedTaskStore()
+            val tasks = unusedTasks()
             val server = KotgentServer(
                 sessionManager = manager,
                 eventStore = eventStore,
@@ -258,46 +252,10 @@ class SpaRoutingTest {
         return rev
     }
 
-    private class UnusedTaskStore : TaskStore {
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-        override val id: String get() = unused()
-        override suspend fun list(project: ProjectId): List<Task> = unused()
-        override suspend fun get(ref: TaskRef): Task = unused()
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task = unused()
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task = unused()
-        override suspend fun delete(ref: TaskRef): Boolean = unused()
-        override suspend fun entry(ref: TaskRef): BacklogEntry = unused()
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused()
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry = unused()
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused()
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean = unused()
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry = unused()
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry = unused()
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = unused()
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused()
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> = unused()
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef): Unit = unused()
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef): Unit = unused()
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry = unused()
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry = unused()
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused()
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): Nothing = unused()
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Nothing = unused()
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused()
-        override suspend fun listAllProjects(): List<ProjectRecord> = unused()
-        override suspend fun project(id: ProjectId): ProjectRecord = unused()
+    private fun unusedTasks(): FakeTaskStore = FakeTaskStore().also {
+        it.interceptor = ForbiddingInterceptor(TASK_STORE_METHODS) { store, method ->
+            "the SPA routing test never calls $store.$method"
+        }
     }
 
     private class UnusedProjectFs : ProjectFs {

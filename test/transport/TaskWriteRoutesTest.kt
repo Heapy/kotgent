@@ -12,28 +12,16 @@ import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
-import io.kotgent.store.EventStore
-import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
-import io.kotgent.store.TaskStore
+import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
 import io.kotgent.task.ActivityKind
-import io.kotgent.task.ArchivedProjectException
-import io.kotgent.task.BacklogEntry
 import io.kotgent.task.DependencyRefusal
-import io.kotgent.task.DependencyRefusedException
-import io.kotgent.task.MoveTarget
+import io.kotgent.task.FakeProjectFs
+import io.kotgent.task.MemoryProjectFileWriter
 import io.kotgent.task.PROJECT_FILE_NAME
-import io.kotgent.task.ProjectFile
-import io.kotgent.task.ProjectFileWriter
-import io.kotgent.task.ProjectFs
-import io.kotgent.task.ProjectPathException
 import io.kotgent.task.ProjectRecord
-import io.kotgent.task.ProjectRegistration
-import io.kotgent.task.Task
-import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
-import io.kotgent.task.parseProjectFile
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.HttpRequestBuilder
@@ -66,6 +54,13 @@ import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class TaskWriteRoutesTest {
+
+    private companion object {
+        val UNREACHED_BY_WRITE_ROUTES = setOf(
+            "upsertSession", "updateSessionState", "setModel", "setModelForProvider", "markRead",
+            "listSessions", "append", "read", "projectionOf",
+        )
+    }
 
     private val token = "task-write-routes-master-token-0123456789"
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
@@ -129,7 +124,7 @@ class TaskWriteRoutesTest {
     @Test
     fun createFromAPaneWhoseSessionHasAProjectUsesItWithoutTouchingTheFilesystem() = withTaskServer { env ->
         env.tasks.seedProject(beta, "beta", "/repo")
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = beta)
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = beta)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"from the pane"}""", pane = paneOne)
@@ -143,9 +138,9 @@ class TaskWriteRoutesTest {
 
     @Test
     fun createFromAPaneResolvesTheCommittedFileAboveTheCwdAndRegistersIt() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/sub")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.fs.addDirectories(listOf("/repo", "/repo/sub"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"resolved"}""", pane = paneOne)
@@ -163,8 +158,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun createFromAPaneInAProjectlessDirectoryWritesTheFileAndRegistersTheProject() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/sub", "/repo/.git")
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.fs.addDirectories(listOf("/repo", "/repo/sub", "/repo/.git"))
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"first ever"}""", pane = paneOne)
@@ -186,8 +181,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun createFromAPaneOutsideAnyRepositoryCreatesTheFileInTheSessionsOwnDirectory() = withTaskServer { env ->
-        env.fs.dirs += setOf("/scratch", "/scratch/notes")
-        env.sessions.seed(sessionOne, cwd = "/scratch/notes", projectId = null)
+        env.fs.addDirectories(listOf("/scratch", "/scratch/notes"))
+        env.seedSession(sessionOne, cwd = "/scratch/notes", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"loose"}""", pane = paneOne)
@@ -198,11 +193,11 @@ class TaskWriteRoutesTest {
 
     @Test
     fun createFromAPaneWhoseProjectWasDeletedIsRefusedBeforeAnythingIsWritten() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/sub")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/sub"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "kotgent", "/repo")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"into a deleted project"}""", pane = paneOne)
@@ -218,18 +213,18 @@ class TaskWriteRoutesTest {
             "the refusal came before the fallback — that file is still on disk and would mint the same uuid",
         )
         assertNull(
-            assertNotNull(env.sessions.snapshot()[sessionOne]).projectId,
+            assertNotNull(env.sessions.snapshotSessions()[sessionOne]).projectId,
             "and the deleted project was not bound onto the calling session either",
         )
     }
 
     @Test
     fun createFromAPaneWhoseDeletedProjectWasRestoredFilesTheTaskAsBefore() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/sub")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/sub"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "kotgent", "/repo")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         assertTrue(env.tasks.setProjectArchived(alpha, false), "the operator restores the project")
@@ -241,14 +236,14 @@ class TaskWriteRoutesTest {
             alpha.value,
             TRANSPORT_JSON.decodeFromString(BacklogEntryDto.serializer(), resp.bodyAsText()).project,
         )
-        assertEquals(alpha, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
+        assertEquals(alpha, assertNotNull(env.sessions.snapshotSessions()[sessionOne]).projectId)
     }
 
     @Test
     fun createFromASessionStampedWithADeletedProjectIsRefusedToo() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "kotgent", "/repo")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = alpha)
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = alpha)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"through the old stamp"}""", pane = paneOne)
@@ -288,10 +283,10 @@ class TaskWriteRoutesTest {
 
     @Test
     fun aDeleteLandingBetweenResolutionAndTheInsertFilesNothing() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/sub")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/sub"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "kotgent", "/repo")
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         // Interleave deletion after resolution and before the atomic insert check.
@@ -351,11 +346,11 @@ class TaskWriteRoutesTest {
     @Test
     fun createFromAPaneWhoseCwdIsGoneCannotAdoptItsWayIntoADeletedProject() = withTaskServer { env ->
         // Force the fallback that adopts the checkout root's existing project file.
-        env.fs.dirs += setOf("/repo", "/repo/.git")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "kotgent", "/repo")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
-        env.sessions.seed(sessionOne, cwd = "/repo/gone", projectId = null)
+        env.seedSession(sessionOne, cwd = "/repo/gone", projectId = null)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"title":"through the fallback"}""", pane = paneOne)
@@ -364,7 +359,7 @@ class TaskWriteRoutesTest {
         assertTrue(resp.bodyAsText().contains(alpha.value), "the refusal names the project it adopted")
         assertTrue(env.tasks.snapshotEntries().isEmpty(), "no card was filed into a deleted project")
         assertNull(
-            assertNotNull(env.sessions.snapshot()[sessionOne]).projectId,
+            assertNotNull(env.sessions.snapshotSessions()[sessionOne]).projectId,
             "and the session was not bound to it either",
         )
     }
@@ -382,7 +377,7 @@ class TaskWriteRoutesTest {
     @Test
     fun createFromAnUnknownPaneIs400() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha)
 
         val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"x"}""", pane = "%99")
 
@@ -411,7 +406,7 @@ class TaskWriteRoutesTest {
     @Test
     fun createWithAnExplicitSessionIdResolvesItsProject() = withTaskServer { env ->
         env.tasks.seedProject(beta, "beta", "/repo")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = beta)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = beta)
 
         val resp = env.post("/tasks", """{"title":"named","sessionId":"${sessionOne.value}"}""")
 
@@ -425,14 +420,14 @@ class TaskWriteRoutesTest {
 
     @Test
     fun createFromAPaneBindsTheProjectItResolvedOntoTheCallingSession() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/sub")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
-        env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null, updatedAt = 4242L)
+        env.fs.addDirectories(listOf("/repo", "/repo/sub"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
+        env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null, updatedAt = 4242L)
         env.panes[PaneId(paneOne)] = sessionOne
 
         assertEquals(HttpStatusCode.Created, env.post("/tasks", """{"title":"resolved"}""", pane = paneOne).status)
 
-        val row = assertNotNull(env.sessions.snapshot()[sessionOne])
+        val row = assertNotNull(env.sessions.snapshotSessions()[sessionOne])
         assertEquals(
             alpha,
             row.projectId,
@@ -443,32 +438,32 @@ class TaskWriteRoutesTest {
     @Test
     fun createFromAPaneInAProjectlessDirectoryBindsTheProjectItCreatedOntoTheCallingSession() =
         withTaskServer { env ->
-            env.fs.dirs += setOf("/repo", "/repo/sub", "/repo/.git")
-            env.sessions.seed(sessionOne, cwd = "/repo/sub", projectId = null)
+            env.fs.addDirectories(listOf("/repo", "/repo/sub", "/repo/.git"))
+            env.seedSession(sessionOne, cwd = "/repo/sub", projectId = null)
             env.panes[PaneId(paneOne)] = sessionOne
 
             assertEquals(HttpStatusCode.Created, env.post("/tasks", """{"title":"first ever"}""", pane = paneOne).status)
 
-            assertEquals(minted, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
+            assertEquals(minted, assertNotNull(env.sessions.snapshotSessions()[sessionOne]).projectId)
         }
 
     @Test
     fun createWithAnExplicitProjectDoesNotRePointTheCallingSession() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/other")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = beta)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = beta)
         env.panes[PaneId(paneOne)] = sessionOne
 
         val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"someone else's"}""", pane = paneOne)
 
         assertEquals(HttpStatusCode.Created, resp.status)
-        assertEquals(beta, assertNotNull(env.sessions.snapshot()[sessionOne]).projectId)
+        assertEquals(beta, assertNotNull(env.sessions.snapshotSessions()[sessionOne]).projectId)
     }
 
 
     @Test
     fun aCreateFromAPaneIsAttributedToTheCallingSession() = withTaskServer { env ->
         env.tasks.seedProject(beta, "beta", "/repo")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = beta)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = beta)
         env.panes[PaneId(paneOne)] = sessionOne
 
         assertEquals(HttpStatusCode.Created, env.post("/tasks", """{"title":"mine"}""", pane = paneOne).status)
@@ -495,7 +490,7 @@ class TaskWriteRoutesTest {
     @Test
     fun aCreateNamingASessionThatDoesNotExistIs400AndWritesNothing() = withTaskServer { env ->
         env.tasks.seedProject(alpha, "alpha", "/repo")
-        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
 
         val resp = env.post("/tasks", """{"project":"${alpha.value}","title":"x","sessionId":"s-ghost"}""")
 
@@ -524,7 +519,7 @@ class TaskWriteRoutesTest {
     @Test
     fun aStateChangeWithAMessageWritesExactlyOneActivityRow() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "ship it")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha)
         env.panes[PaneId(paneOne)] = sessionOne
         env.tasks.clearActivity()
 
@@ -611,14 +606,17 @@ class TaskWriteRoutesTest {
     @Test
     fun patchingATaskToDoneUnlinksEveryHolder() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "close me")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha, taskRef = ref)
-        env.sessions.seed(sessionTwo, cwd = "/repo", projectId = alpha, taskRef = ref)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha, taskRef = ref)
+        env.seedSession(sessionTwo, cwd = "/repo", projectId = alpha, taskRef = ref)
 
         assertEquals(HttpStatusCode.OK, env.patch("/tasks/${ref.value}", """{"state":"done"}""").status)
 
-        assertNull(env.sessions.snapshot()[sessionOne]?.taskRef)
-        assertNull(env.sessions.snapshot()[sessionTwo]?.taskRef)
-        assertTrue(env.sessions.archived.isEmpty(), "closing a task never archives a session")
+        assertNull(env.sessions.snapshotSessions()[sessionOne]?.taskRef)
+        assertNull(env.sessions.snapshotSessions()[sessionTwo]?.taskRef)
+        assertTrue(
+            env.sessions.snapshotSessions().values.none { it.archived },
+            "closing a task never archives a session",
+        )
     }
 
     @Test
@@ -647,15 +645,15 @@ class TaskWriteRoutesTest {
     @Test
     fun aDeleteUnlinksEveryHolderAndRemovesTheTask() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "obsolete")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha, taskRef = ref)
-        env.sessions.seed(sessionTwo, cwd = "/repo", projectId = alpha, taskRef = ref)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha, taskRef = ref)
+        env.seedSession(sessionTwo, cwd = "/repo", projectId = alpha, taskRef = ref)
 
         val resp = env.request(HttpMethod.Delete, "/tasks/${ref.value}")
 
         assertEquals(HttpStatusCode.OK, resp.status)
         assertTrue(env.tasks.snapshotEntries().isEmpty(), "the task is gone")
-        assertNull(env.sessions.snapshot()[sessionOne]?.taskRef, "no session is left holding a dangling badge")
-        assertNull(env.sessions.snapshot()[sessionTwo]?.taskRef)
+        assertNull(env.sessions.snapshotSessions()[sessionOne]?.taskRef, "no session is left holding a dangling badge")
+        assertNull(env.sessions.snapshotSessions()[sessionTwo]?.taskRef)
     }
 
     @Test
@@ -772,7 +770,7 @@ class TaskWriteRoutesTest {
     @Test
     fun aCommentRequiresASessionAndIsAttributedToIt() = withTaskServer { env ->
         val ref = env.seedTask(alpha, "discuss")
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha)
         env.panes[PaneId(paneOne)] = sessionOne
         env.tasks.clearActivity()
 
@@ -803,7 +801,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun aBlankCommentIs400AndAnUnknownTaskIs404() = withTaskServer { env ->
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha)
         env.panes[PaneId(paneOne)] = sessionOne
         val ref = env.seedTask(alpha, "discuss")
 
@@ -820,7 +818,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun aMalformedRefIs400OnEveryRouteThatTakesOne() = withTaskServer { env ->
-        env.sessions.seed(sessionOne, cwd = "/repo", projectId = alpha)
+        env.seedSession(sessionOne, cwd = "/repo", projectId = alpha)
         env.panes[PaneId(paneOne)] = sessionOne
         val bad = "no-colon"
         val calls = listOf(
@@ -840,7 +838,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsWritesTheFileAtAnAbsolutePathAndRegistersIt() = withTaskServer { env ->
-        env.fs.dirs += "/srv/new-repo"
+        env.fs.addDirectory("/srv/new-repo")
 
         val resp = env.post("/projects", """{"path":"/srv/new-repo"}""")
 
@@ -855,7 +853,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsAnchorsASubdirectoryAtTheMainCheckoutRoot() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/src")
+        env.fs.addDirectories(listOf("/repo", "/repo/.git", "/repo/src"))
 
         val resp = env.post("/projects", """{"path":"/repo/src"}""")
 
@@ -876,8 +874,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsPointedAtALinkedWorktreeWritesIntoTheMainCheckout() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature")
-        env.fs.files["/wt/feature/.git"] = "gitdir: /repo/.git/worktrees/feature\n"
+        env.fs.addDirectories(listOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature"))
+        env.fs.writeFile("/wt/feature/.git", "gitdir: /repo/.git/worktrees/feature\n")
 
         val resp = env.post("/projects", """{"path":"/wt/feature"}""")
 
@@ -891,8 +889,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsAdoptsTheProjectAlreadyCommittedAtThePathInsteadOfMintingOneAbove() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/packages", "/repo/packages/api")
-        env.fs.files["/repo/packages/api/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"api"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git", "/repo/packages", "/repo/packages/api"))
+        env.fs.writeFile("/repo/packages/api/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"api"}""")
 
         val resp = env.post("/projects", """{"path":"/repo/packages/api"}""")
 
@@ -903,7 +901,7 @@ class TaskWriteRoutesTest {
         assertEquals("/repo/packages/api", dto.path)
         assertTrue(env.writer.calls.isEmpty(), "an owned path is adopted, never written to")
         assertNull(
-            env.fs.files["/repo/$PROJECT_FILE_NAME"],
+            env.fs.written["/repo/$PROJECT_FILE_NAME"],
             "and no competing project file appears at the checkout root",
         )
         assertEquals(
@@ -915,8 +913,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsAdoptsTheProjectCommittedAboveTheNamedDirectory() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/src")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git", "/repo/src"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
 
         val resp = env.post("/projects", """{"path":"/repo/src"}""")
 
@@ -930,8 +928,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsRefusesToRestoreADeletedProjectFromADescendantPath() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/sub")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git", "/repo/sub"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
 
@@ -951,9 +949,9 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsRefusesToRestoreADeletedProjectFromOneOfItsLinkedWorktrees() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
-        env.fs.files["/wt/feature/.git"] = "gitdir: /repo/.git/worktrees/feature\n"
+        env.fs.addDirectories(listOf("/repo", "/repo/.git", "/repo/.git/worktrees/feature", "/wt/feature"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
+        env.fs.writeFile("/wt/feature/.git", "gitdir: /repo/.git/worktrees/feature\n")
         env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
 
@@ -971,8 +969,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsAdoptingADeletedProjectsDirectoryBringsItBack() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "the name it carried when it was deleted", "/old/checkout")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
 
@@ -1005,8 +1003,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsRefusesWhenADeleteWinsWhileAnExistingProjectIsBeingAdopted() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
         env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
         assertTrue(env.tasks.setProjectArchived(alpha, true))
         env.tasks.beforeUpsertProject = { id ->
@@ -1029,9 +1027,9 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsRefusesWhenTheWriterAdoptsAFileThatAppearedAfterResolution() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git")
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
         env.writer.beforeEnsure = { dir, _ ->
-            env.fs.files["$dir/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+            env.fs.writeFile("$dir/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
             env.tasks.seedProject(alpha, "deleted name", "/old/checkout")
             assertTrue(env.tasks.setProjectArchived(alpha, true))
         }
@@ -1052,8 +1050,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsAdoptingALiveProjectIsUnchangedAndStaysIdempotent() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
 
         val first = env.post("/projects", """{"path":"/repo"}""")
         val second = env.post("/projects", """{"path":"/repo"}""")
@@ -1075,7 +1073,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsHonoursAGivenNameAndRefusesOneAFileCouldNotCarry() = withTaskServer { env ->
-        env.fs.dirs += "/srv/new-repo"
+        env.fs.addDirectory("/srv/new-repo")
 
         assertEquals(
             "Backlog",
@@ -1097,7 +1095,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsRefusesARelativeOrMissingPath() = withTaskServer { env ->
-        env.fs.dirs += "/srv/new-repo"
+        env.fs.addDirectory("/srv/new-repo")
 
         val relative = env.post("/projects", """{"path":"new-repo"}""")
         assertEquals(HttpStatusCode.BadRequest, relative.status)
@@ -1109,8 +1107,8 @@ class TaskWriteRoutesTest {
 
     @Test
     fun postProjectsRefusesAPathThatIsNotADirectory() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git")
-        env.fs.files["/repo/README.md"] = "# repo\n"
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
+        env.fs.writeFile("/repo/README.md", "# repo\n")
 
         val resp = env.post("/projects", """{"path":"/repo/README.md"}""")
 
@@ -1118,14 +1116,14 @@ class TaskWriteRoutesTest {
         assertTrue(resp.bodyAsText().contains("/repo/README.md"), resp.bodyAsText())
         assertTrue(env.writer.calls.isEmpty(), "nothing is written for a path that is not a directory")
         assertTrue(env.tasks.snapshotProjects().isEmpty(), "and no project is registered")
-        assertNull(env.fs.files["/repo/$PROJECT_FILE_NAME"], "no project file appeared at the checkout root")
+        assertNull(env.fs.written["/repo/$PROJECT_FILE_NAME"], "no project file appeared at the checkout root")
     }
 
     @Test
     fun postProjectsRefusesAFileEvenWhenAProjectIsCommittedAboveIt() = withTaskServer { env ->
-        env.fs.dirs += setOf("/repo", "/repo/.git")
-        env.fs.files["/repo/$PROJECT_FILE_NAME"] = """{"id":"${alpha.value}","name":"kotgent"}"""
-        env.fs.files["/repo/README.md"] = "# repo\n"
+        env.fs.addDirectories(listOf("/repo", "/repo/.git"))
+        env.fs.writeFile("/repo/$PROJECT_FILE_NAME", """{"id":"${alpha.value}","name":"kotgent"}""")
+        env.fs.writeFile("/repo/README.md", "# repo\n")
 
         val resp = env.post("/projects", """{"path":"/repo/README.md"}""")
 
@@ -1136,7 +1134,7 @@ class TaskWriteRoutesTest {
 
     @Test
     fun aWriterRefusalIsA400() = withTaskServer { env ->
-        env.fs.dirs += "/srv/readonly"
+        env.fs.addDirectory("/srv/readonly")
         env.writer.failOn += "/srv/readonly"
 
         val resp = env.post("/projects", """{"path":"/srv/readonly"}""")
@@ -1297,9 +1295,11 @@ class TaskWriteRoutesTest {
         val tasks: FakeTaskStore,
         val sessions: FakeEventStore,
         val fs: FakeProjectFs,
-        val writer: FakeProjectFileWriter,
+        val writer: MemoryProjectFileWriter,
         val panes: MutableMap<PaneId, SessionId>,
     ) {
+        private var seededSessions = 0L
+
         suspend fun request(
             method: HttpMethod,
             path: String,
@@ -1326,15 +1326,43 @@ class TaskWriteRoutesTest {
             tasks.seedProject(project, project.value.take(8), "/repo")
             return tasks.create(project, title, "").ref
         }
+
+        fun seedSession(
+            id: SessionId,
+            cwd: String,
+            projectId: ProjectId?,
+            taskRef: TaskRef? = null,
+            updatedAt: Long = 0L,
+        ) {
+            sessions.seedSession(
+                SessionMeta(
+                    id = id,
+                    name = id.value,
+                    agent = "claude",
+                    cwd = cwd,
+                    tmuxSession = "kt-${id.value}",
+                    state = SessionState.running,
+                    stateSource = EventSource.system,
+                    createdAt = seededSessions++,
+                    updatedAt = updatedAt,
+                    taskRef = taskRef,
+                    projectId = projectId,
+                ),
+            )
+        }
     }
 
     private fun withTaskServer(block: suspend (Env) -> Unit) = runBlocking {
         withTimeout(60.seconds) {
             val tokens = TokenHolder(token)
-            val tasks = FakeTaskStore()
-            val sessions = FakeEventStore()
+            val tasks = FakeTaskStore(now = { 0L })
+            val sessions = FakeEventStore(now = { 0L }).also {
+                it.interceptor = ForbiddingInterceptor(UNREACHED_BY_WRITE_ROUTES) { store, method ->
+                    "the task write routes are not expected to call $store.$method"
+                }
+            }
             val fs = FakeProjectFs()
-            val writer = FakeProjectFileWriter(fs, minted)
+            val writer = MemoryProjectFileWriter(fs) { minted }
             val panes = mutableMapOf<PaneId, SessionId>()
             val service = TaskService(
                 tasks = tasks,
@@ -1369,366 +1397,6 @@ class TaskWriteRoutesTest {
         }
     }
 
-
-    private class FakeTaskStore : TaskStore {
-        private val mutex = Mutex()
-        private val tasks = mutableMapOf<TaskRef, Task>()
-        private val entries = mutableMapOf<TaskRef, BacklogEntry>()
-        private val activity = mutableListOf<TaskActivityEntry>()
-        private val deps = mutableMapOf<TaskRef, MutableList<TaskRef>>()
-        private val projects = mutableMapOf<ProjectId, ProjectRecord>()
-        private var nextKey = 0
-        private var rev = 0L
-        private var activityId = 0L
-
-        override val id: String = TaskRef.LOCAL_TRACKER
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-
-        fun seedProject(project: ProjectId, name: String, path: String?) {
-            projects[project] = ProjectRecord(project, name, path, 0L)
-        }
-
-        fun clearActivity() {
-            activity.clear()
-        }
-
-        suspend fun snapshotEntries(): Map<TaskRef, BacklogEntry> = mutex.withLock { entries.toMap() }
-        suspend fun snapshotTasks(): Map<TaskRef, Task> = mutex.withLock { tasks.toMap() }
-        suspend fun snapshotActivity(): List<TaskActivityEntry> = mutex.withLock { activity.toList() }
-        suspend fun snapshotDeps(): Map<TaskRef, List<TaskRef>> =
-            mutex.withLock { deps.mapValues { it.value.toList() } }
-        suspend fun snapshotProjects(): Map<ProjectId, ProjectRecord> = mutex.withLock { projects.toMap() }
-
-        override suspend fun list(project: ProjectId): List<Task> = mutex.withLock {
-            entries.values.filter { it.project == project }.mapNotNull { tasks[it.ref] }
-        }
-
-        override suspend fun get(ref: TaskRef): Task? = mutex.withLock { tasks[ref] }
-
-        /** Runs outside the lock to expose the resolution/insert race. */
-        var beforeCreate: (suspend () -> Unit)? = null
-
-        /** Runs outside the lock to expose POST /projects' restore/register race. */
-        var beforeUpsertProject: (suspend (ProjectId) -> Unit)? = null
-
-        override suspend fun create(
-            project: ProjectId,
-            title: String,
-            body: String,
-            author: String,
-        ): Task {
-            beforeCreate?.invoke()
-            return createLocked(project, title, body, author)
-        }
-
-        private suspend fun createLocked(
-            project: ProjectId,
-            title: String,
-            body: String,
-            author: String,
-        ): Task = mutex.withLock {
-            if (projects[project]?.archived == true) throw ArchivedProjectException(project)
-            val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
-            val task = Task(ref, title, body, url = null, updatedAt = 0L)
-            tasks[ref] = task
-            val end = entries.values.filter { it.project == project }.maxOfOrNull { it.position } ?: 0.0
-            entries[ref] = BacklogEntry(ref, project, end + 1.0, TaskState.todo, false, 0L, 0L, ++rev)
-            activity += TaskActivityEntry(++activityId, ref, 0L, ActivityKind.created, author, null, null, null)
-            task
-        }
-
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = mutex.withLock {
-            val existing = tasks[ref] ?: return@withLock null
-            val updated = existing.copy(title = title ?: existing.title, body = body ?: existing.body)
-            tasks[ref] = updated
-            entries[ref]?.let { entries[ref] = it.copy(rev = ++rev) }
-            updated
-        }
-
-        override suspend fun delete(ref: TaskRef): Boolean = mutex.withLock {
-            activity.removeAll { it.ref == ref }
-            deps.remove(ref)
-            deps.values.forEach { it.remove(ref) }
-            entries.remove(ref)
-            tasks.remove(ref) != null
-        }
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = mutex.withLock { entries[ref] }
-
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = mutex.withLock {
-            entries.values.filter { it.project == project }.sortedBy { it.position }
-        }
-
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = mutex.withLock {
-            entries.values
-                .filter { it.project == project && it.state == TaskState.todo }
-                .minByOrNull { it.position }
-        }
-
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoWhen(ref) { true }
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            startIfTodoWhen(ref) { projects[it]?.archived != true }
-
-        private suspend fun startIfTodoWhen(
-            ref: TaskRef,
-            acceptsProject: (ProjectId) -> Boolean,
-        ): Boolean = mutex.withLock {
-            val existing = entries[ref] ?: return@withLock false
-            if (existing.state != TaskState.todo) return@withLock false
-            if (!acceptsProject(existing.project)) return@withLock false
-            entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
-            true
-        }
-
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry? = mutex.withLock {
-            val existing = entries[ref] ?: return@withLock null
-            val moved = existing.copy(state = to, rev = ++rev)
-            entries[ref] = moved
-            activity += TaskActivityEntry(
-                ++activityId, ref, 0L, ActivityKind.transition, author, message, existing.state, to,
-            )
-            moved
-        }
-
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = mutex.withLock {
-            val existing = entries[ref] ?: return@withLock null
-            val siblings = entries.values.filter { it.project == existing.project && it.ref != ref }
-            val position = when (target) {
-                MoveTarget.Top -> (siblings.minOfOrNull { it.position } ?: 1.0) - 1.0
-                MoveTarget.Bottom -> (siblings.maxOfOrNull { it.position } ?: 0.0) + 1.0
-                is MoveTarget.Before -> (entries[target.ref] ?: return@withLock null).position - 0.5
-                is MoveTarget.After -> (entries[target.ref] ?: return@withLock null).position + 0.5
-            }
-            val moved = existing.copy(position = position, rev = ++rev)
-            entries[ref] = moved
-            moved
-        }
-
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
-            mutex.withLock { deps[ref].orEmpty().toList() }
-
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> =
-            mutex.withLock { deps.filterValues { ref in it }.keys.toList() }
-
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> = mutex.withLock {
-            deps.filterKeys { entries[it]?.project == project }.mapValues { it.value.toList() }
-        }
-
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
-            fun refuse(refusal: DependencyRefusal, why: String): Nothing = throw DependencyRefusedException(
-                refusal, ref, dependsOn,
-                "cannot add '${ref.value}' depends on '${dependsOn.value}': $why (${refusal.name})",
-            )
-            if (ref == dependsOn) refuse(DependencyRefusal.self, "a task cannot depend on itself")
-            val from = entries[ref] ?: refuse(DependencyRefusal.unknownRef, "no such task '${ref.value}'")
-            val to = entries[dependsOn]
-                ?: refuse(DependencyRefusal.unknownRef, "no such task '${dependsOn.value}'")
-            if (from.project != to.project) {
-                refuse(DependencyRefusal.crossProject, "they belong to different projects")
-            }
-            if (reaches(dependsOn, ref)) refuse(DependencyRefusal.cycle, "it would close a ring")
-            val edges = deps.getOrPut(ref) { mutableListOf() }
-            if (dependsOn !in edges) edges += dependsOn
-            entries[ref] = from.copy(rev = ++rev)
-        }
-
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
-            deps[ref]?.remove(dependsOn)
-            entries[ref]?.let { entries[ref] = it.copy(rev = ++rev) }
-        }
-
-        private fun reaches(start: TaskRef, target: TaskRef): Boolean {
-            val seen = mutableSetOf<TaskRef>()
-            val stack = ArrayDeque(listOf(start))
-            while (stack.isNotEmpty()) {
-                val here = stack.removeLast()
-                if (here == target) return true
-                if (!seen.add(here)) continue
-                stack += deps[here].orEmpty()
-            }
-            return false
-        }
-
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-            mutex.withLock {
-                if (ref !in entries) return@withLock null
-                val row = TaskActivityEntry(++activityId, ref, 0L, ActivityKind.comment, author, text, null, null)
-                activity += row
-                row
-            }
-
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry? = mutex.withLock {
-            if (ref !in entries) return@withLock null
-            val row = TaskActivityEntry(++activityId, ref, 0L, kind, author, text, fromState, toState)
-            activity += row
-            row
-        }
-
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> =
-            mutex.withLock { activity.filter { it.ref == ref } }
-
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration {
-            beforeUpsertProject?.invoke(id)
-            return mutex.withLock {
-                val existing = projects[id]
-                if (existing != null && existing.archived) {
-                    return@withLock ProjectRegistration.refusedArchived
-                }
-                projects[id] = ProjectRecord(id, name, path ?: existing?.path, 0L, existing?.archived ?: false)
-                ProjectRegistration.registered
-            }
-        }
-
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
-            val existing = projects[id] ?: return@withLock false
-            projects[id] = existing.copy(archived = archived)
-            true
-        }
-
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
-            mutex.withLock { projects.values.filter { it.archived == archived }.sortedBy { it.name } }
-
-        override suspend fun listAllProjects(): List<ProjectRecord> =
-            mutex.withLock { projects.values.sortedBy { it.name } }
-
-        override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
-    }
-
-    private class FakeEventStore : EventStore {
-        private val mutex = Mutex()
-        private val rows = mutableMapOf<SessionId, SessionMeta>()
-
-        val archived: MutableSet<SessionId> = mutableSetOf()
-
-        fun seed(
-            id: SessionId,
-            cwd: String,
-            projectId: ProjectId?,
-            taskRef: TaskRef? = null,
-            updatedAt: Long = 0L,
-        ) {
-            rows[id] = SessionMeta(
-                id = id,
-                name = id.value,
-                agent = "claude",
-                cwd = cwd,
-                tmuxSession = "kt-${id.value}",
-                state = SessionState.running,
-                stateSource = EventSource.system,
-                createdAt = rows.size.toLong(),
-                updatedAt = updatedAt,
-                taskRef = taskRef,
-                projectId = projectId,
-            )
-        }
-
-        suspend fun snapshot(): Map<SessionId, SessionMeta> = mutex.withLock { rows.toMap() }
-
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { rows[sessionId] }
-
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
-            mutex.withLock {
-                rows[sessionId]?.let { rows[sessionId] = it.copy(taskRef = taskRef) }
-            }
-        }
-
-        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = mutex.withLock {
-            rows.values.filter { it.taskRef == taskRef }.sortedBy { it.createdAt }
-        }
-
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {
-            if (archived) this.archived += sessionId else this.archived -= sessionId
-        }
-
-        override suspend fun upsertSession(meta: SessionMeta) = unused("upsertSession")
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) = unused("updateSessionState")
-        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: ProviderSessionId,
-            model: String,
-        ): Boolean = unused("setModelForProvider")
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
-            mutex.withLock {
-                rows[sessionId]?.let { rows[sessionId] = it.copy(projectId = projectId) }
-            }
-        }
-
-        override suspend fun setName(sessionId: SessionId, name: String) {
-        }
-
-        override suspend fun listSessions(): List<SessionMeta> = unused("listSessions")
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
-            unused("append")
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = unused("read")
-        override suspend fun projectionOf(sessionId: SessionId): Projection = unused("projectionOf")
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = unused("subscribe")
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
-
-        private fun unused(name: String): Nothing =
-            error("the task write routes are not expected to call EventStore.$name")
-    }
-
-    private class FakeProjectFs : ProjectFs {
-        val dirs: MutableSet<String> = mutableSetOf()
-        val files: MutableMap<String, String> = mutableMapOf()
-
-        val reads: MutableList<String> = mutableListOf()
-
-        override fun isDirectory(path: String): Boolean = path.trimEnd('/') in dirs
-
-        override fun readFile(path: String, maxBytes: Int): String? {
-            reads += path
-            return files[path]?.take(maxBytes)
-        }
-
-        override fun canonicalize(path: String): String? {
-            val trimmed = path.trimEnd('/').ifEmpty { "/" }
-            return if (trimmed in dirs || trimmed in files) trimmed else null
-        }
-    }
-
-    private class FakeProjectFileWriter(
-        private val fs: FakeProjectFs,
-        private val mint: ProjectId,
-    ) : ProjectFileWriter {
-        val calls: MutableList<Pair<String, String>> = mutableListOf()
-
-        val failOn: MutableSet<String> = mutableSetOf()
-
-        var beforeEnsure: (suspend (String, String) -> Unit)? = null
-
-        override suspend fun ensureProjectFile(dir: String, name: String): ProjectFile {
-            calls += dir to name
-            if (dir in failOn) throw ProjectPathException(dir, "cannot write $PROJECT_FILE_NAME in '$dir'")
-            beforeEnsure?.invoke(dir, name)
-            val path = "$dir/$PROJECT_FILE_NAME"
-            fs.files[path]?.let { existing -> return parseProjectFile(existing) ?: ProjectFile(mint, name) }
-            fs.files[path] = """{"id":"${mint.value}","name":"$name"}"""
-            return ProjectFile(mint, name)
-        }
-    }
 
     private fun HttpRequestBuilder.applyIfPresent(name: String, value: String?) {
         if (value != null) header(name, value)

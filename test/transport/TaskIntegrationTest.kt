@@ -18,6 +18,7 @@ import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.db.KotgentDatabase
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SqliteTaskStore
+import io.kotgent.task.FakeProjectFs
 import io.kotgent.task.PROJECT_FILE_NAME
 import io.kotgent.task.ProjectFile
 import io.kotgent.task.ProjectFileWriter
@@ -279,7 +280,7 @@ class TaskIntegrationTest {
             val events = SqliteEventStore.using(driver, now = { 1L })
             val tasks = SqliteTaskStore.using(driver, now = { 1L })
             val fs = FakeProjectFs(
-                dirs = setOf(projectRoot, sessionCwd),
+                dirs = listOf(projectRoot, sessionCwd),
                 files = mapOf(
                     "$projectRoot/$PROJECT_FILE_NAME" to """{"id":"${projectId.value}","name":"$projectName"}""",
                 ),
@@ -373,18 +374,6 @@ class TaskIntegrationTest {
         private fun typeOf(text: String): String? = runCatching {
             TRANSPORT_JSON.parseToJsonElement(text).jsonObject["type"]?.jsonPrimitive?.content
         }.getOrNull()
-    }
-
-    private class FakeProjectFs(
-        private val dirs: Set<String>,
-        private val files: Map<String, String>,
-    ) : ProjectFs {
-        override fun isDirectory(path: String): Boolean = path.trimEnd('/') in dirs
-        override fun readFile(path: String, maxBytes: Int): String? = files[path]?.take(maxBytes)
-        override fun canonicalize(path: String): String? {
-            val trimmed = path.trimEnd('/').ifEmpty { "/" }
-            return if (trimmed in dirs || trimmed in files) trimmed else null
-        }
     }
 
     private class RefusingProjectFileWriter : ProjectFileWriter {

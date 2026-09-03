@@ -11,9 +11,10 @@ import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
-import io.kotgent.store.EventStore
+import io.kotgent.store.FailingInterceptor
+import io.kotgent.store.FakeEventStore
+import io.kotgent.store.RecordingInterceptor
 import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -201,7 +202,7 @@ class PushNotifierTest {
             env.store.emit(update("s2", SessionState.needs_approval))
             assertEquals(SessionId("s2"), env.sent.receive())
 
-            assertEquals(1, env.store.listCalls, "the snapshot is a baseline, not a per-update refresh")
+            assertEquals(1, env.calls.countOf("listSessions"), "the snapshot is a baseline, not a per-update refresh")
             env.stop()
         }
     }
@@ -322,91 +323,28 @@ class PushNotifierTest {
     }
 
 
-    private class FakeUpdatesStore(
-        private val sessions: List<SessionMeta>,
-        private val beforeListSessions: suspend () -> Unit,
-        private val failListSessions: Boolean,
-    ) : EventStore {
-        // Mirrors the lossy UI signal; the notifier must not consume this one.
-        override val sessionUpdates: SharedFlow<SessionUpdate>
-            field = MutableSharedFlow<SessionUpdate>(
-                replay = 0,
-                extraBufferCapacity = 64,
-                onBufferOverflow = BufferOverflow.DROP_OLDEST,
-            )
-
-        // Mirrors the unbuffered reliable signal and its producer backpressure.
-        override val reliableSessionUpdates: SharedFlow<SessionUpdate>
-            field = MutableSharedFlow<SessionUpdate>()
-
-        var listCalls = 0
-            private set
-
-        suspend fun emit(update: SessionUpdate) {
-            sessionUpdates.tryEmit(update)
-            reliableSessionUpdates.emit(update)
-        }
-
-        suspend fun emitUiOnly(update: SessionUpdate) = sessionUpdates.emit(update)
-        suspend fun emitReliableOnly(update: SessionUpdate) = reliableSessionUpdates.emit(update)
-
-        suspend fun awaitSubscriber() {
-            reliableSessionUpdates.subscriptionCount.first { it > 0 }
-        }
-
-        fun subscriberCount(): Int = reliableSessionUpdates.subscriptionCount.value
-
-        override suspend fun listSessions(): List<SessionMeta> {
-            listCalls++
-            beforeListSessions()
-            if (failListSessions) throw IllegalStateException("cannot list sessions: database is locked")
-            return sessions
-        }
-
-        override suspend fun upsertSession(meta: SessionMeta) {}
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) {}
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {}
-        override suspend fun setModel(sessionId: SessionId, model: String?) {}
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: io.kotgent.core.ProviderSessionId,
-            model: String,
-        ): Boolean = false
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) {}
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
-        }
-
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
-        }
-
-        override suspend fun setName(sessionId: SessionId, name: String) {
-        }
-
-        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
-            return emptyList()
-        }
-
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = null
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq = Seq(0L)
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
-        override suspend fun projectionOf(sessionId: SessionId): Projection = Projection.EMPTY
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = emptyFlow()
-    }
-
     private class Env(
         sessions: List<SessionMeta> = emptyList(),
-        beforeListSessions: suspend () -> Unit = {},
+        beforeListSessions: (suspend () -> Unit)? = null,
         failListSessions: Boolean = false,
         failSendFor: Set<SessionId> = emptySet(),
         beforeSend: suspend (SessionId) -> Unit = {},
     ) {
-        val store = FakeUpdatesStore(sessions, beforeListSessions, failListSessions)
+        val calls = RecordingInterceptor()
+
+        val store = FakeEventStore(sessionMetadata = sessions.associateBy { it.id }).also {
+            it.beforeListSessions = beforeListSessions
+            it.interceptor = if (failListSessions) {
+                FailingInterceptor(
+                    mutableMapOf(
+                        "listSessions" to IllegalStateException("cannot list sessions: database is locked"),
+                    ),
+                    it.interceptor,
+                )
+            } else {
+                calls
+            }
+        }
 
         val sent = Channel<SessionId>(Channel.UNLIMITED)
 
@@ -432,7 +370,7 @@ class PushNotifierTest {
 
         suspend fun awaitSeeded() {
             store.awaitSubscriber()
-            assertEquals(1, store.listCalls, "readiness includes exactly one completed baseline")
+            assertEquals(1, calls.countOf("listSessions"), "readiness includes exactly one completed baseline")
         }
 
         fun stop() {

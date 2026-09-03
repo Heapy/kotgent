@@ -15,7 +15,7 @@ import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
-import io.kotgent.store.SessionUpdate
+import io.kotgent.store.FakeEventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.StoredEvent
 import io.kotgent.tmux.TmuxHookConfig
@@ -140,8 +140,8 @@ class HookRoutesTest {
 
     @Test
     fun aValidPostAppendsTheNormalizedEventToTheStore() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(port, ClaudeHookConfig.STOP)
             assertEquals(HttpStatusCode.OK, response.status)
 
@@ -154,8 +154,8 @@ class HookRoutesTest {
 
     @Test
     fun theClaudeLegacyIngressAliasStillRunsTheHandler() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(
                 port,
                 ClaudeHookConfig.STOP,
@@ -189,8 +189,8 @@ class HookRoutesTest {
 
     @Test
     fun postToolUseAppendsAToolCallCarryingTheToolName() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(
                 port,
                 ClaudeHookConfig.POST_TOOL_USE,
@@ -206,9 +206,9 @@ class HookRoutesTest {
 
     @Test
     fun sessionStartAppendsSessionBoundWithTheProviderId() {
-        val store = RecordingEventStore()
+        val store = RecordingEvents()
         val uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-        withIngress(store) { port, client ->
+        withIngress(store.events) { port, client ->
             val response = client.postHook(
                 port,
                 ClaudeHookConfig.SESSION_START,
@@ -224,8 +224,8 @@ class HookRoutesTest {
 
     @Test
     fun anInvalidTokenIs401AndAppendsNothing() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(port, ClaudeHookConfig.STOP, token = "wrong-token")
             assertEquals(HttpStatusCode.Unauthorized, response.status)
             assertTrue(store.appended.tryReceive().isFailure, "a rejected token must append nothing")
@@ -234,8 +234,8 @@ class HookRoutesTest {
 
     @Test
     fun aMissingTokenIs401AndAppendsNothing() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(port, ClaudeHookConfig.STOP, token = null)
             assertEquals(HttpStatusCode.Unauthorized, response.status)
             assertTrue(store.appended.tryReceive().isFailure, "a missing token must append nothing")
@@ -245,8 +245,8 @@ class HookRoutesTest {
 
     @Test
     fun anUnknownPaneIs404AndAppendsNothing() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(port, ClaudeHookConfig.STOP, pane = "%999")
             assertEquals(HttpStatusCode.NotFound, response.status)
             assertTrue(store.appended.tryReceive().isFailure, "an unresolved pane must append nothing")
@@ -256,8 +256,8 @@ class HookRoutesTest {
 
     @Test
     fun anUnmappedHookIs200AndAppendsNothing() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.postHook(port, "PreToolUse")
             assertEquals(HttpStatusCode.OK, response.status, "a wired-but-unmapped hook is accepted")
             assertTrue(store.appended.tryReceive().isFailure, "an ignored hook stores nothing")
@@ -267,9 +267,9 @@ class HookRoutesTest {
 
     @Test
     fun rotatingTheTokenFlipsTheIngressToTheNewValueWithoutARestart() {
-        val store = RecordingEventStore()
+        val store = RecordingEvents()
         val holder = TokenHolder(token)
-        withIngress(store, tokenProvider = holder::current) { port, client ->
+        withIngress(store.events, tokenProvider = holder::current) { port, client ->
             assertEquals(
                 HttpStatusCode.OK,
                 client.postHook(port, ClaudeHookConfig.STOP, token = holder.current()).status,
@@ -298,8 +298,8 @@ class HookRoutesTest {
 
     @Test
     fun aHookArrivingUnderAForeignHostIs403AndAppendsNothing() {
-        val store = RecordingEventStore()
-        withIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withIngress(store.events) { port, client ->
             val response = client.post(url(port, ClaudeHookConfig.STOP)) {
                 header(ClaudeHookConfig.HOOK_TOKEN_HEADER, token)
                 header(ClaudeHookConfig.TMUX_PANE_HEADER, pane.value)
@@ -313,8 +313,8 @@ class HookRoutesTest {
 
     @Test
     fun theCodexIngressIsLocalOnlyToo() {
-        val store = RecordingEventStore()
-        withCodexIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withCodexIngress(store.events) { port, client ->
             val response = client.post("http://127.0.0.1:$port${CodexHookConfig.INGRESS_PATH}?event=${CodexHookConfig.STOP}") {
                 header(CodexHookConfig.HOOK_TOKEN_HEADER, token)
                 header(CodexHookConfig.TMUX_PANE_HEADER, pane.value)
@@ -456,8 +456,8 @@ class HookRoutesTest {
 
     @Test
     fun codexPermissionRequestAppendsAnApproval() {
-        val store = RecordingEventStore()
-        withCodexIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withCodexIngress(store.events) { port, client ->
             val response = client.postCodexHook(
                 port,
                 CodexHookConfig.PERMISSION_REQUEST,
@@ -473,8 +473,8 @@ class HookRoutesTest {
 
     @Test
     fun theCodexLegacyIngressAliasStillRunsTheHandler() {
-        val store = RecordingEventStore()
-        withCodexIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withCodexIngress(store.events) { port, client ->
             val response = client.postCodexHook(
                 port,
                 CodexHookConfig.STOP,
@@ -487,9 +487,9 @@ class HookRoutesTest {
 
     @Test
     fun codexSessionStartBindsCodexOwnId() {
-        val store = RecordingEventStore()
+        val store = RecordingEvents()
         val id = "019f8ea0-2548-7871-9835-947ff7623ccf"
-        withCodexIngress(store) { port, client ->
+        withCodexIngress(store.events) { port, client ->
             val response = client.postCodexHook(
                 port,
                 CodexHookConfig.SESSION_START,
@@ -510,10 +510,10 @@ class HookRoutesTest {
 
     @Test
     fun codexSessionStartThatDisplacesADifferentBoundIdFiresTheRebindSeam() {
-        val store = RecordingEventStore()
-        store.sessionMeta = boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+        val store = RecordingEvents()
+        store.events.seedSession(boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")))
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
-        withCodexIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
+        withCodexIngress(store.events, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
             val response = client.postCodexHook(
                 port,
                 CodexHookConfig.SESSION_START,
@@ -531,10 +531,9 @@ class HookRoutesTest {
 
     @Test
     fun aThrowingRebindCorrectionNeverFailsTheHook() {
-        val store = RecordingEventStore()
-        store.sessionMeta = boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
-        withCodexIngress(
-            store,
+        val store = RecordingEvents()
+        store.events.seedSession(boundMeta(ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")))
+        withCodexIngress(store.events,
             onProviderIdRebound = { throw IllegalStateException("correction broke") },
         ) { port, client ->
             val response = client.postCodexHook(
@@ -553,15 +552,15 @@ class HookRoutesTest {
 
     @Test
     fun codexSessionStartFiresNoRebindOnAFirstBindOrARepeatOfTheSameId() {
-        val store = RecordingEventStore()
+        val store = RecordingEvents()
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
-        withCodexIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
+        withCodexIngress(store.events, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
             val id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
             val _ = client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
             store.appended.receive()
             assertTrue(rebounds.tryReceive().isFailure, "a first bind is not a displacement")
 
-            store.sessionMeta = boundMeta(ProviderSessionId(id))
+            store.events.seedSession(boundMeta(ProviderSessionId(id)))
             val _ = client.postCodexHook(port, CodexHookConfig.SESSION_START, body = """{"session_id":"$id"}""")
             store.appended.receive()
             assertTrue(rebounds.tryReceive().isFailure, "re-binding the same id displaces nothing")
@@ -570,8 +569,8 @@ class HookRoutesTest {
 
     @Test
     fun codexIngressRejectsAWrongTokenBeforeLookingAtAnythingElse() {
-        val store = RecordingEventStore()
-        withCodexIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withCodexIngress(store.events) { port, client ->
             val response = client.postCodexHook(port, CodexHookConfig.STOP, token = "wrong")
             assertEquals(HttpStatusCode.Unauthorized, response.status)
             assertTrue(store.appended.tryReceive().isFailure, "an unauthenticated callback stores nothing")
@@ -580,8 +579,8 @@ class HookRoutesTest {
 
     @Test
     fun codexIngress404sAnUnknownPane() {
-        val store = RecordingEventStore()
-        withCodexIngress(store, paneLookup = { null }) { port, client ->
+        val store = RecordingEvents()
+        withCodexIngress(store.events, paneLookup = { null }) { port, client ->
             assertEquals(HttpStatusCode.NotFound, client.postCodexHook(port, CodexHookConfig.STOP).status)
             assertTrue(store.appended.tryReceive().isFailure)
         }
@@ -589,24 +588,24 @@ class HookRoutesTest {
 
     @Test
     fun eachIngressSpeaksOnlyItsOwnProvidersVocabulary() {
-        val claudeStore = RecordingEventStore()
-        withIngress(claudeStore) { port, client ->
+        val claudeStore = RecordingEvents()
+        withIngress(claudeStore.events) { port, client ->
             assertEquals(HttpStatusCode.OK, client.postHook(port, CodexHookConfig.PERMISSION_REQUEST).status)
             assertTrue(claudeStore.appended.tryReceive().isFailure, "a codex-only hook is inert on /hooks/claude")
             assertEquals(HttpStatusCode.OK, client.postHook(port, JunieHookConfig.STOP_FAILURE).status)
             assertTrue(claudeStore.appended.tryReceive().isFailure, "a junie-only hook is inert on /hooks/claude")
         }
 
-        val codexStore = RecordingEventStore()
-        withCodexIngress(codexStore) { port, client ->
+        val codexStore = RecordingEvents()
+        withCodexIngress(codexStore.events) { port, client ->
             assertEquals(HttpStatusCode.OK, client.postCodexHook(port, ClaudeHookConfig.NOTIFICATION).status)
             assertTrue(codexStore.appended.tryReceive().isFailure, "a claude-only hook is inert on /hooks/codex")
             assertEquals(HttpStatusCode.OK, client.postCodexHook(port, JunieHookConfig.STOP_FAILURE).status)
             assertTrue(codexStore.appended.tryReceive().isFailure, "a junie-only hook is inert on /hooks/codex")
         }
 
-        val junieStore = RecordingEventStore()
-        withJunieIngress(junieStore) { port, client ->
+        val junieStore = RecordingEvents()
+        withJunieIngress(junieStore.events) { port, client ->
             assertEquals(HttpStatusCode.OK, client.postJunieHook(port, ClaudeHookConfig.NOTIFICATION).status)
             assertTrue(junieStore.appended.tryReceive().isFailure, "a claude-only hook is inert on /hooks/junie")
             assertEquals(HttpStatusCode.OK, client.postJunieHook(port, CodexHookConfig.POST_TOOL_USE).status)
@@ -660,8 +659,8 @@ class HookRoutesTest {
 
     @Test
     fun juniePreToolUseAppendsAToolCallCarryingTheToolName() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.PRE_TOOL_USE,
@@ -677,8 +676,8 @@ class HookRoutesTest {
 
     @Test
     fun theJunieLegacyIngressAliasStillRunsTheHandler() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.STOP,
@@ -691,8 +690,8 @@ class HookRoutesTest {
 
     @Test
     fun juniePermissionRequestAppendsAnApproval() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.PERMISSION_REQUEST,
@@ -705,8 +704,8 @@ class HookRoutesTest {
 
     @Test
     fun junieStopFailureCompletesTheTurnSoASessionCannotStickAtRunning() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.STOP_FAILURE,
@@ -719,8 +718,8 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionEndExitsTheSession() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.SESSION_END,
@@ -733,8 +732,8 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionStartCarriesNoIdSoNothingIsBound() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.SESSION_START,
@@ -747,8 +746,8 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionStartBindsANonUuidIdWhenOneIsPresent() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.SESSION_START,
@@ -764,10 +763,10 @@ class HookRoutesTest {
 
     @Test
     fun junieSessionStartThatDisplacesADifferentBoundIdFiresTheRebindSeam() {
-        val store = RecordingEventStore()
-        store.sessionMeta = boundMeta(ProviderSessionId("session-260730-010101-aaaa"), agent = "junie")
+        val store = RecordingEvents()
+        store.events.seedSession(boundMeta(ProviderSessionId("session-260730-010101-aaaa"), agent = "junie"))
         val rebounds = Channel<SessionId>(Channel.UNLIMITED)
-        withJunieIngress(store, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
+        withJunieIngress(store.events, onProviderIdRebound = { rebounds.send(it) }) { port, client ->
             val response = client.postJunieHook(
                 port,
                 JunieHookConfig.SESSION_START,
@@ -785,8 +784,8 @@ class HookRoutesTest {
 
     @Test
     fun junieIngressRejectsAWrongTokenBeforeLookingAtAnythingElse() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val response = client.postJunieHook(port, JunieHookConfig.STOP, token = "wrong")
             assertEquals(HttpStatusCode.Unauthorized, response.status)
             assertTrue(store.appended.tryReceive().isFailure, "an unauthenticated callback stores nothing")
@@ -795,8 +794,8 @@ class HookRoutesTest {
 
     @Test
     fun junieIngress404sAnUnknownPane() {
-        val store = RecordingEventStore()
-        withJunieIngress(store, paneLookup = { null }) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events, paneLookup = { null }) { port, client ->
             assertEquals(HttpStatusCode.NotFound, client.postJunieHook(port, JunieHookConfig.STOP).status)
             assertTrue(store.appended.tryReceive().isFailure)
         }
@@ -804,8 +803,8 @@ class HookRoutesTest {
 
     @Test
     fun theJunieIngressIsLocalOnlyToo() {
-        val store = RecordingEventStore()
-        withJunieIngress(store) { port, client ->
+        val store = RecordingEvents()
+        withJunieIngress(store.events) { port, client ->
             val url = "http://127.0.0.1:$port${JunieHookConfig.INGRESS_PATH}?event=${JunieHookConfig.STOP}"
             val response = client.post(url) {
                 header(JunieHookConfig.HOOK_TOKEN_HEADER, token)
@@ -818,53 +817,10 @@ class HookRoutesTest {
         }
     }
 
-    private class RecordingEventStore : EventStore {
-        data class Appended(val sessionId: SessionId, val event: AgentEvent, val source: EventSource)
+    /** Awaits each committed append instead of polling the log for one. */
+    private class RecordingEvents {
+        val appended = Channel<StoredEvent>(Channel.UNLIMITED)
 
-        val appended = Channel<Appended>(Channel.UNLIMITED)
-        private var seq = 0L
-
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq {
-            seq += 1
-            appended.send(Appended(sessionId, event, source))
-            return Seq(seq)
-        }
-
-        override suspend fun upsertSession(meta: SessionMeta) = Unit
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) = Unit
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) = Unit
-        override suspend fun setModel(sessionId: SessionId, model: String?) = Unit
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: ProviderSessionId,
-            model: String,
-        ): Boolean = false
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) = Unit
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) {
-        }
-
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) {
-        }
-
-        override suspend fun setName(sessionId: SessionId, name: String) {
-        }
-
-        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> {
-            return emptyList()
-        }
-
-        var sessionMeta: SessionMeta? = null
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = sessionMeta
-        override suspend fun listSessions(): List<SessionMeta> = emptyList()
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
-        override suspend fun projectionOf(sessionId: SessionId): Projection = Projection.EMPTY
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = emptyFlow()
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
+        val events = FakeEventStore().also { it.onAppend = { row -> appended.send(row) } }
     }
 }

@@ -1,6 +1,6 @@
 package io.kotgent.transport
 
-import io.kotgent.push.PushStore
+import io.kotgent.push.FakePushStore
 import io.kotgent.push.PushSubscription
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -19,8 +19,6 @@ import io.ktor.http.parseServerSetCookieHeader
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -275,19 +273,6 @@ class PushRoutesTest {
         )
     }
 
-
-    private class FakePushStore : PushStore {
-        private val mutex = Mutex()
-        private val rows = mutableMapOf<String, PushSubscription>()
-
-        override suspend fun list(): List<PushSubscription> = mutex.withLock { rows.values.toList() }
-
-        override suspend fun save(subscription: PushSubscription) = mutex.withLock {
-            rows[subscription.endpoint] = subscription
-        }
-
-        override suspend fun remove(endpoint: String) = mutex.withLock { rows.remove(endpoint); Unit }
-    }
 
     private inner class Env(val port: Int, val client: HttpClient, val store: FakePushStore) {
         suspend fun signIn(): String {

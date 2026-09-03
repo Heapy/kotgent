@@ -12,22 +12,18 @@ import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
+import io.kotgent.store.FailingInterceptor
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
+import io.kotgent.store.ProjectUpsert
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.TaskStore
-import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
-import io.kotgent.task.MoveTarget
+import io.kotgent.task.FakeProjectFs
 import io.kotgent.task.ProjectFs
-import io.kotgent.task.ProjectRecord
-import io.kotgent.task.ProjectRegistration
-import io.kotgent.task.Task
-import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -39,6 +35,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class TaskProjectWiringTest {
 
+
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
 
     private val beta = ProjectId.of("11111111-2222-4333-8444-555555555555")
@@ -47,7 +44,7 @@ class TaskProjectWiringTest {
 
 
     private fun tree(): FakeProjectFs = FakeProjectFs(
-        dirs = setOf(
+        dirs = listOf(
             "/", "/repo", "/repo/sub", "/repo/.git", "/repo/.git/worktrees",
             "/repo/.git/worktrees/feature", "/wt", "/wt/feature", "/elsewhere",
         ),
@@ -72,8 +69,8 @@ class TaskProjectWiringTest {
                 "and so does the committed row — the id is written by the insert itself",
             )
             assertEquals(
-                listOf(RegisteredProject(alpha, "kotgent", "/repo")),
-                f.tasks.registrations,
+                listOf(ProjectUpsert(alpha, "kotgent", "/repo")),
+                f.tasks.upsertProjectWrites,
                 "the projects row names the CHECKOUT ROOT, not the session's cwd",
             )
         }
@@ -88,7 +85,7 @@ class TaskProjectWiringTest {
 
             assertNull(started.projectId)
             assertNull(f.store.getSession(started.id)!!.projectId)
-            assertTrue(f.tasks.registrations.isEmpty(), "no project file, nothing to register")
+            assertTrue(f.tasks.upsertProjectWrites.isEmpty(), "no project file, nothing to register")
         }
     }
 
@@ -98,7 +95,7 @@ class TaskProjectWiringTest {
             val f = Fixture(this)
             val real = canonicalPath("/tmp")!!
             val fs = FakeProjectFs(
-                dirs = setOf("/", real),
+                dirs = listOf("/", real),
                 files = mapOf("$real/.kotgent.json" to """{"id": "${alpha.value}", "name": "kotgent"}"""),
             )
 
@@ -107,8 +104,8 @@ class TaskProjectWiringTest {
             assertEquals(alpha, imported.projectId)
             assertEquals(alpha, f.store.getSession(imported.id)!!.projectId)
             assertEquals(
-                listOf(RegisteredProject(alpha, "kotgent", real)),
-                f.tasks.registrations,
+                listOf(ProjectUpsert(alpha, "kotgent", real)),
+                f.tasks.upsertProjectWrites,
                 "the import registers the project it resolved, exactly as a start does",
             )
         }
@@ -131,10 +128,10 @@ class TaskProjectWiringTest {
             )
             assertEquals(
                 listOf(
-                    RegisteredProject(alpha, "kotgent", "/repo"),
-                    RegisteredProject(alpha, "kotgent", "/repo"),
+                    ProjectUpsert(alpha, "kotgent", "/repo"),
+                    ProjectUpsert(alpha, "kotgent", "/repo"),
                 ),
-                f.tasks.registrations,
+                f.tasks.upsertProjectWrites,
                 "both resolve to the main checkout root, so the one projects row is refreshed with it",
             )
         }
@@ -144,7 +141,7 @@ class TaskProjectWiringTest {
     fun aFailedProjectRegistrationLeavesTheRowUnstampedSoTheBackfillRetriesIt() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture(this)
-            f.tasks.upsertProjectFailure = IllegalStateException("disk is on fire")
+            f.failures.failures["upsertProject"] = IllegalStateException("disk is on fire")
 
             val started = f.manager().start("claude", "/repo/sub")
 
@@ -152,11 +149,11 @@ class TaskProjectWiringTest {
             assertNull(started.projectId, "write both or neither")
             assertNull(f.store.getSession(started.id)!!.projectId)
 
-            f.tasks.upsertProjectFailure = null
+            val _ = f.failures.failures.remove("upsertProject")
             val _ = f.reconciler().reconcile()
 
             assertEquals(alpha, f.store.getSession(started.id)!!.projectId)
-            assertEquals(listOf(RegisteredProject(alpha, "kotgent", "/repo")), f.tasks.registrations)
+            assertEquals(listOf(ProjectUpsert(alpha, "kotgent", "/repo")), f.tasks.upsertProjectWrites)
         }
     }
 
@@ -164,14 +161,14 @@ class TaskProjectWiringTest {
     fun aStartInsideAnArchivedProjectIsNotStampedAndResurrectsNothing() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture(this)
-            f.tasks.archiveProject(alpha, archived = true)
+            f.tasks.seedArchived(alpha, archived = true)
 
             val started = f.manager().start("claude", "/repo/sub")
 
             assertEquals(SessionState.running, started.state, "a tombstone must never fail a launch")
             assertNull(started.projectId, "the file is still on disk, but the project it names was deleted")
             assertNull(f.store.getSession(started.id)!!.projectId)
-            assertTrue(f.tasks.registrations.isEmpty(), "and the row it would have written was refused")
+            assertTrue(f.tasks.upsertProjectWrites.isEmpty(), "and the row it would have written was refused")
         }
     }
 
@@ -179,19 +176,19 @@ class TaskProjectWiringTest {
     fun restoringTheProjectMakesTheNextStartBindItAgain() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture(this)
-            f.tasks.archiveProject(alpha, archived = true)
+            f.tasks.seedArchived(alpha, archived = true)
             val manager = f.manager(newIds = listOf(SessionId("while001"), SessionId("after001")))
 
             assertNull(manager.start("claude", "/repo/sub").projectId)
 
-            f.tasks.archiveProject(alpha, archived = false)
+            f.tasks.seedArchived(alpha, archived = false)
 
             assertEquals(
                 alpha,
                 manager.start("claude", "/repo/sub").projectId,
                 "the guard reads the mark on every registration; it is not a latch",
             )
-            assertEquals(listOf(RegisteredProject(alpha, "kotgent", "/repo")), f.tasks.registrations)
+            assertEquals(listOf(ProjectUpsert(alpha, "kotgent", "/repo")), f.tasks.upsertProjectWrites)
         }
     }
 
@@ -239,9 +236,9 @@ class TaskProjectWiringTest {
     fun aRefusedBackfillRetriesUntilRestoringTheProjectLetsTheNextPassBindIt() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture(this)
-            f.tasks.archiveProject(alpha, archived = true)
+            f.tasks.seedArchived(alpha, archived = true)
             f.seedSession("tombed01", cwd = "/repo/sub")
-            val registration = RegisteredProject(alpha, "kotgent", "/repo")
+            val registration = ProjectUpsert(alpha, "kotgent", "/repo")
             val reconciler = f.reconciler()
 
             val _ = reconciler.reconcile()
@@ -252,14 +249,14 @@ class TaskProjectWiringTest {
             )
             assertEquals(
                 listOf(registration),
-                f.tasks.registrationAttempts,
+                f.tasks.upsertProjectAttempts,
                 "the first pass did resolve the file and ask the task store to register its project",
             )
             assertTrue(
                 f.store.projectWrites.isEmpty(),
                 "a refusal must not persist a project binding",
             )
-            assertTrue(f.tasks.registrations.isEmpty(), "and the task store wrote no project row")
+            assertTrue(f.tasks.upsertProjectWrites.isEmpty(), "and the task store wrote no project row")
 
             val _ = reconciler.reconcile()
 
@@ -269,13 +266,13 @@ class TaskProjectWiringTest {
             )
             assertEquals(
                 listOf(registration, registration),
-                f.tasks.registrationAttempts,
+                f.tasks.upsertProjectAttempts,
                 "a null projectId makes a later reconciliation retry the refused registration",
             )
             assertTrue(f.store.projectWrites.isEmpty(), "neither refused attempt binds the session")
-            assertTrue(f.tasks.registrations.isEmpty(), "neither refused attempt resurrects the project")
+            assertTrue(f.tasks.upsertProjectWrites.isEmpty(), "neither refused attempt resurrects the project")
 
-            f.tasks.archiveProject(alpha, archived = false)
+            f.tasks.seedArchived(alpha, archived = false)
             val _ = reconciler.reconcile()
 
             assertEquals(
@@ -290,12 +287,12 @@ class TaskProjectWiringTest {
             )
             assertEquals(
                 listOf(registration),
-                f.tasks.registrations,
+                f.tasks.upsertProjectWrites,
                 "the restored project is registered exactly once",
             )
             assertEquals(
                 listOf(registration, registration, registration),
-                f.tasks.registrationAttempts,
+                f.tasks.upsertProjectAttempts,
                 "the accepted attempt follows both refusals instead of relying on a latched result",
             )
         }
@@ -307,7 +304,7 @@ class TaskProjectWiringTest {
             val f = Fixture(this)
             val live = TaskRef("local:1")
             val gone = TaskRef("local:404")
-            f.tasks.entries[live] = f.entry(live, TaskState.in_progress)
+            f.tasks.seedEntry(f.entry(live, TaskState.in_progress))
             f.seedSession("holder01", cwd = "/repo", projectId = alpha, taskRef = live)
             f.seedSession("dangler1", cwd = "/repo", projectId = alpha, taskRef = gone)
 
@@ -343,12 +340,12 @@ class TaskProjectWiringTest {
             val f = Fixture(this)
             val orphan = TaskRef("local:7")
             val before = f.entry(orphan, TaskState.in_progress)
-            f.tasks.entries[orphan] = before
+            f.tasks.seedEntry(before)
             f.seedSession("worker01", cwd = "/repo/sub")
 
             val _ = f.reconciler().reconcile()
 
-            assertEquals(before, f.tasks.entries[orphan], "an unlinked in_progress card is not a defect")
+            assertEquals(before, f.tasks.snapshotEntries()[orphan], "an unlinked in_progress card is not a defect")
             assertEquals(alpha, f.store.getSession(SessionId("worker01"))!!.projectId, "the pass did run")
             assertTrue(f.store.taskRefWrites.isEmpty(), "and it wrote no link")
         }
@@ -358,7 +355,7 @@ class TaskProjectWiringTest {
     fun oneFailingRowDoesNotAbortTheRestOfTheTaskPass() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture(this)
-            f.tasks.entryFailure = IllegalStateException("the task store is unreadable")
+            f.failures.failures["entry"] = IllegalStateException("the task store is unreadable")
             f.seedSession("poison01", cwd = "/repo", taskRef = TaskRef("local:9"))
             f.seedSession("healthy1", cwd = "/repo/sub")
 
@@ -381,7 +378,10 @@ class TaskProjectWiringTest {
 
     private inner class Fixture(private val scope: CoroutineScope) {
         val tmux = FakeTmux()
-        val tasks = FakeTaskStore()
+        val failures = FailingInterceptor()
+        val tasks = FakeTaskStore(now = { CLOCK }).also {
+            it.interceptor = ForbiddingInterceptor(UNREACHED, failures, ::refusal)
+        }
         val store = TaskLinkStore(SqliteEventStore.inMemory(now = { CLOCK }))
 
         fun manager(
@@ -456,137 +456,6 @@ class TaskProjectWiringTest {
         )
     }
 
-    private data class RegisteredProject(val id: ProjectId, val name: String, val path: String?)
-
-    private class FakeProjectFs(
-        private val dirs: Set<String>,
-        private val files: Map<String, String>,
-    ) : ProjectFs {
-
-        override fun isDirectory(path: String): Boolean = normalize(path) in dirs
-
-        override fun readFile(path: String, maxBytes: Int): String? =
-            files[normalize(path)]?.take(maxBytes)
-
-        override fun canonicalize(path: String): String? {
-            val normalized = normalize(path)
-            return if (normalized in dirs || normalized in files) normalized else null
-        }
-
-        private fun normalize(path: String): String {
-            val out = ArrayList<String>()
-            for (segment in path.split('/')) {
-                when (segment) {
-                    "", "." -> Unit
-                    ".." -> if (out.isNotEmpty()) out.removeAt(out.size - 1)
-                    else -> out.add(segment)
-                }
-            }
-            return "/" + out.joinToString("/")
-        }
-    }
-
-    private class FakeTaskStore : TaskStore {
-        val registrations = mutableListOf<RegisteredProject>()
-        val registrationAttempts = mutableListOf<RegisteredProject>()
-        val entries = HashMap<TaskRef, BacklogEntry>()
-
-        var upsertProjectFailure: Throwable? = null
-
-        var entryFailure: Throwable? = null
-
-        override val id: String = TaskRef.LOCAL_TRACKER
-
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-
-        val archivedProjects = mutableSetOf<ProjectId>()
-
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration {
-            val registration = RegisteredProject(id, name, path)
-            registrationAttempts += registration
-            upsertProjectFailure?.let { throw it }
-            if (id in archivedProjects) return ProjectRegistration.refusedArchived
-            registrations += registration
-            return ProjectRegistration.registered
-        }
-
-        // Seed tombstone state; this wiring path never calls the production mutator.
-        fun archiveProject(id: ProjectId, archived: Boolean) {
-            if (archived) archivedProjects += id else archivedProjects -= id
-        }
-
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) =
-            unused("setProjectArchived")
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? {
-            entryFailure?.let { throw it }
-            return entries[ref]
-        }
-
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
-
-        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
-
-        override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
-
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
-
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
-
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = unused("startIfTodo")
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            unused("startIfTodoInLiveProject")
-
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry? = unused("transition")
-
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused("move")
-
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = unused("dependenciesOf")
-
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused("dependentsOf")
-
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> =
-            unused("dependencyEdges")
-
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = unused("addDependency")
-
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = unused("removeDependency")
-
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-            unused("comment")
-
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry? = unused("appendActivity")
-
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
-
-        override suspend fun list(project: ProjectId): List<Task> = unused("list")
-
-        override suspend fun get(ref: TaskRef): Task? = unused("get")
-
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-            unused("create")
-
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
-
-        override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
-
-        private fun unused(member: String): Nothing =
-            throw UnsupportedOperationException("the daemon's project wiring must not call TaskStore.$member")
-    }
-
     private class TaskLinkStore(private val delegate: EventStore) : EventStore by delegate {
 
         val taskRefWrites = mutableListOf<Pair<SessionId, TaskRef?>>()
@@ -630,5 +499,15 @@ class TaskProjectWiringTest {
 
     private companion object {
         const val CLOCK: Long = 7_000L
+
+        val UNREACHED = setOf(
+            "listProjects", "listAllProjects", "project", "listBacklog", "nextCandidate", "startIfTodo",
+            "startIfTodoInLiveProject", "transition", "move", "dependenciesOf", "dependentsOf",
+            "dependencyEdges", "addDependency", "removeDependency", "comment", "appendActivity",
+            "activity", "list", "get", "create", "update", "delete",
+        )
+
+        fun refusal(store: String, method: String): String =
+            "the daemon's project wiring must not call $store.$method"
     }
 }

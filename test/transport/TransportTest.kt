@@ -30,9 +30,8 @@ import io.kotgent.daemon.canonicalPath
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
+import io.kotgent.push.FakePushStore
 import io.kotgent.push.PushNotifier
-import io.kotgent.push.PushStore
-import io.kotgent.push.PushSubscription
 import io.kotgent.store.EventStore
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePreferencesStore
@@ -102,11 +101,7 @@ class TransportTest {
         withServer(
             productionFactory = true,
             pushAssembler = { events, scope ->
-                val subscriptions = object : PushStore {
-                    override suspend fun list(): List<PushSubscription> = emptyList()
-                    override suspend fun save(subscription: PushSubscription) {}
-                    override suspend fun remove(endpoint: String) {}
-                }
+                val subscriptions = FakePushStore()
                 val _ = PushNotifier(events, send = { sent.send(it) }).start(scope)
                 assembled = true
                 DaemonPush(subscriptions, { "production-forwarded-vapid-key" }, close = {})
@@ -153,11 +148,7 @@ class TransportTest {
                         assemblePush = {
                             currentCoroutineContext()[Job]!!.cancel()
                             DaemonPush(
-                                store = object : PushStore {
-                                    override suspend fun list(): List<PushSubscription> = emptyList()
-                                    override suspend fun save(subscription: PushSubscription) {}
-                                    override suspend fun remove(endpoint: String) {}
-                                },
+                                store = FakePushStore(),
                                 publicKey = { "unused" },
                                 close = {
                                     yield()

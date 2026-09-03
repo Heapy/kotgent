@@ -8,18 +8,17 @@ import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.daemon.TaskService
 import io.kotgent.store.FakeEventStore
-import io.kotgent.store.TaskStore
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
+import io.kotgent.store.RecordingInterceptor
 import io.kotgent.task.ActivityKind
 import io.kotgent.task.BacklogEntry
-import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectFile
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
-import io.kotgent.task.ProjectRecord
 import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.header
@@ -36,11 +35,7 @@ import io.ktor.http.parseServerSetCookieHeader
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.builtins.ListSerializer
 import kotlin.test.Test
@@ -51,6 +46,14 @@ import kotlin.time.Duration.Companion.seconds
 import io.ktor.server.cio.CIO as ServerCIO
 
 class TaskReadRoutesTest {
+
+    private companion object {
+        val WRITES = setOf(
+            "nextCandidate", "create", "update", "delete", "startIfTodo", "startIfTodoInLiveProject",
+            "transition", "move", "addDependency", "removeDependency", "comment", "appendActivity",
+            "upsertProject", "setProjectArchived",
+        )
+    }
 
     private val token = "task-read-routes-master-token-0123456789"
     private val fixedNow = 1_754_000_000_000L
@@ -501,9 +504,9 @@ class TaskReadRoutesTest {
     private inner class Env(
         val port: Int,
         val client: HttpClient,
-        private val tasks: FakeTaskStore,
+        private val calls: RecordingInterceptor,
     ) {
-        suspend fun journal(): List<String> = tasks.journal()
+        suspend fun journal(): List<String> = calls.journal()
 
         suspend fun get(
             path: String,
@@ -543,24 +546,21 @@ class TaskReadRoutesTest {
     ) = runBlocking {
         withTimeout(30.seconds) {
             val tokens = TokenHolder(token)
-            val tasks = FakeTaskStore(
-                entries = backlog(),
-                tracked = tracked(),
-                edges = mapOf(third to listOf(first, second)),
-                activity = mapOf(
-                    first to listOf(
-                        activityRow(1, first, ActivityKind.created, TaskService.BOARD_AUTHOR, null),
-                        activityRow(2, first, ActivityKind.comment, paneSession.value, "looks good"),
-                    ),
-                ),
-                projects = mapOf(
-                    project to ProjectRecord(project, "kotgent", "/Users/dev/kotgent", fixedNow),
-                    otherProject to ProjectRecord(otherProject, "sidecar", null, fixedNow),
-                    deletedProject to ProjectRecord(
-                        deletedProject, "abandoned", "/Users/dev/abandoned", fixedNow, archived = true,
-                    ),
-                ),
+            val calls = RecordingInterceptor(
+                ForbiddingInterceptor(WRITES) { store, method -> "the read routes must not call $store.$method" },
             )
+            val tasks = FakeTaskStore(now = { fixedNow }).apply {
+                seedProject(project, "kotgent", "/Users/dev/kotgent")
+                seedProject(otherProject, "sidecar")
+                seedProject(deletedProject, "abandoned", "/Users/dev/abandoned", archived = true)
+                val tracked = tracked()
+                backlog().forEach { [ref, row] -> seedEntry(row, tracked[ref]) }
+                seedDependency(third, first)
+                seedDependency(third, second)
+                seedActivity(first, ActivityKind.created, TaskService.BOARD_AUTHOR)
+                seedActivity(first, ActivityKind.comment, paneSession.value, "looks good")
+                interceptor = calls
+            }
             val store = FakeEventStore(
                 sessionMetadata = sessions,
             )
@@ -583,111 +583,12 @@ class TaskReadRoutesTest {
             val port = server.engine.resolvedConnectors().first().port
             val client = HttpClient(CIO)
             try {
-                block(Env(port, client, tasks))
+                block(Env(port, client, calls))
             } finally {
                 client.close()
                 server.stop(gracePeriodMillis = 100, timeoutMillis = 500)
             }
         }
-    }
-
-    private fun activityRow(id: Long, ref: TaskRef, kind: ActivityKind, author: String, text: String?) =
-        TaskActivityEntry(id, ref, fixedNow, kind, author, text, null, null)
-
-    private class FakeTaskStore(
-        private val entries: Map<TaskRef, BacklogEntry>,
-        private val tracked: Map<TaskRef, Task>,
-        private val edges: Map<TaskRef, List<TaskRef>>,
-        private val activity: Map<TaskRef, List<TaskActivityEntry>>,
-        private val projects: Map<ProjectId, ProjectRecord>,
-    ) : TaskStore {
-        private val mutex = Mutex()
-        private val calls = mutableListOf<String>()
-
-        suspend fun journal(): List<String> = mutex.withLock { calls.toList() }
-
-        private suspend fun <T> record(name: String, answer: T): T = mutex.withLock { calls += name; answer }
-
-        override val id: String = TaskRef.LOCAL_TRACKER
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = record("entry", entries[ref])
-
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = record(
-            "listBacklog",
-            entries.values.filter { it.project == project }.sortedBy { it.position },
-        )
-
-        override suspend fun list(project: ProjectId): List<Task> = record(
-            "list",
-            tracked.values.filter { entries[it.ref]?.project == project },
-        )
-
-        override suspend fun get(ref: TaskRef): Task? = record("get", tracked[ref])
-
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
-            record("dependenciesOf", edges[ref].orEmpty())
-
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = record(
-            "dependentsOf",
-            edges.filterValues { ref in it }.keys.sortedBy { it.value },
-        )
-
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> = record(
-            "dependencyEdges",
-            edges.filterKeys { entries[it]?.project == project },
-        )
-
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> =
-            record("activity", activity[ref].orEmpty())
-
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
-            record("listProjects", projects.values.filter { it.archived == archived }.sortedBy { it.name })
-
-        override suspend fun listAllProjects(): List<ProjectRecord> =
-            record("listAllProjects", projects.values.sortedBy { it.name })
-
-        override suspend fun project(id: ProjectId): ProjectRecord? = record("project", projects[id])
-
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry = readOnly("nextCandidate")
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-            readOnly("create")
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task = readOnly("update")
-        override suspend fun delete(ref: TaskRef): Boolean = readOnly("delete")
-        override suspend fun startIfTodo(ref: TaskRef): Boolean =
-            readOnly("startIfTodo")
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            readOnly("startIfTodoInLiveProject")
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry = readOnly("transition")
-
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry = readOnly("move")
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = readOnly("addDependency")
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = readOnly("removeDependency")
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry =
-            readOnly("comment")
-
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry = readOnly("appendActivity")
-
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?) =
-            readOnly("upsertProject")
-
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) =
-            readOnly("setProjectArchived")
-
-        private fun readOnly(name: String): Nothing =
-            error("the read routes must not call TaskStore.$name")
     }
 
     private object UnusedProjectFs : ProjectFs {

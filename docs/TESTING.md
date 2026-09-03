@@ -435,8 +435,17 @@ code calls itself in the expected way rather than that the application produces 
 
 A double with more than one consumer should live in one place instead of being copied. `fakes` is a real
 module for exactly that reason: the native test fragment and the browser fixture depend on the same
-in-memory event store, task store, `tmux` control, and project filesystem, and two copies would be free to
-drift apart while both stayed green.
+in-memory event store, task store, push store, `tmux` control, and project filesystem, and two copies would
+be free to drift apart while both stayed green.
+
+There is exactly one fake per store, and a test shapes it rather than replacing it. Seed helpers write rows
+without going through the guarded path. Named race hooks (`beforeCreate`, `afterNextCandidate`,
+`beforeConditionalClear`, …) run outside the store's lock, which is what makes them able to expose a race.
+Everything else is a `FakeStoreInterceptor` around the locked call: `RecordingInterceptor` journals it,
+`ForbiddingInterceptor` proves the subject never reaches a method, and `FailingInterceptor` injects a
+failure. Interceptors chain, and one instance may be shared by two stores to assert lock ordering across
+them. A forbidden call raises an `Error`, not an exception, so a subject that swallows per-row failures
+cannot hide it.
 
 Fixtures should be minimal, sanitized, versioned when they represent an external format, and readable enough
 to explain the scenario. Generated fixtures must have a documented generator and a reproducible source. A

@@ -12,18 +12,17 @@ import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
 import io.kotgent.core.TaskRef
 import io.kotgent.store.EventStore
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
+import io.kotgent.store.RecordingInterceptor
+import io.kotgent.store.TASK_STORE_METHODS
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.TaskStore
 import io.kotgent.task.ActivityKind
-import io.kotgent.task.BacklogEntry
-import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
-import io.kotgent.task.ProjectRecord
-import io.kotgent.task.Task
 import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +41,15 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class SessionDoneTaskTest {
+
+    private companion object {
+        val UNREACHED_BY_DONE = setOf(
+            "list", "get", "create", "update", "delete", "listBacklog", "move", "dependenciesOf",
+            "dependentsOf", "dependencyEdges", "addDependency", "removeDependency", "comment",
+            "activity", "upsertProject", "setProjectArchived", "listProjects", "listAllProjects",
+            "project",
+        )
+    }
 
     private val alpha = ProjectId.of("0f2c7a4e-1c3d-4f7a-9b21-6f0a2d9c1e34")
     private val ref = TaskRef("local:1")
@@ -95,7 +103,9 @@ class SessionDoneTaskTest {
     fun doneOnALinkedSessionClosesTheTaskUnlinksEveryHolderAndArchivesIt() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture()
-            val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
             val mgr = managerOver(f, tasks)
 
             val _ = mgr.start("claude", "/tmp")
@@ -107,7 +117,7 @@ class SessionDoneTaskTest {
             val trace = f.journal.filterNot { it.startsWith("sessions.getSession(") }
 
             assertEquals(listOf("done01"), f.tmux.killed, "Done still kills the agent")
-            assertEquals(TaskState.done, tasks.entries.getValue(ref).state, "the linked task is closed")
+            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the linked task is closed")
 
             val row = f.store.getSession(worker)!!
             assertTrue(row.archived, "the session is archived off the sidebar")
@@ -121,7 +131,7 @@ class SessionDoneTaskTest {
 
             assertEquals(
                 listOf(
-                    "tasks.transition(local:1 -> done)",
+                    "tasks.transition(local:1, done)",
                     "sessions.clearTaskRefIf(done01, local:1)",
                     "tasks.appendActivity(local:1, unlinked)",
                     "sessions.clearTaskRefIf(other1, local:1)",
@@ -134,12 +144,12 @@ class SessionDoneTaskTest {
 
             assertEquals(
                 listOf(ActivityKind.transition, ActivityKind.unlinked, ActivityKind.unlinked),
-                tasks.activity.map { it.kind },
+                tasks.snapshotActivity().map { it.kind },
                 "the feed records the close and one unlink per holder",
             )
             assertEquals(
                 worker.value,
-                tasks.activity.first().author,
+                tasks.snapshotActivity().first().author,
                 "the close is attributed to the session that finished, not to the board",
             )
         }
@@ -149,7 +159,9 @@ class SessionDoneTaskTest {
     fun closingFromTheBoardUnlinksTheSessionAndLeavesItAlive() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture()
-            val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
             val mgr = managerOver(f, tasks)
             val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
@@ -158,7 +170,7 @@ class SessionDoneTaskTest {
 
             val _ = service.transition(ref, TaskState.done, TaskService.BOARD_AUTHOR, message = null)
 
-            assertEquals(TaskState.done, tasks.entries.getValue(ref).state, "the board closed the task")
+            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the board closed the task")
             val row = f.store.getSession(worker)!!
             assertNull(row.taskRef, "which unlinks the session")
             assertFalse(row.archived, "but leaves it in the sidebar — that is what hands it back to `task next`")
@@ -174,7 +186,9 @@ class SessionDoneTaskTest {
                 close: suspend (SessionManager, TaskService) -> Unit,
             ): Triple<List<String>, List<TaskActivityEntry>, List<TaskRef?>> {
                 val f = Fixture()
-                val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
+                val tasks = recordingTasks(f.journal).apply {
+                    seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+                }
                 val mgr = managerOver(f, tasks)
                 val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
@@ -190,7 +204,7 @@ class SessionDoneTaskTest {
                     .filterNot { it.startsWith("sessions.setArchived(") }
                 return Triple(
                     trace,
-                    tasks.activity.toList(),
+                    tasks.snapshotActivity(),
                     listOf(f.store.getSession(worker)!!.taskRef, f.store.getSession(neighbour)!!.taskRef),
                 )
             }
@@ -209,7 +223,7 @@ class SessionDoneTaskTest {
             assertEquals(fromSession.third, fromBoard.third, "and leave the same holders unlinked")
             assertEquals(
                 listOf(
-                    "tasks.transition(local:1 -> done)",
+                    "tasks.transition(local:1, done)",
                     "sessions.clearTaskRefIf(done01, local:1)",
                     "tasks.appendActivity(local:1, unlinked)",
                     "sessions.clearTaskRefIf(other1, local:1)",
@@ -226,9 +240,9 @@ class SessionDoneTaskTest {
         withTimeout(20.seconds) {
             val f = Fixture()
             val other = TaskRef("local:2")
-            val tasks = RecordingTaskStore(f.journal).apply {
-                seed(ref, alpha, TaskState.in_progress)
-                seed(other, alpha, TaskState.in_progress)
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+                seedTask(other, alpha, "title of ${other.value}", state = TaskState.in_progress)
             }
             val mgr = managerOver(f, tasks)
 
@@ -242,7 +256,7 @@ class SessionDoneTaskTest {
 
             mgr.markDone(worker)
 
-            assertEquals(TaskState.done, tasks.entries.getValue(ref).state, "the task still closes")
+            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the task still closes")
             assertNull(f.store.getSession(worker)!!.taskRef, "the holder that stayed put is released")
             assertEquals(
                 other,
@@ -251,12 +265,12 @@ class SessionDoneTaskTest {
             )
             assertEquals(
                 listOf(ActivityKind.transition, ActivityKind.unlinked),
-                tasks.activity.map { it.kind },
+                tasks.snapshotActivity().map { it.kind },
                 "and the feed records one release, for the one holder actually released",
             )
             assertEquals(
                 worker.value,
-                tasks.activity.last().author,
+                tasks.snapshotActivity().last().author,
                 "…namely the session that pressed Done",
             )
         }
@@ -269,9 +283,9 @@ class SessionDoneTaskTest {
             val f = Fixture()
             val reviewed = ref
             val taken = TaskRef("local:2")
-            val tasks = RecordingTaskStore(f.journal).apply {
-                seed(reviewed, alpha, TaskState.todo)
-                seed(taken, alpha, TaskState.todo, position = 2.0)
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(reviewed, alpha, "title of ${reviewed.value}", state = TaskState.todo)
+                seedTask(taken, alpha, "title of ${taken.value}", state = TaskState.todo, position = 2.0)
             }
             val mgr = managerOver(f, tasks)
             val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
@@ -298,7 +312,7 @@ class SessionDoneTaskTest {
             )
             assertEquals(
                 listOf(ActivityKind.linked, ActivityKind.transition, ActivityKind.linked),
-                tasks.activity.map { it.kind },
+                tasks.snapshotActivity().map { it.kind },
                 "and nothing in the feed says the reviewed task lost its worker",
             )
 
@@ -306,12 +320,12 @@ class SessionDoneTaskTest {
 
             assertEquals(
                 TaskState.done,
-                tasks.entries.getValue(taken).state,
+                tasks.snapshotEntries().getValue(taken).state,
                 "Done closes what the link points at NOW — the task the agent had only just started",
             )
             assertEquals(
                 TaskState.review,
-                tasks.entries.getValue(reviewed).state,
+                tasks.snapshotEntries().getValue(reviewed).state,
                 "the reviewed task is not closed by that Done…",
             )
             assertTrue(
@@ -325,7 +339,9 @@ class SessionDoneTaskTest {
     fun linkNextRefusesASelectedCardWhenItsProjectIsTombstonedBeforeStart() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture()
-            val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.todo) }
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.todo)
+            }
             val mgr = managerOver(f, tasks)
             val service = TaskService(tasks, f.store, UnusedProjectFs, UnusedProjectFileWriter)
 
@@ -333,20 +349,20 @@ class SessionDoneTaskTest {
             f.journal.clear()
             tasks.afterNextCandidate = {
                 tasks.afterNextCandidate = null
-                tasks.tombstone(alpha)
+                tasks.seedArchived(alpha, archived = true)
             }
 
             val taken = service.linkNext(worker, alpha)
             val trace = f.journal.toList()
 
             assertNull(taken, "a card selected before its project tombstone must not be handed out")
-            assertEquals(TaskState.todo, tasks.entries.getValue(ref).state, "the refused card stays todo")
+            assertEquals(TaskState.todo, tasks.snapshotEntries().getValue(ref).state, "the refused card stays todo")
             assertNull(f.store.getSession(worker)!!.taskRef, "the session stays unlinked")
             assertEquals(
                 listOf(
-                    "tasks.nextCandidate($alpha)",
+                    "tasks.nextCandidate(${alpha.value})",
                     "tasks.startIfTodoInLiveProject(${ref.value})",
-                    "tasks.nextCandidate($alpha)",
+                    "tasks.nextCandidate(${alpha.value})",
                 ),
                 trace,
                 "the automatic path records and retries the tombstone-aware operation",
@@ -359,7 +375,7 @@ class SessionDoneTaskTest {
     fun doneOnAnUnlinkedSessionNeverConsultsTheTaskStore() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture()
-            val mgr = managerOver(f, RefusingTaskStore)
+            val mgr = managerOver(f, refusingTasks())
 
             val _ = mgr.start("claude", "/tmp")
             mgr.markDone(worker)
@@ -391,7 +407,9 @@ class SessionDoneTaskTest {
     fun cancellationBetweenTheTwoWritesCannotHalfApplyDone() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture()
-            val tasks = RecordingTaskStore(f.journal).apply { seed(ref, alpha, TaskState.in_progress) }
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
             f.store.yieldBeforeArchive = true
             val mgr = managerOver(f, tasks)
 
@@ -400,7 +418,7 @@ class SessionDoneTaskTest {
 
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
-            tasks.duringTransition = {
+            tasks.afterTransition = {
                 entered.complete(Unit)
                 release.await()
             }
@@ -411,7 +429,7 @@ class SessionDoneTaskTest {
             release.complete(Unit)
             job.join()
 
-            assertEquals(TaskState.done, tasks.entries.getValue(ref).state, "the task still closed")
+            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the task still closed")
             val row = f.store.getSession(worker)!!
             assertTrue(row.archived, "and the session still archived — cancellation cannot split the pair")
             assertNull(row.taskRef, "the holder was unlinked on the way")
@@ -459,186 +477,21 @@ class SessionDoneTaskTest {
         }
     }
 
-    private class RecordingTaskStore(private val journal: MutableList<String>) : TaskStore {
-        val entries: MutableMap<TaskRef, BacklogEntry> = mutableMapOf()
-        val activity: MutableList<TaskActivityEntry> = mutableListOf()
-
-        var duringTransition: (suspend () -> Unit)? = null
-        var afterNextCandidate: (suspend () -> Unit)? = null
-
-        private var rev = 0L
-        private var activityId = 0L
-        private val tombstonedProjects: MutableSet<ProjectId> = mutableSetOf()
-
-        fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double = 1.0) {
-            entries[ref] = BacklogEntry(
-                ref = ref,
-                project = project,
-                position = position,
-                state = state,
-                blocked = false,
-                createdAt = 1_000L,
-                updatedAt = 1_000L,
-                rev = ++rev,
-            )
+    private fun recordingTasks(journal: MutableList<String>): FakeTaskStore =
+        FakeTaskStore(now = { 1_000L }).also {
+            it.interceptor = ForbiddingInterceptor(
+                UNREACHED_BY_DONE,
+                RecordingInterceptor(
+                    describe = { call -> "tasks.${call.method}(${call.args.joinToString(", ")})" },
+                    entries = journal,
+                ),
+            ) { store, method -> "Done is not expected to call $store.$method" }
         }
 
-        fun tombstone(project: ProjectId) {
-            tombstonedProjects += project
+    private fun refusingTasks(): FakeTaskStore = FakeTaskStore().also {
+        it.interceptor = ForbiddingInterceptor(TASK_STORE_METHODS) { store, method ->
+            "an unlinked Done must not reach $store.$method"
         }
-
-        override val id: String = TaskRef.LOCAL_TRACKER
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry? {
-            journal += "tasks.transition(${ref.value} -> $to)"
-            val existing = entries[ref] ?: return null
-            val moved = existing.copy(state = to, rev = ++rev)
-            entries[ref] = moved
-            activity += TaskActivityEntry(
-                id = ++activityId,
-                ref = ref,
-                ts = 0L,
-                kind = ActivityKind.transition,
-                author = author,
-                text = message,
-                fromState = existing.state,
-                toState = to,
-            )
-            duringTransition?.invoke()
-            return moved
-        }
-
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry? {
-            journal += "tasks.appendActivity(${ref.value}, $kind)"
-            if (ref !in entries) return null
-            val row = TaskActivityEntry(++activityId, ref, 0L, kind, author, text, fromState, toState)
-            activity += row
-            return row
-        }
-
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? {
-            journal += "tasks.entry(${ref.value})"
-            return entries[ref]
-        }
-
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
-            journal += "tasks.nextCandidate($project)"
-            if (project in tombstonedProjects) return null
-            val candidate = entries.values
-                .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
-                .minByOrNull { it.position }
-            afterNextCandidate?.invoke()
-            return candidate
-        }
-
-        override suspend fun startIfTodo(ref: TaskRef): Boolean =
-            startIfTodoWhen(ref, "startIfTodo") { true }
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            startIfTodoWhen(ref, "startIfTodoInLiveProject") { it !in tombstonedProjects }
-
-        private fun startIfTodoWhen(
-            ref: TaskRef,
-            operation: String,
-            acceptsProject: (ProjectId) -> Boolean,
-        ): Boolean {
-            journal += "tasks.$operation(${ref.value})"
-            val existing = entries[ref] ?: return false
-            if (existing.state != TaskState.todo) return false
-            if (!acceptsProject(existing.project)) return false
-            entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
-            return true
-        }
-
-        override suspend fun list(project: ProjectId): List<Task> = unused("list")
-        override suspend fun get(ref: TaskRef): Task? = unused("get")
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-            unused("create")
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
-        override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused("move")
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = unused("dependenciesOf")
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused("dependentsOf")
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> =
-            unused("dependencyEdges")
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = unused("addDependency")
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = unused("removeDependency")
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-            unused("comment")
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
-        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
-        override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
-
-        private fun unused(name: String): Nothing = error("Done is not expected to call TaskStore.$name")
-    }
-
-    private object RefusingTaskStore : TaskStore {
-        override val id: String = TaskRef.LOCAL_TRACKER
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = unused("entry")
-        override suspend fun list(project: ProjectId): List<Task> = unused("list")
-        override suspend fun get(ref: TaskRef): Task? = unused("get")
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-            unused("create")
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
-        override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
-        override suspend fun startIfTodo(ref: TaskRef): Boolean =
-            unused("startIfTodo")
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            unused("startIfTodoInLiveProject")
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry? = unused("transition")
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused("move")
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = unused("dependenciesOf")
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused("dependentsOf")
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> =
-            unused("dependencyEdges")
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = unused("addDependency")
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = unused("removeDependency")
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-            unused("comment")
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry? = unused("appendActivity")
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
-        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
-        override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
-
-        private fun unused(name: String): Nothing =
-            error("an unlinked Done must not reach TaskStore.$name")
     }
 
     private object UnusedProjectFs : ProjectFs {

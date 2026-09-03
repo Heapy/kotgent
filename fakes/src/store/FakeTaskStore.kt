@@ -27,7 +27,10 @@ import kotlinx.coroutines.sync.withLock
 
 class FakeTaskStore(
     private val now: () -> Long = { 1_000L },
+    updatesBuffer: Int = 1024,
 ) : TaskStore {
+
+    var interceptor: FakeStoreInterceptor = PassThroughInterceptor
 
     private val mutex = Mutex()
     private val projects = LinkedHashMap<ProjectId, ProjectRecord>()
@@ -43,27 +46,38 @@ class FakeTaskStore(
 
     private val updates = MutableSharedFlow<TaskUpdate>(
         replay = 0,
-        extraBufferCapacity = 1024,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        extraBufferCapacity = updatesBuffer,
+        // Zero capacity makes collector readiness a deterministic rendezvous rather than a burst race.
+        onBufferOverflow = if (updatesBuffer == 0) BufferOverflow.SUSPEND else BufferOverflow.DROP_OLDEST,
     )
     override val taskUpdates: SharedFlow<TaskUpdate> = updates
 
-    // Publish only after a compound mutation finishes so subscribers never observe partial derived state.
+    // Publish only after a compound mutation commits, so subscribers never observe partial derived state
+    // and a zero-capacity rendezvous cannot deadlock against a collector that reads the store.
     private val staged = mutableListOf<TaskUpdate>()
+
+    private class Committed<T>(val value: T, val updates: List<TaskUpdate>)
 
     private fun stage(update: TaskUpdate) {
         staged += update
     }
 
-    private fun <T> publishing(block: () -> T): T {
-        try {
-            val result = block()
-            for (index in staged.indices) updates.tryEmit(staged[index])
-            return result
-        } finally {
-            staged.clear()
+    private suspend fun <T> reading(method: String, vararg args: String, block: () -> T): T =
+        interceptor.around(FakeStoreCall(STORE, method, args.toList())) { mutex.withLock { block() } }
+
+    private suspend fun <T> mutating(method: String, vararg args: String, block: () -> T): T =
+        interceptor.around(FakeStoreCall(STORE, method, args.toList())) {
+            val committed = mutex.withLock {
+                staged.clear()
+                try {
+                    Committed(block(), staged.toList())
+                } finally {
+                    staged.clear()
+                }
+            }
+            for (update in committed.updates) updates.emit(update)
+            committed.value
         }
-    }
 
 
     // Seed helpers are used only before the server starts; runtime methods take the mutex.
@@ -89,6 +103,35 @@ class FakeTaskStore(
         reseedBlocked()
     }
 
+    /** Seeds a row verbatim, including the revision a read test asserts on. */
+    fun seedEntry(entry: BacklogEntry, task: Task? = null) {
+        entries[entry.ref] = entry
+        if (task != null) tasks[entry.ref] = task
+        entry.ref.key.toIntOrNull()?.let { if (it > nextKey) nextKey = it }
+        reseedBlocked()
+    }
+
+    /** Seeds a tombstone without exercising the production mutator a subject may be forbidden to call. */
+    fun seedArchived(id: ProjectId, archived: Boolean) {
+        val existing = projects[id] ?: ProjectRecord(id, id.value.take(8), null, now())
+        projects[id] = existing.copy(archived = archived)
+    }
+
+    fun forgetTask(ref: TaskRef) {
+        val _ = entries.remove(ref)
+        val _ = tasks.remove(ref)
+        val _ = deps.remove(ref)
+        reseedBlocked()
+    }
+
+    fun forgetProject(id: ProjectId) {
+        val _ = projects.remove(id)
+    }
+
+    fun clearActivity() {
+        activityRows.clear()
+    }
+
     fun seedDependency(ref: TaskRef, dependsOn: TaskRef) {
         val edges = deps.getOrPut(ref) { mutableListOf() }
         if (dependsOn !in edges) edges += dependsOn
@@ -107,14 +150,57 @@ class FakeTaskStore(
     }
 
 
+    suspend fun snapshotEntries(): Map<TaskRef, BacklogEntry> = mutex.withLock { entries.toMap() }
+
+    suspend fun snapshotTasks(): Map<TaskRef, Task> = mutex.withLock { tasks.toMap() }
+
+    suspend fun snapshotActivity(): List<TaskActivityEntry> = mutex.withLock { activityRows.toList() }
+
+    suspend fun snapshotDeps(): Map<TaskRef, List<TaskRef>> =
+        mutex.withLock { deps.mapValues { it.value.toList() } }
+
+    suspend fun snapshotProjects(): Map<ProjectId, ProjectRecord> = mutex.withLock { projects.toMap() }
+
+
+    /** Every attempt, recorded before an archive refusal can end the call. */
+    val upsertProjectAttempts: MutableList<ProjectUpsert> = mutableListOf()
+
+    /** The subset of [upsertProjectAttempts] that actually wrote a project row. */
+    val upsertProjectWrites: MutableList<ProjectUpsert> = mutableListOf()
+
+    var nextCandidateCalls: Int = 0
+        private set
+
+    /** Runs outside the lock to expose the resolution/insert race. */
+    var beforeCreate: (suspend () -> Unit)? = null
+
+    /** Runs outside the lock to expose the restore/register race. */
+    var beforeUpsertProject: (suspend (ProjectId) -> Unit)? = null
+
+    /** Runs outside the lock to expose the route-check/candidate-selection race. */
+    var beforeNextCandidate: (suspend () -> Unit)? = null
+
+    /** Runs after the read and outside the lock, so a claim or a deletion can interleave. */
+    var afterNextCandidate: (suspend (Int) -> Unit)? = null
+
+    /** Runs outside the lock to expose the candidate-selection/start race. */
+    var beforeStartIfTodo: (suspend () -> Unit)? = null
+
+    /** Parks a baseline read outside the lock so live updates can enter the gap. */
+    var beforeDependencyEdges: (suspend () -> Unit)? = null
+
+    /** Runs after the write commits and before the call returns, to park a caller between two writes. */
+    var afterTransition: (suspend () -> Unit)? = null
+
+
     /** Harness-only create with a caller-known ref, needed to name the later socket update. */
     suspend fun addTask(
         ref: TaskRef,
         project: ProjectId,
         title: String,
         position: Double? = null,
-    ): BacklogEntry = mutex.withLock {
-        publishing {
+    ): BacklogEntry = mutating("addTask", ref.value) {
+        run {
             tasks[ref] = Task(ref, title, "body of $title", url = null, updatedAt = now())
             val row = BacklogEntry(
                 ref, project, position ?: endPosition(project), TaskState.todo, blocked = false,
@@ -127,19 +213,24 @@ class FakeTaskStore(
         }
     }
 
-    override suspend fun list(project: ProjectId): List<Task> = mutex.withLock {
+    suspend fun renormalize(project: ProjectId): Unit = mutating("renormalize", project.value) {
+        renormalizeLocked(project)
+    }
+
+    override suspend fun list(project: ProjectId): List<Task> = reading("list", project.value) {
         entries.values.filter { it.project == project }
             .mapNotNull { tasks[it.ref] }
             .sortedBy { it.ref.value }
     }
 
-    override suspend fun get(ref: TaskRef): Task? = mutex.withLock { tasks[ref] }
+    override suspend fun get(ref: TaskRef): Task? = reading("get", ref.value) { tasks[ref] }
 
-    override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-        mutex.withLock {
+    override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task {
+        beforeCreate?.invoke()
+        return mutating("create", project.value) {
             // Match production's atomic archive check; seeded rows may predate the tombstone.
             if (projects[project]?.archived == true) throw ArchivedProjectException(project)
-            publishing {
+            run {
                 val ref = TaskRef("${TaskRef.LOCAL_TRACKER}:${++nextKey}")
                 val created = Task(ref, title, body, url = null, updatedAt = now())
                 tasks[ref] = created
@@ -155,10 +246,11 @@ class FakeTaskStore(
                 created
             }
         }
+    }
 
-    override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = mutex.withLock {
-        publishing {
-            val existing = tasks[ref] ?: return@publishing null
+    override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = mutating("update", ref.value) {
+        run {
+            val existing = tasks[ref] ?: return@run null
             val updated = existing.copy(
                 title = title ?: existing.title, body = body ?: existing.body, updatedAt = now(),
             )
@@ -168,9 +260,9 @@ class FakeTaskStore(
         }
     }
 
-    override suspend fun delete(ref: TaskRef): Boolean = mutex.withLock {
-        publishing {
-            if (tasks.remove(ref) == null) return@publishing false
+    override suspend fun delete(ref: TaskRef): Boolean = mutating("delete", ref.value) {
+        run {
+            if (tasks.remove(ref) == null) return@run false
             val dependents = dependentsLocked(ref)
             entries.remove(ref)
             deps.remove(ref)
@@ -184,35 +276,49 @@ class FakeTaskStore(
     }
 
 
-    override suspend fun entry(ref: TaskRef): BacklogEntry? = mutex.withLock { entries[ref] }
+    override suspend fun entry(ref: TaskRef): BacklogEntry? = reading("entry", ref.value) { entries[ref] }
 
-    override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = mutex.withLock {
+    override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = reading("listBacklog", project.value) {
         entries.values.filter { it.project == project }.sortedWith(RANK_ORDER)
     }
 
-    override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = mutex.withLock {
-        if (projects[project]?.archived == true) return@withLock null
-        entries.values
-            .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
-            .minWithOrNull(RANK_ORDER)
+    override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
+        beforeNextCandidate?.invoke()
+        val call = nextCandidateCalls++
+        val candidate = reading("nextCandidate", project.value) {
+            if (projects[project]?.archived == true) {
+                null
+            } else {
+                entries.values
+                    .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
+                    .minWithOrNull(RANK_ORDER)
+            }
+        }
+        afterNextCandidate?.invoke(call)
+        return candidate
     }
 
 
-    override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoWhen(ref) { true }
+    override suspend fun startIfTodo(ref: TaskRef): Boolean =
+        startIfTodoWhen("startIfTodo", ref) { true }
 
     override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-        startIfTodoWhen(ref) { projects[it]?.archived != true }
+        startIfTodoWhen("startIfTodoInLiveProject", ref) { projects[it]?.archived != true }
 
     private suspend fun startIfTodoWhen(
+        method: String,
         ref: TaskRef,
         acceptsProject: (ProjectId) -> Boolean,
-    ): Boolean = mutex.withLock {
-        publishing {
-            val existing = entries[ref] ?: return@publishing false
-            if (existing.state != TaskState.todo) return@publishing false
-            if (!acceptsProject(existing.project)) return@publishing false
-            val _ = writeStateLocked(existing, TaskState.in_progress)
-            true
+    ): Boolean {
+        beforeStartIfTodo?.invoke()
+        return mutating(method, ref.value) {
+            run {
+                val existing = entries[ref] ?: return@run false
+                if (existing.state != TaskState.todo) return@run false
+                if (!acceptsProject(existing.project)) return@run false
+                val _ = writeStateLocked(existing, TaskState.in_progress)
+                true
+            }
         }
     }
 
@@ -221,25 +327,29 @@ class FakeTaskStore(
         to: TaskState,
         author: String,
         message: String?,
-    ): BacklogEntry? = mutex.withLock {
-        publishing {
-            val existing = entries[ref] ?: return@publishing null
-            activityRows += TaskActivityEntry(
-                ++activityId, ref, now(), ActivityKind.transition, author, message, existing.state, to,
-            )
-            writeStateLocked(existing, to)
+    ): BacklogEntry? {
+        val moved = mutating("transition", ref.value, to.name) {
+            run {
+                val existing = entries[ref] ?: return@run null
+                activityRows += TaskActivityEntry(
+                    ++activityId, ref, now(), ActivityKind.transition, author, message, existing.state, to,
+                )
+                writeStateLocked(existing, to)
+            }
         }
+        afterTransition?.invoke()
+        return moved
     }
 
-    override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = mutex.withLock {
-        publishing {
-            val existing = entries[ref] ?: return@publishing null
+    override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = mutating("move", ref.value) {
+        run {
+            val existing = entries[ref] ?: return@run null
             val neighbour = when (target) {
                 is MoveTarget.Before -> target.ref
                 is MoveTarget.After -> target.ref
                 else -> null
             }
-            if (neighbour != null && entries[neighbour]?.project != existing.project) return@publishing null
+            if (neighbour != null && entries[neighbour]?.project != existing.project) return@run null
 
             val rank = rankForLocked(existing, target) ?: run {
                 // Adjacent floating-point ranks eventually collapse; normalize before retrying once.
@@ -256,19 +366,23 @@ class FakeTaskStore(
 
 
     override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
-        mutex.withLock { deps[ref].orEmpty().sortedBy { it.value } }
+        reading("dependenciesOf", ref.value) { deps[ref].orEmpty().sortedBy { it.value } }
 
-    override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = mutex.withLock { dependentsLocked(ref) }
+    override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> =
+        reading("dependentsOf", ref.value) { dependentsLocked(ref) }
 
-    override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> = mutex.withLock {
-        deps.entries
-            .filter { entries[it.key]?.project == project }
-            .sortedBy { it.key.value }
-            .associateTo(LinkedHashMap()) { entry -> entry.key to entry.value.sortedBy { it.value } }
+    override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> {
+        beforeDependencyEdges?.invoke()
+        return reading("dependencyEdges", project.value) {
+            deps.entries
+                .filter { entries[it.key]?.project == project }
+                .sortedBy { it.key.value }
+                .associateTo(LinkedHashMap()) { entry -> entry.key to entry.value.sortedBy { it.value } }
+        }
     }
 
-    override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
-        publishing {
+    override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutating("addDependency", ref.value, dependsOn.value) {
+        run {
             fun refuse(refusal: DependencyRefusal, why: String): Nothing = throw DependencyRefusedException(
                 refusal, ref, dependsOn,
                 "cannot add '${ref.value}' depends on '${dependsOn.value}': $why (${refusal.name})",
@@ -281,7 +395,7 @@ class FakeTaskStore(
                 refuse(DependencyRefusal.crossProject, "they belong to different projects")
             }
             val edges = deps.getOrPut(ref) { mutableListOf() }
-            if (dependsOn in edges) return@publishing
+            if (dependsOn in edges) return@run
             if (wouldCycle(edgeSnapshotLocked(), ref, dependsOn)) {
                 refuse(DependencyRefusal.cycle, "it would close a ring")
             }
@@ -290,17 +404,18 @@ class FakeTaskStore(
         }
     }
 
-    override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef): Unit = mutex.withLock {
-        publishing {
-            if (deps[ref]?.remove(dependsOn) != true) return@publishing
-            restampAfterEditLocked(ref)
+    override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef): Unit =
+        mutating("removeDependency", ref.value, dependsOn.value) {
+            run {
+                if (deps[ref]?.remove(dependsOn) != true) return@run
+                restampAfterEditLocked(ref)
+            }
         }
-    }
 
 
     override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-        mutex.withLock {
-            if (ref !in entries) return@withLock null
+        mutating("comment", ref.value) {
+            if (ref !in entries) return@mutating null
             val row = TaskActivityEntry(++activityId, ref, now(), ActivityKind.comment, author, text, null, null)
             activityRows += row
             row
@@ -313,42 +428,47 @@ class FakeTaskStore(
         text: String?,
         fromState: TaskState?,
         toState: TaskState?,
-    ): TaskActivityEntry? = mutex.withLock {
-        if (ref !in entries) return@withLock null
+    ): TaskActivityEntry? = mutating("appendActivity", ref.value, kind.name) {
+        if (ref !in entries) return@mutating null
         val row = TaskActivityEntry(++activityId, ref, now(), kind, author, text, fromState, toState)
         activityRows += row
         row
     }
 
     override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> =
-        mutex.withLock { activityRows.filter { it.ref == ref } }
+        reading("activity", ref.value) { activityRows.filter { it.ref == ref } }
 
 
-    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration =
-        mutex.withLock {
+    override suspend fun upsertProject(id: ProjectId, name: String, path: String?): ProjectRegistration {
+        beforeUpsertProject?.invoke(id)
+        return mutating("upsertProject", id.value) {
+            upsertProjectAttempts += ProjectUpsert(id, name, path)
             val existing = projects[id]
-            if (existing != null && existing.archived) return@withLock ProjectRegistration.refusedArchived
+            if (existing != null && existing.archived) return@mutating ProjectRegistration.refusedArchived
             projects[id] = ProjectRecord(id, name, path ?: existing?.path, now(), existing?.archived ?: false)
+            upsertProjectWrites += ProjectUpsert(id, name, path)
             ProjectRegistration.registered
         }
-
-    override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean = mutex.withLock {
-        val existing = projects[id] ?: return@withLock false
-        projects[id] = existing.copy(archived = archived)
-        true
     }
 
+    override suspend fun setProjectArchived(id: ProjectId, archived: Boolean): Boolean =
+        mutating("setProjectArchived", id.value, archived.toString()) {
+            val existing = projects[id] ?: return@mutating false
+            projects[id] = existing.copy(archived = archived)
+            true
+        }
+
     // Match the SQL store's deterministic `name, id` ordering.
-    override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = mutex.withLock {
+    override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = reading("listProjects") {
         projects.values.filter { it.archived == archived }
             .sortedWith(compareBy({ it.name }, { it.id.value }))
     }
 
-    override suspend fun listAllProjects(): List<ProjectRecord> = mutex.withLock {
+    override suspend fun listAllProjects(): List<ProjectRecord> = reading("listAllProjects") {
         projects.values.sortedWith(compareBy({ it.name }, { it.id.value }))
     }
 
-    override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
+    override suspend fun project(id: ProjectId): ProjectRecord? = reading("project", id.value) { projects[id] }
 
 
     private fun writeStateLocked(existing: BacklogEntry, to: TaskState): BacklogEntry {
@@ -438,6 +558,9 @@ class FakeTaskStore(
     }
 
     private companion object {
+        const val STORE = "TaskStore"
         val RANK_ORDER: Comparator<BacklogEntry> = compareBy({ it.position }, { it.ref.value })
     }
 }
+
+data class ProjectUpsert(val id: ProjectId, val name: String, val path: String?)

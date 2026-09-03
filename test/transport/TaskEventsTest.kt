@@ -4,15 +4,11 @@ import io.kotgent.core.ProjectId
 import io.kotgent.core.TaskRef
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePreferencesStore
-import io.kotgent.store.TaskStore
-import io.kotgent.task.ActivityKind
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
 import io.kotgent.task.BacklogEntry
-import io.kotgent.task.MoveTarget
-import io.kotgent.task.ProjectRecord
 import io.kotgent.task.Task
-import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
@@ -23,12 +19,7 @@ import io.ktor.server.routing.routing
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.jsonObject
@@ -66,7 +57,7 @@ class TaskEventsTest {
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedProject(beta, "beta", "/repo/beta")
             tasks.seedTask(TaskRef("local:1"), alpha, "first", position = 1.0)
-            tasks.seedTask(TaskRef("local:2"), alpha, "second", position = 2.0, blocked = true)
+            tasks.seedTask(TaskRef("local:2"), alpha, "second", position = 2.0)
             tasks.seedDependency(TaskRef("local:2"), TaskRef("local:1"))
             tasks.seedTask(TaskRef("local:9"), beta, "elsewhere", position = 1.0)
         },
@@ -156,7 +147,7 @@ class TaskEventsTest {
     ) { ws ->
         assertTrue(ws.expectSnapshot().tasks.isEmpty(), "the baseline is empty before any task")
 
-        ws.tasks.addTask(TaskRef("local:1"), alpha, "fresh", position = 1.0)
+        val _ = ws.tasks.addTask(TaskRef("local:1"), alpha, "fresh", position = 1.0)
         val row = ws.expectRow()
         assertEquals("local:1", row.task.ref, "a ref new to this socket arrives as a full row")
         assertEquals("fresh", row.task.title, "…carrying everything the client needs to render a card")
@@ -179,7 +170,7 @@ class TaskEventsTest {
         assertTrue(ws.tasks.delete(TaskRef("local:1")), "the task went away")
         assertEquals("local:1", ws.expectRemoved().ref, "a null-entry update becomes task_removed")
 
-        ws.tasks.addTask(TaskRef("local:1"), alpha, "reborn", position = 1.0)
+        val _ = ws.tasks.addTask(TaskRef("local:1"), alpha, "reborn", position = 1.0)
         assertEquals("reborn", ws.expectRow().task.title, "the ref is uncarried again, so it arrives whole")
     }
 
@@ -213,16 +204,19 @@ class TaskEventsTest {
     @Test
     fun aBurstEmittedWhileTheBaselineIsBeingReadIsDeliveredAfterIt() = runBlocking {
         withTimeout(30.seconds) {
-            val tasks = FakeTaskStore()
+            val tasks = tasksStore()
+            val baseline = Baseline(tasks)
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
             val burst = (1..20).map { TaskRef("local:$it") }
 
             withServer(tasks) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") {
-                    tasks.baselineEntered.await()
-                    burst.forEach { tasks.addTask(it, alpha, "burst ${it.key}", position = it.key.toDouble()) }
-                    tasks.baselineGate.complete(Unit)
+                    baseline.entered.await()
+                    burst.forEach {
+                        val _ = tasks.addTask(it, alpha, "burst ${it.key}", position = it.key.toDouble())
+                    }
+                    val _ = baseline.gate.complete(Unit)
 
                     assertEquals(
                         listOf("local:0"),
@@ -239,17 +233,18 @@ class TaskEventsTest {
     @Test
     fun theCollectorIsAlreadyDrainingWhileTheBaselineIsBeingRead() = runBlocking {
         withTimeout(30.seconds) {
-            val tasks = FakeTaskStore(updatesBuffer = 0)
+            val tasks = tasksStore(updatesBuffer = 0)
+            val baseline = Baseline(tasks)
             tasks.seedProject(alpha, "alpha", "/repo/alpha")
             tasks.seedTask(TaskRef("local:0"), alpha, "already there", position = 0.5)
 
             withServer(tasks) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") {
-                    tasks.baselineEntered.await()
+                    baseline.entered.await()
                     withTimeout(5.seconds) {
-                        tasks.addTask(TaskRef("local:1"), alpha, "banked", position = 1.0)
+                        val _ = tasks.addTask(TaskRef("local:1"), alpha, "banked", position = 1.0)
                     }
-                    tasks.baselineGate.complete(Unit)
+                    val _ = baseline.gate.complete(Unit)
 
                     assertEquals(
                         listOf("local:0"),
@@ -277,9 +272,9 @@ class TaskEventsTest {
         block: suspend (Env) -> Unit,
     ) = runBlocking {
         withTimeout(30.seconds) {
-            val tasks = FakeTaskStore()
+            val tasks = tasksStore()
+            val _ = Baseline(tasks).gate.complete(Unit)
             seed(tasks)
-            tasks.baselineGate.complete(Unit)
             withServer(tasks) { port, client ->
                 client.webSocket("ws://127.0.0.1:$port/events") { block(Env(this, tasks)) }
             }
@@ -377,175 +372,23 @@ class TaskEventsTest {
     )
 
 
-    private class FakeTaskStore(
-        updatesBuffer: Int = 1024,
-    ) : TaskStore {
-        private val lock = Mutex()
-        private val projects = LinkedHashMap<ProjectId, ProjectRecord>()
-        private val entries = LinkedHashMap<TaskRef, BacklogEntry>()
-        private val trackerRows = LinkedHashMap<TaskRef, Task>()
-        private val edges = LinkedHashMap<TaskRef, MutableList<TaskRef>>()
-        private var rev = 0L
+    /** Parks the baseline's edge read outside the lock so live updates can enter the gap. */
+    private class Baseline(store: FakeTaskStore) {
+        val entered = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
 
-        // Parks the baseline's final read outside the lock so live updates can enter the gap.
-        val baselineEntered = CompletableDeferred<Unit>()
-        val baselineGate = CompletableDeferred<Unit>()
-
-        override val id: String = TaskRef.LOCAL_TRACKER
-
-        private val updates = MutableSharedFlow<TaskUpdate>(
-            extraBufferCapacity = updatesBuffer,
-            // Zero capacity makes collector readiness a deterministic rendezvous rather than a burst race.
-            onBufferOverflow = if (updatesBuffer == 0) BufferOverflow.SUSPEND else BufferOverflow.DROP_OLDEST,
-        )
-        override val taskUpdates: SharedFlow<TaskUpdate> = updates
-
-
-        fun seedProject(id: ProjectId, name: String, path: String, archived: Boolean = false) {
-            projects[id] = ProjectRecord(id, name, path, updatedAt = 1_000L, archived = archived)
-        }
-
-        fun seedTask(
-            ref: TaskRef,
-            project: ProjectId,
-            title: String,
-            position: Double,
-            state: TaskState = TaskState.todo,
-            blocked: Boolean = false,
-        ) {
-            entries[ref] = BacklogEntry(ref, project, position, state, blocked, 1_000L, 1_000L, ++rev)
-            trackerRows[ref] = Task(ref, title, "body of $title", null, 1_000L)
-        }
-
-        fun seedDependency(ref: TaskRef, dependsOn: TaskRef) {
-            edges.getOrPut(ref) { mutableListOf() } += dependsOn
-        }
-
-
-        suspend fun addTask(ref: TaskRef, project: ProjectId, title: String, position: Double) {
-            val entry = lock.withLock {
-                val created = BacklogEntry(ref, project, position, TaskState.todo, false, 2_000L, 2_000L, ++rev)
-                entries[ref] = created
-                trackerRows[ref] = Task(ref, title, "body of $title", null, 2_000L)
-                created
-            }
-            updates.emit(TaskUpdate(ref, entry, entry.rev))
-        }
-
-        suspend fun renormalize(project: ProjectId) {
-            val rewritten = lock.withLock {
-                entries.values
-                    .filter { it.project == project }
-                    .sortedBy { it.position }
-                    .mapIndexed { index, entry ->
-                        val moved = entry.copy(position = index + 1.0, rev = ++rev)
-                        entries[entry.ref] = moved
-                        moved
-                    }
-            }
-            rewritten.forEach { updates.emit(TaskUpdate(it.ref, it, it.rev)) }
-        }
-
-
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> =
-            error("the /events baseline owes TaskStore.listAllProjects' single-observation contract")
-
-        override suspend fun listAllProjects(): List<ProjectRecord> =
-            lock.withLock { projects.values.toList() }
-
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = lock.withLock {
-            entries.values.filter { it.project == project }.sortedBy { it.position }
-        }
-
-        override suspend fun list(project: ProjectId): List<Task> = lock.withLock {
-            entries.values.filter { it.project == project }.mapNotNull { trackerRows[it.ref] }
-        }
-
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> {
-            baselineEntered.complete(Unit)
-            baselineGate.await()
-            return lock.withLock {
-                edges.filterKeys { entries[it]?.project == project }.mapValues { it.value.toList() }
+        init {
+            store.beforeDependencyEdges = {
+                val _ = entered.complete(Unit)
+                gate.await()
             }
         }
-
-        override suspend fun get(ref: TaskRef): Task? = lock.withLock { trackerRows[ref] }
-
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> =
-            lock.withLock { edges[ref]?.toList().orEmpty() }
-
-
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodoWhen(ref) { true }
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            startIfTodoWhen(ref) { projects[it]?.archived != true }
-
-        private suspend fun startIfTodoWhen(
-            ref: TaskRef,
-            acceptsProject: (ProjectId) -> Boolean,
-        ): Boolean {
-            val started = lock.withLock {
-                val existing = entries[ref]
-                if (existing == null || existing.state != TaskState.todo || !acceptsProject(existing.project)) {
-                    null
-                } else {
-                    existing.copy(state = TaskState.in_progress, rev = ++rev).also { entries[ref] = it }
-                }
-            } ?: return false
-            updates.emit(TaskUpdate(ref, started, started.rev))
-            return true
-        }
-
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry? {
-            val moved = lock.withLock {
-                entries[ref]?.copy(state = to, rev = ++rev)?.also { entries[ref] = it }
-            } ?: return null
-            updates.emit(TaskUpdate(ref, moved, moved.rev))
-            return moved
-        }
-
-        override suspend fun delete(ref: TaskRef): Boolean {
-            val removedRev = lock.withLock {
-                if (entries.remove(ref) == null) return@withLock null
-                trackerRows.remove(ref)
-                edges.remove(ref)
-                ++rev
-            } ?: return false
-            updates.emit(TaskUpdate(ref, null, removedRev))
-            return true
-        }
-
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = unused("entry")
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? = unused("nextCandidate")
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused("move")
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused("dependentsOf")
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = unused("addDependency")
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = unused("removeDependency")
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-            unused("comment")
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry? = unused("appendActivity")
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-            unused("create")
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
-        override suspend fun project(id: ProjectId): ProjectRecord? = unused("project")
-
-        private fun unused(name: String): Nothing =
-            error("the events socket is not expected to call TaskStore.$name")
     }
+
+    private fun tasksStore(updatesBuffer: Int = 1024): FakeTaskStore =
+        FakeTaskStore(updatesBuffer = updatesBuffer).also {
+            it.interceptor = ForbiddingInterceptor(setOf("listProjects")) { _, _ ->
+                "the /events baseline owes TaskStore.listAllProjects' single-observation contract"
+            }
+        }
 }

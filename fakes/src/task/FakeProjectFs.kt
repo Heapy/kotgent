@@ -28,6 +28,15 @@ class FakeProjectFs(
     // A live snapshot: browser scenarios may add directories after construction.
     val directories: Set<String> get() = tree.load().directories
 
+    private val readsRef = AtomicReference<List<String>>(emptyList())
+
+    /** Every path handed to [readFile], so a test can prove a resolution short-circuited. */
+    val reads: List<String> get() = readsRef.load()
+
+    fun addDirectories(paths: Collection<String>) {
+        paths.forEach { addDirectory(it) }
+    }
+
     fun addDirectory(path: String) {
         val normalized = normalize(path)
         mutate { it.copy(directories = it.directories + ancestry(normalized, includeSelf = true)) }
@@ -46,6 +55,10 @@ class FakeProjectFs(
     override fun isDirectory(path: String): Boolean = normalize(path) in tree.load().directories
 
     override fun readFile(path: String, maxBytes: Int): String? {
+        while (true) {
+            val current = readsRef.load()
+            if (readsRef.compareAndSet(current, current + path)) break
+        }
         val text = tree.load().files[normalize(path)] ?: return null
         if (maxBytes <= 0) return null
         // The production intake bound is bytes, not Unicode characters.

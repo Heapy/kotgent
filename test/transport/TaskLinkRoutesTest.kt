@@ -20,20 +20,13 @@ import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
 import io.kotgent.daemon.agentFactoryOf
-import io.kotgent.store.EventStore
-import io.kotgent.store.SessionUpdate
-import io.kotgent.store.StoredEvent
-import io.kotgent.store.TaskStore
+import io.kotgent.store.FakeEventStore
+import io.kotgent.store.FakeTaskStore
+import io.kotgent.store.ForbiddingInterceptor
 import io.kotgent.task.ActivityKind
-import io.kotgent.task.BacklogEntry
-import io.kotgent.task.MoveTarget
 import io.kotgent.task.ProjectFileWriter
 import io.kotgent.task.ProjectFs
-import io.kotgent.task.ProjectRecord
-import io.kotgent.task.Task
-import io.kotgent.task.TaskActivityEntry
 import io.kotgent.task.TaskState
-import io.kotgent.task.TaskUpdate
 import io.kotgent.task.UnknownProjectException
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -74,6 +67,14 @@ import io.ktor.server.cio.CIO as ServerCIO
 
 class TaskLinkRoutesTest {
 
+    private companion object {
+        val UNREACHED_BY_LINK_ROUTES = setOf(
+            "list", "create", "update", "delete", "listBacklog", "transition", "move", "dependentsOf",
+            "dependencyEdges", "addDependency", "removeDependency", "comment", "activity",
+            "upsertProject", "setProjectArchived", "listProjects", "listAllProjects",
+        )
+    }
+
     private val token = "task-link-routes-master-token-0123456789"
     private val alpha = ProjectId.of("0F2C7A4E-1C3D-4F7A-9B21-6F0A2D9C1E34")
     private val beta = ProjectId.of("11111111-2222-4333-8444-555555555555")
@@ -101,7 +102,7 @@ class TaskLinkRoutesTest {
         assertEquals(HttpStatusCode.OK, env.link(t1, pane = pane1).status)
         assertEquals(
             TaskState.in_progress,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "the first link advanced the conditional todo → in_progress",
         )
 
@@ -117,12 +118,12 @@ class TaskLinkRoutesTest {
         )
         assertEquals(
             TaskState.in_progress,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "the second link left the state alone — startIfTodo answering false is normal, not a failure",
         )
         assertEquals(
             listOf(ActivityKind.linked, ActivityKind.linked),
-            env.tasks.activityKinds(t1),
+            env.activityKinds(t1),
             "each link is attributed in the feed",
         )
     }
@@ -153,7 +154,7 @@ class TaskLinkRoutesTest {
         )
 
         assertEquals(emptyList(), env.sessions.sessionsHoldingTask(t1), "no refusal wrote a link")
-        assertEquals(TaskState.todo, env.tasks.stateOf(t1), "and none of them started the task")
+        assertEquals(TaskState.todo, env.stateOf(t1), "and none of them started the task")
     }
 
     @Test
@@ -167,7 +168,7 @@ class TaskLinkRoutesTest {
             "deliberately creating a dangling sessions.task_ref is not the same as tolerating a racing one",
         )
         assertTrue("local:404" in resp.bodyAsText(), "the refusal names the ref")
-        assertNull(env.sessions.linkOf(s1), "the session was left unlinked")
+        assertNull(env.linkOf(s1), "the session was left unlinked")
     }
 
     @Test
@@ -178,7 +179,7 @@ class TaskLinkRoutesTest {
             assertEquals(HttpStatusCode.BadRequest, resp.status, "'$bad' is not a ref")
             assertTrue("<tracker>:<key>" in resp.bodyAsText(), "the refusal says what a ref looks like")
         }
-        assertNull(env.sessions.linkOf(s1))
+        assertNull(env.linkOf(s1))
     }
 
 
@@ -191,11 +192,11 @@ class TaskLinkRoutesTest {
         val _ = env.link(t1, pane = pane2)
 
         assertEquals(HttpStatusCode.OK, env.unlink(t1, pane = pane1).status)
-        assertNull(env.sessions.linkOf(s1), "the caller's link is gone")
-        assertEquals(t1, env.sessions.linkOf(s2), "the other session's link is untouched")
+        assertNull(env.linkOf(s1), "the caller's link is gone")
+        assertEquals(t1, env.linkOf(s2), "the other session's link is untouched")
         assertEquals(
             TaskState.in_progress,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "a session detaching says nothing about whether the work is finished",
         )
     }
@@ -215,7 +216,7 @@ class TaskLinkRoutesTest {
                 "here or the path segment is decorative",
         )
         assertTrue("local:2" in resp.bodyAsText(), "the refusal names what the session actually holds")
-        assertEquals(t2, env.sessions.linkOf(s1), "and the real link survived")
+        assertEquals(t2, env.linkOf(s1), "and the real link survived")
     }
 
     @Test
@@ -228,7 +229,7 @@ class TaskLinkRoutesTest {
             env.unlink(t1, pane = pane1).status,
             "the caller asked for 'not linked to this', which is already true",
         )
-        assertNull(env.sessions.linkOf(s1))
+        assertNull(env.linkOf(s1))
     }
 
     @Test
@@ -247,10 +248,10 @@ class TaskLinkRoutesTest {
             "a clear that wrote nothing must not be reported as an unlink",
         )
         assertTrue("local:1" in resp.bodyAsText(), "the refusal names the ref that was not cleared")
-        assertEquals(t2, env.sessions.linkOf(s1), "the newer link survives the release keyed by the older ref")
+        assertEquals(t2, env.linkOf(s1), "the newer link survives the release keyed by the older ref")
         assertEquals(
             listOf(ActivityKind.linked),
-            env.tasks.activityKinds(t1),
+            env.activityKinds(t1),
             "and no `unlinked` row is written for a release that wrote nothing",
         )
     }
@@ -260,14 +261,14 @@ class TaskLinkRoutesTest {
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
         val _ = env.link(t1, pane = pane1)
-        env.tasks.forget(t1)
+        env.tasks.forgetTask(t1)
 
         assertEquals(
             HttpStatusCode.OK,
             env.unlink(t1, pane = pane1).status,
             "a session left holding a deleted task's ref is exactly who needs to clear it",
         )
-        assertNull(env.sessions.linkOf(s1))
+        assertNull(env.linkOf(s1))
     }
 
 
@@ -281,7 +282,7 @@ class TaskLinkRoutesTest {
         val taken = env.nextTask(pane = pane1)
         assertEquals(t1.value, taken?.ref, "rank order decides, and the project comes from the session")
         assertEquals(TaskState.in_progress.name, taken?.state, "the answer is re-read after the transition")
-        assertEquals(t1, env.sessions.linkOf(s1))
+        assertEquals(t1, env.linkOf(s1))
     }
 
     @Test
@@ -300,7 +301,7 @@ class TaskLinkRoutesTest {
             TRANSPORT_JSON.decodeFromString(NextTaskResponse.serializer(), resp.bodyAsText()).task,
             "and the body says so",
         )
-        assertNull(env.sessions.linkOf(s1), "nothing eligible means nothing linked")
+        assertNull(env.linkOf(s1), "nothing eligible means nothing linked")
     }
 
     @Test
@@ -323,7 +324,7 @@ class TaskLinkRoutesTest {
         )
         assertEquals(
             setOf(t1, t2),
-            setOfNotNull(env.sessions.linkOf(s1), env.sessions.linkOf(s2)),
+            setOfNotNull(env.linkOf(s1), env.linkOf(s2)),
             "both sessions ended up linked, one task each",
         )
     }
@@ -349,7 +350,7 @@ class TaskLinkRoutesTest {
 
         val taken = env.nextTask(pane = pane1, body = """{"project":"${beta.value}"}""")
         assertEquals(t3.value, taken?.ref, "an explicit project overrides the session's")
-        assertEquals(t3, env.sessions.linkOf(s1))
+        assertEquals(t3, env.linkOf(s1))
     }
 
     @Test
@@ -361,7 +362,7 @@ class TaskLinkRoutesTest {
 
         assertEquals(HttpStatusCode.NotFound, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(beta.value in resp.bodyAsText(), "the body names the project it could not find")
-        assertNull(env.sessions.linkOf(s1), "a refused pickup links nothing")
+        assertNull(env.linkOf(s1), "a refused pickup links nothing")
     }
 
     @Test
@@ -373,10 +374,10 @@ class TaskLinkRoutesTest {
         val resp = env.post("/tasks/next", pane = pane1)
 
         assertEquals(HttpStatusCode.NotFound, resp.status, "answered ${resp.bodyAsText()}")
-        assertNull(env.sessions.linkOf(s1), "and nothing was taken")
+        assertNull(env.linkOf(s1), "and nothing was taken")
         assertEquals(
             TaskState.todo,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "the refusal precedes linkNext, so no candidate was started either",
         )
     }
@@ -385,7 +386,7 @@ class TaskLinkRoutesTest {
     fun nextRefusesADeletedProjectBecauseItStartsTheCardItHandsOut() = withLinkServer { env ->
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
-        env.tasks.archiveProject(alpha)
+        env.tasks.seedArchived(alpha, archived = true)
 
         val fromTheSession = env.post("/tasks/next", pane = pane1)
         assertEquals(
@@ -399,14 +400,14 @@ class TaskLinkRoutesTest {
             env.post("/tasks/next", pane = pane1, body = """{"project":"${alpha.value}"}""").status,
             "naming it explicitly is the same answer an unknown uuid gets",
         )
-        assertNull(env.sessions.linkOf(s1), "nothing was linked")
+        assertNull(env.linkOf(s1), "nothing was linked")
         assertEquals(
             TaskState.todo,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "and the refusal precedes linkNext, so no card moved to in_progress",
         )
         assertTrue(
-            env.tasks.activityKinds(t1).isEmpty(),
+            env.activityKinds(t1).isEmpty(),
             "…and no activity row records work that never started",
         )
     }
@@ -418,7 +419,7 @@ class TaskLinkRoutesTest {
 
         // Interleave deletion after the route check and before candidate selection.
         env.tasks.beforeNextCandidate = {
-            env.tasks.archiveProject(alpha)
+            env.tasks.seedArchived(alpha, archived = true)
             env.tasks.beforeNextCandidate = null
         }
 
@@ -436,13 +437,13 @@ class TaskLinkRoutesTest {
             body,
             "the race uses the same refusal as a project deleted before the request",
         )
-        assertNull(env.sessions.linkOf(s1), "nothing was linked")
+        assertNull(env.linkOf(s1), "nothing was linked")
         assertEquals(
             TaskState.todo,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "and no card moved to in_progress on a board that no longer lists its project",
         )
-        assertTrue(env.tasks.activityKinds(t1).isEmpty(), "…and nothing claims work that never started")
+        assertTrue(env.activityKinds(t1).isEmpty(), "…and nothing claims work that never started")
     }
 
     @Test
@@ -452,7 +453,7 @@ class TaskLinkRoutesTest {
 
         // Interleave deletion after candidate selection and before its transition.
         env.tasks.beforeStartIfTodo = {
-            env.tasks.archiveProject(alpha)
+            env.tasks.seedArchived(alpha, archived = true)
             env.tasks.beforeStartIfTodo = null
         }
 
@@ -469,20 +470,20 @@ class TaskLinkRoutesTest {
             body,
             "the race uses the same refusal as a project deleted before the request",
         )
-        assertNull(env.sessions.linkOf(s1), "nothing was linked")
+        assertNull(env.linkOf(s1), "nothing was linked")
         assertEquals(
             TaskState.todo,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "and no card moved to in_progress on a board that no longer lists its project",
         )
-        assertTrue(env.tasks.activityKinds(t1).isEmpty(), "…and nothing claims work that never started")
+        assertTrue(env.activityKinds(t1).isEmpty(), "…and nothing claims work that never started")
     }
 
     @Test
     fun linkStaysOpenForADeletedProjectsCardBecauseItNamesOneThatAlreadyExists() = withLinkServer { env ->
         env.seedTask(t1, alpha)
         env.seedSession(s1, pane1, alpha)
-        env.tasks.archiveProject(alpha)
+        env.tasks.seedArchived(alpha, archived = true)
 
         assertEquals(
             HttpStatusCode.OK,
@@ -490,13 +491,13 @@ class TaskLinkRoutesTest {
             "the tombstone closes the project as a SOURCE of work — a card the caller names by ref is " +
                 "reachable exactly as `task show` and `task done` still are",
         )
-        assertEquals(t1, env.sessions.linkOf(s1))
+        assertEquals(t1, env.linkOf(s1))
         assertEquals(
             TaskState.in_progress,
-            env.tasks.stateOf(t1),
+            env.stateOf(t1),
             "claiming a `todo` card starts it here as it would in a live project",
         )
-        assertEquals(listOf(ActivityKind.linked), env.tasks.activityKinds(t1), "…and the feed records it")
+        assertEquals(listOf(ActivityKind.linked), env.activityKinds(t1), "…and the feed records it")
     }
 
     @Test
@@ -533,8 +534,8 @@ class TaskLinkRoutesTest {
             "start --task is ONE request: the answer already carries the link, so a client merging this " +
                 "DTO newest-rev-wins does not need a second round trip to see it",
         )
-        assertEquals(t1, env.sessions.linkOf(SessionId(dto.id)), "and the row really holds it")
-        assertEquals(TaskState.in_progress, env.tasks.stateOf(t1), "the launch also started the task")
+        assertEquals(t1, env.linkOf(SessionId(dto.id)), "and the row really holds it")
+        assertEquals(TaskState.in_progress, env.stateOf(t1), "the launch also started the task")
     }
 
     @Test
@@ -550,7 +551,7 @@ class TaskLinkRoutesTest {
                 "a daemon with no task layer refuses the link rather than starting the session and " +
                     "dropping it silently",
             )
-            assertEquals(emptyList(), env.sessions.all(), "and no session was started")
+            assertEquals(emptyList(), env.allSessions(), "and no session was started")
             assertEquals(emptyList(), env.tmux.newSessionCommands, "not even a tmux side effect")
         }
 
@@ -570,7 +571,7 @@ class TaskLinkRoutesTest {
 
         assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue("local:404" in resp.bodyAsText(), "the refusal names the ref it could not find")
-        assertEquals(emptyList(), env.sessions.all(), "no session row was written")
+        assertEquals(emptyList(), env.allSessions(), "no session row was written")
         assertEquals(emptyList(), env.tmux.newSessionCommands, "and no tmux side effect happened")
     }
 
@@ -595,7 +596,7 @@ class TaskLinkRoutesTest {
                 "$path is mounted inside authenticated { }",
             )
         }
-        assertNull(env.sessions.linkOf(s1), "an unauthenticated request wrote nothing")
+        assertNull(env.linkOf(s1), "an unauthenticated request wrote nothing")
     }
 
 
@@ -613,9 +614,21 @@ class TaskLinkRoutesTest {
             project: ProjectId,
             state: TaskState = TaskState.todo,
             position: Double = 1.0,
-        ) = tasks.seed(ref, project, state, position)
+        ) {
+            tasks.seedProject(project, project.value.take(8), "/repo")
+            tasks.seedTask(ref, project, "title of ${ref.value}", state = state, position = position)
+        }
 
-        suspend fun seedProject(project: ProjectId) = tasks.seedProject(project)
+        fun seedProject(project: ProjectId) = tasks.seedProject(project, project.value.take(8), "/repo")
+
+        suspend fun stateOf(ref: TaskRef): TaskState? = tasks.snapshotEntries()[ref]?.state
+
+        suspend fun activityKinds(ref: TaskRef): List<ActivityKind> =
+            tasks.snapshotActivity().filter { it.ref == ref }.map { it.kind }
+
+        suspend fun linkOf(id: SessionId): TaskRef? = sessions.snapshotSessions()[id]?.taskRef
+
+        suspend fun allSessions(): List<SessionMeta> = sessions.snapshotSessions().values.toList()
 
         suspend fun seedSession(id: SessionId, pane: PaneId, project: ProjectId?) {
             sessions.upsertSession(
@@ -628,7 +641,7 @@ class TaskLinkRoutesTest {
                     paneId = pane,
                     state = SessionState.running,
                     stateSource = EventSource.system,
-                    createdAt = fixedNow + sessions.count(),
+                    createdAt = fixedNow + sessions.snapshotSessions().size,
                     updatedAt = fixedNow,
                     projectId = project,
                 ),
@@ -669,8 +682,12 @@ class TaskLinkRoutesTest {
         block: suspend (Env) -> Unit,
     ) = runBlocking {
         withTimeout(60.seconds) {
-            val tasks = FakeTaskStore()
-            val store = FakeEventStore()
+            val tasks = FakeTaskStore(now = { fixedNow }).also {
+                it.interceptor = ForbiddingInterceptor(UNREACHED_BY_LINK_ROUTES) { store, method ->
+                    "the link routes must not call $store.$method"
+                }
+            }
+            val store = FakeEventStore(now = { fixedNow })
             val registry = PaneRegistry()
             val tmux = FakeTmux()
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -740,247 +757,6 @@ class TaskLinkRoutesTest {
             )
             is LaunchMode.Resume -> LaunchSpec(listOf("claude", "--resume"), emptyMap(), cwd, null)
         }
-    }
-
-    private class FakeTaskStore : TaskStore {
-        private val mutex = Mutex()
-        private val entries = LinkedHashMap<TaskRef, BacklogEntry>()
-        private val projects = LinkedHashMap<ProjectId, ProjectRecord>()
-        private val feed = mutableListOf<TaskActivityEntry>()
-        private var rev = 0L
-        private var activityId = 0L
-
-        override val id: String = TaskRef.LOCAL_TRACKER
-        override val taskUpdates: SharedFlow<TaskUpdate> = MutableSharedFlow()
-
-        suspend fun seed(ref: TaskRef, project: ProjectId, state: TaskState, position: Double) =
-            mutex.withLock {
-                entries[ref] = BacklogEntry(ref, project, position, state, false, 1_000L, 1_000L, ++rev)
-                val _ = projects.getOrPut(project) { ProjectRecord(project, project.value.take(8), "/repo", 0L) }
-                Unit
-            }
-
-        suspend fun seedProject(project: ProjectId) = mutex.withLock {
-            projects[project] = ProjectRecord(project, project.value.take(8), "/repo", 0L)
-            Unit
-        }
-
-        suspend fun forgetProject(project: ProjectId) = mutex.withLock { projects.remove(project); Unit }
-
-        // Seed archive state without exercising a route-external store mutation.
-        suspend fun archiveProject(project: ProjectId) = mutex.withLock {
-            val row = projects[project] ?: error("seed the project before archiving it")
-            projects[project] = row.copy(archived = true)
-            Unit
-        }
-
-        suspend fun forget(ref: TaskRef) = mutex.withLock { entries.remove(ref); Unit }
-
-        suspend fun stateOf(ref: TaskRef): TaskState? = mutex.withLock { entries[ref]?.state }
-
-        suspend fun activityKinds(ref: TaskRef): List<ActivityKind> =
-            mutex.withLock { feed.filter { it.ref == ref }.map { it.kind } }
-
-        override suspend fun entry(ref: TaskRef): BacklogEntry? = mutex.withLock { entries[ref] }
-
-        override suspend fun get(ref: TaskRef): Task? = mutex.withLock {
-            entries[ref]?.let { Task(ref, "title of ${ref.value}", "", null, it.updatedAt) }
-        }
-
-        /** Runs outside the lock to expose the route-check/candidate-selection race. */
-        var beforeNextCandidate: (suspend () -> Unit)? = null
-
-        /** Runs outside the lock to expose the candidate-selection/start race. */
-        var beforeStartIfTodo: (suspend () -> Unit)? = null
-
-        override suspend fun nextCandidate(project: ProjectId): BacklogEntry? {
-            beforeNextCandidate?.invoke()
-            return mutex.withLock {
-                if (projects[project]?.archived == true) return@withLock null
-                entries.values
-                    .filter { it.project == project && it.state == TaskState.todo && !it.blocked }
-                    .minByOrNull { it.position }
-            }
-        }
-
-        override suspend fun startIfTodo(ref: TaskRef): Boolean = startIfTodo(ref, requireLiveProject = false)
-
-        override suspend fun startIfTodoInLiveProject(ref: TaskRef): Boolean =
-            startIfTodo(ref, requireLiveProject = true)
-
-        private suspend fun startIfTodo(ref: TaskRef, requireLiveProject: Boolean): Boolean {
-            beforeStartIfTodo?.invoke()
-            return mutex.withLock {
-                val existing = entries[ref]
-                if (existing == null || existing.state != TaskState.todo) {
-                    false
-                } else if (requireLiveProject && projects[existing.project]?.archived == true) {
-                    false
-                } else {
-                    entries[ref] = existing.copy(state = TaskState.in_progress, rev = ++rev)
-                    true
-                }
-            }
-        }
-
-        override suspend fun appendActivity(
-            ref: TaskRef,
-            kind: ActivityKind,
-            author: String,
-            text: String?,
-            fromState: TaskState?,
-            toState: TaskState?,
-        ): TaskActivityEntry? = mutex.withLock {
-            if (ref !in entries) {
-                null
-            } else {
-                TaskActivityEntry(++activityId, ref, 0L, kind, author, text, fromState, toState)
-                    .also { feed += it }
-            }
-        }
-
-        override suspend fun dependenciesOf(ref: TaskRef): List<TaskRef> = emptyList()
-
-        override suspend fun list(project: ProjectId): List<Task> = unused("list")
-        override suspend fun create(project: ProjectId, title: String, body: String, author: String): Task =
-            unused("create")
-        override suspend fun update(ref: TaskRef, title: String?, body: String?): Task? = unused("update")
-        override suspend fun delete(ref: TaskRef): Boolean = unused("delete")
-        override suspend fun listBacklog(project: ProjectId): List<BacklogEntry> = unused("listBacklog")
-        override suspend fun transition(
-            ref: TaskRef,
-            to: TaskState,
-            author: String,
-            message: String?,
-        ): BacklogEntry? = unused("transition")
-        override suspend fun move(ref: TaskRef, target: MoveTarget): BacklogEntry? = unused("move")
-        override suspend fun dependentsOf(ref: TaskRef): List<TaskRef> = unused("dependentsOf")
-        override suspend fun dependencyEdges(project: ProjectId): Map<TaskRef, List<TaskRef>> =
-            unused("dependencyEdges")
-        override suspend fun addDependency(ref: TaskRef, dependsOn: TaskRef) = unused("addDependency")
-        override suspend fun removeDependency(ref: TaskRef, dependsOn: TaskRef) = unused("removeDependency")
-        override suspend fun comment(ref: TaskRef, author: String, text: String): TaskActivityEntry? =
-            unused("comment")
-        override suspend fun activity(ref: TaskRef): List<TaskActivityEntry> = unused("activity")
-        override suspend fun upsertProject(id: ProjectId, name: String, path: String?) = unused("upsertProject")
-        override suspend fun setProjectArchived(id: ProjectId, archived: Boolean) = unused("setProjectArchived")
-        override suspend fun listProjects(archived: Boolean): List<ProjectRecord> = unused("listProjects")
-        override suspend fun listAllProjects(): List<ProjectRecord> = unused("listAllProjects")
-        override suspend fun project(id: ProjectId): ProjectRecord? = mutex.withLock { projects[id] }
-
-        private fun unused(name: String): Nothing = error("the link routes must not call TaskStore.$name")
-    }
-
-    private class FakeEventStore : EventStore {
-        private val mutex = Mutex()
-        private val rows = LinkedHashMap<SessionId, SessionMeta>()
-        private var rev = 0L
-        private var seq = 0L
-
-        suspend fun all(): List<SessionMeta> = mutex.withLock { rows.values.toList() }
-
-        suspend fun count(): Int = mutex.withLock { rows.size }
-
-        suspend fun linkOf(id: SessionId): TaskRef? = mutex.withLock { rows[id]?.taskRef }
-
-        override suspend fun upsertSession(meta: SessionMeta) = mutex.withLock {
-            val existing = rows[meta.id]
-            rows[meta.id] = meta.copy(
-                taskRef = meta.taskRef ?: existing?.taskRef,
-                projectId = meta.projectId ?: existing?.projectId,
-                rev = ++rev,
-            )
-        }
-
-        // One-shot gate inserts a newer link immediately before the atomic conditional clear.
-        var beforeConditionalClear: (suspend () -> Unit)? = null
-
-        override suspend fun setTaskRef(sessionId: SessionId, taskRef: TaskRef?) =
-            mutex.withLock {
-                val row = rows[sessionId] ?: return@withLock
-                rows[sessionId] = row.copy(taskRef = taskRef, rev = ++rev)
-            }
-
-        override suspend fun clearTaskRefIf(
-            sessionId: SessionId,
-            expectedRef: TaskRef,
-        ): Boolean {
-            beforeConditionalClear?.let { hook ->
-                beforeConditionalClear = null
-                hook()
-            }
-            return mutex.withLock {
-                val row = rows[sessionId]
-                if (row == null || row.taskRef != expectedRef) return@withLock false
-                rows[sessionId] = row.copy(taskRef = null, rev = ++rev)
-                true
-            }
-        }
-
-        override suspend fun sessionsHoldingTask(taskRef: TaskRef): List<SessionMeta> = mutex.withLock {
-            rows.values.filter { it.taskRef == taskRef }.sortedBy { it.createdAt }
-        }
-
-        override suspend fun getSession(sessionId: SessionId): SessionMeta? = mutex.withLock { rows[sessionId] }
-
-        override suspend fun listSessions(): List<SessionMeta> = mutex.withLock {
-            rows.values.sortedBy { it.createdAt }
-        }
-
-        override suspend fun append(sessionId: SessionId, event: AgentEvent, source: EventSource): Seq =
-            mutex.withLock {
-                val next = Seq(++seq)
-                val row = rows[sessionId]
-                if (row != null) {
-                    rows[sessionId] = row.copy(
-                        providerSessionId = (event as? AgentEvent.SessionBound)?.providerSessionId
-                            ?: row.providerSessionId,
-                        lastSeq = next,
-                        rev = ++rev,
-                    )
-                }
-                next
-            }
-
-        override suspend fun projectionOf(sessionId: SessionId): Projection = mutex.withLock {
-            val row = rows[sessionId]
-            Projection(
-                state = row?.state ?: SessionState.running,
-                pendingApprovals = 0,
-                lastSeq = row?.lastSeq ?: Seq(0),
-                providerSessionId = row?.providerSessionId,
-                stopRequested = false,
-            )
-        }
-
-        override suspend fun updateSessionState(
-            sessionId: SessionId,
-            state: SessionState,
-            stateSource: EventSource,
-            paneId: PaneId?,
-            updatedAt: Long,
-        ) = unused("updateSessionState")
-        override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) =
-            unused("setArchived")
-        override suspend fun setModel(sessionId: SessionId, model: String?) = unused("setModel")
-        override suspend fun setModelForProvider(
-            sessionId: SessionId,
-            providerSessionId: ProviderSessionId,
-            model: String,
-        ): Boolean = unused("setModelForProvider")
-        override suspend fun markRead(sessionId: SessionId, seq: Seq) = unused("markRead")
-        override suspend fun setProjectId(sessionId: SessionId, projectId: ProjectId?) =
-            unused("setProjectId")
-
-        override suspend fun setName(sessionId: SessionId, name: String) {
-        }
-
-        override suspend fun read(sessionId: SessionId, fromSeq: Seq): List<StoredEvent> = emptyList()
-
-        override fun subscribe(sessionId: SessionId, fromSeq: Seq): Flow<StoredEvent> = unused("subscribe")
-        override val sessionUpdates: SharedFlow<SessionUpdate> = MutableSharedFlow()
-
-        private fun unused(name: String): Nothing = error("this test must not call EventStore.$name")
     }
 
     private object UnusedProjectFs : ProjectFs {

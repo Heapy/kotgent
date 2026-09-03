@@ -1,6 +1,7 @@
 package io.kotgent.push
 
 import io.kotgent.core.SessionId
+import io.kotgent.store.FailingInterceptor
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -152,7 +153,7 @@ class PushSenderTest {
     @Test
     fun aFailedPruneIsReportedAndDoesNotAbortTheFanOut() = runBlocking {
         withTimeout(20.seconds) {
-            val store = FakePushStore(failRemoveFor = setOf(apple))
+            val store = FakePushStore().also { it.failRemoveFor += apple }
             val env = Env(statuses = mapOf(apple to 410, google to 201), store = store)
             env.store.seed(sub(apple), sub(google))
 
@@ -241,7 +242,17 @@ class PushSenderTest {
     @Test
     fun anUnreadableStoreDegradesToSilence() = runBlocking {
         withTimeout(20.seconds) {
-            val env = Env(store = FakePushStore(failList = true))
+            val env = Env(
+                store = FakePushStore().also {
+                    it.interceptor = FailingInterceptor(
+                        mutableMapOf(
+                            "list" to IllegalStateException(
+                                "the subscription list cannot be read: database is locked",
+                            ),
+                        ),
+                    )
+                },
+            )
 
             env.sender.send(session)
             assertTrue(env.transport.calls.isEmpty())
@@ -265,35 +276,6 @@ class PushSenderTest {
         }
 
         fun urls(): List<String> = calls.map { it.url }
-    }
-
-    private class FakePushStore(
-        private val failList: Boolean = false,
-        private val failRemoveFor: Set<String> = emptySet(),
-    ) : PushStore {
-        private val rows = mutableMapOf<String, PushSubscription>()
-
-        fun seed(vararg subscriptions: PushSubscription) {
-            for (s in subscriptions) rows[s.endpoint] = s
-        }
-
-        fun endpoints(): List<String> = rows.keys.toList()
-
-        override suspend fun list(): List<PushSubscription> {
-            if (failList) throw IllegalStateException("the subscription list cannot be read: database is locked")
-            return rows.values.toList()
-        }
-
-        override suspend fun save(subscription: PushSubscription) {
-            rows[subscription.endpoint] = subscription
-        }
-
-        override suspend fun remove(endpoint: String) {
-            if (endpoint in failRemoveFor) {
-                throw IllegalStateException("the subscription table is locked")
-            }
-            rows.remove(endpoint)
-        }
     }
 
     private inner class Env(
