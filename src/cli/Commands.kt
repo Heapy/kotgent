@@ -1,61 +1,18 @@
 package io.kotgent.cli
 
-import app.cash.sqldelight.db.SqlDriver
-import app.cash.sqldelight.driver.native.NativeSqliteDriver
 import io.kotgent.currentUiVersion
-import io.kotgent.adapter.AgentAdapter
-import io.kotgent.adapter.claude.ClaudeAdapter
-import io.kotgent.adapter.claude.ClaudeCli
 import io.kotgent.adapter.claude.ClaudeHookConfig
-import io.kotgent.adapter.codex.CodexAdapter
-import io.kotgent.adapter.codex.CodexCli
 import io.kotgent.adapter.codex.CodexHookConfig
-import io.kotgent.adapter.junie.JunieAdapter
-import io.kotgent.adapter.junie.JunieCli
 import io.kotgent.adapter.junie.JunieHookConfig
-import io.kotgent.adapter.shell.ShellAdapter
-import io.kotgent.daemon.CLAUDE_AGENT_KIND
-import io.kotgent.daemon.CODEX_AGENT_KIND
-import io.kotgent.daemon.CodexRolloutScan
-import io.kotgent.daemon.JUNIE_AGENT_KIND
-import io.kotgent.daemon.JunieSessionScan
-import io.kotgent.daemon.PaneRegistry
-import io.kotgent.daemon.ProviderIdCapture
-import io.kotgent.daemon.Reconciler
-import io.kotgent.daemon.SHELL_AGENT_KIND
-import io.kotgent.daemon.SessionManager
-import io.kotgent.daemon.TaskService
 import io.kotgent.daemon.VendorStoreProbe
-import io.kotgent.daemon.agentFactoryOf
-import io.kotgent.daemon.captureCodexModelOnce
-import io.kotgent.daemon.captureJunieModelOnce
-import io.kotgent.daemon.importableAgentKinds
-import io.kotgent.daemon.productionSessionLocator
 import io.kotgent.daemon.productionVendorStoreProbe
-import io.kotgent.daemon.requireAbsoluteBinary
-import io.kotgent.db.KotgentDatabase
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.DAEMON_LABEL
 import io.kotgent.launchd.LaunchdInstaller
-import io.kotgent.push.DarwinPushTransport
-import io.kotgent.push.OpensslVapidSigner
-import io.kotgent.push.PushNotifier
-import io.kotgent.push.PushSender
-import io.kotgent.push.SqlitePushStore
-import io.kotgent.push.VapidKey
-import io.kotgent.push.VapidTokenCache
-import io.kotgent.push.vapidSubject
-import io.kotgent.store.EventStore
-import io.kotgent.store.SqliteEventStore
-import io.kotgent.store.SqliteTaskStore
-import io.kotgent.task.PosixProjectFileWriter
-import io.kotgent.task.PosixProjectFs
 import io.kotgent.sys.installShutdownSignals
-import io.kotgent.sys.currentLoginShell
 import io.kotgent.sys.pendingShutdownSignal
 import io.kotgent.sys.shutdownSignalName
 import io.kotgent.tmux.ProcessRunner
-import io.kotgent.tmux.Tmux
 import io.kotgent.tmux.TmuxHookConfig
 import io.kotgent.transport.KotgentServer
 import io.kotgent.transport.ServerBindException
@@ -63,21 +20,11 @@ import io.kotgent.transport.SessionDto
 import io.kotgent.transport.TICKET_CODE_LENGTH
 import io.kotgent.transport.TICKET_TTL_MILLIS
 import io.kotgent.transport.TicketResponse
-import io.kotgent.transport.TokenHolder
-import io.kotgent.transport.defaultTokenPath
-import io.kotgent.transport.readOrCreateToken
 import io.kotgent.transport.readTokenOrNull
 import io.kotgent.transport.writePrivateFile
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -251,160 +198,36 @@ object Commands {
             eprintln("kotgent daemon: ${e.message}")
             return@runBlocking 1
         }
-        // Gates read the holder per request. Persist hook headers before the CLI token: TokenHolder publishes
-        // only after this callback succeeds, so a partial failure leaves both memory and the CLI on the old
-        // token instead of locking the control plane out. Hook headers heal on the next successful rotation.
-        val tokenHolder = TokenHolder(readOrCreateToken()) { rotated ->
-            val _ = writeClaudeHookSettings(port, rotated)
-            val _ = writeCodexHookScript(port, rotated)
-            val _ = writeJunieHookConfig(port, rotated)
-            val _ = writeTmuxHookScript(port, rotated)
-            writePrivateFile(defaultTokenPath(), rotated.encodeToByteArray())
-        }
-        val token = tokenHolder.current()
+        val modules = DaemonModules(port, config.publicUrl, vendorProbe)
+        val storage = modules.storage
+        val sessions = modules.sessions
 
-        // Keep the driver for an explicit shutdown checkpoint.
-        val driver = NativeSqliteDriver(
-            schema = KotgentDatabase.Schema,
-            name = DB_FILENAME,
-            onConfiguration = { config ->
-                config.copy(
-                    extendedConfig = config.extendedConfig.copy(basePath = kotgentHome()),
-                )
-            },
-        )
-        val store = SqliteEventStore.using(driver)
-        // Task and session writes share a driver but remain sequential; sessions retain a single writer.
-        val taskStore = SqliteTaskStore.using(driver)
-        val projectFs = PosixProjectFs()
-        val taskService = TaskService(taskStore, store, projectFs, PosixProjectFileWriter())
-        val tmuxHookScriptPath = writeTmuxHookScript(port, token)
-        val tmux = Tmux(TMUX_SOCKET, hookScriptPath = tmuxHookScriptPath)
+        // Beans are lazy, so realize them in the order their effects require: the token before the hook
+        // artifacts that carry it, the database before the tmux server so a storage failure leaves no
+        // server behind, and the hook artifacts before the manager that launches agents against them.
+        val tokenHolder = modules.auth.tokens.value
+        val eventStore = storage.eventStore.value
+        val taskStore = storage.taskStore.value
+        val taskService = storage.taskService.value
+        val tmux = sessions.tmux.value
         tmux.ensureServer()
-
-        val registry = PaneRegistry()
-        val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val idCapture = ProviderIdCapture(store, bgScope)
-
-        // Hook ingress writes the source-of-truth store directly, so adapters must not re-emit those events.
-        val settingsPath = writeClaudeHookSettings(port, token)
-        val codexHookScriptPath = writeCodexHookScript(port, token)
-        val junieHookConfigPath = writeJunieHookConfig(port, token)
-        val claudeCli = ClaudeCli()
-        val claudeVersion = claudeCli.detectVersion()
-        val sessionIdSupported = ClaudeCli.supportsSessionId(claudeVersion)
-        val codexCli = CodexCli()
-        val codexVersion = codexCli.detectVersion()
-        val junieCli = JunieCli()
-        val junieVersion = junieCli.detectVersion()
-        // Launchd has a minimal PATH, and tmux changes cwd before exec. Require absolute CLI paths before
-        // any tmux side effect so a relative lookup cannot launch a cwd-local binary or leave a phantom row.
-        val claudePath: String? = claudeCli.locate()
-        val codexPath: String? = codexCli.locate()
-        val juniePath: String? = junieCli.locate()
-        // The builder keys are the launch allowlist and the source for the narrower import allowlist.
-        val agentBuilders: Map<String, (cwd: String) -> AgentAdapter> =
-            mapOf(
-                CLAUDE_AGENT_KIND to { cwd: String ->
-                    ClaudeAdapter(
-                        cwd = cwd,
-                        settingsPath = settingsPath,
-                        events = emptyFlow(),
-                        sessionIdSupported = sessionIdSupported,
-                        binaryName = requireAbsoluteBinary(CLAUDE_AGENT_KIND, claudePath),
-                        cliVersion = claudeVersion?.toString(),
-                        cliPath = claudePath,
-                    )
-                },
-                CODEX_AGENT_KIND to { cwd: String ->
-                    CodexAdapter(
-                        cwd = cwd,
-                        hookScriptPath = codexHookScriptPath,
-                        events = emptyFlow(),
-                        binaryName = requireAbsoluteBinary(CODEX_AGENT_KIND, codexPath),
-                        cliVersion = codexVersion?.toString(),
-                        cliPath = codexPath,
-                    )
-                },
-                JUNIE_AGENT_KIND to { cwd: String ->
-                    JunieAdapter(
-                        cwd = cwd,
-                        hookConfigPath = junieHookConfigPath,
-                        events = emptyFlow(),
-                        binaryName = requireAbsoluteBinary(JUNIE_AGENT_KIND, juniePath),
-                        cliVersion = junieVersion?.toString(),
-                        cliPath = juniePath,
-                    )
-                },
-                SHELL_AGENT_KIND to { cwd: String ->
-                    ShellAdapter(cwd = cwd, shell = currentLoginShell())
-                },
-            )
-        val agentFactory = agentFactoryOf(agentBuilders)
-        // Codex cannot preallocate an id; discover it from the post-launch rollout without relying on hooks.
-        val rolloutScan = CodexRolloutScan()
-        // Junie's SessionStart payload also omits the id; its session directory exists before index rows do.
-        val junieScan = JunieSessionScan()
-        val manager = SessionManager(
-            tmux,
-            store,
-            registry,
-            agentFactory,
-            idCapture,
-            // Import and reconciliation must classify transcripts through the same probe.
-            vendorProbe,
-            productionSessionLocator(),
-            // Shell has no external provider session or transcript to import.
-            importableAgentKinds(agentBuilders.keys),
-            discoverProviderId = { meta ->
-                when (meta.agent) {
-                    CODEX_AGENT_KIND -> rolloutScan.discoverSessionId(meta.cwd, meta.createdAt)
-                    JUNIE_AGENT_KIND -> junieScan.discoverSessionId(meta.cwd, meta.createdAt)
-                    else -> null
-                }
-            },
-            // Codex and Junie expose models only after the first turn, so capture polls provider storage.
-            captureModelInBackground = { meta ->
-                if (meta.agent == CODEX_AGENT_KIND) {
-                    bgScope.launch {
-                        repeat(MODEL_CAPTURE_ATTEMPTS) {
-                            // Re-read the provider id each attempt: background discovery may land mid-poll.
-                            // Never guess by cwd+mtime because a late first bind would not correct it.
-                            if (captureCodexModelOnce(store, rolloutScan, meta)) return@launch
-                            delay(MODEL_CAPTURE_INTERVAL_MILLIS.milliseconds)
-                        }
-                    }
-                }
-                if (meta.agent == JUNIE_AGENT_KIND) {
-                    // Junie's modelUsage mixes primary and helper models; its extractor uses frequency.
-                    bgScope.launch {
-                        repeat(MODEL_CAPTURE_ATTEMPTS) {
-                            if (captureJunieModelOnce(store, junieScan, meta)) return@launch
-                            delay(MODEL_CAPTURE_INTERVAL_MILLIS.milliseconds)
-                        }
-                    }
-                }
-            },
-            taskStore = taskStore,
-            projectFs = projectFs,
-        )
+        val manager = sessions.manager.value
 
         // Rebuild pane identity before reconciliation. An in-progress task without a linked session remains
         // valid because a human may have moved it on the board.
         manager.rebuildRegistryFromStore()
-        val _ = Reconciler(tmux, store, vendorProbe, registry, taskStore = taskStore, projectFs = projectFs)
-            .reconcile()
+        val _ = sessions.reconciler.value.reconcile()
 
         // Push is optional. Table failure omits its routes; VAPID key and signer failures remain lazy so
         // installations that never enable notifications do not pay for or depend on openssl.
         val runtime = try {
             startDaemonServer(
-                assemblePush = { startPush(driver, config.publicUrl, bgScope, store) },
+                assemblePush = { modules.push.start(sessions.background.value, eventStore) },
                 createServer = { push ->
                     KotgentServer.production(
                         sessionManager = manager,
-                        eventStore = store,
-                        preferencesStore = store,
+                        eventStore = eventStore,
+                        preferencesStore = eventStore,
                         tokens = tokenHolder,
                         tmux = tmux,
                         currentVersion = currentUiVersion(),
@@ -421,8 +244,8 @@ object Commands {
         } catch (e: ServerBindException) {
             eprintln("kotgent daemon: ${e.message}")
             reportPortHolder(port)
-            bgScope.cancel()
-            driver.close()
+            sessions.close()
+            storage.close()
             return@runBlocking 1
         }
         val server = runtime.server
@@ -441,53 +264,10 @@ object Commands {
         // sessions intentionally survive daemon shutdown.
         println("kotgent daemon: ${shutdownSignalName(signo)} — shutting down")
         server.stop()
-        bgScope.cancel()
+        sessions.close()
         runtime.push?.close?.invoke()
-        driver.close()
+        storage.close()
         0
-    }
-
-    /**
-     * Subscription storage failure disables push; later startup failures propagate after closing the
-     * already-created Darwin transport. VAPID key and signer errors remain deferred until first use.
-     */
-    private suspend fun startPush(
-        driver: SqlDriver,
-        publicUrl: String?,
-        scope: CoroutineScope,
-        events: EventStore,
-    ): DaemonPush? {
-        val subscriptions = try {
-            SqlitePushStore(driver)
-        } catch (e: Throwable) {
-            eprintln("kotgent daemon: push notifications disabled (no subscription table): ${e.message}")
-            return null
-        }
-        val key = VapidKey()
-        // PushSender resolves the public key before signing, ensuring this path has been created.
-        val signer = OpensslVapidSigner(keyPath = key.keyPath)
-        val tokens = VapidTokenCache(subject = vapidSubject(publicUrl), sign = signer::sign)
-        val transport = DarwinPushTransport()
-        return withStartupCompensation(
-            compensate = { transport.close() },
-        ) {
-            val sender = PushSender(
-                store = subscriptions,
-                publicKey = key::publicKeyBase64Url,
-                vapidToken = tokens::tokenFor,
-                transport = transport,
-            )
-            // Seed after reconciliation and await subscription before exposing hook ingress.
-            val notifier = PushNotifier(events, send = { id -> sender.send(id) }).start(scope)
-            DaemonPush(
-                subscriptions,
-                key::publicKeyBase64Url,
-                close = {
-                    notifier.cancelAndJoin()
-                    transport.close()
-                },
-            )
-        }
     }
 
     /**
@@ -508,11 +288,8 @@ object Commands {
         eprintln("  killing it also kills the agents running in it — detach or finish them first.")
     }
 
-    private const val DB_FILENAME: String = "kotgent.db"
 
-    private const val MODEL_CAPTURE_ATTEMPTS: Int = 10
 
-    private const val MODEL_CAPTURE_INTERVAL_MILLIS: Long = 3_000
 
     /**
      * Signal handlers cannot resume coroutines safely, so shutdown is polled.
@@ -523,7 +300,7 @@ object Commands {
      * One provider transcript probe serves import and reconciliation so resumability cannot drift between
      * the initial validation and later restarts.
      */
-    private val vendorProbe: VendorStoreProbe = productionVendorStoreProbe()
+    internal val vendorProbe: VendorStoreProbe = productionVendorStoreProbe()
 
     private fun withApi(block: suspend (ApiClient) -> Int): Int = runBlocking {
         try {
@@ -540,7 +317,7 @@ object Commands {
         }
     }
 
-    private fun writeClaudeHookSettings(port: Int, token: String): String {
+    internal fun writeClaudeHookSettings(port: Int, token: String): String {
         // Keep the token in an atomic 0600 curl header file, never in process-visible argv.
         val headerPath = "${kotgentHome()}/claude-hook-header"
         writePrivateFile(headerPath, ClaudeHookConfig.headerFileContent(token).encodeToByteArray())
@@ -553,7 +330,7 @@ object Commands {
      * The token stays in a provider-specific atomic `0600` curl header file, never argv. `/bin/sh` reads
      * the `0600` script directly, so it needs no execute bit.
      */
-    private fun writeCodexHookScript(port: Int, token: String): String {
+    internal fun writeCodexHookScript(port: Int, token: String): String {
         val headerPath = "${kotgentHome()}/codex-hook-header"
         writePrivateFile(headerPath, CodexHookConfig.headerFileContent(token).encodeToByteArray())
         val path = "${kotgentHome()}/codex-hook.sh"
@@ -565,7 +342,7 @@ object Commands {
      * Junie hooks use kotgent's per-launch config rather than mutating the user's config. The token stays
      * in an atomic `0600` curl header file and never appears in argv.
      */
-    private fun writeJunieHookConfig(port: Int, token: String): String {
+    internal fun writeJunieHookConfig(port: Int, token: String): String {
         val headerPath = "${kotgentHome()}/junie-hook-header"
         writePrivateFile(headerPath, JunieHookConfig.headerFileContent(token).encodeToByteArray())
         val scriptPath = "${kotgentHome()}/junie-hook.sh"

@@ -8,6 +8,7 @@ plugins:
 
 dependencies:
   - ./sysnative
+  - $libs.komok.tech.to.be.injected
   - $libs.kotlinx.coroutines.core
   - $libs.ktor.server.cio
   - $libs.ktor.server.websockets
