@@ -292,10 +292,12 @@ function App() {
   const deepLinkRef = useRef(deepLinkSessionId());
   // Announce each outage once so the reconnect loop does not flood the aria-live region.
   const disconnectAnnouncedRef = useRef(false);
-  // lib/reattach.js owns decisions; these refs hold machine state and effect handles.
-  const reattachRef = useRef(initialReattachState());
-  const reattachTimersRef = useRef(new Map());
-  const reattachProbesRef = useRef(new Map());
+  // lib/reattach.js owns decisions; these refs hold machine state and the one timer and one probe it
+  // can have in flight, each stamped with the generation that armed it.
+  const reattachRef = useRef(null);
+  if (reattachRef.current === null) reattachRef.current = initialReattachState();
+  const reattachTimerRef = useRef(null);
+  const reattachProbeRef = useRef(null);
   const projectRefreshStartedRef = useRef(false);
 
   // Capture before xterm/forms; KeyboardEvent.code keeps the shortcut physical across layouts.
@@ -334,27 +336,30 @@ function App() {
         case SCHEDULE: {
           // The zero-delay boundary prevents Preact batching detach→same-id attach into no state change.
           const handle = setTimeout(() => {
-            reattachTimersRef.current.delete(effect.gen);
+            const timer = reattachTimerRef.current;
+            if (timer && timer.gen === effect.gen) reattachTimerRef.current = null;
             dispatch(timerFired(effect.gen));
           }, 0);
-          reattachTimersRef.current.set(effect.gen, handle);
+          reattachTimerRef.current = { gen: effect.gen, handle: handle };
           break;
         }
         case CANCEL_TIMER: {
-          const handle = reattachTimersRef.current.get(effect.gen);
-          reattachTimersRef.current.delete(effect.gen);
-          if (handle !== undefined) clearTimeout(handle);
+          const timer = reattachTimerRef.current;
+          if (!timer || timer.gen !== effect.gen) break;
+          reattachTimerRef.current = null;
+          clearTimeout(timer.handle);
           break;
         }
         case PROBE: {
           // The events socket may also be stale, so liveness is read over HTTP rather than assumed.
           const controller = new AbortController();
-          reattachProbesRef.current.set(effect.gen, controller);
           const livenessTimeout = setTimeout(() => controller.abort(), REATTACH_LIVENESS_TIMEOUT_MS);
+          reattachProbeRef.current = { gen: effect.gen, controller: controller };
           // Release both handles on every outcome.
           const settle = () => {
             clearTimeout(livenessTimeout);
-            reattachProbesRef.current.delete(effect.gen);
+            const probe = reattachProbeRef.current;
+            if (probe && probe.gen === effect.gen) reattachProbeRef.current = null;
           };
           // Two handlers, not a `.catch` link: a throw while performing the resolved effects would
           // otherwise be reported as a dead session, for a generation the reducer has already retired.
@@ -372,9 +377,10 @@ function App() {
           break;
         }
         case ABORT_PROBE: {
-          const controller = reattachProbesRef.current.get(effect.gen);
-          reattachProbesRef.current.delete(effect.gen);
-          if (controller) controller.abort();
+          const probe = reattachProbeRef.current;
+          if (!probe || probe.gen !== effect.gen) break;
+          reattachProbeRef.current = null;
+          probe.controller.abort();
           break;
         }
         case ATTACH:
