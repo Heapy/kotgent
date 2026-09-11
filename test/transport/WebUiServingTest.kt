@@ -3,18 +3,13 @@ package io.kotgent.transport
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
-import io.kotgent.cli.TMUX_SOCKET
 import io.kotgent.core.AgentEvent
-import io.kotgent.core.MAX_SESSION_NAME_LENGTH
 import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
-import io.kotgent.daemon.isDirectory
-import io.kotgent.daemon.listDir
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePreferencesStore
-import io.kotgent.task.PROJECT_NAME_MAX_LENGTH
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
@@ -59,7 +54,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 class WebUiServingTest {
@@ -121,63 +115,6 @@ class WebUiServingTest {
             assertContentTypeContains(resp, "javascript")
             assertTrue(resp.bodyAsText().isNotEmpty(), "$path is not empty")
         }
-
-        val htmPreact = ctx.get("/_v/$rev/vendor/htm-preact.module.js").bodyAsText()
-        assertTrue(htmPreact.contains("\"preact\""), "htm/preact imports the bare 'preact' specifier")
-        assertTrue(htmPreact.contains("\"htm\""), "htm/preact imports the bare 'htm' specifier")
-        assertTrue(
-            ctx.get("/_v/$rev/vendor/preact-hooks.module.js").bodyAsText().contains("\"preact\""),
-            "the hooks build imports the bare 'preact' specifier",
-        )
-
-        // The stock signals adapter and import map cannot inspect each other, so pin their specifiers.
-        val signals = ctx.get("/_v/$rev/vendor/signals.module.js").bodyAsText()
-        for (specifier in listOf("preact", "preact/hooks", "@preact/signals-core")) {
-            assertTrue(
-                signals.contains("\"$specifier\""),
-                "the signals adapter imports the bare '$specifier' specifier the import map wires",
-            )
-        }
-
-        // Node-importable state modules must resolve the same signals-core URL as Preact's adapter;
-        // otherwise their signals live in a reactive graph no rendered component observes.
-        val relativeVendorImport = "\"../vendor/signals-core.module.js\""
-        for (module in STATE_MODULES + listOf("/lib/mutation.js", "/lib/readiness.js")) {
-            val body = ctx.get("/_v/$rev$module").bodyAsText()
-            assertTrue(
-                body.contains(relativeVendorImport),
-                "$module imports signals-core by the relative path, not the bare specifier",
-            )
-        }
-        assertTrue(
-            index.contains("\"@preact/signals-core\": \"/_v/$rev/vendor/signals-core.module.js\""),
-            "the relative import above resolves to exactly the import map's signals-core target",
-        )
-    }
-
-    // The name inputs' caps are hand-copied mirrors of the server's bound, and creation must not be
-    // stricter than rename. Nothing else notices a drift: a browser that accepted more would post a name
-    // the route refuses, and one that accepted less would silently truncate what the operator typed.
-    @Test
-    fun bothSessionNameFieldsMaxlengthMirrorsTheServersNameBound() = withServer { ctx ->
-        val caps = Regex("maxlength=\"(\\d+)\"").findAll(ctx.get("/components/dialogs.js").bodyAsText())
-            .map { it.groupValues[1] }.toList()
-        assertEquals(listOf("$MAX_SESSION_NAME_LENGTH", "$MAX_SESSION_NAME_LENGTH"), caps, "both name inputs")
-    }
-
-    // Dialog padding is an enumeration of form ids, not a rule on a shared class, so a new dialog is
-    // unstyled until its id is added and no test that asserts markup or behavior can see it.
-    @Test
-    fun everyDialogFormIdCarriesAPaddingRule() = withServer { ctx ->
-        val markup = ctx.get("/components/dialogs.js").bodyAsText() + ctx.get("/components/Board.js").bodyAsText()
-        val css = ctx.get("/style.css").bodyAsText()
-        val ids = Regex("id=\"([a-z-]+-form)\"").findAll(markup).map { it.groupValues[1] }.toSet()
-        assertTrue(ids.contains("rename-session-form"), "the scan reaches the dialogs it is meant to close")
-        for (id in ids) {
-            val padded = Regex("#$id[^{]*\\{[^}]*\\bpadding:").containsMatchIn(css) ||
-                Regex("#$id,[^{]*\\{[^}]*\\bpadding:").containsMatchIn(css)
-            assertTrue(padded, "#$id has no padding rule in style.css — the dialog would render edge to edge")
-        }
     }
 
     @Test
@@ -198,89 +135,6 @@ class WebUiServingTest {
             assertContentTypeContains(resp, "javascript")
             assertTrue(resp.bodyAsText().isNotEmpty(), "GET $path is not an empty file")
         }
-        assertTrue(
-            ctx.get("/lib/paths.js").bodyAsText().contains("export function groupSessions"),
-            "the grouping helpers are exported for the sidebar (and for out-of-browser checks)",
-        )
-        assertTrue(
-            ctx.get("/lib/prefs.js").bodyAsText().contains("export function loadPrefs"),
-            "the stored preferences are exported",
-        )
-        val sessionHelpers = ctx.get("/lib/sessions.js").bodyAsText()
-        assertTrue(
-            sessionHelpers.contains("export function upsertIfNewer") &&
-                sessionHelpers.contains("export function patchIfNewer"),
-            "the newest-rev-wins appliers are exported under the names the state modules import",
-        )
-    }
-
-    // Shared-list signals may be assigned only by their owning state modules. Resolve aliases from each
-    // import before scanning so callers remain free to choose local binding names.
-    @Test
-    fun theSharedListsAreWrittenOnlyInsideTheirStateModules() {
-        val dir = locateWebUiDir()
-        val modules = webUiModules(dir)
-        assertTrue(
-            modules.size >= MIN_SCANNED_MODULES,
-            "only ${modules.size} modules were found under $dir; the scan below would prove almost nothing",
-        )
-        var bindings = 0
-        for (path in modules) {
-            val source = readFileTextOrNull("$dir/$path")
-                ?: fail("$path is served but could not be read from $dir")
-            for (state in STATE_SIGNAL_MODULES) {
-                for (binding in importedBindings(source, state)) {
-                    bindings++
-                    // The leading class keeps `foo.sessions.value` and `mysessions.value` out of it.
-                    val assignment = Regex("(^|[^\\w.])" + Regex.escape(binding) + "\\.value\\s*=[^=]")
-                    assertFalse(
-                        assignment.containsMatchIn(source),
-                        "$path assigns to $binding.value, but $state is the only writer of that list. " +
-                            "A second writer is the defect class the state modules exist to end: go " +
-                            "through the module's exported writer instead.",
-                    )
-                }
-            }
-        }
-        assertTrue(
-            bindings > 0,
-            "no module outside state/ imports anything from ${STATE_SIGNAL_MODULES.joinToString()}, so " +
-                "the scan matched nothing — the import shape it reads must have changed",
-        )
-    }
-
-    /** Every first-party served `.js` module outside the state owners. */
-    private fun webUiModules(dir: String, rel: String = ""): List<String> {
-        val here = if (rel.isEmpty()) dir else "$dir/$rel"
-        val found = mutableListOf<String>()
-        for (name in listDir(here)) {
-            val childRel = if (rel.isEmpty()) name else "$rel/$name"
-            if (isDirectory("$dir/$childRel")) {
-                if (name != "vendor" && name != "state") found += webUiModules(dir, childRel)
-            } else if (name.endsWith(".js")) {
-                found += childRel
-            }
-        }
-        return found
-    }
-
-    /**
-     * The local names [source] binds from [stateModule], `as` aliases resolved. Anything else in the
-     * import list is a function, and a function is exactly what this contract wants callers to use.
-     */
-    private fun importedBindings(source: String, stateModule: String): List<String> {
-        val statement = Regex(
-            "import\\s*\\{([^}]*)\\}\\s*from\\s*\"[^\"]*" + Regex.escape(stateModule) + "\"",
-        )
-        return statement.findAll(source).flatMap { match ->
-            // Line comments are stripped first: one sitting beside a specifier would otherwise swallow
-            // the next name into an unparsable token and quietly drop it from the scan.
-            val listed = match.groupValues[1].lines().joinToString(" ") { it.substringBefore("//") }
-            listed.split(',').mapNotNull { specifier ->
-                val name = specifier.substringAfter(" as ").trim()
-                name.takeIf { it.isNotEmpty() && it.all { ch -> ch.isLetterOrDigit() || ch == '_' } }
-            }
-        }.toList()
     }
 
     @Test
@@ -499,21 +353,6 @@ class WebUiServingTest {
     }
 
     @Test
-    fun theBrowserPushModuleCallsTheDaemonsOwnPushRoutes() = withServer { ctx ->
-        val push = ctx.get("/lib/push.js")
-        assertEquals(HttpStatusCode.OK, push.status, "GET /lib/push.js is served")
-        assertContentTypeContains(push, "javascript")
-        val body = push.bodyAsText()
-        for (route in listOf(PUSH_VAPID_KEY_PATH, PUSH_SUBSCRIBE_PATH, PUSH_UNSUBSCRIBE_PATH)) {
-            assertTrue(body.contains("\"$route\""), "the page calls the daemon's $route route")
-        }
-        assertTrue(
-            body.contains("\"/sw.js\""),
-            "it registers the worker by the root path its scope depends on",
-        )
-    }
-
-    @Test
     fun daemonServesTheVendoredXtermFromANestedPath() = withServer { ctx ->
         val resp = ctx.get("/vendor/xterm.js")
         assertEquals(HttpStatusCode.OK, resp.status, "GET /vendor/xterm.js (nested) is served")
@@ -593,106 +432,6 @@ class WebUiServingTest {
 
         assertEquals(HttpStatusCode.NotFound, ctx.get("/version").status, "the bare path is the SPA's, and 404s")
     }
-
-
-    @Test
-    fun theCopyableTmuxCommandNamesTheDaemonsOwnSocketInUtf8() = withServer { ctx ->
-        val sessions = ctx.get("/lib/sessions.js").bodyAsText()
-        assertTrue(
-            sessions.contains("\"tmux -u -L $TMUX_SOCKET attach -t \""),
-            "lib/sessions.js builds `tmux -u -L $TMUX_SOCKET attach -t <name>`; the socket label is the " +
-                "daemon's own and `-u` is what keeps the pane's non-ASCII cells from becoming underscores",
-        )
-    }
-
-    @Test
-    fun theServiceWorkerHandWritesTheSameApiPrefixTheModuleDeclares() = withServer { ctx ->
-        val api = ctx.get("/lib/api.js").bodyAsText()
-        val worker = ctx.get("/sw.js").bodyAsText()
-        assertTrue(
-            api.contains("const API_PREFIX = \"$API_PREFIX\";"),
-            "lib/api.js names the prefix once, and it is the daemon's own $API_PREFIX",
-        )
-        for (url in listOf("/sessions", "/push/subscribe", "/push/unsubscribe")) {
-            assertTrue(
-                worker.contains("\"$API_PREFIX$url\""),
-                "the service worker still spells `$API_PREFIX$url`; the two spellings must agree",
-            )
-        }
-    }
-
-    @Test
-    fun theDeepLinkParameterIsTheOneTheServiceWorkerBuilds() = withServer { ctx ->
-        val router = ctx.get("/lib/router.js").bodyAsText()
-        val worker = ctx.get("/sw.js").bodyAsText()
-        assertTrue(
-            router.contains("""export const DEEP_LINK_PARAM = "session";"""),
-            "the router names the deep-link parameter once",
-        )
-        assertTrue(
-            worker.contains("""openWindow(sessionId ? "/?session=" + encodeURIComponent(sessionId) : "/")"""),
-            "the service worker still opens `/?session=<id>`; the two spellings must agree",
-        )
-    }
-
-    @Test
-    fun theAppReachesHistoryOnlyThroughTheRouter() = withServer { ctx ->
-        val app = ctx.get("/app.js").bodyAsText()
-        assertFalse(app.contains("pushState"), "no screen change is hand-rolled outside the router")
-    }
-
-    @Test
-    fun theBoardComponentsEmitOnlyTheSharedVocabularyAndTheStylesheetDressesAllOfIt() = withServer { ctx ->
-        val sources = mapOf(
-            "Board.js" to ctx.get("/components/Board.js").bodyAsText(),
-            "TaskCard.js" to ctx.get("/components/TaskCard.js").bodyAsText(),
-            "TaskDetail.js" to ctx.get("/components/TaskDetail.js").bodyAsText(),
-        )
-        val emitted = mutableSetOf<String>()
-        for ([name, source] in sources) {
-            val tokens = vocabularyTokensIn(source)
-            emitted += tokens
-            for (className in tokens) {
-                assertTrue(
-                    BOARD_VOCABULARY.contains(className),
-                    "$name emits '$className', which BOARD_VOCABULARY does not declare — " +
-                        "style.css is written from that list and would never style it",
-                )
-            }
-        }
-        for (owned in BOARD_OWNED_CLASSES) {
-            assertTrue(
-                emitted.contains(owned),
-                "the board emits the '$owned' class the stylesheet is dressing",
-            )
-        }
-        val css = ctx.get("/style.css").bodyAsText()
-        for (className in BOARD_VOCABULARY) {
-            assertTrue(
-                Regex("\\.${Regex.escape(className)}(?![-\\w])").containsMatchIn(css),
-                "style.css carries no rule for '$className' — a vocabulary word nothing draws",
-            )
-        }
-    }
-
-    @Test
-    fun theProjectNameFieldAcceptsEveryNameTheApiDoes() = withServer { ctx ->
-        val board = ctx.get("/components/Board.js").bodyAsText()
-        assertTrue(
-            board.contains("const PROJECT_NAME_MAX_LENGTH = $PROJECT_NAME_MAX_LENGTH;"),
-            "the board's cap is io.kotgent.task.PROJECT_NAME_MAX_LENGTH ($PROJECT_NAME_MAX_LENGTH), " +
-                "spelled once",
-        )
-        assertTrue(
-            board.contains("maxlength=\${PROJECT_NAME_MAX_LENGTH}"),
-            "and the field is bound to that constant rather than to a second literal beside it",
-        )
-        assertFalse(
-            board.contains("maxlength=\"80\""),
-            "the old hard-coded 80 is gone — it was 20 characters short of what the daemon accepts",
-        )
-    }
-
 
     private class Ctx(val port: Int, val client: HttpClient) {
         suspend fun get(path: String, block: io.ktor.client.request.HttpRequestBuilder.() -> Unit = {}): HttpResponse =
@@ -791,33 +530,6 @@ class WebUiServingTest {
         assertEquals(size, beInt(20), "$what pixel height")
     }
 
-    private fun vocabularyTokensIn(source: String): Set<String> {
-        val found = mutableSetOf<String>()
-        for (value in classAttributeValues(source)) {
-            for (token in CLASS_TOKEN.findAll(value).map { it.value }) {
-                if (token == "board" || token.startsWith("board-") || token.startsWith("task-")) {
-                    found.add(token)
-                }
-            }
-        }
-        return found
-    }
-
-    private fun classAttributeValues(source: String): List<String> {
-        val values = mutableListOf<String>()
-        var at = source.indexOf(CLASS_ATTRIBUTE)
-        while (at >= 0) {
-            val start = at + CLASS_ATTRIBUTE.length
-            when {
-                start >= source.length -> Unit
-                source[start] == '"' -> values += readQuotedValue(source, start + 1)
-                source.startsWith("\${", start) -> values += readInterpolation(source, start + 2)
-            }
-            at = source.indexOf(CLASS_ATTRIBUTE, at + 1)
-        }
-        return values
-    }
-
     private fun readQuotedValue(source: String, from: Int): String {
         var depth = 0
         var at = from
@@ -862,39 +574,10 @@ private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 
 private const val MODE_0700: Int = 0b111_000_000
 
-// Signal-backed state modules checked by both serving and reactive-graph contracts.
 private val STATE_MODULES: List<String> = listOf(
     "/state/sessions.js", "/state/tasks.js", "/state/projects.js",
     "/state/selection.js", "/state/dialog.js", "/state/status.js", "/state/prefs.js",
 )
-
-// Shared list signals whose external assignments are forbidden.
-private val STATE_SIGNAL_MODULES: List<String> = listOf(
-    "state/sessions.js", "state/tasks.js", "state/projects.js",
-)
-
-// Prevent a broken module walk or filter from passing on an empty scan.
-private const val MIN_SCANNED_MODULES: Int = 20
-
-private const val CLASS_ATTRIBUTE: String = "class="
-
-private val CLASS_TOKEN = Regex("[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
-
-private val BOARD_VOCABULARY: Set<String> = setOf(
-    "board", "board-head", "board-identity", "board-project", "board-project-path",
-    "board-new-task",
-    "board-columns", "board-column", "board-column-head", "board-column-switch",
-    "board-show-all-done", "board-drop-target", "board-drop-slot",
-    "task-card", "task-card-handle", "task-card-title", "task-card-meta",
-    "task-blocked", "task-dep-count", "task-sessions", "task-session-dot",
-    "task-detail", "task-detail-head", "task-detail-body", "task-deps",
-    "task-activity", "task-activity-row",
-    "task-badge", "task-badge-unknown",
-)
-
-private val BOARD_BADGE_CLASSES: Set<String> = setOf("task-badge", "task-badge-unknown")
-
-private val BOARD_OWNED_CLASSES: Set<String> = BOARD_VOCABULARY - BOARD_BADGE_CLASSES
 
 private fun locateWebUiDir(): String {
     var dir = currentDir()

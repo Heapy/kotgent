@@ -313,37 +313,22 @@ Real-device release checklist:
   automatic capitalisation, so a name is stored exactly as typed.
 - An installed PWA reaching the board and deleting a project from the palette button rather than `⌘K`.
 
-### Static assets and source-shape checks
+### Static assets and source checks
 
-Static-serving tests should verify externally observable facts: reachability, bytes, media types, cache
-headers, revision addresses, path safety, and precedence over API routes.
+Static-serving tests verify externally observable facts: reachability, bytes, media types, cache headers,
+revision addresses, path safety, and precedence over API routes.
 
 Assertions that scan production Kotlin, JavaScript, HTML, or CSS with `contains`, `indexOf`, or regular
-expressions do not prove execution. They can pass around unreachable or broken code and fail after a safe
-refactor. Use source-shape assertions only when the exact source text is itself the external contract, and
-keep that exception narrow.
+expressions do not prove execution and do not count as coverage. They pass around unreachable or broken
+code and fail after a safe refactor. Do not add one. Prove behavior with an integration test that
+exercises it, and prove pure, tangled logic with a unit test of the module that owns it. When a
+requirement is architectural, prefer a parser, linter, module-graph check, or compiler-enforced boundary.
 
-When the requirement is architectural rather than behavioral, prefer a parser, linter, module-graph check,
-or compiler-enforced boundary. When the requirement is visual, prefer browser assertions or focused visual
-regression images. When it is interactive, execute the interaction.
-
-`test/transport/WebUiServingTest.kt` covers addresses, media types, cache headers, content revisions, path
-safety, route precedence, the served-module registry, and a closed set of source-shape guards. Add a
-source-shape guard only for one of these cases:
-
-- **An agreement between two files that never read each other.** The service worker's hand-written API
-  prefix against the module that declares it; the deep-link parameter; the board's project-name cap
-  against the API's. Each side works alone, so nothing the page does distinguishes agreement from
-  coincidence.
-- **One graph, asserted from the outside.** Signal-owning modules imported by Node use a relative
-  signals-core path that normalizes to the import map target. Two graphs render identically but share no
-  state, so runtime behavior cannot diagnose this split reliably.
-- **The absence of a second implementation of something that must have one owner.** History reached only
-  through `lib/router.js`; the shared lists assigned only inside their state modules, resolved through
-  each file's own import statement so an aliased binding is caught too. A scan is the only thing that can
-  see an owner that does not exist yet.
-Keep the exception closed: a source scan cannot distinguish a fix from a regression unless source shape is
-itself the contract.
+The scans that once lived in `test/transport/WebUiServingTest.kt` are gone; the invariants they watched
+(one reactive graph, one owner of history and of the shared lists, the service worker's hand-written API
+prefix and deep-link parameter, the name caps mirrored from the daemon, dialog padding, the board's class
+vocabulary) are backlog tasks for behavior tests. The one text check that stays reads `index.html`: the PWA
+install surface is a real-device journey Chromium cannot prove.
 
 ## CLI
 

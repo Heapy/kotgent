@@ -3,7 +3,6 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 import {
   ABORT_PROBE,
@@ -27,7 +26,6 @@ import {
   terminalClosed,
   timerFired,
 } from "../../resources/webui/lib/reattach.js";
-import * as machine from "../../resources/webui/lib/reattach.js";
 import { sessionRow } from "./fixtures.js";
 
 const VISIBLE = Object.freeze({ visible: true, activeSessionId: "s1", pending: null });
@@ -482,18 +480,5 @@ describe("the reconnect journey", () => {
     const fired = reduceReattach(back.state, timerFired(back.state.timer), VISIBLE);
     assert.deepEqual(kinds(fired.effects), [PROBE]);
     assert.equal(fired.effects[0].id, "s1");
-  });
-});
-
-// Close the adapter vocabulary so a new reducer effect cannot be silently discarded by app.js.
-describe("the adapter's effect vocabulary", () => {
-  test("app.js carries an arm for every effect kind the machine declares", () => {
-    const source = readFileSync(new URL("../../resources/webui/app.js", import.meta.url), "utf8");
-    const kinds = Object.keys(machine).filter((name) =>
-      /^[A-Z][A-Z_]*$/.test(name) && typeof machine[name] === "string");
-    assert.ok(kinds.length >= 8, "the scan found no effect kinds to check");
-    for (const kind of kinds) {
-      assert.match(source, new RegExp("\\bcase " + kind + ":"), kind + " has no arm in app.js");
-    }
   });
 });

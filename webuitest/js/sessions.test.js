@@ -9,6 +9,7 @@ import {
   byRecentChange,
   displayName,
   patchIfNewer,
+  tmuxAttachCommand,
   upsertIfNewer,
 } from "../../resources/webui/lib/sessions.js";
 import { listOf, patchFrame, sessionRow } from "./fixtures.js";
@@ -266,5 +267,13 @@ describe("a rename and the done-list ordering", () => {
 
     assert.deepEqual(ordered.map((s) => s.id), ["newer", "older"]);
     assert.equal(ordered[1].name, "renamed", "the row moved nowhere, but it did take the new name");
+  });
+});
+
+describe("tmuxAttachCommand", () => {
+  // The socket label mirrors io.kotgent.cli.TMUX_SOCKET by hand; `-u` keeps non-ASCII cells from
+  // becoming underscores in the attached pane.
+  test("names the daemon's own socket and asks for UTF-8", () => {
+    assert.equal(tmuxAttachCommand("kotgent-one"), "tmux -u -L kotgent attach -t kotgent-one");
   });
 });

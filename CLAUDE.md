@@ -108,7 +108,3 @@ Do not archive completed plans.
   order; commit the previewed target on release.
 - End board drags through the shared idempotent abort path, including pointer loss, removal, unmount, and
   sidebar layout changes.
-- `BOARD_VOCABULARY` in `test/transport/WebUiServingTest.kt` closes the board's class vocabulary in three
-  directions: every `board`/`board-*`/`task-*` token the components emit is declared there, every owned
-  word is emitted, and every word carries a rule in `style.css`. Register new structural classes; pure
-  state modifiers stay unprefixed and outside the scan.
