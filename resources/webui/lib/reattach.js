@@ -18,6 +18,7 @@ const GRANT_AND_SCHEDULE = "grantAndSchedule";
 const TERMINAL_CLOSED = "terminalClosed";
 const CANCEL = "cancel";
 const SESSIONS_PRUNED = "sessionsPruned";
+const SESSION_STATE_CHANGED = "sessionStateChanged";
 const HIDDEN = "hidden";
 const TIMER_FIRED = "timerFired";
 const PROBE_RESOLVED = "probeResolved";
@@ -29,9 +30,10 @@ export function initialReattachState() {
 
 export const grant = () => ({ type: GRANT });
 export const grantAndSchedule = () => ({ type: GRANT_AND_SCHEDULE });
-export const terminalClosed = (id) => ({ type: TERMINAL_CLOSED, id: id });
+export const terminalClosed = (id, state = null) => ({ type: TERMINAL_CLOSED, id: id, state: state });
 export const cancel = () => ({ type: CANCEL });
 export const sessionsPruned = (ids) => ({ type: SESSIONS_PRUNED, ids: ids });
+export const sessionStateChanged = (id, state) => ({ type: SESSION_STATE_CHANGED, id: id, state: state });
 export const hidden = () => ({ type: HIDDEN });
 export const timerFired = (gen) => ({ type: TIMER_FIRED, gen: gen });
 export const probeResolved = (gen, row) => ({ type: PROBE_RESOLVED, gen: gen, row: row });
@@ -72,6 +74,7 @@ export function reduceReattach(state, event, env) {
       return schedule(Object.freeze({ ...state, granted: true }), env);
 
     case TERMINAL_CLOSED:
+      if (event.state != null && !isAliveState(event.state)) return unchanged(state);
       return schedule(Object.freeze({ ...state, candidate: event.id }), env);
 
     case CANCEL:
@@ -79,6 +82,12 @@ export function reduceReattach(state, event, env) {
 
     case SESSIONS_PRUNED:
       if (!state.candidate || event.ids.has(state.candidate)) return unchanged(state);
+      return stop(state, { candidate: null, granted: false });
+
+    // Stop cancels before the POST and the pane dies before the answer, so the close that cancel meant
+    // to ignore lands after it. The row's own state is what retires such a candidate.
+    case SESSION_STATE_CHANGED:
+      if (event.id !== state.candidate || isAliveState(event.state)) return unchanged(state);
       return stop(state, { candidate: null, granted: false });
 
     // The candidate survives; the grant does not, because foregrounding issues a fresh one.

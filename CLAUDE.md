@@ -60,7 +60,8 @@ Do not archive completed plans.
 - Keep terminal reattachment decisions in `resources/webui/lib/reattach.js`; `app.js` supplies current
   environment and performs declared effects. Preserve the distinction between hidden and cancelled, do
   not spend a grant before a candidate exists, and keep probe guards ordered. Only control actions named
-  by `affectsAttachment` may defer a resolved probe.
+  by `affectsAttachment` may defer a resolved probe. A candidate whose row is not alive is retired: stop
+  cancels before the POST, and the pane dies before the answer, so the close lands after the cancel.
 - Use `resources/webui/lib/refresh.js` for unversioned sources such as projects. Reads are serial and a
   response overtaken by a later request is discarded. Each read owns its readiness token; every port
   failure must settle the pump and all covered waiters.

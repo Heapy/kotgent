@@ -22,6 +22,7 @@ import {
   probeFailed,
   probeResolved,
   reduceReattach,
+  sessionStateChanged,
   sessionsPruned,
   terminalClosed,
   timerFired,
@@ -396,6 +397,56 @@ describe("hidden, cancel and the snapshot prune", () => {
     const step = reduceReattach(granted.state, sessionsPruned(new Set()), VISIBLE);
     assert.deepEqual(step.state, granted.state);
     assert.deepEqual(step.effects, []);
+  });
+});
+
+describe("a candidate whose session is dead", () => {
+  // Stop dispatches cancel BEFORE the POST, and the daemon kills the pane before it answers, so the
+  // close that cancel meant to ignore arrives after it and names the stopped session as the candidate.
+  test("the stop journey leaves no candidate for the next grant to spend", () => {
+    const stopped = run(initialReattachState(), [
+      grant(),
+      cancel(),
+      terminalClosed("s1"),
+      sessionStateChanged("s1", "stopped"),
+    ]);
+    assert.equal(stopped.state.candidate, null);
+    const back = run(stopped.state, [hidden(), grantAndSchedule()]);
+    const fired = reduceReattach(back.state, timerFired(back.state.timer), VISIBLE);
+    assert.deepEqual(fired.effects, [], "foregrounding has nothing to probe");
+    assert.equal(fired.state.granted, true, "the grant waits for a real drop");
+  });
+
+  test("a close reported with a dead state records no candidate", () => {
+    for (const dead of ["stopped", "crashed", "resumable"]) {
+      const { state, effects } = run(initialReattachState(), [grant(), terminalClosed("s1", dead)]);
+      assert.equal(state.candidate, null, dead + " must not become the candidate");
+      assert.deepEqual(effects, []);
+    }
+  });
+
+  test("a close reported alive, or with no row to judge, still records the candidate", () => {
+    for (const known of ["running", null, undefined]) {
+      const { state } = run(initialReattachState(), [grant(), terminalClosed("s1", known)]);
+      assert.equal(state.candidate, "s1");
+    }
+  });
+
+  test("a crash arriving while the probe is in flight aborts it and retires the candidate", () => {
+    const { state } = probing();
+    const step = reduceReattach(state, sessionStateChanged("s1", "crashed"), VISIBLE);
+    assert.equal(step.state.candidate, null);
+    assert.equal(step.state.probe, null);
+    assert.deepEqual(kinds(step.effects), [ABORT_PROBE]);
+  });
+
+  test("another session's state, or a live state, changes nothing", () => {
+    const { state } = probing();
+    for (const event of [sessionStateChanged("s2", "stopped"), sessionStateChanged("s1", "ready")]) {
+      const step = reduceReattach(state, event, VISIBLE);
+      assert.deepEqual(step.state, state);
+      assert.deepEqual(step.effects, []);
+    }
   });
 });
 

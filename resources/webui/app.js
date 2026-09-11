@@ -31,6 +31,7 @@ import {
   probeFailed,
   probeResolved,
   reduceReattach,
+  sessionStateChanged,
   sessionsPruned,
   terminalClosed,
   timerFired,
@@ -590,6 +591,7 @@ function App() {
     setAttachedId((id) => (id && !ids.has(id) ? null : id));
     pruneReadPosters(ids);
     dispatchReattach(sessionsPruned(ids));
+    for (const row of rows) dispatchReattach(sessionStateChanged(row.id, row.state));
     const wanted = deepLinkRef.current;
     if (wanted) {
       const target = rows.find((s) => s.id === wanted);
@@ -609,6 +611,7 @@ function App() {
 
   const applySessionRow = useCallback((row) => {
     const { changed, previous, winner } = mergeSessionRow(row);
+    if (winner) dispatchReattach(sessionStateChanged(winner.id, winner.state));
     if (changed && previous && !previous.needsAttention && row.needsAttention) {
       notifyAttention(previous);
     }
@@ -629,6 +632,7 @@ function App() {
     // A patch for a row this page has never seen carries too little to publish, so there is nothing to
     // poke a read against either.
     if (!winner) return;
+    dispatchReattach(sessionStateChanged(winner.id, winner.state));
     if (changed && !previous.needsAttention && msg.needsAttention) notifyAttention(previous);
     // Even a stale patch retries a stalled mark-read POST without rewriting the signal.
     if (winner.id === activeSessionId.value) {
@@ -913,6 +917,7 @@ function App() {
         );
         if (updated && updated.id) {
           mergeSessionRow(updated);
+          dispatchReattach(sessionStateChanged(updated.id, updated.state));
         }
         if (action === "stop" || action === "done") {
           if (s.id === activeSessionId.value) setAttachedId(null);
@@ -981,7 +986,7 @@ function App() {
 
   const onTerminalClosed = useCallback((id) => {
     const s = findSession(id);
-    dispatchReattach(terminalClosed(id));
+    dispatchReattach(terminalClosed(id, s ? s.state : null));
     setAttachedId((current) => (current === id ? null : current));
     if (activeSessionId.value === id) setHint(detachedHint(s));
   }, [dispatchReattach]);
