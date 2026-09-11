@@ -580,7 +580,6 @@ textarea:focus-visible {
   padding: 6px 8px;
   touch-action: none;
 }
-/* hide scrollbar gutter */
 #terminal-host .xterm-viewport { overflow: hidden; }
 /* Safari zooms the page when xterm's hidden input is below 16px. */
 #terminal-host .xterm-helper-textarea { font-size: 16px !important; }

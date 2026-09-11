@@ -1,9 +1,4 @@
-// The session/task link rules from resources/webui/lib/sessions.js. They share one module and must stay
-// distinguishable: `sessionTaskLinkDisabledReason` answers whether the command and the picker are offered
-// at all, `sessionTaskLinkSubmitBlocked` re-checks the world immediately before the POST,
-// `normalizeTaskQuery`/`taskMatchesQuery` decide what the picker's search shows, and
-// `sessionTaskLinkOutcome` phrases what the committed link turned out to be. None of them touches the
-// DOM, the network, or a timer, so they are proven here rather than in the browser tier.
+// Pure coverage for link availability, the pre-submit guard, task search, and committed outcomes.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -82,8 +77,7 @@ describe("sessionTaskLinkDisabledReason", () => {
 });
 
 describe("sessionTaskLinkSubmitBlocked", () => {
-  // The picker's guard and this one are different rules that share a matcher. This one runs against the
-  // live world one statement before the POST, so every clause below is a race the operator can lose.
+  // Re-check every mutable input against live state immediately before the POST.
   function submission(overrides) {
     return {
       session: sessionRow({}),
@@ -199,13 +193,7 @@ describe("task query matching", () => {
     assert.equal(taskMatchesQuery(null, normalizeTaskQuery("index")), false);
   });
 
-  // The finding: under a tr/az browser locale toLocaleLowerCase() folds "I" to dotless "ı", so a title
-  // typed in ASCII stops matching an ASCII query. Naming the buggy fold explicitly is not enough to
-  // prove anything: on any non-Turkish host "INDEX".toLocaleLowerCase() and "INDEX".toLowerCase() agree,
-  // so the byte assertions below hold under either implementation and reverting the fix stays green.
-  // The default fold is therefore redirected to the real Turkish one (./turkish-fold.js) around every
-  // call into the rule, which is the same technique the palette's fold uses in typeahead.test.js. What
-  // is asserted is that these rules never *call* the locale-sensitive method.
+  // Substitute the Turkish fold to prove neither side calls the locale-sensitive method.
   test("a Turkish browser locale cannot break the match", () => {
     assert.notEqual(
       INDEX_TASK.title.toLocaleLowerCase("tr"),
@@ -219,11 +207,10 @@ describe("task query matching", () => {
     );
     assert.notEqual("INDEX".toLocaleLowerCase("tr"), "INDEX".toLowerCase());
 
-    // Byte-exact, not just "it matched": a locale fold would return "ındex" for both of these.
+    // A locale-sensitive fold would return dotless characters here.
     assert.equal(underTurkishFold(() => normalizeTaskQuery("INDEX")), "index");
     assert.equal(underTurkishFold(() => normalizeTaskQuery(INDEX_TASK.title)), "index the api");
 
-    // The query side and the task side fold separately, so both are exercised under the substitution.
     assert.equal(
       underTurkishFold(() => taskMatchesQuery(INDEX_TASK, normalizeTaskQuery("index"))),
       true,

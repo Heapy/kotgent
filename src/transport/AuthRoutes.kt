@@ -263,7 +263,7 @@ private suspend fun ApplicationCall.respondToUnconsumedExchangeAndClose(
 internal suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush(
     reason: String = "closing unconsumed $AUTH_EXCHANGE_PATH request body",
 ) {
-    // Pinned to Ktor CIO 3.4.x: the grandparent owns raw-body parsing and closes the accepted socket.
+    // Ktor CIO's grandparent owns raw-body parsing and closes the accepted socket.
     val callJob = coroutineContext[Job] ?: return
     val requestHandlerJob = callJob.parent ?: return
     val connectionPipelineJob = requestHandlerJob.parent ?: return

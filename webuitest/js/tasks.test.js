@@ -188,9 +188,7 @@ describe("open-state classification", () => {
   });
 });
 
-// The board's ordering rule. It is a pure comparator the tier already imports, and until now the only
-// thing proving it was a five-row assertion in the browser tier — one level above where it can be
-// answered. Zeroing the createdAt tiebreak passed the whole node tier before these cases existed.
+// Board order uses state rank, explicit position, creation time, then ref.
 describe("compareTasksByBoardOrder", () => {
   const sorted = (...rows) => rows.slice().sort(compareTasksByBoardOrder).map((row) => row.ref);
 

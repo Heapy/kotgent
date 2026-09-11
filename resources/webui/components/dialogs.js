@@ -815,13 +815,9 @@ export function LinkTaskDialog({
   const [query, setQuery] = useState("");
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
-  // The picker's own unmount guard, not a currency check: a link that fails after the dialog closed has
-  // nothing left to tell anyone.
+  // Suppress errors that arrive after the picker unmounts.
   const aliveRef = useRef(true);
-  // A signal, not state: two Enters can arrive in one task, and a `useState` flag read from the render
-  // closure is still `null` for the second one, which is how the same row used to be POSTed twice. The
-  // guard below reads it with `.peek()`, at event time. That is what `submittingRef` was for, minus the
-  // second copy of the same fact.
+  // The synchronous signal guard prevents two commits in the same task.
   const busyTask = useSignal(null);
   const busyTaskRef = busyTask.value;
   const busy = busyTaskRef !== null;
@@ -829,15 +825,10 @@ export function LinkTaskDialog({
   // Judged on the project read alone: once that list has answered, an archived project is a definite
   // refusal and there is no reason to wait for the task snapshot before saying so.
   const projectUnavailable = projectsStatus.state === READY && !projectActive;
-  // Both sources, one state. A failure carries the sentence the retry control is drawn beside; without
-  // it a 503 on either read was indistinguishable from a read still in flight, forever.
+  // Both reads must settle; failure supplies the retry control's message.
   const readiness = combineReadiness(tasksStatus, projectsStatus);
   const ready = readiness.state === READY;
   const failure = readiness.state === FAILED ? readiness.error : null;
-  // Nothing downstream depends on this list's identity — `openTasksForProject` sorts deterministically
-  // and the typeahead resolves its active row by key value — so a foreign-project frame costs a filter
-  // and a sort, not a re-sorted picker. An identity cache here re-ran the filter on every render anyway
-  // and then compared the result element by element to keep the previous array alive.
   const projectId = initialSession && initialSession.projectId;
   const rows = useMemo(
     () => (projectActive
@@ -847,8 +838,7 @@ export function LinkTaskDialog({
   );
   const normalizedQuery = normalizeTaskQuery(query);
   const results = useMemo(() => {
-    // taskMatchesQuery already admits an empty query; this early return is kept for the array's
-    // identity, which useTypeahead's key list is derived from.
+    // Preserve the source array identity for an empty query.
     if (!normalizedQuery) return rows;
     return rows.filter((task) => taskMatchesQuery(task, normalizedQuery));
   }, [rows, normalizedQuery]);
@@ -864,9 +854,7 @@ export function LinkTaskDialog({
     if (!busy && error && inputRef.current) inputRef.current.focus();
   }, [busy, error]);
 
-  // `typeahead` is declared below and captured, not read, until an event runs: the hook needs `choose`
-  // as its commit callback and `choose` needs the hook's activation, and only one of the two can come
-  // first.
+  // The callback captures `typeahead`, which is read only after both declarations complete.
   const choose = async (task) => {
     if (!task || busyTask.peek() !== null || listLocked) return;
     setError(null);
@@ -883,10 +871,7 @@ export function LinkTaskDialog({
     }
   };
 
-  // The active row is this hook's answer, derived during render and again inside its key handler, so an
-  // Enter in the same frame as the query that produced the list links the row that is drawn. Clearing
-  // the error on `onNavigate` is deliberate and belongs to the keyboard alone: hover and focus activate
-  // passively, or reaching for the retry would erase the sentence saying what went wrong.
+  // Only keyboard navigation clears the error; pointer and focus activation are passive.
   const typeahead = useTypeahead({
     keys: keys,
     token: normalizedQuery,
@@ -954,9 +939,6 @@ export function LinkTaskDialog({
   `;
 }
 
-// The results panel, as early returns in refusal order rather than one five-branch ternary; this is the
-// shape restoreProjectBody above already answers. Everything it reads is derived in the component, so it
-// takes a record rather than thirteen positional arguments.
 function linkTaskBody({
   changed, projectUnavailable, failure, ready, rows, results, query,
   activeTaskRef, busy, busyTaskRef, typeahead, choose, onRetryProjects,

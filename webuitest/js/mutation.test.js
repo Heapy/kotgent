@@ -1,15 +1,4 @@
-// The one mutation runner from resources/webui/lib/mutation.js. It replaced three unrelated idioms that
-// each expressed "is something already running": a status-sentence comparison, a boolean save-in-flight
-// ref, and a pending-action mirror ref. Everything it owns — the lock and the name it publishes — is
-// browser-independent, so it is proven here instead of one level up.
-//
-// The two properties worth stating twice, because the flows in app.js depend on both: the lock is taken
-// synchronously at the call, before the runner's first await, so a second flow entered in the same turn
-// is refused rather than interleaved; and the lock is released only when the whole callback settles, so
-// a mutation's own follow-up read still holds it. Those two are also why the runner hands the callback
-// no currency token: with the lock exclusive, "is my mutation still the newest" has no reachable no.
-// Whether a late outcome may still speak is asked of state/status.js instead, and proven in
-// state-selection.test.js.
+// The shared mutation lock is acquired synchronously and held until the full callback settles.
 
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -109,10 +98,7 @@ describe("runMutation", () => {
     assert.equal(pendingMutation.value, null);
   });
 
-  // The runner passes the callback nothing, and that is the assertion: a currency token here would have
-  // to answer "did a newer mutation start while mine ran", and the two tests above are why it cannot —
-  // the second run is refused before it takes the lock, so no newer mutation exists to supersede the
-  // holder. A flow that has to protect a sentence it already announced asks state/status.js instead.
+  // Exclusivity makes a per-run currency token unnecessary.
   test("the callback is handed no currency token to mistake for one", async () => {
     let handed = "untouched";
     await runMutation("delete-project", (context) => {
@@ -144,9 +130,7 @@ describe("runMutation", () => {
   });
 });
 
-// The palette gates on the presence of a holder name, not on its value, so the sets below can only agree.
-// What that buys is the registry-level fact that `session.rename` carries the pending guard at all; the
-// per-flow direction is proven in the browser, by SessionDialogsTest.
+// The palette gates every registered mutation while any flow holds the lock.
 describe("the palette while a flow holds the lock", () => {
   const BUSY_REASON = "another action is still in progress";
   const active = {

@@ -398,13 +398,8 @@ class TaskCommandsTest {
             )
             assertThat(options.nth(1)).hasClass(ACTIVE_OPTION)
             val readsBeforeSubmit = targetedReads.get()
-            // Synthesized rather than driven, deliberately, and this is the exception the rule allows:
-            // what is being proven is that both keydowns compose *within one task* — the arrow moves the
-            // choice and the Enter that follows it in the same turn commits the row it just moved to,
-            // with no render in between. A real `press()` pair cannot state that, because Playwright
-            // lets the page paint between them and the defect this replaced (an active row reconciled in
-            // a post-paint effect) would pass. Everything else in this file drives real gestures; the
-            // routing of a plain ArrowUp and Enter to this field is proven by the presses above.
+            // Dispatch both keys in one task; separate Playwright presses permit a render between them
+            // and cannot prove that navigation and commit compose synchronously.
             query.evaluate(
                 """el => {
                   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
@@ -540,9 +535,7 @@ class TaskCommandsTest {
             assertEquals(0, writes.get(), "an archived project's retained tasks are never submitted")
         }
 
-    // Finding app.js:388. Readiness used to be a boolean, so a failed GET /projects was indistinguishable
-    // from one still in flight: the picker read "Reading open tasks…" with no error, no retry and no
-    // timeout until a board round-trip or a reload repaired it.
+    // A failed project read must become an actionable picker error, not a perpetual loading state.
     @Test
     fun aFailedProjectReadOffersARetryInThePickerAndTheRetryRecovers() {
         val readFails = AtomicBoolean(true)
@@ -597,10 +590,7 @@ class TaskCommandsTest {
         }
     }
 
-    // Finding app.js:403. Project rows carry no WebSocket frame and only mount and board entry refresh
-    // them, so the session screen judged every picker against the list it read at load: a project that
-    // became live afterwards stayed "no longer active" until the page was reloaded. The harness has no
-    // project-create command, and restoring an archived one exercises the same membership question.
+    // Project rows have no event frame, so opening the picker must refresh live membership.
     @Test
     fun aProjectRestoredAfterPageLoadIsLinkableWithoutAReload() =
         onScenario(TASK_LINK_PICKER_SCENARIO, "link-task-live-project-list") { harness, page ->

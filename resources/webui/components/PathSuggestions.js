@@ -1,17 +1,5 @@
-/* The one directory-path picker. Two dialogs offer one — the New Project directory and the New Session
- * working directory — and they carried the same thing twice: the same debounced POST to
- * /directories/complete with the same abort handling, the same dismiss/choose pair, the same
- * `useTypeahead` call, and the same listbox markup down to the class names.
- *
- * The rows compare by key. `lib/typeahead.js` exists to end the index-plus-`-1`-sentinel representation,
- * and both copies had reintroduced it (`suggestions.indexOf(activeKey)` and then `index === active` in
- * the markup) while the link picker, the third site, already compared refs directly. An index survives
- * here for exactly one reason: `aria-activedescendant` names an element by id, and the option ids are
- * positional, so the index is minted where the id is and nowhere else.
- *
- * What stays with the caller is what actually differs: the text value and its validation, `required`,
- * `disabled`, and the placeholder. The hook owns the suggestion list and answers the keyboard for it.
- */
+/* Shared debounced directory picker. Rows compare by key; a positional index exists only to mint the
+ * option id required by aria-activedescendant. */
 
 import { html } from "htm/preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
@@ -22,14 +10,7 @@ import { useTypeahead } from "./Typeahead.js";
 /** Long enough that walking a path with the arrow keys does not read a directory per keystroke. */
 const DIRECTORY_COMPLETION_DELAY_MS = 150;
 
-/**
- * @param id the field's own element id. The listbox is `<id>-options` and its rows `<id>-option-<n>`,
- *   which is what `aria-controls` and `aria-activedescendant` are built from.
- * @param basePath the Preferences base a relative entry resolves against; a caller that froze it passes
- *   the frozen value and a caller reading a live prop passes that. Normalizing is idempotent.
- * @param inputRef the combobox input, so committing a row returns focus to it.
- * @param onChoose receives the committed path. The caller owns the field's value.
- */
+/** Owns suggestions and keyboard handling while the caller owns the field value and validation. */
 export function usePathSuggestions({ id, basePath, inputRef, onChoose }) {
   const [query, setQuery] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -101,11 +82,8 @@ export function usePathSuggestions({ id, basePath, inputRef, onChoose }) {
     optionRef: typeahead.optionRef,
     activate: typeahead.activate,
     choose: choose,
-    // What `switchMode` needs: the field's value changed underneath a list produced for the old one.
     reset: dismiss,
-    // The caller owns the field's value, so it forwards what was typed rather than the hook reading it.
     onType: setQuery,
-    // Every attribute the combobox contributes to the listbox, so no caller can wire half of them.
     fieldProps: {
       role: "combobox",
       "aria-autocomplete": "list",
@@ -119,7 +97,6 @@ export function usePathSuggestions({ id, basePath, inputRef, onChoose }) {
   };
 }
 
-/** The listbox for a `usePathSuggestions` picker. Renders nothing until the field has rows to offer. */
 export function PathSuggestions({ picker }) {
   if (!picker.open) return null;
   return html`

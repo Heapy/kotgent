@@ -173,7 +173,6 @@ object Commands {
         }
     }
 
-    /** Idempotent. */
     fun uninstall(): Int = try {
         val installer = LaunchdInstaller()
         installer.uninstall()

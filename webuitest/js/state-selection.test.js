@@ -1,14 +1,5 @@
-// The four state groups that moved out of app.js last: the selection (with its generation counter), the
-// open dialog, the announced status sentence, and the preferences. They were `useState` plus a hand-kept
-// `useRef` mirror each, so none of their rules were reachable below a browser. They are reachable here
-// because these modules import signals-core by relative path and touch no DOM, no network and no timer —
-// `lib/prefs.js` reads localStorage, but behind its own try/catch, so it answers defaults under node.
-//
-// The headline case is A→B→A. `selectionGenRef` existed because an async flow that conditionally
-// auto-selects on completion must be refused once the operator has navigated during it — and comparing
-// *ids* cannot see a round trip that ends where it started. Nothing else in the page can answer that
-// question: the mutation lock does not move when the operator does, and `announcementHolds` tracks what
-// was said, not where they went.
+// Browser-independent coverage for selection, dialogs, status, and preferences. Selection generation
+// detects an A→B→A round trip that an id comparison cannot see.
 
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -110,14 +101,12 @@ describe("state/selection.js", () => {
     replaceSessions([sessionRow({ id: "a" }), sessionRow({ id: "b", name: "two" })]);
     selectSessionId("a");
 
-    // The flow captures the selection it was submitted under, then awaits.
     const selectionUnmoved = markSelection();
     const settled = (async () => {
       await Promise.resolve();
       return selectionUnmoved();
     })();
 
-    // Meanwhile the operator goes to B and comes back to A.
     selectSessionId("b");
     selectSessionId("a");
 
@@ -264,10 +253,7 @@ describe("state/status.js", () => {
     assert.deepEqual(status.value, first);
   });
 
-  // The guard a flow uses across an await: it announced that a result is coming, and it may replace that
-  // sentence with the result only while nobody else has spoken. This is what a status *text* comparison
-  // could not do — the case below, where the same sentence is said twice, is exactly the one that
-  // defeated it, and it is reachable: every lifecycle action announces "<Action> in progress…".
+  // A token, rather than message text, decides whether an async flow still owns the announcement.
   test("an announcement holds until something else speaks", () => {
     const mine = say("Link request completed for one; refreshing the session…");
     assert.equal(announcementHolds(mine), true);
@@ -328,8 +314,7 @@ describe("state/prefs.js", () => {
     assert.equal(prefs.value, before, "a declined observation must not even cost a render");
   });
 
-  // Two ways of not applying, told apart: the save flow reports an unreadable body as a failed save and
-  // a superseded one as a save that landed, so a single boolean forced the caller to sanitize twice.
+  // Unreadable and superseded payloads require different caller outcomes.
   test("a payload the daemon's contract cannot describe is declined as unreadable, not as stale", () => {
     const before = prefs.value;
     assert.equal(applyServerPreferences(null), PREFS_UNREADABLE);

@@ -1,25 +1,5 @@
-// The selection rules behind the shared typeahead-listbox primitive
-// (resources/webui/lib/typeahead.js, wired to Preact in resources/webui/components/Typeahead.js).
-//
-// Four sites spelled these rules four times — the command palette, the two directory-path pickers, and
-// the session/task link picker — and disagreed in ways that only a browser could show:
-//
-//   * the link picker reconciled its active row in a post-paint effect, so a query typed and an Enter
-//     pressed in the same frame linked nothing, or the wrong row. Every rule here is a pure function of
-//     the current keys and the last explicit choice, so "what is active" has an answer during render and
-//     again at event time, with no frame in between. `commitsTheRowNavigationJustChose` is that case.
-//   * three sites carried an index with a `-1` sentinel and one carried a ref. An index is a name for a
-//     position, and positions move underneath a live list. Keys are the single representation here; the
-//     `-1` sentinel becomes a `null` active key, which is a value the rules return rather than a number
-//     the callers agree to read as "nothing".
-//   * an IME candidate commit dispatches keydown with `key === "Enter"`, `isComposing === true` and
-//     `keyCode === 229`. The link picker's Enter is the only one in the app that commits a mutating
-//     POST, so `typeaheadIntent` answers "composing" before it answers "commit".
-//
-// The last block covers lib/commands.js, whose `toLocaleLowerCase()` fold made a command containing "I"
-// unfindable under a tr/az browser locale. Node's default locale cannot be changed per test, so the
-// fold itself is replaced for the duration of the check by ./turkish-fold.js: that proves the palette no
-// longer *calls* the locale-sensitive method, which is the actual claim.
+// Pure coverage for keyed typeahead selection, same-task navigation and commit, IME handling, and
+// locale-independent command filtering.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -149,9 +129,7 @@ describe("typeaheadIntent", () => {
 });
 
 describe("navigating and committing", () => {
-  // The defect this primitive exists to remove: ArrowUp and Enter dispatched into the same task, with
-  // no render between them. A row derived at render time is one navigation behind here; a row derived
-  // from the last explicit choice is not.
+  // Navigation and commit must compose without an intervening render.
   test("commitsTheRowNavigationJustChose", () => {
     const options = { autoFirst: true, token: "" };
     let chosen = null;

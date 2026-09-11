@@ -1,11 +1,5 @@
-// The shared session/task/project state in resources/webui/state/. `lib/sessions.js` and `lib/tasks.js`
-// still own the merge arithmetic; these modules own the current value and are the only writers of it,
-// which is what makes the interleave in finding app.js:649 unrepresentable — there is no second copy for
-// three of seven writers to forget.
-//
-// They are provable here because they import signals-core by relative path rather than through the
-// import map: nothing in them touches the DOM, the network, or a timer. `effect()` stands in for a
-// Preact render, so "does this frame cost a render" is an assertion rather than a claim.
+// Shared session, task, and project stores have one writer surface; effects measure whether a merge
+// would notify a subscribed component.
 
 import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -40,7 +34,7 @@ import {
 } from "../../resources/webui/state/projects.js";
 import { patchFrame, sessionRow, taskRow } from "./fixtures.js";
 
-// The modules are singletons, exactly as a browser holds them. Reset the value rather than the module.
+// Reset singleton values between tests.
 function resetState() {
   replaceSessions([]);
   sessionsReadiness.reset();
@@ -50,8 +44,7 @@ function resetState() {
   projectsReadiness.reset();
 }
 
-// Count notifications the way a subscribed component would see them: the first run is the initial
-// subscription, so a frame that costs no render leaves the count where it was.
+// The effect's first run establishes the subscription; later runs count render notifications.
 function countRenders(target) {
   const seen = { renders: 0 };
   seen.stop = effect(() => {
@@ -64,10 +57,7 @@ function countRenders(target) {
 beforeEach(resetState);
 
 describe("session writers compose instead of discarding each other", () => {
-  // The interleave finding app.js:649 describes: `setSessions((prev) => upsertIfNewer(prev, created))`
-  // queued a functional update that the mirror ref never saw, so the very next writer — which read the
-  // mirror — rebuilt the list from a value that predated the queued write and dropped it. One signal
-  // read synchronously by every writer cannot express that.
+  // Every writer must synchronously observe the previous writer's result.
   test("a row written by one writer is visible to the next writer immediately", () => {
     mergeSessionRow(sessionRow({ id: "s1" }));
     const second = mergeSessionRow(sessionRow({ id: "s2", name: "two" }));
@@ -141,10 +131,7 @@ describe("out-of-order and duplicate session frames converge", () => {
 });
 
 describe("the equal-revision rule", () => {
-  // app.js:152 states the intent: "Imperative triggers can retry a failed POST even when unread and seq
-  // do not change." The patch path used to return early whenever the merge produced no new list, which
-  // silently withdrew that retry for exactly the frames that carry it — a redelivered session_update is
-  // the only trigger a stalled read POST gets when nothing about the row changes.
+  // An equal-revision delivery still exposes the winner so callers can retry side effects.
   test("an equal-revision frame still reports a winner, so markReadIfViewing is still reached", () => {
     mergeSessionRow(sessionRow({ rev: 4, unread: 5, lastSeq: 11 }));
 

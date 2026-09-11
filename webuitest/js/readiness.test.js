@@ -1,17 +1,5 @@
-// Readiness from resources/webui/lib/readiness.js. It replaced three booleans — `tasksReady`,
-// `projectsReady`, and the `ready`/`projectUnavailable` pair the link picker derived from them — which
-// between them could spell 64 combinations, of which a handful were legal and none could say "the read
-// failed". That gap is finding app.js:388: one 503 on GET /projects left the picker reading "Reading open
-// tasks…" with no error, no retry and no timeout, until a board round-trip or a reload repaired it.
-//
-// Nothing here touches the DOM, the network, or a timer, so every transition is proven at this tier
-// rather than through a browser. The two rules worth stating twice, because the picker depends on both:
-//
-//   * a terminal `failed` always carries a non-empty sentence. A failure with nothing to say is the
-//     stuck-forever state under a different name.
-//   * `ready` is sticky. A refresh over a good list keeps rendering that list, and a refresh that fails
-//     does not blank it — the picker opens against data it already has, and only a source that has never
-//     succeeded can fail visibly.
+// Readiness distinguishes every terminal outcome, supplies a failure message, and remains ready while
+// previously loaded data is revalidated.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -211,9 +199,7 @@ describe("combineReadiness", () => {
     assert.equal(combineReadiness().state, IDLE);
   });
 
-  // A caller that has not created its readiness yet, or reads one through an optional prop, passes an
-  // absent status. It is read as idle rather than throwing on `.state`, which the picker relies on to
-  // draw "reading…" instead of nothing at all during its first frame.
+  // Optional sources are idle during their first frame.
   test("an absent source is idle, not a crash and not a ready", () => {
     assert.equal(combineReadiness(null).state, IDLE);
     assert.equal(combineReadiness(undefined).state, IDLE);
@@ -230,8 +216,7 @@ describe("the defensive branches", () => {
     assert.equal(readiness.status.value.error, UNKNOWN_FAILURE);
   });
 
-  // The retry control is rendered from the status, not from whether a loader happens to be registered,
-  // so pressing it before or after the owner unregisters must be a no-op rather than a throw.
+  // A retry remains safe after its loader is unregistered.
   test("retrying with no loader registered resolves to nothing", async () => {
     const readiness = createReadiness();
     readiness.fail(readiness.begin(), "offline");

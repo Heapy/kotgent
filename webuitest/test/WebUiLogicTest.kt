@@ -11,11 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-/**
- * Gate for the browser-independent Web UI tier in `webuitest/js/`, which runs under Node's built-in test
- * runner. The tier stays outside `resources/webui/` because `webUiRevision` digests and serves every file
- * under that tree; this class is the only thing that wires it into the aggregate suite.
- */
+/** Runs the browser-independent `webuitest/js/` suite under Node from the aggregate Kotlin suite. */
 class WebUiLogicTest {
 
     @Test
@@ -32,7 +28,7 @@ class WebUiLogicTest {
         val result = runNode(root)
         val report = "\n--- node --test stdout ---\n${result.stdout}\n--- node --test stderr ---\n${result.stderr}"
 
-        // A missing or renamed pattern makes node exit 0 with an empty plan, so the count is load-bearing.
+        // Node can exit successfully with an empty plan, so validate the TAP count.
         val ran = tapCount(result.stdout, TESTS_SUMMARY)
             ?: fail(
                 "the node runner printed no TAP summary line ('$TESTS_SUMMARY <n>'), so it never reached " +
@@ -43,18 +39,14 @@ class WebUiLogicTest {
             "node --test matched no test at all under $jsDir (it exits 0 when its pattern " +
                 "'$TEST_PATTERN' matches nothing). Files seen there: ${testFiles.joinToString()}$report",
         )
-        // A floor, not a per-file count: TAP does not attribute a passing test to the file it came from,
-        // so a file that contributes nothing while another contributes extra stays invisible here. What
-        // it does catch is the whole tier collapsing — a rename, a bad pattern, a file that throws on
-        // import — which is the failure that would otherwise read as a clean pass.
+        // TAP cannot attribute passing tests to files; this floor catches a collapsed tier, not exact coverage.
         assertTrue(
             ran >= testFiles.size,
             "node --test ran $ran tests, fewer than the ${testFiles.size} test files $jsDir holds " +
                 "(${testFiles.joinToString()}), so at least one of them contributed nothing$report",
         )
         assertEquals(0, tapCount(result.stdout, FAIL_SUMMARY) ?: -1, "the JavaScript tier reported failures$report")
-        // A test that exceeds --test-timeout is cancelled, not failed, so the fail count alone would
-        // report a hung test as a clean tier.
+        // Node reports a timed-out test as cancelled rather than failed.
         assertEquals(
             0,
             tapCount(result.stdout, CANCELLED_SUMMARY) ?: -1,
@@ -64,9 +56,7 @@ class WebUiLogicTest {
         assertEquals(0, result.exitCode, "node --test exited non-zero$report")
     }
 
-    // The floor is a prerequisite, so it is asserted before the run rather than discovered as a parse
-    // error somewhere inside a module. Every other record of the number is prose — webuitest/module.yaml,
-    // README.md, docs/TESTING.md and the CI step — and none of them fails a build.
+    // Check the runtime prerequisite before interpreting module parse failures.
     private fun assertNodeMeetsTheFloor() {
         val printed = try {
             val process = ProcessBuilder(NODE, "--version").redirectErrorStream(true).start()
@@ -92,10 +82,7 @@ class WebUiLogicTest {
             "(v$NODE_MAJOR_FLOOR or newer) and re-run. This check never skips."
 
     private fun runNode(root: Path): NodeResult {
-        // --test-timeout turns a test that never settles into a named TAP failure instead of a hang.
-        // Node's runner has no default per-test timeout, and no test in webuitest/js/ sets its own, so
-        // without this a single unresolved promise stalls `./kotlin test` itself. A timed-out test is
-        // reported as cancelled rather than failed, which is why the count is asserted separately above.
+        // Node has no default per-test timeout; cancelled tests are checked separately above.
         val command = listOf(
             NODE, "--test", "--test-reporter=tap", "--test-timeout=$TEST_TIMEOUT_MILLIS", TEST_PATTERN,
         )
@@ -105,10 +92,7 @@ class WebUiLogicTest {
             fail(missingNodeMessage(e.message))
         }
 
-        // Both pipes are drained on their own threads and the watchdog runs before either is joined.
-        // Reading one of them inline would block until the child closed it, so the watchdog would only
-        // be reached after the child had already finished — no help at all against the failure it exists
-        // for, which is a child still alive with its stdout pipe open. A full pipe also stalls the child.
+        // Drain both pipes concurrently so neither the child nor the watchdog can block on a full pipe.
         val out = drain("node-test-stdout", process.inputStream)
         val err = drain("node-test-stderr", process.errorStream)
         if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
@@ -143,8 +127,7 @@ class WebUiLogicTest {
         if (!Files.isDirectory(jsDir)) {
             fail("the browser-independent Web UI tier is missing: $jsDir is not a directory")
         }
-        // Recursive, because TEST_PATTERN is: a test file in a subdirectory would otherwise run without
-        // ever being counted, and the floor below would not notice it going missing.
+        // Match the runner's recursive pattern when validating its test-file floor.
         return Files.walk(jsDir).use { paths ->
             paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(TEST_SUFFIX) }
                 .map { jsDir.relativize(it).toString() }
@@ -153,7 +136,7 @@ class WebUiLogicTest {
         }
     }
 
-    /** The summary sits at the end of the stream; a child's own output is re-emitted as a nested comment. */
+    /** Reads the final TAP summary, skipping nested child output. */
     private fun tapCount(stdout: String, prefix: String): Int? =
         stdout.lineSequence()
             .lastOrNull { it.startsWith("$prefix ") }
@@ -197,8 +180,7 @@ class WebUiLogicTest {
     private companion object {
         const val NODE = "node"
 
-        // The same floor webuitest/module.yaml, README.md, docs/TESTING.md and .github/workflows/ci.yml
-        // state in prose. This is the only copy that can fail a run.
+        // Executable counterpart to the documented Node prerequisite.
         const val NODE_MAJOR_FLOOR = 24
         const val PROJECT_MANIFEST = "project.yaml"
         const val JS_RELATIVE = "webuitest/js"

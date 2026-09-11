@@ -55,17 +55,8 @@ class SessionRevMergeTest {
         }
     }
 
-    // The equal-revision fall-through in app.js's applySessionPatch. A redelivered frame merges into
-    // nothing — the revision arithmetic declines it — and the path deliberately continues to the read
-    // POST anyway, because when unread and seq never move, a redelivery is the only trigger a POST that
-    // already failed will ever get. Re-adding an early `if (!changed) return;` there passes every other
-    // test in this repository.
-    //
-    // The frame is redelivered by dispatching it on the app's own events socket. That is a synthesized
-    // event, which docs/TESTING.md allows only with a reason: the rule exists because a synthesized
-    // *gesture* proves a listener runs rather than that the platform routes the gesture, and there is no
-    // gesture here. What is replayed is the daemon's own frame, byte for byte, on the real socket the
-    // app is listening to — and no fixture can make a daemon send the same revision twice.
+    // Equal-revision frames still retry mark-read. Replay the daemon's own frame on the real socket
+    // because the fixture cannot make the daemon emit the same revision twice.
     @Test
     fun aRedeliveredFrameRetriesAReadPostThatAlreadyFailed() {
         Harness(SESSIONS_SCENARIO).use { harness ->

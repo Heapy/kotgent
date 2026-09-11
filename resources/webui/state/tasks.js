@@ -1,6 +1,4 @@
-// The live task list, held once, on the same terms as state/sessions.js: `lib/tasks.js` owns the
-// revision arithmetic, this module owns the current value and is its only writer. See the header of
-// state/sessions.js for why signals-core is imported by relative path rather than by bare specifier.
+// This module is the sole owner of live task state; lib/tasks.js owns revision arithmetic.
 
 import { computed, signal } from "../vendor/signals-core.module.js";
 import { READY, createReadiness } from "../lib/readiness.js";
@@ -13,10 +11,7 @@ import {
 
 export const tasks = signal([]);
 
-// A destructive confirmation must distinguish an unloaded snapshot from an empty backlog. The task list
-// arrives on the events socket rather than through a read of its own, so it never reaches `failed`: the
-// socket retries forever on its own and announces the outage itself. It uses the same vocabulary as the
-// project list so the link picker asks one question instead of two.
+// Destructive flows must distinguish an unloaded snapshot from a loaded empty backlog.
 export const tasksReadiness = createReadiness();
 
 const taskByRef = computed(() => {

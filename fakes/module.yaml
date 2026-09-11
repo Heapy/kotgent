@@ -1,8 +1,7 @@
 # Shared doubles live in a main module because both `webuicheck` and root tests consume them.
-# There is one fake per store; per-test behavior comes from its race hooks and from a
-# FakeStoreInterceptor, not from a private copy.
-# Toolchain 0.11 resolves root(test) -> fakes -> root(main) as a fragment DAG, not a module cycle.
-# It also has no cross-module test friends, so declarations in `src/` must be public.
+# Per-test behavior comes from race hooks and FakeStoreInterceptor rather than private fake copies.
+# The root(test) -> fakes -> root(main) fragment graph is not a module cycle. Cross-module tests have
+# no friend access, so declarations in `src/` must be public.
 product:
   type: kmp/lib
   platforms: [macosArm64]

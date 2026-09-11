@@ -6,7 +6,7 @@ import org.jetbrains.amper.plugins.TaskAction
 import java.nio.file.Files
 import java.nio.file.Path
 
-// Toolchain 0.11 exposes neither native artifacts nor the build root. Deriving both from outputDir
+// Toolchain exposes neither native artifacts nor the build root. Deriving both from outputDir
 // preserves --build-dir, and the record file avoids build-log prefixes that make stdout unsafe to parse.
 @TaskAction(executionAvoidance = ExecutionAvoidance.Disabled)
 fun printKexePath(

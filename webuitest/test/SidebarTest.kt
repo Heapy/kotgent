@@ -585,8 +585,7 @@ class SidebarTest {
         }
     }
 
-    // The rename half of what the live frame buys: a rename made anywhere else — the CLI's PATCH, a second
-    // tab — reaches this page as a session_update, so the row relabels with no reload and no refetch.
+    // An external rename arrives as a live session update without a reload or refetch.
     @Test
     fun aRenameMadeElsewhereRelabelsTheRowWithoutAReload() {
         signedIn(SESSIONS_SCENARIO, "sidebar-rename-live") { harness, _, page ->

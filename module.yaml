@@ -28,7 +28,7 @@ settings:
     serialization:
       format: json
       version: 1.11.0
-    # Toolchain 0.11.x does not propagate sqliter's -lsqlite3 linker option to the final native link.
+    # SQLiter's linker option does not reach the final native link.
     freeCompilerArgs:
       - -linker-option
       - -lsqlite3

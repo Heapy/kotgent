@@ -348,11 +348,8 @@ fun Browser.fineContext(
 
 fun testResultsDir(): Path = repoRoot.resolve(TEST_RESULTS_RELATIVE).also { Files.createDirectories(it) }
 
-// An uncaught exception in the page is a defect this tier used to ship green. A handler that throws
-// after its visible effect has already committed leaves every DOM assertion true — a click on the New
-// Session mode toggle called a setter that no longer existed, the mode still switched, and the whole
-// suite stayed green. Watching here rather than per test closes the class: every browser test body runs
-// inside `traced`, on pages it opens itself and on the ones login already opened.
+// Capture uncaught errors from every page in the traced context; DOM assertions alone can miss a late
+// handler failure after its visible effect has committed.
 fun BrowserContext.traced(name: String, block: () -> Unit) {
     val slug = name.map { if (it.isLetterOrDigit() || it == '.' || it == '-' || it == '_') it else '-' }
         .joinToString("")

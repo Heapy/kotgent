@@ -5,21 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The one property of `components/Typeahead.js` that its own module header names as the defect class the
- * primitive exists to remove: the choice lives in a `useSignal` created per hook call, so two mounted
- * pickers do not share one active row. A module-level `signal()` there would pass every other tier in
- * this repository, because no screen in the app opens two pickers at once and nothing else mounts the
- * hook twice.
- *
- * The two instances are therefore mounted here, in the page realm, against the served module and the
- * import map the app itself resolves through — the same technique as `SignalsVendorTest`, for the same
- * reason: hooks only run inside a real render, and this claim is about what a second instance sees. The
- * lists deliberately share their keys, because a choice that is not in the other picker's list would be
- * discarded by `resolveActiveKey` and a shared signal would go unnoticed.
- *
- * Navigation is driven by real key presses on a real focused input, not by calling the handler.
- */
+/** Proves two rendered typeahead hooks keep independent choices under real keyboard input. */
 class TypeaheadInstanceTest {
 
     @Test
@@ -48,14 +34,11 @@ class TypeaheadInstanceTest {
                             FIRST,
                         )
 
-                        // And the second instance's own navigation composes from its own choice rather
-                        // than from the first one's.
                         page.locator("#typeahead-probe-input-two").press("ArrowDown")
                         page.locator("#typeahead-probe-input-two").press("ArrowDown")
                         assertThat(active("two", page)).hasText(THIRD)
                         assertThat(active("one", page)).hasText(SECOND)
 
-                        // Enter commits the row its own picker is showing, to its own callback.
                         page.locator("#typeahead-probe-input-one").press("Enter")
                         page.locator("#typeahead-probe-input-two").press("Enter")
                         assertEquals(
@@ -82,9 +65,7 @@ class TypeaheadInstanceTest {
     }
 }
 
-// Two independent pickers over the same option keys. Same keys on purpose: a shared choice signal would
-// otherwise name a row the other list does not offer, which `resolveActiveKey` discards — and the bug
-// would hide behind its own fallback.
+// Identical option keys ensure resolveActiveKey cannot hide a shared signal behind its fallback.
 private val MOUNT_PICKERS: String = """
     async () => {
       const tag = document.querySelector('script[type="importmap"]');

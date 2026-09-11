@@ -13,7 +13,6 @@ class MalformedTaskRefException(val value: String) :
 class UnknownProjectException(val id: ProjectId) :
     RuntimeException("no such project '${id.value}'")
 
-/** Raised when an atomic store write refuses an archived project. */
 class ArchivedProjectException(val id: ProjectId) :
     RuntimeException(
         "project '${id.value}' was deleted — bring it back with `kotgent project restore ${id.value}`",

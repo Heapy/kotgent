@@ -3,7 +3,7 @@ package io.kotgent.store
 import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlDriver
 
-/** Avoids noisy failed-ALTER probes; public because Toolchain 0.11 has no test friend modules. */
+/** Avoids noisy failed-ALTER probes; public because cross-module tests have no friend access. */
 fun SqlDriver.hasColumn(table: String, column: String): Boolean =
     executeQuery(
         identifier = null,
