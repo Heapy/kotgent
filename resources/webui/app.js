@@ -7,7 +7,6 @@ import { html } from "htm/preact";
 import "@preact/signals";
 
 import {
-  AUTH_PATH,
   apiRequest,
   errorMessage,
   isDefiniteAnswer,
@@ -651,17 +650,14 @@ function App() {
   fetchSessionRowRef.current = fetchSessionRow;
 
   // Revision ordering prevents this initial GET from rolling back a concurrent save or WS update.
-  // It is also the installed app's first-load 401 gate; replace avoids a back-button loop.
   useEffect(() => {
     let stopped = false;
     apiRequest("/preferences")
       .then((value) => { if (!stopped) applyServerPreferences(value); })
       .catch((e) => {
         if (stopped) return;
-        if (isUnauthenticated(e)) {
-          window.location.replace(AUTH_PATH);
-          return;
-        }
+        // apiRequest is already leaving for the sign-in page; a sentence nobody reads adds nothing.
+        if (isUnauthenticated(e)) return;
         say("Could not load preferences: " + errorMessage(e), true);
       });
     return () => { stopped = true; };

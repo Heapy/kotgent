@@ -12,6 +12,14 @@ export function isUnauthenticated(error) {
   return !!(error && error.unauthenticated);
 }
 
+// `/auth` is a server-rendered page, not a router screen, so leaving is a location change and `replace`
+// keeps the back button off the signed-out app. Behind a port so the Node tier can observe the call.
+let signOut = () => window.location.replace(AUTH_PATH);
+
+export function setSignOutHandler(handler) {
+  signOut = handler;
+}
+
 // A 4xx is authoritative. A client timeout cannot confirm the daemon's outcome, while missing status
 // and 5xx can recover without changing the request.
 export function isDefiniteAnswer(error) {
@@ -70,7 +78,10 @@ export async function apiRequest(path, options) {
     }
     throw error;
   }
+  // Every read answers 401 the same way, including the reattach probe, whose caller would otherwise
+  // report an expired cookie as a dead session.
   if (resp.status === 401) {
+    signOut();
     const expired = new Error("Signed out — open " + AUTH_PATH + " and enter a sign-in code.");
     expired.unauthenticated = true;
     expired.status = resp.status;
