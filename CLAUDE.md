@@ -7,7 +7,7 @@ Do not archive completed plans.
 
 ## Tooling
 
-- This is a Kotlin/Native project built with Kotlin Toolchain 0.12.0. Use the project-local `./kotlin`
+- This is a Kotlin/Native project built with Kotlin Toolchain 0.12.1. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
 - Run `./kotlin build` before `./kotlin test`: the `webuitest` browser tier executes the `webuicheck`
   binary, and no test task builds it. Every other tier runs from `./kotlin test` alone.
@@ -59,12 +59,14 @@ Do not archive completed plans.
   and screen selection; avoid parallel sources of truth in components.
 - Keep terminal reattachment decisions in `resources/webui/lib/reattach.js`; `app.js` supplies current
   environment and performs declared effects. Preserve the distinction between hidden and cancelled, do
-  not spend a grant before a candidate exists, and keep probe guards ordered. Only control actions named
-  by `affectsAttachment` may defer a resolved probe. A candidate whose row is not alive is retired: stop
-  cancels before the POST, and the pane dies before the answer, so the close lands after the cancel.
+  not spend a grant before a candidate exists, and keep probe guards ordered. A hidden page holds a
+  resolved probe; among pending mutations only the control actions `affectsAttachment` names do. A
+  candidate whose row is not alive is retired: stop cancels before the POST, and the pane dies before the
+  answer, so the close lands after the cancel.
 - Use `resources/webui/lib/refresh.js` for unversioned sources such as projects. Reads are serial and a
-  response overtaken by a later request is discarded. Each read owns its readiness token; every port
-  failure must settle the pump and all covered waiters.
+  response overtaken by a later request is discarded. Each read owns its readiness token. A port that
+  throws must still answer its waiters; a failing `read` or `succeed` is a failed read and never stops
+  the pump.
 - Session, task, project, selection, dialog, status, and preference state lives in signals under
   `resources/webui/state/`, one owner per concern; callers must use that module's writers.
 - A signal module imported by Node must import signals-core by relative path. That path must normalize to
@@ -94,8 +96,11 @@ Do not archive completed plans.
   `components/PathSuggestions.js`.
 - Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
   uppercase `I` differently. Keep `webuitest/js/turkish-fold.js` coverage for every matching rule.
-- In htm templates use `spellcheck=${false}`, `autoCorrect="off"`, and
-  `autocapitalize="off"`; served-DOM tests protect these Preact/browser-specific spellings.
+- In htm templates use `spellcheck=${false}`, `autoCorrect="off"`, and `autocapitalize="off"`; served-DOM
+  tests protect these spellings. `spellCheck=${false}` fails Preact's property test and sets nothing;
+  `spellcheck="false"` reaches the boolean IDL setter, which coerces any non-empty string to on. No DOM
+  property carries `autoCorrect`, so Preact sets a plain attribute in every engine, while lowercase
+  `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
 - A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot

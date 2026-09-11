@@ -1,5 +1,7 @@
-// One synchronous lock serializes daemon mutations through each flow's final follow-up read. The holder
-// name drives UI guards; announcement, selection, and component-lifetime guards remain separate.
+// One synchronous lock serializes daemon mutations through each flow's final follow-up read: releasing
+// after the request alone would let a second flow start while the first is still settling and overwrite
+// its result. The holder name drives UI guards; announcement, selection, and component-lifetime guards
+// remain separate.
 
 import { signal } from "../vendor/signals-core.module.js";
 
