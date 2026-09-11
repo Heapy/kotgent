@@ -23,7 +23,7 @@ import {
   probeResolved,
   reduceReattach,
   sessionStateChanged,
-  sessionsPruned,
+  snapshotApplied,
   terminalClosed,
   timerFired,
 } from "../../resources/webui/lib/reattach.js";
@@ -317,7 +317,7 @@ describe("probeFailed", () => {
   });
 });
 
-describe("hidden, cancel and the snapshot prune", () => {
+describe("hidden, cancel and the reconnect snapshot", () => {
   // Cancellation must spend an unconsumed grant before the ensuing pane death.
   test("cancel spends an unspent grant", () => {
     const granted = run(initialReattachState(), [grant()]);
@@ -332,9 +332,9 @@ describe("hidden, cancel and the snapshot prune", () => {
     assert.equal(step.state.candidate, "s1");
   });
 
-  test("a prune that dropped the candidate spends an unspent grant", () => {
+  test("a snapshot without the candidate spends an unspent grant", () => {
     const armed = run(initialReattachState(), [grant(), terminalClosed("s1")]);
-    const step = reduceReattach(armed.state, sessionsPruned(new Set(["s2"])), VISIBLE);
+    const step = reduceReattach(armed.state, snapshotApplied(new Set(["s2"])), VISIBLE);
     assert.equal(step.state.granted, false);
     assert.equal(step.state.candidate, null);
   });
@@ -380,21 +380,21 @@ describe("hidden, cancel and the snapshot prune", () => {
 
   test("a snapshot that still lists the candidate changes nothing", () => {
     const { state } = probing();
-    const step = reduceReattach(state, sessionsPruned(new Set(["s1", "s2"])), VISIBLE);
+    const step = reduceReattach(state, snapshotApplied(new Set(["s1", "s2"])), VISIBLE);
     assert.deepEqual(step.state, state);
     assert.deepEqual(step.effects, []);
   });
 
-  test("a snapshot that dropped the candidate cancels", () => {
+  test("a snapshot no longer listing the candidate cancels", () => {
     const { state } = probing();
-    const step = reduceReattach(state, sessionsPruned(new Set(["s2"])), VISIBLE);
+    const step = reduceReattach(state, snapshotApplied(new Set(["s2"])), VISIBLE);
     assert.deepEqual(idle(step.state), IDLE);
     assert.deepEqual(kinds(step.effects), [ABORT_PROBE]);
   });
 
   test("a snapshot with no candidate held changes nothing, whatever it lists", () => {
     const granted = run(initialReattachState(), [grant()]);
-    const step = reduceReattach(granted.state, sessionsPruned(new Set()), VISIBLE);
+    const step = reduceReattach(granted.state, snapshotApplied(new Set()), VISIBLE);
     assert.deepEqual(step.state, granted.state);
     assert.deepEqual(step.effects, []);
   });
@@ -470,7 +470,7 @@ describe("the reconnect journey", () => {
     const first = probing();
     const failed = reduceReattach(first.state, probeFailed(first.state.probe.gen, { definite: false }), VISIBLE);
     const regranted = reduceReattach(failed.state, grantAndSchedule(), VISIBLE);
-    const pruned = reduceReattach(regranted.state, sessionsPruned(new Set(["s1"])), VISIBLE);
+    const pruned = reduceReattach(regranted.state, snapshotApplied(new Set(["s1"])), VISIBLE);
     const second = reduceReattach(pruned.state, timerFired(pruned.state.timer), VISIBLE);
     assert.deepEqual(kinds(second.effects), [PROBE]);
   });

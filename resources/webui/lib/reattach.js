@@ -17,7 +17,7 @@ const GRANT = "grant";
 const GRANT_AND_SCHEDULE = "grantAndSchedule";
 const TERMINAL_CLOSED = "terminalClosed";
 const CANCEL = "cancel";
-const SESSIONS_PRUNED = "sessionsPruned";
+const SNAPSHOT_APPLIED = "snapshotApplied";
 const SESSION_STATE_CHANGED = "sessionStateChanged";
 const HIDDEN = "hidden";
 const TIMER_FIRED = "timerFired";
@@ -32,7 +32,7 @@ export const grant = () => ({ type: GRANT });
 export const grantAndSchedule = () => ({ type: GRANT_AND_SCHEDULE });
 export const terminalClosed = (id, state = null) => ({ type: TERMINAL_CLOSED, id: id, state: state });
 export const cancel = () => ({ type: CANCEL });
-export const sessionsPruned = (ids) => ({ type: SESSIONS_PRUNED, ids: ids });
+export const snapshotApplied = (liveIds) => ({ type: SNAPSHOT_APPLIED, liveIds: liveIds });
 export const sessionStateChanged = (id, state) => ({ type: SESSION_STATE_CHANGED, id: id, state: state });
 export const hidden = () => ({ type: HIDDEN });
 export const timerFired = (gen) => ({ type: TIMER_FIRED, gen: gen });
@@ -80,8 +80,8 @@ export function reduceReattach(state, event, env) {
     case CANCEL:
       return stop(state, { candidate: null, granted: false });
 
-    case SESSIONS_PRUNED:
-      if (!state.candidate || event.ids.has(state.candidate)) return unchanged(state);
+    case SNAPSHOT_APPLIED:
+      if (!state.candidate || event.liveIds.has(state.candidate)) return unchanged(state);
       return stop(state, { candidate: null, granted: false });
 
     // Stop cancels before the POST and the pane dies before the answer, so the close that cancel meant

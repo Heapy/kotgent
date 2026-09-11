@@ -32,7 +32,7 @@ import {
   probeResolved,
   reduceReattach,
   sessionStateChanged,
-  sessionsPruned,
+  snapshotApplied,
   terminalClosed,
   timerFired,
 } from "./lib/reattach.js";
@@ -592,7 +592,7 @@ function App() {
     pruneSelection(ids);
     setAttachedId((id) => (id && !ids.has(id) ? null : id));
     pruneReadPosters(ids);
-    dispatchReattach(sessionsPruned(ids));
+    dispatchReattach(snapshotApplied(ids));
     for (const row of rows) dispatchReattach(sessionStateChanged(row.id, row.state));
     const wanted = deepLinkRef.current;
     if (wanted) {
