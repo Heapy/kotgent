@@ -293,6 +293,41 @@ class ProjectDialogTest {
     }
 
     @Test
+    fun aFailedRereadOfALoadedListSaysRefreshNotLoadAndKeepsTheRows() {
+        val failNextLiveRead = AtomicBoolean(false)
+        onProjects(
+            "project-reread-failed-wording",
+            beforeLoad = { _, context ->
+                context.route("**$PROJECTS_API") { route ->
+                    val isLiveRead = route.request().method() == "GET" && !route.request().url().contains('?')
+                    if (isLiveRead && failNextLiveRead.compareAndSet(true, false)) {
+                        route.fulfill(
+                            Route.FulfillOptions()
+                                .setStatus(503)
+                                .setContentType("text/plain")
+                                .setBody("daemon down"),
+                        )
+                    } else {
+                        route.resume()
+                    }
+                }
+            },
+        ) { _, page ->
+            failNextLiveRead.set(true)
+            // Board entry is the one loud refresh; leaving and returning is how the app performs one.
+            page.openPalette()
+            page.runFirstMatch("back to sessions", "Back to sessions")
+            page.openPalette()
+            page.runFirstMatch("task board", "Open the task board")
+
+            assertThat(page.locator(".board-project")).hasText("Alpha Fixture")
+            assertThat(page.projectRow(SELECTED_PROJECT)).hasClass("project-row active")
+            assertThat(page.locator("#board-status")).containsText("Could not refresh projects: daemon down")
+            assertThat(page.locator("#board-status")).not().containsText("Could not load projects")
+        }
+    }
+
+    @Test
     fun aStalledDeleteTimesOutWithAnUnconfirmedOutcomeAndUnlocksTheDialog() {
         val held = AtomicReference<Route?>(null)
         onProjects(

@@ -244,7 +244,9 @@ const reloadProjectsQueue = createSerialRefresh({
   succeed: (rows) => replaceProjects(rows),
   // Failed revalidation preserves rows that have already loaded.
   fail: (token, error) => projectsReadiness.fail(token, projectFailureSentence(error)),
-  report: (error) => say(projectFailureSentence(error), true),
+  report: (error) => say(projectsReadiness.status.value.state === READY
+    ? "Could not refresh projects: " + errorMessage(error)
+    : projectFailureSentence(error), true),
 });
 
 function projectFailureSentence(error) {
