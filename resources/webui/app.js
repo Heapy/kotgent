@@ -15,6 +15,28 @@ import {
   wsUrl,
 } from "./lib/api.js";
 import { writeClipboard } from "./lib/clipboard.js";
+import {
+  ABORT_PROBE,
+  ATTACH,
+  CANCEL_TIMER,
+  HINT_CLEAR,
+  HINT_DEAD,
+  HINT_DETACHED,
+  PROBE,
+  SCHEDULE,
+  cancel as cancelReattachEvent,
+  grant as grantReattach,
+  grantAndSchedule,
+  hidden as pageHidden,
+  initialReattachState,
+  probeFailed,
+  probeResolved,
+  reduceReattach,
+  sessionsPruned,
+  terminalClosed,
+  timerFired,
+} from "./lib/reattach.js";
+import { createSerialRefresh } from "./lib/refresh.js";
 import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
 import { READY } from "./lib/readiness.js";
@@ -211,23 +233,34 @@ function detachedHint(session) {
     : "Terminal detached.";
 }
 
+// Project rows lack revisions and event frames, so ordered reads replace the entire list.
+const reloadProjectsQueue = createSerialRefresh({
+  read: async () => {
+    const response = await fetchProjects();
+    if (Array.isArray(response)) return response;
+    return response && Array.isArray(response.projects) ? response.projects : [];
+  },
+  begin: () => projectsReadiness.begin(),
+  succeed: (rows) => replaceProjects(rows),
+  // Failed revalidation preserves rows that have already loaded.
+  fail: (token, error) => projectsReadiness.fail(token, projectFailureSentence(error)),
+  report: (error) => say(projectFailureSentence(error), true),
+});
+
+function projectFailureSentence(error) {
+  return "Could not load projects: " + errorMessage(error);
+}
+
 function App() {
-  // Reading a signal in the render body is the subscription: these values are never a second copy of
-  // anything, and the writers below are module functions that every caller shares.
+  // Render-body signal reads subscribe this component to the shared stores.
   const sessions = sessionsSignal.value;
   const sessionsReady = sessionsReadiness.status.value.state === READY;
   const tasks = tasksSignal.value;
   const projects = projectsSignal.value;
-  // Readiness is a state, not a flag. A boolean cannot tell "not read yet" from "the read failed", which
-  // is why one failed GET /projects used to strand the link picker on "Reading open tasks…" for the rest
-  // of the page's life. The two statuses travel to the picker as they are; it owns what to draw for each.
+  // Preserve idle, loading, ready, and failed so the picker can distinguish each outcome.
   const taskListStatus = tasksReadiness.status.value;
   const projectListStatus = projectsReadiness.status.value;
-  // The name of the flow holding the mutation lock. Every disabled reason in the palette is derived from
-  // it, and every async closure below reads the same signal rather than a mirror of this value.
   const pendingAction = pendingMutation.value;
-  // Selection, the open dialog, the announced sentence and the preferences are held the same way, each
-  // by the module that owns its writers. Reading them here is what subscribes this component to them.
   const activeId = activeSessionId.value;
   const activeSession = activeSessionSignal.value;
   const dialog = dialogSignal.value;
@@ -257,15 +290,10 @@ function App() {
   const deepLinkRef = useRef(deepLinkSessionId());
   // Announce each outage once so the reconnect loop does not flood the aria-live region.
   const disconnectAnnouncedRef = useRef(false);
-  // A zero-delay boundary prevents Preact batching detach→same-id attach into no state change.
-  const reattachIdRef = useRef(null);
-  const reattachTimerRef = useRef(null);
-  // The AbortController also owns the async liveness result, including repeated checks for one id.
-  const reattachRequestRef = useRef(null);
-  // Foregrounding or event-socket recovery grants one reattach attempt.
-  const reattachAvailableRef = useRef(false);
-  // Project rows have no revision. Serialize refreshes and discard a response once a later read is requested.
-  const projectRefreshRef = useRef({ requested: 0, settled: 0, running: false, waiters: [] });
+  // lib/reattach.js owns decisions; these refs hold machine state and effect handles.
+  const reattachRef = useRef(initialReattachState());
+  const reattachTimersRef = useRef(new Map());
+  const reattachProbesRef = useRef(new Map());
   const projectRefreshStartedRef = useRef(false);
 
   // Capture before xterm/forms; KeyboardEvent.code keeps the shortcut physical across layouts.
@@ -291,123 +319,85 @@ function App() {
     return () => document.removeEventListener("keydown", handler, true);
   }, []);
 
-  const cancelReattach = useCallback(() => {
-    reattachIdRef.current = null;
-    reattachAvailableRef.current = false;
-    const request = reattachRequestRef.current;
-    reattachRequestRef.current = null;
-    if (request) request.abort();
-    if (reattachTimerRef.current !== null) {
-      clearTimeout(reattachTimerRef.current);
-      reattachTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleReattach = useCallback(() => {
-    if (document.visibilityState !== "visible" ||
-        !reattachAvailableRef.current ||
-        reattachTimerRef.current !== null) return;
-    reattachTimerRef.current = setTimeout(async () => {
-      reattachTimerRef.current = null;
-      const id = reattachIdRef.current;
-      // Preserve a grant that arrived before the queued terminal-close callback supplied its id.
-      if (!id || document.visibilityState !== "visible") return;
-      reattachAvailableRef.current = false;
-
-      // The events socket may also be stale; fetch liveness and re-check local intent after awaiting.
-      const controller = new AbortController();
-      const previousRequest = reattachRequestRef.current;
-      reattachRequestRef.current = controller;
-      if (previousRequest) previousRequest.abort();
-      const livenessTimeout = setTimeout(
-        () => controller.abort(),
-        REATTACH_LIVENESS_TIMEOUT_MS,
-      );
-      try {
-        const s = await apiRequest(
-          "/sessions/" + encodeURIComponent(id),
-          { signal: controller.signal },
-        );
-        if (reattachRequestRef.current !== controller) return;
-        if (reattachIdRef.current !== id) return;
-        if (document.visibilityState !== "visible") return;
-        if (activeSessionId.value !== id) {
-          reattachIdRef.current = null;
-          return;
-        }
-        // A pending control action temporarily owns the attachment decision; retain the candidate.
-        if (pendingMutation.value) return;
-        if (!s || !isAliveState(s.state)) {
-          reattachIdRef.current = null;
-          setHint(deadHint(s && s.state));
-          return;
-        }
-
-        reattachIdRef.current = null;
-        setAttachedId(id);
-        setHint(null);
-      } catch (err) {
-        if (reattachRequestRef.current !== controller) return;
-        // Definite failures retire the candidate; transient failures await the next recovery grant.
-        if (isDefiniteAnswer(err)) reattachIdRef.current = null;
-        if (activeSessionId.value === id) setHint(detachedHint(null));
-      } finally {
-        clearTimeout(livenessTimeout);
-        if (reattachRequestRef.current === controller) reattachRequestRef.current = null;
-      }
-    }, 0);
-  }, []);
-
-  const reloadProjects = useCallback((reportFailure = true) => {
-    const refresh = projectRefreshRef.current;
-    const request = ++refresh.requested;
-    const result = new Promise((resolve) => {
-      refresh.waiters.push({ request: request, reportFailure: reportFailure, resolve: resolve });
+  // Stable dispatcher: read the world, reduce, store, then perform effects.
+  const dispatchReattach = useCallback(function dispatch(event) {
+    const step = reduceReattach(reattachRef.current, event, {
+      visible: document.visibilityState === "visible",
+      activeSessionId: activeSessionId.value,
+      pending: pendingMutation.value,
     });
-
-    if (!refresh.running) {
-      refresh.running = true;
-      void (async () => {
-        while (refresh.settled < refresh.requested) {
-          const reading = refresh.requested;
-          const attempt = projectsReadiness.begin();
-          let rows = null;
-          let failure = null;
-          try {
-            const response = await fetchProjects();
-            rows = Array.isArray(response)
-              ? response
-              : (response && Array.isArray(response.projects) ? response.projects : []);
-          } catch (e) {
-            failure = e;
-          }
-
-          // A later request represents a later observation. Never apply or report this older response.
-          if (reading !== refresh.requested) continue;
-          const ready = refresh.waiters.filter((waiter) => waiter.request <= reading);
-          refresh.waiters = refresh.waiters.filter((waiter) => waiter.request > reading);
-          if (failure) {
-            const sentence = "Could not load projects: " + errorMessage(failure);
-            if (ready.some((waiter) => waiter.reportFailure)) say(sentence, true);
-            // Declined once the list has loaded at least once: a failed revalidation leaves the rows the
-            // operator is looking at alone. Only a source that has never answered fails visibly, with the
-            // retry control the picker draws from this state.
-            projectsReadiness.fail(attempt, sentence);
-          } else {
-            replaceProjects(rows);
-          }
-          refresh.settled = reading;
-          for (const waiter of ready) waiter.resolve(failure ? null : rows);
+    reattachRef.current = step.state;
+    for (const effect of step.effects) {
+      switch (effect.kind) {
+        case SCHEDULE: {
+          // The zero-delay boundary prevents Preact batching detach→same-id attach into no state change.
+          const handle = setTimeout(() => {
+            reattachTimersRef.current.delete(effect.gen);
+            dispatch(timerFired(effect.gen));
+          }, 0);
+          reattachTimersRef.current.set(effect.gen, handle);
+          break;
         }
-        refresh.running = false;
-      })();
+        case CANCEL_TIMER: {
+          const handle = reattachTimersRef.current.get(effect.gen);
+          reattachTimersRef.current.delete(effect.gen);
+          if (handle !== undefined) clearTimeout(handle);
+          break;
+        }
+        case PROBE: {
+          // The events socket may also be stale, so liveness is read over HTTP rather than assumed.
+          const controller = new AbortController();
+          reattachProbesRef.current.set(effect.gen, controller);
+          const livenessTimeout = setTimeout(() => controller.abort(), REATTACH_LIVENESS_TIMEOUT_MS);
+          // Release both handles on every outcome.
+          const settle = () => {
+            clearTimeout(livenessTimeout);
+            reattachProbesRef.current.delete(effect.gen);
+          };
+          // Two handlers, not a `.catch` link: a throw while performing the resolved effects would
+          // otherwise be reported as a dead session, for a generation the reducer has already retired.
+          void apiRequest("/sessions/" + encodeURIComponent(effect.id), { signal: controller.signal })
+            .then(
+              (row) => {
+                settle();
+                dispatch(probeResolved(effect.gen, row));
+              },
+              (err) => {
+                settle();
+                dispatch(probeFailed(effect.gen, { definite: isDefiniteAnswer(err) }));
+              },
+            );
+          break;
+        }
+        case ABORT_PROBE: {
+          const controller = reattachProbesRef.current.get(effect.gen);
+          reattachProbesRef.current.delete(effect.gen);
+          if (controller) controller.abort();
+          break;
+        }
+        case ATTACH:
+          setAttachedId(effect.id);
+          break;
+        case HINT_DEAD:
+          setHint(deadHint(effect.state));
+          break;
+        // Only a failed liveness read reaches this generic detached hint.
+        case HINT_DETACHED:
+          setHint(detachedHint(null));
+          break;
+        case HINT_CLEAR:
+          setHint(null);
+          break;
+        default:
+          break;
+      }
     }
-    return result;
   }, []);
+
+  const reloadProjects = useCallback((reportFailure = true) => reloadProjectsQueue(reportFailure), []);
 
   // Project changes have no event frame. Refresh on mount, board entry and foregrounding.
   useEffect(() => {
-    // The picker's retry control asks the readiness for another read; this is the read it gets.
     projectsReadiness.setLoader(reloadProjects);
     const first = !projectRefreshStartedRef.current;
     projectRefreshStartedRef.current = true;
@@ -440,9 +430,7 @@ function App() {
     };
   }, [onBoard, reloadProjects]);
 
-  // The project list is otherwise frozen for the session screen's lifetime — it carries no frame and
-  // only mount and board entry refresh it — so a project created after page load reads as "no longer
-  // active" and an archived one still passes the guard. Judge the picker against a live list instead.
+  // Refresh while the picker is open because project changes have no event frame.
   const linkPickerOpen = dialog !== null && dialog.kind === "link-task";
   useEffect(() => {
     if (linkPickerOpen) reloadProjects(false);
@@ -535,15 +523,13 @@ function App() {
   const selectedProjectId = selectedProject ? selectedProject.id : null;
 
   const showSession = useCallback((session) => {
-    // The selection event and its generation advance together; nothing between here and the navigate
-    // below reads either.
     selectSessionId(session.id);
-    cancelReattach();
+    dispatchReattach(cancelReattachEvent());
     setDrawerOpen(false);
     // The route is the owner of both the visible screen and selected session.
     navigate(sessionPath(session.id));
     if (isAliveState(session.state)) {
-      reattachAvailableRef.current = true;
+      dispatchReattach(grantReattach());
       setAttachedId(session.id);
       setHint(null);
     } else {
@@ -552,7 +538,7 @@ function App() {
     }
     // The caller may hold a row the shared list has not merged yet; judge unread from what it handed us.
     markReadIfViewing(session.id, session.unread, session.lastSeq);
-  }, [cancelReattach]);
+  }, [dispatchReattach]);
 
   const selectSession = useCallback((id) => {
     const session = findSession(id);
@@ -604,7 +590,7 @@ function App() {
     pruneSelection(ids);
     setAttachedId((id) => (id && !ids.has(id) ? null : id));
     pruneReadPosters(ids);
-    if (reattachIdRef.current && !ids.has(reattachIdRef.current)) cancelReattach();
+    dispatchReattach(sessionsPruned(ids));
     const wanted = deepLinkRef.current;
     if (wanted) {
       const target = rows.find((s) => s.id === wanted);
@@ -620,7 +606,7 @@ function App() {
     disconnectAnnouncedRef.current = false;
     // Do not repeat the routine count into the aria-live region after reconnects.
     if (first) say(rows.length + " session(s).");
-  }, [cancelReattach, showSession]);
+  }, [dispatchReattach, showSession]);
 
   const applySessionRow = useCallback((row) => {
     const { changed, previous, winner } = mergeSessionRow(row);
@@ -645,12 +631,7 @@ function App() {
     // poke a read against either.
     if (!winner) return;
     if (changed && !previous.needsAttention && msg.needsAttention) notifyAttention(previous);
-    // Equal and older revisions deliberately fall through to markReadIfViewing instead of returning
-    // early, which is what this path used to do. The redundancy is the point: a redelivered
-    // session_update is the only trigger a stalled read POST gets when unread and seq never change, and
-    // `markReadIfViewing` is written to be that retry. It costs nothing — the merge above already
-    // declined to write the signal, so an unchanged frame subscribes nobody and renders nothing — and it
-    // makes this path uniform with applySessionRow, which has always poked the read on every observation.
+    // Even a stale patch retries a stalled mark-read POST without rewriting the signal.
     if (winner.id === activeSessionId.value) {
       markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
     }
@@ -710,9 +691,8 @@ function App() {
   }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;
-  // Keeping the socket stable also preserves whether a later open is a recovery.
-  const scheduleReattachRef = useRef(scheduleReattach);
-  scheduleReattachRef.current = scheduleReattach;
+  // The deps stay empty: `opened` below is what tells a first open from a recovery, and a torn-down
+  // effect resets it, so a terminal dropped while the daemon was unreachable would never be reattached.
   useEffect(() => {
     let socket = null;
     let timer = null;
@@ -730,11 +710,8 @@ function App() {
         return;
       }
       socket.onopen = () => {
-        if (opened) {
-          // Event-socket recovery grants a fresh owned terminal liveness check.
-          reattachAvailableRef.current = true;
-          scheduleReattachRef.current();
-        }
+        // Event-socket recovery grants a fresh owned terminal liveness check.
+        if (opened) dispatchReattach(grantAndSchedule());
         opened = true;
       };
       socket.onmessage = (ev) => {
@@ -803,27 +780,15 @@ function App() {
   // Mobile suspension may drop the terminal socket. Foregrounding grants one ordered reattach attempt.
   useEffect(() => {
     const reconnectWhenVisible = () => {
-      const visible = document.visibilityState === "visible";
-      reattachAvailableRef.current = visible;
-      if (!visible) {
-        if (reattachTimerRef.current !== null) {
-          clearTimeout(reattachTimerRef.current);
-          reattachTimerRef.current = null;
-        }
-        const request = reattachRequestRef.current;
-        reattachRequestRef.current = null;
-        if (request) request.abort();
-        return;
-      }
-      scheduleReattach();
+      dispatchReattach(document.visibilityState === "visible" ? grantAndSchedule() : pageHidden());
     };
 
     document.addEventListener("visibilitychange", reconnectWhenVisible);
     return () => {
       document.removeEventListener("visibilitychange", reconnectWhenVisible);
-      cancelReattach();
+      dispatchReattach(cancelReattachEvent());
     };
-  }, [cancelReattach, scheduleReattach]);
+  }, [dispatchReattach]);
 
   const startSession = useCallback((body) => {
     const submittedDialog = dialogSignal.value;
@@ -937,7 +902,9 @@ function App() {
         !window.confirm("Mark " + displayName(s) + " done? This stops the agent and hides the session.")) {
       return;
     }
-    if (action === "stop" || action === "done" || action === "resume") cancelReattach();
+    if (action === "stop" || action === "done" || action === "resume") {
+      dispatchReattach(cancelReattachEvent());
+    }
 
     try {
       // The action is the lock's name: lib/commands.js reads it back to decide which controls a
@@ -957,16 +924,14 @@ function App() {
             ? "Marked done. The archive toggle in the sidebar header brings it back."
             : "Session stopped. Resume it to continue.");
         } else if (action === "resume") {
-          reattachAvailableRef.current = true;
+          dispatchReattach(grantReattach());
           // Do not attach over a newer selection or erase the hint that selection installed.
           if (s.id === activeSessionId.value) {
             setAttachedId(s.id);
             setHint(null);
           }
         }
-        // The completion sentence replaces this flow's own "in progress…" and nothing else. Whatever
-        // the operator was told while the request was in flight — a lost connection, most reachably — is
-        // newer than a result they were already told was coming, and is the only notice they get of it.
+        // Replace only this flow's progress message; preserve newer announcements.
         if (announcementHolds(progress)) {
           say(capitalize(action) + " completed for " + displayName(s) + ".");
         }
@@ -974,7 +939,7 @@ function App() {
     } catch (e) {
       say(capitalize(action) + " failed: " + errorMessage(e), true);
     }
-  }, [cancelReattach]);
+  }, [dispatchReattach]);
 
   // Local attach/detach must not race actions that can rewrite attachment state.
   const attach = useCallback(() => {
@@ -983,11 +948,11 @@ function App() {
       say(MUTATION_BUSY_MESSAGE, true);
       return;
     }
-    cancelReattach();
-    reattachAvailableRef.current = true;
+    dispatchReattach(cancelReattachEvent());
+    dispatchReattach(grantReattach());
     setAttachedId(activeSessionId.value);
     setHint(null);
-  }, [cancelReattach]);
+  }, [dispatchReattach]);
 
   const detach = useCallback(() => {
     if (affectsAttachment(pendingMutation.value)) {
@@ -995,10 +960,10 @@ function App() {
       return;
     }
     const s = activeSessionSignal.value;
-    cancelReattach();
+    dispatchReattach(cancelReattachEvent());
     setAttachedId(null);
     setHint(detachedHint(s));
-  }, [cancelReattach]);
+  }, [dispatchReattach]);
 
   // Report async copy results outside the palette because its aria-live region unmounts immediately.
   const copyTmuxCommand = useCallback(async () => {
@@ -1020,12 +985,10 @@ function App() {
 
   const onTerminalClosed = useCallback((id) => {
     const s = findSession(id);
-    reattachIdRef.current = id;
+    dispatchReattach(terminalClosed(id));
     setAttachedId((current) => (current === id ? null : current));
     if (activeSessionId.value === id) setHint(detachedHint(s));
-    // A foreground grant may precede this queued close callback; reschedule once its id is known.
-    if (document.visibilityState === "visible") scheduleReattach();
-  }, [scheduleReattach]);
+  }, [dispatchReattach]);
 
   // Dialogs can close or remount while saving, so component-local busy state cannot serialize PUTs.
   // The shared mutation lock outlives any one dialog instance, so it can.
@@ -1054,7 +1017,6 @@ function App() {
           say("Preferences were saved, but newer settings arrived. Review the current values.");
           return;
         }
-        // Keep the apply decision and close in the same turn.
         closeDialogFrom(submittedDialog);
         const current = serverPrefs.value;
         say(current.basePath.length > 0
@@ -1152,20 +1114,10 @@ function App() {
       closeDialogFrom(submittedDialog);
       const refreshing = say("Link request completed for " + label + "; refreshing the session…");
 
-      // The text-only link response cannot update the badge. Re-read the committed row and let the
-      // normal revision merge arbitrate it against a racing WebSocket frame.
-      //
-      // The session-action lock is held through this read rather than released after the POST, which
-      // reverses the earlier decision recorded here. That decision reasoned that a revision-safe read
-      // must not make unrelated controls wait for its transport timeout; its cost was that a second
-      // link could start while this one was still settling and overwrite what it committed. Ordering
-      // the two links is worth more than the wait, and the wait is bounded: every request carries
-      // API_REQUEST_TIMEOUT_MS (60 s, lib/api.js:4), so a stalled read cannot hold the lock longer than
-      // one transport timeout. Reads that are not part of a mutation stay outside the lock entirely.
+      // Hold the mutation lock through the badge re-read so a second link cannot overtake it. The shared
+      // request timeout bounds the wait; the revision merge arbitrates racing WebSocket frames.
       const fresh = await fetchSessionRow(sessionId);
-      // Do not overwrite feedback the operator received while this read was in flight. The lock keeps a
-      // second mutation out, but not the events socket announcing a lost connection, and that warning is
-      // worth more than the badge sentence it would be replaced by.
+      // Preserve newer feedback, such as an events-socket warning.
       if (!announcementHolds(refreshing)) return;
       const winner = findSession(sessionId) || fresh;
       const outcome = sessionTaskLinkOutcome({ label: label, ref: ref, fresh: fresh, winner: winner });

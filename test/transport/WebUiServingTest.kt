@@ -130,12 +130,7 @@ class WebUiServingTest {
             "the hooks build imports the bare 'preact' specifier",
         )
 
-        // Closed source-shape exception (docs/TESTING.md:291-298): an agreement between two files that
-        // never read each other. The signals adapter is a stock dist build whose bare specifiers only
-        // resolve because index.html's import map names them; neither file can observe the other, and no
-        // running page can report which specifier a module *would* have failed on. That the adapter then
-        // works against the vendored Preact internals is proven by execution, in
-        // webuitest/test/SignalsVendorTest.kt, not here.
+        // The stock signals adapter and import map cannot inspect each other, so pin their specifiers.
         val signals = ctx.get("/_v/$rev/vendor/signals.module.js").bodyAsText()
         for (specifier in listOf("preact", "preact/hooks", "@preact/signals-core")) {
             assertTrue(
@@ -144,17 +139,8 @@ class WebUiServingTest {
             )
         }
 
-        // Same exception, same reason, opposite direction: the state modules must reach the *same*
-        // signals-core instance the adapter above reaches, or their signals would live in a second
-        // reactive graph and no component would ever re-render for them. index.html loads
-        // /_v/<rev>/app.js, so a state module is /_v/<rev>/state/*.js and its relative vendor import
-        // normalizes to the very URL the import map names — the browser then keys one module instance
-        // off that one URL. The bare specifier is not used here because these modules are also imported
-        // by node, which has no resolver for it, and their rules are proven at that tier. Nothing a
-        // running page can report distinguishes one graph from two, so the agreement is asserted here.
-        // lib/mutation.js and lib/readiness.js are in this list for the same reason: they own the
-        // pending-lock signal and the readiness statuses, node imports them directly, and a lock or a
-        // readiness that lives in a graph of its own is worthless.
+        // Node-importable state modules must resolve the same signals-core URL as Preact's adapter;
+        // otherwise their signals live in a reactive graph no rendered component observes.
         val relativeVendorImport = "\"../vendor/signals-core.module.js\""
         for (module in STATE_MODULES + listOf("/lib/mutation.js", "/lib/readiness.js")) {
             val body = ctx.get("/_v/$rev$module").bodyAsText()
@@ -200,7 +186,8 @@ class WebUiServingTest {
             "/lib/paths.js", "/lib/prefs.js", "/lib/api.js", "/lib/sessions.js", "/lib/qr.js",
             "/lib/notify.js", "/lib/push.js", "/lib/agents.js", "/lib/commands.js",
             "/lib/clipboard.js", "/lib/unicode.js", "/lib/mutation.js", "/lib/readiness.js",
-            "/lib/router.js", "/lib/tasks.js", "/lib/typeahead.js",
+            "/lib/router.js", "/lib/tasks.js", "/lib/typeahead.js", "/lib/reattach.js",
+            "/lib/refresh.js",
             "/components/Sidebar.js", "/components/TerminalPane.js", "/components/KeyBar.js",
             "/components/dialogs.js", "/components/CommandPalette.js", "/components/Typeahead.js",
             "/components/PathSuggestions.js",
@@ -227,15 +214,8 @@ class WebUiServingTest {
         )
     }
 
-    // The shared lists have one writer each: the state module that holds them. Three loops used to stand
-    // here asserting that `state/sessions.js` contains "export function mergeSessionRow" and so on, under
-    // the message "the session list has no writer outside mergeSessionRow and its siblings" — a sentence
-    // no second writer could ever make false, while a renamed export already breaks app boot and every
-    // browser test. The contract runs the other way: nothing outside state/ assigns to those signals.
-    // Which name a module would assign through is not fixed — app.js imports `sessions as sessionsSignal`
-    // — so each file's own import statement is read for the local name it binds, and that name is what is
-    // looked for on the left of an assignment. Component-local `useSignal` values (`chosen`, `busyTask`)
-    // are bound by nobody's import and are correctly invisible here.
+    // Shared-list signals may be assigned only by their owning state modules. Resolve aliases from each
+    // import before scanning so callers remain free to choose local binding names.
     @Test
     fun theSharedListsAreWrittenOnlyInsideTheirStateModules() {
         val dir = locateWebUiDir()
@@ -269,7 +249,7 @@ class WebUiServingTest {
         )
     }
 
-    /** Every served `.js` module outside `vendor/` (not ours) and `state/` (the owners themselves). */
+    /** Every first-party served `.js` module outside the state owners. */
     private fun webUiModules(dir: String, rel: String = ""): List<String> {
         val here = if (rel.isEmpty()) dir else "$dir/$rel"
         val found = mutableListOf<String>()
@@ -882,24 +862,18 @@ private fun fileExists(path: String): Boolean = access(path, F_OK) == 0
 
 private const val MODE_0700: Int = 0b111_000_000
 
-// The signal-backed shared state: one module per concern, each the only writer of the state it holds —
-// the three lists, plus the selection (and its generation counter), the open dialog, the announced
-// status sentence and the preferences. They are named once here because two tests need them — the
-// served-module registry and the source-shape check that pins their vendor import to the import map's
-// own target.
+// Signal-backed state modules checked by both serving and reactive-graph contracts.
 private val STATE_MODULES: List<String> = listOf(
     "/state/sessions.js", "/state/tasks.js", "/state/projects.js",
     "/state/selection.js", "/state/dialog.js", "/state/status.js", "/state/prefs.js",
 )
 
-// The three lists a component or app.js could plausibly reach for a writer of. The other four state
-// modules hold a single value each and are written through their own functions the same way.
+// Shared list signals whose external assignments are forbidden.
 private val STATE_SIGNAL_MODULES: List<String> = listOf(
     "state/sessions.js", "state/tasks.js", "state/projects.js",
 )
 
-// A floor under the module walk: if the tree stopped being found, or the filter stopped matching, the
-// scan would pass by reading nothing at all.
+// Prevent a broken module walk or filter from passing on an empty scan.
 private const val MIN_SCANNED_MODULES: Int = 20
 
 private const val CLASS_ATTRIBUTE: String = "class="

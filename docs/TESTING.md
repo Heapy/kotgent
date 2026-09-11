@@ -220,12 +220,13 @@ The wrapper also passes `--test-timeout`: Node's runner has no per-test timeout 
 that never settles would hang `./kotlin test` rather than fail it. A test cut off that way is reported as
 *cancelled* rather than failed, so the cancelled count is asserted alongside the failure count.
 
-What stays out of this tier is as deliberate as what is in it. A module belongs here once it neither touches
-a browser global at import time nor reaches a specifier Node cannot resolve. `lib/qr.js` is the one `lib/`
-module that fails the second test — it imports the bare specifier `"qrcode"`, which only the browser's
-import map resolves — so its rules are proven in the browser tier. `lib/commands.js`, `lib/paths.js` and
-`lib/unicode.js` pass both tests and are proven here only in part; extending their coverage is open work,
-recorded in the README backlog.
+`lib/reattach.js` models terminal reconnect scheduling as state, events, current environment, and declared
+effects. `lib/refresh.js` serializes reads of unversioned sources through explicit ports. Their transition
+and ordering rules belong in this tier; real sockets, daemon restart, and background-tab behavior remain
+browser tests.
+
+A module belongs here only when importing it touches no browser global and every specifier resolves under
+Node. Browser-only import-map dependencies stay in the browser tier.
 
 ### Components and DOM behavior
 
@@ -261,20 +262,11 @@ The browser suite should cover a small set of high-value journeys:
 9. Open session and task deep links from a cold page and after reconnect.
 10. Exercise service-worker and cached-shell update behavior.
 
-This layer exists. `webuitest` is a JVM module of tests only: it drives a real Chromium through Playwright
-for Java against `webuicheck`, a fixture binary that assembles the real server over the shared doubles in
-`fakes`, serves a terminal from a real PTY running a deterministic shell snippet instead of a provider, and
-takes scenario commands on standard input. `webuicheck` proves nothing and must keep proving nothing: its
-scenario files under `webuicheck/src/scenarios/` contain zero assertions, and its own native tests only
-verify that the fixture itself can start. A gate that must *prove* something belongs in `webuitest`,
-where a failure is a red test rather than a binary that quietly exits zero — that is why, for instance, the
-vendored signals adapter is proven by `SignalsVendorTest` and not by a scenario. Each test spawns its own
-harness on an ephemeral port, signs in through the real login form with a single-use ticket, and leaves
-nothing behind outside the checkout.
-Journeys 1, 3, 4, 5, 8, and 9 are covered; 2, 6, and 7 are covered in part, as the dialogs and refusals that
-begin them rather than as the whole round trip; 10 is not covered at all, and neither is anything that needs
-a real push service. The Playwright driver ships its Node runtime inside the Maven artifact, so this layer
-still adds no package manager and no build step.
+`webuitest` drives Chromium through Playwright against the `webuicheck` fixture binary. The fixture assembles
+the real server over shared doubles, serves a real PTY running a deterministic shell snippet, and accepts
+scenario commands over standard input. Assertions belong in `webuitest`, never in fixture scenarios. Each
+test uses an ephemeral port, signs in through the real single-use form, and leaves no state outside the
+checkout. Playwright supplies its own Node runtime, so this tier needs no package manager or build step.
 
 Standards-based behavior should be run in more than one browser engine, but only where the difference is
 measured rather than assumed. Playwright's WebKit does not deliver touch pointers to the page at all, so
@@ -335,29 +327,23 @@ When the requirement is architectural rather than behavioral, prefer a parser, l
 or compiler-enforced boundary. When the requirement is visual, prefer browser assertions or focused visual
 regression images. When it is interactive, execute the interaction.
 
-This is now the whole of `test/transport/WebUiServingTest.kt`: addresses, media types, cache headers,
-content revisions, path safety, precedence over the API, a registry that names every served module exactly
-once, and a closed list of source-shape guards for the claims a running page cannot make. Those claims are
-of three kinds, and a new guard must be one of them:
+`test/transport/WebUiServingTest.kt` covers addresses, media types, cache headers, content revisions, path
+safety, route precedence, the served-module registry, and a closed set of source-shape guards. Add a
+source-shape guard only for one of these cases:
 
 - **An agreement between two files that never read each other.** The service worker's hand-written API
   prefix against the module that declares it; the deep-link parameter; the board's project-name cap
   against the API's. Each side works alone, so nothing the page does distinguishes agreement from
   coincidence.
-- **One graph, asserted from the outside.** Every module that holds a signal — the seven under `state/`
-  plus `lib/mutation.js` and `lib/readiness.js` — imports signals-core by a relative path that normalizes
-  to exactly the URL the import map names, because the bare specifier resolves in a browser and nowhere
-  else while these modules are also imported by Node. Two graphs render identically and share nothing, so
-  a running page cannot report the difference.
+- **One graph, asserted from the outside.** Signal-owning modules imported by Node use a relative
+  signals-core path that normalizes to the import map target. Two graphs render identically but share no
+  state, so runtime behavior cannot diagnose this split reliably.
 - **The absence of a second implementation of something that must have one owner.** History reached only
   through `lib/router.js`; the shared lists assigned only inside their state modules, resolved through
   each file's own import statement so an aliased binding is caught too. A scan is the only thing that can
   see an owner that does not exist yet.
-
-The tier it replaced made 1181 substring assertions over served JavaScript and CSS. One of them spelled
-out the exact line of a defect that the browser tier later found, so that suite had pinned the bug as a
-contract and broke when the bug was fixed. Keep the exception closed; a source scan cannot tell a fix from
-a regression.
+Keep the exception closed: a source scan cannot distinguish a fix from a regression unless source shape is
+itself the contract.
 
 ## CLI
 
