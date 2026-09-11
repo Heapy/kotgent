@@ -10,7 +10,7 @@ import { deferred, flush } from "./fixtures.js";
 /** A recording adapter whose reads are resolved by hand, so ordering is chosen rather than raced. */
 function harness(applyRows = null) {
   const reads = [];
-  const calls = { begin: 0, succeed: [], fail: [], report: [] };
+  const calls = { begin: 0, succeed: [], fail: [], report: [], order: [] };
   let tokens = 0;
   const refresh = createSerialRefresh({
     read: () => {
@@ -22,13 +22,21 @@ function harness(applyRows = null) {
       calls.begin += 1;
       return "token-" + (++tokens);
     },
-    // Recorded after the store has taken the rows, so a store that refuses them records no application.
+    // The real port (state/projects.js) writes the rows before anything downstream can throw, so a
+    // store that throws is recorded as having applied them.
     succeed: (rows) => {
-      if (applyRows) applyRows(rows);
       calls.succeed.push(rows);
+      calls.order.push("succeed");
+      if (applyRows) applyRows(rows);
     },
-    fail: (token, error) => calls.fail.push({ token: token, error: error }),
-    report: (error) => calls.report.push(error),
+    fail: (token, error) => {
+      calls.fail.push({ token: token, error: error });
+      calls.order.push("fail");
+    },
+    report: (error) => {
+      calls.report.push(error);
+      calls.order.push("report");
+    },
   });
   return { refresh: refresh, reads: reads, calls: calls };
 }
@@ -203,8 +211,8 @@ describe("a port that throws", () => {
     const first = h.refresh();
     await flush();
     h.reads[0].resolve(["p1"]);
-    assert.equal(await first, null, "rows the store refused were never loaded");
-    assert.deepEqual(h.calls.succeed, [], "nothing was applied");
+    assert.equal(await first, null, "no caller builds on rows the store could not confirm");
+    assert.deepEqual(h.calls.succeed, [["p1"]], "the rows may well be on screen already");
     assert.equal(h.calls.fail.length, 1);
     assert.equal(h.calls.fail[0].error, boom);
     assert.deepEqual(h.calls.report, [boom], "the operator hears the real reason");
@@ -215,6 +223,17 @@ describe("a port that throws", () => {
     assert.equal(h.reads.length, 2, "the queue is not wedged");
     h.reads[1].resolve(["p2"]);
     assert.deepEqual(await second, ["p2"]);
+  });
+});
+
+describe("failure port order", () => {
+  test("the operator is told before the readiness is failed", async () => {
+    const h = harness();
+    h.refresh(true);
+    await flush();
+    h.reads[0].reject(new Error("503"));
+    await flush();
+    assert.deepEqual(h.calls.order, ["report", "fail"]);
   });
 });
 

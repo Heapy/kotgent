@@ -30,7 +30,8 @@ export function createSerialRefresh({ read, begin, succeed, fail, report }) {
           const ready = queue.waiters.filter((waiter) => waiter.request <= reading);
           queue.waiters = queue.waiters.filter((waiter) => waiter.request > reading);
           queue.settled = reading;
-          // A store that refuses the rows has not applied them, so this read did not load the list.
+          // A store that throws while taking the rows may already have applied them. The read still counts
+          // as failed: no caller builds on rows it cannot confirm, and the readiness gets its retry.
           if (!failure) {
             try {
               succeed(rows);
@@ -40,8 +41,8 @@ export function createSerialRefresh({ read, begin, succeed, fail, report }) {
           }
           try {
             if (failure) {
-              fail(token, failure);
               if (ready.some((waiter) => waiter.reportFailure)) report(failure);
+              fail(token, failure);
             }
           } finally {
             for (const waiter of ready) waiter.resolve(failure ? null : rows);
