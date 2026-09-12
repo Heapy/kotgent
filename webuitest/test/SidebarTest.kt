@@ -16,6 +16,34 @@ import kotlin.test.fail
 class SidebarTest {
 
     @Test
+    fun selectingAndReselectingASessionFocusesItsTerminalForTyping() {
+        signedIn(RESTART_SCENARIO, "sidebar-terminal-focus") { _, _, page ->
+            val host = page.locator("#terminal-host")
+            val input = host.locator(".xterm-helper-textarea")
+            val selections = listOf(
+                "s-restart-a" to "FIRST-SELECTION",
+                "s-restart-a" to "SAME-SELECTION",
+                "s-restart-b" to "OTHER-SELECTION",
+            )
+            for (selection in selections) {
+                val [id, text] = selection
+                page.locator("#session-list .session-row[data-id='$id']").click()
+                assertThat(input).isFocused()
+                assertThat(host).containsText("KOTGENT-RESTART-READY")
+
+                page.keyboard().type(text)
+                page.keyboard().press("Enter")
+                assertThat(host).containsText(text)
+            }
+
+            val row = page.locator("#session-list .session-row[data-id='s-restart-a']")
+            row.focus()
+            page.keyboard().press("Enter")
+            assertThat(input).isFocused()
+        }
+    }
+
+    @Test
     fun theSidebarIsOneFlatListOfEverySessionUntilABasePathIsConfigured() {
         signedIn(SESSIONS_SCENARIO, "sidebar-flat") { _, _, page ->
             assertThat(page.locator("#session-list .session-row")).hasCount(4)

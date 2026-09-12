@@ -254,7 +254,7 @@ function installSwipeScroll(term) {
 }
 
 export function TerminalPane({
-  session, tasks, attachedId, terminalFontSize, terminalUnicode, hint, drawerOpen,
+  session, tasks, attachedId, focusRequest, terminalFontSize, terminalUnicode, hint, drawerOpen,
   sidebarCollapsed, onToggleDrawer, onToggleSidebar, onOpenPalette, onTerminalClosed,
 }) {
   const hostRef = useRef(null);
@@ -456,6 +456,11 @@ export function TerminalPane({
       if (sendBytesRef.current === sendBytes) sendBytesRef.current = null;
     };
   }, [attachedId]);
+
+  // Each sidebar selection requests focus, even when the attachment stays the same.
+  useEffect(() => {
+    if (focusRequest?.sessionId === attachedId) terminalRef.current?.focus();
+  }, [focusRequest]);
 
   /* Install unicode providers on the live attachment. attachedId retriggers for each Terminal, and
    * cancellation prevents out-of-order asynchronous loads from installing stale providers. */

@@ -273,6 +273,7 @@ function App() {
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
   const [attachedId, setAttachedId] = useState(null);
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState(null);
   const [palette, setPalette] = useState(null);
   const [showDone, setShowDone] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
@@ -553,6 +554,11 @@ function App() {
     const session = findSession(id);
     if (session) showSession(session);
   }, [showSession]);
+
+  const selectSidebarSession = useCallback((id) => {
+    selectSession(id);
+    setTerminalFocusRequest({ sessionId: id });
+  }, [selectSession]);
 
   // Route targets wait for their row. A bare "/" intentionally preserves the current terminal.
   const routeSessionId = route.screen === SCREEN_SESSIONS ? route.id : null;
@@ -1239,7 +1245,7 @@ function App() {
       collapsed=${sidebarCollapsed}
       showDone=${showDone}
       sessionsReady=${sessionsReady}
-      onSelect=${selectSession}
+      onSelect=${selectSidebarSession}
       onSelectProject=${selectProject}
       onNewSession=${openNewSession}
       onNewProject=${newProject}
@@ -1279,6 +1285,7 @@ function App() {
         session=${activeSession}
         tasks=${tasks}
         attachedId=${attachedId}
+        focusRequest=${terminalFocusRequest}
         terminalFontSize=${prefs.terminalFontSize}
         terminalUnicode=${prefs.terminalUnicode}
         hint=${hint}
