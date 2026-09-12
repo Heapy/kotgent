@@ -24,7 +24,7 @@ class AttentionTracker {
     }
 }
 
-/** Mirrors the service worker's filter so every push has a visible session to show. */
+/** The notifications route owns the display filter; this predicate keeps attention wakes aligned. */
 private fun SessionMeta.isWaiting(): Boolean = state.needsAttention && !archived
 
 private fun SessionUpdate.isWaiting(): Boolean = state.needsAttention && !archived

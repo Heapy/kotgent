@@ -1,8 +1,10 @@
 package io.kotgent.daemon
 
 import io.kotgent.adapter.extractModel
+import io.kotgent.adapter.codex.extractCodexRateLimits
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionMeta
+import io.kotgent.core.UsageObservation
 import io.kotgent.core.isCanonicalUuid
 import io.kotgent.store.EventStore
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -68,6 +70,14 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
     fun modelOf(providerSessionId: ProviderSessionId): String? =
         rolloutHeadOf(providerSessionId, MODEL_SCAN_BYTES)?.let(::extractModel)
 
+    fun rateLimitsOf(providerSessionId: ProviderSessionId): List<UsageObservation> =
+        rolloutFiles().firstNotNullOfOrNull { file ->
+            if (rolloutFileSessionId(file.name) != providerSessionId) return@firstNotNullOfOrNull null
+            val tail = readTailWithOffset(file.path, TOKEN_COUNT_TAIL_BYTES) ?: return@firstNotNullOfOrNull null
+            // A record without ordering evidence cannot become fresh merely because its tail was scanned.
+            extractCodexRateLimits(tail.bytes, providerSessionId.value, tail.offset).filter { it.source != null }
+        } ?: emptyList()
+
     private fun rolloutHeadOf(providerSessionId: ProviderSessionId, bytes: Int): String? =
         rolloutFiles().firstNotNullOfOrNull { file ->
             if (rolloutFileSessionId(file.name) != providerSessionId) return@firstNotNullOfOrNull null
@@ -106,6 +116,8 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
         const val HEAD_BYTES: Int = 8 * 1024
 
         const val MODEL_SCAN_BYTES: Int = 256 * 1024
+
+        const val TOKEN_COUNT_TAIL_BYTES: Int = 256 * 1024
 
         const val MTIME_SLACK_MILLIS: Long = 2_000
     }

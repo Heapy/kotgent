@@ -505,11 +505,25 @@ textarea:focus-visible {
 .badge-resumable { background: #4a3610; color: #ffe0a3; }
 
 #sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+}
+.sidebar-footer-row {
   align-items: baseline;
   display: flex;
   gap: 8px;
-  margin-top: auto;
-  padding-top: 12px;
+}
+#usage-strip {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+.usage-provider.stale {
+  opacity: 0.5;
+}
+.usage-window {
+  white-space: nowrap;
 }
 .status-line {
   flex: 1 1 auto;

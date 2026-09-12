@@ -1,16 +1,15 @@
 package io.kotgent.push
 
 import io.kotgent.cli.eprintln
-import io.kotgent.core.SessionId
 import io.kotgent.crypto.base64Url
 import io.kotgent.crypto.sha256
 import kotlinx.coroutines.CancellationException
 
 /**
- * Sends payload-less RFC 8030 messages. The service worker fetches current session state, keeping session
- * data out of Apple/Google; per-session topics collapse queued wakes. Failures do not stop other devices
- * and are never retried as stale approvals may already be resolved. Permanent 404/410 endpoints are
- * pruned, while transient failures retain their subscription.
+ * Sends payload-less RFC 8030 messages. The service worker fetches current notifications, keeping their
+ * data out of Apple/Google; topics collapse queued wakes for the same notification. Failures do not stop
+ * other devices and are never retried as stale approvals may already be resolved. Permanent 404/410
+ * endpoints are pruned, while transient failures retain their subscription.
  */
 class PushSender(
     private val store: PushStore,
@@ -21,7 +20,7 @@ class PushSender(
 ) {
 
     /** Resolves the VAPID key only when at least one subscription exists. */
-    suspend fun send(sessionId: SessionId) {
+    suspend fun send(topicKey: String) {
         val subscriptions = try {
             store.list()
         } catch (e: CancellationException) {
@@ -41,9 +40,9 @@ class PushSender(
             return
         }
 
-        val topic = pushTopic(sessionId)
+        val topic = pushTopic(topicKey)
         for (subscription in subscriptions) {
-            deliver(subscription, key, topic, sessionId)
+            deliver(subscription, key, topic, topicKey)
         }
     }
 
@@ -51,7 +50,7 @@ class PushSender(
         subscription: PushSubscription,
         key: String,
         topic: String,
-        sessionId: SessionId,
+        topicKey: String,
     ) {
         val jwt = try {
             vapidToken(subscription.endpoint)
@@ -78,7 +77,7 @@ class PushSender(
             }
             else -> {
                 // Transient failures retain the subscription and drop only this stale-prone message.
-                onError("push: ${subscription.endpoint} returned HTTP $status for session ${sessionId.value}")
+                onError("push: ${subscription.endpoint} returned HTTP $status for topic $topicKey")
             }
         }
     }
@@ -116,9 +115,9 @@ val PUSH_GONE_STATUSES: Set<Int> = setOf(404, 410)
 /** 96 digest bits fit RFC 8030's 32-character topic bound. */
 const val PUSH_TOPIC_LENGTH: Int = 16
 
-/** Hashing hides the session id and satisfies Topic's URL-safe alphabet. */
-fun pushTopic(sessionId: SessionId): String =
-    base64Url(sha256(sessionId.value.encodeToByteArray())).take(PUSH_TOPIC_LENGTH)
+/** Hashing hides the notification key and satisfies Topic's URL-safe alphabet. */
+fun pushTopic(key: String): String =
+    base64Url(sha256(key.encodeToByteArray())).take(PUSH_TOPIC_LENGTH)
 
 fun pushRequestHeaders(
     jwt: String,

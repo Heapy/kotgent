@@ -8,6 +8,7 @@ import io.kotgent.webuicheck.scenarios.sessionsMixedScenario
 import io.kotgent.webuicheck.scenarios.sessionsScenario
 import io.kotgent.webuicheck.scenarios.terminalScenario
 import io.kotgent.webuicheck.scenarios.terminalX10Scenario
+import io.kotgent.webuicheck.scenarios.usageScenario
 
 
 private val SCENARIOS: Map<String, Scenario> = buildScenarioRegistry()
@@ -25,6 +26,7 @@ private fun buildScenarioRegistry(): Map<String, Scenario> {
         restartScenario(),
         terminalScenario(),
         terminalX10Scenario(),
+        usageScenario(),
     ) + boardScenarios()
     val registry = LinkedHashMap<String, Scenario>(all.size)
     for (scenario in all) {

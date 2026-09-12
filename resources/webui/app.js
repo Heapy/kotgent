@@ -112,6 +112,7 @@ import {
   openDialog,
 } from "./state/dialog.js";
 import { announcementHolds, say, status as statusSignal } from "./state/status.js";
+import { mergeUsageWindow, replaceUsage } from "./state/usage.js";
 import {
   PREFS_SUPERSEDED,
   PREFS_UNREADABLE,
@@ -696,6 +697,8 @@ function App() {
     else if (msg.type === "task_row") mergeTaskRow(msg.task);
     else if (msg.type === "task_update") mergeTaskPatch(msg.task);
     else if (msg.type === "task_removed") dropTask(msg.ref);
+    else if (msg.type === "usage_snapshot") replaceUsage(msg.windows);
+    else if (msg.type === "usage_update") mergeUsageWindow(msg.window);
   }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;

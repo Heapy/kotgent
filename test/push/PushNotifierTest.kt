@@ -60,10 +60,10 @@ class PushNotifierTest {
 
             env.store.emit(update("s1", SessionState.needs_approval))
 
-            assertEquals(SessionId("s1"), env.sent.receive(), "the edge notifies about the session that moved")
+            assertEquals("session.attention:s1", env.sent.receive(), "the edge notifies about the session that moved")
             env.store.emit(update("s1", SessionState.needs_approval))
             env.store.emit(update("s2", SessionState.needs_approval))
-            assertEquals(SessionId("s2"), env.sent.receive(), "only the second session's own edge follows")
+            assertEquals("session.attention:s2", env.sent.receive(), "only the second session's own edge follows")
             assertTrue(env.errors.isEmpty(), "a clean run reports nothing: ${env.errors}")
             env.stop()
         }
@@ -81,7 +81,7 @@ class PushNotifierTest {
             env.store.emit(update("s1", SessionState.needs_approval, archived = true))
             env.store.emit(update("s2", SessionState.needs_approval))
 
-            assertEquals(SessionId("s2"), env.sent.receive(), "the first notification is the first real edge")
+            assertEquals("session.attention:s2", env.sent.receive(), "the first notification is the first real edge")
             env.stop()
             assertTrue(env.sent.tryReceive().isFailure, "and nothing else was queued behind it")
         }
@@ -98,7 +98,7 @@ class PushNotifierTest {
             env.store.emit(update("s1", SessionState.needs_approval))
             env.store.emit(update("s2", SessionState.needs_approval))
 
-            assertEquals(SessionId("s2"), env.sent.receive(), "only the session that actually changed notifies")
+            assertEquals("session.attention:s2", env.sent.receive(), "only the session that actually changed notifies")
             env.stop()
             assertTrue(env.sent.tryReceive().isFailure, "the already-waiting session never notified")
         }
@@ -129,7 +129,7 @@ class PushNotifierTest {
             env.store.awaitSubscriber()
             env.store.emit(update("s1", SessionState.needs_approval))
             assertEquals(
-                SessionId("s1"),
+                "session.attention:s1",
                 env.sent.receive(),
                 "the first update accepted after readiness is evaluated against the completed baseline",
             )
@@ -198,9 +198,9 @@ class PushNotifierTest {
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
-            assertEquals(SessionId("s1"), env.sent.receive())
+            assertEquals("session.attention:s1", env.sent.receive())
             env.store.emit(update("s2", SessionState.needs_approval))
-            assertEquals(SessionId("s2"), env.sent.receive())
+            assertEquals("session.attention:s2", env.sent.receive())
 
             assertEquals(1, env.calls.countOf("listSessions"), "the snapshot is a baseline, not a per-update refresh")
             env.stop()
@@ -221,7 +221,7 @@ class PushNotifierTest {
             env.store.emitReliableOnly(update("reliable", SessionState.needs_approval))
 
             assertEquals(
-                SessionId("reliable"),
+                "session.attention:reliable",
                 env.sent.receive(),
                 "attention tracking uses the store's ordered reliable signal",
             )
@@ -238,7 +238,7 @@ class PushNotifierTest {
             var first = true
             val env = Env(
                 beforeSend = { id ->
-                    if (first && id == SessionId("first")) {
+                    if (first && id == "session.attention:first") {
                         first = false
                         firstDeliveryStarted.complete(Unit)
                         releaseFirstDelivery.await()
@@ -256,15 +256,15 @@ class PushNotifierTest {
             env.store.emit(update("processed-barrier", SessionState.running))
 
             releaseFirstDelivery.complete(Unit)
-            assertEquals(SessionId("first"), env.sent.receive())
+            assertEquals("session.attention:first", env.sent.receive())
             assertEquals(
-                SessionId("burst-${burstSize - 1}"),
+                "session.attention:burst-${burstSize - 1}",
                 env.sent.receive(),
                 "only the latest pending wake survives the blocked delivery",
             )
 
             env.store.emit(update("sentinel", SessionState.needs_approval))
-            assertEquals(SessionId("sentinel"), env.sent.receive(), "a later edge still wakes delivery normally")
+            assertEquals("session.attention:sentinel", env.sent.receive(), "a later edge still wakes delivery normally")
             env.stop()
             assertTrue(env.sent.tryReceive().isFailure, "no stale burst remains queued")
         }
@@ -274,14 +274,14 @@ class PushNotifierTest {
     @Test
     fun aThrowingSenderDoesNotStopTheCollector() = runBlocking {
         withTimeout(20.seconds) {
-            val env = Env(sessions = emptyList(), failSendFor = setOf(SessionId("s1"))).start(this)
+            val env = Env(sessions = emptyList(), failSendFor = setOf("session.attention:s1")).start(this)
             env.awaitSeeded()
 
             env.store.emit(update("s1", SessionState.needs_approval))
-            assertEquals(SessionId("s1"), env.sent.receive(), "the failing send was still attempted")
+            assertEquals("session.attention:s1", env.sent.receive(), "the failing send was still attempted")
 
             env.store.emit(update("s2", SessionState.needs_approval))
-            assertEquals(SessionId("s2"), env.sent.receive(), "and the next update is still delivered")
+            assertEquals("session.attention:s2", env.sent.receive(), "and the next update is still delivered")
             env.stop()
             assertTrue(
                 env.errors.any { it.contains("s1") },
@@ -298,7 +298,7 @@ class PushNotifierTest {
 
             env.store.emit(update("s1", SessionState.needs_approval))
 
-            assertEquals(SessionId("s1"), env.sent.receive(), "updates are still collected without a baseline")
+            assertEquals("session.attention:s1", env.sent.receive(), "updates are still collected without a baseline")
             env.stop()
             assertTrue(
                 env.errors.any { it.contains("database is locked") },
@@ -327,8 +327,8 @@ class PushNotifierTest {
         sessions: List<SessionMeta> = emptyList(),
         beforeListSessions: (suspend () -> Unit)? = null,
         failListSessions: Boolean = false,
-        failSendFor: Set<SessionId> = emptySet(),
-        beforeSend: suspend (SessionId) -> Unit = {},
+        failSendFor: Set<String> = emptySet(),
+        beforeSend: suspend (String) -> Unit = {},
     ) {
         val calls = RecordingInterceptor()
 
@@ -346,7 +346,7 @@ class PushNotifierTest {
             }
         }
 
-        val sent = Channel<SessionId>(Channel.UNLIMITED)
+        val sent = Channel<String>(Channel.UNLIMITED)
 
         val errors = mutableListOf<String>()
 

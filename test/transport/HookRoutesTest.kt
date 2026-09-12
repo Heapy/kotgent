@@ -415,6 +415,7 @@ class HookRoutesTest {
         store: EventStore,
         paneLookup: suspend (PaneId) -> SessionId? = { seededPanes[it] },
         onProviderIdRebound: suspend (SessionId) -> Unit = {},
+        onTurnCompleted: suspend (SessionId) -> Unit = {},
         block: suspend (port: Int, client: HttpClient) -> Unit,
     ) = runBlocking {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
@@ -422,6 +423,7 @@ class HookRoutesTest {
                 val _ = codexHookRoutes(
                     { token }, paneLookup, store, paneLookupGraceMillis = 0,
                     onProviderIdRebound = onProviderIdRebound,
+                    onTurnCompleted = onTurnCompleted,
                 )
             }
         }
@@ -452,6 +454,32 @@ class HookRoutesTest {
         if (token != null) header(CodexHookConfig.HOOK_TOKEN_HEADER, token)
         if (pane != null) header(CodexHookConfig.TMUX_PANE_HEADER, pane)
         setBody(body)
+    }
+
+    @Test
+    fun aCodexStopDispatchesTurnCompletionAfterTheEventHasCommitted() {
+        val store = RecordingEvents()
+        val completions = Channel<SessionId>(Channel.UNLIMITED)
+        withCodexIngress(store.events, onTurnCompleted = { id ->
+            assertEquals(AgentEvent.TurnCompleted, store.appended.receive().event)
+            completions.send(id)
+        }) { port, client ->
+            assertEquals(HttpStatusCode.OK, client.postCodexHook(port, CodexHookConfig.USER_PROMPT_SUBMIT).status)
+            assertEquals(AgentEvent.TurnStarted, store.appended.receive().event)
+            assertTrue(completions.tryReceive().isFailure)
+            assertEquals(HttpStatusCode.OK, client.postCodexHook(port, CodexHookConfig.STOP).status)
+            assertEquals(session, completions.receive())
+        }
+        completions.close()
+    }
+
+    @Test
+    fun aFailedTurnCompletionCallbackDoesNotUndoAnAcceptedCodexStop() {
+        val store = RecordingEvents()
+        withCodexIngress(store.events, onTurnCompleted = { error("capture unavailable") }) { port, client ->
+            assertEquals(HttpStatusCode.OK, client.postCodexHook(port, CodexHookConfig.STOP).status)
+            assertEquals(AgentEvent.TurnCompleted, store.appended.receive().event)
+        }
     }
 
     @Test

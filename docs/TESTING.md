@@ -171,6 +171,13 @@ The contract should cover:
 Fixture tests protect known formats. A separate scheduled compatibility probe may inspect supported provider
 CLIs without starting a model turn, so upstream format drift is detected before a release depends on it.
 
+Usage capture has separate executable boundaries: the generated Claude script preserves raw input,
+stdout and exit status while capture stalls or fails; ingress tests use real HTTP and SQLite; Codex
+fixtures exercise bounded rollout tails, record ordering and unit conversion. The verified provider
+versions and live-probe limits are recorded in [usage-limits-research.md](usage-limits-research.md).
+Before release, also launch a session with the operator's custom status line and check its visual output;
+edit the user-scope command and verify the next session picks up the change.
+
 ## Process, filesystem, and operating-system edges
 
 Behavior that depends on the host must be tested against the host. Use terminating helper executables and
@@ -268,6 +275,19 @@ scenario commands over standard input. Assertions belong in `webuitest`, never i
 test uses an ephemeral port, signs in through the real single-use form, and leaves no state outside the
 checkout. Playwright supplies its own Node runtime, so this tier needs no package manager or build step.
 
+The usage fixture adds a real in-memory SQLite store and a `usage` scenario command. `UsageStripTest`
+proves snapshots, live updates, durations, listener restart snapshots and stale-heartbeat behavior.
+Let the initial render effects establish the socket before pausing Playwright's clock; freezing it before navigation
+also freezes the effects being tested. Script, ingress, socket and browser coverage is compositional,
+not evidence of a live long-running provider turn through the assembled feature.
+
+For early resets, real SQLite tests cover source admission, atomic history, generations and reopen.
+`UsageResetNotifierTest` covers eligibility, retries, interrupted acknowledgement and slow workers;
+`DaemonUsageStartupTest` verifies that recovered inbox data is readable over HTTP before its wake runs,
+including push-disabled startup and failure cleanup. The actual classic service worker runs under a
+Node VM to prove typed display, deadlines, fallback and click routing. These checks do not establish
+delivery by a device's push service.
+
 Standards-based behavior should be run in more than one browser engine, but only where the difference is
 measured rather than assumed. Playwright's WebKit does not deliver touch pointers to the page at all, so
 every gesture test is Chromium-only today, and a second engine is worth adding for a given test on the day
@@ -280,6 +300,10 @@ notification permission prompts.
 
 Real-device release checklist:
 
+- An installed PWA receives an early weekly-reset push whose text includes the percent spent before the
+  reset and when that reading was seen. Tapping it opens the root view from a closed app and from an
+  already open task/session; attention notifications still open their session. Check repeated wakes on
+  two devices: reading on one must not consume the other's item.
 - On iOS and Android, long-press a board card's title and linked-session name; neither a text-selection
   menu nor a link callout should appear, while a tap should still open the task or session.
 - Both project dialogs on a phone and a tablet: the swipe handle, the compensated padding, and backdrop

@@ -31,6 +31,7 @@ import kotlin.test.fail
 // The JVM browser tests spawn the native harness because Playwright cannot drive Kotlin/Native in-process.
 // Each login needs a fresh context: cookies are host-scoped, not port-scoped, but harness tokens differ.
 const val EMPTY_SCENARIO: String = "empty"
+const val USAGE_SCENARIO: String = "usage"
 const val SESSIONS_SCENARIO: String = "sessions"
 const val SESSIONS_MIXED_SCENARIO: String = "sessions-mixed"
 const val ATTENTION_SCENARIO: String = "attention"

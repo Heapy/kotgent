@@ -6,6 +6,7 @@ import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.SessionState
+import io.kotgent.core.UsageSource
 import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -256,6 +257,56 @@ class CodexRolloutScanTest {
         placeRolloutWithModel(codexDir, "2026", "07", "24", uuid('b'), cwd = "/work/shared", model = "gpt-6")
 
         assertNull(CodexRolloutScan(codexDir).modelOf(mine))
+    }
+
+    @Test
+    fun quotaReadsTheRolloutTailBeyondTheModelHeadWithStableRecordProvenance() = runBlocking {
+        withTimeout(10.seconds) {
+            val codexDir = makeCodexDir()
+            val mine = uuid('a')
+            placeRolloutWithModel(codexDir, "2026", "09", "11", mine, cwd = "/work/mine", model = "gpt-5.5")
+            val file = files.last()
+            val head = requireNotNull(readHead(file, CodexRolloutScan.MODEL_SCAN_BYTES))
+            val padding = "é🙂".repeat(CodexRolloutScan.TOKEN_COUNT_TAIL_BYTES / 2)
+            val quota = """{"timestamp":"2026-09-11T18:05:58.392Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":58,"window_minutes":10080,"resets_at":1789435330}}}}"""
+            val beforeQuota = "$head{\"type\":\"padding\",\"payload\":\"$padding\"}\n"
+            val contents = "$beforeQuota$quota\n{\"unfinished\":"
+            writeFile(file, contents)
+
+            val scan = CodexRolloutScan(codexDir)
+            val usage = scan.rateLimitsOf(mine).single()
+            assertEquals(58.0, usage.usedPercent)
+            assertEquals(604_800L, usage.windowSeconds)
+            assertEquals(1_789_435_330_000L, usage.resetsAt)
+            assertEquals(UsageSource(mine.value, beforeQuota.encodeToByteArray().size.toLong(), 1_789_149_958_392L), usage.source)
+            assertEquals(usage, scan.rateLimitsOf(mine).single(), "reading the same record never freshens it")
+            val shifted = contents + "\n{\"type\":\"message\",\"text\":\"" + "é🙂".repeat(500) + "\"}\n"
+            writeFile(file, shifted)
+            assertEquals(usage, scan.rateLimitsOf(mine).single(), "moving the bounded tail does not change the record's offset")
+            val secondQuota = quota.replace("\"used_percent\":58", "\"used_percent\":59")
+            writeFile(file, "$shifted$secondQuota\n")
+            val second = scan.rateLimitsOf(mine).single()
+            assertEquals(59.0, second.usedPercent)
+            assertEquals(UsageSource(mine.value, shifted.encodeToByteArray().size.toLong(), 1_789_149_958_392L), second.source)
+            assertTrue(second.source!!.revision > usage.source!!.revision, "distinct records sharing a timestamp still advance")
+            assertEquals("gpt-5.5", scan.modelOf(mine), "model extraction still reads the head")
+            assertTrue(scan.rateLimitsOf(uuid('b')).isEmpty(), "the source is keyed by provider id")
+        }
+    }
+
+    @Test
+    fun quotaWithoutARecordTimestampCannotBeAdmittedByTheProductionScanner() = runBlocking {
+        withTimeout(10.seconds) {
+            val codexDir = makeCodexDir()
+            val mine = uuid('c')
+            placeRollout(codexDir, "2026", "09", "11", mine, cwd = "/work/mine")
+            val quota = """{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":20}}}}"""
+            val previous = """{"timestamp":"2026-09-11T18:05:58.392Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":19}}}}"""
+            writeFile(files.last(), "$previous\n$quota\n")
+
+            assertTrue(CodexRolloutScan(codexDir).rateLimitsOf(mine).isEmpty())
+            assertTrue(CodexRolloutScan("/nonexistent/kotgent-test-codex").rateLimitsOf(mine).isEmpty())
+        }
     }
 
     @Test

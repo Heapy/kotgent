@@ -24,7 +24,7 @@ import kotlinx.coroutines.withContext
  */
 class PushNotifier(
     private val store: EventStore,
-    private val send: suspend (SessionId) -> Unit,
+    private val send: suspend (String) -> Unit,
     private val tracker: AttentionTracker = AttentionTracker(),
     private val onError: (String) -> Unit = ::eprintln,
 ) {
@@ -91,7 +91,7 @@ class PushNotifier(
 
     private suspend fun deliver(sessionId: SessionId) {
         try {
-            send(sessionId)
+            send("session.attention:${sessionId.value}")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {

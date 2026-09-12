@@ -1,6 +1,5 @@
 package io.kotgent.push
 
-import io.kotgent.core.SessionId
 import io.kotgent.store.FailingInterceptor
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -15,9 +14,9 @@ class PushSenderTest {
     private val apple = "https://web.push.apple.com/device-a"
     private val google = "https://fcm.googleapis.com/fcm/send/device-b"
     private val publicKey = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"
-    private val session = SessionId("sess-alpha")
+    private val session = "session.attention:sess-alpha"
 
-    private val sessionTopic = "Cc0mtfSec0nSHnMY"
+    private val sessionTopic = "iuh-mJoIRpDBBu5t"
 
     private fun sub(endpoint: String, createdAt: Long = 1_000L) = PushSubscription(
         endpoint = endpoint,
@@ -73,24 +72,29 @@ class PushSenderTest {
                 "the RFC 8292 credential: this endpoint's token plus the application server key",
             )
             assertEquals("1800", headers["TTL"], "TTL is required by RFC 8030 §5.2 and is 30 minutes")
-            assertEquals(sessionTopic, headers["Topic"], "Topic is the short digest of the session id")
+            assertEquals(sessionTopic, headers["Topic"], "Topic is the short digest of the namespaced notification key")
         }
     }
 
     @Test
-    fun theTopicIsAShortUrlSafeDigestThatDiffersPerSession() = runBlocking {
+    fun theTopicIsAShortUrlSafeDigestThatDistinguishesNotificationKindsAndIds() = runBlocking {
         withTimeout(20.seconds) {
             assertEquals(sessionTopic, pushTopic(session), "pinned against an independent sha256/base64url")
             assertEquals(PUSH_TOPIC_LENGTH, pushTopic(session).length, "far under the RFC 8030 §5.4 cap of 32")
             assertNotEquals(
                 pushTopic(session),
-                pushTopic(SessionId("sess-beta")),
+                pushTopic("session.attention:sess-beta"),
                 "two sessions must not collapse onto one queued message",
             )
             assertTrue(
-                pushTopic(SessionId("a session id/with?characters a topic may not carry"))
+                pushTopic("session.attention:a session id/with?characters a topic may not carry")
                     .all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' },
-                "a Topic must be URL-safe base64 whatever the session id looks like",
+                "a Topic must be URL-safe base64 whatever the notification key looks like",
+            )
+            assertEquals("U9ZMAiu9HiIodE1O", pushTopic("usage.reset:1"), "independent sha256/base64url digest")
+            assertNotEquals(
+                pushTopic("session.attention:1"), pushTopic("usage.reset:1"),
+                "different notification kinds with the same id cannot replace each other's wake",
             )
         }
     }

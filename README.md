@@ -13,7 +13,8 @@ who want to move between Mac, iPad, and iPhone without moving the process itself
 
 - durable agent processes in an isolated `tmux` server;
 - one live session list and terminal shared by every client;
-- attention notifications when an agent needs a human response;
+- attention notifications when an agent needs a human response, plus early weekly quota-reset notices;
+- shared Claude and Codex usage meters in the sidebar;
 - restart-safe session state and a project task backlog stored locally on the Mac.
 
 Kotgent does not replace a provider's conversation storage. Claude, Codex, and Junie still own their
@@ -173,13 +174,13 @@ session is fanned out to every terminal client.
 
 | Layer | Responsibility |
 |---|---|
-| `core/` | Host-free events, session states, reducer, and projection. |
+| `core/` | Host-free events, session reducer/projection, quota rules, and notification models. |
 | `adapter/` | Claude, Codex, Junie, and shell launch/resume behavior plus event normalization. |
 | `daemon/` | Session lifecycle, reconciliation, provider-id capture, and task coordination. |
 | `tmux/`, `pty/` | Isolated process hosting and the single-upstream terminal fan-out. |
-| `store/`, `task/` | SQLite event/session persistence and the project backlog. |
+| `store/`, `task/` | SQLite session/usage history, notification inbox, and project backlog. |
 | `transport/` | Ktor REST, WebSocket, authentication, and static PWA endpoints. |
-| `push/` | Attention-edge tracking, subscriptions, VAPID signing, and Web Push delivery. |
+| `push/` | Attention tracking, early-reset inbox projection, subscriptions, VAPID signing, and Web Push delivery. |
 | `launchd/` | Per-user daemon installation and environment capture. |
 
 State is local and restart-safe; remote access publishes only the authenticated browser surface. See
@@ -496,6 +497,19 @@ The sidebar footer identifies the running daemon: local source builds show the r
 embedded short Git hash (for example `0.9.0+81c37fe`), while published Homebrew builds show the release
 version alone (`0.9.0`).
 
+Above that footer, the usage strip shows each available Claude and Codex quota as a **percentage used**,
+shared across sessions. Window labels follow the reported duration, so Codex's primary window can be
+weekly. Hover a value for its expected reset time and last observation time; missing windows stay hidden.
+A provider line dims when its newest observation is more than ten minutes old. Matching Claude
+heartbeat renders keep it fresh, but that timestamp describes capture activity, not a fresh provider lookup.
+
+Kotgent never polls providers for usage. It captures the quota input to Claude's status-line command
+while preserving that command's output, and reads Codex's existing rollout after a turn ends. Claude
+reset detection requires a decrease within an already observed running session: a first reading from
+another session or an unchanged cached render cannot trigger a reset. Codex requires both a percentage
+drop and a changed, known reset time. The shared meters assume one account per provider on this Mac; see the
+[provider research](docs/usage-limits-research.md) for payload and freshness limits.
+
 A session row also carries an **unread pill** — how many events have arrived since you last looked at that
 session. Looking at it clears it: the browser posts the cursor it has displayed, so the count is
 **server-side** (it clears on the phone and the desktop together, and a second browser sees it clear with no
@@ -503,11 +517,16 @@ reload) and **persistent** (restarting the daemon does not resurrect a cleared b
 not count as activity, so `kotgent list`'s ordering is unaffected.
 
 The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
-`false → true` attention transition sends a payload-less push; the service worker fetches `/api/v1/sessions`
-under a ten-second deadline, shows one notification per waiting, non-archived session, and opens or
-focuses that session when tapped. If the fetch fails or stalls it still shows a generic attention
-notification. If Web Push is unsupported, denied, or unavailable on the daemon, the live tab falls back
-to ordinary in-tab notifications.
+`false → true` attention transition or an early weekly quota reset sends a payload-less push. The service
+worker fetches the authenticated `/api/v1/notifications` inbox under a ten-second deadline and shows
+current session-attention items plus reset notices from the past hour. Attention notices open or focus
+their session; quota notices open Kotgent's main view and name the provider, percentage used before the
+reset, and when that value was seen. A failed or stalled fetch still produces a generic Kotgent notice.
+
+Scheduled resets and resets of shorter windows do not notify. Early weekly resets remain recorded in
+the local journal and inbox even when push is disabled. If Web Push is unsupported, denied, or
+unavailable on the daemon, the live tab falls back to ordinary in-tab **attention** notifications;
+usage-reset notices require Web Push.
 
 ![The kotgent Web UI: the sidebar's "Needs attention" queue and session list on the left, a live Claude
 session's terminal on the right, with Interrupt / Detach / Stop / Done controls.](docs/images/web-ui.png)
@@ -555,7 +574,7 @@ the first question is almost always "does the plist still match my shell?".
   16.4 or later and an installed home-screen app; enable it from that app's sidebar so the permission
   prompt runs from the tap itself. A missing/unusable `/usr/bin/openssl`, denied browser permission, or an
   unreachable push service disables only server-sent push, and kotgent falls back to live-tab
-  notifications.
+  attention notifications.
 - **Push stopped after `vapid.pem` was deleted, replaced, or regenerated.** A browser subscription is
   bound to the VAPID public key it was created with. Toggle notifications off and on in each installed
   browser/PWA to register a fresh subscription with the daemon. The key at
@@ -619,8 +638,11 @@ Kotgent is deliberately focused. The current product boundary is:
   model it is running; its name is an editable label (`kotgent session rename`, or the palette's rename
   dialog) that reaches every open client live and falls back to the automatic one when cleared; **Done**
   stops an agent and archives it off the sidebar (restorable, history kept); and an opt-in, per-device
-  **notification toggle** registers server-sent Web Push for attention edges, with live-tab notification
-  fallback.
+  **notification toggle** registers server-sent Web Push for attention edges and early weekly quota
+  resets, with live-tab fallback for attention only.
+- **Shared usage meters.** The sidebar shows available Claude and Codex percentage windows, expected
+  resets, and observation freshness without provider polling. Early weekly resets retain their prior
+  usage in the local notification inbox, independently of push availability.
 - **Installable mobile PWA.** The manifest, root service worker, home-screen icons, responsive drawer,
   visual-viewport terminal sizing, software-keyboard focus handling, special-key toolbar, foreground
   terminal reattachment, and notification deep links are all shipped. The service worker is network-only:
@@ -652,8 +674,6 @@ Kotgent is deliberately focused. The current product boundary is:
 - Structured mobile actions such as native approve/deny buttons outside the agent's terminal. Approvals
   remain interactive TUI operations today.
 - A **diff viewer** and snapshots.
-- **Usage-limit tracking** — how much of each provider's quota is left and when it resets (Claude: the
-  5-hour window and the weekly cap; Codex: the weekly cap).
 - **More of the Web UI's pure rules proven without a browser.** `lib/commands.js`, `lib/paths.js` and
   `lib/unicode.js` already import cleanly under Node and are only partly covered by the tier in
   `webuitest/js/`; `lib/qr.js` stays in the browser tier for as long as it is the one `lib/` module with

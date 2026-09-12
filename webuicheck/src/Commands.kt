@@ -5,6 +5,7 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
 import io.kotgent.core.SessionId
 import io.kotgent.core.SessionState
+import io.kotgent.core.UsageObservation
 import io.kotgent.daemon.daemonEpochMillis
 import kotlinx.coroutines.runBlocking
 
@@ -24,8 +25,41 @@ fun handleCommand(line: String, ctx: HarnessContext): Boolean {
         "model" -> handleModel(words, ctx)
         "rename" -> handleRename(words, ctx)
         "append" -> handleAppend(words, ctx)
+        "usage" -> handleUsage(words, ctx)
         else -> handleTaskCommand(words, ctx)
     }
+}
+
+private fun handleUsage(words: List<String>, ctx: HarnessContext): Boolean {
+    if (words.size !in 4..7) {
+        return reject("usage: usage <provider> <windowKey> <percent> [resetsAt|-] [observedAt|-] [windowSeconds|-]")
+    }
+    val percent = words[3].toDoubleOrNull()
+    if (percent == null || !percent.isFinite() || percent !in 0.0..100.0) {
+        return reject("usage: percent must be finite and between 0 and 100")
+    }
+    val optional = words.drop(4).map { it.takeUnless { value -> value == "-" } }
+    for ((index, value) in optional.withIndex()) {
+        if (value == null) continue
+        val number = value.toLongOrNull()
+        if (number == null || number < 0 || (index == 2 && number == 0L)) {
+            return reject("usage: timestamps must be non-negative epoch millis and windowSeconds must be positive")
+        }
+    }
+    val resetsAt = optional.getOrNull(0)?.toLong()
+    val observedAt = optional.getOrNull(1)?.toLong()
+    val windowSeconds = if (optional.size >= 3) optional[2]?.toLong() else when (words[2]) {
+        "five_hour" -> 5 * 60 * 60L
+        "seven_day" -> 7 * 24 * 60 * 60L
+        else -> null
+    }
+    runBlocking {
+        ctx.fakes.usage.observe(
+            UsageObservation(words[1], words[2], percent, resetsAt, windowSeconds),
+            observedAt = observedAt,
+        )
+    }
+    return true
 }
 
 private fun handleRestart(words: List<String>, ctx: HarnessContext): Boolean {

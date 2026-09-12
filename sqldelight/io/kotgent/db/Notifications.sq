@@ -1,0 +1,27 @@
+-- Existing databases create this table in SqliteNotificationStore.init; keep the DDL synchronized.
+CREATE TABLE notifications (
+  id                   TEXT NOT NULL PRIMARY KEY,
+  created_at           INTEGER NOT NULL,
+  provider             TEXT NOT NULL,
+  window_key           TEXT NOT NULL,
+  expected_at          INTEGER,
+  used_before          REAL NOT NULL,
+  used_before_seen_at   INTEGER NOT NULL,
+  window_seconds       INTEGER
+);
+
+insertNotification:
+INSERT INTO notifications (
+  id, created_at, provider, window_key, expected_at, used_before, used_before_seen_at, window_seconds
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO NOTHING;
+
+selectRecent:
+SELECT id, created_at, provider, window_key, expected_at, used_before, used_before_seen_at, window_seconds
+FROM notifications
+WHERE created_at >= ?
+ORDER BY created_at DESC, id;
+
+prune:
+DELETE FROM notifications
+WHERE created_at < ?;

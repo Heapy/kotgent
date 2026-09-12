@@ -15,6 +15,8 @@ import kotlinx.serialization.json.putJsonObject
 object ClaudeHookConfig {
     const val INGRESS_PATH: String = "/api/v1/hooks/claude"
 
+    const val USAGE_INGRESS_PATH: String = "/api/v1/hooks/claude/usage"
+
     const val LEGACY_INGRESS_PATH: String = "/hooks/claude"
 
     const val HOOK_TOKEN_HEADER: String = "X-Kotgent-Hook-Token"
@@ -52,8 +54,17 @@ object ClaudeHookConfig {
         }
     }
 
-    fun generate(port: Int, headerFilePath: String, json: Json = PRETTY): String {
+    fun generate(
+        port: Int,
+        headerFilePath: String,
+        json: Json = PRETTY,
+        operatorStatusLineCommand: String? = null,
+    ): String {
         val root = buildJsonObject {
+            putJsonObject("statusLine") {
+                put("type", "command")
+                put("command", ClaudeStatusLineScript.command(port, headerFilePath, operatorStatusLineCommand))
+            }
             putJsonObject("hooks") {
                 for (event in HOOK_EVENTS) {
                     putJsonArray(event) {

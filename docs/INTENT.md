@@ -8,8 +8,11 @@ restarting the daemon—must not discard the work.
 
 - Start a new agent or shell, or adopt a provider conversation that began elsewhere, and continue it from
   any client without losing its terminal or history.
-- Leave the machine and receive a notification only when a session needs human attention.
+- Leave the machine and receive a notification when a session needs human attention or a weekly quota
+  resets early, making capacity available sooner than expected.
 - See what every session is doing, organize sessions by project, and recover stopped conversations.
+- See the available Claude and Codex quota windows together, with percentages used, expected reset
+  times, and observation times; recognize stale readings without opening each provider session.
 - Keep an ordered, dependency-aware backlog per project so ideas become explicit work rather than context
   remembered by the operator or trapped in one session.
 - Use the full terminal and backlog comfortably from an installable phone or tablet PWA.
@@ -26,6 +29,11 @@ restarting the daemon—must not discard the work.
   storage or pretend provider differences do not exist.
 - **Attention is actionable.** State and notifications should answer whether the operator must intervene,
   not merely report that bytes or events arrived. Approvals remain human decisions made in the terminal.
+- **Quota follows provider evidence.** Shared meters use provider output already produced during
+  normal work, without polling. Claude needs a decrease within an established session baseline; new
+  sessions and unchanged cached renders cannot establish a reset. Early weekly reset notices retain the
+  percentage used beforehand and when it was seen, including when push is disabled. Ordinary scheduled
+  resets stay quiet, and capture freshness must not imply a new provider lookup.
 - **Work is explicit but collaborative.** Project identity survives moves, clones, and worktrees. Task links
   coordinate sessions without exclusive locks: more than one session may work the same task, and an agent
   hands completed work to review rather than silently accepting it on the human's behalf.
@@ -45,3 +53,6 @@ restarting the daemon—must not discard the work.
   cloud scheduler.
 - The service worker is network-only: without the local daemon there is no useful offline application state.
 - Shell sessions provide a remotely reachable login shell, not a durable conversation or provider import.
+- Usage meters assume one account per provider on the Mac and show only available percentage windows.
+  [Provider payload and freshness limits](usage-limits-research.md) bound what they can establish.
+- The live-tab notification fallback covers session attention; usage-reset notifications use Web Push.

@@ -201,6 +201,23 @@ class ClaudeAdapterTest {
     }
 
     @Test
+    fun generatedSettingsIncludeTheChainedStatusLineWithOrWithoutAnOperatorCommand() {
+        for (operator in listOf(null, "printf 'custom status'")) {
+            val settings = ClaudeHookConfig.generate(7419, "/tmp/hook-header", operatorStatusLineCommand = operator)
+            val root = Json.parseToJsonElement(settings).jsonObject
+            val statusLine = root.getValue("statusLine").jsonObject
+            assertEquals("command", statusLine.getValue("type").jsonPrimitive.content)
+            val command = statusLine.getValue("command").jsonPrimitive.content
+            assertTrue(command.startsWith("'/usr/bin/perl' '-e'"))
+            assertTrue(ClaudeHookConfig.USAGE_INGRESS_PATH in command)
+            assertTrue("/tmp/hook-header" in command)
+            assertEquals(ClaudeHookConfig.HOOK_EVENTS.toSet(), root.getValue("hooks").jsonObject.keys)
+        }
+        val compact = ClaudeHookConfig.generate(7419, "/tmp/hook-header", Json { prettyPrint = false })
+        assertTrue("statusLine" in Json.parseToJsonElement(compact).jsonObject)
+    }
+
+    @Test
     fun headerFileContentCarriesTheTokenHeaderLine() {
         assertEquals(
             "${ClaudeHookConfig.HOOK_TOKEN_HEADER}: sekret-123\n",

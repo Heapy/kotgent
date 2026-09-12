@@ -19,6 +19,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -55,6 +56,7 @@ fun Route.codexHookRoutes(
     json: Json = HOOK_JSON,
     paneLookupGraceMillis: Long = PANE_LOOKUP_GRACE_MILLIS,
     onProviderIdRebound: suspend (SessionId) -> Unit = {},
+    onTurnCompleted: suspend (SessionId) -> Unit = {},
 ) = hookRoutes(
     paths = listOf(CodexHookConfig.INGRESS_PATH, CodexHookConfig.LEGACY_INGRESS_PATH),
     tokenHeader = CodexHookConfig.HOOK_TOKEN_HEADER,
@@ -67,6 +69,7 @@ fun Route.codexHookRoutes(
     json = json,
     paneLookupGraceMillis = paneLookupGraceMillis,
     onProviderIdRebound = onProviderIdRebound,
+    onTurnCompleted = onTurnCompleted,
 )
 
 fun Route.junieHookRoutes(
@@ -134,6 +137,7 @@ private fun Route.hookRoutes(
     paneLookupGraceMillis: Long,
     onHookPayload: suspend (SessionId, JsonElement) -> Unit = { _, _ -> },
     onProviderIdRebound: suspend (SessionId) -> Unit = {},
+    onTurnCompleted: suspend (SessionId) -> Unit = {},
 ) = loopbackOnly {
     // Provider hooks originate locally; keeping this wrapper here prevents accidental tunnel exposure.
     for (path in paths) {
@@ -196,6 +200,17 @@ private fun Route.hookRoutes(
                         val _ = store.append(sessionId, normalized, EventSource.hook)
                         runCatching { onProviderIdRebound(sessionId) }.onFailure { failure ->
                             eprintln("provider-id rebind correction failed for '${sessionId.value}': $failure")
+                        }
+                    }
+                } else if (normalized == AgentEvent.TurnCompleted) {
+                    withContext(NonCancellable) {
+                        val _ = store.append(sessionId, normalized, EventSource.hook)
+                        try {
+                            onTurnCompleted(sessionId)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            eprintln("turn-completion callback failed for '${sessionId.value}': ${e.message}")
                         }
                     }
                 } else {

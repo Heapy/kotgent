@@ -11,8 +11,10 @@ import io.kotgent.pty.realPtyFactory
 import io.kotgent.pty.terminalBridgeForSession
 import io.kotgent.push.PushStore
 import io.kotgent.store.EventStore
+import io.kotgent.store.NotificationStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.TaskStore
+import io.kotgent.store.UsageStore
 import io.kotgent.sys.markOpenFdsCloexec
 import io.kotgent.tmux.Tmux
 import io.ktor.http.ContentType
@@ -69,6 +71,9 @@ class KotgentServer(
     host: String = "127.0.0.1",
     port: Int = 0,
     private val json: Json = TRANSPORT_JSON,
+    private val usageStore: UsageStore? = null,
+    private val onCodexTurnCompleted: suspend (SessionId) -> Unit = {},
+    private val notificationStore: NotificationStore? = null,
 ) {
     private var terminalRegistry: TerminalRegistry? = null
 
@@ -99,9 +104,11 @@ class KotgentServer(
                     install(WebSockets)
                     routing {
                         val _ = claudeHookRoutes(tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON)
+                        usageStore?.let { usage -> claudeUsageRoutes(tokens::current, usage) }
                         val _ = codexHookRoutes(
                             tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON,
                             onProviderIdRebound = sessionManager::onProviderIdRebound,
+                            onTurnCompleted = onCodexTurnCompleted,
                         )
                         val _ = junieHookRoutes(
                             tokens::current, sessionManager.paneLookup, eventStore, HOOK_JSON,
@@ -123,7 +130,8 @@ class KotgentServer(
                                 )
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
-                                eventsWs(eventStore, preferencesStore, taskStore, json)
+                                notificationRoutes(eventStore, notificationStore, json)
+                                eventsWs(eventStore, preferencesStore, taskStore, json, usageStore = usageStore)
                                 terminalWs(registry, eventStore, json)
                                 val backlog = taskStore
                                 val coordinator = taskService
@@ -213,6 +221,9 @@ class KotgentServer(
             taskService: TaskService? = null,
             host: String = "127.0.0.1",
             port: Int = 0,
+            usageStore: UsageStore? = null,
+            onCodexTurnCompleted: suspend (SessionId) -> Unit = {},
+            notificationStore: NotificationStore? = null,
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             eventStore = eventStore,
@@ -228,6 +239,9 @@ class KotgentServer(
             onTmuxSessionClosed = onTmuxSessionClosed,
             taskStore = taskStore,
             taskService = taskService,
+            usageStore = usageStore,
+            onCodexTurnCompleted = onCodexTurnCompleted,
+            notificationStore = notificationStore,
             host = host,
             port = port,
         )

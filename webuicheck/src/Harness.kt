@@ -26,8 +26,10 @@ import io.kotgent.transport.TokenHolder
 import io.kotgent.transport.generateToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.withContext
@@ -38,6 +40,7 @@ class HarnessFakes(
     val eventStore: FakeEventStore,
     val preferencesStore: FakePreferencesStore,
     val taskStore: FakeTaskStore,
+    val usage: UsageFixture,
     val projectFs: FakeProjectFs,
     val projectFileWriter: MemoryProjectFileWriter,
 )
@@ -141,8 +144,14 @@ class Harness(
     suspend fun stop() {
         val current = server
         server = null
-        withContext(Dispatchers.Default) { current?.stop() }
-        background.cancel()
+        withContext(NonCancellable) {
+            try {
+                withContext(Dispatchers.Default) { current?.stop() }
+            } finally {
+                background.coroutineContext[Job]?.cancelAndJoin()
+                fakes.usage.close()
+            }
+        }
     }
 
     private fun buildServer(port: Int): KotgentServer = KotgentServer(
@@ -156,6 +165,7 @@ class Harness(
         webUiDir = webUiDir,
         tickets = tickets,
         taskStore = fakes.taskStore,
+        usageStore = fakes.usage.store,
         taskService = taskService,
         port = port,
     )

@@ -96,7 +96,7 @@ class TransportTest {
 
     @Test
     fun productionPushAssemblerIsReadyBeforeTheRealServerFactoryBinds() {
-        val sent = Channel<SessionId>(Channel.UNLIMITED)
+        val sent = Channel<String>(Channel.UNLIMITED)
         var assembled = false
         withServer(
             productionFactory = true,
@@ -128,7 +128,7 @@ class TransportTest {
                 EventSource.hook,
             )
             assertEquals(
-                SessionId(created.id),
+                "session.attention:${created.id}",
                 sent.receive(),
                 "the notifier assembled before bind observes the first post-bind attention transition",
             )

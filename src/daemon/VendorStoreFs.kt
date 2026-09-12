@@ -63,9 +63,13 @@ fun readHead(path: String, bytes: Int): String? {
     }
 }
 
-@OptIn(ExperimentalForeignApi::class)
 // The returned tail may begin mid-record; per-line parsers must tolerate it.
-fun readTail(path: String, bytes: Int): String? {
+fun readTail(path: String, bytes: Int): String? = readTailWithOffset(path, bytes)?.bytes?.decodeToString()
+
+data class FileTail(val bytes: ByteArray, val offset: Long)
+
+@OptIn(ExperimentalForeignApi::class)
+fun readTailWithOffset(path: String, bytes: Int): FileTail? {
     val fp = fopen(path, "rb") ?: return null
     try {
         if (fseek(fp, 0, SEEK_END) != 0) return null
@@ -77,7 +81,7 @@ fun readTail(path: String, bytes: Int): String? {
         val read = buffer.usePinned { fread(it.addressOf(0), 1.convert(), take.convert(), fp) }
         val n = read.toInt()
         if (n <= 0) return null
-        return buffer.decodeToString(0, n)
+        return FileTail(if (n == take) buffer else buffer.copyOf(n), size - take.toLong())
     } finally {
         fclose(fp)
     }

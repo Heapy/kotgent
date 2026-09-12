@@ -14,6 +14,7 @@ import io.kotgent.daemon.AgentFactory
 import io.kotgent.daemon.CLAUDE_AGENT_KIND
 import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.CodexRolloutScan
+import io.kotgent.daemon.CodexUsageCapture
 import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.JunieSessionScan
 import io.kotgent.daemon.PaneRegistry
@@ -41,6 +42,8 @@ import io.kotgent.push.vapidSubject
 import io.kotgent.store.EventStore
 import io.kotgent.store.SqliteEventStore
 import io.kotgent.store.SqliteTaskStore
+import io.kotgent.store.SqliteUsageStore
+import io.kotgent.store.SqliteNotificationStore
 import io.kotgent.sys.currentLoginShell
 import io.kotgent.task.PosixProjectFileWriter
 import io.kotgent.task.PosixProjectFs
@@ -52,8 +55,8 @@ import io.kotgent.transport.writePrivateFile
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.emptyFlow
@@ -77,8 +80,11 @@ internal class AuthModule(
      * token instead of locking the control plane out. Hook headers heal on the next successful rotation.
      */
     val tokens by bean {
-        TokenHolder(readOrCreateToken()) { rotated ->
-            val _ = Commands.writeClaudeHookSettings(port, rotated)
+        val initial = readOrCreateToken()
+        // Launch-time settings refresh must never race token rotation by rewriting this shared header.
+        val _ = Commands.writeClaudeHookHeader(initial)
+        TokenHolder(initial) { rotated ->
+            val _ = Commands.writeClaudeHookHeader(rotated)
             val _ = Commands.writeCodexHookScript(port, rotated)
             val _ = Commands.writeJunieHookConfig(port, rotated)
             val _ = Commands.writeTmuxHookScript(port, rotated)
@@ -88,8 +94,8 @@ internal class AuthModule(
 }
 
 /**
- * Each bean writes its provider's hook artifacts and answers the path they live at, so realizing the bean
- * is the write. Whoever consumes the path therefore orders the write.
+ * Resolving a provider's hook path writes its artifacts. Claude refreshes on every launch because the
+ * chained operator status command may have changed since the previous launch.
  */
 internal class HookFilesModule(
     private val port: Int,
@@ -97,7 +103,10 @@ internal class HookFilesModule(
 ) {
     private val token: String get() = auth.tokens.value.current()
 
-    val claudeSettings by bean { Commands.writeClaudeHookSettings(port, token) }
+    fun claudeSettings(): String {
+        val _ = auth.tokens.value
+        return Commands.writeClaudeHookSettings(port)
+    }
 
     val codexScript by bean { Commands.writeCodexHookScript(port, token) }
 
@@ -107,6 +116,8 @@ internal class HookFilesModule(
 }
 
 internal class StorageModule {
+    private var maintenance: Job? = null
+
     /** Kept for an explicit shutdown checkpoint. */
     val driver by bean {
         NativeSqliteDriver(
@@ -125,13 +136,26 @@ internal class StorageModule {
     // Task and session writes share a driver but remain sequential; sessions retain a single writer.
     val taskStore by bean { SqliteTaskStore.using(driver.value) }
 
+    val usageStore by bean { SqliteUsageStore(driver.value) }
+
+    val notificationStore by bean { SqliteNotificationStore(driver.value) }
+
     val projectFs by bean { PosixProjectFs() }
 
     val taskService by bean {
         TaskService(taskStore.value, eventStore.value, projectFs.value, PosixProjectFileWriter())
     }
 
-    fun close() {
+    suspend fun startMaintenance(scope: CoroutineScope) {
+        check(maintenance == null) { "storage maintenance already started" }
+        maintenance = startStorageMaintenance(scope, prune = {
+            usageStore.value.prune()
+            notificationStore.value.prune()
+        })
+    }
+
+    suspend fun close() {
+        maintenance?.cancelAndJoin()
         if (driver.isInitialized) driver.value.close()
     }
 }
@@ -177,7 +201,7 @@ internal class AgentModule(
             CLAUDE_AGENT_KIND to { cwd: String ->
                 ClaudeAdapter(
                     cwd = cwd,
-                    settingsPath = hooks.claudeSettings.value,
+                    settingsPath = hooks.claudeSettings(),
                     events = emptyFlow(),
                     sessionIdSupported = sessionIdSupported,
                     binaryName = requireAbsoluteBinary(CLAUDE_AGENT_KIND, claudePath),
@@ -227,6 +251,16 @@ internal class SessionModule(
     val background by bean { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
 
     val idCapture by bean { ProviderIdCapture(storage.eventStore.value, background.value) }
+
+    val codexUsageCapture by bean {
+        CodexUsageCapture(
+            scope = background.value,
+            events = storage.eventStore.value,
+            usage = storage.usageStore.value,
+            rateLimitsOf = agents.rolloutScan.value::rateLimitsOf,
+            onError = { failure -> eprintln("kotgent daemon: Codex usage capture failed: ${failure.message}") },
+        )
+    }
 
     val manager by bean {
         val rollout = agents.rolloutScan.value
@@ -291,8 +325,8 @@ internal class SessionModule(
         )
     }
 
-    fun close() {
-        if (background.isInitialized) background.value.cancel()
+    suspend fun close() {
+        if (background.isInitialized) background.value.coroutineContext[Job]?.cancelAndJoin()
     }
 }
 
@@ -340,7 +374,7 @@ internal class PushModule(
         ) {
             val fanOut = sender.value
             // Seed after reconciliation and await subscription before exposing hook ingress.
-            val notifier = PushNotifier(events, send = { id -> fanOut.send(id) }).start(scope)
+            val notifier = PushNotifier(events, send = fanOut::send).start(scope)
             DaemonPush(
                 store,
                 vapid::publicKeyBase64Url,

@@ -12,11 +12,14 @@ dependencies:
   - ../fakes
   # Root does not export Ktor, but the in-memory uploader must implement its public channel type.
   - $libs.ktor.server.cio
+  - $libs.sqldelight.native.driver
 
 settings:
   kotlin:
     version: 2.4.10
     freeCompilerArgs:
+      - -linker-option
+      - -lsqlite3
       - -Xreturn-value-checker=full
       - -Xname-based-destructuring=complete
   native:

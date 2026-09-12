@@ -5,10 +5,12 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.adapter.codex.CodexHookConfig
 import io.kotgent.adapter.junie.JunieHookConfig
 import io.kotgent.daemon.VendorStoreProbe
+import io.kotgent.daemon.defaultClaudeDir
 import io.kotgent.daemon.productionVendorStoreProbe
 import io.kotgent.exe.NativeExe
 import io.kotgent.launchd.DAEMON_LABEL
 import io.kotgent.launchd.LaunchdInstaller
+import io.kotgent.push.UsageResetNotifier
 import io.kotgent.sys.installShutdownSignals
 import io.kotgent.sys.pendingShutdownSignal
 import io.kotgent.sys.shutdownSignalName
@@ -21,11 +23,16 @@ import io.kotgent.transport.TICKET_CODE_LENGTH
 import io.kotgent.transport.TICKET_TTL_MILLIS
 import io.kotgent.transport.TicketResponse
 import io.kotgent.transport.readTokenOrNull
+import io.kotgent.transport.readFileBytesOrNull
 import io.kotgent.transport.writePrivateFile
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * CLI handlers return process exit codes and render expected failures on stderr without stack traces.
@@ -220,31 +227,47 @@ object Commands {
         // Push is optional. Table failure omits its routes; VAPID key and signer failures remain lazy so
         // installations that never enable notifications do not pay for or depend on openssl.
         val runtime = try {
-            startDaemonServer(
-                assemblePush = { modules.push.start(sessions.background.value, eventStore) },
-                createServer = { push ->
-                    KotgentServer.production(
-                        sessionManager = manager,
-                        eventStore = eventStore,
-                        preferencesStore = eventStore,
-                        tokens = tokenHolder,
-                        tmux = tmux,
-                        currentVersion = currentUiVersion(),
-                        publicUrl = config.publicUrl,
-                        pushStore = push?.store,
-                        vapidPublicKey = push?.publicKey,
-                        onTmuxSessionClosed = manager::onTmuxSessionClosed,
-                        taskStore = taskStore,
-                        taskService = taskService,
-                        port = port,
-                    )
+            withStartupCompensation(
+                compensate = {
+                    sessions.close()
+                    storage.close()
                 },
-            )
+            ) {
+                storage.startMaintenance(sessions.background.value)
+                startDaemonServer(
+                    assemblePush = { modules.push.start(sessions.background.value, eventStore) },
+                    startUsage = { push ->
+                        UsageResetNotifier(
+                            usageStore = storage.usageStore.value,
+                            inbox = storage.notificationStore.value,
+                            wake = if (push == null) null else modules.push.sender.value::send,
+                        ).start(sessions.background.value)
+                    },
+                    createServer = { push ->
+                        KotgentServer.production(
+                            sessionManager = manager,
+                            eventStore = eventStore,
+                            preferencesStore = eventStore,
+                            tokens = tokenHolder,
+                            tmux = tmux,
+                            currentVersion = currentUiVersion(),
+                            publicUrl = config.publicUrl,
+                            pushStore = push?.store,
+                            vapidPublicKey = push?.publicKey,
+                            onTmuxSessionClosed = manager::onTmuxSessionClosed,
+                            taskStore = taskStore,
+                            taskService = taskService,
+                            usageStore = storage.usageStore.value,
+                            notificationStore = storage.notificationStore.value,
+                            onCodexTurnCompleted = sessions.codexUsageCapture.value::onTurnCompleted,
+                            port = port,
+                        )
+                    },
+                )
+            }
         } catch (e: ServerBindException) {
             eprintln("kotgent daemon: ${e.message}")
             reportPortHolder(port)
-            sessions.close()
-            storage.close()
             return@runBlocking 1
         }
         val server = runtime.server
@@ -316,12 +339,30 @@ object Commands {
         }
     }
 
-    internal fun writeClaudeHookSettings(port: Int, token: String): String {
+    internal fun writeClaudeHookHeader(
+        token: String,
+        home: String = kotgentHome(),
+    ): String {
         // Keep the token in an atomic 0600 curl header file, never in process-visible argv.
-        val headerPath = "${kotgentHome()}/claude-hook-header"
+        val headerPath = "$home/claude-hook-header"
         writePrivateFile(headerPath, ClaudeHookConfig.headerFileContent(token).encodeToByteArray())
-        val path = "${kotgentHome()}/claude-hooks.json"
-        writePrivateFile(path, ClaudeHookConfig.generate(port, headerPath).encodeToByteArray())
+        return headerPath
+    }
+
+    internal fun writeClaudeHookSettings(
+        port: Int,
+        home: String = kotgentHome(),
+        operatorSettingsPath: String = "${defaultClaudeDir()}/settings.json",
+    ): String {
+        val headerPath = "$home/claude-hook-header"
+        val path = "$home/claude-hooks.json"
+        val settings = readFileBytesOrNull(operatorSettingsPath, limit = 1_048_576)?.decodeToString()
+        writePrivateFile(
+            path,
+            ClaudeHookConfig.generate(
+                port, headerPath, operatorStatusLineCommand = operatorClaudeStatusLineCommand(settings),
+            ).encodeToByteArray(),
+        )
         return path
     }
 
@@ -362,6 +403,20 @@ object Commands {
         writePrivateFile(path, TmuxHookConfig.hookScript(port, headerPath).encodeToByteArray())
         return path
     }
+}
+
+internal fun operatorClaudeStatusLineCommand(settings: String?): String? {
+    if (settings == null) return null
+    val root = try {
+        Json.parseToJsonElement(settings) as? JsonObject
+    } catch (_: SerializationException) {
+        null
+    } ?: return null
+    val statusLine = root["statusLine"] as? JsonObject ?: return null
+    val type = statusLine["type"] as? JsonPrimitive ?: return null
+    if (!type.isString || type.content != "command") return null
+    return (statusLine["command"] as? JsonPrimitive)
+        ?.takeIf { it.isString && it.content.isNotBlank() }?.content
 }
 
 /**

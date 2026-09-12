@@ -1,5 +1,5 @@
 /*
- * Classic, root-scoped, network-only worker. Pushes are payloadless, so it fetches session state; a
+ * Classic, root-scoped, network-only worker. Pushes are payloadless, so it fetches notifications; a
  * failed fetch still shows a generic banner because the subscription promises user-visible delivery.
  */
 
@@ -7,15 +7,15 @@
 
 // A classic worker cannot import the shared API-prefix helper.
 const TITLE = "Kotgent — needs attention";
-const SESSIONS_URL = "/api/v1/sessions";
-const SESSIONS_TIMEOUT_MS = 10_000;
+const NOTIFICATIONS_URL = "/api/v1/notifications";
+const NOTIFICATIONS_TIMEOUT_MS = 10_000;
 const PUSH_SUBSCRIBE_URL = "/api/v1/push/subscribe";
 const PUSH_UNSUBSCRIBE_URL = "/api/v1/push/unsubscribe";
 const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 const PUSH_PREFERENCE_CACHE = "kotgent-push-preference-v1";
 const PUSH_PREFERENCE_URL = "/.kotgent-push-preference";
 const GENERIC_TAG = "kotgent-attention";
-const GENERIC_BODY = "A session needs your attention.";
+const GENERIC_BODY = "Open Kotgent to see recent notifications.";
 let pushLifecycle = Promise.resolve();
 
 // Activate updates without waiting for every tab to close.
@@ -26,7 +26,7 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 self.addEventListener("fetch", () => { /* default network handling */ });
 
 self.addEventListener("push", (event) => {
-  event.waitUntil(showAttention());
+  event.waitUntil(showNotifications());
 });
 
 self.addEventListener("pushsubscriptionchange", (event) => {
@@ -55,7 +55,7 @@ self.addEventListener("message", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  event.waitUntil(openSession(data.sessionId));
+  event.waitUntil(openSession(data.type === "usage.reset" ? null : data.sessionId));
 });
 
 async function postPushState(url, body) {
@@ -166,18 +166,26 @@ async function syncPushSubscription(event) {
   }
 }
 
-async function waitingSessions() {
+async function currentNotifications() {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), SESSIONS_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), NOTIFICATIONS_TIMEOUT_MS);
   try {
-    const resp = await fetch(SESSIONS_URL, {
+    const resp = await fetch(NOTIFICATIONS_URL, {
       credentials: "include",
+      cache: "no-store",
       signal: controller.signal,
     });
     if (!resp.ok) return [];
     const list = await resp.json();
     if (!Array.isArray(list)) return [];
-    return list.filter((s) => s && s.needsAttention && !s.archived);
+    return list.filter((item) => {
+      if (!item) return false;
+      if (item.type === "session.attention") return typeof item.sessionId === "string" && item.sessionId.length > 0;
+      return item.type === "usage.reset" && typeof item.id === "string" && item.id.length > 0
+        && typeof item.provider === "string" && item.provider.length > 0
+        && Number.isFinite(item.usedBefore) && item.usedBefore >= 0 && item.usedBefore <= 100
+        && Number.isFinite(item.usedBeforeSeenAt) && Number.isFinite(new Date(item.usedBeforeSeenAt).getTime());
+    });
   } catch (_) {
     return [];
   } finally {
@@ -185,26 +193,33 @@ async function waitingSessions() {
   }
 }
 
-function sessionName(s) {
-  return (s && (s.name || s.tmuxSession || s.id)) || "A session";
-}
-
-async function showAttention() {
-  const waiting = await waitingSessions();
-  if (waiting.length === 0) {
-    await self.registration.showNotification(TITLE, {
+async function showNotifications() {
+  const notifications = await currentNotifications();
+  if (notifications.length === 0) {
+    await self.registration.showNotification("Kotgent", {
       body: GENERIC_BODY,
       tag: GENERIC_TAG,
       renotify: false,
     });
     return;
   }
-  await Promise.all(waiting.map((s) => self.registration.showNotification(TITLE, {
-    body: sessionName(s) + " needs your attention.",
-    tag: s.id,
-    renotify: false,
-    data: { sessionId: s.id },
-  })));
+  await Promise.all(notifications.map((item) => {
+    if (item.type === "session.attention") {
+      return self.registration.showNotification(TITLE, {
+        body: (item.sessionName || item.sessionId) + " needs your attention.",
+        tag: item.sessionId,
+        renotify: false,
+        data: { type: item.type, sessionId: item.sessionId },
+      });
+    }
+    return self.registration.showNotification("Kotgent — early usage reset", {
+      body: item.provider + " weekly limit reset early. " + item.usedBefore + "% used; last seen "
+        + new Date(item.usedBeforeSeenAt).toLocaleString() + ".",
+      tag: item.id,
+      renotify: false,
+      data: { type: item.type },
+    });
+  }));
 }
 
 // Focused clients must also switch sessions; focus alone leaves the old session selected.
@@ -214,6 +229,13 @@ async function openSession(sessionId) {
     const client = clients[0];
     if (sessionId) {
       try { client.postMessage({ type: "select-session", sessionId: sessionId }); } catch (_) {}
+    } else {
+      // A reset opens the overview even when this client is displaying a session or task.
+      try {
+        const root = await client.navigate("/");
+        if (root) return root.focus();
+      } catch (_) {}
+      return self.clients.openWindow("/");
     }
     if ("focus" in client) return client.focus();
     return undefined;

@@ -35,6 +35,7 @@ fun newHarnessFakes(): HarnessFakes {
         eventStore = FakeEventStore(now = ::daemonEpochMillis),
         preferencesStore = FakePreferencesStore(),
         taskStore = FakeTaskStore(now = ::daemonEpochMillis),
+        usage = UsageFixture(),
         projectFs = projectFs,
         projectFileWriter = MemoryProjectFileWriter(projectFs),
     )

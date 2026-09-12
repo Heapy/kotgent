@@ -4,12 +4,14 @@ import io.kotgent.core.AgentEvent
 import io.kotgent.core.Seq
 import io.kotgent.core.SessionId
 import io.kotgent.core.TaskRef
+import io.kotgent.core.UsageWindowState
 import io.kotgent.store.EventStore
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.SessionUpdate
 import io.kotgent.store.StaleCursorException
 import io.kotgent.store.StoredEvent
 import io.kotgent.store.TaskStore
+import io.kotgent.store.UsageStore
 import io.kotgent.task.BacklogEntry
 import io.kotgent.task.TaskUpdate
 import io.ktor.server.routing.Route
@@ -34,13 +36,14 @@ fun Route.eventsWs(
     preferencesStore: PreferencesStore,
     taskStore: TaskStore? = null,
     json: Json = TRANSPORT_JSON,
+    usageStore: UsageStore? = null,
 ) {
     webSocket("/events") {
         val sessionParam = call.request.queryParameters["session"]
         if (sessionParam != null) {
             streamOneSession(store, json, sessionParam)
         } else {
-            streamGlobalUpdates(store, preferencesStore, taskStore, json)
+            streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore)
         }
     }
 }
@@ -50,6 +53,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
     preferencesStore: PreferencesStore,
     taskStore: TaskStore?,
     json: Json,
+    usageStore: UsageStore?,
 ) {
     val ws = this
     coroutineScope {
@@ -94,6 +98,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
         }
 
         if (taskStore != null) launchTaskStream(ws, taskStore, json)
+        if (usageStore != null) launchUsageStream(ws, usageStore, json)
 
         store.sessionUpdates
             .onSubscription {
@@ -106,6 +111,55 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
                 lock.withLock { pending[update.sessionId] = update }
                 wake.trySend(Unit)
             }
+    }
+}
+
+private fun CoroutineScope.launchUsageStream(
+    ws: DefaultWebSocketServerSession,
+    usage: UsageStore,
+    json: Json,
+) {
+    val lock = Mutex()
+    val pending = LinkedHashMap<Pair<String, String>, UsageWindowState>()
+    val wake = Channel<Unit>(Channel.CONFLATED)
+
+    launch {
+        // Only onSubscription wakes the initial read: changes absent from it are already being banked.
+        wake.receive()
+        val baseline = usage.list()
+        val delivered = baseline.associate {
+            (it.current.provider to it.current.windowKey) to it.current.observedAt
+        }.toMutableMap()
+        ws.sendEventsFrame(json, UsageSnapshotDto(baseline.map { it.toDto() }))
+        while (true) {
+            while (true) {
+                val next = lock.withLock {
+                    val iterator = pending.entries.iterator()
+                    if (!iterator.hasNext()) null else {
+                        val entry = iterator.next()
+                        val banked = entry.key to entry.value
+                        iterator.remove()
+                        banked
+                    }
+                } ?: break
+                val [key, state] = next
+                if (state.current.observedAt <= (delivered[key] ?: -1L)) continue
+                ws.sendEventsFrame(json, UsageUpdateDto(state.toDto()))
+                delivered[key] = state.current.observedAt
+            }
+            wake.receive()
+        }
+    }
+
+    launch {
+        usage.updates.onSubscription { wake.trySend(Unit) }.collect { state ->
+            // Neither a snapshot read nor a slow socket can block the store's reliable flow collector.
+            val key = state.current.provider to state.current.windowKey
+            lock.withLock {
+                if (state.current.observedAt > (pending[key]?.current?.observedAt ?: -1L)) pending[key] = state
+            }
+            wake.trySend(Unit)
+        }
     }
 }
 
@@ -222,6 +276,35 @@ private suspend fun DefaultWebSocketServerSession.streamOneSession(
 @Serializable
 // One sealed serializer owns the `type` discriminator; hand-written type fields would collide at runtime.
 sealed class EventsFrame
+
+@Serializable
+data class UsageWindowDto(
+    val provider: String,
+    val windowKey: String,
+    val usedPercent: Double,
+    val resetsAt: Long?,
+    val windowSeconds: Long?,
+    val observedAt: Long,
+    val changedAt: Long,
+)
+
+@Serializable
+@SerialName("usage_snapshot")
+data class UsageSnapshotDto(val windows: List<UsageWindowDto>) : EventsFrame()
+
+@Serializable
+@SerialName("usage_update")
+data class UsageUpdateDto(val window: UsageWindowDto) : EventsFrame()
+
+fun UsageWindowState.toDto(): UsageWindowDto = UsageWindowDto(
+    provider = current.provider,
+    windowKey = current.windowKey,
+    usedPercent = current.usedPercent,
+    resetsAt = current.resetsAt,
+    windowSeconds = current.windowSeconds,
+    observedAt = current.observedAt,
+    changedAt = changedAt,
+)
 
 @Serializable
 @SerialName("sessions_snapshot")

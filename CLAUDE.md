@@ -48,6 +48,40 @@ Do not archive completed plans.
 - The task backlog is a local workflow layer over tracker data. Task/session links are intentionally
   non-exclusive, and task references are durable external identifiers.
 
+## Usage and notifications
+
+- `SqliteUsageStore` owns the account projection keyed by provider/window, source baselines, sample
+  history, and reset journal. Commit them together before publishing. Keep this data out of `sessions`.
+- Capture existing provider output without polling: Claude status-line renders and Codex end-of-turn
+  rollout records. Preserve native window keys, omit unavailable percentages, and normalize times to
+  epoch milliseconds and durations to seconds at ingress.
+- Source revision and capture time reject reordered input before assigning monotonic per-key
+  `observedAt`. That timestamp means admitted render/record receipt, not provider fetch freshness.
+  Matching Claude heartbeats may refresh receipt time without adding samples; unchanged cached values
+  must never undo another source's projection or advance the account evidence watermark.
+- Claude reset evidence requires both an account decrease and a decrease within a known source whose
+  baseline belongs to the current reset generation. Codex requires a percent decrease and two known,
+  different reset timestamps. Early means more than five minutes before the previous window end.
+  Notify only for early weekly resets: Claude `seven_day`, or Codex duration 604800 seconds in either slot.
+- Every reset is journaled. Eligible pending inbox projection is durable and idempotent by reset id.
+  `UsageResetNotifier` starts independently of push, subscribes and projects before HTTP binds, and
+  enables wakes only after binding. Its fast collector never waits for SQLite projection or network
+  delivery. Projection makes at most three attempts per signal; exhaustion retains pending work for the
+  next signal or restart, and startup exhaustion fails readiness. Join background work before closing SQLite.
+- Inbox acknowledgement means the notification row is durable, not that a push was delivered. Wakes are
+  best effort and may coalesce because each fetch reads the whole inbox. A failed bind or shutdown after
+  acknowledgement can lose a queued wake without losing the inbox row.
+- `/api/v1/notifications` merges the last hour of durable `usage.reset` items with all current,
+  non-archived `session.attention` levels. There is no notification read state. Keep push payload-less,
+  with namespaced topic keys `usage.reset:<id>` and `session.attention:<id>`.
+- Retention runs at startup and daily: usage history/source baselines for 90 days, inbox rows for one
+  day. Keep the current usage projection. Age cutoffs on inbox reads apply even before pruning runs.
+- Authentication owns the private Claude header file and its rotation. Per-launch settings generation
+  only reads and chains the user-scope status command; it must not rewrite the token header. Preserve
+  the operator command's input, output and exit status independently of background capture.
+- Provider evidence, conservative detection blind spots, and deferred scope live in
+  [docs/usage-limits-research.md](docs/usage-limits-research.md).
+
 ## Transport and Web UI
 
 - Client APIs live under `/api/v1`.
@@ -67,7 +101,7 @@ Do not archive completed plans.
   response overtaken by a later request is discarded. Each read owns its readiness token. A port that
   throws must still answer its waiters; a failing `read` or `succeed` is a failed read and never stops
   the pump.
-- Session, task, project, selection, dialog, status, and preference state lives in signals under
+- Session, task, project, usage, selection, dialog, status, and preference state lives in signals under
   `resources/webui/state/`, one owner per concern; callers must use that module's writers.
 - A signal module imported by Node must import signals-core by relative path. That path must normalize to
   the import map's target so browser code shares one reactive graph while Node can resolve the module.
@@ -80,6 +114,10 @@ Do not archive completed plans.
   or a second list; two records drift.
 - Preserve revision-based newest-wins merging for HTTP responses and WebSocket frames. Arrival timing is
   not an ordering guarantee.
+- Usage has dedicated `usage_snapshot`/`usage_update` frames and no REST usage read. Subscribe before
+  the authoritative snapshot, buffer newest-per-window updates independently of socket delivery, and
+  merge strictly by `observedAt`. The sidebar dims after ten minutes without a matching receipt; its
+  local expiry timer does not poll a provider.
 - `SessionUpdateDto` carries `name`, whose absent-means-keep contract is the opposite of `model`'s
   authoritative clear. Keep the rationale on the DTO field rather than duplicating it at merge sites.
 - `PatchSessionRequest` takes a single nullable `name` and answers 400 for a body carrying nothing,
