@@ -4,6 +4,7 @@ import com.microsoft.playwright.Clock
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
+import com.microsoft.playwright.options.AriaRole
 import java.util.regex.Pattern
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,22 +12,30 @@ import kotlin.test.assertTrue
 
 class UsageStripTest {
     @Test
-    fun theSnapshotShowsOneLinePerObservedProviderAndTheActualCodexWindowDuration() {
+    fun theSnapshotShowsUsageBarsAndTheActualCodexWindowDuration() {
         usagePage(USAGE_SCENARIO, "usage-snapshot") { _, page ->
-            assertThat(page.locator("#usage-strip")).hasAttribute("aria-label", "Usage limits")
+            assertThat(page.getByRole(AriaRole.GROUP, Page.GetByRoleOptions().setName("Usage limits").setExact(true)))
+                .isVisible()
             assertThat(page.locator(".usage-provider")).hasCount(2)
-            assertThat(provider(page, "claude")).hasText("claude · 5h 23% · 7d 41%")
-            assertThat(provider(page, "codex")).hasText("codex · 7d 58%")
+            assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "41")
+            assertUsage(page, "codex", "primary" to "58")
+            assertThat(window(page, "claude", "five_hour").getByRole(AriaRole.PROGRESSBAR))
+                .hasAccessibleName("claude 5h usage")
+            assertThat(window(page, "claude", "seven_day").getByRole(AriaRole.PROGRESSBAR))
+                .hasAccessibleName("claude 7d usage")
+            assertThat(window(page, "codex", "primary").getByRole(AriaRole.PROGRESSBAR))
+                .hasAccessibleName("codex 7d usage")
+            assertThat(page.locator("#usage-strip")).not().containsText("%")
             assertThat(provider(page, "junie")).hasCount(0)
             assertThat(provider(page, "shell")).hasCount(0)
             assertThat(window(page, "claude", "five_hour")).hasAttribute(
-                "title", title(page, FIVE_HOUR_RESET, EPOCH),
+                "title", title(page, "23", FIVE_HOUR_RESET, EPOCH),
             )
             assertThat(window(page, "claude", "seven_day")).hasAttribute(
-                "title", title(page, WEEKLY_RESET, EPOCH),
+                "title", title(page, "41", WEEKLY_RESET, EPOCH),
             )
             assertThat(window(page, "codex", "primary")).hasAttribute(
-                "title", title(page, WEEKLY_RESET, EPOCH),
+                "title", title(page, "58", WEEKLY_RESET, EPOCH),
             )
             assertThat(page.locator(".usage-provider.stale")).hasCount(0)
         }
@@ -39,19 +48,19 @@ class UsageStripTest {
             assertThat(page.locator(".usage-provider")).hasCount(0)
 
             harness.send("usage claude five_hour 23 - $EPOCH")
-            assertThat(provider(page, "claude")).hasText("claude · 5h 23%")
-            assertThat(window(page, "claude", "five_hour")).hasAttribute("title", title(page, null, EPOCH))
+            assertUsage(page, "claude", "five_hour" to "23")
+            assertThat(window(page, "claude", "five_hour")).hasAttribute("title", title(page, "23", null, EPOCH))
             assertThat(provider(page, "codex")).hasCount(0)
             assertThat(provider(page, "junie")).hasCount(0)
 
             harness.send("usage claude seven_day 41 $WEEKLY_RESET $EPOCH")
-            assertThat(provider(page, "claude")).hasText("claude · 5h 23% · 7d 41%")
+            assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "41")
             harness.send("usage claude five_hour 24.5 $FIVE_HOUR_RESET ${EPOCH + 1}")
-            assertThat(provider(page, "claude")).hasText("claude · 5h 24.5% · 7d 41%")
+            assertUsage(page, "claude", "five_hour" to "24.5", "seven_day" to "41")
             assertThat(page.locator(".usage-provider")).hasCount(1)
 
             harness.send("usage codex primary 58 $WEEKLY_RESET $EPOCH 604800")
-            assertThat(provider(page, "codex")).hasText("codex · 7d 58%")
+            assertUsage(page, "codex", "primary" to "58")
             assertThat(page.locator(".usage-provider")).hasCount(2)
             assertEquals(4, frameCount(page, "usage_update"), "all four mutations arrived over the events socket")
             assertEquals(1, frameCount(page, "usage_snapshot"), "the updates did not require reconnecting")
@@ -63,8 +72,8 @@ class UsageStripTest {
         usagePage(USAGE_SCENARIO, "usage-stale-heartbeat") { harness, page ->
             val claude = provider(page, "claude")
             val codex = provider(page, "codex")
-            assertThat(claude).hasText("claude · 5h 23% · 7d 41%")
-            assertThat(codex).hasText("codex · 7d 58%")
+            assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "41")
+            assertUsage(page, "codex", "primary" to "58")
             // Boot with running timers, then publish heartbeats after pausing so every deadline is
             // scheduled against this controlled clock rather than the bootstrap timer's real ticks.
             val anchor = EPOCH + 60_000
@@ -73,9 +82,9 @@ class UsageStripTest {
             harness.send("usage claude five_hour 23 $FIVE_HOUR_RESET $anchor")
             harness.send("usage claude seven_day 41 $WEEKLY_RESET $anchor")
             harness.send("usage codex primary 58 $WEEKLY_RESET $anchor 604800")
-            assertThat(window(page, "claude", "five_hour")).hasAttribute("title", title(page, FIVE_HOUR_RESET, anchor))
-            assertThat(window(page, "claude", "seven_day")).hasAttribute("title", title(page, WEEKLY_RESET, anchor))
-            assertThat(window(page, "codex", "primary")).hasAttribute("title", title(page, WEEKLY_RESET, anchor))
+            assertThat(window(page, "claude", "five_hour")).hasAttribute("title", title(page, "23", FIVE_HOUR_RESET, anchor))
+            assertThat(window(page, "claude", "seven_day")).hasAttribute("title", title(page, "41", WEEKLY_RESET, anchor))
+            assertThat(window(page, "codex", "primary")).hasAttribute("title", title(page, "58", WEEKLY_RESET, anchor))
             val freshOpacity = opacity(claude)
             assertThat(claude).not().hasClass(STALE)
             val initialFrames = frameCount(page, "usage_update")
@@ -92,14 +101,14 @@ class UsageStripTest {
             val heartbeatAt = anchor + STALE_MILLIS + 1
             harness.send("usage claude seven_day 41 $WEEKLY_RESET $heartbeatAt")
             assertThat(window(page, "claude", "seven_day")).hasAttribute(
-                "title", title(page, WEEKLY_RESET, heartbeatAt),
+                "title", title(page, "41", WEEKLY_RESET, heartbeatAt),
             )
-            assertThat(claude).hasText("claude · 5h 23% · 7d 41%")
+            assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "41")
             assertThat(claude).not().hasClass(STALE)
             assertEquals(freshOpacity, opacity(claude))
             assertThat(codex).hasClass(STALE)
             assertThat(window(page, "claude", "five_hour")).hasAttribute(
-                "title", title(page, FIVE_HOUR_RESET, anchor),
+                "title", title(page, "23", FIVE_HOUR_RESET, anchor),
             )
 
             page.clock().runFor(STALE_MILLIS)
@@ -114,16 +123,16 @@ class UsageStripTest {
     fun aListenerRestartKeepsTheRealUsageProjectionForTheNextSnapshot() {
         usagePage(USAGE_SCENARIO, "usage-restart") { harness, page ->
             harness.send("usage claude seven_day 45 $WEEKLY_RESET ${EPOCH + 1}")
-            assertThat(provider(page, "claude")).hasText("claude · 5h 23% · 7d 45%")
+            assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "45")
 
             harness.send("restart")
             page.reload()
             awaitSnapshot(page)
 
-            assertThat(provider(page, "claude")).hasText("claude · 5h 23% · 7d 45%")
-            assertThat(provider(page, "codex")).hasText("codex · 7d 58%")
+            assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "45")
+            assertUsage(page, "codex", "primary" to "58")
             assertThat(window(page, "claude", "seven_day")).hasAttribute(
-                "title", title(page, WEEKLY_RESET, EPOCH + 1),
+                "title", title(page, "45", WEEKLY_RESET, EPOCH + 1),
             )
             assertEquals(0, frameCount(page, "usage_update"), "the fresh page received the persisted value in its snapshot")
         }
@@ -159,9 +168,21 @@ private fun provider(page: Page, providerName: String): Locator =
 private fun window(page: Page, providerName: String, key: String): Locator =
     provider(page, providerName).locator(".usage-window[data-window='$key']")
 
-private fun title(page: Page, resetsAt: Long?, observedAt: Long): String {
+private fun assertUsage(page: Page, providerName: String, vararg values: Pair<String, String>) {
+    assertThat(provider(page, providerName).getByRole(AriaRole.PROGRESSBAR)).hasCount(values.size)
+    for (entry in values) {
+        val [key, percent] = entry
+        val bar = window(page, providerName, key).getByRole(AriaRole.PROGRESSBAR)
+        assertThat(bar).hasAttribute("value", percent)
+        assertThat(bar).hasAttribute("max", "100")
+        assertThat(bar).hasAttribute("aria-valuetext", "$percent% used")
+        assertThat(bar).isVisible()
+    }
+}
+
+private fun title(page: Page, percent: String, resetsAt: Long?, observedAt: Long): String {
     fun localDate(stamp: Long): String = page.evaluate("stamp => new Date(stamp).toLocaleString()", stamp.toDouble()) as String
-    return "Resets: ${resetsAt?.let(::localDate) ?: "unknown"}\nObserved: ${localDate(observedAt)}"
+    return "$percent% used\nResets: ${resetsAt?.let(::localDate) ?: "unknown"}\nObserved: ${localDate(observedAt)}"
 }
 
 private fun opacity(locator: Locator): Double =

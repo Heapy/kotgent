@@ -497,9 +497,10 @@ The sidebar footer identifies the running daemon: local source builds show the r
 embedded short Git hash (for example `0.9.0+81c37fe`), while published Homebrew builds show the release
 version alone (`0.9.0`).
 
-Above that footer, the usage strip shows each available Claude and Codex quota as a **percentage used**,
-shared across sessions. Window labels follow the reported duration, so Codex's primary window can be
-weekly. Hover a value for its expected reset time and last observation time; missing windows stay hidden.
+The usage strip stays pinned above that footer while sessions and projects scroll. It shows each available
+Claude and Codex quota as a **progress bar showing usage**, shared across sessions. Window labels follow the
+reported duration, so Codex's primary window can be weekly. Hover a bar for the percentage used, expected
+reset time and last observation time; missing windows stay hidden.
 A provider line dims when its newest observation is more than ten minutes old. Matching Claude
 heartbeat renders keep it fresh, but that timestamp describes capture activity, not a fresh provider lookup.
 
@@ -640,8 +641,8 @@ Kotgent is deliberately focused. The current product boundary is:
   stops an agent and archives it off the sidebar (restorable, history kept); and an opt-in, per-device
   **notification toggle** registers server-sent Web Push for attention edges and early weekly quota
   resets, with live-tab fallback for attention only.
-- **Shared usage meters.** The sidebar shows available Claude and Codex percentage windows, expected
-  resets, and observation freshness without provider polling. Early weekly resets retain their prior
+- **Shared usage meters.** The sidebar keeps available Claude and Codex usage bars visible, with expected
+  resets and observation freshness without provider polling. Early weekly resets retain their prior
   usage in the local notification inbox, independently of push availability.
 - **Installable mobile PWA.** The manifest, root service worker, home-screen icons, responsive drawer,
   visual-viewport terminal sizing, software-keyboard focus handling, special-key toolbar, foreground

@@ -11,8 +11,9 @@ restarting the daemon—must not discard the work.
 - Leave the machine and receive a notification when a session needs human attention or a weekly quota
   resets early, making capacity available sooner than expected.
 - See what every session is doing, organize sessions by project, and recover stopped conversations.
-- See the available Claude and Codex quota windows together, with percentages used, expected reset
-  times, and observation times; recognize stale readings without opening each provider session.
+- Keep the available Claude and Codex quota windows in view while scrolling the sidebar, with usage bars,
+  exact percentages, reset times and observation times in tooltips; recognize stale readings without
+  opening each provider session.
 - Keep an ordered, dependency-aware backlog per project so ideas become explicit work rather than context
   remembered by the operator or trapped in one session.
 - Use the full terminal and backlog comfortably from an installable phone or tablet PWA.

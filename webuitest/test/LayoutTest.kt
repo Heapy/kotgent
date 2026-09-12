@@ -165,19 +165,19 @@ class LayoutTest {
     }
 
     @Test
-    fun theSidebarPinsItsHeaderAboveTheSessionsAndTasksScrollersOnDesktop() {
+    fun theSidebarPinsItsHeaderAndUsageAroundTheSessionsAndTasksScrollersOnDesktop() {
         Harness(TASK_LINKED_SESSION_SCENARIO).use { harness ->
             onDesktop(harness, "layout-sidebar-scroll-desktop") { page ->
-                exercisePinnedSidebar(page, mobile = false)
+                exercisePinnedSidebar(harness, page, mobile = false)
             }
         }
     }
 
     @Test
-    fun theSidebarPinsItsHeaderInsideTheMobileDrawer() {
+    fun theSidebarPinsItsHeaderAndUsageInsideTheMobileDrawer() {
         Harness(TASK_LINKED_SESSION_SCENARIO).use { harness ->
             onPhone(harness, "layout-sidebar-scroll-phone") { page ->
-                exercisePinnedSidebar(page, mobile = true)
+                exercisePinnedSidebar(harness, page, mobile = true)
             }
         }
     }
@@ -514,7 +514,7 @@ private const val DESKTOP_HEIGHT = 900
 private const val PHONE_WIDTH = 390
 private const val PHONE_HEIGHT = 844
 
-private const val SIDEBAR_SCROLL_VIEWPORT_HEIGHT = 200
+private const val SIDEBAR_SCROLL_VIEWPORT_HEIGHT = 280
 
 private const val DEFAULT_TERMINAL_FONT_SIZE = 13
 private const val LARGEST_TERMINAL_FONT_SIZE = 16
@@ -758,8 +758,13 @@ private val MEASURE_NOTIFY_TOGGLE = """
     }
 """.trimIndent()
 
-private fun exercisePinnedSidebar(page: Page, mobile: Boolean) {
+private fun exercisePinnedSidebar(harness: Harness, page: Page, mobile: Boolean) {
     assertThat(page.locator("#session-list .session-row")).hasCount(3)
+    harness.send("usage claude five_hour 23")
+    harness.send("usage claude seven_day 41")
+    harness.send("usage codex primary 58 - - 18000")
+    harness.send("usage codex secondary 72 - - 604800")
+    assertThat(page.locator("#usage-strip progress")).hasCount(4)
     page.setViewportSize(if (mobile) PHONE_WIDTH else DESKTOP_WIDTH, SIDEBAR_SCROLL_VIEWPORT_HEIGHT)
     if (mobile) {
         page.locator("#drawer-toggle").click()
@@ -808,9 +813,11 @@ private fun assertPinnedSidebarScroll(page: Page, movingSelector: String, where:
     val scrollBefore = scroll.boundingBox() ?: fail("$where rendered no scroll-port box")
     val movingBefore = moving.boundingBox() ?: fail("$where rendered no $movingSelector box")
     val footerBefore = footer.boundingBox() ?: fail("$where rendered no footer box")
+    val sidebarBox = sidebar.boundingBox() ?: fail("$where rendered no sidebar box")
     assertTrue(
-        footerBefore.y + footerBefore.height > scrollBefore.y + scrollBefore.height + EDGE_EPS,
-        "$where showed the whole footer before scrolling, so reaching it proves nothing",
+        footerBefore.y >= scrollBefore.y + scrollBefore.height - EDGE_EPS &&
+            footerBefore.y + footerBefore.height <= sidebarBox.y + sidebarBox.height + EDGE_EPS,
+        "$where must show the entire footer below the scroll port before scrolling",
     )
 
     val scrolled = scroll.number("el => { el.scrollTop = el.scrollHeight; return el.scrollTop; }")
@@ -832,10 +839,20 @@ private fun assertPinnedSidebarScroll(page: Page, movingSelector: String, where:
         "$where did not move $movingSelector with the scrollable content",
     )
     assertTrue(
-        footerAfter.y >= scrollBefore.y - EDGE_EPS &&
-            footerAfter.y + footerAfter.height <= scrollBefore.y + scrollBefore.height + EDGE_EPS,
-        "$where did not bring its footer fully into the scroll port",
+        abs(footerAfter.y - footerBefore.y) <= EDGE_EPS &&
+            abs(footerAfter.height - footerBefore.height) <= EDGE_EPS,
+        "$where moved or resized its pinned usage footer while scrolling",
     )
+    val bars = page.locator("#usage-strip progress")
+    assertThat(bars).hasCount(4)
+    for (bar in bars.all()) {
+        val box = bar.boundingBox() ?: fail("$where rendered no usage bar box")
+        assertTrue(
+            box.y >= footerAfter.y && box.y + box.height <= footerAfter.y + footerAfter.height &&
+                box.x >= sidebarBox.x && box.x + box.width <= sidebarBox.x + sidebarBox.width && box.width > 0,
+            "$where clipped a usage bar",
+        )
+    }
     assertEquals(0.0, sidebar.number("el => el.scrollTop"), "$where scrolled the outer sidebar")
 }
 

@@ -66,16 +66,23 @@ function UsageStrip() {
   }, [nextStaleAt, now]);
   if (!rows.length) return null;
   return html`
-    <div id="usage-strip" aria-label="Usage limits">
+    <div id="usage-strip" role="group" aria-label="Usage limits">
       ${rows.map((row) => html`
         <div key=${row.provider} data-provider=${row.provider}
              class=${"usage-provider" + (now - row.newest > USAGE_STALE_MS ? " stale" : "")}>
-          ${row.provider}${row.windows.map((window) => html`
-            <span key=${window.windowKey} class="usage-window" data-window=${window.windowKey}
-                  title=${"Resets: " + (window.resetsAt == null ? "unknown" : new Date(window.resetsAt).toLocaleString())
-                    + "\nObserved: " + new Date(window.observedAt).toLocaleString()}>
-              ${" · " + usageLabel(window) + " " + window.usedPercent + "%"}
-            </span>`)}
+          <span class="usage-provider-name">${row.provider}</span>
+          <div class="usage-windows">
+            ${row.windows.map((window) => html`
+              <div key=${window.windowKey} class="usage-window" data-window=${window.windowKey}
+                   title=${window.usedPercent + "% used\nResets: "
+                     + (window.resetsAt == null ? "unknown" : new Date(window.resetsAt).toLocaleString())
+                     + "\nObserved: " + new Date(window.observedAt).toLocaleString()}>
+                <span class="usage-window-label">${usageLabel(window)}</span>
+                <progress class="usage-progress" max="100" value=${window.usedPercent}
+                          aria-label=${row.provider + " " + usageLabel(window) + " usage"}
+                          aria-valuetext=${window.usedPercent + "% used"}></progress>
+              </div>`)}
+          </div>
         </div>`)}
     </div>`;
 }
@@ -691,18 +698,19 @@ export function Sidebar({
         </section>
       `}
 
-        <footer id="sidebar-footer">
-          <${UsageStrip} />
-          <div class="sidebar-footer-row">
+      </div>
+
+      <footer id="sidebar-footer">
+        <${UsageStrip} />
+        <div class="sidebar-footer-row">
           ${!onTasks && html`
             <p id="status-line" class=${"status-line" + (status.error ? " error" : "")}
                role="status" aria-live="polite">${status.text}</p>`}
           ${currentVersion && html`
             <span id="current-version" title="Kotgent version">${currentVersion}</span>
           `}
-          </div>
-        </footer>
-      </div>
+        </div>
+      </footer>
     </aside>
   `;
 }
