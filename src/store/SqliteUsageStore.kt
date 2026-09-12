@@ -8,15 +8,16 @@ import io.kotgent.core.UsageReset
 import io.kotgent.core.UsageSource
 import io.kotgent.core.UsageWindowState
 import io.kotgent.core.detectReset
+import io.kotgent.core.isNotificationEligible
 import io.kotgent.db.KotgentDatabase
+import io.kotgent.db.Usage_windows
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 
 class SqliteUsageStore(
     driver: SqlDriver,
@@ -28,13 +29,19 @@ class SqliteUsageStore(
     private val dbMutex = Mutex()
 
     override val updates: SharedFlow<UsageWindowState>
-        field = MutableSharedFlow(extraBufferCapacity = 64)
+        field = MutableSharedFlow(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     override val resets: SharedFlow<UsageReset>
-        field = MutableSharedFlow(extraBufferCapacity = 64)
+        field = MutableSharedFlow(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     init {
         for (sql in CREATE_TABLES_IF_NOT_EXISTS) driver.execute(null, sql, 0)
+        if (!driver.hasColumn("usage_windows", "received_at")) {
+            db.transaction {
+                driver.execute(null, "ALTER TABLE usage_windows ADD COLUMN received_at INTEGER NOT NULL DEFAULT 0", 0)
+                driver.execute(null, "UPDATE usage_windows SET received_at = observed_at", 0)
+            }
+        }
     }
 
     override suspend fun observe(observation: UsageObservation): Unit = operationsMutex.withLock {
@@ -42,16 +49,14 @@ class SqliteUsageStore(
             db.transactionWithResult { observeLocked(observation, now()) }
         }
         if (publication != null) {
-            // Readers must remain able to finish onSubscription snapshots while a publisher suspends.
-            withContext(NonCancellable) {
-                updates.emit(publication.state)
-                publication.reset?.let { resets.emit(it) }
-            }
+            // Live frames are hints; snapshots and pending inbox work remain durable in SQLite.
+            val _ = updates.tryEmit(publication.state)
+            publication.reset?.let { val _ = resets.tryEmit(it) }
         }
     }
 
     override suspend fun list(): List<UsageWindowState> = dbMutex.withLock {
-        queries.selectAllWindows(::readWindow).executeAsList().map { it.state }
+        queries.selectAllWindows().executeAsList().map { readWindow(it).state }
     }
 
     override suspend fun prune(): Unit = dbMutex.withLock {
@@ -71,7 +76,7 @@ class SqliteUsageStore(
                 provider, windowKey, expectedAt, observedAt, usedBefore, usedBeforeSeenAt,
                 early != 0L, resetsAtMoved != 0L, windowSeconds, id,
             )
-        }.executeAsList()
+        }.executeAsList().filter { it.isNotificationEligible }
     }
 
     override suspend fun markResetNotificationProjected(id: Long): Unit = dbMutex.withLock {
@@ -79,10 +84,15 @@ class SqliteUsageStore(
     }
 
     private fun observeLocked(input: UsageObservation, timestamp: Long): Publication? {
-        val stored = queries.selectWindow(input.provider, input.windowKey, ::readWindow).executeAsOneOrNull()
+        val stored = queries.selectWindow(input.provider, input.windowKey).executeAsOneOrNull()?.let(::readWindow)
         val current = stored?.state?.current
         val generation = stored?.generation ?: 0L
-        val admittedCaptureAt = stored?.admittedCaptureAt ?: 0L
+        // A wall-clock correction must not leave a persisted future watermark blocking this meter.
+        // Source revisions still reject replay within each producer; new Claude sources need a baseline.
+        val persistedCaptureAt = stored?.admittedCaptureAt ?: 0L
+        val admittedCaptureAt = if (persistedCaptureAt > timestamp &&
+            persistedCaptureAt - timestamp > MAX_CAPTURE_LEAD_MILLIS
+        ) 0L else persistedCaptureAt
         val source = input.source
         val baseline = source?.let {
             queries.selectSource(input.provider, input.windowKey, it.id, ::readSource).executeAsOneOrNull()
@@ -90,6 +100,12 @@ class SqliteUsageStore(
         val previousSource = baseline?.observation?.source
         val advancingSource = source != null && (previousSource == null || source.revision > previousSource.revision)
         val distinctSourceValues = baseline == null || !sameValues(baseline.observation, input)
+        // A known cached render can outlive a wall-clock correction. It may refresh receipt, never evidence.
+        val knownCachedRender = input.provider == "claude" && source != null && source == previousSource &&
+            !distinctSourceValues && current != null && sameValues(current, input)
+        if (source != null && source.capturedAt > timestamp &&
+            source.capturedAt - timestamp > MAX_CAPTURE_LEAD_MILLIS && !knownCachedRender
+        ) return null
 
         if (source != null) {
             if (previousSource != null && source.revision <= previousSource.revision) {
@@ -117,13 +133,18 @@ class SqliteUsageStore(
             val advancesEvidence = advancingSource &&
                 (input.provider != "claude" || (baseline != null && distinctSourceValues))
             val nextCaptureAt = if (advancesEvidence) maxOf(admittedCaptureAt, source.capturedAt) else admittedCaptureAt
-            if (timestamp - current.observedAt < USAGE_HEARTBEAT_MILLIS) {
-                if (nextCaptureAt != admittedCaptureAt) {
+            if (timestamp >= stored.state.receivedAt &&
+                timestamp - stored.state.receivedAt < USAGE_HEARTBEAT_MILLIS
+            ) {
+                if (nextCaptureAt != persistedCaptureAt) {
                     val _ = queries.updateAdmittedCapture(nextCaptureAt, input.provider, input.windowKey)
                 }
                 return null
             }
-            val state = stored.state.copy(current = current.copy(observedAt = nextObservedAt(current, timestamp)))
+            val state = stored.state.copy(
+                current = current.copy(observedAt = nextObservedAt(current, timestamp)),
+                receivedAt = timestamp,
+            )
             writeWindow(state, generation, nextCaptureAt)
             return Publication(state)
         }
@@ -131,16 +152,18 @@ class SqliteUsageStore(
         val admitted = input.copy(observedAt = nextObservedAt(current, timestamp))
         val sameSessionDrop = advancingSource && baseline != null && distinctSourceValues &&
             baseline.generation == generation && baseline.observation.usedPercent > admitted.usedPercent
-        val detected = if (input.provider != "claude" || sameSessionDrop) detectReset(current, admitted) else null
+        val detected = if (input.provider != "claude" || sameSessionDrop) {
+            detectReset(current, admitted, stored?.state?.receivedAt ?: timestamp, timestamp)
+        } else null
         val nextGeneration = generation + if (detected == null) 0 else 1
         if (advancingSource) {
             writeSource(admitted, if (distinctSourceValues) nextGeneration else baseline.generation)
         }
-        val state = UsageWindowState(admitted, admitted.observedAt, current)
+        val state = UsageWindowState(admitted, changedAt = timestamp, receivedAt = timestamp)
         writeWindow(state, nextGeneration, maxOf(admittedCaptureAt, source?.capturedAt ?: admittedCaptureAt))
         val _ = queries.insertSample(
             admitted.provider, admitted.windowKey, admitted.usedPercent, admitted.resetsAt,
-            admitted.windowSeconds, admitted.observedAt, source?.id, source?.revision, source?.capturedAt,
+            admitted.windowSeconds, timestamp, source?.id, source?.revision, source?.capturedAt,
         )
         val reset = detected?.let {
             val _ = queries.insertReset(
@@ -163,13 +186,20 @@ class SqliteUsageStore(
 
     private fun writeWindow(state: UsageWindowState, generation: Long, admittedCaptureAt: Long) {
         val current = state.current
-        val previous = state.previous
         val _ = queries.upsertWindow(
-            current.provider, current.windowKey, current.usedPercent, current.resetsAt, current.windowSeconds,
-            current.observedAt, state.changedAt, current.source?.id, current.source?.revision,
-            current.source?.capturedAt, generation, admittedCaptureAt, previous?.usedPercent, previous?.resetsAt,
-            previous?.windowSeconds, previous?.observedAt, previous?.source?.id, previous?.source?.revision,
-            previous?.source?.capturedAt,
+            provider = current.provider,
+            window_key = current.windowKey,
+            used_percent = current.usedPercent,
+            resets_at = current.resetsAt,
+            window_seconds = current.windowSeconds,
+            observed_at = current.observedAt,
+            changed_at = state.changedAt,
+            received_at = state.receivedAt,
+            source_id = current.source?.id,
+            source_revision = current.source?.revision,
+            source_captured_at = current.source?.capturedAt,
+            reset_generation = generation,
+            admitted_capture_at = admittedCaptureAt,
         )
     }
 
@@ -180,6 +210,7 @@ class SqliteUsageStore(
     private class SourceBaseline(val observation: UsageObservation, val generation: Long)
 
     companion object {
+        private const val MAX_CAPTURE_LEAD_MILLIS = 60_000L
         /** Runtime migration DDL; keep synchronized with Usage.sq. */
         val CREATE_TABLES_IF_NOT_EXISTS: List<String> = listOf(
             """
@@ -191,18 +222,12 @@ class SqliteUsageStore(
               window_seconds INTEGER,
               observed_at INTEGER NOT NULL,
               changed_at INTEGER NOT NULL,
+              received_at INTEGER NOT NULL,
               source_id TEXT,
               source_revision INTEGER,
               source_captured_at INTEGER,
               reset_generation INTEGER NOT NULL DEFAULT 0,
               admitted_capture_at INTEGER NOT NULL DEFAULT 0,
-              prev_used_percent REAL,
-              prev_resets_at INTEGER,
-              prev_window_seconds INTEGER,
-              prev_observed_at INTEGER,
-              prev_source_id TEXT,
-              prev_source_revision INTEGER,
-              prev_source_captured_at INTEGER,
               PRIMARY KEY (provider, window_key)
             )
             """.trimIndent(),
@@ -278,43 +303,22 @@ class SqliteUsageStore(
             generation,
         )
 
-        private fun readWindow(
-            provider: String,
-            windowKey: String,
-            usedPercent: Double,
-            resetsAt: Long?,
-            windowSeconds: Long?,
-            observedAt: Long,
-            changedAt: Long,
-            sourceId: String?,
-            sourceRevision: Long?,
-            sourceCapturedAt: Long?,
-            generation: Long,
-            admittedCaptureAt: Long,
-            previousUsedPercent: Double?,
-            previousResetsAt: Long?,
-            previousWindowSeconds: Long?,
-            previousObservedAt: Long?,
-            previousSourceId: String?,
-            previousSourceRevision: Long?,
-            previousSourceCapturedAt: Long?,
-        ): StoredWindow = StoredWindow(
+        private fun readWindow(row: Usage_windows): StoredWindow = StoredWindow(
             UsageWindowState(
                 current = UsageObservation(
-                    provider, windowKey, usedPercent, resetsAt, windowSeconds, observedAt,
-                    readSourceIdentity(sourceId, sourceRevision, sourceCapturedAt),
+                    provider = row.provider,
+                    windowKey = row.window_key,
+                    usedPercent = row.used_percent,
+                    resetsAt = row.resets_at,
+                    windowSeconds = row.window_seconds,
+                    observedAt = row.observed_at,
+                    source = readSourceIdentity(row.source_id, row.source_revision, row.source_captured_at),
                 ),
-                changedAt = changedAt,
-                previous = previousUsedPercent?.let {
-                    UsageObservation(
-                        provider, windowKey, it, previousResetsAt, previousWindowSeconds,
-                        requireNotNull(previousObservedAt),
-                        readSourceIdentity(previousSourceId, previousSourceRevision, previousSourceCapturedAt),
-                    )
-                },
+                changedAt = row.changed_at,
+                receivedAt = row.received_at,
             ),
-            generation,
-            admittedCaptureAt,
+            row.reset_generation,
+            row.admitted_capture_at,
         )
 
         private fun readSourceIdentity(id: String?, revision: Long?, capturedAt: Long?): UsageSource? =

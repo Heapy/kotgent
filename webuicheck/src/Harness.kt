@@ -166,6 +166,7 @@ class Harness(
         tickets = tickets,
         taskStore = fakes.taskStore,
         usageStore = fakes.usage.store,
+        usageClock = fakes.usage::currentTimeMillis,
         taskService = taskService,
         port = port,
     )

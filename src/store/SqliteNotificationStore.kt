@@ -4,7 +4,7 @@ import app.cash.sqldelight.db.SqlDriver
 import io.kotgent.core.NOTIFICATION_RETENTION_MILLIS
 import io.kotgent.core.UsageReset
 import io.kotgent.core.UsageResetNotification
-import io.kotgent.core.isWeeklyUsageWindow
+import io.kotgent.core.isNotificationEligible
 import io.kotgent.db.KotgentDatabase
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -24,7 +24,7 @@ class SqliteNotificationStore(
 
     override suspend fun insert(reset: UsageReset): Boolean = mutex.withLock {
         require(reset.id > 0) { "Notification requires a durable usage reset id" }
-        if (!reset.early || !isWeeklyUsageWindow(reset.provider, reset.windowKey, reset.windowSeconds)) {
+        if (!reset.isNotificationEligible) {
             return@withLock false
         }
         queries.insertNotification(

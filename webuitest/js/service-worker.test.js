@@ -264,19 +264,28 @@ test("a cold session click opens the encoded session URL", async () => {
   assert.equal(h.closed, 1);
 });
 
-for (const [name, data] of [["usage", { type: "usage.reset", sessionId: "stray-session" }], ["generic", {}]]) {
-  test(name + " clicks navigate an existing window to the overview and focus the returned client", async () => {
-    const rootCalls = [];
-    const root = { async focus() { rootCalls.push("focus"); } };
-    const window = windowClient({ navigateResult: root });
-    const h = harness({ clients: [window.client] });
-    await h.click(data).done;
-    assert.deepEqual(window.calls, [["navigate", "/"]]);
-    assert.deepEqual(rootCalls, ["focus"]);
-    assert.equal(h.clientCalls.length, 1, "a successfully navigated window needs no extra window");
-    assert.equal(h.closed, 1);
-  });
+test("a generic click focuses the current window without navigating or changing its selection", async () => {
+  const window = windowClient();
+  const h = harness({ clients: [window.client] });
+  await h.click({}).done;
+  assert.deepEqual(window.calls, [["focus"]]);
+  assert.equal(h.clientCalls.length, 1, "the current terminal remains in its existing document");
+  assert.equal(h.closed, 1);
+});
 
+test("a usage click navigates to the overview even if its data includes a stray session", async () => {
+  const rootCalls = [];
+  const root = { async focus() { rootCalls.push("focus"); } };
+  const window = windowClient({ navigateResult: root });
+  const h = harness({ clients: [window.client] });
+  await h.click({ type: "usage.reset", sessionId: "stray-session" }).done;
+  assert.deepEqual(window.calls, [["navigate", "/"]]);
+  assert.deepEqual(rootCalls, ["focus"]);
+  assert.equal(h.clientCalls.length, 1, "a successfully navigated window needs no extra window");
+  assert.equal(h.closed, 1);
+});
+
+for (const [name, data] of [["usage", { type: "usage.reset" }], ["generic", {}]]) {
   test(name + " clicks open the overview when no window exists", async () => {
     const h = harness();
     await h.click(data).done;

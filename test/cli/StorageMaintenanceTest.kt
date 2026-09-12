@@ -12,6 +12,31 @@ import kotlin.time.Duration.Companion.seconds
 
 class StorageMaintenanceTest {
     @Test
+    fun aStartupPruneFailureIsReportedAndTheNextScheduledPruneStillRuns() = runBlocking {
+        withTimeout(10.seconds) {
+            val ticks = Channel<Unit>()
+            val recovered = Channel<Unit>()
+            val errors = mutableListOf<String>()
+            var calls = 0
+            val job = startStorageMaintenance(
+                scope = this,
+                prune = { if (++calls == 1) error("database locked") else recovered.send(Unit) },
+                awaitNext = { ticks.receive() },
+                onError = { errors += it },
+            )
+            try {
+                assertEquals(1, calls)
+                assertTrue(errors.single().contains("database locked"))
+                ticks.send(Unit)
+                recovered.receive()
+                assertEquals(2, calls)
+            } finally {
+                job.cancelAndJoin()
+            }
+        }
+    }
+
+    @Test
     fun startupPrunesBeforeReturningAndPeriodicFailureDoesNotEndTheSchedule() = runBlocking {
         withTimeout(10.seconds) {
             val ticks = Channel<Unit>()

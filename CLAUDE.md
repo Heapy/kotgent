@@ -56,7 +56,8 @@ Do not archive completed plans.
   rollout records. Preserve native window keys, omit unavailable percentages, and normalize times to
   epoch milliseconds and durations to seconds at ingress.
 - Source revision and capture time reject reordered input before assigning monotonic per-key
-  `observedAt`. That timestamp means admitted render/record receipt, not provider fetch freshness.
+  `observedAt`, which is a merge revision. Separate `receivedAt` records actual daemon receipt time for
+  heartbeat gating, display and reset timing; neither timestamp establishes provider fetch freshness.
   Matching Claude heartbeats may refresh receipt time without adding samples; unchanged cached values
   must never undo another source's projection or advance the account evidence watermark.
 - Claude reset evidence requires both an account decrease and a decrease within a known source whose
@@ -66,8 +67,11 @@ Do not archive completed plans.
 - Every reset is journaled. Eligible pending inbox projection is durable and idempotent by reset id.
   `UsageResetNotifier` starts independently of push, subscribes and projects before HTTP binds, and
   enables wakes only after binding. Its fast collector never waits for SQLite projection or network
-  delivery. Projection makes at most three attempts per signal; exhaustion retains pending work for the
-  next signal or restart, and startup exhaustion fails readiness. Join background work before closing SQLite.
+  delivery. Projection makes at most three attempts per signal. Runtime exhaustion schedules another
+  local inbox attempt within a minute, independently of provider activity; rows older than the one-hour
+  notification window still expire. Startup exhaustion reports failure and exits normally with code 1.
+  Live usage flows may drop old hints; pending work and snapshots remain in SQLite. Never suspend a
+  writer on a slow collector. Join background work before closing SQLite.
 - Inbox acknowledgement means the notification row is durable, not that a push was delivered. Wakes are
   best effort and may coalesce because each fetch reads the whole inbox. A failed bind or shutdown after
   acknowledgement can lose a queued wake without losing the inbox row.
@@ -75,10 +79,14 @@ Do not archive completed plans.
   non-archived `session.attention` levels. There is no notification read state. Keep push payload-less,
   with namespaced topic keys `usage.reset:<id>` and `session.attention:<id>`.
 - Retention runs at startup and daily: usage history/source baselines for 90 days, inbox rows for one
-  day. Keep the current usage projection. Age cutoffs on inbox reads apply even before pruning runs.
+  day. A failed prune is reported without preventing startup or cancelling future maintenance. Keep the
+  current usage projection. Age cutoffs on inbox reads apply even before pruning runs.
 - Authentication owns the private Claude header file and its rotation. Per-launch settings generation
   only reads and chains the user-scope status command; it must not rewrite the token header. Preserve
   the operator command's input, output and exit status independently of background capture.
+- Claude render ordering and throttling use monotonic time with a boot identity; capture time stays in
+  epoch milliseconds. Capture state is pruned after 90 days and abandoned staging files after one day,
+  under one permanent directory lock. Do not unlink legacy lock inodes a running old script may hold.
 - Provider evidence, conservative detection blind spots, and deferred scope live in
   [docs/usage-limits-research.md](docs/usage-limits-research.md).
 
@@ -115,9 +123,11 @@ Do not archive completed plans.
 - Preserve revision-based newest-wins merging for HTTP responses and WebSocket frames. Arrival timing is
   not an ordering guarantee.
 - Usage has dedicated `usage_snapshot`/`usage_update` frames and no REST usage read. Subscribe before
-  the authoritative snapshot, buffer newest-per-window updates independently of socket delivery, and
-  merge strictly by `observedAt`. The sidebar dims after ten minutes without a matching receipt; its
-  local expiry timer does not poll a provider.
+  the authoritative snapshot, reread all windows on coalesced hints, and send only newer revisions.
+  A dropped hint for one window must recover on another window's surviving hint. Merge strictly by
+  `observedAt`. The sidebar ages `receivedAt` against the frame's `serverNow`, then
+  uses local monotonic elapsed time. Phone wall-clock skew must not alter freshness. Its expiry timer
+  does not poll a provider.
 - `SessionUpdateDto` carries `name`, whose absent-means-keep contract is the opposite of `model`'s
   authoritative clear. Keep the rationale on the DTO field rather than duplicating it at merge sites.
 - `PatchSessionRequest` takes a single nullable `name` and answers 400 for a body carrying nothing,

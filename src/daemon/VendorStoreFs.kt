@@ -9,6 +9,9 @@ import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.yield
 import platform.posix.SEEK_END
 import platform.posix.SEEK_SET
 import platform.posix.S_IFDIR
@@ -42,6 +45,29 @@ fun listDir(path: String): List<String> {
             if (name != "." && name != "..") names.add(name)
         }
         return names
+    } finally {
+        closedir(dir)
+    }
+}
+
+/** Visits without materializing the directory; false stops early and still closes its handle. */
+@OptIn(ExperimentalForeignApi::class)
+internal suspend fun visitDirectoryEntries(path: String, visit: suspend (String) -> Boolean): Boolean {
+    val context = currentCoroutineContext()
+    context.ensureActive()
+    yield()
+    val dir = opendir(path) ?: return true
+    try {
+        var entries = 0
+        while (true) {
+            context.ensureActive()
+            // Check cancellation between native calls and let this dispatcher run its timeout/canceller.
+            // An individual opendir/readdir or file read remains a non-preemptible native call.
+            if (++entries % 64 == 0) yield()
+            val entry = readdir(dir) ?: return true
+            val name = entry.pointed.d_name.toKString()
+            if (name != "." && name != ".." && !visit(name)) return false
+        }
     } finally {
         closedir(dir)
     }

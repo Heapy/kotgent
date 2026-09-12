@@ -697,8 +697,8 @@ function App() {
     else if (msg.type === "task_row") mergeTaskRow(msg.task);
     else if (msg.type === "task_update") mergeTaskPatch(msg.task);
     else if (msg.type === "task_removed") dropTask(msg.ref);
-    else if (msg.type === "usage_snapshot") replaceUsage(msg.windows);
-    else if (msg.type === "usage_update") mergeUsageWindow(msg.window);
+    else if (msg.type === "usage_snapshot") replaceUsage(msg.windows, msg.serverNow);
+    else if (msg.type === "usage_update") mergeUsageWindow(msg.window, msg.serverNow);
   }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;

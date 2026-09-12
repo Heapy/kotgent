@@ -55,7 +55,7 @@ self.addEventListener("message", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  event.waitUntil(openSession(data.type === "usage.reset" ? null : data.sessionId));
+  event.waitUntil(openNotification(data));
 });
 
 async function postPushState(url, body) {
@@ -223,13 +223,15 @@ async function showNotifications() {
 }
 
 // Focused clients must also switch sessions; focus alone leaves the old session selected.
-async function openSession(sessionId) {
+async function openNotification(data) {
+  const overview = data.type === "usage.reset";
+  const sessionId = overview ? null : data.sessionId;
   const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   if (clients.length > 0) {
     const client = clients[0];
     if (sessionId) {
       try { client.postMessage({ type: "select-session", sessionId: sessionId }); } catch (_) {}
-    } else {
+    } else if (overview) {
       // A reset opens the overview even when this client is displaying a session or task.
       try {
         const root = await client.navigate("/");

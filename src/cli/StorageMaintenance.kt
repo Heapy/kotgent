@@ -12,17 +12,20 @@ internal suspend fun startStorageMaintenance(
     awaitNext: suspend () -> Unit = { delay(24 * 60 * 60_000L) },
     onError: (String) -> Unit = ::eprintln,
 ): Job {
-    prune()
+    suspend fun attempt() {
+        try {
+            prune()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            onError("kotgent daemon: history pruning failed: ${e.message}")
+        }
+    }
+    attempt()
     return scope.launch {
         while (true) {
             awaitNext()
-            try {
-                prune()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                onError("kotgent daemon: history pruning failed: ${e.message}")
-            }
+            attempt()
         }
     }
 }

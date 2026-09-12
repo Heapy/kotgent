@@ -15,6 +15,10 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.S_IRUSR
@@ -32,6 +36,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -308,6 +313,127 @@ class CodexRolloutScanTest {
             assertTrue(CodexRolloutScan("/nonexistent/kotgent-test-codex").rateLimitsOf(mine).isEmpty())
         }
     }
+
+    @Test
+    fun repeatedQuotaReadsReuseTheLocatedFileButStillReadItsLatestTail() = runBlocking {
+        withTimeout(10.seconds) {
+            val codexDir = makeCodexDir()
+            val mine = uuid('a')
+            placeRollout(codexDir, "2026", "09", "11", mine, "/work/mine")
+            val path = files.last()
+            writeFile(path, quotaRecord(20))
+            var directoryReads = 0
+            val scan = CodexRolloutScan(codexDir, visitEntries = { directory, visit ->
+                directoryReads++
+                visitDirectoryEntries(directory, visit)
+            })
+
+            assertEquals(20.0, scan.rateLimitsOf(mine).single().usedPercent)
+            val coldReads = directoryReads
+            assertTrue(coldReads > 0)
+            writeFile(path, quotaRecord(30))
+            assertEquals(30.0, scan.rateLimitsOf(mine).single().usedPercent)
+            assertEquals(coldReads, directoryReads, "a retry or later turn does not walk the dated inventory again")
+
+            unlink(path)
+            assertTrue(scan.rateLimitsOf(mine).isEmpty(), "a removed cached file cannot retain a stale quota")
+            val missingReads = directoryReads
+            placeRollout(codexDir, "2026", "09", "12", mine, "/work/mine")
+            writeFile(files.last(), quotaRecord(40))
+            assertEquals(40.0, scan.rateLimitsOf(mine).single().usedPercent)
+            assertTrue(directoryReads > missingReads, "absence is never cached and a moved rollout is rediscovered")
+        }
+    }
+
+    @Test
+    fun usageLookupStopsAtTheMatchedFileWithoutVisitingTheRestOfItsDirectory() = runBlocking {
+        withTimeout(10.seconds) {
+            val codexDir = makeCodexDir()
+            repeat(64) { index ->
+                placeRollout(codexDir, "2026", "09", "11", indexedUuid(index), "/work/shared")
+                writeFile(files.last(), quotaRecord(20))
+            }
+            val directory = files.last().substringBeforeLast('/')
+            val orderedNames = mutableListOf<String>()
+            val _ = visitDirectoryEntries(directory) { orderedNames += it; true }
+            val mine = requireNotNull(rolloutFileSessionId(orderedNames.first()))
+            val visitedNames = mutableListOf<String>()
+            val scan = CodexRolloutScan(codexDir, visitEntries = { dir, visit ->
+                visitDirectoryEntries(dir) { name ->
+                    if (dir == directory) visitedNames += name
+                    visit(name)
+                }
+            })
+
+            assertEquals(20.0, scan.rateLimitsOf(mine).single().usedPercent)
+            assertEquals(listOf(orderedNames.first()), visitedNames, "the actual directory's first match ends enumeration")
+        }
+    }
+
+    @Test
+    fun usagePathCacheEvictsOldEntriesAndKeepsRecentlyReadPaths() = runBlocking {
+        withTimeout(15.seconds) {
+            val codexDir = makeCodexDir()
+            val ids = (0..128).map(::indexedUuid)
+            for (id in ids) {
+                placeRollout(codexDir, "2026", "09", "11", id, "/work/shared")
+                writeFile(files.last(), quotaRecord(20))
+            }
+            var directoryReads = 0
+            val scan = CodexRolloutScan(codexDir, visitEntries = { directory, visit ->
+                directoryReads++
+                visitDirectoryEntries(directory, visit)
+            })
+            for (id in ids.take(128)) assertEquals(20.0, scan.rateLimitsOf(id).single().usedPercent)
+            val _ = scan.rateLimitsOf(ids.first())
+            val _ = scan.rateLimitsOf(ids.last())
+            val fullReads = directoryReads
+            val _ = scan.rateLimitsOf(ids.first())
+            assertEquals(fullReads, directoryReads, "a recent path remains cached after reaching the bound")
+            val _ = scan.rateLimitsOf(ids[1])
+            assertTrue(directoryReads > fullReads, "the bounded cache rediscovers an evicted old path")
+        }
+    }
+
+    @Test
+    fun cancelledUsageLookupStopsInsideTheRealDirectoryWalk() = runBlocking {
+        withTimeout(10.seconds) {
+            val codexDir = makeCodexDir()
+            placeRollout(codexDir, "2026", "09", "11", uuid('a'), "/work/other")
+            val directory = files.last().substringBeforeLast('/')
+            repeat(256) { index ->
+                val neighbour = "$directory/neighbour-$index.jsonl"
+                writeFile(neighbour, "{}")
+                files += neighbour
+            }
+            var visited = 0
+            val entered = CompletableDeferred<Unit>()
+            val scan = CodexRolloutScan(codexDir, visitEntries = { dir, visit ->
+                visitDirectoryEntries(dir) { name ->
+                    visited++
+                    if (visited == 20) entered.complete(Unit)
+                    visit(name)
+                }
+            })
+            val lookup = async(start = CoroutineStart.UNDISPATCHED) { scan.rateLimitsOf(uuid('b')) }
+
+            entered.await()
+            assertFalse(lookup.isCompleted, "a large native directory walk must yield to its caller before finishing")
+            assertTrue(visited in 1..256)
+            lookup.cancelAndJoin()
+            assertFailsWith<CancellationException> { lookup.await() }
+            assertTrue(visited < 257, "cancellation stops enumeration, not merely publication after the whole scan")
+            var reopened = 0
+            assertTrue(visitDirectoryEntries(directory) { reopened++; true })
+            assertEquals(257, reopened)
+        }
+    }
+
+    private fun quotaRecord(percent: Int): String =
+        """{"timestamp":"2026-09-11T18:05:58.392Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":$percent,"window_minutes":10080}}}}""" + "\n"
+
+    private fun indexedUuid(index: Int): ProviderSessionId =
+        ProviderSessionId("00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}")
 
     @Test
     fun captureCodexModelOnceReReadsTheProviderIdTheBackgroundBindLandedMidPoll() = runBlocking {

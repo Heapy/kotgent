@@ -18,7 +18,12 @@ import io.ktor.server.routing.routing
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.jsonObject
@@ -37,8 +42,8 @@ class UsageEventsTest {
 
     @Test
     fun usageFramesRoundTripThroughTheSealedSerializerIncludingUnknownOptionalValues() {
-        val window = UsageWindowDto("codex", "primary", 12.5, null, null, epoch, epoch - 1)
-        val frames = listOf<EventsFrame>(UsageSnapshotDto(listOf(window)), UsageUpdateDto(window))
+        val window = UsageWindowDto("codex", "primary", 12.5, null, null, epoch, epoch - 1, epoch - 2)
+        val frames = listOf<EventsFrame>(UsageSnapshotDto(listOf(window), epoch + 123), UsageUpdateDto(window, epoch + 456))
         val types = listOf("usage_snapshot", "usage_update")
         for (index in frames.indices) {
             val encoded = TRANSPORT_JSON.encodeToString(EventsFrame.serializer(), frames[index])
@@ -48,14 +53,14 @@ class UsageEventsTest {
     }
 
     @Test
-    fun aUsageWindowDtoKeepsValueChangeTimeSeparateFromItsLatestObservation() {
+    fun aUsageWindowDtoKeepsReceiptAndChangeTimesSeparateFromItsOrderingRevision() {
         val state = UsageWindowState(
             observation(12.5).copy(observedAt = epoch + 60_000),
             changedAt = epoch,
-            previous = null,
+            receivedAt = epoch - 1,
         )
         assertEquals(
-            UsageWindowDto("claude", "seven_day", 12.5, epoch + 3_600_000, 604_800, epoch + 60_000, epoch),
+            UsageWindowDto("claude", "seven_day", 12.5, epoch + 3_600_000, 604_800, epoch + 60_000, epoch, epoch - 1),
             state.toDto(),
         )
     }
@@ -68,6 +73,7 @@ class UsageEventsTest {
         withSocket(store) {
             val snapshot = assertIs<UsageSnapshotDto>(nextUsageFrame())
             assertEquals(expected, snapshot.windows)
+            assertEquals(epoch, snapshot.serverNow)
         }
     }
 
@@ -76,7 +82,9 @@ class UsageEventsTest {
         withSocket(store) {
             assertTrue(assertIs<UsageSnapshotDto>(nextUsageFrame()).windows.isEmpty())
             store.observe(observation(20.0))
-            val first = assertIs<UsageUpdateDto>(nextUsageFrame()).window
+            val update = assertIs<UsageUpdateDto>(nextUsageFrame())
+            assertEquals(epoch, update.serverNow)
+            val first = update.window
             assertEquals(store.list().single().toDto(), first)
 
             store.observe(observation(21.0))
@@ -133,6 +141,45 @@ class UsageEventsTest {
         }
     }
 
+    @Test
+    fun aSurvivingHintRefreshesAWindowWhoseLastUpdateWasDroppedDuringAnotherWindowsBurst() = withStore { store ->
+        store.observe(observation(10.0))
+        store.observe(observation(0.0, provider = "codex", key = "primary"))
+        val forwarded = MutableSharedFlow<UsageWindowState>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        val port = object : UsageStore by store { override val updates = forwarded }
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        withSocket(port) {
+            val initial = assertIs<UsageSnapshotDto>(nextUsageFrame())
+            val received = initial.windows.associateBy { it.provider }.toMutableMap()
+            var first = true
+            val relay = launch(start = CoroutineStart.UNDISPATCHED) {
+                store.updates.collect { state ->
+                    if (first) {
+                        first = false
+                        entered.complete(Unit)
+                        release.await()
+                    }
+                    val _ = forwarded.tryEmit(state)
+                }
+            }
+            try {
+                store.observe(observation(1.0, provider = "codex", key = "primary"))
+                entered.await()
+                store.observe(observation(20.0))
+                repeat(80) { index -> store.observe(observation(2.0 + index, provider = "codex", key = "primary")) }
+                release.complete(Unit)
+                while (received["claude"]?.usedPercent != 20.0 || received["codex"]?.usedPercent != 81.0) {
+                    val update = assertIs<UsageUpdateDto>(nextUsageFrame()).window
+                    received[update.provider] = update
+                }
+            } finally {
+                release.complete(Unit)
+                relay.cancelAndJoin()
+            }
+        }
+    }
+
     private fun observation(percent: Double, provider: String = "claude", key: String = "seven_day") =
         UsageObservation(provider, key, percent, epoch + 3_600_000, 604_800)
 
@@ -150,7 +197,7 @@ class UsageEventsTest {
     private suspend fun withSocket(usage: UsageStore, block: suspend DefaultClientWebSocketSession.() -> Unit) {
         val server = embeddedServer(ServerCIO, port = 0, host = "127.0.0.1") {
             install(ServerWebSockets)
-            routing { eventsWs(FakeEventStore(), FakePreferencesStore(), usageStore = usage) }
+            routing { eventsWs(FakeEventStore(), FakePreferencesStore(), usageStore = usage, usageClock = { epoch }) }
         }
         val client = HttpClient(CIO) { install(ClientWebSockets) }
         try {

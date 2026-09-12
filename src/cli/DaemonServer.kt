@@ -3,6 +3,8 @@ package io.kotgent.cli
 import io.kotgent.push.PushStore
 import io.kotgent.push.UsageResetNotifier
 import io.kotgent.transport.KotgentServer
+import io.kotgent.transport.ServerBindException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -17,6 +19,20 @@ class DaemonServer(
     val server: KotgentServer,
     val push: DaemonPush?,
 )
+
+internal suspend fun daemonStartupOrNull(
+    onError: (String) -> Unit = ::eprintln,
+    onBindFailure: () -> Unit = {},
+    start: suspend () -> DaemonServer,
+): DaemonServer? = try {
+    start()
+} catch (failure: CancellationException) {
+    throw failure
+} catch (failure: Exception) {
+    onError("kotgent daemon: ${failure.message}")
+    if (failure is ServerBindException) onBindFailure()
+    null
+}
 
 /**
  * Compensates an acquired resource when startup fails. Cleanup is [NonCancellable], and its failure is

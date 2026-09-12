@@ -1,7 +1,6 @@
 package io.kotgent.core
 
 const val USAGE_HEARTBEAT_MILLIS: Long = 60_000
-const val USAGE_STALE_MILLIS: Long = 10 * 60_000
 const val USAGE_RETENTION_MILLIS: Long = 90 * 24 * 60 * 60_000L
 
 /** Render/record provenance; capturedAt is epoch millis, not a provider quota-fetch timestamp. */
@@ -43,7 +42,8 @@ data class UsageObservation(
 data class UsageWindowState(
     val current: UsageObservation,
     val changedAt: Long,
-    val previous: UsageObservation?,
+    /** Actual daemon receipt time; unlike current.observedAt this may move backwards with the clock. */
+    val receivedAt: Long,
 )
 
 data class UsageReset(
@@ -66,3 +66,6 @@ fun isWeeklyUsageWindow(provider: String, windowKey: String, windowSeconds: Long
         "codex" -> windowSeconds == 7 * 24 * 60 * 60L
         else -> false
     }
+
+val UsageReset.isNotificationEligible: Boolean
+    get() = early && isWeeklyUsageWindow(provider, windowKey, windowSeconds)

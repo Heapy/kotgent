@@ -281,7 +281,10 @@ Let the initial render effects establish the socket before pausing Playwright's 
 also freezes the effects being tested. Script, ingress, socket and browser coverage is compositional,
 not evidence of a live long-running provider turn through the assembled feature.
 
-For early resets, real SQLite tests cover source admission, atomic history, generations and reopen.
+For early resets, real SQLite tests cover source admission, atomic history, generations, receipt-time
+migration and reopen. Clock-correction tests must include producer-to-receipt delay and unchanged cached
+renders; making capture and receipt clocks equal hides a stuck watermark. A slow-subscriber socket test
+drops one window's final hint during another window's burst and still requires both authoritative values.
 `UsageResetNotifierTest` covers eligibility, retries, interrupted acknowledgement and slow workers;
 `DaemonUsageStartupTest` verifies that recovered inbox data is readable over HTTP before its wake runs,
 including push-disabled startup and failure cleanup. The actual classic service worker runs under a

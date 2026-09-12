@@ -229,13 +229,27 @@ Installed artifacts were read as data; no credentials were opened and no provide
   heartbeats, cannot establish the freshness of a Claude provider fetch.
 - The generated status command captures the operator's user-scope command at session launch. Edits
   take effect at the next launch; project/local status commands are not chained. Capture state is scoped
-  to the Claude session, tmux server and pane, with a fresh incarnation if its counters restart.
+  to the boot, Claude session, tmux server and pane, with a fresh incarnation if its counters restart.
+  Monotonic render time orders workers and throttles heartbeats independently of wall-clock corrections.
+  State older than 90 days and staging files older than one day are pruned during capture. New scripts
+  share one permanent directory lock; legacy per-session lock inodes are retained because unlinking them
+  can break exclusion for an old script still holding the inode.
+- `observedAt` is a monotonic account/window merge revision. Actual daemon receipt time is stored
+  separately as `receivedAt`; clock corrections must not suppress matching heartbeats or distort reset
+  eligibility. Incoming capture timestamps more than a minute ahead are rejected, except an exact known
+  Claude cached heartbeat matching the current meter. A persisted future evidence watermark is rebased
+  after a clock correction, while source revisions continue to reject replay. Browser freshness uses
+  server time and local monotonic elapsed time rather than comparing phone and daemon wall clocks.
 - Reset journal and inbox durability do not imply push delivery. Pending inbox work is replayed after
-  restart, and retries re-read it up to three times per signal. Once acknowledged, the inbox row survives
+  restart, and retries re-read it up to three times per signal. After runtime exhaustion, a local timer
+  retries within a minute without waiting for another provider reset. Once acknowledged, the inbox row survives
   but a failed bind, crash or shutdown may lose the queued wake. Wakes are best effort and may coalesce;
   each fetch reads the complete inbox. Old pending resets outside the one-hour notification window are
   not replayed as banners. Usage history is retained for 90 days and inbox rows for one day, with pruning
   at startup and daily rather than at the exact expiry instant.
+- Codex usage capture caches up to 128 known rollout paths and reads fresh tails on each turn. Cache
+  misses use cooperative filename traversal; individual native filesystem calls remain non-preemptible
+  even though the traversal checks cancellation and yields between entries.
 - Acceptance combines executable script, ingress, SQLite, WebSocket, notifier and browser tests. There
   was no live long-turn observation through the final assembled feature. Codex weekly eligibility is
   tested through the real journal/inbox, while enabled-delivery tests exercise the shared wake path.

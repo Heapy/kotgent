@@ -1,6 +1,7 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { usage } from "../state/usage.js";
+import { providerUsageStaleAt } from "../lib/usage.js";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
@@ -31,8 +32,6 @@ const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
 const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
 
-const USAGE_STALE_MS = 600_000;
-
 function usageLabel(window) {
   if (window.windowSeconds === 604800) return "7d";
   if (window.windowSeconds === 18000) return "5h";
@@ -44,7 +43,7 @@ function usageLabel(window) {
 function UsageStrip() {
   const windows = usage.value;
   const [, refresh] = useState(0);
-  const now = Date.now();
+  const now = performance.now();
   const providers = new Map();
   for (const window of windows) {
     if (!providers.has(window.provider)) providers.set(window.provider, []);
@@ -53,30 +52,30 @@ function UsageStrip() {
   const rows = Array.from(providers, ([provider, values]) => ({
     provider,
     windows: values,
-    newest: Math.max(...values.map((window) => window.observedAt)),
+    staleAt: providerUsageStaleAt(values),
   }));
   const nextStaleAt = Math.min(...rows
-    .map((row) => row.newest + USAGE_STALE_MS + 1)
+    .map((row) => row.staleAt)
     .filter((deadline) => deadline > now));
   useEffect(() => {
     if (!Number.isFinite(nextStaleAt)) return;
     const timer = setTimeout(() => refresh((tick) => tick + 1),
-      Math.min(2_147_483_647, Math.max(0, nextStaleAt - Date.now())));
+      Math.min(2_147_483_647, Math.ceil(Math.max(0, nextStaleAt - performance.now()))));
     return () => clearTimeout(timer);
-  }, [nextStaleAt, now]);
+  }, [nextStaleAt]);
   if (!rows.length) return null;
   return html`
     <div id="usage-strip" role="group" aria-label="Usage limits">
       ${rows.map((row) => html`
         <div key=${row.provider} data-provider=${row.provider}
-             class=${"usage-provider" + (now - row.newest > USAGE_STALE_MS ? " stale" : "")}>
+             class=${"usage-provider" + (now >= row.staleAt ? " stale" : "")}>
           <span class="usage-provider-name">${row.provider}</span>
           <div class="usage-windows">
             ${row.windows.map((window) => html`
               <div key=${window.windowKey} class="usage-window" data-window=${window.windowKey}
                    title=${window.usedPercent + "% used\nResets: "
                      + (window.resetsAt == null ? "unknown" : new Date(window.resetsAt).toLocaleString())
-                     + "\nObserved: " + new Date(window.observedAt).toLocaleString()}>
+                     + "\nObserved: " + new Date(window.receivedAt).toLocaleString()}>
                 <span class="usage-window-label">${usageLabel(window)}</span>
                 <progress class="usage-progress" max="100" value=${window.usedPercent}
                           aria-label=${row.provider + " " + usageLabel(window) + " usage"}

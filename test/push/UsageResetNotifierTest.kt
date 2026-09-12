@@ -20,6 +20,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -45,6 +46,7 @@ class UsageResetNotifierTest {
         var beforeAck: suspend (Long) -> Unit = {}
         var beforeWake: suspend (String) -> Unit = {}
         var retry: suspend (Long) -> Unit = {}
+        var recovery: suspend () -> Unit = { delay(60_000L) }
         var pendingReads = 0
         val insertResults = mutableListOf<Boolean>()
         val retryDelays = mutableListOf<Long>()
@@ -84,6 +86,7 @@ class UsageResetNotifierTest {
             now = { clock },
             awaitRetry = { millis -> retryDelays += millis; retry(millis) },
             onError = { val _ = errors.trySend(it) },
+            awaitRecovery = { recovery() },
         ).start(scope)
 
         suspend fun recordReset(
@@ -108,7 +111,7 @@ class UsageResetNotifierTest {
         }
 
         suspend fun awaitAcknowledged(id: Long) {
-            while (acknowledged.receive() != id) Unit
+            while (acknowledged.receive() != id) { }
         }
 
         fun count(sql: String): Long = driver.executeQuery(
@@ -161,9 +164,9 @@ class UsageResetNotifierTest {
 
     @Test
     fun pushDisabledStillProjectsOnlyEarlyWeeklyResetsIncludingCodexPrimary() = test { fixture ->
-        fixture.recordReset(onTime = true)
-        fixture.recordReset(key = "five_hour", duration = 18_000)
-        fixture.recordReset(provider = "codex", key = "secondary", duration = 18_000)
+        val _ = fixture.recordReset(onTime = true)
+        val _ = fixture.recordReset(key = "five_hour", duration = 18_000)
+        val _ = fixture.recordReset(provider = "codex", key = "secondary", duration = 18_000)
         val claudeId = fixture.recordReset()
         val codexId = fixture.recordReset(provider = "codex", key = "primary")
         val running = fixture.start(pushEnabled = false)
@@ -224,6 +227,34 @@ class UsageResetNotifierTest {
     }
 
     @Test
+    fun runtimeProjectionRecoversOnItsOwnTimerWithoutAnotherReset() = test { fixture ->
+        val recovering = Channel<Unit>()
+        val retryNow = Channel<Unit>()
+        fixture.recovery = { recovering.send(Unit); retryNow.receive() }
+        val running = fixture.start()
+        running.activateDelivery()
+        var failing = true
+        fixture.beforeInsert = { if (failing) error("inbox busy") }
+        val reset = fixture.recordReset()
+        assertTrue(fixture.errors.receive().contains("within a minute"))
+        recovering.receive()
+        assertTrue(fixture.inbox.recent(0).isEmpty())
+        fixture.clock += 60_000
+        retryNow.send(Unit)
+        assertTrue(fixture.errors.receive().contains("within a minute"))
+        recovering.receive()
+        failing = false
+        fixture.clock += 60_000
+        retryNow.send(Unit)
+        assertEquals("usage.reset:$reset", fixture.sent.receive())
+        assertTrue(fixture.usage.pendingResetNotifications(0).isEmpty())
+        assertEquals(listOf("usage.reset:$reset"), fixture.inbox.recent(0).map { it.id })
+        running.close()
+        recovering.close()
+        retryNow.close()
+    }
+
+    @Test
     fun acknowledgementFailureRetriesExistingInboxRowBeforeWaking() = test { fixture ->
         val id = fixture.recordReset()
         var acknowledgementAttempts = 0
@@ -275,7 +306,7 @@ class UsageResetNotifierTest {
                 wakeGate.await()
             }
         }
-        fixture.recordReset()
+        val _ = fixture.recordReset()
         inserting.await()
         var lastId = 0L
         repeat(80) { lastId = fixture.recordReset() }
@@ -359,7 +390,7 @@ class UsageResetNotifierTest {
                 stopped.complete(Unit)
             }
         }
-        fixture.recordReset()
+        val _ = fixture.recordReset()
         waking.await()
         running.close()
         assertTrue(stopped.isCompleted)

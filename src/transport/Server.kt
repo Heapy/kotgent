@@ -47,6 +47,7 @@ import platform.posix.F_OK
 import platform.posix.access
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Clock
 
 // Programmatic endpoints are versioned; hook and auth handlers also expose root aliases for older clients.
 const val API_PREFIX: String = "/api/v1"
@@ -74,6 +75,7 @@ class KotgentServer(
     private val usageStore: UsageStore? = null,
     private val onCodexTurnCompleted: suspend (SessionId) -> Unit = {},
     private val notificationStore: NotificationStore? = null,
+    private val usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
 ) {
     private var terminalRegistry: TerminalRegistry? = null
 
@@ -131,7 +133,7 @@ class KotgentServer(
                                 directoryCompletionRoutes(directoryCompleter, json)
                                 preferencesRoutes(preferencesStore, json)
                                 notificationRoutes(eventStore, notificationStore, json)
-                                eventsWs(eventStore, preferencesStore, taskStore, json, usageStore = usageStore)
+                                eventsWs(eventStore, preferencesStore, taskStore, json, usageStore = usageStore, usageClock = usageClock)
                                 terminalWs(registry, eventStore, json)
                                 val backlog = taskStore
                                 val coordinator = taskService
@@ -224,6 +226,7 @@ class KotgentServer(
             usageStore: UsageStore? = null,
             onCodexTurnCompleted: suspend (SessionId) -> Unit = {},
             notificationStore: NotificationStore? = null,
+            usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
         ): KotgentServer = KotgentServer(
             sessionManager = sessionManager,
             eventStore = eventStore,
@@ -242,6 +245,7 @@ class KotgentServer(
             usageStore = usageStore,
             onCodexTurnCompleted = onCodexTurnCompleted,
             notificationStore = notificationStore,
+            usageClock = usageClock,
             host = host,
             port = port,
         )

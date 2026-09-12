@@ -20,6 +20,8 @@ class UsageFixture {
 
     val store: UsageStore = SqliteUsageStore(driver) { observationTime }
 
+    fun currentTimeMillis(): Long = observationTime
+
     suspend fun observe(observation: UsageObservation, observedAt: Long? = null) {
         observationMutex.withLock {
             observationTime = observedAt ?: daemonEpochMillis()

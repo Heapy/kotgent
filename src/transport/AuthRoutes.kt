@@ -6,18 +6,13 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.contentLength
 import io.ktor.server.request.receiveChannel
-import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readAvailable
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.SerializationException
@@ -249,28 +244,9 @@ private suspend fun ApplicationCall.respondToUnconsumedExchangeAndClose(
     text: String,
     status: HttpStatusCode,
     requestBody: ByteReadChannel? = null,
-) {
-    response.header(HttpHeaders.Connection, "close")
-    try {
-        respondText(text, status = status)
-    } finally {
-        requestBody?.cancel(null)
-        withContext(NonCancellable) { closePinnedCioConnectionAfterFlush() }
-    }
-}
-
-@OptIn(ExperimentalCoroutinesApi::class)
-internal suspend fun ApplicationCall.closePinnedCioConnectionAfterFlush(
-    reason: String = "closing unconsumed $AUTH_EXCHANGE_PATH request body",
-) {
-    // Ktor CIO's grandparent owns raw-body parsing and closes the accepted socket.
-    val callJob = coroutineContext[Job] ?: return
-    val requestHandlerJob = callJob.parent ?: return
-    val connectionPipelineJob = requestHandlerJob.parent ?: return
-    // Its response writer is a sibling, so allow the early 4xx bytes a bounded flush window.
-    delay(AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS.milliseconds)
-    connectionPipelineJob.cancel(CancellationException(reason))
-}
+) = respondToUnconsumedBodyAndClose(
+    text, status, requestBody, "closing unconsumed $AUTH_EXCHANGE_PATH request body",
+)
 
 fun authorizeTicketExchange(facts: RequestFacts, publicUrl: String?): AuthDecision {
     // The ticket is the credential; Host+Origin are the browser-side CSRF boundary for this POST.
@@ -294,8 +270,6 @@ private fun authEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()
 const val AUTH_EXCHANGE_MAX_BODY_BYTES: Int = 1_024
 
 const val AUTH_EXCHANGE_BODY_TIMEOUT_MILLIS: Long = 5_000L
-
-private const val AUTH_EXCHANGE_RESPONSE_FLUSH_GRACE_MILLIS: Long = 100L
 
 const val AUTH_PAGE_HTML: String = """<!DOCTYPE html>
 <html lang="en">

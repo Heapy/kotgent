@@ -7,18 +7,12 @@ CREATE TABLE usage_windows (
   window_seconds INTEGER,
   observed_at INTEGER NOT NULL,
   changed_at INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
   source_id TEXT,
   source_revision INTEGER,
   source_captured_at INTEGER,
   reset_generation INTEGER NOT NULL DEFAULT 0,
   admitted_capture_at INTEGER NOT NULL DEFAULT 0,
-  prev_used_percent REAL,
-  prev_resets_at INTEGER,
-  prev_window_seconds INTEGER,
-  prev_observed_at INTEGER,
-  prev_source_id TEXT,
-  prev_source_revision INTEGER,
-  prev_source_captured_at INTEGER,
   PRIMARY KEY (provider, window_key)
 );
 
@@ -65,36 +59,32 @@ CREATE TABLE usage_resets (
 );
 
 selectAllWindows:
-SELECT * FROM usage_windows ORDER BY provider, window_key;
+SELECT provider, window_key, used_percent, resets_at, window_seconds, observed_at, changed_at,
+       received_at, source_id, source_revision, source_captured_at, reset_generation, admitted_capture_at
+FROM usage_windows ORDER BY provider, window_key;
 
 selectWindow:
-SELECT * FROM usage_windows WHERE provider = ? AND window_key = ?;
+SELECT provider, window_key, used_percent, resets_at, window_seconds, observed_at, changed_at,
+       received_at, source_id, source_revision, source_captured_at, reset_generation, admitted_capture_at
+FROM usage_windows WHERE provider = ? AND window_key = ?;
 
 upsertWindow:
 INSERT INTO usage_windows (
-  provider, window_key, used_percent, resets_at, window_seconds, observed_at, changed_at,
-  source_id, source_revision, source_captured_at, reset_generation, admitted_capture_at,
-  prev_used_percent, prev_resets_at, prev_window_seconds, prev_observed_at,
-  prev_source_id, prev_source_revision, prev_source_captured_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  provider, window_key, used_percent, resets_at, window_seconds, observed_at, changed_at, received_at,
+  source_id, source_revision, source_captured_at, reset_generation, admitted_capture_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(provider, window_key) DO UPDATE SET
   used_percent = excluded.used_percent,
   resets_at = excluded.resets_at,
   window_seconds = excluded.window_seconds,
   observed_at = excluded.observed_at,
   changed_at = excluded.changed_at,
+  received_at = excluded.received_at,
   source_id = excluded.source_id,
   source_revision = excluded.source_revision,
   source_captured_at = excluded.source_captured_at,
   reset_generation = excluded.reset_generation,
-  admitted_capture_at = excluded.admitted_capture_at,
-  prev_used_percent = excluded.prev_used_percent,
-  prev_resets_at = excluded.prev_resets_at,
-  prev_window_seconds = excluded.prev_window_seconds,
-  prev_observed_at = excluded.prev_observed_at,
-  prev_source_id = excluded.prev_source_id,
-  prev_source_revision = excluded.prev_source_revision,
-  prev_source_captured_at = excluded.prev_source_captured_at;
+  admitted_capture_at = excluded.admitted_capture_at;
 
 selectSource:
 SELECT * FROM usage_sources WHERE provider = ? AND window_key = ? AND source_id = ?;
@@ -134,9 +124,7 @@ selectPendingResets:
 SELECT id, provider, window_key, expected_at, observed_at, used_before, used_before_seen_at,
        early, resets_at_moved, window_seconds
 FROM usage_resets
-WHERE inbox_projected = 0 AND early = 1 AND observed_at >= ?
-  AND ((provider = 'claude' AND window_key = 'seven_day')
-       OR (provider = 'codex' AND window_seconds = 604800))
+WHERE inbox_projected = 0 AND observed_at >= ?
 ORDER BY id;
 
 markResetProjected:

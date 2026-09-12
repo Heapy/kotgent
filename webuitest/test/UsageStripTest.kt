@@ -68,6 +68,29 @@ class UsageStripTest {
     }
 
     @Test
+    fun snapshotFreshnessUsesDaemonAgeWhenThePhoneClockIsHoursAheadOrBehind() {
+        usagePage(EMPTY_SCENARIO, "usage-clock-skew") { harness, page ->
+            val serverNow = snapshotServerNow(page)
+            page.clock().setFixedTime(serverNow + 12 * 60 * 60 * 1_000)
+            harness.send("usage claude seven_day 41 - ${serverNow - 700_000}")
+            harness.send("usage codex primary 58 - $serverNow 604800")
+            assertThat(provider(page, "codex")).not().hasClass(STALE)
+
+            page.reload()
+            awaitSnapshot(page)
+            assertThat(provider(page, "claude")).hasClass(STALE)
+            assertThat(provider(page, "codex")).not().hasClass(STALE)
+
+            page.clock().setFixedTime(serverNow - 12 * 60 * 60 * 1_000)
+            page.reload()
+            awaitSnapshot(page)
+            assertThat(provider(page, "claude")).hasClass(STALE)
+            assertThat(provider(page, "codex")).not().hasClass(STALE)
+            assertUsage(page, "claude", "seven_day" to "41")
+        }
+    }
+
+    @Test
     fun timeAloneDimsTheStripAndAnUnchangedHeartbeatRevivesItsProviderAndRearmsTheTimer() {
         usagePage(USAGE_SCENARIO, "usage-stale-heartbeat") { harness, page ->
             val claude = provider(page, "claude")
@@ -89,6 +112,7 @@ class UsageStripTest {
             assertThat(claude).not().hasClass(STALE)
             val initialFrames = frameCount(page, "usage_update")
 
+            page.clock().setSystemTime(anchor + 12 * 60 * 60 * 1_000)
             page.clock().runFor(STALE_MILLIS)
             assertThat(claude).not().hasClass(STALE)
             assertThat(codex).not().hasClass(STALE)
@@ -111,6 +135,7 @@ class UsageStripTest {
                 "title", title(page, "23", FIVE_HOUR_RESET, anchor),
             )
 
+            page.clock().setSystemTime(anchor - 12 * 60 * 60 * 1_000)
             page.clock().runFor(STALE_MILLIS)
             assertThat(claude).not().hasClass(STALE)
             page.clock().runFor(1)
@@ -191,6 +216,10 @@ private fun opacity(locator: Locator): Double =
 private fun frameCount(page: Page, type: String): Int = (page.evaluate("""
     type => (window.__kotgentFrames || []).filter((raw) => JSON.parse(raw).type === type).length
 """.trimIndent(), type) as Number).toInt()
+
+private fun snapshotServerNow(page: Page): Long = (page.evaluate("""
+    () => (window.__kotgentFrames || []).map(JSON.parse).find(frame => frame.type === "usage_snapshot").serverNow
+""".trimIndent()) as Number).toLong()
 
 private val STALE: Pattern = Pattern.compile("\\bstale\\b")
 private const val EPOCH: Long = 1_800_000_000_000L

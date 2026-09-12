@@ -63,6 +63,9 @@ class ClaudeStatusLineScriptTest {
             tmux: String = "/tmp/fixture-socket,123,0",
             state: String = stateDirectory,
             curlCommand: String = curl,
+            atTicks: Long = atMicros,
+            boot: String = "fixture-boot",
+            perlOptions: String = "",
         ): ProcessResult {
             val index = invocation++
             val input = "$directory/input-$index"
@@ -74,6 +77,8 @@ class ClaudeStatusLineScriptTest {
                 stateDirectory = state,
                 curlPath = curlCommand,
                 renderMicros = atMicros,
+                renderTicks = atTicks,
+                bootId = boot,
             )
             return ProcessRunner.run(listOf(
                 "/usr/bin/perl", "-e", """
@@ -86,7 +91,7 @@ class ClaudeStatusLineScriptTest {
                     exec @ARGV;
                     die "exec failed";
                 """.trimIndent(), "$directory/process-group-$index",
-                "/usr/bin/env", "TMUX_PANE=$pane", "TMUX=$tmux", "/bin/sh", "-c",
+                "/usr/bin/env", "TMUX_PANE=$pane", "TMUX=$tmux", "PERL5LIB=$directory", "PERL5OPT=$perlOptions", "/bin/sh", "-c",
                 "$command < ${ProcessRunner.shQuote(input)}",
             ))
         }
@@ -122,13 +127,21 @@ class ClaudeStatusLineScriptTest {
             return Json.parseToJsonElement(result.stdout).jsonObject
         }
 
-        suspend fun awaitRender(renderMicros: Long) = withTimeout(5.seconds) {
+        suspend fun awaitRender(renderTicks: Long) = withTimeout(5.seconds) {
             while (true) {
                 val result = ProcessRunner.run(listOf("/bin/sh", "-c", "cat ${ProcessRunner.shQuote(stateDirectory)}/*.json 2>/dev/null"))
                 val state = runCatching { Json.parseToJsonElement(result.stdout).jsonObject }.getOrNull()
-                if (state?.get("render_micros")?.jsonPrimitive?.long == renderMicros) return@withTimeout
+                if (state?.get("render_ticks")?.jsonPrimitive?.long == renderTicks) return@withTimeout
                 delay(10.milliseconds)
             }
+        }
+
+        fun ageFile(name: String, seconds: Long) {
+            val result = ProcessRunner.run(listOf(
+                "/usr/bin/perl", "-e", "my ${'$'}age = shift; utime(time() - ${'$'}age, time() - ${'$'}age, @ARGV) or die qq(age file failed\\n)",
+                seconds.toString(), "$directory/$name",
+            ))
+            assertEquals(0, result.exitCode, result.stderr)
         }
 
         fun close() {
@@ -190,6 +203,43 @@ class ClaudeStatusLineScriptTest {
     }
 
     @Test
+    fun captureTempfileAndWriteFailuresCannotBreakTheOperatorsInputOutputOrExit() = test { f ->
+        val raw = "$firstPayload\n\n"
+        val failures = listOf(
+            "die qq(injected tempfile failure\\n)",
+            "my (${ '$' }handle, ${ '$' }path) = ${ '$' }original->(@_); close ${ '$' }handle; open ${ '$' }handle, '<', ${ '$' }path or die; return (${ '$' }handle, ${ '$' }path)",
+        )
+        for (failure in failures) {
+            writePrivateFile("${f.directory}/FixtureTempFailure.pm", """
+                package FixtureTempFailure;
+                use File::Temp ();
+                no warnings qw(redefine);
+                my ${'$'}original = \&File::Temp::tempfile;
+                *File::Temp::tempfile = sub { $failure };
+                1;
+            """.trimIndent().encodeToByteArray())
+            val result = f.run(
+                raw, micros,
+                operator = "/bin/cat; exec /usr/bin/perl -e '1 while wait() > 0; exit 7'",
+                perlOptions = "-MFixtureTempFailure",
+            )
+            assertEquals(7, result.exitCode)
+            assertEquals(raw, result.stdout)
+            assertEquals("", result.stderr)
+        }
+        assertTrue(f.requests().isEmpty())
+    }
+
+    @Test
+    fun operatorInputLargerThanThePipeBufferIsPreservedByteForByte() = test { f ->
+        val raw = "α\u0000β\n".repeat(50_000)
+        val result = f.run(raw, micros, operator = "/bin/cat; exit 9")
+        assertEquals(9, result.exitCode)
+        assertEquals(raw, result.stdout)
+        assertEquals("", result.stderr)
+    }
+
+    @Test
     fun aStalledCaptureCannotHoldTheOperatorsOutputPipeOpen() = test { f ->
         f.touch("stall")
 
@@ -234,6 +284,115 @@ class ClaudeStatusLineScriptTest {
         val _ = f.run(changedPayload, micros + 60_010_000)
         val heartbeat = f.awaitRequests(3).last()
         assertEquals(source(changed), source(heartbeat))
+    }
+
+    @Test
+    fun wallClockRollbackKeepsMonotonicHeartbeatsAndChangedCaptureEvidenceMoving() = test { f ->
+        val _ = f.run(firstPayload, micros, atTicks = 1_000_000)
+        val first = f.awaitRequests(1).single()
+        val rolledBack = micros - 3_600_000_000
+        val _ = f.run(firstPayload, rolledBack, atTicks = 60_999_000)
+        f.awaitRender(60_999_000)
+        assertEquals(1, f.requests().size)
+        val _ = f.run(firstPayload, rolledBack + 1_000, atTicks = 61_000_000)
+        val heartbeat = f.awaitRequests(2).last()
+        assertEquals(source(first), source(heartbeat))
+        val _ = f.run(changedPayload, rolledBack + 2_000, atTicks = 61_001_000)
+        val changed = f.awaitRequests(3).last()
+        assertEquals(sourceId(first), sourceId(changed))
+        assertEquals(2L, revision(changed))
+        assertEquals((rolledBack + 2_000) / 1_000, capturedAt(changed), "new evidence retains its actual epoch time")
+        val _ = f.run(firstPayload, micros + 1_000, atTicks = 61_000_500, operator = "exec /usr/bin/perl -e '1 while wait() > 0'")
+        assertEquals(3, f.requests().size, "an older worker cannot win merely because its wall clock was ahead")
+    }
+
+    @Test
+    fun rebootStartsANewIncarnationEvenWhenTheTmuxIdentityIsReused() = test { f ->
+        val _ = f.run(firstPayload, micros, atTicks = 9_000_000, boot = "boot-one")
+        val first = f.awaitRequests(1).single()
+        val _ = f.run(changedPayload, micros + 1_000, atTicks = 1_000, boot = "boot-two")
+        val restarted = f.awaitRequests(2).last()
+        assertNotEquals(sourceId(first), sourceId(restarted))
+        assertEquals(1L, revision(restarted))
+    }
+
+    @Test
+    fun oldWallClockStateStartsANewBaselineInsteadOfBlockingMonotonicRenders() = test { f ->
+        val _ = f.run(firstPayload, micros, atTicks = 1_000)
+        val first = f.awaitRequests(1).single()
+        val migrate = ProcessRunner.run(listOf("/usr/bin/perl", "-MJSON::PP", "-e", """
+            my (${ '$' }path) = glob(shift . '/*.json');
+            open my ${ '$' }input, '<', ${ '$' }path or die;
+            my ${ '$' }raw = do { local ${ '$' }/; <${ '$' }input> };
+            close ${ '$' }input;
+            my ${ '$' }state = decode_json(${ '$' }raw);
+            delete ${ '$' }state->{render_ticks};
+            ${ '$' }state->{render_micros} = 1800000000000100;
+            open my ${ '$' }output, '>', ${ '$' }path or die;
+            print {${ '$' }output} encode_json(${ '$' }state);
+            close ${ '$' }output;
+        """.trimIndent(), f.stateDirectory))
+        assertEquals(0, migrate.exitCode, migrate.stderr)
+        val _ = f.run(changedPayload, micros - 1_000, atTicks = 2_000)
+        val renewed = f.awaitRequests(2).last()
+        assertNotEquals(sourceId(first), sourceId(renewed))
+        assertEquals(1L, revision(renewed))
+    }
+
+    @Test
+    fun captureMaintenancePrunesInactiveStateAndAbandonedStagingButKeepsRecentFiles() = test { f ->
+        val _ = f.run(firstPayload, micros)
+        val _ = f.awaitRequests(1)
+        val expired = "a".repeat(64) + ".json"
+        val recent = "b".repeat(64) + ".json"
+        for (name in listOf(expired, recent, ".state-abandoned", ".body-abandoned", ".state-recent")) {
+            writePrivateFile("${f.stateDirectory}/$name", "fixture".encodeToByteArray())
+        }
+        f.ageFile("state/$expired", 91 * 86_400L)
+        f.ageFile("state/.state-abandoned", 86_401)
+        f.ageFile("state/.body-abandoned", 86_401)
+        f.ageFile("state/.cleanup", 86_401)
+        f.ageFile("state/.capture.lock", 91 * 86_400L)
+        val _ = f.run(changedPayload, micros + 1_000)
+        val _ = f.awaitRequests(2)
+        assertFalse(f.exists("state/$expired"))
+        assertFalse(f.exists("state/.state-abandoned"))
+        assertFalse(f.exists("state/.body-abandoned"))
+        assertTrue(f.exists("state/$recent"))
+        assertTrue(f.exists("state/.state-recent"))
+        assertTrue(f.exists("state/.capture.lock"), "the single shared lock inode remains stable across cleanup")
+        val locks = ProcessRunner.run(listOf("/bin/sh", "-c", "ls -a ${ProcessRunner.shQuote(f.stateDirectory)}")).stdout.lines().filter { it.endsWith(".lock") }
+        assertEquals(listOf(".capture.lock"), locks)
+    }
+
+    @Test
+    fun aKilledStateWriterReleasesTheSharedLockAndItsAbandonedFileIsPruned() = test { f ->
+        writePrivateFile("${f.directory}/FixtureKilledWriter.pm", $$"""
+            package FixtureKilledWriter;
+            use File::Temp ();
+            no warnings qw(redefine);
+            my $original = \&File::Temp::tempfile;
+            *File::Temp::tempfile = sub {
+                my ($handle, $path) = $original->(@_);
+                open my $record, '>', '$${f.directory}/abandoned-path' or die;
+                print {$record} $path;
+                close $record;
+                kill 'KILL', $$;
+                die 'writer survived';
+            };
+            1;
+        """.trimIndent().encodeToByteArray())
+        val result = f.run(firstPayload, micros, operator = "/bin/cat", perlOptions = "-MFixtureKilledWriter")
+        assertEquals(0, result.exitCode)
+        assertEquals(firstPayload, result.stdout)
+        f.awaitFile("abandoned-path")
+        val abandoned = "state/" + f.text("abandoned-path").substringAfterLast('/')
+        assertTrue(f.exists(abandoned))
+        f.ageFile(abandoned, 86_401)
+        f.ageFile("state/.cleanup", 86_401)
+        val _ = f.run(changedPayload, micros + 1_000)
+        assertEquals(1L, revision(f.awaitRequests(1).single()))
+        assertFalse(f.exists(abandoned))
     }
 
     @Test

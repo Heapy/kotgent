@@ -3,7 +3,12 @@ package io.kotgent.core
 const val EARLY_TOLERANCE_MILLIS: Long = 5 * 60_000
 
 /** The store admits source ordering and same-session evidence before comparing this pair. */
-fun detectReset(previous: UsageObservation?, current: UsageObservation): UsageReset? {
+fun detectReset(
+    previous: UsageObservation?,
+    current: UsageObservation,
+    previousReceivedAt: Long,
+    receivedAt: Long,
+): UsageReset? {
     if (previous == null || previous.provider != current.provider || previous.windowKey != current.windowKey) {
         return null
     }
@@ -17,16 +22,16 @@ fun detectReset(previous: UsageObservation?, current: UsageObservation): UsageRe
     if (!reset) return null
 
     val beforeEnd = previous.resetsAt != null &&
-        current.observedAt < previous.resetsAt - EARLY_TOLERANCE_MILLIS
+        receivedAt < previous.resetsAt - EARLY_TOLERANCE_MILLIS
     return UsageReset(
         provider = current.provider,
         windowKey = current.windowKey,
         expectedAt = previous.resetsAt,
-        observedAt = current.observedAt,
+        observedAt = receivedAt,
         usedBefore = previous.usedPercent,
-        usedBeforeSeenAt = previous.observedAt,
+        usedBeforeSeenAt = previousReceivedAt,
         early = beforeEnd,
         resetsAtMoved = moved,
-        windowSeconds = previous.windowSeconds,
+        windowSeconds = current.windowSeconds ?: previous.windowSeconds,
     )
 }

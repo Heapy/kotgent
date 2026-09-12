@@ -144,7 +144,7 @@ class SqliteUsageStoreTest {
         val after = update.await()
         assertEquals(before.current.copy(observedAt = f.clock), after.current)
         assertEquals(before.changedAt, after.changedAt)
-        assertEquals(before.previous, after.previous)
+        assertEquals(f.clock, after.receivedAt)
         assertEquals(after, f.current())
         assertEquals(1L, f.count("usage_samples"))
         assertEquals(0L, f.count("usage_resets"))
@@ -173,7 +173,7 @@ class SqliteUsageStoreTest {
     }
 
     @Test
-    fun valueChangesImmediatelyPreserveTheEntirePreviousObservation() = test { f ->
+    fun valueChangesImmediatelyRetainBothCompleteSamplesInHistory() = test { f ->
         f.store.observe(f.observation(40.0, duration = 18_000))
         val before = f.current()
         f.clock += 1
@@ -184,7 +184,7 @@ class SqliteUsageStoreTest {
 
         val after = update.await()
         assertEquals(changed.copy(observedAt = f.clock), after.current)
-        assertEquals(before.current, after.previous)
+        assertEquals(listOf(before.current, after.current), sampleHistory(f.driver))
         assertEquals(f.clock, after.changedAt)
         assertEquals(after, f.current())
         assertEquals(2L, f.count("usage_samples"))
@@ -202,7 +202,7 @@ class SqliteUsageStoreTest {
 
         val after = update.await()
         assertEquals(week, after.current.windowSeconds)
-        assertEquals(before.current, after.previous)
+        assertEquals(listOf(before.current, after.current), sampleHistory(f.driver))
         assertEquals(f.clock, after.changedAt)
         assertEquals(2L, f.count("usage_samples"))
         assertEquals(0L, f.count("usage_resets"))
@@ -211,7 +211,7 @@ class SqliteUsageStoreTest {
     @Test
     fun aSameSourceDecreaseJournalsAndReliablyEmitsTheCommittedReset() = test { f ->
         f.store.observe(f.observation(70.0))
-        val before = f.current().current
+        val before = f.current()
         val reset = async(start = CoroutineStart.UNDISPATCHED) { f.store.resets.first() }
         f.clock += 1
 
@@ -220,7 +220,7 @@ class SqliteUsageStoreTest {
         val emitted = reset.await()
         assertTrue(emitted.id > 0)
         assertEquals(70.0, emitted.usedBefore)
-        assertEquals(before.observedAt, emitted.usedBeforeSeenAt)
+        assertEquals(before.receivedAt, emitted.usedBeforeSeenAt)
         assertEquals(resetAt, emitted.expectedAt)
         assertEquals(f.clock, emitted.observedAt)
         assertEquals(week, emitted.windowSeconds)
@@ -257,7 +257,7 @@ class SqliteUsageStoreTest {
         writer.join()
         val pending = f.store.pendingResetNotifications(0)
         assertEquals(65, pending.size, "committed work survives a subscriber leaving after the first signal")
-        assertEquals(reset, pending.first())
+        assertTrue(reset in pending, "live flow may coalesce, but every reset remains pending in SQLite")
     }
 
     @Test
@@ -273,8 +273,9 @@ class SqliteUsageStoreTest {
         assertEquals(epoch, first.current.observedAt)
         assertEquals(epoch + 1, second.current.observedAt)
         assertEquals(epoch + 2, third.current.observedAt)
-        assertEquals(second.current, third.previous)
-        assertEquals(third.current.observedAt, third.changedAt)
+        assertEquals(f.clock, third.changedAt)
+        assertEquals(f.clock, third.receivedAt)
+        assertEquals(listOf(epoch, epoch, f.clock), sampleHistory(f.driver).map { it.observedAt })
     }
 
     @Test
@@ -360,6 +361,140 @@ class SqliteUsageStoreTest {
         assertEquals(before, f.current())
         assertEquals(2L, f.count("usage_samples"))
         assertEquals(0L, f.count("usage_resets"))
+    }
+
+    @Test
+    fun futureInputCannotPoisonTheMeterAndAPersistedFutureWatermarkRecoversAfterClockCorrection() = test { f ->
+        f.store.observe(f.observation(50.0))
+        f.store.observe(f.observation(90.0, revision = 2, capturedAt = epoch + 86_400_000))
+        assertEquals(50.0, f.current().current.usedPercent)
+        assertEquals(1L, scalar(f.driver, "SELECT source_revision FROM usage_sources"))
+
+        f.clock += 86_400_000
+        f.store.observe(f.observation(60.0, revision = 2))
+        val beforeCorrection = f.current().current.observedAt
+        f.clock = epoch + 1
+        // Reconstruct the store to prove recovery does not depend on an in-memory clock checkpoint.
+        val reopened = SqliteUsageStore(f.driver) { f.clock }
+        reopened.observe(f.observation(61.0, revision = 3, capturedAt = f.clock - 100))
+        assertEquals(61.0, reopened.list().single().current.usedPercent)
+        assertTrue(reopened.list().single().current.observedAt > beforeCorrection)
+        assertEquals(f.clock - 100, scalar(f.driver, "SELECT admitted_capture_at FROM usage_windows"))
+        reopened.observe(f.observation(5.0, revision = 2))
+        assertEquals(61.0, reopened.list().single().current.usedPercent, "clock recovery does not admit old source revisions")
+        f.clock += 1
+        reopened.observe(f.observation(62.0, source = "b"))
+        assertEquals(62.0, reopened.list().single().current.usedPercent)
+    }
+
+    @Test
+    fun aNewSourceCaptureBeforeReceiptCanRecoverAFutureBarrierWithoutProvingAReset() = test { f ->
+        f.clock += 86_400_000
+        f.store.observe(f.observation(80.0))
+        f.clock = epoch + 1
+        val reopened = SqliteUsageStore(f.driver) { f.clock }
+
+        reopened.observe(f.observation(10.0, source = "new-source", capturedAt = f.clock - 100))
+
+        val current = reopened.list().single()
+        assertEquals(10.0, current.current.usedPercent)
+        assertEquals(f.clock, current.receivedAt)
+        assertEquals(f.clock - 100, scalar(f.driver, "SELECT admitted_capture_at FROM usage_windows"))
+        assertEquals(0L, f.count("usage_resets"), "a new source still establishes only a baseline")
+    }
+
+    @Test
+    fun aCachedHeartbeatAfterClockRollbackRefreshesActualReceiptWithoutWaitingForTheFutureRevision() = test { f ->
+        f.store.observe(f.observation(70.0))
+        f.clock += 86_400_000
+        val futureCapture = f.observation(80.0, revision = 2)
+        f.store.observe(futureCapture)
+        val future = f.current()
+        f.clock = epoch + 1
+        val reopened = SqliteUsageStore(f.driver) { f.clock }
+        val refresh = async(start = CoroutineStart.UNDISPATCHED) { reopened.updates.first() }
+
+        reopened.observe(futureCapture)
+
+        val corrected = refresh.await()
+        assertEquals(f.clock, corrected.receivedAt)
+        assertEquals(future.current.observedAt + 1, corrected.current.observedAt)
+        assertEquals(future.changedAt, corrected.changedAt)
+        assertEquals(2L, f.count("usage_samples"))
+        assertEquals(0L, f.count("usage_resets"))
+        assertEquals(0L, scalar(f.driver, "SELECT admitted_capture_at FROM usage_windows"))
+        f.clock += USAGE_HEARTBEAT_MILLIS - 1
+        reopened.observe(futureCapture)
+        assertEquals(corrected, reopened.list().single())
+        f.clock++
+        reopened.observe(futureCapture)
+        val next = reopened.list().single()
+        assertEquals(f.clock, next.receivedAt)
+        assertEquals(corrected.current.observedAt + 1, next.current.observedAt)
+
+        val reset = async(start = CoroutineStart.UNDISPATCHED) { reopened.resets.first() }
+        f.clock++
+        reopened.observe(f.observation(3.0, revision = 3))
+        val recorded = reset.await()
+        assertTrue(recorded.early)
+        assertEquals(f.clock, recorded.observedAt)
+        assertEquals(next.receivedAt, recorded.usedBeforeSeenAt)
+        assertEquals(80.0, recorded.usedBefore)
+        assertEquals(f.clock, reopened.list().single().changedAt)
+        assertEquals(f.clock, sampleHistory(f.driver).last().observedAt)
+        assertEquals(listOf(recorded), reopened.pendingResetNotifications(0))
+    }
+
+    @Test
+    fun futureOrderingRevisionsDoNotMakeAnOnTimeResetEarly() = test { f ->
+        val deadline = epoch + 3_600_000
+        f.clock = epoch + 86_400_000
+        f.store.observe(f.observation(80.0, resetsAt = deadline))
+        f.clock = deadline
+        val reset = async(start = CoroutineStart.UNDISPATCHED) { f.store.resets.first() }
+
+        f.store.observe(f.observation(3.0, revision = 2, resetsAt = deadline))
+
+        val recorded = reset.await()
+        assertEquals(deadline, recorded.observedAt)
+        assertFalse(recorded.early)
+        assertEquals(1L, f.count("usage_resets"))
+        assertTrue(f.store.pendingResetNotifications(0).isEmpty())
+    }
+
+    @Test
+    fun blockedCollectorsCannotHoldAWritingJobOrLoseDurablePendingResets() = test { f ->
+        f.store.observe(f.observation(90.0))
+        val release = CompletableDeferred<Unit>()
+        val updates = launch(start = CoroutineStart.UNDISPATCHED) { f.store.updates.collect { release.await() } }
+        val resets = launch(start = CoroutineStart.UNDISPATCHED) { f.store.resets.collect { release.await() } }
+        try {
+            val writer = launch {
+                repeat(100) { index ->
+                    f.clock++
+                    f.store.observe(f.observation(89.0 - index * 0.5, revision = index + 2L))
+                }
+            }
+            writer.join()
+            assertEquals(100, f.store.pendingResetNotifications(0).size)
+            assertEquals(101L, f.count("usage_samples"))
+        } finally {
+            release.complete(Unit)
+            updates.cancel()
+            resets.cancel()
+            updates.join()
+            resets.join()
+        }
+    }
+
+    @Test
+    fun aCodexResetWithANewlyReportedWeeklyDurationRemainsPendingForTheInbox() = test { f ->
+        f.store.observe(f.observation(80.0, provider = "codex", key = "primary", duration = null))
+        f.clock++
+        f.store.observe(f.observation(2.0, revision = 2, provider = "codex", key = "primary", duration = week, resetsAt = resetAt + 10_000))
+        val reset = f.store.pendingResetNotifications(0).single()
+        assertEquals(week, reset.windowSeconds)
+        assertEquals(80.0, reset.usedBefore)
     }
 
     @Test
@@ -492,7 +627,7 @@ class SqliteUsageStoreTest {
         }
 
         assertEquals(listOf(5.0, 6.0), updates.map { it.current.usedPercent })
-        assertEquals(before.current, updates.first().previous)
+        assertEquals(before.current, sampleHistory(f.driver).first())
         assertEquals(3L, f.count("usage_samples"))
         assertEquals(1L, f.count("usage_resets"))
         assertEquals(listOf(reset.await()), f.store.pendingResetNotifications(0))
@@ -517,6 +652,70 @@ class SqliteUsageStoreTest {
         assertEquals(1L, f.count("usage_sources"))
         assertEquals(1L, scalar(f.driver, "SELECT COUNT(*) FROM usage_sources WHERE provider = 'codex'"))
         assertTrue(f.store.pendingResetNotifications(0).isEmpty())
+    }
+
+    @Test
+    fun theB77509cProjectionMigratesReceiptsWithoutRewritingLegacyColumnsOrLosingHistory() = runBlocking {
+        withTimeout(20.seconds) {
+            withTempDbDir { directory ->
+                var clock = epoch
+                val legacyTime = epoch + 86_400_000
+                fun open() = NativeSqliteDriver(
+                    schema = preUsageSchema,
+                    name = "usage-receipt-migration.db",
+                    onConfiguration = { it.copy(extendedConfig = it.extendedConfig.copy(basePath = directory)) },
+                )
+                val legacy = open()
+                try {
+                    legacy.execute(null, b77509cWindowsSchema, 0)
+                    legacy.execute(null, """
+                        INSERT INTO usage_windows (
+                          provider, window_key, used_percent, resets_at, window_seconds, observed_at,
+                          changed_at, reset_generation, admitted_capture_at, prev_used_percent
+                        ) VALUES ('claude', 'seven_day', 40, $resetAt, $week, $legacyTime,
+                                  $legacyTime, 3, $legacyTime, 88)
+                    """.trimIndent(), 0)
+                    assertFalse(legacy.hasColumn("usage_windows", "received_at"))
+                } finally {
+                    legacy.close()
+                }
+
+                val migrated = open()
+                try {
+                    val store = SqliteUsageStore(migrated) { clock }
+                    val initial = store.list().single()
+                    assertEquals(legacyTime, initial.receivedAt, "old observed_at is the only historical receipt available")
+                    assertEquals(legacyTime, initial.current.observedAt)
+                    assertEquals(3L, scalar(migrated, "SELECT reset_generation FROM usage_windows"))
+                    store.observe(UsageObservation("claude", "seven_day", 40.0, resetAt, week))
+                    val heartbeat = store.list().single()
+                    assertEquals(clock, heartbeat.receivedAt)
+                    assertEquals(legacyTime + 1, heartbeat.current.observedAt)
+                    assertEquals(legacyTime, heartbeat.changedAt)
+                    assertEquals(0L, scalar(migrated, "SELECT COUNT(*) FROM usage_samples"))
+                    clock++
+                    store.observe(UsageObservation("claude", "seven_day", 41.0, resetAt, week))
+                    assertEquals(listOf(clock), sampleHistory(migrated).map { it.observedAt })
+                    assertEquals(88L, scalar(migrated, "SELECT CAST(prev_used_percent AS INTEGER) FROM usage_windows"))
+                } finally {
+                    migrated.close()
+                }
+
+                val reopened = open()
+                try {
+                    val store = SqliteUsageStore(reopened) { clock }
+                    val current = store.list().single()
+                    assertEquals(clock, current.receivedAt, "opening again must not replace actual receipt with logical revision")
+                    assertEquals(clock, current.changedAt)
+                    assertEquals(legacyTime + 2, current.current.observedAt)
+                    assertEquals(41.0, current.current.usedPercent)
+                    assertEquals(listOf(clock), sampleHistory(reopened).map { it.observedAt })
+                    assertEquals(88L, scalar(reopened, "SELECT CAST(prev_used_percent AS INTEGER) FROM usage_windows"))
+                } finally {
+                    reopened.close()
+                }
+            }
+        }
     }
 
     @Test
@@ -584,6 +783,28 @@ class SqliteUsageStoreTest {
         }
     }
 
+    private fun sampleHistory(driver: SqlDriver): List<UsageObservation> = driver.executeQuery(
+        identifier = null,
+        sql = "SELECT provider, window_key, used_percent, resets_at, window_seconds, observed_at, " +
+            "source_id, source_revision, source_captured_at FROM usage_samples ORDER BY id",
+        mapper = { cursor ->
+            val samples = buildList {
+                while (cursor.next().value) {
+                    add(UsageObservation(
+                        assertNotNull(cursor.getString(0)), assertNotNull(cursor.getString(1)),
+                        assertNotNull(cursor.getDouble(2)), cursor.getLong(3), cursor.getLong(4),
+                        assertNotNull(cursor.getLong(5)),
+                        cursor.getString(6)?.let {
+                            UsageSource(it, assertNotNull(cursor.getLong(7)), assertNotNull(cursor.getLong(8)))
+                        },
+                    ))
+                }
+            }
+            QueryResult.Value(samples)
+        },
+        parameters = 0,
+    ).value
+
     private fun scalar(driver: SqlDriver, sql: String): Long = driver.executeQuery(
         identifier = null,
         sql = sql,
@@ -593,6 +814,32 @@ class SqliteUsageStoreTest {
         },
         parameters = 0,
     ).value
+
+    // Immutable projection DDL from b77509c, before receipt time was separated from ordering.
+    private val b77509cWindowsSchema = """
+        CREATE TABLE usage_windows (
+          provider TEXT NOT NULL,
+          window_key TEXT NOT NULL,
+          used_percent REAL NOT NULL,
+          resets_at INTEGER,
+          window_seconds INTEGER,
+          observed_at INTEGER NOT NULL,
+          changed_at INTEGER NOT NULL,
+          source_id TEXT,
+          source_revision INTEGER,
+          source_captured_at INTEGER,
+          reset_generation INTEGER NOT NULL DEFAULT 0,
+          admitted_capture_at INTEGER NOT NULL DEFAULT 0,
+          prev_used_percent REAL,
+          prev_resets_at INTEGER,
+          prev_window_seconds INTEGER,
+          prev_observed_at INTEGER,
+          prev_source_id TEXT,
+          prev_source_revision INTEGER,
+          prev_source_captured_at INTEGER,
+          PRIMARY KEY (provider, window_key)
+        )
+    """.trimIndent()
 
     private val preUsageSchema = object : SqlSchema<QueryResult.Value<Unit>> {
         override val version: Long = 1

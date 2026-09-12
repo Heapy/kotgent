@@ -17,7 +17,6 @@ import io.kotgent.sys.shutdownSignalName
 import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.TmuxHookConfig
 import io.kotgent.transport.KotgentServer
-import io.kotgent.transport.ServerBindException
 import io.kotgent.transport.SessionDto
 import io.kotgent.transport.TICKET_CODE_LENGTH
 import io.kotgent.transport.TICKET_TTL_MILLIS
@@ -226,7 +225,7 @@ object Commands {
 
         // Push is optional. Table failure omits its routes; VAPID key and signer failures remain lazy so
         // installations that never enable notifications do not pay for or depend on openssl.
-        val runtime = try {
+        val runtime = daemonStartupOrNull(onBindFailure = { reportPortHolder(port) }) {
             withStartupCompensation(
                 compensate = {
                     sessions.close()
@@ -265,11 +264,7 @@ object Commands {
                     },
                 )
             }
-        } catch (e: ServerBindException) {
-            eprintln("kotgent daemon: ${e.message}")
-            reportPortHolder(port)
-            return@runBlocking 1
-        }
+        } ?: return@runBlocking 1
         val server = runtime.server
         println("kotgent daemon listening on http://127.0.0.1:$port  (tmux -L $TMUX_SOCKET)")
         config.publicUrl?.let { println("  also reachable at $it  (Host + Origin allowlisted)") }

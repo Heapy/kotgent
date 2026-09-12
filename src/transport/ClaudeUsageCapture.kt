@@ -4,18 +4,14 @@ import io.kotgent.adapter.claude.ClaudeHookConfig
 import io.kotgent.core.UsageObservation
 import io.kotgent.core.UsageSource
 import io.kotgent.store.UsageStore
-import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.contentLength
 import io.ktor.server.request.receiveChannel
-import io.ktor.server.response.header
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import io.ktor.utils.io.ByteReadChannel
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -105,15 +101,7 @@ private suspend fun ApplicationCall.rejectUsageCapture(
     text: String,
     status: HttpStatusCode,
     body: ByteReadChannel? = null,
-) {
-    response.header(HttpHeaders.Connection, "close")
-    try {
-        respondText(text, status = status)
-    } finally {
-        body?.cancel(null)
-        withContext(NonCancellable) { closePinnedCioConnectionAfterFlush("closing rejected Claude usage capture") }
-    }
-}
+) = respondToUnconsumedBodyAndClose(text, status, body, "closing rejected Claude usage capture")
 
 private fun JsonObject.stringValue(key: String): String? =
     (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull

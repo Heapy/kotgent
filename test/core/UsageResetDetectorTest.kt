@@ -20,18 +20,34 @@ class UsageResetDetectorTest {
         duration: Long? = null,
     ) = UsageObservation(provider, window, percent, reset, duration, seen)
 
+    private fun detectAtFixtureTimes(previous: UsageObservation?, current: UsageObservation): UsageReset? =
+        detectReset(previous, current, previous?.observedAt ?: 0, current.observedAt)
+
+    @Test
+    fun receiptTimesDetermineResetTimingEvenWhenOrderingRevisionsAreInTheFuture() {
+        val previous = observation(percent = 70.0).copy(observedAt = end + 86_400_000)
+        val current = previous.copy(usedPercent = 2.0, observedAt = previous.observedAt + 1)
+        val previousReceipt = end - 3_700_000
+        val receipt = end - 3_600_000
+        val reset = assertNotNull(detectReset(previous, current, previousReceipt, receipt))
+        assertTrue(reset.early)
+        assertEquals(previousReceipt, reset.usedBeforeSeenAt)
+        assertEquals(receipt, reset.observedAt)
+        assertFalse(assertNotNull(detectReset(previous, current, previousReceipt, end)).early)
+    }
+
     @Test
     fun aFirstObservationAndUnchangedOrRisingUsageDoNotReset() {
         val previous = observation()
-        assertNull(detectReset(null, previous))
-        assertNull(detectReset(previous, previous.copy(observedAt = previous.observedAt + 1)))
-        assertNull(detectReset(previous, previous.copy(usedPercent = 42.0)))
+        assertNull(detectAtFixtureTimes(null, previous))
+        assertNull(detectAtFixtureTimes(previous, previous.copy(observedAt = previous.observedAt + 1)))
+        assertNull(detectAtFixtureTimes(previous, previous.copy(usedPercent = 42.0)))
     }
 
     @Test
     fun anyClaudeDecreaseAnHourBeforeThePromisedEndIsEarly() {
         val previous = observation(percent = 41.1, seen = end - 3_700_000)
-        val reset = assertNotNull(detectReset(previous, observation(percent = 41.0)))
+        val reset = assertNotNull(detectAtFixtureTimes(previous, observation(percent = 41.0)))
         assertTrue(reset.early)
         assertFalse(reset.resetsAtMoved)
         assertEquals(end, reset.expectedAt)
@@ -46,9 +62,9 @@ class UsageResetDetectorTest {
     fun theToleranceBoundaryAndScheduledClaudeDropsAreNotEarly() {
         val previous = observation()
         for (seen in listOf(end - EARLY_TOLERANCE_MILLIS, end, end + 1)) {
-            assertFalse(assertNotNull(detectReset(previous, observation(percent = 0.0, seen = seen))).early)
+            assertFalse(assertNotNull(detectAtFixtureTimes(previous, observation(percent = 0.0, seen = seen))).early)
         }
-        assertTrue(assertNotNull(detectReset(
+        assertTrue(assertNotNull(detectAtFixtureTimes(
             previous,
             observation(percent = 0.0, seen = end - EARLY_TOLERANCE_MILLIS - 1),
         )).early)
@@ -56,7 +72,7 @@ class UsageResetDetectorTest {
 
     @Test
     fun aClaudeDropWithoutAKnownDeadlineIsJournalledWithoutAnEarlyClaim() {
-        val reset = assertNotNull(detectReset(
+        val reset = assertNotNull(detectAtFixtureTimes(
             observation(reset = null),
             observation(percent = 1.0, reset = null),
         ))
@@ -67,17 +83,17 @@ class UsageResetDetectorTest {
     @Test
     fun codexRequiresBothAPercentDropAndAMovedKnownDeadline() {
         val previous = observation(provider = "codex")
-        assertNull(detectReset(previous, previous.copy(usedPercent = 1.0)))
-        assertNull(detectReset(previous, previous.copy(resetsAt = end + 604_800_000)))
-        assertNull(detectReset(previous, previous.copy(usedPercent = 1.0, resetsAt = null)))
-        assertNull(detectReset(previous.copy(resetsAt = null), previous.copy(usedPercent = 1.0)))
-        val early = assertNotNull(detectReset(
+        assertNull(detectAtFixtureTimes(previous, previous.copy(usedPercent = 1.0)))
+        assertNull(detectAtFixtureTimes(previous, previous.copy(resetsAt = end + 604_800_000)))
+        assertNull(detectAtFixtureTimes(previous, previous.copy(usedPercent = 1.0, resetsAt = null)))
+        assertNull(detectAtFixtureTimes(previous.copy(resetsAt = null), previous.copy(usedPercent = 1.0)))
+        val early = assertNotNull(detectAtFixtureTimes(
             previous,
             previous.copy(usedPercent = 1.0, resetsAt = end + 604_800_000),
         ))
         assertTrue(early.early)
         assertTrue(early.resetsAtMoved)
-        val onTime = assertNotNull(detectReset(
+        val onTime = assertNotNull(detectAtFixtureTimes(
             previous,
             previous.copy(usedPercent = 1.0, resetsAt = end + 604_800_000, observedAt = end),
         ))
@@ -85,17 +101,26 @@ class UsageResetDetectorTest {
     }
 
     @Test
+    fun codexUsesTheCurrentDurationAndFallsBackOnlyWhenItIsAbsent() {
+        val previous = observation(provider = "codex")
+        val current = previous.copy(usedPercent = 1.0, resetsAt = end + 604_800_000, windowSeconds = 604_800)
+        assertTrue(assertNotNull(detectAtFixtureTimes(previous, current)).isNotificationEligible)
+        assertEquals(604_800L, assertNotNull(detectAtFixtureTimes(previous.copy(windowSeconds = 604_800), current.copy(windowSeconds = null))).windowSeconds)
+        assertFalse(assertNotNull(detectAtFixtureTimes(previous.copy(windowSeconds = 604_800), current.copy(windowSeconds = 18_000))).isNotificationEligible)
+    }
+
+    @Test
     fun anUnknownProviderUsesTheConservativeRule() {
         val previous = observation(provider = "future")
-        assertNull(detectReset(previous, previous.copy(usedPercent = 0.0)))
-        assertNotNull(detectReset(previous, previous.copy(usedPercent = 0.0, resetsAt = end + 1)))
+        assertNull(detectAtFixtureTimes(previous, previous.copy(usedPercent = 0.0)))
+        assertNotNull(detectAtFixtureTimes(previous, previous.copy(usedPercent = 0.0, resetsAt = end + 1)))
     }
 
     @Test
     fun observationsFromDifferentMetersCannotEstablishAReset() {
         val previous = observation()
-        assertNull(detectReset(previous, observation(percent = 0.0, provider = "codex")))
-        assertNull(detectReset(previous, observation(percent = 0.0, window = "five_hour")))
+        assertNull(detectAtFixtureTimes(previous, observation(percent = 0.0, provider = "codex")))
+        assertNull(detectAtFixtureTimes(previous, observation(percent = 0.0, window = "five_hour")))
     }
 
     @Test

@@ -12,6 +12,10 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import platform.posix.getenv
 import platform.posix.stat
 
@@ -43,10 +47,15 @@ fun defaultCodexDir(): String {
 }
 
 @OptIn(ExperimentalForeignApi::class)
-class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
+class CodexRolloutScan(
+    private val codexDir: String = defaultCodexDir(),
+    private val visitEntries: suspend (String, suspend (String) -> Boolean) -> Boolean = ::visitDirectoryEntries,
+) {
 
     // Archived rollouts are outside this root and cannot be resumed by Codex.
     private val sessionsRoot: String get() = "${codexDir.trimEnd('/')}/sessions"
+    private val usageLookupMutex = Mutex()
+    private val usagePaths = LinkedHashMap<ProviderSessionId, String>()
 
     fun hasRollout(providerSessionId: ProviderSessionId): Boolean =
         rolloutFiles().any { rolloutFileSessionId(it.name) == providerSessionId }
@@ -70,13 +79,39 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
     fun modelOf(providerSessionId: ProviderSessionId): String? =
         rolloutHeadOf(providerSessionId, MODEL_SCAN_BYTES)?.let(::extractModel)
 
-    fun rateLimitsOf(providerSessionId: ProviderSessionId): List<UsageObservation> =
-        rolloutFiles().firstNotNullOfOrNull { file ->
-            if (rolloutFileSessionId(file.name) != providerSessionId) return@firstNotNullOfOrNull null
-            val tail = readTailWithOffset(file.path, TOKEN_COUNT_TAIL_BYTES) ?: return@firstNotNullOfOrNull null
-            // A record without ordering evidence cannot become fresh merely because its tail was scanned.
-            extractCodexRateLimits(tail.bytes, providerSessionId.value, tail.offset).filter { it.source != null }
-        } ?: emptyList()
+    suspend fun rateLimitsOf(providerSessionId: ProviderSessionId): List<UsageObservation> = usageLookupMutex.withLock {
+        currentCoroutineContext().ensureActive()
+        var tail = usagePaths.remove(providerSessionId)?.let { path ->
+            readTailWithOffset(path, TOKEN_COUNT_TAIL_BYTES)?.also { usagePaths[providerSessionId] = path }
+        }
+        if (tail == null) {
+            val _ = visitEntries(sessionsRoot) { year ->
+                val yearPath = "$sessionsRoot/$year"
+                visitEntries(yearPath) { month ->
+                    val monthPath = "$yearPath/$month"
+                    visitEntries(monthPath) { day ->
+                        val dayPath = "$monthPath/$day"
+                        visitEntries(dayPath) file@ { name ->
+                            // ID lookup needs neither neighbouring rollouts' stat calls nor their contents.
+                            if (rolloutFileSessionId(name) != providerSessionId) return@file true
+                            val path = "$dayPath/$name"
+                            tail = readTailWithOffset(path, TOKEN_COUNT_TAIL_BYTES)
+                            if (tail == null) return@file true
+                            if (usagePaths.size >= MAX_USAGE_PATHS) {
+                                val _ = usagePaths.remove(usagePaths.keys.first())
+                            }
+                            usagePaths[providerSessionId] = path
+                            false
+                        }
+                    }
+                }
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        // A record without ordering evidence cannot become fresh merely because its tail was scanned.
+        tail?.let { extractCodexRateLimits(it.bytes, providerSessionId.value, it.offset).filter { it.source != null } }
+            ?: emptyList()
+    }
 
     private fun rolloutHeadOf(providerSessionId: ProviderSessionId, bytes: Int): String? =
         rolloutFiles().firstNotNullOfOrNull { file ->
@@ -118,6 +153,8 @@ class CodexRolloutScan(private val codexDir: String = defaultCodexDir()) {
         const val MODEL_SCAN_BYTES: Int = 256 * 1024
 
         const val TOKEN_COUNT_TAIL_BYTES: Int = 256 * 1024
+
+        private const val MAX_USAGE_PATHS: Int = 128
 
         const val MTIME_SLACK_MILLIS: Long = 2_000
     }

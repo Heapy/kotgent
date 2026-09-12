@@ -2,7 +2,6 @@ package io.kotgent.push
 
 import io.kotgent.cli.eprintln
 import io.kotgent.core.NOTIFICATION_WINDOW_MILLIS
-import io.kotgent.core.isWeeklyUsageWindow
 import io.kotgent.store.NotificationStore
 import io.kotgent.store.UsageStore
 import kotlinx.coroutines.CancellationException
@@ -27,6 +26,7 @@ class UsageResetNotifier(
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val awaitRetry: suspend (Long) -> Unit = { delay(it) },
     private val onError: (String) -> Unit = ::eprintln,
+    private val awaitRecovery: suspend () -> Unit = { delay(60_000L) },
 ) {
     /** Returns after subscription and durable projection, with network delivery held until activation. */
     suspend fun start(scope: CoroutineScope): Running {
@@ -79,6 +79,7 @@ class UsageResetNotifier(
         val signals = Channel<Unit>(Channel.CONFLATED)
         // Every payload-less wake fetches the complete inbox, so one follow-up wake covers a burst.
         val deliveries = Channel<String>(Channel.CONFLATED)
+        var recovery: Job? = null
         launch(start = CoroutineStart.UNDISPATCHED) {
             usageStore.resets.onSubscription { subscribed.complete(Unit) }.collect {
                 val _ = signals.trySend(Unit)
@@ -95,11 +96,20 @@ class UsageResetNotifier(
             projectWithRetries(deliveries)?.let { throw it }
             ready.complete(Unit)
             for (signal in signals) {
-                projectWithRetries(deliveries)?.let { failure ->
-                    onError("usage notifications: inbox projection failed after 3 attempts; pending resets retained: ${failure.describe()}")
+                // Own the timer here: a firing job may still be active when its signal is consumed.
+                recovery?.cancel()
+                recovery = null
+                val failure = projectWithRetries(deliveries)
+                if (failure != null) {
+                    onError("usage notifications: inbox projection failed after 3 attempts; retrying local pending work within a minute: ${failure.describe()}")
+                    recovery = launch {
+                        awaitRecovery()
+                        val _ = signals.trySend(Unit)
+                    }
                 }
             }
         } finally {
+            recovery?.cancel()
             signals.close()
             deliveries.close()
         }
@@ -110,7 +120,6 @@ class UsageResetNotifier(
             try {
                 val pending = usageStore.pendingResetNotifications(now() - NOTIFICATION_WINDOW_MILLIS)
                 for (reset in pending) {
-                    if (!reset.early || !isWeeklyUsageWindow(reset.provider, reset.windowKey, reset.windowSeconds)) continue
                     val _ = inbox.insert(reset)
                     usageStore.markResetNotificationProjected(reset.id)
                     if (wake != null) {

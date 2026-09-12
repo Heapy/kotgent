@@ -30,6 +30,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlin.time.Clock
 
 fun Route.eventsWs(
     store: EventStore,
@@ -37,13 +38,14 @@ fun Route.eventsWs(
     taskStore: TaskStore? = null,
     json: Json = TRANSPORT_JSON,
     usageStore: UsageStore? = null,
+    usageClock: () -> Long = { Clock.System.now().toEpochMilliseconds() },
 ) {
     webSocket("/events") {
         val sessionParam = call.request.queryParameters["session"]
         if (sessionParam != null) {
             streamOneSession(store, json, sessionParam)
         } else {
-            streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore)
+            streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock)
         }
     }
 }
@@ -54,6 +56,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
     taskStore: TaskStore?,
     json: Json,
     usageStore: UsageStore?,
+    usageClock: () -> Long,
 ) {
     val ws = this
     coroutineScope {
@@ -98,7 +101,7 @@ private suspend fun DefaultWebSocketServerSession.streamGlobalUpdates(
         }
 
         if (taskStore != null) launchTaskStream(ws, taskStore, json)
-        if (usageStore != null) launchUsageStream(ws, usageStore, json)
+        if (usageStore != null) launchUsageStream(ws, usageStore, json, usageClock)
 
         store.sessionUpdates
             .onSubscription {
@@ -118,47 +121,29 @@ private fun CoroutineScope.launchUsageStream(
     ws: DefaultWebSocketServerSession,
     usage: UsageStore,
     json: Json,
+    now: () -> Long,
 ) {
-    val lock = Mutex()
-    val pending = LinkedHashMap<Pair<String, String>, UsageWindowState>()
     val wake = Channel<Unit>(Channel.CONFLATED)
-
     launch {
-        // Only onSubscription wakes the initial read: changes absent from it are already being banked.
+        // Subscription precedes the snapshot; every surviving hint rereads all authoritative windows.
         wake.receive()
         val baseline = usage.list()
         val delivered = baseline.associate {
             (it.current.provider to it.current.windowKey) to it.current.observedAt
         }.toMutableMap()
-        ws.sendEventsFrame(json, UsageSnapshotDto(baseline.map { it.toDto() }))
-        while (true) {
-            while (true) {
-                val next = lock.withLock {
-                    val iterator = pending.entries.iterator()
-                    if (!iterator.hasNext()) null else {
-                        val entry = iterator.next()
-                        val banked = entry.key to entry.value
-                        iterator.remove()
-                        banked
-                    }
-                } ?: break
-                val [key, state] = next
+        ws.sendEventsFrame(json, UsageSnapshotDto(baseline.map { it.toDto() }, now()))
+        for (signal in wake) {
+            for (state in usage.list()) {
+                val key = state.current.provider to state.current.windowKey
                 if (state.current.observedAt <= (delivered[key] ?: -1L)) continue
-                ws.sendEventsFrame(json, UsageUpdateDto(state.toDto()))
+                ws.sendEventsFrame(json, UsageUpdateDto(state.toDto(), now()))
                 delivered[key] = state.current.observedAt
             }
-            wake.receive()
         }
     }
-
     launch {
-        usage.updates.onSubscription { wake.trySend(Unit) }.collect { state ->
-            // Neither a snapshot read nor a slow socket can block the store's reliable flow collector.
-            val key = state.current.provider to state.current.windowKey
-            lock.withLock {
-                if (state.current.observedAt > (pending[key]?.current?.observedAt ?: -1L)) pending[key] = state
-            }
-            wake.trySend(Unit)
+        usage.updates.onSubscription { wake.trySend(Unit) }.collect {
+            val _ = wake.trySend(Unit)
         }
     }
 }
@@ -286,15 +271,16 @@ data class UsageWindowDto(
     val windowSeconds: Long?,
     val observedAt: Long,
     val changedAt: Long,
+    val receivedAt: Long,
 )
 
 @Serializable
 @SerialName("usage_snapshot")
-data class UsageSnapshotDto(val windows: List<UsageWindowDto>) : EventsFrame()
+data class UsageSnapshotDto(val windows: List<UsageWindowDto>, val serverNow: Long) : EventsFrame()
 
 @Serializable
 @SerialName("usage_update")
-data class UsageUpdateDto(val window: UsageWindowDto) : EventsFrame()
+data class UsageUpdateDto(val window: UsageWindowDto, val serverNow: Long) : EventsFrame()
 
 fun UsageWindowState.toDto(): UsageWindowDto = UsageWindowDto(
     provider = current.provider,
@@ -304,6 +290,7 @@ fun UsageWindowState.toDto(): UsageWindowDto = UsageWindowDto(
     windowSeconds = current.windowSeconds,
     observedAt = current.observedAt,
     changedAt = changedAt,
+    receivedAt = receivedAt,
 )
 
 @Serializable

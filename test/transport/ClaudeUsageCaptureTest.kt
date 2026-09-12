@@ -16,10 +16,17 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
+import io.ktor.network.selector.SelectorManager
+import io.ktor.network.sockets.aSocket
+import io.ktor.network.sockets.openReadChannel
+import io.ktor.network.sockets.openWriteChannel
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
@@ -173,6 +180,20 @@ class ClaudeUsageCaptureTest {
     }
 
     @Test
+    fun earlyRejectionFlushesItsResponseAndClosesAnUnconsumedKeepAliveConnection() = withIngress { context ->
+        val unauthorized = context.unconsumedRequestUntilClosed(contentLength = 1, presented = "wrong")
+        assertTrue(unauthorized.startsWith("HTTP/1.1 401"), unauthorized)
+        assertTrue(unauthorized.contains("Connection: close", ignoreCase = true), unauthorized)
+        assertTrue(unauthorized.contains("unauthorized"), unauthorized)
+
+        val oversized = context.unconsumedRequestUntilClosed(contentLength = CLAUDE_USAGE_MAX_BODY_BYTES + 1)
+        assertTrue(oversized.startsWith("HTTP/1.1 413"), oversized)
+        assertTrue(oversized.contains("request body too large"), oversized)
+        assertTrue(context.store.list().isEmpty())
+        assertEquals(HttpStatusCode.OK, context.post(capture()).status, "closing rejected sockets leaves the server healthy")
+    }
+
+    @Test
     fun theStoreRequiresASameSessionDecreaseAfterAFirstSourceBaseline() = withIngress { context ->
         assertEquals(HttpStatusCode.OK, context.post(capture()).status)
         assertTrue(context.store.pendingResetNotifications(0).isEmpty())
@@ -213,6 +234,44 @@ class ClaudeUsageCaptureTest {
             if (host != null) header(HttpHeaders.Host, host)
             setBody(body)
         }
+
+        suspend fun unconsumedRequestUntilClosed(contentLength: Int, presented: String = token): String =
+            withTimeout(3.seconds) {
+                val selector = SelectorManager(Dispatchers.Default)
+                val socket = aSocket(selector).tcp().connect("127.0.0.1", port)
+                try {
+                    val input = socket.openReadChannel()
+                    val output = socket.openWriteChannel(autoFlush = true)
+                    val request = buildString {
+                        append("POST ${ClaudeHookConfig.USAGE_INGRESS_PATH} HTTP/1.1\r\n")
+                        append("Host: 127.0.0.1:$port\r\n")
+                        append("${ClaudeHookConfig.HOOK_TOKEN_HEADER}: $presented\r\n")
+                        append("Content-Type: application/json\r\n")
+                        append("Content-Length: $contentLength\r\n")
+                        append("Connection: keep-alive\r\n\r\n")
+                    }
+                    output.writeFully(request.encodeToByteArray())
+                    val response = StringBuilder()
+                    val bytes = ByteArray(1_024)
+                    while (true) {
+                        val read = try {
+                            input.readAvailable(bytes)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Native CIO may reset a connection whose promised request body never arrived.
+                            break
+                        }
+                        if (read < 0) break
+                        response.append(bytes.decodeToString(endIndex = read))
+                        check(response.length <= 16_384) { "rejection response exceeded its bound" }
+                    }
+                    response.toString()
+                } finally {
+                    socket.close()
+                    selector.close()
+                }
+            }
     }
 
     private fun withIngress(block: suspend (Context) -> Unit) = runBlocking {
