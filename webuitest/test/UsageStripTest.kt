@@ -12,6 +12,162 @@ import kotlin.test.assertTrue
 
 class UsageStripTest {
     @Test
+    fun detailsOpenOnHoverAndKeyboardFocusAndEscapeKeepsFocusWithoutReflow() {
+        usagePage(USAGE_SCENARIO, "usage-tooltip-keyboard") { _, page ->
+            val meter = window(page, "claude", "five_hour")
+            val button = meter.getByRole(AriaRole.BUTTON)
+            val tooltip = meter.getByRole(AriaRole.TOOLTIP)
+            val strip = page.locator("#usage-strip")
+            val height = strip.boundingBox()!!.height
+            assertThat(tooltip).isHidden()
+            button.hover()
+            assertThat(tooltip).isVisible()
+            assertThat(detail(meter, "Time left")).not().hasText("unknown")
+            assertEquals(height, strip.boundingBox()!!.height)
+            val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("usage-compact-desktop.png")))
+            page.mouse().move(800.0, 200.0)
+            assertThat(tooltip).isHidden()
+            button.focus()
+            assertThat(tooltip).isVisible()
+            button.press("Escape")
+            assertThat(tooltip).isHidden()
+            assertThat(button).isFocused()
+            assertThat(page.locator("#sidebar")).isVisible()
+            button.press("Enter")
+            assertThat(tooltip).isVisible()
+            button.press("Tab")
+            assertThat(tooltip).isHidden()
+            page.getByRole(AriaRole.LINK, Page.GetByRoleOptions().setName("Sessions").setExact(true)).focus()
+            button.hover()
+            assertThat(tooltip).isVisible()
+            page.getByRole(AriaRole.LINK, Page.GetByRoleOptions().setName("Tasks").setExact(true)).focus()
+            assertThat(tooltip).isHidden()
+        }
+    }
+
+    @Test
+    fun keyboardFocusedDetailsSurviveMouseLeavingUntilDismissedOrFocusMoves() {
+        usagePage(USAGE_SCENARIO, "usage-tooltip-mixed-input") { _, page ->
+            val meter = window(page, "claude", "seven_day")
+            val button = meter.getByRole(AriaRole.BUTTON)
+            val tooltip = meter.getByRole(AriaRole.TOOLTIP)
+            window(page, "claude", "five_hour").getByRole(AriaRole.BUTTON).focus()
+            page.keyboard().press("Tab")
+            assertThat(button).isFocused()
+            assertThat(tooltip).isVisible()
+
+            button.hover()
+            page.mouse().move(800.0, 200.0)
+            assertThat(button).isFocused()
+            assertThat(tooltip).isVisible()
+
+            button.press("Escape")
+            assertThat(tooltip).isHidden()
+            assertThat(button).isFocused()
+            button.press("Enter")
+            assertThat(tooltip).isVisible()
+            button.press("Tab")
+            assertThat(tooltip).isHidden()
+        }
+    }
+
+    @Test
+    fun tappingAMeterShowsItsDetailsWithinThePhoneSidebarAndTappingOutsideClosesThem() {
+        usagePage(USAGE_SCENARIO, "usage-tooltip-touch", touch = true) { _, page ->
+            val meter = window(page, "claude", "seven_day")
+            val button = meter.getByRole(AriaRole.BUTTON)
+            val tooltip = meter.getByRole(AriaRole.TOOLTIP)
+            button.tap()
+            assertThat(tooltip).isVisible()
+            val bounds = tooltip.boundingBox()!!
+            val sidebar = page.locator("#sidebar").boundingBox()!!
+            assertTrue(bounds.x >= sidebar.x && bounds.x + bounds.width <= sidebar.x + sidebar.width)
+            assertTrue(bounds.y >= sidebar.y && bounds.y + bounds.height <= sidebar.y + sidebar.height)
+            val _ = page.screenshot(Page.ScreenshotOptions().setPath(testResultsDir().resolve("usage-compact-phone.png")))
+            page.getByRole(AriaRole.HEADING, Page.GetByRoleOptions().setName("Kotgent").setExact(true)).tap()
+            assertThat(tooltip).isHidden()
+        }
+    }
+
+    @Test
+    fun unknownTimesHaveNoMarkerAndReachingAKnownResetPreservesTheLastUsage() {
+        usagePage(EMPTY_SCENARIO, "usage-time-boundaries") { harness, page ->
+            val serverNow = snapshotServerNow(page)
+            page.clock().pauseAt(EPOCH + 60_000)
+            harness.send("usage claude five_hour 82 - $serverNow")
+            harness.send("usage codex primary 14 ${serverNow + 90_000} $serverNow -")
+            assertUsage(page, "claude", "five_hour" to "82")
+            assertUsage(page, "codex", "primary" to "14")
+            assertThat(page.locator(".usage-now-marker")).hasCount(0)
+            assertThat(detail(window(page, "claude", "five_hour"), "Time left")).hasText("unknown")
+
+            harness.send("usage claude five_hour 82 ${serverNow + 90_000} ${serverNow + 1}")
+            val meter = window(page, "claude", "five_hour")
+            assertThat(meter.locator(".usage-now-marker")).isVisible()
+            page.clock().runFor(90_001)
+            assertThat(detail(meter, "Time left")).hasText("Waiting for update")
+            assertTrue(markerPosition(meter) > 0.99)
+            assertUsage(page, "claude", "five_hour" to "82")
+        }
+    }
+
+    @Test
+    fun theNowMarkerAdvancesWithoutProviderPollingAndIgnoresPhoneClockSkew() {
+        usagePage(EMPTY_SCENARIO, "usage-now-marker") { harness, page ->
+            val serverNow = snapshotServerNow(page)
+            page.clock().pauseAt(EPOCH + 60_000)
+            harness.send("usage claude five_hour 36 ${serverNow + 7_200_000} $serverNow")
+            assertUsage(page, "claude", "five_hour" to "36")
+            val meter = window(page, "claude", "five_hour")
+            assertThat(meter.locator(".usage-now-marker")).isVisible()
+            val frames = frameCount(page, "usage_update")
+            page.clock().setSystemTime(EPOCH - 12 * 60 * 60 * 1_000)
+            val start = markerPosition(meter)
+            assertEquals(0.6, start, 0.005)
+            page.clock().runFor(30 * 60 * 1_000)
+            assertEquals(start + 0.1, markerPosition(meter), 0.005)
+            assertUsage(page, "claude", "five_hour" to "36")
+            assertEquals(frames, frameCount(page, "usage_update"), "time advances without provider polling")
+        }
+    }
+
+    @Test
+    fun aClockCorrectionFromOneProviderMovesBothMarkersWithoutRevivingTheSilentProvider() {
+        usagePage(EMPTY_SCENARIO, "usage-shared-clock") { harness, page ->
+            val serverNow = snapshotServerNow(page)
+            val resetsAt = serverNow + 7_200_000
+            page.clock().pauseAt(EPOCH + 60_000)
+            harness.send("usage claude five_hour 36 $resetsAt $serverNow")
+            harness.send("usage codex primary 58 $resetsAt $serverNow 18000")
+            assertUsage(page, "claude", "five_hour" to "36")
+            assertUsage(page, "codex", "primary" to "58")
+            val claude = window(page, "claude", "five_hour")
+            val codex = window(page, "codex", "primary")
+            codex.getByRole(AriaRole.BUTTON).click()
+            val codexReceipt = detail(codex, "Observed").textContent()
+            page.clock().runFor(STALE_MILLIS + 1)
+            assertThat(provider(page, "claude")).hasClass(STALE)
+            assertThat(provider(page, "codex")).hasClass(STALE)
+            val frames = frameCount(page, "usage_update")
+
+            val correctedNow = serverNow - 3_600_000
+            harness.send("usage claude five_hour 36 $resetsAt $correctedNow")
+            val correctedDate = page.evaluate("stamp => new Date(stamp).toLocaleString()", correctedNow.toDouble()) as String
+            assertThat(detail(claude, "Now")).hasText(correctedDate)
+            assertThat(detail(codex, "Now")).hasText(correctedDate)
+            assertThat(detail(codex, "Time left")).hasText("3h 0m")
+            assertEquals(0.4, markerPosition(claude), 0.005)
+            assertEquals(0.4, markerPosition(codex), 0.005)
+            assertThat(codex.getByRole(AriaRole.TOOLTIP)).isVisible()
+            assertThat(detail(codex, "Observed")).hasText(codexReceipt)
+            assertUsage(page, "codex", "primary" to "58")
+            assertThat(provider(page, "claude")).not().hasClass(STALE)
+            assertThat(provider(page, "codex")).hasClass(STALE)
+            assertEquals(frames + 1, frameCount(page, "usage_update"), "only Claude published a new reading")
+        }
+    }
+
+    @Test
     fun theSnapshotShowsUsageBarsAndTheActualCodexWindowDuration() {
         usagePage(USAGE_SCENARIO, "usage-snapshot") { _, page ->
             assertThat(page.getByRole(AriaRole.GROUP, Page.GetByRoleOptions().setName("Usage limits").setExact(true)))
@@ -25,18 +181,12 @@ class UsageStripTest {
                 .hasAccessibleName("claude 7d usage")
             assertThat(window(page, "codex", "primary").getByRole(AriaRole.PROGRESSBAR))
                 .hasAccessibleName("codex 7d usage")
-            assertThat(page.locator("#usage-strip")).not().containsText("%")
+            assertTrue("%" !in page.locator("#usage-strip").innerText(), "the compact strip has no permanent numeric labels")
             assertThat(provider(page, "junie")).hasCount(0)
             assertThat(provider(page, "shell")).hasCount(0)
-            assertThat(window(page, "claude", "five_hour")).hasAttribute(
-                "title", title(page, "23", FIVE_HOUR_RESET, EPOCH),
-            )
-            assertThat(window(page, "claude", "seven_day")).hasAttribute(
-                "title", title(page, "41", WEEKLY_RESET, EPOCH),
-            )
-            assertThat(window(page, "codex", "primary")).hasAttribute(
-                "title", title(page, "58", WEEKLY_RESET, EPOCH),
-            )
+            assertDetails(page, "claude", "five_hour", "23", FIVE_HOUR_RESET, EPOCH)
+            assertDetails(page, "claude", "seven_day", "41", WEEKLY_RESET, EPOCH)
+            assertDetails(page, "codex", "primary", "58", WEEKLY_RESET, EPOCH)
             assertThat(page.locator(".usage-provider.stale")).hasCount(0)
         }
     }
@@ -49,7 +199,7 @@ class UsageStripTest {
 
             harness.send("usage claude five_hour 23 - $EPOCH")
             assertUsage(page, "claude", "five_hour" to "23")
-            assertThat(window(page, "claude", "five_hour")).hasAttribute("title", title(page, "23", null, EPOCH))
+            assertDetails(page, "claude", "five_hour", "23", null, EPOCH)
             assertThat(provider(page, "codex")).hasCount(0)
             assertThat(provider(page, "junie")).hasCount(0)
 
@@ -71,7 +221,7 @@ class UsageStripTest {
     fun snapshotFreshnessUsesDaemonAgeWhenThePhoneClockIsHoursAheadOrBehind() {
         usagePage(EMPTY_SCENARIO, "usage-clock-skew") { harness, page ->
             val serverNow = snapshotServerNow(page)
-            page.clock().setFixedTime(serverNow + 12 * 60 * 60 * 1_000)
+            page.clock().setSystemTime(serverNow + 12 * 60 * 60 * 1_000)
             harness.send("usage claude seven_day 41 - ${serverNow - 700_000}")
             harness.send("usage codex primary 58 - $serverNow 604800")
             assertThat(provider(page, "codex")).not().hasClass(STALE)
@@ -81,7 +231,7 @@ class UsageStripTest {
             assertThat(provider(page, "claude")).hasClass(STALE)
             assertThat(provider(page, "codex")).not().hasClass(STALE)
 
-            page.clock().setFixedTime(serverNow - 12 * 60 * 60 * 1_000)
+            page.clock().setSystemTime(serverNow - 12 * 60 * 60 * 1_000)
             page.reload()
             awaitSnapshot(page)
             assertThat(provider(page, "claude")).hasClass(STALE)
@@ -100,42 +250,36 @@ class UsageStripTest {
             // Boot with running timers, then publish heartbeats after pausing so every deadline is
             // scheduled against this controlled clock rather than the bootstrap timer's real ticks.
             val anchor = EPOCH + 60_000
-            page.clock().install(Clock.InstallOptions().setTime(EPOCH))
             page.clock().pauseAt(anchor)
             harness.send("usage claude five_hour 23 $FIVE_HOUR_RESET $anchor")
             harness.send("usage claude seven_day 41 $WEEKLY_RESET $anchor")
             harness.send("usage codex primary 58 $WEEKLY_RESET $anchor 604800")
-            assertThat(window(page, "claude", "five_hour")).hasAttribute("title", title(page, "23", FIVE_HOUR_RESET, anchor))
-            assertThat(window(page, "claude", "seven_day")).hasAttribute("title", title(page, "41", WEEKLY_RESET, anchor))
-            assertThat(window(page, "codex", "primary")).hasAttribute("title", title(page, "58", WEEKLY_RESET, anchor))
-            val freshOpacity = opacity(claude)
+            assertDetails(page, "claude", "five_hour", "23", FIVE_HOUR_RESET, anchor)
+            assertDetails(page, "claude", "seven_day", "41", WEEKLY_RESET, anchor)
+            assertDetails(page, "codex", "primary", "58", WEEKLY_RESET, anchor)
+            val claudeBars = claude.locator(".usage-window-button").first()
+            val freshOpacity = opacity(claudeBars)
             assertThat(claude).not().hasClass(STALE)
             val initialFrames = frameCount(page, "usage_update")
 
-            page.clock().setSystemTime(anchor + 12 * 60 * 60 * 1_000)
             page.clock().runFor(STALE_MILLIS)
             assertThat(claude).not().hasClass(STALE)
             assertThat(codex).not().hasClass(STALE)
             page.clock().runFor(1)
             assertThat(claude).hasClass(STALE)
             assertThat(codex).hasClass(STALE)
-            assertTrue(opacity(claude) < freshOpacity, "stale data is visibly dimmed, not only marked with a class")
+            assertTrue(opacity(claudeBars) < freshOpacity, "stale data is visibly dimmed, not only marked with a class")
             assertEquals(initialFrames, frameCount(page, "usage_update"), "the timer needs no backend update")
 
             val heartbeatAt = anchor + STALE_MILLIS + 1
             harness.send("usage claude seven_day 41 $WEEKLY_RESET $heartbeatAt")
-            assertThat(window(page, "claude", "seven_day")).hasAttribute(
-                "title", title(page, "41", WEEKLY_RESET, heartbeatAt),
-            )
+            assertDetails(page, "claude", "seven_day", "41", WEEKLY_RESET, heartbeatAt)
             assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "41")
             assertThat(claude).not().hasClass(STALE)
-            assertEquals(freshOpacity, opacity(claude))
+            assertEquals(freshOpacity, opacity(claudeBars))
             assertThat(codex).hasClass(STALE)
-            assertThat(window(page, "claude", "five_hour")).hasAttribute(
-                "title", title(page, "23", FIVE_HOUR_RESET, anchor),
-            )
+            assertDetails(page, "claude", "five_hour", "23", FIVE_HOUR_RESET, anchor)
 
-            page.clock().setSystemTime(anchor - 12 * 60 * 60 * 1_000)
             page.clock().runFor(STALE_MILLIS)
             assertThat(claude).not().hasClass(STALE)
             page.clock().runFor(1)
@@ -156,25 +300,24 @@ class UsageStripTest {
 
             assertUsage(page, "claude", "five_hour" to "23", "seven_day" to "45")
             assertUsage(page, "codex", "primary" to "58")
-            assertThat(window(page, "claude", "seven_day")).hasAttribute(
-                "title", title(page, "45", WEEKLY_RESET, EPOCH + 1),
-            )
+            assertDetails(page, "claude", "seven_day", "45", WEEKLY_RESET, EPOCH + 1)
             assertEquals(0, frameCount(page, "usage_update"), "the fresh page received the persisted value in its snapshot")
         }
     }
 }
 
-private fun usagePage(scenario: String, trace: String, block: (Harness, Page) -> Unit) {
+private fun usagePage(scenario: String, trace: String, touch: Boolean = false, block: (Harness, Page) -> Unit) {
     Harness(scenario).use { harness ->
         onChromium { browser ->
-            browser.fineContext().use { context ->
+            (if (touch) browser.touchContext() else browser.fineContext()).use { context ->
                 context.traced(trace) {
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
                     val page = context.newPage()
                     page.addInitScript(FRAME_RECORDER)
-                    page.clock().setFixedTime(EPOCH)
+                    page.clock().install(Clock.InstallOptions().setTime(EPOCH))
                     page.navigate("${harness.baseUrl}/")
                     awaitSnapshot(page)
+                    if (touch) page.getByRole(AriaRole.BUTTON, Page.GetByRoleOptions().setName("Show the session list")).tap()
                     assertThat(page.locator("#sidebar")).isVisible()
                     block(harness, page)
                 }
@@ -184,7 +327,9 @@ private fun usagePage(scenario: String, trace: String, block: (Harness, Page) ->
 }
 
 private fun awaitSnapshot(page: Page) {
-    page.waitForCondition { frameCount(page, "usage_snapshot") > 0 }
+    page.waitForCondition {
+        listOf("usage_snapshot", "sessions_snapshot", "tasks_snapshot").all { frameCount(page, it) > 0 }
+    }
 }
 
 private fun provider(page: Page, providerName: String): Locator =
@@ -205,13 +350,25 @@ private fun assertUsage(page: Page, providerName: String, vararg values: Pair<St
     }
 }
 
-private fun title(page: Page, percent: String, resetsAt: Long?, observedAt: Long): String {
+private fun assertDetails(page: Page, provider: String, key: String, percent: String, resetsAt: Long?, observedAt: Long) {
     fun localDate(stamp: Long): String = page.evaluate("stamp => new Date(stamp).toLocaleString()", stamp.toDouble()) as String
-    return "$percent% used\nResets: ${resetsAt?.let(::localDate) ?: "unknown"}\nObserved: ${localDate(observedAt)}"
+    val meter = window(page, provider, key)
+    assertThat(meter.locator(".usage-tooltip strong")).containsText("$percent% used")
+    assertThat(detail(meter, "Resets")).hasText(resetsAt?.let(::localDate) ?: "unknown")
+    assertThat(detail(meter, "Observed")).hasText(localDate(observedAt))
 }
+
+private fun detail(meter: Locator, label: String): Locator = meter.locator(".usage-tooltip dl > div")
+    .filter(Locator.FilterOptions().setHasText(Pattern.compile("^$label"))).locator("dd")
 
 private fun opacity(locator: Locator): Double =
     (locator.evaluate("el => Number(getComputedStyle(el).opacity)") as Number).toDouble()
+
+private fun markerPosition(meter: Locator): Double {
+    val track = meter.getByRole(AriaRole.PROGRESSBAR).boundingBox()!!
+    val marker = meter.locator(".usage-now-marker").boundingBox()!!
+    return (marker.x + marker.width / 2 - track.x) / track.width
+}
 
 private fun frameCount(page: Page, type: String): Int = (page.evaluate("""
     type => (window.__kotgentFrames || []).filter((raw) => JSON.parse(raw).type === type).length

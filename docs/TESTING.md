@@ -276,10 +276,14 @@ test uses an ephemeral port, signs in through the real single-use form, and leav
 checkout. Playwright supplies its own Node runtime, so this tier needs no package manager or build step.
 
 The usage fixture adds a real in-memory SQLite store and a `usage` scenario command. `UsageStripTest`
-proves snapshots, live updates, durations, listener restart snapshots and stale-heartbeat behavior.
-Let the initial render effects establish the socket before pausing Playwright's clock; freezing it before navigation
-also freezes the effects being tested. Script, ingress, socket and browser coverage is compositional,
-not evidence of a live long-running provider turn through the assembled feature.
+proves snapshots, live updates, durations, listener restart snapshots and stale-heartbeat behavior. It also
+checks the current-time marker against rendered bar geometry, progress without provider frames, phone
+clock skew, unknown reset/duration, and preserving usage at the reset deadline. A clock correction from one
+window must update every marker without refreshing silent providers. Tooltip checks cover hover, keyboard
+dismissal without losing focus, and touch layout without moving the sidebar contents.
+Install Playwright's advancing clock before navigation, and let all initial snapshots arrive before pausing
+it; freezing it before navigation also freezes the effects being tested. Script, ingress, socket and browser
+coverage is compositional, not evidence of a live long-running provider turn through the assembled feature.
 
 For early resets, real SQLite tests cover source admission, atomic history, generations, receipt-time
 migration and reopen. Clock-correction tests must include producer-to-receipt delay and unchanged cached
@@ -303,6 +307,9 @@ notification permission prompts.
 
 Real-device release checklist:
 
+- Tap a usage bar in the installed phone PWA: its current/reset/observation times and remaining duration
+  must be readable inside the sidebar; tapping outside dismisses the tooltip. Return from a suspended app
+  and check that the time marker refreshes with the resumed clock and incoming usage snapshot.
 - An installed PWA receives an early weekly-reset push whose text includes the percent spent before the
   reset and when that reading was seen. Tapping it opens the root view from a closed app and from an
   already open task/session; attention notifications still open their session. Check repeated wakes on

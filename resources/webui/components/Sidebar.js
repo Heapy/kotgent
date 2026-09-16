@@ -1,7 +1,6 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { usage } from "../state/usage.js";
-import { providerUsageStaleAt } from "../lib/usage.js";
+import { UsageStrip } from "./UsageStrip.js";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
@@ -31,60 +30,6 @@ import {
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
 const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
-
-function usageLabel(window) {
-  if (window.windowSeconds === 604800) return "7d";
-  if (window.windowSeconds === 18000) return "5h";
-  if (window.provider === "claude" && window.windowKey === "seven_day") return "7d";
-  if (window.provider === "claude" && window.windowKey === "five_hour") return "5h";
-  return window.windowKey;
-}
-
-function UsageStrip() {
-  const windows = usage.value;
-  const [, refresh] = useState(0);
-  const now = performance.now();
-  const providers = new Map();
-  for (const window of windows) {
-    if (!providers.has(window.provider)) providers.set(window.provider, []);
-    providers.get(window.provider).push(window);
-  }
-  const rows = Array.from(providers, ([provider, values]) => ({
-    provider,
-    windows: values,
-    staleAt: providerUsageStaleAt(values),
-  }));
-  const nextStaleAt = Math.min(...rows
-    .map((row) => row.staleAt)
-    .filter((deadline) => deadline > now));
-  useEffect(() => {
-    if (!Number.isFinite(nextStaleAt)) return;
-    const timer = setTimeout(() => refresh((tick) => tick + 1),
-      Math.min(2_147_483_647, Math.ceil(Math.max(0, nextStaleAt - performance.now()))));
-    return () => clearTimeout(timer);
-  }, [nextStaleAt]);
-  if (!rows.length) return null;
-  return html`
-    <div id="usage-strip" role="group" aria-label="Usage limits">
-      ${rows.map((row) => html`
-        <div key=${row.provider} data-provider=${row.provider}
-             class=${"usage-provider" + (now >= row.staleAt ? " stale" : "")}>
-          <span class="usage-provider-name">${row.provider}</span>
-          <div class="usage-windows">
-            ${row.windows.map((window) => html`
-              <div key=${window.windowKey} class="usage-window" data-window=${window.windowKey}
-                   title=${window.usedPercent + "% used\nResets: "
-                     + (window.resetsAt == null ? "unknown" : new Date(window.resetsAt).toLocaleString())
-                     + "\nObserved: " + new Date(window.receivedAt).toLocaleString()}>
-                <span class="usage-window-label">${usageLabel(window)}</span>
-                <progress class="usage-progress" max="100" value=${window.usedPercent}
-                          aria-label=${row.provider + " " + usageLabel(window) + " usage"}
-                          aria-valuetext=${window.usedPercent + "% used"}></progress>
-              </div>`)}
-          </div>
-        </div>`)}
-    </div>`;
-}
 
 /** Preserve real links; route only plain clicks in-app. */
 function NavSwitch({ screen, sessionsPath }) {
