@@ -281,6 +281,10 @@ checks the current-time marker against rendered bar geometry, progress without p
 clock skew, unknown reset/duration, and preserving usage at the reset deadline. A clock correction from one
 window must update every marker without refreshing silent providers. Tooltip checks cover hover, keyboard
 dismissal without losing focus, and touch layout without moving the sidebar contents.
+The `usage-clock` command advances the daemon clock without publishing a reading. A resume regression moves
+that clock and the browser wall clock while leaving its monotonic clock paused, then requires a fresh socket
+snapshot to correct the marker and age the unchanged reading. Coordinator tests cover bounded batching,
+follow-up invalidations, snapshot completion, retired callbacks, timeouts, backoff, and disposal.
 Install Playwright's advancing clock before navigation, and let all initial snapshots arrive before pausing
 it; freezing it before navigation also freezes the effects being tested. Script, ingress, socket and browser
 coverage is compositional, not evidence of a live long-running provider turn through the assembled feature.
@@ -310,6 +314,10 @@ Real-device release checklist:
 - Tap a usage bar in the installed phone PWA: its current/reset/observation times and remaining duration
   must be readable inside the sidebar; tapping outside dismisses the tooltip. Return from a suspended app
   and check that the time marker refreshes with the resumed clock and incoming usage snapshot.
+- Sleep and wake a Mac with the Safari PWA open and providers silent. The countdown and stale indication
+  must recover after a fresh snapshot, including when the event socket survived sleep. Repeat while the
+  daemon is temporarily unreachable, then restore it. Automated clock simulation does not prove OS wake
+  event delivery or installed-PWA behavior.
 - An installed PWA receives an early weekly-reset push whose text includes the percent spent before the
   reset and when that reading was seen. Tapping it opens the root view from a closed app and from an
   already open task/session; attention notifications still open their session. Check repeated wakes on

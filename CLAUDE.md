@@ -109,6 +109,10 @@ Do not archive completed plans.
   response overtaken by a later request is discarded. Each read owns its readiness token. A port that
   throws must still answer its waiters; a failing `read` or `succeed` is a failed read and never stops
   the pump.
+- Event-stream recovery goes through `resources/webui/lib/resync.js`: one coordinator per source batches
+  requests, serializes resynchronization and owns retries. Beside it, `resume.js` emits requests; `events.js`
+  applies frames through state writers and completes after all three snapshots. Retired socket callbacks
+  cannot publish. Wall-clock discontinuities request server time; they never supply usage time or freshness.
 - Session, task, project, usage, selection, dialog, status, and preference state lives in signals under
   `resources/webui/state/`, one owner per concern; callers must use that module's writers.
 - A signal module imported by Node must import signals-core by relative path. That path must normalize to

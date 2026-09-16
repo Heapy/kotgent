@@ -4,6 +4,7 @@ import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Route
+import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -514,7 +515,7 @@ class SidebarTest {
             initScripts = listOf(SOCKET_FAULT_SCRIPT, eventsFaultScript(EVENTS_THROWN), FETCH_RECORDER_SCRIPT),
         ) { _, _, page ->
             assertThat(page.locator("#current-version")).isVisible()
-            assertThat(page.locator("#status-line")).containsText("events WS error")
+            assertThat(page.locator("#status-line")).hasText(DISCONNECT_LINE)
 
             assertThat(page.locator("#sessions-loading")).hasText("Loading sessions…")
             assertThat(page.locator("#empty-sessions")).hasCount(0)
@@ -568,7 +569,9 @@ class SidebarTest {
 
             setEventsFault(page, EVENTS_HEALTHY)
             harness.send("emit s-beta needs_approval")
-            assertThat(page.locator("#attention-list .session-row[data-id='s-beta']")).hasCount(1)
+            // Repeated failures back off up to 30 seconds before the next connection's snapshot.
+            assertThat(page.locator("#attention-list .session-row[data-id='s-beta']"))
+                .hasCount(1, LocatorAssertions.HasCountOptions().setTimeout(40_000.0))
             assertEquals(
                 operatorLine,
                 statusText(page),

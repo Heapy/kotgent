@@ -26,8 +26,19 @@ fun handleCommand(line: String, ctx: HarnessContext): Boolean {
         "rename" -> handleRename(words, ctx)
         "append" -> handleAppend(words, ctx)
         "usage" -> handleUsage(words, ctx)
+        "usage-clock" -> handleUsageClock(words, ctx)
         else -> handleTaskCommand(words, ctx)
     }
+}
+
+private fun handleUsageClock(words: List<String>, ctx: HarnessContext): Boolean {
+    val timestamp = words.getOrNull(1)?.toLongOrNull()
+    if (words.size != 2 || timestamp == null || timestamp < 0) {
+        return reject("usage-clock: usage-clock <non-negative epoch millis>")
+    }
+    runBlocking { ctx.fakes.usage.setTime(timestamp) }
+    writeStdoutLine("${COMMAND_ACK_PREFIX}usage-clock")
+    return true
 }
 
 private fun handleUsage(words: List<String>, ctx: HarnessContext): Boolean {

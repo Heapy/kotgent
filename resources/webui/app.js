@@ -37,6 +37,8 @@ import {
   timerFired,
 } from "./lib/reattach.js";
 import { createSerialRefresh } from "./lib/refresh.js";
+import { createEventsConnection } from "./lib/events.js";
+import { watchRefreshSources } from "./lib/resume.js";
 import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
 import { READY } from "./lib/readiness.js";
@@ -619,7 +621,6 @@ function App() {
     // Judge unread from the authoritative frame.
     const active = rows.find((s) => s.id === activeSessionId.value);
     if (active) markReadIfViewing(active.id, active.unread, active.lastSeq);
-    disconnectAnnouncedRef.current = false;
     // Do not repeat the routine count into the aria-live region after reconnects.
     if (first) say(rows.length + " session(s).");
   }, [dispatchReattach, showSession]);
@@ -708,58 +709,33 @@ function App() {
   }, [applySessionsSnapshot, applySessionRow, applySessionPatch]);
   const sessionsFrameRef = useRef(onSessionsFrame);
   sessionsFrameRef.current = onSessionsFrame;
-  // The deps stay empty: `opened` below is what tells a first open from a recovery, and a torn-down
-  // effect resets it, so a terminal dropped while the daemon was unreachable would never be reattached.
+  // One connection owner survives renders; every trigger requests recovery through its coordinator.
   useEffect(() => {
-    let socket = null;
-    let timer = null;
-    let stopped = false;
-    let opened = false;
-
-    const connect = () => {
-      if (stopped) return;
-      try {
-        socket = new WebSocket(wsUrl("/events"));
-      } catch (e) {
-        // The list has no HTTP fallback, so keep reconnecting.
-        say("events WS error: " + e, true);
-        timer = setTimeout(connect, 2000);
-        return;
-      }
-      socket.onopen = () => {
-        // Event-socket recovery grants a fresh owned terminal liveness check.
-        if (opened) dispatchReattach(grantAndSchedule());
-        opened = true;
-      };
-      socket.onmessage = (ev) => {
-        let msg;
-        try { msg = JSON.parse(ev.data); } catch (_) { return; }
-        if (!msg) return;
+    const connection = createEventsConnection({
+      url: () => wsUrl("/events"),
+      onFrame: (msg) => {
         if (msg.type === "preferences_update") {
           applyServerPreferences(msg);
           return;
         }
         sessionsFrameRef.current(msg);
-      };
-      socket.onclose = () => {
-        if (stopped) return;
+      },
+      onReady: ({ recovered }) => {
+        disconnectAnnouncedRef.current = false;
+        if (recovered) dispatchReattach(grantAndSchedule());
+      },
+      onFailure: () => {
         if (!disconnectAnnouncedRef.current) {
           disconnectAnnouncedRef.current = true;
           say("Daemon connection lost — reconnecting…", true);
         }
-        timer = setTimeout(connect, 2000);
-      };
-      socket.onerror = () => {};
-    };
-
-    connect();
+      },
+    });
+    const stopSources = watchRefreshSources({ request: connection.request, window, document });
+    connection.request({ reason: "mount" });
     return () => {
-      stopped = true;
-      clearTimeout(timer);
-      if (socket) {
-        socket.onclose = null;
-        try { socket.close(); } catch (_) {}
-      }
+      stopSources();
+      connection.dispose();
     };
   }, []);
 

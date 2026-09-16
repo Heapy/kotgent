@@ -22,6 +22,10 @@ class UsageFixture {
 
     fun currentTimeMillis(): Long = observationTime
 
+    suspend fun setTime(timestamp: Long) {
+        observationMutex.withLock { observationTime = timestamp }
+    }
+
     suspend fun observe(observation: UsageObservation, observedAt: Long? = null) {
         observationMutex.withLock {
             observationTime = observedAt ?: daemonEpochMillis()

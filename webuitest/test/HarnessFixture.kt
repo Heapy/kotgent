@@ -507,7 +507,7 @@ private const val RESTART_COMMAND = "restart"
 
 // Duplicated from webuicheck because constants cannot cross the native/JVM boundary.
 private const val COMMAND_ACK_PREFIX = "OK "
-private val ACKNOWLEDGED_COMMANDS = setOf("project-del", "project-restore")
+private val ACKNOWLEDGED_COMMANDS = setOf("project-del", "project-restore", "usage-clock")
 
 private const val HANDSHAKE_TIMEOUT_MILLIS = 30_000L
 private const val RESTART_TIMEOUT_MILLIS = 30_000L

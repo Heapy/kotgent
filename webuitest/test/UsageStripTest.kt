@@ -121,13 +121,44 @@ class UsageStripTest {
             val meter = window(page, "claude", "five_hour")
             assertThat(meter.locator(".usage-now-marker")).isVisible()
             val frames = frameCount(page, "usage_update")
+            val snapshots = frameCount(page, "usage_snapshot")
             page.clock().setSystemTime(EPOCH - 12 * 60 * 60 * 1_000)
+            page.clock().runFor(10_100)
+            page.waitForCondition { frameCount(page, "usage_snapshot") == snapshots + 1 }
             val start = markerPosition(meter)
             assertEquals(0.6, start, 0.005)
             page.clock().runFor(30 * 60 * 1_000)
             assertEquals(start + 0.1, markerPosition(meter), 0.005)
             assertUsage(page, "claude", "five_hour" to "36")
             assertEquals(frames, frameCount(page, "usage_update"), "time advances without provider polling")
+        }
+    }
+
+    @Test
+    fun aSleepingMonotonicClockRecoversFromASnapshotWithoutAProviderUpdate() {
+        usagePage(EMPTY_SCENARIO, "usage-clock-resume") { harness, page ->
+            val serverNow = snapshotServerNow(page)
+            page.clock().pauseAt(EPOCH + 60_000)
+            harness.send("usage claude five_hour 36 ${serverNow + 7_200_000} $serverNow")
+            assertUsage(page, "claude", "five_hour" to "36")
+            val meter = window(page, "claude", "five_hour")
+            meter.getByRole(AriaRole.BUTTON).click()
+            val receipt = detail(meter, "Observed").textContent()
+            val updates = frameCount(page, "usage_update")
+            val snapshots = frameCount(page, "usage_snapshot")
+
+            // Advance the daemon and wall clocks while leaving performance.now() asleep. The real
+            // event socket remains open, and changing the fixture clock publishes no provider frame.
+            harness.send("usage-clock ${serverNow + 1_800_000}")
+            page.clock().setSystemTime(EPOCH + 60_000 + 1_800_000)
+            page.clock().runFor(10_100)
+            assertThat(detail(meter, "Time left")).hasText("1h 30m")
+            assertEquals(0.7, markerPosition(meter), 0.005)
+            assertThat(provider(page, "claude")).hasClass(STALE)
+            assertThat(detail(meter, "Observed")).hasText(receipt)
+            assertUsage(page, "claude", "five_hour" to "36")
+            assertEquals(updates, frameCount(page, "usage_update"))
+            assertEquals(snapshots + 1, frameCount(page, "usage_snapshot"))
         }
     }
 
