@@ -10,7 +10,7 @@ the common workflow and links to those guides; implementation invariants belong 
 
 ## Tooling
 
-- This is a Kotlin/Native project built with Kotlin Toolchain 0.12.1. Use the project-local `./kotlin`
+- This is a Kotlin/Native project built with Kotlin Toolchain 0.12.2. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
 - Run `./kotlin build` before `./kotlin test`: the `webuitest` browser tier executes the `webuicheck`
   binary, and no test task builds it. Every other tier runs from `./kotlin test` alone.
