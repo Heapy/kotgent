@@ -5,6 +5,9 @@ testing strategy. Active implementation plans belong in `docs/plans/`. Before de
 move durable decisions to their authoritative documents and unfinished work to an active plan or backlog.
 Do not archive completed plans.
 
+Keep current user-facing agent behavior and accepted limitations in `docs/agents/`. The README provides
+the common workflow and links to those guides; implementation invariants belong here.
+
 ## Tooling
 
 - This is a Kotlin/Native project built with Kotlin Toolchain 0.12.1. Use the project-local `./kotlin`
@@ -83,12 +86,11 @@ Do not archive completed plans.
   current usage projection. Age cutoffs on inbox reads apply even before pruning runs.
 - Authentication owns the private Claude header file and its rotation. Per-launch settings generation
   only reads and chains the user-scope status command; it must not rewrite the token header. Preserve
-  the operator command's input, output and exit status independently of background capture.
+  the operator command's input, output and exit status independently of background capture. Changes to
+  that command apply on the next launch; project/local status commands are not chained.
 - Claude render ordering and throttling use monotonic time with a boot identity; capture time stays in
   epoch milliseconds. Capture state is pruned after 90 days and abandoned staging files after one day,
   under one permanent directory lock. Do not unlink legacy lock inodes a running old script may hold.
-- Provider evidence, conservative detection blind spots, and deferred scope live in
-  [docs/usage-limits-research.md](docs/usage-limits-research.md).
 
 ## Transport and Web UI
 

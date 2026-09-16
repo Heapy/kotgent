@@ -28,8 +28,7 @@ immortal:
 - **Close the IDE / reload the browser** — the agent keeps running in `tmux` (a client detached, the
   process did not die).
 - **Reboot the machine** — the process is gone, but the conversation is preserved on disk by the provider
-  itself (Claude's per-project transcripts, Codex's rollout files, Junie's session directories) and is
-  restored with `resume`.
+  itself and is restored with `resume`. See the [agent guides](#agents) for recovery behavior and limits.
 
 ## Contents
 
@@ -39,6 +38,7 @@ immortal:
 - [Install the PWA in Safari](#install-the-pwa-in-safari)
 - [Architecture](#architecture)
 - [Requirements](#requirements)
+- [Agents](#agents)
 - [Build & test](#build--test)
 - [The CLI](#the-cli) — [the task backlog](#the-task-backlog),
   [access & auth](#access--auth--two-keys-one-shape), [Web UI](#web-ui--kotgent-web)
@@ -220,28 +220,25 @@ invariants, and [docs/TESTING.md](docs/TESTING.md) for the verification strategy
   reports when full PTY write completion was not observed. A PTY error may have written a prefix, so
   inspect the terminal before resending to avoid duplicated input. `focus-events` stays off: with one tmux client
   fanned out to many viewers, "is the terminal focused" has no single answer. Developed against tmux 3.7b.
-- **`claude`** — the Claude Code CLI, on your `PATH`. Session-id preallocation (`claude --session-id`)
-  needs a recent version; kotgent version-gates it and falls back to a `SessionStart` hook on older CLIs.
-  Developed against claude 2.1.x.
-- **`codex`** — the Codex CLI, on your `PATH`, if you want codex sessions. kotgent installs its hooks
-  per launch (`codex -c 'hooks={…}'`), so your `~/.codex` is never modified. Codex has no session-id
-  preallocation, so the id is captured afterwards — from the `SessionStart` hook, or by reading the
-  rollout file Codex writes under `~/.codex/sessions`. Developed against codex-cli 0.145.
-- **`junie`** — the Junie CLI, on your `PATH`, if you want junie sessions. kotgent installs its hooks per
-  launch (`junie --config-location <kotgent-owned file>`), so your `~/.junie/config.json` is never
-  modified. Junie has no session-id preallocation either, so the id is captured afterwards, by reading the
-  session directory Junie writes under `~/.junie/sessions`. Live state tracking needs Junie's **hooks**,
-  which are an EAP feature: on a stable build that ignores them the session still launches and attaches,
-  it just shows a coarser state. Developed against junie 26.8.3 (EAP).
-- **`shell`** — your current login shell (`$SHELL`, then the passwd entry, with `/bin/zsh` as the safe
-  fallback). It launches with `-l`, needs no additional CLI, emits no provider hooks and has no import path.
-  Consequently it has no model or attention notifications; Resume starts a new login shell in the same
-  working directory rather than restoring a conversation.
+- **An agent CLI**, installed and available on the login shell's `PATH` when you run `kotgent install`.
+  Only the agent you want to use is required; a plain shell needs no additional CLI. See [Agents](#agents).
 - **`/usr/bin/openssl` and NSURLSession (Web Push only).** kotgent lazily uses macOS's system
   `/usr/bin/openssl` to generate and sign its VAPID P-256 credential; outbound HTTPS delivery uses
   the Darwin HTTP client backed by NSURLSession and the system trust store. Both are macOS runtime
   facilities, not packages to install. If VAPID setup fails, the daemon and in-tab notifications keep
   working; only server-sent push is unavailable.
+
+## Agents
+
+These user guides describe how each integration currently works: setup, launch, resume and import,
+configuration, session status, usage meters, and known limitations.
+
+| Session type | Start command | User guide |
+|---|---|---|
+| Claude Code | `kotgent start claude` | [Claude Code](docs/agents/CLAUDE.md) |
+| Codex | `kotgent start codex` | [Codex](docs/agents/CODEX.md) |
+| Junie | `kotgent start junie` | [Junie](docs/agents/JUNIE.md) |
+| Login shell | `kotgent start shell` | [Shell](docs/agents/SHELL.md) |
 
 ## Build & test
 
@@ -359,23 +356,11 @@ kotgent <command> [args]
   clear error pointing at `kotgent install`, not a silent attach failure.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the requested agent or login shell in it, and
   records the session.
-- **`import`** brings a conversation you started *outside* kotgent — `claude`, `codex` or `junie` run in a
-  plain terminal — under kotgent, with its history intact. The import itself only registers the session (no
-  `tmux` side effects): kotgent verifies the provider's own on-disk record and writes a `resumable` entry,
-  then immediately resumes it (`claude --resume <id>` / `codex resume <id>` /
-  `junie --resume --session-id <id>`); `--no-start` skips that and
-  leaves it registered for later. The project directory is discovered from the provider's record; pass
-  `--cwd` if that discovery fails or picks the wrong directory. `shell` is deliberately not importable:
-  there is no outside provider session or transcript to adopt. Finding a provider session id:
-  - **claude** — shown in the `claude --resume` session picker; it is also the transcript's file name,
-    `~/.claude/projects/<encoded-project-dir>/<session-id>.jsonl`.
-  - **codex** — shown in the `codex resume` session picker; it is also the trailing UUID of the rollout
-    file name, `~/.codex/sessions/<date>/rollout-<timestamp>-<session-id>.jsonl`. An *archived* codex
-    session cannot be imported — archiving puts it out of `codex resume`'s reach.
-  - **junie** — shown in `/history`; it is also the directory name under `~/.junie/sessions`, e.g.
-    `session-260730-015553-1j1h`. Junie keeps only its most recent sessions' context, so a session whose
-    directory it has pruned cannot be imported. A junie session in which you never submitted a prompt has
-    no recorded project directory, so pass `--cwd` (there is nothing to resume in it anyway).
+- **`import`** brings a conversation you started outside kotgent under its control, with its history
+  intact. The import first verifies the provider's on-disk record and registers a `resumable` entry,
+  then resumes it in `tmux`; `--no-start` leaves it registered for later. The project directory is
+  discovered from the provider's record; pass `--cwd` if discovery fails or picks the wrong directory.
+  See the [agent guides](#agents) for finding a provider session id and provider-specific import limits.
 
   Importing an id kotgent already tracks fails with the existing session's id and the right next move
   (`kotgent resume <id>`, or Restore in the Web UI if that session is archived). The Web UI's new-session
@@ -497,19 +482,15 @@ The sidebar footer identifies the running daemon: local source builds show the r
 embedded short Git hash (for example `0.9.0+81c37fe`), while published Homebrew builds show the release
 version alone (`0.9.0`).
 
-The usage strip stays pinned above that footer while sessions and projects scroll. It shows each available
-Claude and Codex quota as a **progress bar showing usage**, shared across sessions. Window labels follow the
-reported duration, so Codex's primary window can be weekly. Hover a bar for the percentage used, expected
-reset time and last observation time; missing windows stay hidden.
-A provider line dims when its newest observation is more than ten minutes old. Matching Claude
-heartbeat renders keep it fresh, but that timestamp describes capture activity, not a fresh provider lookup.
+The usage strip stays pinned above that footer while sessions and projects scroll. Available quota windows
+appear as **progress bars showing usage**, shared across sessions, with a current-time marker relative to
+the expected reset. Window labels follow the reported duration. Hover, focus with the keyboard, or tap a
+bar to see the percentage used, current time, time remaining, reset time and last observation; missing
+windows stay hidden. A provider line dims when its newest observation is more than ten minutes old.
 
-Kotgent never polls providers for usage. It captures the quota input to Claude's status-line command
-while preserving that command's output, and reads Codex's existing rollout after a turn ends. Claude
-reset detection requires a decrease within an already observed running session: a first reading from
-another session or an unchanged cached render cannot trigger a reset. Codex requires both a percentage
-drop and a changed, known reset time. The shared meters assume one account per provider on this Mac; see the
-[provider research](docs/usage-limits-research.md) for payload and freshness limits.
+Kotgent captures existing provider output without polling and assumes one account per provider on this
+Mac. Observation time describes capture activity and does not guarantee a fresh provider lookup. The
+[agent guides](#agents) explain each provider's available windows, capture timing and reset limitations.
 
 A session row also carries an **unread pill** — how many events have arrived since you last looked at that
 session. Looking at it clears it: the browser posts the cursor it has displayed, so the count is
@@ -538,8 +519,8 @@ Most real-world breakage traces back to the daemon's launchd environment, which 
 the first question is almost always "does the plist still match my shell?".
 
 - **`start` fails with `agent '…' not found on the daemon's PATH`.** The daemon's `PATH` is a
-  snapshot taken at `kotgent install`, not your live shell's. If `claude`/`codex` moved (a version manager,
-  a new Homebrew prefix, a fresh `nvm` install for codex's `env node` shebang), re-run `kotgent install`
+  snapshot taken at `kotgent install`, not your live shell's. If an agent CLI moved because of a version
+  manager or a new Homebrew prefix, re-run `kotgent install`
   from a full login shell. kotgent fails fast here on purpose: the error names the fix instead of leaving a
   phantom `running` row.
 - **The TUI renders as a wall of underscores.** The tmux client decided it may not emit UTF-8, which
@@ -600,21 +581,21 @@ outlive it by design, so drop them explicitly if you mean to.
 
 Kotgent's core control loop is one end-to-end path:
 
-> **`kotgent start` a Claude session → close IDEA (Detach) → open the browser → continue the same
-> session → see it flag "needs attention" when Claude asks for approval.**
+> **`kotgent start` an agent session → close IDEA (Detach) → open the browser → continue the same
+> session → see it flag "needs attention" when the agent reports that it needs a response.**
 
 Concretely:
 
-1. `kotgent start claude` launches Claude inside `tmux` session `kt-<id>` and records it.
+1. `kotgent start <agent>` launches the selected agent inside `tmux` session `kt-<id>` and records it.
 2. Attaching from the IDE terminal and then closing it (Detach) drops one WebSocket subscriber. The
    daemon holds the **single** upstream `tmux attach` client and fans it out, so the agent keeps running
    with no client attached.
 3. Running `kotgent web` opens the credential-free sign-in form and prints a one-time code; after signing
    in, clicking the session re-attaches to the very same live process — the browser is just another client
    of the same fan-out.
-4. When Claude hits a permission prompt, its `Notification` hook posts to the daemon, which normalizes it
-   into an `ApprovalRequested` event; the reducer moves the session to `needs_approval`, and the events
-   WebSocket lights the session up in the browser's "Needs attention" queue.
+4. When a provider hook reports that the agent needs a response, the daemon updates its session state,
+   and the events WebSocket updates the browser's "Needs attention" queue. The available signals depend
+   on the [agent integration](#agents).
 
 ## Status & limitations
 
@@ -623,11 +604,8 @@ Kotgent is deliberately focused. The current product boundary is:
 **Implemented:**
 
 - **Four launch kinds: Claude, Codex, Junie and Shell.** The three providers run as a TUI in `tmux` and
-  report through hooks; Shell runs the user's login shell through the same lifecycle and terminal fan-out.
-  Codex and Junie both fire a real `PermissionRequest`, so `needs_approval` is precise there rather than inferred
-  from a generic notification — kotgent only observes it, the operator answers in the terminal. Junie's
-  hooks are an EAP feature: without them a junie session still launches and attaches, its state is simply
-  coarser.
+  Shell uses the same lifecycle and terminal fan-out. State tracking and provider limitations are described
+  in the [agent guides](#agents).
 - **Two keys, browser-friendly auth.** The daemon still binds `127.0.0.1` only, but browsers authenticate
   with a stateless, no-secret-in-URL session cookie (`kotgent web` mints a one-time ticket), and a phone
   can sign in through a **cloudflared** tunnel + Cloudflare Access. The CLI and hooks keep using the master
@@ -664,14 +642,7 @@ Kotgent is deliberately focused. The current product boundary is:
 
 **Backlog (not built yet):**
 
-- The Codex **app-server** (JSON-RPC v2) as an alternative event source — structured items, two-way
-  approvals, and no terminal. That is a different product surface (a chat UI, not a terminal fan-out),
-  so it is deliberately separate from the adapter above.
-- **A fourth provider: `cursor-cli`** — another TUI-in-`tmux` adapter behind the same shape (launch spec +
-  hook config + normalizer, an ingress route, a `VendorStoreProbe`, and an `agentFactoryOf` entry), with
-  nothing in `core/`, the store, or the fan-out changing. Open questions to resolve first: whether it
-  exposes per-launch hooks (like Codex's `-c 'hooks={…}'`) or forces a user-scoped config, how it reports
-  approvals, and whether/how a session id can be preallocated or must be scanned after the fact.
+- Additional providers, including Cursor; see the [Cursor integration research](docs/cursor-cli-research.md).
 - Structured mobile actions such as native approve/deny buttons outside the agent's terminal. Approvals
   remain interactive TUI operations today.
 - A **diff viewer** and snapshots.

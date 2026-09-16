@@ -56,5 +56,7 @@ restarting the daemon—must not discard the work.
 - The service worker is network-only: without the local daemon there is no useful offline application state.
 - Shell sessions provide a remotely reachable login shell, not a durable conversation or provider import.
 - Usage meters assume one account per provider on the Mac and show only available percentage windows.
-  [Provider payload and freshness limits](usage-limits-research.md) bound what they can establish.
+  The [agent guides](../README.md#agents) describe provider-specific evidence and accepted limitations.
+- Additional provider meters, a usage CLI/REST read, Prometheus export, and a reset-journal UI remain
+  outside the current scope.
 - The live-tab notification fallback covers session attention; usage-reset notifications use Web Push.

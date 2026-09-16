@@ -173,8 +173,16 @@ CLIs without starting a model turn, so upstream format drift is detected before 
 
 Usage capture has separate executable boundaries: the generated Claude script preserves raw input,
 stdout and exit status while capture stalls or fails; ingress tests use real HTTP and SQLite; Codex
-fixtures exercise bounded rollout tails, record ordering and unit conversion. The verified provider
-versions and live-probe limits are recorded in [usage-limits-research.md](usage-limits-research.md).
+fixtures exercise bounded rollout tails, record ordering and unit conversion.
+
+Live probes on 2026-09-11 used Claude Code 2.1.268 and Codex CLI 0.154.0. They confirmed that a Claude
+permission-mode change can repeat cached quota without a provider request, CLI settings override the
+user status command, and a Codex quota record was visible when its Stop hook ran. That single Codex
+observation does not establish a flush deadline. The hour-long cross-session Claude check, conflicting
+project/local status commands, and a long turn through the assembled feature were not exercised live.
+Cursor and Junie quota capture were not probed. These findings are version-specific evidence, not
+provider timing or compatibility guarantees.
+
 Before release, also launch a session with the operator's custom status line and check its visual output;
 edit the user-scope command and verify the next session picks up the change.
 
