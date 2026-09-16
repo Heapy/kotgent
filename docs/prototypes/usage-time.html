@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Kotgent · Время до ресета</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #14171c;
+      --panel: #1b1f27;
+      --border: #2a2f3a;
+      --text: #e6e9ef;
+      --muted: #9aa3b2;
+      --accent: #8b62ff;
+      --track: #353b49;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input, select { font: inherit; }
+    button, select { color: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid #b59aff;
+      outline-offset: 4px;
+    }
+    [hidden] { display: none !important; }
+    main { max-width: 1060px; margin: 0 auto; padding: 42px 32px 28px; }
+    .masthead { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .masthead strong { font-size: 16px; letter-spacing: .2px; }
+    .tag { color: var(--muted); border-left: 1px solid #454b58; padding-left: 12px; }
+    h1 { font-size: clamp(26px, 4vw, 34px); letter-spacing: -.8px; font-weight: 650; margin: 29px 0 10px; }
+    .intro { color: var(--muted); font-size: 15px; line-height: 1.6; margin: 0; max-width: 730px; }
+    .workspace { display: grid; grid-template-columns: 368px minmax(0, 1fr); gap: 36px; margin-top: 32px; align-items: start; }
+    .section-heading { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; gap: 12px; }
+    h2 { font-size: 14px; font-weight: 600; margin: 0; }
+    .eyebrow { font-size: 11px; color: var(--muted); }
+    .preview-stage { background: #111419; border: 1px solid var(--border); border-radius: 18px; padding: 16px 23px; }
+    .sidebar { width: 320px; max-width: 100%; height: 475px; padding: 12px; background: var(--panel); border-radius: 14px; display: flex; flex-direction: column; }
+    .brand { font-size: 18px; font-weight: 700; letter-spacing: .3px; margin: 0 0 10px; }
+    .navigation { display: flex; padding: 3px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); font-size: 12px; font-weight: 600; text-align: center; }
+    .navigation span { flex: 1; padding: 6px; color: var(--muted); }
+    .navigation .active { background: #2c2546; color: var(--text); border-radius: 5px; }
+    .session-context { flex: 1; min-height: 0; overflow: hidden; padding-top: 17px; }
+    .session-heading { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; padding: 0 5px 10px; }
+    .session { padding: 10px; margin-bottom: 5px; border: 1px solid transparent; border-radius: 9px; }
+    .session.selected { background: #2c2741; border-color: #665095; }
+    .session-title { display: flex; align-items: center; justify-content: space-between; gap: 5px; font-size: 12px; font-weight: 600; }
+    .session-title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .badge { padding: 2px 6px; font-size: 9px; border-radius: 8px; background: #14532d; color: #b7f7c9; }
+    .badge.running { background: #1e3a8a; color: #bfd4ff; }
+    .badge.stopped { background: #2d333d; color: #aeb6c2; }
+    .usage-strip { border-top: 1px solid var(--border); padding-top: 12px; display: grid; gap: 10px; }
+    .usage-provider { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; align-items: start; }
+    .provider-name { font-size: 11px; font-weight: 500; line-height: 24px; }
+    .usage-windows { display: grid; gap: 4px; min-width: 0; }
+    .meter-shell { position: relative; }
+    .meter-button { width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: center; background: transparent; border: 0; padding: 0; min-height: 24px; border-radius: 4px; text-align: left; }
+    .meter-button:hover { background: #232833; }
+    .window-label { color: var(--muted); font-size: 11px; }
+    .meter-button[aria-pressed="true"] .window-label { color: var(--text); }
+    .track { position: relative; height: 6px; border-radius: 999px; background: var(--track); }
+    .fill { position: absolute; inset: 0 auto 0 0; width: var(--used); border-radius: inherit; background: var(--accent); }
+    .now-marker { position: absolute; left: clamp(1px, var(--elapsed), calc(100% - 1px)); top: 50%; width: 2px; height: 14px; background: #f4f3ff; border-radius: 1px; transform: translate(-50%, -50%); box-shadow: 0 0 0 2px var(--panel); }
+    .row-countdown { display: none; margin: -1px 0 4px 26px; color: var(--muted); font-size: 10px; line-height: 15px; font-variant-numeric: tabular-nums; }
+    .with-countdown .row-countdown { display: block; }
+    .meter-tooltip { display: none; pointer-events: none; position: absolute; bottom: calc(100% + 7px); right: 0; width: 246px; z-index: 5; padding: 12px 13px; border: 1px solid #485061; border-radius: 9px; background: #232833; box-shadow: 0 10px 30px #0007; font-size: 11px; line-height: 1.5; }
+    .meter-shell.tip-open .meter-tooltip, .meter-shell:has(.meter-button:focus-visible) .meter-tooltip { display: block; }
+    @media (hover: hover) { .meter-shell:hover .meter-tooltip { display: block; } }
+    .tooltip-title { display: block; font-weight: 600; margin-bottom: 6px; }
+    .tooltip-line { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); }
+    .tooltip-line span:last-child { color: var(--text); text-align: right; }
+    .sidebar-status { display: flex; justify-content: space-between; margin-top: 12px; font-size: 10px; color: var(--muted); }
+    .connection { display: flex; align-items: center; gap: 5px; }
+    .connection::before { content: ""; width: 5px; height: 5px; background: #67b485; border-radius: 50%; }
+    .preview-caption { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 14px 0 0; }
+    .display-options { border: 0; padding: 0; margin: 20px 0 0; }
+    .display-options legend { font-size: 12px; color: var(--muted); padding: 0; margin-bottom: 10px; }
+    .segmented { display: flex; gap: 4px; background: #111419; border: 1px solid var(--border); padding: 4px; border-radius: 9px; }
+    .segmented label { flex: 1; position: relative; cursor: pointer; }
+    .segmented input { position: absolute; opacity: 0; }
+    .segmented span { display: block; padding: 8px 6px; font-size: 12px; text-align: center; color: var(--muted); border-radius: 5px; }
+    .segmented input:checked + span { background: #302642; color: #e4d9ff; box-shadow: 0 0 0 1px #514065; }
+    .segmented input:focus-visible + span { outline: 2px solid #b59aff; outline-offset: 2px; }
+    .inspector { min-width: 0; }
+    .detail { border: 1px solid var(--border); background: var(--panel); border-radius: 14px; padding: 24px; }
+    .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .detail-heading label { color: var(--muted); font-size: 12px; }
+    select { border: 1px solid #454d5e; background: var(--bg); border-radius: 7px; padding: 7px 27px 7px 9px; font-size: 12px; max-width: 60%; }
+    .countdown { font-size: 28px; letter-spacing: -.6px; font-weight: 600; margin: 24px 0 5px; font-variant-numeric: tabular-nums; }
+    .reset-caption { font-size: 12px; color: var(--muted); min-height: 18px; }
+    .detail-meter { position: relative; margin-top: 56px; }
+    .detail-meter .track { height: 10px; }
+    .detail-meter .now-marker { height: 22px; }
+    .now-label { position: absolute; bottom: calc(100% + 14px); left: clamp(65px, var(--elapsed), calc(100% - 65px)); transform: translateX(-50%); white-space: nowrap; color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .axis { display: flex; justify-content: space-between; gap: 15px; margin-top: 14px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .axis span:last-child { text-align: right; }
+    .legend { display: flex; flex-wrap: wrap; gap: 18px; color: #c1c7d2; font-size: 12px; margin-top: 23px; }
+    .legend span { display: flex; gap: 7px; align-items: center; }
+    .legend-used { width: 16px; height: 6px; border-radius: 3px; background: var(--accent); }
+    .legend-now { width: 2px; height: 12px; background: #f4f3ff; margin: 0 7px; border-radius: 1px; }
+    .reading { color: #c1c7d2; font-size: 13px; line-height: 1.65; margin: 19px 0 0; min-height: 43px; }
+    .controls { padding-top: 25px; }
+    .control-label { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; font-size: 13px; }
+    output { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    input[type="range"] { display: block; width: 100%; margin: 9px 0 19px; height: 22px; accent-color: #b29aff; cursor: pointer; }
+    .presets { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+    .presets button { background: transparent; border: 1px solid #404858; border-radius: 6px; min-height: 32px; padding: 6px 10px; font-size: 11px; color: #c1c7d2; }
+    .presets button:hover { background: #292f3a; border-color: #79718d; }
+    .control-note { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 12px 0 0; }
+    .notes { border-top: 1px solid var(--border); margin-top: 29px; padding-top: 18px; display: grid; grid-template-columns: 368px minmax(0, 1fr); gap: 36px; }
+    .notes p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0; }
+    .notes strong { color: #c1c7d2; font-weight: 500; }
+    @media (max-width: 850px) {
+      main { max-width: 650px; padding: 28px 20px; }
+      .workspace { grid-template-columns: minmax(0, 1fr); gap: 30px; }
+      .preview-stage { display: flex; justify-content: center; padding: 16px; }
+      .sidebar { height: 425px; }
+      .notes { grid-template-columns: 1fr; gap: 12px; }
+    }
+    @media (max-width: 390px) {
+      main { padding: 24px 14px; }
+      .preview-stage { padding: 10px; }
+      .detail { padding: 20px; }
+      .countdown { font-size: 25px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="masthead"><strong>Kotgent</strong><span class="tag">Прототип · 01</span></div>
+      <h1>Когда сбросится лимит?</h1>
+      <p class="intro">Расход и время на одной полоске. Белая риска показывает «сейчас» внутри окна — от его начала до ресета.</p>
+    </header>
+    <div class="workspace">
+      <section aria-labelledby="preview-title">
+        <div class="section-heading"><h2 id="preview-title">В боковой панели</h2><span class="eyebrow">Масштаб 1:1 · 320 px</span></div>
+        <div class="preview-stage">
+          <aside class="sidebar" lang="en" aria-label="Sidebar preview">
+            <div class="brand">Kotgent</div>
+            <div class="navigation" aria-label="Navigation preview"><span class="active">Sessions</span><span>Tasks</span></div>
+            <div class="session-context">
+              <div class="session-heading"><span>SESSIONS</span><span>~/dev/pet/kotgent</span></div>
+              <div class="session selected"><div class="session-title"><span>Usage limits</span><span class="badge">ready</span></div><div class="session-sub">claude · kotgent</div></div>
+              <div class="session"><div class="session-title"><span>Review changes</span><span class="badge running">running</span></div><div class="session-sub">codex · kotgent</div></div>
+              <div class="session"><div class="session-title"><span>Session navigation</span><span class="badge stopped">stopped</span></div><div class="session-sub">claude · kotgent</div></div>
+            </div>
+            <div id="usage-strip" class="usage-strip" role="group" aria-label="Usage limits"></div>
+            <div class="sidebar-status"><span class="connection">Connected</span><span>Preview</span></div>
+          </aside>
+        </div>
+        <p class="preview-caption">Наведите, коснитесь или выберите полоску с клавиатуры, чтобы увидеть точное время.</p>
+        <fieldset class="display-options">
+          <legend>Сравнить плотность</legend>
+          <div class="segmented">
+            <label><input type="radio" name="density" value="compact" checked><span>Компактно</span></label>
+            <label><input type="radio" name="density" value="countdown"><span>С таймером</span></label>
+          </div>
+        </fieldset>
+      </section>
+      <section class="inspector" aria-labelledby="detail-title">
+        <div class="section-heading"><h2 id="detail-title">Как это читается</h2><span class="eyebrow">Интерактивный пример</span></div>
+        <div class="detail">
+          <div class="detail-heading"><label for="window-choice">Окно лимита</label><select id="window-choice"></select></div>
+          <div id="countdown" class="countdown"></div>
+          <div id="reset-caption" class="reset-caption"></div>
+          <div id="detail-meter" class="detail-meter">
+            <span id="now-label" class="now-label"></span>
+            <div id="detail-track" class="track" role="meter" aria-label="Использовано лимита" aria-valuemin="0" aria-valuemax="100"><span class="fill"></span><span id="detail-marker" class="now-marker" aria-hidden="true"></span></div>
+            <div class="axis"><span id="axis-start"></span><span id="axis-end"></span></div>
+          </div>
+          <div class="legend"><span><i class="legend-used" aria-hidden="true"></i>Использовано</span><span><i class="legend-now" aria-hidden="true"></i>Сейчас</span></div>
+          <p id="reading" class="reading"></p>
+        </div>
+        <div class="controls">
+          <div class="control-label"><label for="elapsed">Время внутри окна</label><output id="elapsed-output" for="elapsed"></output></div>
+          <input id="elapsed" type="range" min="0" max="100" step="1" value="62">
+          <div class="control-label"><label for="used">Расход лимита</label><output id="used-output" for="used"></output></div>
+          <input id="used" type="range" min="0" max="100" step="1" value="36">
+          <div class="presets" role="group" aria-label="Примеры состояний">
+            <button type="button" data-preset="normal">Обычный</button>
+            <button type="button" data-preset="soon">Перед ресетом</button>
+            <button type="button" data-preset="expired">Время вышло</button>
+            <button type="button" data-preset="unknown">Ресет неизвестен</button>
+          </div>
+          <p class="control-note">Демонстрационные данные. Сдвиг времени меняет все окна, расход — только выбранное. Чтобы вернуть отметку времени, выберите «Обычный».</p>
+        </div>
+      </section>
+    </div>
+    <footer class="notes">
+      <p><strong>Предлагаю компактный вариант.</strong><br>Одна новая риска, привычная фиолетовая заливка. Точное время — по наведению или нажатию.</p>
+      <p>Левый край — начало окна, правый — запланированный ресет. Если заливка обгоняет риску, доля потраченного лимита больше доли прошедшего времени. Это сравнение с равномерным расходом, а не прогноз.</p>
+    </footer>
+    <noscript><p>Включите JavaScript, чтобы увидеть интерактивные полоски прототипа.</p></noscript>
+  </main>
+  <script>
+    const minute = 60_000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+    const baseNow = new Date(2026, 8, 12, 15, 6).getTime();
+    const windows = [
+      { id: "claude-5h", provider: "Claude", label: "5h", duration: 5 * hour, used: 36, initialElapsed: 62 },
+      { id: "claude-7d", provider: "Claude", label: "7d", duration: 7 * day, used: 71, initialElapsed: 43 },
+      { id: "codex-5h", provider: "Codex", label: "5h", duration: 5 * hour, used: 14, initialElapsed: 78 },
+      { id: "codex-7d", provider: "Codex", label: "7d", duration: 7 * day, used: 28, initialElapsed: 64 },
+    ].map((item) => ({ ...item, start: baseNow - item.duration * item.initialElapsed / 100, unknown: false }));
+    const byId = (id) => document.getElementById(id);
+    const clockFormat = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" });
+    const dateFormat = new Intl.DateTimeFormat("ru", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    let currentNow = baseNow;
+    let selectedId = windows[0].id;
+    const choice = byId("window-choice");
+    const selected = () => windows.find((item) => item.id === selectedId);
+    const elapsedPercent = (item) => (currentNow - item.start) / item.duration * 100;
+    const clamp = (value) => Math.min(100, Math.max(0, value));
+    const resetAt = (item) => item.start + item.duration;
+    const compactDate = (time, item) => item.label === "5h" ? clockFormat.format(time) : dateFormat.format(time);
+
+    function remainingText(milliseconds, english = false) {
+      const total = Math.max(1, Math.ceil(milliseconds / minute));
+      const days = Math.floor(total / 1440);
+      const hours = Math.floor(total % 1440 / 60);
+      const minutes = total % 60;
+      if (days) return english ? `${days}d ${hours}h` : `${days} д ${hours} ч`;
+      if (hours) return english ? `${hours}h ${minutes}m` : `${hours} ч ${minutes} мин`;
+      return english ? `${minutes}m` : `${minutes} мин`;
+    }
+
+    for (const provider of ["Claude", "Codex"]) {
+      const row = document.createElement("div");
+      row.className = "usage-provider";
+      row.innerHTML = `<span class="provider-name">${provider}</span><div class="usage-windows"></div>`;
+      for (const item of windows.filter((entry) => entry.provider === provider)) {
+        const shell = document.createElement("div");
+        shell.className = "meter-shell";
+        shell.id = item.id;
+        shell.innerHTML = `
+          <button class="meter-button" type="button" aria-describedby="tip-${item.id}" aria-pressed="false">
+            <span class="window-label">${item.label}</span>
+            <span class="track" aria-hidden="true"><span class="fill"></span><span class="now-marker"></span></span>
+          </button>
+          <div class="row-countdown"></div>
+          <div id="tip-${item.id}" class="meter-tooltip" role="tooltip">
+            <strong class="tooltip-title"></strong>
+            <div class="tooltip-line"><span>Now</span><span class="tip-now"></span></div>
+            <div class="tooltip-line"><span>Resets</span><span class="tip-reset"></span></div>
+            <div class="tooltip-line"><span>Time left</span><span class="tip-left"></span></div>
+          </div>`;
+        shell.querySelector("button").addEventListener("click", () => {
+          const wasOpen = shell.classList.contains("tip-open");
+          closeTips();
+          shell.classList.toggle("tip-open", !wasOpen);
+          selectedId = item.id;
+          render();
+        });
+        row.querySelector(".usage-windows").append(shell);
+        choice.add(new Option(`${item.provider} · ${item.label}`, item.id));
+      }
+      byId("usage-strip").append(row);
+    }
+
+    function closeTips() {
+      document.querySelectorAll(".tip-open").forEach((shell) => shell.classList.remove("tip-open"));
+    }
+
+    function render() {
+      for (const item of windows) {
+        const shell = byId(item.id);
+        const left = resetAt(item) - currentNow;
+        const leftLabel = item.unknown ? "Unknown" : left <= 0 ? "Waiting for update" : remainingText(left, true);
+        shell.style.setProperty("--used", `${item.used}%`);
+        shell.style.setProperty("--elapsed", `${clamp(elapsedPercent(item))}%`);
+        shell.querySelector(".now-marker").hidden = item.unknown;
+        shell.querySelector("button").setAttribute("aria-pressed", String(item.id === selectedId));
+        shell.querySelector("button").setAttribute("aria-label", `${item.provider} ${item.label}: ${item.used}% used. Time left: ${leftLabel}`);
+        shell.querySelector(".row-countdown").textContent = item.unknown ? "Reset unknown" : left <= 0 ? leftLabel : `${leftLabel} to reset`;
+        shell.querySelector(".tooltip-title").textContent = `${item.provider} · ${item.label} · ${item.used}% used`;
+        shell.querySelector(".tip-now").textContent = dateFormat.format(currentNow);
+        shell.querySelector(".tip-reset").textContent = item.unknown ? "Unknown" : dateFormat.format(resetAt(item));
+        shell.querySelector(".tip-left").textContent = leftLabel;
+      }
+      const item = selected();
+      const elapsed = elapsedPercent(item);
+      const left = resetAt(item) - currentNow;
+      choice.value = item.id;
+      byId("detail-meter").style.setProperty("--used", `${item.used}%`);
+      byId("detail-meter").style.setProperty("--elapsed", `${clamp(elapsed)}%`);
+      byId("detail-track").setAttribute("aria-valuenow", item.used);
+      byId("detail-track").setAttribute("aria-valuetext", `${item.used}% лимита использовано`);
+      byId("detail-marker").hidden = item.unknown;
+      byId("now-label").hidden = item.unknown;
+      byId("now-label").textContent = `${left <= 0 ? "Окно завершено" : "Сейчас " + clockFormat.format(currentNow)}`;
+      byId("axis-start").textContent = item.unknown ? "0% лимита" : compactDate(item.start, item);
+      byId("axis-end").textContent = item.unknown ? "100% лимита" : compactDate(resetAt(item), item);
+      byId("countdown").textContent = item.unknown ? "Время ресета неизвестно" : left <= 0 ? "Ждём обновления" : `${remainingText(left)} до ресета`;
+      byId("reset-caption").textContent = item.unknown ? "Показываем только известный расход лимита." : `Ресет ${dateFormat.format(resetAt(item))} · местное время`;
+      byId("reading").textContent = item.unknown
+        ? `Использовано ${item.used}% лимита. Без времени ресета отметку «сейчас» не показываем.`
+        : left <= 0
+          ? `Время окна вышло. Сохраняем последние ${item.used}% расхода, пока провайдер не подтвердит сброс.`
+          : elapsed < 0
+            ? `Окно ещё не началось. Отметка остаётся у левого края; последние данные расхода — ${item.used}%.`
+            : `${item.used}% лимита использовано за ${Math.round(elapsed)}% времени окна. ${item.used > elapsed ? "Заливка обгоняет отметку времени." : item.used < elapsed ? "Отметка времени впереди заливки." : "Расход и время идут вровень."}`;
+      byId("elapsed").value = clamp(elapsed);
+      byId("elapsed").disabled = item.unknown;
+      byId("elapsed").setAttribute("aria-valuetext", `${Math.round(clamp(elapsed))}% времени окна прошло`);
+      byId("elapsed-output").textContent = item.unknown ? "Неизвестно" : `${Math.round(clamp(elapsed))}% прошло`;
+      byId("used").value = item.used;
+      byId("used-output").textContent = `${item.used}% использовано`;
+    }
+
+    choice.addEventListener("change", () => { selectedId = choice.value; closeTips(); render(); });
+    byId("elapsed").addEventListener("input", (event) => {
+      currentNow = selected().start + selected().duration * Number(event.target.value) / 100;
+      closeTips();
+      render();
+    });
+    byId("used").addEventListener("input", (event) => { selected().used = Number(event.target.value); render(); });
+    document.querySelectorAll('input[name="density"]').forEach((input) => {
+      input.addEventListener("change", () => byId("usage-strip").classList.toggle("with-countdown", input.value === "countdown"));
+    });
+    document.querySelectorAll("[data-preset]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const item = selected();
+        const preset = button.dataset.preset;
+        item.unknown = preset === "unknown";
+        if (preset === "normal") {
+          currentNow = baseNow;
+          for (const entry of windows) { entry.unknown = false; }
+          item.used = item.id === "claude-5h" ? 36 : item.id === "claude-7d" ? 71 : item.id === "codex-5h" ? 14 : 28;
+        } else if (!item.unknown) {
+          currentNow = item.start + item.duration * (preset === "soon" ? .98 : 1.01);
+          item.used = 82;
+        }
+        closeTips();
+        render();
+      });
+    });
+    document.addEventListener("click", (event) => { if (!event.target.closest(".meter-shell")) closeTips(); });
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeTips(); document.activeElement.blur(); } });
+    document.addEventListener("focusin", (event) => { if (!event.target.closest(".meter-shell")) closeTips(); });
+    render();
+  </script>
+</body>
+</html>
