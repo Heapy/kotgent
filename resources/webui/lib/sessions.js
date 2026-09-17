@@ -10,6 +10,7 @@ export function stateBadge(state) {
     case "needs_answer":  return { label: "needs answer", cls: "badge-attention" };
     case "stopped":       return { label: "stopped", cls: "badge-dead" };
     case "crashed":       return { label: "crashed", cls: "badge-crashed" };
+    case "lost":          return { label: "lost", cls: "badge-lost" };
     case "resumable":     return { label: "resumable", cls: "badge-resumable" };
     default:              return { label: state || "unknown", cls: "badge-dead" };
   }
@@ -17,6 +18,10 @@ export function stateBadge(state) {
 
 export function isNeedsAttention(state) {
   return state === "needs_approval" || state === "needs_answer";
+}
+
+export function isLostState(state) {
+  return state === "lost";
 }
 
 export function isAliveState(state) {

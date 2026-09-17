@@ -164,9 +164,12 @@ function clearDeepLink() {
 }
 
 function deadHint(state) {
-  return state === "resumable"
-    ? "This session can be resumed."
-    : "This session is " + stateBadge(state).label + ". Resume it to continue.";
+  if (state === "resumable") return "This session can be resumed.";
+  if (state === "lost") {
+    return "This session is lost: the agent no longer keeps its conversation, so it cannot be resumed. " +
+      "Start a new session instead.";
+  }
+  return "This session is " + stateBadge(state).label + ". Resume it to continue.";
 }
 
 // Per-session retry state prevents one session's mark from superseding another's.

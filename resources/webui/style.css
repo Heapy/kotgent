@@ -502,6 +502,7 @@ textarea:focus-visible {
 .badge-attention { background: #5a1a1d; color: #ffc9c9; }
 .badge-dead      { background: #2d333d; color: #aeb6c2; }
 .badge-crashed   { background: #5a1a1a; color: #ffb3b3; }
+.badge-lost      { background: #3a2434; color: #e3b6d8; }
 .badge-resumable { background: #4a3610; color: #ffe0a3; }
 
 #sidebar-footer {
@@ -1832,6 +1833,8 @@ button.task-card-title:hover,
 .task-session-dot[data-state="badge-dead"] { --dot: #6c7482; }
 .task-session-dot[data-state="crashed"],
 .task-session-dot[data-state="badge-crashed"] { --dot: #ff8f8f; }
+.task-session-dot[data-state="lost"],
+.task-session-dot[data-state="badge-lost"] { --dot: #c98fc0; }
 .task-session-dot[data-state="resumable"],
 .task-session-dot[data-state="badge-resumable"] { --dot: #d9a441; }
 /* An archived holder keeps its link until the last live session closes the task; a hollow dot says so. */

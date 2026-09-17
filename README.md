@@ -312,7 +312,7 @@ kotgent <command> [args]
              [--cwd D] [--name N] [--tag T] [--no-start]
   list | ls                     list sessions and their states
   stop <id>                     stop a session
-  resume <id>                   resume a stopped/crashed/resumable session
+  resume <id>                   resume a stopped/crashed/resumable session (never a lost one)
   interrupt <id>                send Ctrl-C to un-stick a session
   attach <id>                   attach a raw terminal to a session
   session rename <id> <name>    rename a session (an empty name restores the automatic label)
@@ -612,8 +612,7 @@ Kotgent is deliberately focused. The current product boundary is:
   can sign in through a **cloudflared** tunnel + Cloudflare Access. The CLI and hooks keep using the master
   token; `kotgent token rotate` invalidates every cookie at once.
 - The full `start → Detach → browser → continue → needs-attention` path, session reconciliation on daemon
-  restart (`running` / `stopped` / `crashed` / `resumable` classification), provider-id capture, and
-  launchd install.
+  restart, provider-id capture, and launchd install.
 - **Session metadata & lifecycle polish.** Each session shows its agent CLI version and, best-effort, the
   model it is running; its name is an editable label (`kotgent session rename`, or the palette's rename
   dialog) that reaches every open client live and falls back to the automatic one when cleared; **Done**

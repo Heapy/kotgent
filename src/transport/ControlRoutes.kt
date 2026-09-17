@@ -15,6 +15,7 @@ import io.kotgent.daemon.NoSuchSessionException
 import io.kotgent.daemon.ResumeBlockedException
 import io.kotgent.daemon.SessionManager
 import io.kotgent.daemon.TaskService
+import io.kotgent.daemon.TranscriptGoneException
 import io.kotgent.daemon.TranscriptNotFoundException
 import io.kotgent.daemon.UnknownAgentKindException
 import io.kotgent.daemon.UnsupportedAgentException
@@ -293,6 +294,9 @@ fun Route.controlRoutes(
             }
         } catch (_: ResumeBlockedException) {
             call.respondText("resume blocked: provider id pending", status = HttpStatusCode.Conflict)
+            return@post
+        } catch (e: TranscriptGoneException) {
+            call.respondText("resume blocked: ${e.message}", status = HttpStatusCode.Conflict)
             return@post
         } catch (_: NoSuchSessionException) {
             call.respondText("no such session ${id.value}", status = HttpStatusCode.NotFound)

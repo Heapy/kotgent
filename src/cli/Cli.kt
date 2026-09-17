@@ -106,7 +106,7 @@ val USAGE: String = """
                  [--cwd D] [--name N] [--tag T] [--no-start]
       list | ls                      list sessions
       stop <id>                      stop a session
-      resume <id>                    resume a stopped/crashed/resumable session
+      resume <id>                    resume a stopped/crashed/resumable session (never a lost one)
       interrupt <id>                 send Ctrl-C to un-stick a session
       attach <id>                    attach a raw terminal to a session
       session rename <id> <name>     rename a session (an empty name restores the automatic label)

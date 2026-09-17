@@ -51,7 +51,8 @@ class ReconcilerTest {
         assertEquals(SessionState.stopped, Reconciler.classify(false, SessionState.running, stopIntent = true, transcriptExists = false))
 
         assertEquals(SessionState.resumable, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = true))
-        assertEquals(SessionState.crashed, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = false))
+        assertEquals(SessionState.lost, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = false))
+        assertEquals(SessionState.lost, Reconciler.classify(false, SessionState.crashed, stopIntent = false, transcriptExists = false), "a failed exit whose transcript is gone is no longer resumable")
     }
 
 
@@ -89,8 +90,8 @@ class ReconcilerTest {
             assertEquals(SessionState.running, store.getSession(SessionId("alive"))!!.state)
             assertEquals(SessionState.stopped, store.getSession(SessionId("stopd"))!!.state, "clean-stop intent wins over a surviving transcript")
             assertEquals(SessionState.resumable, store.getSession(SessionId("resum"))!!.state)
-            assertEquals(SessionState.crashed, store.getSession(SessionId("crash"))!!.state, "dead + no transcript -> crashed")
-            assertEquals(SessionState.crashed, store.getSession(SessionId("noid"))!!.state, "dead + no provider id -> crashed")
+            assertEquals(SessionState.lost, store.getSession(SessionId("crash"))!!.state, "dead + no transcript -> lost")
+            assertEquals(SessionState.lost, store.getSession(SessionId("noid"))!!.state, "dead + no provider id -> lost")
 
             assertEquals(livePane, store.getSession(SessionId("alive"))!!.paneId, "reconcile recaptured the live pane_id")
 
@@ -130,7 +131,7 @@ class ReconcilerTest {
             assertEquals(SessionState.resumable, store.getSession(SessionId("clsess"))!!.state)
             assertEquals(SessionState.resumable, store.getSession(SessionId("cxsess"))!!.state)
             assertEquals(
-                SessionState.crashed,
+                SessionState.lost,
                 store.getSession(SessionId("unknwn"))!!.state,
                 "an agent kind with no registered probe answers 'no transcript', never another provider's",
             )

@@ -151,13 +151,13 @@ class DomainTest {
 
     @Test
     fun sessionStatesPartitionIntoAliveAndDead() {
-        assertEquals(7, SessionState.entries.size, "there must be exactly 7 states")
+        assertEquals(8, SessionState.entries.size, "there must be exactly 8 states")
         assertEquals(
             setOf(SessionState.running, SessionState.needs_approval, SessionState.needs_answer, SessionState.ready),
             SessionState.ALIVE,
         )
         assertEquals(
-            setOf(SessionState.stopped, SessionState.crashed, SessionState.resumable),
+            setOf(SessionState.stopped, SessionState.crashed, SessionState.lost, SessionState.resumable),
             SessionState.DEAD,
         )
         assertEquals(SessionState.entries.toSet(), SessionState.ALIVE + SessionState.DEAD)

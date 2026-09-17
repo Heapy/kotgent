@@ -18,6 +18,9 @@ enum class SessionState {
 
     crashed,
 
+    /** No live pane or resumable provider session was found. */
+    lost,
+
     resumable;
 
     val isAlive: Boolean get() = this in ALIVE
@@ -29,7 +32,7 @@ enum class SessionState {
     companion object {
         val ALIVE: Set<SessionState> = setOf(running, needs_approval, needs_answer, ready)
 
-        val DEAD: Set<SessionState> = setOf(stopped, crashed, resumable)
+        val DEAD: Set<SessionState> = setOf(stopped, crashed, lost, resumable)
 
         val NEEDS_ATTENTION: Set<SessionState> = setOf(needs_approval, needs_answer)
     }

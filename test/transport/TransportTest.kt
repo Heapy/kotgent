@@ -1043,6 +1043,24 @@ class TransportTest {
     }
 
     @Test
+    fun resumingASessionWhoseTranscriptIsGoneIs409AndLaunchesNothing() = withServer { ctx ->
+        ctx.store.upsertSession(
+            SessionMeta(
+                id = SessionId("lost01"), name = "lost01", agent = "claude", providerSessionId = providerId,
+                cwd = "/tmp", tmuxSession = "kt-lost01", state = SessionState.lost,
+                createdAt = 1L, updatedAt = 1L,
+            ),
+        )
+
+        val resp = ctx.post("/sessions/lost01/resume")
+
+        assertEquals(HttpStatusCode.Conflict, resp.status, "answered ${resp.bodyAsText()}")
+        val body = resp.bodyAsText()
+        assertTrue(body.contains("no transcript left"), "the 409 body says what is missing: $body")
+        assertTrue(ctx.tmux.newSessionCommands.isEmpty(), "and no pane was opened to die immediately")
+    }
+
+    @Test
     fun resumingASessionWhoseAgentBinaryIsMissingIs400WithInstallHint() = withServer(
         factory = agentFactoryOf(mapOf("claude" to { _: String -> throw AgentBinaryNotFoundException("claude") })),
     ) { ctx ->

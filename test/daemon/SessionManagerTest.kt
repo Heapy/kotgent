@@ -56,6 +56,8 @@ class SessionManagerTest {
     private val cat = listOf("cat")
 
     private val importProbe = VendorStoreProbe { _, _, _ -> false }
+
+    private val liveTranscriptProbe = VendorStoreProbe { _, _, _ -> true }
     private val importLocator = VendorSessionLocator { _, _ -> null }
     private val importKinds = setOf("claude", "codex")
 
@@ -363,7 +365,7 @@ class SessionManagerTest {
     }
 
     @Test
-    fun aClosedShellWhoseCwdWasDeletedBecomesCrashed() = runBlocking {
+    fun aClosedShellWhoseCwdWasDeletedBecomesLost() = runBlocking {
         withTimeout(20.seconds) {
             val cwd = makeClosedSessionTestDirectory()
             assertEquals(0, rmdir(cwd), "the test models a cwd deleted before the shell exits")
@@ -382,7 +384,7 @@ class SessionManagerTest {
             mgr.onTmuxSessionClosed(id)
 
             val row = store.getSession(id)!!
-            assertEquals(SessionState.crashed, row.state)
+            assertEquals(SessionState.lost, row.state)
             assertEquals(EventSource.liveness, row.stateSource)
             assertNull(registry.lookup(pane))
         }
@@ -833,7 +835,7 @@ class SessionManagerTest {
                 tmux, store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
-                importProbe, importLocator, importKinds,
+                liveTranscriptProbe, importLocator, importKinds,
                 now = { 7L },
             )
             store.upsertSession(
@@ -991,7 +993,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
-                importProbe, importLocator, importKinds,
+                liveTranscriptProbe, importLocator, importKinds,
                 now = { 7L },
             )
             store.upsertSession(meta("resu01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
@@ -1005,6 +1007,57 @@ class SessionManagerTest {
             val pane = updated.paneId!!
             assertEquals(SessionId("resu01"), registry.lookup(pane), "the fresh pane is registered")
             assertEquals(SessionState.ready, store.getSession(SessionId("resu01"))!!.state)
+        }
+    }
+
+    @Test
+    fun aCrashedSessionWhoseTranscriptSurvivedStillResumes() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                liveTranscriptProbe, importLocator, importKinds,
+                now = { 7L },
+            )
+            store.upsertSession(meta("crsh01", SessionState.crashed, providerId = provider, paneId = PaneId("%1")))
+
+            val updated = mgr.resume(SessionId("crsh01"))
+
+            assertEquals(SessionState.ready, updated.state, "a failed exit is resumable while its transcript lives")
+            assertEquals(1, tmux.newSessionCommands.size, "and the guard let the launch through")
+        }
+    }
+
+    @Test
+    fun resumeIsRefusedForASessionWhoseTranscriptTheProviderDeleted() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+            val mgr = SessionManager(
+                tmux, store, registry,
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
+                now = { 7L },
+            )
+            store.upsertSession(meta("lost01", SessionState.lost, providerId = provider, paneId = PaneId("%1")))
+
+            val ex = assertFailsWith<TranscriptGoneException> { mgr.resume(SessionId("lost01")) }
+
+            assertEquals(provider, ex.providerSessionId)
+            assertTrue(tmux.newSessionCommands.isEmpty(), "a pane the provider would reject is never opened")
+            assertEquals(
+                SessionState.lost, store.getSession(SessionId("lost01"))!!.state,
+                "the refused resume leaves the stored row unchanged",
+            )
+            assertNull(registry.lookup(PaneId("%1")), "and registers no pane")
         }
     }
 
@@ -1119,7 +1172,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
-                importProbe, importLocator, importKinds,
+                liveTranscriptProbe, importLocator, importKinds,
                 now = { 9L },
             )
             store.upsertSession(meta("resf01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
@@ -1211,7 +1264,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
-                importProbe, importLocator, importKinds,
+                liveTranscriptProbe, importLocator, importKinds,
                 now = { 9L },
             )
             store.upsertSession(meta("rorp01", SessionState.resumable, providerId = provider, paneId = PaneId("%1")))
@@ -1498,7 +1551,7 @@ class SessionManagerTest {
                 tmux, store, registry,
                 StubAgentFactory(cat, preallocated = null),
                 ProviderIdCapture(store, this),
-                importProbe, importLocator, importKinds,
+                liveTranscriptProbe, importLocator, importKinds,
                 now = { 1L },
             )
             store.upsertSession(meta("zomb01", SessionState.running, providerId = provider, paneId = PaneId("%1")))

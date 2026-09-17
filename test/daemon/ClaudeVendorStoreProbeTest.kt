@@ -99,7 +99,7 @@ class ClaudeVendorStoreProbeTest {
             assertFalse(probe.hasTranscript("claude", cwd, id), "no transcript on disk -> not resumable")
 
             assertEquals(
-                SessionState.crashed,
+                SessionState.lost,
                 Reconciler.classify(paneAlive = false, currentState = SessionState.running, stopIntent = false, transcriptExists = probe.hasTranscript("claude", cwd, id)),
             )
         }

@@ -329,7 +329,7 @@ class TaskProjectWiringTest {
             val _ = f.reconciler().reconcile()
 
             val row = f.store.getSession(SessionId("dangler2"))!!
-            assertEquals(SessionState.crashed, row.state, "the pane is gone, so the state write did happen")
+            assertEquals(SessionState.lost, row.state, "the pane is gone, so the state write did happen")
             assertNull(row.taskRef, "and the clear survived it")
         }
     }

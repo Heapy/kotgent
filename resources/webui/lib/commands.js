@@ -3,6 +3,7 @@
 import {
   displayName,
   isAliveState,
+  isLostState,
   isNeedsAttention,
   sessionTaskLinkDisabledReason,
   stateBadge,
@@ -19,7 +20,10 @@ function disabledWhenNotAlive(session) {
 
 function disabledWhenAlive(session) {
   if (!session) return "no session is selected";
-  return isAliveState(session.state) ? "the selected session is already running" : null;
+  if (isAliveState(session.state)) return "the selected session is already running";
+  return isLostState(session.state)
+    ? "the agent deleted this conversation, so there is nothing left to resume"
+    : null;
 }
 
 function disabledWhenNoProject(projectId) {

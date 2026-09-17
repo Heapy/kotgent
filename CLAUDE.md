@@ -29,6 +29,8 @@ the common workflow and links to those guides; implementation invariants belong 
   the edges and behind interfaces.
 - Session state is a projection of the append-only event log. Operator control signals are not events
   and are not persisted in that log.
+- `VendorStoreProbe` reports resume availability, including a shell's cwd. Use it in reconciliation,
+  import and resume; let `Reconciler.classify` assign `lost`.
 - `ProviderSessionId` is a bounded safe-character identifier, not necessarily a UUID. Enforce UUID shape
   only at provider boundaries where the provider guarantees one.
 - The daemon owns one upstream `tmux attach` per session and fans it out to subscribers. Runtime identity

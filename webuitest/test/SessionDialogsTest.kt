@@ -1005,7 +1005,7 @@ class SessionDialogsTest {
         const val BADGE_SESSION = "s-alpha"
 
         val SESSION_STATES = listOf(
-            "running", "ready", "needs_approval", "needs_answer", "stopped", "crashed", "resumable",
+            "running", "ready", "needs_approval", "needs_answer", "stopped", "crashed", "lost", "resumable",
         )
 
         val BADGE_CHANGED = """

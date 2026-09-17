@@ -146,14 +146,14 @@ class CodexRolloutScanTest {
             val probe = codexVendorStoreProbe(codexDir)
             assertFalse(probe.hasTranscript("codex", "/work/repo", uuid('d')), "a different id is not found")
             assertEquals(
-                SessionState.crashed,
+                SessionState.lost,
                 Reconciler.classify(
                     paneAlive = false,
                     currentState = SessionState.running,
                     stopIntent = false,
                     transcriptExists = false,
                 ),
-                "nothing to resume -> crashed, not a resume that would fail",
+                "nothing to resume -> lost, not a resume that would fail",
             )
         }
     }

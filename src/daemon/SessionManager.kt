@@ -125,6 +125,15 @@ class TranscriptNotFoundException(
         "an archived codex session is out of `codex resume`'s reach and cannot be imported",
 )
 
+class TranscriptGoneException(
+    val agentKind: String,
+    val providerSessionId: ProviderSessionId,
+    val cwd: String,
+) : RuntimeException(
+    "$agentKind session '${providerSessionId.value}' has no transcript left under '$cwd' — the provider " +
+        "deleted its conversation history, so this session can no longer be resumed; start a new one",
+)
+
 class DuplicateImportException(val existingId: SessionId, val archived: Boolean) :
     RuntimeException(
         "provider session already imported as kotgent session '${existingId.value}'" +
@@ -388,6 +397,10 @@ class SessionManager(
 
         val adapter = agentFactory.create(meta.agent, meta.cwd)
         val spec = adapter.buildLaunchSpec(LaunchMode.Resume(providerId))
+        // Check after agent resolution to preserve its errors, and before opening a terminal that cannot resume.
+        if (!vendorProbe.hasTranscript(meta.agent, meta.cwd, providerId)) {
+            throw TranscriptGoneException(meta.agent, providerId, meta.cwd)
+        }
         val deadState = if (meta.state.isDead) meta.state else SessionState.crashed
 
         var paneId: PaneId? = null

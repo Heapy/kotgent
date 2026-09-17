@@ -1283,7 +1283,7 @@ kotgent import <agent> <id>   register a session started outside kotgent, then r
 kotgent attach <id>           attach a raw terminal
 kotgent interrupt <id>        send Ctrl-C
 kotgent stop <id>             stop a session
-kotgent resume <id>           resume a stopped/crashed/resumable session
+kotgent resume <id>           resume a stopped/crashed/resumable session (never a lost one)
 kotgent daemon [--port N]     run the control plane`;
 
 const STATES = [
@@ -1296,7 +1296,12 @@ const STATES = [
     "Blocked on a question. Modeled but never produced by the current Claude adapter — interactive " +
     "Claude gives no \"waiting for an answer\" signal."],
   ["stopped", "badge-dead", "The agent process exited cleanly (this is what Stop leaves behind)."],
-  ["crashed", "badge-crashed", "The agent process exited abnormally or its pane was lost."],
+  ["crashed", "badge-crashed",
+    "The agent process exited with a failure, or its launch did. The daemon reclassifies it as resumable " +
+    "or lost as soon as it looks at the agent's own store."],
+  ["lost", "badge-lost",
+    "Dead and unrecoverable: the pane is gone and the agent no longer keeps the conversation — Claude " +
+    "deletes a transcript 30 days after its last turn. Resume is refused; start a new session."],
   ["resumable", "badge-resumable", "Dead, but the conversation transcript survives — Resume can revive it."],
 ];
 
@@ -1324,7 +1329,7 @@ const CONTROLS = [
   ["Resume",
     "Relaunches the agent against the saved transcript in a fresh tmux session and puts it back to " +
     "ready. It is refused while the provider's session id has not been captured yet — that id is what " +
-    "a resume is addressed to."],
+    "a resume is addressed to — and for a lost session, whose transcript the agent has deleted."],
   ["Detach",
     "Closes only your terminal client. The agent keeps working; when the last viewer leaves, the daemon " +
     "drops its upstream tmux attach too."],
