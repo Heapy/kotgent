@@ -69,6 +69,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
@@ -905,6 +906,25 @@ class TransportTest {
         ) {
             val reason = closeReason.await()
             assertEquals(CloseReason.Codes.VIOLATED_POLICY, reason?.knownReason, "a stale cursor closes with VIOLATED_POLICY")
+        }
+    }
+
+
+    @Test
+    fun aClosedEventsWsEndsItsServerSideStream() = withServer { ctx ->
+        val idle = ctx.store.sessionUpdateSubscribers
+        ctx.client.webSocket(
+            "ws://127.0.0.1:${ctx.port}$API_PREFIX/events",
+            request = { header(HttpHeaders.Authorization, "Bearer $token") },
+        ) {
+            val _ = incoming.receive()
+            assertTrue(
+                ctx.store.sessionUpdateSubscribers > idle,
+                "the snapshot frame means this socket now holds a collector",
+            )
+        }
+        withTimeout(5.seconds) {
+            while (ctx.store.sessionUpdateSubscribers > idle) delay(10)
         }
     }
 

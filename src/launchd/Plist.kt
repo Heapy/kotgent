@@ -26,6 +26,12 @@ fun mergedDaemonPath(captured: String?): String {
 /** Crash-loop floor for the KeepAlive job. */
 const val DAEMON_THROTTLE_INTERVAL: Int = 10
 
+/**
+ * Allow concurrent viewers, PTYs and hook bursts while keeping the default within FD_SETSIZE
+ * for select-based consumers.
+ */
+const val DAEMON_OPEN_FILE_LIMIT: Int = 1024
+
 fun launchAgentPlist(
     binaryPath: String,
     logDir: String,
@@ -33,6 +39,7 @@ fun launchAgentPlist(
     path: String = DAEMON_DEFAULT_PATH,
     lang: String = DEFAULT_UTF8_LOCALE,
     throttleInterval: Int = DAEMON_THROTTLE_INTERVAL,
+    openFileLimit: Int = DAEMON_OPEN_FILE_LIMIT,
 ): String {
     val logs = logDir.trimEnd('/')
     val outPath = "$logs/daemon.out.log"
@@ -55,6 +62,11 @@ fun launchAgentPlist(
         appendLine("    <true/>")
         appendLine("    <key>ThrottleInterval</key>")
         appendLine("    <integer>$throttleInterval</integer>")
+        appendLine("    <key>SoftResourceLimits</key>")
+        appendLine("    <dict>")
+        appendLine("        <key>NumberOfFiles</key>")
+        appendLine("        <integer>$openFileLimit</integer>")
+        appendLine("    </dict>")
         appendLine("    <key>EnvironmentVariables</key>")
         appendLine("    <dict>")
         appendLine("        <key>PATH</key>")

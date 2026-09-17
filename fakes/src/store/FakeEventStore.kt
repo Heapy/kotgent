@@ -121,6 +121,8 @@ class FakeEventStore(
 
     suspend fun emitUiOnly(update: SessionUpdate) = sessionUpdates.emit(update)
 
+    val sessionUpdateSubscribers: Int get() = sessionUpdates.subscriptionCount.value
+
     suspend fun emitReliableOnly(update: SessionUpdate) = reliableSessionUpdates.emit(update)
 
     suspend fun awaitSubscriber() {

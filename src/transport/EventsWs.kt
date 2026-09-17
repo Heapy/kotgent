@@ -42,10 +42,22 @@ fun Route.eventsWs(
 ) {
     webSocket("/events") {
         val sessionParam = call.request.queryParameters["session"]
-        if (sessionParam != null) {
-            streamOneSession(store, json, sessionParam)
-        } else {
-            streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock)
+        coroutineScope {
+            val stream = launch {
+                if (sessionParam != null) {
+                    streamOneSession(store, json, sessionParam)
+                } else {
+                    streamGlobalUpdates(store, preferencesStore, taskStore, json, usageStore, usageClock)
+                }
+            }
+            try {
+                // Draining detects client disconnects while the outgoing stream is idle.
+                for (frame in incoming) {
+                    val _ = frame
+                }
+            } finally {
+                stream.cancel()
+            }
         }
     }
 }

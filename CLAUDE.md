@@ -104,6 +104,7 @@ the common workflow and links to those guides; implementation invariants belong 
 - Client APIs live under `/api/v1`.
 - Authorization decisions belong in the shared authorization function. Never put the master token in a
   URL; browser access uses one-time tickets and the stateless session cookie.
+- Drain `incoming` in every WebSocket handler, including handlers that only send frames.
 - The service worker remains a classic, network-only worker at `/sw.js`; do not add module imports or an
   offline shell. Root shell and worker responses must revalidate.
 - `resources/webui/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts

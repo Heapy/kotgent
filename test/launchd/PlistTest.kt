@@ -48,6 +48,12 @@ class PlistTest {
     }
 
     @Test
+    fun softResourceLimitsRaiseTheOpenFileCeilingOverTheLaunchdDefaultOf256() {
+        assertEquals(1024, DAEMON_OPEN_FILE_LIMIT)
+        assertEquals(1024, softLimit(xml(), "NumberOfFiles"), "the agent asks launchd for 1024 descriptors")
+    }
+
+    @Test
     fun environmentPathIncludesHomebrewAndSystemBins() {
         val path = environmentPath(xml())
         assertTrue("/opt/homebrew/bin" in path, "PATH carries /opt/homebrew/bin (Apple-silicon brew)")
@@ -74,7 +80,7 @@ class PlistTest {
     }
 
     @Test
-    fun labelAndThrottleAndPathAndLangAreParameterizable() {
+    fun labelAndThrottleAndLimitAndPathAndLangAreParameterizable() {
         val x = launchAgentPlist(
             binaryPath = binary,
             logDir = logDir,
@@ -82,9 +88,11 @@ class PlistTest {
             path = "/custom/bin",
             lang = "ru_RU.UTF-8",
             throttleInterval = 42,
+            openFileLimit = 4096,
         )
         assertEquals("io.example.custom", labelValue(x))
         assertEquals(42, integerAfterKey(x, "ThrottleInterval"))
+        assertEquals(4096, softLimit(x, "NumberOfFiles"))
         assertEquals("/custom/bin", environmentPath(x))
         assertEquals("ru_RU.UTF-8", environmentValue(x, "LANG"))
     }
@@ -175,6 +183,12 @@ class PlistTest {
         val array = Regex("<key>ProgramArguments</key>\\s*<array>(.*?)</array>", RegexOption.DOT_MATCHES_ALL)
             .find(x)?.groupValues?.get(1) ?: error("no ProgramArguments array")
         return Regex("<string>([^<]*)</string>").findAll(array).map { it.groupValues[1] }.toList()
+    }
+
+    private fun softLimit(x: String, key: String): Int {
+        val dict = Regex("<key>SoftResourceLimits</key>\\s*<dict>(.*?)</dict>", RegexOption.DOT_MATCHES_ALL)
+            .find(x)?.groupValues?.get(1) ?: error("no SoftResourceLimits dict")
+        return integerAfterKey(dict, key)
     }
 
     private fun environmentPath(x: String): String = environmentValue(x, "PATH")

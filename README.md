@@ -353,7 +353,8 @@ kotgent <command> [args]
   the plist: launchd starts the daemon with a minimal env and *no* locale, so the snapshot is what lets the
   daemon and the agents it spawns find `claude`/`codex`/`junie` and render a UTF-8 TUI. Re-run it from a full shell
   whenever either goes stale. An agent that can't be resolved on the daemon's `PATH` fails fast with a
-  clear error pointing at `kotgent install`, not a silent attach failure.
+  clear error pointing at `kotgent install`, not a silent attach failure. The plist also sets the
+  daemon's soft open-file limit to 1024 for viewers, attached sessions and hook bursts.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the requested agent or login shell in it, and
   records the session.
 - **`import`** brings a conversation you started outside kotgent under its control, with its history
