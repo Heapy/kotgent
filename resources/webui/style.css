@@ -1834,6 +1834,11 @@ button.task-card-title:hover,
 .task-session-dot[data-state="badge-crashed"] { --dot: #ff8f8f; }
 .task-session-dot[data-state="resumable"],
 .task-session-dot[data-state="badge-resumable"] { --dot: #d9a441; }
+/* An archived holder keeps its link until the last live session closes the task; a hollow dot says so. */
+.task-session-dot[data-archived="true"] {
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--dot);
+}
 .task-badge .task-session-dot,
 .task-badge-unknown .task-session-dot,
 .task-sessions li a .task-session-dot {

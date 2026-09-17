@@ -54,7 +54,9 @@ Three rules, each correct on its own, and one order in which they are jointly wr
 1. `task review` keeps the link — the task in `review` is still this session's task.
 2. `task next` **overwrites** `sessions.task_ref`. A session works one task at a time and re-pointing it
    is an ordinary write: no warning, no error, no feed entry on the task that was dropped.
-3. Session "Done" closes whatever the link points at **now**, then archives the session.
+3. Session "Done" archives the session, then closes whatever the link points at **now** — but only when
+   every other session holding that task has been marked done too. An archived holder keeps its link, so
+   `undone` restores a holder that blocks a later close.
 
 So `review A` immediately followed by `next B` leaves task A sitting in `review` with **no session at
 all** — no terminal for the human to open, no diff, and nothing in A's activity feed saying it lost its
@@ -67,8 +69,8 @@ disposes of the reviewed task, and the two ways differ in what happens to the ag
 
 - **Closed from the board** — every holder is unlinked and the sessions stay **alive**. That is what hands
   a long-lived worker session back to `task next`, and it is the path the loop is built around.
-- **"Done" on the session** — the task is closed and the session is archived. That agent's run is over;
-  there is no next task for it.
+- **"Done" on the session** — the session is archived, and the task is closed by whichever holder is
+  marked done last. That agent's run is over; there is no next task for it.
 
 **`kotgent task unlink` is not the way out of this.** It would free the session, but it would also take
 the reviewed task's only session with it — leaving the human the same card with no terminal behind it,
@@ -101,6 +103,11 @@ What is actually true:
   link. It is not an error, it does not warn, and it will not be made one.
 - The board **shows every linked session** on a task's card. Two dots on a card is a legitimate state, not
   a corruption to be reconciled away.
+- Session "Done" on one of several holders **does not close the task**. It archives that session and leaves
+  the card where it is; the holder marked done last is the one that closes it and releases every link.
+  A holder that crashed or was stopped but never marked done still blocks the close — that is deliberate,
+  because `stopped` and `resumable` are how a session you mean to resume looks. `kotgent task done` is the
+  explicit override, and the way out when the remaining holder is never coming back.
 - Pointing a session at a different task overwrites that session's link. A session works one task at a
   time; a task does not work one session at a time. That includes `task next`, which is why the loop above
   runs it only from a free session — the daemon will not refuse a `next` from a session that is still

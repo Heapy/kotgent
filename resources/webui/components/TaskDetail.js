@@ -374,11 +374,14 @@ export function TaskDetail({
               ${linked.map((s) => html`
                 <li key=${s.id}>
                   <span class="task-session-dot" data-state=${stateBadge(s.state).cls}
+                        data-archived=${s.archived ? "true" : null}
                         title=${stateBadge(s.state).label} aria-hidden="true"></span>
                   <a href=${sessionPath(s.id)} onClick=${routeClick(sessionPath(s.id))}>
                     ${displayName(s)}
                   </a>
-                  <small>${s.agent || "?"} · ${stateBadge(s.state).label}</small>
+                  <small>
+                    ${s.agent || "?"} · ${stateBadge(s.state).label}${s.archived ? " · done" : ""}
+                  </small>
                 </li>
               `)}
             </ul>

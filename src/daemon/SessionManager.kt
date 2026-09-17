@@ -335,15 +335,21 @@ class SessionManager(
         terminate(sessionId)
         // These stores cannot share a transaction; NonCancellable only prevents a client cancellation gap.
         withContext(NonCancellable) {
-            closeLinkedTask(sessionId)
+            // Archiving first makes this session invisible to its own holder count, so two concurrent
+            // closes cannot each defer to the other and strand the task with no unarchived holder.
             store.setArchived(sessionId, true, now())
+            closeLinkedTask(sessionId)
         }
     }
 
+    /** A non-last holder keeps its link on purpose, so `undone` restores a holder that blocks a later close. */
     private suspend fun closeLinkedTask(sessionId: SessionId) {
         val tasks = taskStore ?: return
         val ref = store.getSession(sessionId)?.taskRef ?: return
+        if (store.sessionsHoldingTask(ref).any { !it.archived }) return
         val _ = tasks.transition(ref, TaskState.done, author = sessionId.value, message = null) ?: return
+        // Snapshot again after the close, as the board path does, so a holder linked during the
+        // transition is released rather than left pointing at a done task.
         for (holder in store.sessionsHoldingTask(ref)) {
             // Preserve a newer task link made after the holder snapshot.
             if (!store.clearTaskRefIf(holder.id, ref)) continue

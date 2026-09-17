@@ -75,12 +75,14 @@ export function TaskCard({
           <ul class="task-sessions">
             ${sessions.map((session) => {
               const badge = stateBadge(session.state);
+              const label = session.archived ? badge.label + " · done" : badge.label;
               return html`
                 <li key=${session.id}>
-                  <a href=${sessionPath(session.id)} title=${displayName(session) + " — " + badge.label}
+                  <a href=${sessionPath(session.id)} title=${displayName(session) + " — " + label}
                      onClick=${(event) => openSession(event, session.id)}>
                     <span class="task-session-dot" data-state=${session.state}
-                          aria-label=${badge.label}></span>
+                          data-archived=${session.archived ? "true" : null}
+                          aria-label=${label}></span>
                     ${displayName(session)}
                   </a>
                 </li>`;

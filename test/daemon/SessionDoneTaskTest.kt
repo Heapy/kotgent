@@ -32,7 +32,6 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -81,7 +80,12 @@ class SessionDoneTaskTest {
         taskStore = tasks,
     )
 
-    private suspend fun Fixture.seedNeighbour(id: SessionId, ref: TaskRef) {
+    private suspend fun Fixture.seedNeighbour(
+        id: SessionId,
+        ref: TaskRef,
+        archived: Boolean = false,
+        state: SessionState = if (archived) SessionState.stopped else SessionState.running,
+    ) {
         store.upsertSession(
             SessionMeta(
                 id = id,
@@ -89,10 +93,11 @@ class SessionDoneTaskTest {
                 agent = "claude",
                 cwd = "/tmp",
                 tmuxSession = "kt-${id.value}",
-                state = SessionState.running,
+                state = state,
                 stateSource = EventSource.system,
                 createdAt = 500L,
                 updatedAt = 500L,
+                archived = archived,
             ),
         )
         store.setTaskRef(id, ref)
@@ -100,7 +105,61 @@ class SessionDoneTaskTest {
 
 
     @Test
-    fun doneOnALinkedSessionClosesTheTaskUnlinksEveryHolderAndArchivesIt() = runBlocking {
+    fun doneOnTheLastUnarchivedHolderClosesTheTaskUnlinksEveryHolderAndArchivesIt() = runBlocking {
+        withTimeout(20.seconds) {
+            val f = Fixture()
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
+            val mgr = managerOver(f, tasks)
+
+            val _ = mgr.start("claude", "/tmp")
+            f.store.setTaskRef(worker, ref)
+            f.seedNeighbour(neighbour, ref, archived = true)
+            f.journal.clear()
+
+            mgr.markDone(worker)
+            val trace = f.journal.filterNot { it.startsWith("sessions.getSession(") }
+
+            assertEquals(listOf("done01"), f.tmux.killed, "Done still kills the agent")
+            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the linked task is closed")
+
+            val row = f.store.getSession(worker)!!
+            assertTrue(row.archived, "the session is archived off the sidebar")
+            assertNull(row.taskRef, "and no longer holds the task")
+            assertEquals(SessionState.stopped, row.state, "the killed session is stopped")
+
+            val other = f.store.getSession(neighbour)!!
+            assertNull(other.taskRef, "the already-archived holder is released by the close too")
+
+            assertEquals(
+                listOf(
+                    "sessions.setArchived(done01 = true)",
+                    "tasks.transition(local:1, done)",
+                    "sessions.clearTaskRefIf(done01, local:1)",
+                    "tasks.appendActivity(local:1, unlinked)",
+                    "sessions.clearTaskRefIf(other1, local:1)",
+                    "tasks.appendActivity(local:1, unlinked)",
+                ),
+                trace,
+                "the session archives before the holder count is taken, and the two stores never nest",
+            )
+
+            assertEquals(
+                listOf(ActivityKind.transition, ActivityKind.unlinked, ActivityKind.unlinked),
+                tasks.snapshotActivity().map { it.kind },
+                "the feed records the close and one unlink per holder",
+            )
+            assertEquals(
+                worker.value,
+                tasks.snapshotActivity().first().author,
+                "the close is attributed to the session that finished, not to the board",
+            )
+        }
+    }
+
+    @Test
+    fun doneWhileAnotherLiveSessionHoldsTheTaskArchivesOnlyThisSession() = runBlocking {
         withTimeout(20.seconds) {
             val f = Fixture()
             val tasks = recordingTasks(f.journal).apply {
@@ -116,41 +175,92 @@ class SessionDoneTaskTest {
             mgr.markDone(worker)
             val trace = f.journal.filterNot { it.startsWith("sessions.getSession(") }
 
-            assertEquals(listOf("done01"), f.tmux.killed, "Done still kills the agent")
-            assertEquals(TaskState.done, tasks.snapshotEntries().getValue(ref).state, "the linked task is closed")
+            assertEquals(listOf("done01"), f.tmux.killed, "Done still kills this agent")
+            assertEquals(
+                TaskState.in_progress,
+                tasks.snapshotEntries().getValue(ref).state,
+                "the task stays open while another live session is still on it",
+            )
 
             val row = f.store.getSession(worker)!!
-            assertTrue(row.archived, "the session is archived off the sidebar")
-            assertNull(row.taskRef, "and no longer holds the task")
-            assertEquals(SessionState.stopped, row.state, "the killed session is stopped")
+            assertTrue(row.archived, "this session is archived off the sidebar")
+            assertEquals(
+                ref,
+                row.taskRef,
+                "and keeps its link, so `undone` restores a live holder that can block a later close",
+            )
 
             val other = f.store.getSession(neighbour)!!
-            assertNull(other.taskRef, "every OTHER holder is unlinked too")
-            assertFalse(other.archived, "but closing a task never archives somebody else's session")
-            assertEquals(SessionState.running, other.state, "nor kills it")
+            assertEquals(ref, other.taskRef, "the live holder keeps working on it")
+            assertFalse(other.archived, "and is neither archived")
+            assertEquals(SessionState.running, other.state, "nor killed")
 
             assertEquals(
-                listOf(
-                    "tasks.transition(local:1, done)",
-                    "sessions.clearTaskRefIf(done01, local:1)",
-                    "tasks.appendActivity(local:1, unlinked)",
-                    "sessions.clearTaskRefIf(other1, local:1)",
-                    "tasks.appendActivity(local:1, unlinked)",
-                    "sessions.setArchived(done01 = true)",
-                ),
+                listOf("sessions.setArchived(done01 = true)"),
                 trace,
-                "the task closes before the session is archived, and the two stores never nest",
+                "no task-layer write happens at all",
             )
+            assertTrue(tasks.snapshotActivity().isEmpty(), "and the feed stays silent")
+        }
+    }
+
+    @Test
+    fun aCrashedHolderThatWasNeverMarkedDoneStillBlocksTheClose() = runBlocking {
+        withTimeout(20.seconds) {
+            val f = Fixture()
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
+            val mgr = managerOver(f, tasks)
+
+            val _ = mgr.start("claude", "/tmp")
+            f.store.setTaskRef(worker, ref)
+            f.seedNeighbour(neighbour, ref, state = SessionState.crashed)
+
+            mgr.markDone(worker)
 
             assertEquals(
-                listOf(ActivityKind.transition, ActivityKind.unlinked, ActivityKind.unlinked),
-                tasks.snapshotActivity().map { it.kind },
-                "the feed records the close and one unlink per holder",
+                TaskState.in_progress,
+                tasks.snapshotEntries().getValue(ref).state,
+                "the predicate is `archived`, not liveness: a dead holder nobody closed still blocks",
             )
+            assertEquals(ref, f.store.getSession(neighbour)!!.taskRef, "and keeps its link")
+        }
+    }
+
+    @Test
+    fun doneOnTheSecondSessionClosesTheTaskOnceTheFirstIsAlreadyDone() = runBlocking {
+        withTimeout(20.seconds) {
+            val f = Fixture()
+            val tasks = recordingTasks(f.journal).apply {
+                seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
+            }
+            val mgr = managerOver(f, tasks)
+
+            val _ = mgr.start("claude", "/tmp")
+            f.store.setTaskRef(worker, ref)
+            f.seedNeighbour(neighbour, ref)
+
+            mgr.markDone(worker)
             assertEquals(
-                worker.value,
-                tasks.snapshotActivity().first().author,
-                "the close is attributed to the session that finished, not to the board",
+                TaskState.in_progress,
+                tasks.snapshotEntries().getValue(ref).state,
+                "the first Done leaves the task open",
+            )
+
+            mgr.markDone(neighbour)
+
+            assertEquals(
+                TaskState.done,
+                tasks.snapshotEntries().getValue(ref).state,
+                "the last one to finish is the one that closes it",
+            )
+            assertNull(f.store.getSession(worker)!!.taskRef, "and every holder is released")
+            assertNull(f.store.getSession(neighbour)!!.taskRef, "including the one that closed it")
+            assertEquals(
+                neighbour.value,
+                tasks.snapshotActivity().first { it.kind == ActivityKind.transition }.author,
+                "the close is attributed to the session that finished last",
             )
         }
     }
@@ -194,7 +304,8 @@ class SessionDoneTaskTest {
 
                 val _ = mgr.start("claude", "/tmp")
                 f.store.setTaskRef(worker, ref)
-                f.seedNeighbour(neighbour, ref)
+                // Archived, so the session close reaches the same last-live-holder path the board takes.
+                f.seedNeighbour(neighbour, ref, archived = true)
                 f.journal.clear()
 
                 close(mgr, service)
@@ -248,10 +359,12 @@ class SessionDoneTaskTest {
 
             val _ = mgr.start("claude", "/tmp")
             f.store.setTaskRef(worker, ref)
-            f.seedNeighbour(neighbour, ref)
+            f.seedNeighbour(neighbour, ref, archived = true)
+            // The second snapshot is the one the unlink loop walks; race the clear that follows it.
+            var snapshots = 0
             f.store.afterSessionsHoldingTask = {
-                f.store.afterSessionsHoldingTask = null
-                f.store.setTaskRef(neighbour, other)
+                snapshots += 1
+                if (snapshots == 2) f.store.setTaskRef(neighbour, other)
             }
 
             mgr.markDone(worker)
@@ -410,7 +523,6 @@ class SessionDoneTaskTest {
             val tasks = recordingTasks(f.journal).apply {
                 seedTask(ref, alpha, "title of ${ref.value}", state = TaskState.in_progress)
             }
-            f.store.yieldBeforeArchive = true
             val mgr = managerOver(f, tasks)
 
             val _ = mgr.start("claude", "/tmp")
@@ -418,7 +530,9 @@ class SessionDoneTaskTest {
 
             val entered = CompletableDeferred<Unit>()
             val release = CompletableDeferred<Unit>()
-            tasks.afterTransition = {
+            // Suspends after the archive and before the close, which is the gap the two stores leave.
+            f.store.afterSessionsHoldingTask = {
+                f.store.afterSessionsHoldingTask = null
                 entered.complete(Unit)
                 release.await()
             }
@@ -441,7 +555,6 @@ class SessionDoneTaskTest {
         private val delegate: EventStore,
         private val journal: MutableList<String>,
     ) : EventStore by delegate {
-        var yieldBeforeArchive: Boolean = false
 
         override suspend fun getSession(sessionId: SessionId): SessionMeta? {
             journal += "sessions.getSession(${sessionId.value})"
@@ -471,7 +584,6 @@ class SessionDoneTaskTest {
         }
 
         override suspend fun setArchived(sessionId: SessionId, archived: Boolean, updatedAt: Long) {
-            if (yieldBeforeArchive) yield()
             journal += "sessions.setArchived(${sessionId.value} = $archived)"
             delegate.setArchived(sessionId, archived, updatedAt)
         }

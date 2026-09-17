@@ -50,6 +50,13 @@ the common workflow and links to those guides; implementation invariants belong 
   guarded runtime migrations used by the owning store.
 - The task backlog is a local workflow layer over tracker data. Task/session links are intentionally
   non-exclusive, and task references are durable external identifiers.
+- Session `done` closes the linked task only when no other holder is left unarchived. The predicate is
+  `archived`, not liveness: `stopped` and `resumable` are ordinary states of a session to come back to, so
+  a holder blocks the close until somebody marks it done. It archives the acting session before counting
+  holders, so two concurrent closes cannot both defer and strand the task, and it re-reads the holders
+  after the close so a link made during it is released too. A non-last holder keeps its link, so `undone`
+  restores a blocking holder. `task done` from CLI or board stays unconditional and is the escape hatch
+  for a task whose remaining holder is never coming back.
 
 ## Usage and notifications
 
