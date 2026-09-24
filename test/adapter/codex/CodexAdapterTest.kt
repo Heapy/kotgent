@@ -6,7 +6,6 @@ import io.kotgent.daemon.SessionManager
 import io.kotgent.tmux.ProcessResult
 import kotlinx.coroutines.flow.emptyFlow
 import kotlin.test.Test
-import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -29,12 +28,11 @@ class CodexAdapterTest {
         assertFalse(spec.command.contains(CodexAdapter.RESUME_SUBCOMMAND), "a New launch is not a resume")
         assertNull(spec.preallocatedSessionId, "codex has no --session-id: nothing is preallocated")
 
-        val overrides = spec.command.withIndex()
-            .filter { it.value == CodexAdapter.CONFIG_FLAG }
-            .map { spec.command[it.index + 1] }
-        assertEquals(2, overrides.size, "exactly two -c overrides: ${spec.command}")
-        assertTrue(overrides.any { it.startsWith("hooks=") }, "one -c carries the hooks: $overrides")
-        assertContains(overrides, CodexAdapter.BYPASS_HOOK_TRUST)
+        assertEquals(
+            listOf("-c", CodexHookConfig.hooksToml(hookScript), "--dangerously-bypass-hook-trust"),
+            spec.command.drop(1),
+            "hook trust is a CLI flag, not a -c configuration key",
+        )
     }
 
     @Test
@@ -44,7 +42,11 @@ class CodexAdapterTest {
 
         assertEquals(listOf("codex", "resume", id.value), spec.command.take(3), "subcommand + id come first")
         assertNull(spec.preallocatedSessionId, "a resume never preallocates (the id already exists)")
-        assertTrue(spec.command.any { it.startsWith("hooks=") }, "a resumed session is hooked too: ${spec.command}")
+        assertEquals(
+            listOf("-c", CodexHookConfig.hooksToml(hookScript), "--dangerously-bypass-hook-trust"),
+            spec.command.drop(3),
+            "resumed sessions also use the hook trust CLI flag",
+        )
     }
 
     @Test
