@@ -190,8 +190,8 @@ class SessionRenameRoutesTest {
         assertEquals("seeded", assertNotNull(env.store.getSession(seeded)).name, "nothing changed")
     }
 
-    // TRANSPORT_JSON encodes defaults, so the CLI's rename body now carries "adhd":null. An explicit
-    // null must read as absent, never as a clear.
+    // TRANSPORT_JSON encodes defaults, so the CLI's rename body carries "adhd":null; an explicit null must
+    // read as absent, never as a clear.
     @Test
     fun anExplicitlyNullAdhdBesideANameRenamesAndKeepsTheMark() = withPatchServer { env ->
         assertEquals(HttpStatusCode.OK, env.patchSession(seeded.value, """{"adhd":true}""").status)

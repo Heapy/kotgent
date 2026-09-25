@@ -110,7 +110,6 @@ function AdhdIcon({ on }) {
     </svg>`;
 }
 
-// The row selects on click, so an inner control must keep its own click from also selecting the row.
 function stopRowActivation(event) {
   event.stopPropagation();
 }

@@ -1,6 +1,4 @@
-// Preference readiness from resources/webui/state/prefs.js. Until the daemon answers, adhdPaths is a
-// placeholder, so the sidebar must tell "no folder marks" from "marks not here yet". This file stands
-// alone because readiness is sticky once ready, and node:test gives each file a fresh process.
+// Stands alone because `prefsReadiness` is sticky once ready, and `node:test` gives each file a fresh process.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
