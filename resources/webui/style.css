@@ -341,48 +341,24 @@ textarea:focus-visible {
 }
 /* A hidden control takes no pointer events until it is revealed: an invisible target would turn a tap
    meant for the row into an action. */
-.group-new {
-  flex: 0 0 auto;
-  margin-left: auto;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease-in-out;
-}
-.group-head:hover > .group-new,
-.group-head:focus-within > .group-new {
-  opacity: 1;
-  pointer-events: auto;
-}
-@media (hover: none) {
-  .group-new {
-    opacity: 1;
-    pointer-events: auto;
-  }
-}
-
-/* A pin that carries a mark shows at rest; an empty one stays hidden until its row is reachable. */
+.group-new,
 .group-adhd,
 .row-adhd {
-  align-items: center;
-  background: none;
-  border: none;
-  color: var(--muted);
-  display: inline-flex;
   flex: 0 0 auto;
-  justify-content: center;
   opacity: 0;
-  padding: 0;
   pointer-events: none;
   transition: opacity 120ms ease-in-out;
 }
+.group-new { margin-left: auto; }
 .group-adhd svg { height: 13px; width: 13px; }
 .row-adhd svg { height: 15px; width: 15px; }
 .group-adhd.active,
 .row-adhd.active {
-  color: var(--accent);
   opacity: 1;
   pointer-events: auto;
 }
+.group-head:hover > .group-new,
+.group-head:focus-within > .group-new,
 .group-head:hover > .group-adhd,
 .group-head:focus-within > .group-adhd,
 .session-row:hover .row-adhd,
@@ -397,15 +373,13 @@ textarea:focus-visible {
   pointer-events: auto;
 }
 @media (hover: none) {
+  .group-new,
   .group-adhd,
   .row-adhd {
     opacity: 1;
     pointer-events: auto;
   }
 }
-/* Match `.icon-button:hover` specificity without restoring its plate. */
-.group-adhd:hover:not(:disabled),
-.row-adhd:hover:not(:disabled) { background: none; }
 
 .row-actions {
   align-items: center;
@@ -2438,7 +2412,9 @@ button.task-card-title:hover,
 
 .show-done-toggle,
 .adhd-toggle,
-.notify-toggle {
+.notify-toggle,
+.group-adhd,
+.row-adhd {
   align-items: center;
   background: none;
   border: none;
@@ -2450,14 +2426,18 @@ button.task-card-title:hover,
 .notify-toggle { color: var(--attn); }
 .show-done-toggle.active,
 .adhd-toggle.active,
-.notify-toggle.active { color: var(--accent); }
+.notify-toggle.active,
+.group-adhd.active,
+.row-adhd.active { color: var(--accent); }
 /* Match `.icon-button:hover` specificity without restoring its plate. */
 .show-done-toggle:hover:not(:disabled),
 .adhd-toggle:hover:not(:disabled),
-.notify-toggle:hover:not(:disabled) {
-  background: none;
-  opacity: 0.75;
-}
+.notify-toggle:hover:not(:disabled),
+.group-adhd:hover:not(:disabled),
+.row-adhd:hover:not(:disabled) { background: none; }
+.show-done-toggle:hover:not(:disabled),
+.adhd-toggle:hover:not(:disabled),
+.notify-toggle:hover:not(:disabled) { opacity: 0.75; }
 /* Do not set SVG fill here: it would repaint the archive slot mask and the muted-bell mask. */
 .show-done-toggle svg,
 .adhd-toggle svg,
