@@ -7,8 +7,7 @@ import io.kotgent.core.AgentEvent
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Codex cannot preallocate a session id; hooks or the rollout scan bind it after launch. The generated
- * hook script is mode `0600`; the hook-trust CLI flag applies only to this invocation.
+ * Codex cannot preallocate a session id; hooks or the rollout scan bind it after launch.
  */
 class CodexAdapter(
     private val cwd: String,
@@ -30,7 +29,6 @@ class CodexAdapter(
             }
             add(CONFIG_FLAG)
             add(CodexHookConfig.hooksToml(hookScriptPath))
-            add(BYPASS_HOOK_TRUST)
         }
         return LaunchSpec(
             command = command,
@@ -46,7 +44,5 @@ class CodexAdapter(
         const val RESUME_SUBCOMMAND: String = "resume"
 
         const val CONFIG_FLAG: String = "-c"
-
-        const val BYPASS_HOOK_TRUST: String = "--dangerously-bypass-hook-trust"
     }
 }

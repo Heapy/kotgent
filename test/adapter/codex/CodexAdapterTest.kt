@@ -29,9 +29,9 @@ class CodexAdapterTest {
         assertNull(spec.preallocatedSessionId, "codex has no --session-id: nothing is preallocated")
 
         assertEquals(
-            listOf("-c", CodexHookConfig.hooksToml(hookScript), "--dangerously-bypass-hook-trust"),
+            listOf("-c", CodexHookConfig.hooksToml(hookScript)),
             spec.command.drop(1),
-            "hook trust is a CLI flag, not a -c configuration key",
+            "hook trust travels in the -c hooks value, never as a flag that trusts every hook",
         )
     }
 
@@ -43,9 +43,9 @@ class CodexAdapterTest {
         assertEquals(listOf("codex", "resume", id.value), spec.command.take(3), "subcommand + id come first")
         assertNull(spec.preallocatedSessionId, "a resume never preallocates (the id already exists)")
         assertEquals(
-            listOf("-c", CodexHookConfig.hooksToml(hookScript), "--dangerously-bypass-hook-trust"),
+            listOf("-c", CodexHookConfig.hooksToml(hookScript)),
             spec.command.drop(3),
-            "resumed sessions also use the hook trust CLI flag",
+            "resumed sessions carry the same hooks and trust",
         )
     }
 
@@ -123,6 +123,49 @@ class CodexAdapterTest {
         val toml = CodexHookConfig.hooksToml(hookScript)
         assertTrue(toml.contains("${CodexHookConfig.POST_TOOL_USE}=[{matcher=\"*\""), "PostToolUse matches every tool")
         assertEquals(1, Regex("matcher=").findAll(toml).count(), "no other event takes a matcher: $toml")
+    }
+
+    @Test
+    fun hooksTomlTrustsEachHandlerAtItsCodexKey() {
+        val toml = CodexHookConfig.hooksToml(hookScript)
+
+        assertTrue(toml.endsWith(",state={" + CodexHookConfig.HOOK_EVENTS.joinToString(",") { event ->
+            "\"${CodexHookConfig.trustKey(event)}\"={trusted_hash=\"${CodexHookConfig.trustedHash(hookScript, event)}\"}"
+        } + "}}"), "state lives inside the same hooks value: $toml")
+        assertEquals(
+            "/<session-flags>/config.toml:user_prompt_submit:0:0",
+            CodexHookConfig.trustKey(CodexHookConfig.USER_PROMPT_SUBMIT),
+        )
+        assertTrue(toml.contains("SessionEnd\",timeout=1}"), "SessionEnd pins Codex's one-second timeout")
+        assertTrue(toml.contains("Stop\",timeout=600}"), "other events pin Codex's ten-minute timeout")
+    }
+
+    /** Expected values are Codex 0.156.1 `hooks/list` `currentHash` output for these exact handlers. */
+    @Test
+    fun trustedHashMatchesCodexHookIdentity() {
+        val expected = mapOf(
+            CodexHookConfig.USER_PROMPT_SUBMIT to "209f659556a4464dbf57df77d888681ab48effbc4877aeb083a51086345b16d8",
+            CodexHookConfig.POST_TOOL_USE to "e486caa28fbfa4a5a2f1d5aa8c84777226fe1d47afd9cb21d39a6f1f9aca281e",
+            CodexHookConfig.PERMISSION_REQUEST to "5c4b0f1b489b5cdc75db59d6801bf09aa3a899270ddfaca02859834cffb69db8",
+            CodexHookConfig.STOP to "80dc8a00aa3301fe3c832820048aef3227f72185a611928f51cfcd85dbb7fdf8",
+            CodexHookConfig.SESSION_START to "c8c94548cf13e9cbe5928b7d20ac831c8dc1e30b258cd70be020718fc6dce581",
+            CodexHookConfig.SESSION_END to "0c631650c5e671d24b13f13107f72994a67d2fc74a63fc20a9fc55a5fef108b4",
+        )
+        assertEquals(CodexHookConfig.HOOK_EVENTS.toSet(), expected.keys)
+        for ([event, hash] in expected) {
+            assertEquals("sha256:$hash", CodexHookConfig.trustedHash(hookScript, event), event)
+        }
+
+        val escaped = """/home/u/we"ird\path/Юзер it's/codex-hook.sh"""
+        assertEquals(
+            "sha256:33a2d77cfb9dabfefb46378f10f2fa3bf32c546b19770f613c1ebdf045a25915",
+            CodexHookConfig.trustedHash(escaped, CodexHookConfig.POST_TOOL_USE),
+            "JSON escapes quotes and backslashes but keeps non-ASCII text raw",
+        )
+        assertEquals(
+            "sha256:39a575936b9a1a30e1e4614d63465f18671798e463c10ee04b715255a1eed7cc",
+            CodexHookConfig.trustedHash(escaped, CodexHookConfig.SESSION_END),
+        )
     }
 
     @Test

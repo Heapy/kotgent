@@ -41,9 +41,12 @@ This is separate from archiving a Kotgent row, which can be restored in the Web 
 ## Configuration, status, and approvals
 
 Kotgent installs its hooks through launch-scoped `-c 'hooks={…}'` settings. It does not modify the
-user-level configuration under `~/.codex`. New and resumed launches pass
-`--dangerously-bypass-hook-trust` so the generated hooks can run without persisted hook trust. Codex
-applies this flag to all enabled hooks for that invocation.
+user-level configuration under `~/.codex`. The same setting marks only Kotgent's generated hooks as
+trusted, so they run without a review. Codex still reviews every other hook. If one of your user,
+project or plugin hooks is new or changed, the session's terminal shows Codex's **Hooks need review**
+screen and waits for your answer. This also applies to a session started from the Web UI. If a Codex
+update changes how it identifies hooks, Kotgent's own hooks appear on that screen as changed; trust them
+there to continue.
 
 Hooks report prompt submission, tool activity, turn completion, session identity, and session end.
 The explicit `PermissionRequest` event drives **Needs approval**. Kotgent observes the request; you

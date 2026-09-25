@@ -33,6 +33,8 @@ the common workflow and links to those guides; implementation invariants belong 
   import and resume; let `Reconciler.classify` assign `lost`.
 - `ProviderSessionId` is a bounded safe-character identifier, not necessarily a UUID. Enforce UUID shape
   only at provider boundaries where the provider guarantees one.
+- Codex trusts Kotgent's hooks per handler through `hooks.state` hashes in the same `-c 'hooks={…}'`
+  value. Never pass `--dangerously-bypass-hook-trust`: it also trusts every user, project and plugin hook.
 - The daemon owns one upstream `tmux attach` per session and fans it out to subscribers. Runtime identity
   comes from the live pane id, never an inherited environment variable.
 - Keep raw POSIX/cinterop in `sysnative`. Toolchain 0.12 links custom cinterop into test binaries, so

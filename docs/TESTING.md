@@ -183,6 +183,13 @@ project/local status commands, and a long turn through the assembled feature wer
 Cursor and Junie quota capture were not probed. These findings are version-specific evidence, not
 provider timing or compatibility guarantees.
 
+Codex hook trust hashes were checked on 2026-09-24 against `hooks/list` from `codex app-server` for
+Codex CLI 0.146.1, 0.150.1, 0.153.0 and 0.156.1; the fixture values come from 0.156.1. The probe runs
+`codex -c '<hooks value>' app-server` over stdio, sends `initialize`, `initialized` and `hooks/list`, and
+expects every `sessionFlags` entry to be `trusted`; it needs no model turn. Keep stdin open until the
+`hooks/list` response arrives, because the server exits on end of input without answering. Repeat it after
+a Codex upgrade, because a changed hash identity sends Kotgent's hooks to Codex's startup review.
+
 Before release, also launch a session with the operator's custom status line and check its visual output;
 edit the user-scope command and verify the next session picks up the change.
 

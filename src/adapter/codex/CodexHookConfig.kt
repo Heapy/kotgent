@@ -1,5 +1,14 @@
 package io.kotgent.adapter.codex
 
+import io.kotgent.crypto.hex
+import io.kotgent.crypto.sha256
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+
 /**
  * Generates Codex's per-launch hook script and `-c` config. User-level hook files would affect every
  * Codex session, while `-c` is session-scoped. The secret stays in a `0600` curl header file.
@@ -29,6 +38,18 @@ object CodexHookConfig {
         USER_PROMPT_SUBMIT, POST_TOOL_USE, PERMISSION_REQUEST, STOP, SESSION_START, SESSION_END,
     )
 
+    const val POST_TOOL_USE_MATCHER: String = "*"
+
+    /** Codex hashes its own defaults when a timeout is omitted, so pinning keeps trust independent of them. */
+    const val HOOK_TIMEOUT_SECONDS: Int = 600
+    const val SESSION_END_TIMEOUT_SECONDS: Int = 1
+
+    /**
+     * Codex keys hook trust by config layer, event and position, so each event must keep exactly one
+     * matcher group with one handler.
+     */
+    const val SESSION_FLAGS_HOOK_KEY_PREFIX: String = "/<session-flags>/config.toml:"
+
     fun ingressUrl(port: Int): String = "http://127.0.0.1:$port$INGRESS_PATH"
 
     fun headerFileContent(token: String): String = "$HOOK_TOKEN_HEADER: $token\n"
@@ -46,18 +67,59 @@ object CodexHookConfig {
         appendLine("  --data-binary @-")
     }
 
+    /** Trusts exactly these handlers through `hooks.state`, leaving every other hook to Codex's review. */
     fun hooksToml(scriptPath: String): String = buildString {
         append("hooks={")
+        for (event in HOOK_EVENTS) {
+            append(event).append("=[{")
+            if (event == POST_TOOL_USE) append("matcher=").append(tomlString(POST_TOOL_USE_MATCHER)).append(",")
+            append("hooks=[{type=\"command\",command=").append(tomlString(hookCommand(scriptPath, event)))
+            append(",timeout=").append(timeoutSeconds(event))
+            append("}]}],")
+        }
+        append("state={")
         HOOK_EVENTS.forEachIndexed { index, event ->
             if (index > 0) append(",")
-            append(event).append("=[{")
-            if (event == POST_TOOL_USE) append("matcher=\"*\",")
-            append("hooks=[{type=\"command\",command=")
-            // An explicit interpreter lets the private script remain non-executable and mode 0600.
-            append(tomlString("$SHELL_INTERPRETER ${shSingleQuote(scriptPath)} $event"))
-            append("}]}]")
+            append(tomlString(trustKey(event)))
+            append("={trusted_hash=").append(tomlString(trustedHash(scriptPath, event))).append("}")
         }
-        append("}")
+        append("}}")
+    }
+
+    fun trustKey(event: String): String = "$SESSION_FLAGS_HOOK_KEY_PREFIX${codexEventLabel(event)}:0:0"
+
+    /**
+     * Mirrors Codex's hook identity: SHA-256 of the normalized handler as compact JSON with sorted keys.
+     * If Codex changes it, these hooks fail closed into Codex's startup review.
+     */
+    fun trustedHash(scriptPath: String, event: String): String {
+        val identity = buildJsonObject {
+            put("event_name", codexEventLabel(event))
+            putJsonArray("hooks") {
+                addJsonObject {
+                    put("async", false)
+                    put("command", hookCommand(scriptPath, event))
+                    put("timeout", timeoutSeconds(event))
+                    put("type", "command")
+                }
+            }
+            if (event == POST_TOOL_USE) put("matcher", POST_TOOL_USE_MATCHER)
+        }
+        return "sha256:" + hex(sha256(Json.encodeToString(JsonElement.serializer(), identity).encodeToByteArray()))
+    }
+
+    // An explicit interpreter lets the private script remain non-executable and mode 0600.
+    private fun hookCommand(scriptPath: String, event: String): String =
+        "$SHELL_INTERPRETER ${shSingleQuote(scriptPath)} $event"
+
+    private fun timeoutSeconds(event: String): Int =
+        if (event == SESSION_END) SESSION_END_TIMEOUT_SECONDS else HOOK_TIMEOUT_SECONDS
+
+    private fun codexEventLabel(event: String): String = buildString {
+        event.forEachIndexed { index, c ->
+            if (c.isUpperCase() && index > 0) append('_')
+            append(c.lowercaseChar())
+        }
     }
 
     private fun tomlString(s: String): String = buildString(s.length + 2) {
