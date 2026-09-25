@@ -630,8 +630,10 @@ function App() {
     // Judge unread from the authoritative frame.
     const active = rows.find((s) => s.id === activeSessionId.value);
     if (active) markReadIfViewing(active.id, active.unread, active.lastSeq);
-    // Do not repeat the routine count into the aria-live region after reconnects.
-    if (first) say(rows.length + " session(s).");
+    // Do not repeat the routine count into the aria-live region after reconnects, and do not say it at
+    // all while the board is on screen: it shares that region with the board's own results and lands
+    // whenever the socket connects, so it would overwrite one.
+    if (first && sessionViewOnScreen) say(rows.length + " session(s).");
   }, [dispatchReattach, showSession]);
 
   const applySessionRow = useCallback((row) => {

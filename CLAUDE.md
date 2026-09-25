@@ -196,6 +196,9 @@ the common workflow and links to those guides; implementation invariants belong 
   deliberately exclude `doneSessions`, and `#show-done-toggle` hides when its list is empty.
 - `SessionRow` selects only on keys aimed at the row itself. Enter on an inner button or link bubbles to
   it, and cancelling that event would select the row instead of activating the control.
+- The routine first-snapshot session count is not announced while the board is on screen: it shares one
+  aria-live region with the board's own results and lands whenever the socket connects. Read the existing
+  module-scope `sessionViewOnScreen` rather than adding another mirror of the same fact.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
 - A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot
