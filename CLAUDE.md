@@ -169,6 +169,8 @@ the common workflow and links to those guides; implementation invariants belong 
   `spellcheck="false"` reaches the boolean IDL setter, which coerces any non-empty string to on. No DOM
   property carries `autoCorrect`, so Preact sets a plain attribute in every engine, while lowercase
   `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.
+- `SessionRow` selects only on keys aimed at the row itself. Enter on an inner button or link bubbles to
+  it, and cancelling that event would select the row instead of activating the control.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has
   real-device constraints that Chromium cannot fully prove; keep those checks in `docs/TESTING.md`.
 - A board drag must not reflow. Every preview movement is a `transform`, the dragged card keeps its slot

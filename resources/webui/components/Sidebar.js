@@ -190,6 +190,8 @@ function SessionRow({ session, tasks, active, onSelect, onRestore }) {
   const badge = stateBadge(session.state);
   const select = () => onSelect(session.id);
   const onKeyDown = (event) => {
+    // Enter on an inner button or link bubbles here; cancelling it would select instead of activating it.
+    if (event.target !== event.currentTarget) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       select();

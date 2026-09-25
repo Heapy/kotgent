@@ -199,6 +199,23 @@ class SidebarTest {
     }
 
     @Test
+    fun theDoneListsRestoreAnswersTheKeyboard() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-restore-keyboard") { _, _, page ->
+            page.onDialog { it.accept() }
+            markDone(page, "s-delta")
+            page.locator("#show-done-toggle").click()
+            assertThat(page.locator("#done-list .session-row[data-id='s-delta']")).hasCount(1)
+
+            // Enter on Restore bubbles to the row, which must let Restore activate instead of selecting.
+            page.locator("#done-list .session-row[data-id='s-delta'] .session-restore").focus()
+            page.keyboard().press("Enter")
+
+            assertThat(page.locator("#done-list .session-row[data-id='s-delta']")).hasCount(0)
+            assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(1)
+        }
+    }
+
+    @Test
     fun theSidebarFooterCarriesTheVersionTheDaemonItselfReports() {
         signedIn(SESSIONS_SCENARIO, "sidebar-version") { harness, context, page ->
             val reported = versionReportedByTheDaemon(context, harness.baseUrl)
