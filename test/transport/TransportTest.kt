@@ -27,6 +27,7 @@ import io.kotgent.daemon.VendorSessionLocator
 import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.agentFactoryOf
 import io.kotgent.daemon.canonicalPath
+import io.kotgent.host.pathLengthLimit
 import io.kotgent.pty.PtyFactory
 import io.kotgent.pty.PtyHandle
 import io.kotgent.pty.TerminalBridge
@@ -1499,7 +1500,7 @@ class TransportTest {
             """{"path":"/work","adhd":"true"}""",
             """{"path":42,"adhd":true}""",
             """{"path":"/a\nb","adhd":true}""",
-            """{"path":"/${"a".repeat(4096)}","adhd":true}""",
+            """{"path":"${pathOverHostLimit()}","adhd":true}""",
         )
 
         for (body in invalidBodies) {
@@ -1507,6 +1508,32 @@ class TransportTest {
             assertEquals(HttpStatusCode.BadRequest, response.status, "invalid body must be rejected: $body")
             assertEquals(before, ctx.getPreferences(), "a rejected request cannot mutate or consume a revision")
         }
+    }
+
+    @Test
+    fun aFolderPathAtTheHostLimitIsAccepted() = withServer { ctx ->
+        val longest = "/" + "a".repeat(pathLengthLimit().max - 1)
+
+        val mark = ctx.postBody("/preferences/adhd-paths", """{"path":"$longest","adhd":true}""")
+        assertEquals(HttpStatusCode.OK, mark.status, "answered ${mark.bodyAsText()}")
+        assertEquals(listOf(longest), ctx.getPreferences().adhdPaths)
+    }
+
+    @Test
+    fun aNonAsciiFolderPathIsMeasuredInEncodedBytes() = withServer { ctx ->
+        val max = pathLengthLimit().max
+        val fits = "/" + "ж".repeat((max - 1) / 2)
+        val over = "/" + "ж".repeat((max - 1) / 2 + 1)
+
+        val accepted = ctx.postBody("/preferences/adhd-paths", """{"path":"$fits","adhd":true}""")
+        assertEquals(HttpStatusCode.OK, accepted.status, "answered ${accepted.bodyAsText()}")
+        assertEquals(listOf(fits), ctx.getPreferences().adhdPaths, "the path survives decoding unchanged")
+        val refused = ctx.postBody("/preferences/adhd-paths", """{"path":"$over","adhd":true}""")
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            refused.status,
+            "${over.length} characters fit, but ${over.encodeToByteArray().size} bytes do not",
+        )
     }
 
     @Test
@@ -1899,6 +1926,8 @@ class TransportTest {
             return result ?: FileUploadResult.Stored(received.size.toLong())
         }
     }
+
+    private fun pathOverHostLimit(): String = "/" + "a".repeat(pathLengthLimit().max)
 
     private fun encodeQueryComponent(value: String): String = value.encodeToByteArray().joinToString("") { byte ->
         val unsigned = byte.toInt() and 0xff

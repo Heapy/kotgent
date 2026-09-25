@@ -1,5 +1,6 @@
 package io.kotgent.transport
 
+import io.kotgent.host.pathLengthLimit
 import io.kotgent.store.PreferencesStore
 import io.kotgent.store.UiPreferences
 import io.ktor.http.ContentType
@@ -98,11 +99,8 @@ fun Route.preferencesRoutes(
             call.respondText("path must be absolute", status = HttpStatusCode.BadRequest)
             return@post
         }
-        if (path.length > MAX_FOLDER_PATH_LENGTH || path.any { it.isISOControl() }) {
-            call.respondText(
-                "path must be at most $MAX_FOLDER_PATH_LENGTH characters without control characters",
-                status = HttpStatusCode.BadRequest,
-            )
+        if (!isPlausibleFolderPath(path)) {
+            call.respondText("path must be $FOLDER_PATH_RULE", status = HttpStatusCode.BadRequest)
             return@post
         }
 
@@ -155,7 +153,12 @@ fun normalizePreferencePath(path: String): String {
 
 private val REPEATED_PATH_SLASHES = Regex("/{2,}")
 
-// PATH_MAX on Linux; macOS allows less, so every real cwd fits.
-private const val MAX_FOLDER_PATH_LENGTH: Int = 4096
+// Control characters are legal in POSIX names but break every place that shows the path.
+private fun isPlausibleFolderPath(path: String): Boolean =
+    HOST_PATH_LIMIT.admits(path) && path.none { it.isISOControl() }
+
+private val HOST_PATH_LIMIT = pathLengthLimit()
+private val FOLDER_PATH_RULE = "at most ${HOST_PATH_LIMIT.max} ${HOST_PATH_LIMIT.unit.label} without control characters"
+
 private const val MIN_GROUPING_LEVEL: Int = 0
 const val MAX_GROUPING_LEVEL: Int = 4
