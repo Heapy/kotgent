@@ -85,50 +85,55 @@ export function orderGroupsByRecentChange(groups) {
   return groups.map(orderedNode).sort((a, b) => b.newestChange - a.newestChange);
 }
 
+const OUTSIDE = "outside";
+const BASE = "base";
+const NESTED = "nested";
+
+function groupingDepth(level) {
+  return Math.max(0, Math.trunc(Number(level)) || 0);
+}
+
+function drawnHeads(cwd, base, depth) {
+  const path = normalizePath(cwd);
+  const segments = segmentsUnder(base, path);
+  if (segments === null) return { kind: OUTSIDE, heads: [{ path: path, label: path || "(unknown)" }] };
+  const visible = segments.slice(0, depth);
+  if (visible.length === 0) return { kind: BASE, heads: [{ path: base, label: basename(base) || base }] };
+  return {
+    kind: NESTED,
+    heads: visible.map((segment, index) => ({
+      path: joinPath(base, visible.slice(0, index + 1)),
+      label: segment,
+    })),
+  };
+}
+
+/** The paths of the folder heads groupSessions draws above a session in this cwd, outermost first. */
+export function headChain(cwd, basePath, level) {
+  return drawnHeads(cwd, normalizePath(basePath), groupingDepth(level)).heads.map((head) => head.path);
+}
+
 export function groupSessions(list, basePath, level) {
   const base = normalizePath(basePath);
-  const depth = Math.max(0, Math.trunc(Number(level)) || 0);
-  const roots = new Map();
-  const outside = new Map();
-  let baseNode = null;
+  const depth = groupingDepth(level);
+  const tops = { [BASE]: new Map(), [NESTED]: new Map(), [OUTSIDE]: new Map() };
 
   for (const s of list) {
-    const path = normalizePath(s.cwd);
-    const segments = segmentsUnder(base, path);
-    if (segments === null) {
-      let node = outside.get(path);
-      if (!node) {
-        node = newNode(path, path || "(unknown)", false);
-        outside.set(path, node);
-      }
-      node.sessions.push(s);
-      continue;
-    }
-
-    const visible = segments.slice(0, depth);
-    if (visible.length === 0) {
-      if (!baseNode) baseNode = newNode(base, basename(base) || base, true);
-      baseNode.sessions.push(s);
-      continue;
-    }
-
-    let siblings = roots;
-    const pathSegments = [];
+    const { kind, heads } = drawnHeads(s.cwd, base, depth);
+    let siblings = tops[kind];
     let node = null;
-    for (const segment of visible) {
-      pathSegments.push(segment);
-      const nodePath = joinPath(base, pathSegments);
-      node = siblings.get(nodePath);
+    for (const head of heads) {
+      node = siblings.get(head.path);
       if (!node) {
-        node = newNode(nodePath, segment, true);
-        siblings.set(nodePath, node);
+        node = newNode(head.path, head.label, kind !== OUTSIDE);
+        siblings.set(head.path, node);
       }
       siblings = node.children;
     }
     node.sessions.push(s);
   }
 
-  const inBase = sortedNodes(roots).map(finishNode);
-  if (baseNode) inBase.unshift(finishNode(baseNode));
-  return inBase.concat(sortedNodes(outside).map(finishNode));
+  return sortedNodes(tops[BASE])
+    .concat(sortedNodes(tops[NESTED]), sortedNodes(tops[OUTSIDE]))
+    .map(finishNode);
 }

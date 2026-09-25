@@ -182,9 +182,12 @@ the common workflow and links to those guides; implementation invariants belong 
   property carries `autoCorrect`, so Preact sets a plain attribute in every engine, while lowercase
   `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.
 - ADHD-mode membership is decided when the list renders: a session is listed when its own flag is set or
-  any ancestor of its `cwd` is marked. Never fan out a folder mark to the sessions under it. The rules
-  live in `resources/webui/lib/adhd.js` and reuse `segmentsUnder`; a second path matcher would drift from
-  the daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. The reduction is
+  a folder head drawn above it is marked. Never fan out a folder mark to the sessions under it. The heads
+  come from `headChain` in `resources/webui/lib/paths.js`, which shares one head rule with `groupSessions`,
+  and the rules live in `resources/webui/lib/adhd.js`. With grouping off, folder marks cover nothing. A
+  mark with no drawn head is inert and is never deleted by a grouping change; it acts again once its head
+  is drawn. Marks are compared through `normalizePath`; a second path matcher would drift from the
+  daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. The reduction is
   strict, including the attention section and its count, but the selected session always keeps a row —
   `activeId` is the selection, not `attachedId` — and `#adhd-toggle` never hides on the sessions screen.
   `#empty-adhd` is gated on nothing being pinned, never on an empty list: the selected row always

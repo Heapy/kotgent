@@ -60,9 +60,6 @@ class FakePreferencesStore : PreferencesStore {
                     basePath = basePath,
                     groupingLevel = groupingLevel,
                     revision = current.revision + 1,
-                    adhdPaths = current.adhdPaths.filter {
-                        adhdPathSurvivesGrouping(it, current.basePath, basePath, groupingLevel)
-                    },
                 ).also {
                     preferences.value = it
                 }

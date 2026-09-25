@@ -437,9 +437,8 @@ class SidebarTest {
         }
     }
 
-    // A mark whose folder the grouping can no longer draw would keep filtering with nothing to clear it.
     @Test
-    fun changingTheGroupingLevelUnpinsFoldersItCanNoLongerShow() {
+    fun aFolderMarkTheGroupingDoesNotDrawWaitsForItsHeadInsteadOfBeingDropped() {
         signedIn(SESSIONS_SCENARIO, "sidebar-adhd-regroup") { _, _, page ->
             configureGrouping(page, basePath = "/", level = 2)
             awaitFoldedTree(page, deepestFolder = "/a/b")
@@ -459,16 +458,26 @@ class SidebarTest {
                 d [/d] (1)
                   s-delta
                 """.trimIndent(),
-                "level 1 draws no /a/b folder, so its mark went and its sessions left the reduced list",
+                "level 1 draws no /a/b head, so its mark covers nothing and its sessions leave the reduced list",
             )
             assertThat(folderMark(page, "/d")).hasAttribute("aria-pressed", "true")
 
-            page.locator("#adhd-toggle").click()
             configureGrouping(page, basePath = "/", level = 2)
-            awaitFoldedTree(page, deepestFolder = "/a/b")
 
-            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "false")
-            assertThat(folderMark(page, "/d")).hasAttribute("aria-pressed", "true")
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+            assertSidebarTree(
+                page,
+                """
+                a [/a] (2)
+                  b [/a/b] (2)
+                    s-alpha
+                    s-beta
+                d [/d] (1)
+                  s-delta
+                """.trimIndent(),
+                "the /a/b head is drawn again, and the mark it kept covers its sessions again",
+            )
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "true")
         }
     }
 

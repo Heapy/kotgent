@@ -212,9 +212,9 @@ function TaskBadge({ session, tasks }) {
   `;
 }
 
-// A session under a marked folder is listed without its own mark. Its pin says so, instead of offering to
-// add something that is already in, and a click gives it a mark that outlives the folder's.
-function adhdPinState(session, adhdPaths) {
+// A session under a marked folder head is listed without its own mark. Its pin says so, instead of offering
+// to add something that is already in, and a click gives it a mark that outlives the folder's.
+function adhdPinState(session, prefs) {
   const name = displayName(session);
   if (session.adhd === true) {
     return {
@@ -224,7 +224,7 @@ function adhdPinState(session, adhdPaths) {
       title: "In ADHD mode — click to remove",
     };
   }
-  const folder = adhdFolderOf(session.cwd, adhdPaths);
+  const folder = adhdFolderOf(session.cwd, prefs);
   if (folder !== null) {
     return {
       cls: " covered",
@@ -236,9 +236,9 @@ function adhdPinState(session, adhdPaths) {
   return { cls: "", on: false, label: "Add " + name + " to ADHD mode", title: "Add to ADHD mode" };
 }
 
-function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, adhdPaths }) {
+function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs }) {
   const badge = stateBadge(session.state);
-  const pin = onMark ? adhdPinState(session, adhdPaths) : null;
+  const pin = onMark ? adhdPinState(session, prefs) : null;
   const select = () => onSelect(session.id);
   const onKeyDown = (event) => {
     // Enter on an inner button or link bubbles here; cancelling it would select instead of activating it.
@@ -302,9 +302,9 @@ function groupNeedsAttention(group) {
 
 function SessionGroup({
   group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
-  onMarkFolder, adhdPaths, done = false,
+  onMarkFolder, prefs, done = false,
 }) {
-  const folderMarked = isPathAdhd(group.path, adhdPaths);
+  const folderMarked = isPathAdhd(group.path, prefs.adhdPaths);
   // The archive tree mirrors the live one, so its folders need collapse keys of their own.
   const collapseKey = (done ? "done:" : "") + group.path;
   const collapsed = collapsedGroups.has(collapseKey);
@@ -354,7 +354,7 @@ function SessionGroup({
             ? html`
               <${SessionRow} key=${entry.session.id} session=${entry.session} tasks=${tasks}
                              active=${entry.session.id === activeId} onSelect=${onSelect}
-                             onRestore=${onRestore} onMark=${onMark} adhdPaths=${adhdPaths} />`
+                             onRestore=${onRestore} onMark=${onMark} prefs=${prefs} />`
             : html`
               <${SessionGroup}
                 key=${entry.group.path}
@@ -368,7 +368,7 @@ function SessionGroup({
                 onRestore=${onRestore}
                 onMark=${onMark}
                 onMarkFolder=${onMarkFolder}
-                adhdPaths=${adhdPaths}
+                prefs=${prefs}
                 done=${done}
               />`))}
         </ul>
@@ -508,11 +508,11 @@ export function Sidebar({
   const visible = useMemo(() => {
     if (!adhdMode || onTasks) return live;
     // The selected session keeps its row, or unmarking it strands the terminal with no row to return to.
-    return live.filter((s) => s.id === activeId || isSessionInAdhd(s, prefs.adhdPaths));
-  }, [activeId, adhdMode, live, onTasks, prefs.adhdPaths]);
+    return live.filter((s) => s.id === activeId || isSessionInAdhd(s, prefs));
+  }, [activeId, adhdMode, live, onTasks, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel]);
   const nothingPinned = useMemo(
-    () => !onTasks && !live.some((s) => isSessionInAdhd(s, prefs.adhdPaths)),
-    [live, onTasks, prefs.adhdPaths],
+    () => !onTasks && !live.some((s) => isSessionInAdhd(s, prefs)),
+    [live, onTasks, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel],
   );
   // Every live frame replaces the sessions array, so the archive derivations below key on this
   // signature instead: it moves only when an archived row does. The id length keeps it unambiguous.
@@ -657,7 +657,7 @@ export function Sidebar({
             ${attention.map((s) => html`
               <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
                              active=${s.id === activeId} onSelect=${onSelect}
-                             onMark=${onMarkSession} adhdPaths=${prefs.adhdPaths} />
+                             onMark=${onMarkSession} prefs=${prefs} />
             `)}
           </ul>
         </section>
@@ -693,13 +693,13 @@ export function Sidebar({
                   onNewSession=${onNewSession}
                   onMark=${onMarkSession}
                   onMarkFolder=${onMarkFolder}
-                  adhdPaths=${prefs.adhdPaths}
+                  prefs=${prefs}
                 />
               `)
             : visible.map((s) => html`
                 <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
                                active=${s.id === activeId} onSelect=${onSelect}
-                               onMark=${onMarkSession} adhdPaths=${prefs.adhdPaths} />
+                               onMark=${onMarkSession} prefs=${prefs} />
               `)}
         </ul>
 
@@ -743,6 +743,7 @@ export function Sidebar({
                     onSelect=${onSelect}
                     onToggle=${toggleGroup}
                     onRestore=${onRestore}
+                    prefs=${prefs}
                     done=${true}
                   />
                 `)

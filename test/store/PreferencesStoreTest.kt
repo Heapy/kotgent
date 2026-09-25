@@ -215,92 +215,55 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun loweringTheLevelDropsOnlyTheMarksDeeperThanTheNewLevel() = runBlocking {
+    fun changingTheLevelKeepsEveryFolderMark() = runBlocking {
         withTimeout(20.seconds) {
             for (store in bothStores()) {
                 val who = store::class.simpleName
                 val _ = store.savePreferences("/", 2)
-                for (path in listOf("/", "/a", "/a/b")) {
+                for (path in folderMarks) {
                     val _ = store.setFolderAdhd(path, true)
                 }
 
-                val saved = store.savePreferences("/", 1)
-
-                assertEquals(listOf("/", "/a"), saved.adhdPaths, "$who: level 1 draws no /a/b folder")
+                assertEquals(folderMarks, store.savePreferences("/", 1).adhdPaths, "$who: level 1 draws no /a/b head")
+                assertEquals(folderMarks, store.savePreferences("/", 0).adhdPaths, "$who: level 0 draws only the base")
+                assertEquals(folderMarks, store.savePreferences("/", 3).adhdPaths, "$who: a deeper level")
             }
         }
     }
 
     @Test
-    fun raisingTheLevelKeepsEveryMark() = runBlocking {
-        withTimeout(20.seconds) {
-            for (store in bothStores()) {
-                val _ = store.savePreferences("/", 1)
-                val _ = store.setFolderAdhd("/a", true)
-
-                val saved = store.savePreferences("/", 3)
-
-                assertEquals(listOf("/a"), saved.adhdPaths, "${store::class.simpleName}")
-            }
-        }
-    }
-
-    @Test
-    fun levelZeroKeepsOnlyAMarkOnTheBaseItself() = runBlocking {
-        withTimeout(20.seconds) {
-            for (store in bothStores()) {
-                val _ = store.savePreferences("/a", 1)
-                val _ = store.setFolderAdhd("/a", true)
-                val _ = store.setFolderAdhd("/a/b", true)
-
-                val saved = store.savePreferences("/a", 0)
-
-                assertEquals(listOf("/a"), saved.adhdPaths, "${store::class.simpleName}: level 0 folds into the base")
-            }
-        }
-    }
-
-    @Test
-    fun turningGroupingOffDropsEveryFolderMark() = runBlocking {
-        withTimeout(20.seconds) {
-            for (store in bothStores()) {
-                val _ = store.savePreferences("/", 2)
-                val _ = store.setFolderAdhd("/a", true)
-                val _ = store.setFolderAdhd("/a/b", true)
-
-                val saved = store.savePreferences("", 1)
-
-                assertEquals(emptyList(), saved.adhdPaths, "${store::class.simpleName}: a flat list draws no folders")
-            }
-        }
-    }
-
-    @Test
-    fun movingTheBaseDropsMarksThatLoseTheirFolderAndKeepsOnesAlreadyOutside() = runBlocking {
+    fun movingTheBaseKeepsEveryFolderMark() = runBlocking {
         withTimeout(20.seconds) {
             for (store in bothStores()) {
                 val _ = store.savePreferences("/a", 2)
-                val _ = store.setFolderAdhd("/a/b", true)
-                val _ = store.setFolderAdhd("/d", true)
+                for (path in folderMarks) {
+                    val _ = store.setFolderAdhd(path, true)
+                }
 
                 val saved = store.savePreferences("/c", 2)
 
-                assertEquals(
-                    listOf("/d"),
-                    saved.adhdPaths,
-                    "${store::class.simpleName}: /a/b fell outside the base, /d was outside all along",
-                )
+                assertEquals(folderMarks, saved.adhdPaths, "${store::class.simpleName}: the marks wait for their heads")
             }
         }
     }
 
     @Test
-    fun survivalComparesWholePathSegments() {
-        assertEquals(false, adhdPathSurvivesGrouping("/a/bc", previousBase = "/", base = "/a/b", level = 4))
-        assertEquals(true, adhdPathSurvivesGrouping("/a/b/c", previousBase = "/", base = "/a/b", level = 1))
-        assertEquals(false, adhdPathSurvivesGrouping("/a/b/c/d", previousBase = "/", base = "/a/b", level = 1))
-        assertEquals(true, adhdPathSurvivesGrouping("/d", previousBase = "/a", base = "/", level = 1))
+    fun turningGroupingOffKeepsEveryFolderMark() = runBlocking {
+        withTimeout(20.seconds) {
+            for (store in bothStores()) {
+                val who = store::class.simpleName
+                val _ = store.savePreferences("/", 2)
+                for (path in folderMarks) {
+                    val _ = store.setFolderAdhd(path, true)
+                }
+
+                assertEquals(folderMarks, store.savePreferences("", 1).adhdPaths, "$who: a flat list draws no heads")
+                assertEquals(folderMarks, store.savePreferences("/", 2).adhdPaths, "$who: grouping back on")
+            }
+        }
     }
+
+    private val folderMarks = listOf("/", "/a", "/a/b", "/d")
 
     private fun bothStores(): List<PreferencesStore> = listOf(SqliteEventStore.inMemory(), FakePreferencesStore())
 

@@ -264,15 +264,7 @@ class SqliteEventStore private constructor(
 
     override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
         mutex.withLock {
-            val previousBase = preferences.value.basePath
-            db.transaction {
-                val _ = preferenceQueries.save(basePath, groupingLevel.toLong())
-                for (path in folderSettings.selectAdhdPaths().executeAsList()) {
-                    if (!adhdPathSurvivesGrouping(path, previousBase, basePath, groupingLevel)) {
-                        val _ = folderSettings.clearAdhd(path)
-                    }
-                }
-            }
+            val _ = preferenceQueries.save(basePath, groupingLevel.toLong())
             readPreferences().also { preferences.value = it }
         }
 

@@ -1,20 +1,16 @@
-// ADHD-mode membership is decided when the list renders, so a folder mark covers every session under
-// it without any write fan-out, including sessions started long after the mark.
+// ADHD-mode membership is decided when the list renders, so a folder mark is never written to the sessions
+// under it. A mark covers the sessions drawn under its head, and nothing while no such head is drawn.
 
-import { normalizePath, segmentsUnder } from "./paths.js";
+import { headChain, normalizePath } from "./paths.js";
+import { groupingEnabled } from "./prefs.js";
 
-// The nearest marked folder holding this cwd, or null. The row pin names it when it, not the session's own
-// mark, is what keeps the session listed.
-export function adhdFolderOf(cwd, paths) {
-  if (!cwd || !Array.isArray(paths)) return null;
-  let nearest = null;
-  for (const path of paths) {
-    // segmentsUnder answers [] for an exact match, so only a null answer means "not under".
-    const below = segmentsUnder(path, cwd);
-    if (below === null) continue;
-    if (nearest === null || below.length < nearest.depth) nearest = { path: path, depth: below.length };
+export function adhdFolderOf(cwd, prefs) {
+  if (!cwd || !groupingEnabled(prefs)) return null;
+  const chain = headChain(cwd, prefs.basePath, prefs.groupingLevel);
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    if (isPathAdhd(chain[index], prefs.adhdPaths)) return chain[index];
   }
-  return nearest === null ? null : nearest.path;
+  return null;
 }
 
 // Whether this exact folder carries a mark, which is what its button shows. A folder under a marked
@@ -25,7 +21,7 @@ export function isPathAdhd(path, paths) {
   return paths.some((marked) => normalizePath(marked) === target);
 }
 
-export function isSessionInAdhd(session, paths) {
+export function isSessionInAdhd(session, prefs) {
   if (!session) return false;
-  return session.adhd === true || adhdFolderOf(session.cwd, paths) !== null;
+  return session.adhd === true || adhdFolderOf(session.cwd, prefs) !== null;
 }

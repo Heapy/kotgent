@@ -5,92 +5,137 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../../resources/webui/lib/adhd.js";
+import { sessionRow } from "./fixtures.js";
 
-const session = (over) => Object.freeze(Object.assign({ id: "s1", cwd: "/a/b", adhd: false }, over));
-const under = (cwd, paths) => isSessionInAdhd(session({ cwd: cwd }), paths);
+const grouping = (basePath, groupingLevel, adhdPaths) => ({ basePath, groupingLevel, adhdPaths });
+const listed = (cwd, prefs) => isSessionInAdhd(sessionRow({ cwd: cwd }), prefs);
 
-describe("a session covered by a marked folder", () => {
-  test("is listed anywhere below that folder", () => {
-    assert.equal(under("/a/b/c", ["/a/b"]), true);
-    assert.equal(under("/a/b/c/d/e", ["/a/b"]), true);
+describe("a folder mark", () => {
+  test("covers everything in the base at level 0, and only the base's own sessions below that", () => {
+    assert.equal(listed("/work/api/x", grouping("/work", 0, ["/work"])), true);
+
+    assert.equal(listed("/work", grouping("/work", 1, ["/work"])), true);
+    assert.equal(listed("/work/api", grouping("/work", 1, ["/work"])), false);
+    assert.equal(listed("/work/api/x", grouping("/work", 1, ["/work"])), false);
   });
 
-  test("is listed in the folder itself", () => {
-    assert.equal(under("/a/b", ["/a/b"]), true);
+  test("on the base head leaves the sibling heads drawn beside it to their own pins", () => {
+    const prefs = grouping("/Users/me/dev", 1, ["/Users/me/dev"]);
+
+    assert.equal(listed("/Users/me/dev", prefs), true);
+    assert.equal(listed("/Users/me/dev/api", prefs), false);
+    assert.equal(listed("/Users/me/dev/api/x", prefs), false);
+    assert.equal(listed("/Users/me/dev/web", prefs), false);
   });
 
-  test("is not listed from a sibling that merely shares a name prefix", () => {
-    assert.equal(under("/a/bc", ["/a/b"]), false);
-    assert.equal(under("/a/because", ["/a/b"]), false);
+  test("on a head inside the base covers every session drawn under it", () => {
+    const prefs = grouping("/Users/me/dev", 1, ["/Users/me/dev/api"]);
+
+    assert.equal(listed("/Users/me/dev/api", prefs), true);
+    assert.equal(listed("/Users/me/dev/api/x", prefs), true);
+    assert.equal(listed("/Users/me/dev/web", prefs), false);
+    assert.equal(listed("/Users/me/dev", prefs), false);
   });
 
-  // Every other case here marks an ancestor, so only this one catches a swapped argument order.
-  test("is not listed when the mark is deeper than the session", () => {
-    assert.equal(under("/a/b", ["/a/b/c"]), false);
+  test("on an outside head covers only that exact cwd", () => {
+    const prefs = grouping("/Users/me/dev", 1, ["/tmp/x"]);
+
+    assert.equal(listed("/tmp/x", prefs), true);
+    assert.equal(listed("/tmp/x/y", prefs), false);
   });
 
-  test("needs only one of several marks", () => {
-    assert.equal(under("/x/y", ["/a/b", "/x", "/q"]), true);
+  test("on the home folder drawn outside the base does not cover the base tree", () => {
+    const prefs = grouping("/Users/me/dev", 1, ["/Users/me"]);
+
+    assert.equal(listed("/Users/me", prefs), true);
+    assert.equal(listed("/Users/me/dev", prefs), false);
+    assert.equal(listed("/Users/me/dev/api", prefs), false);
   });
 
-  test("is not listed when nothing is marked", () => {
-    assert.equal(under("/a/b", []), false);
-    assert.equal(under("/a/b", undefined), false);
-    assert.equal(under("/a/b", null), false);
+  test("keeps acting on its folder once a narrower base draws that folder outside", () => {
+    const prefs = grouping("/Users/me/dev/kotgent", 1, ["/Users/me/dev/api"]);
+
+    assert.equal(listed("/Users/me/dev/api", prefs), true);
+    assert.equal(listed("/Users/me/dev/api/x", prefs), false);
   });
 
-  test("is not listed when it has no cwd to place it", () => {
-    assert.equal(under("", ["/a/b"]), false);
-    assert.equal(under(undefined, ["/a/b"]), false);
+  test("deeper than the level covers nothing until the level draws it", () => {
+    assert.equal(listed("/a/b", grouping("/", 1, ["/a/b"])), false);
+    assert.equal(listed("/a/b/c", grouping("/", 1, ["/a/b"])), false);
+
+    assert.equal(listed("/a/b/c", grouping("/", 2, ["/a/b"])), true);
+  });
+
+  test("covers nothing with grouping off", () => {
+    assert.equal(listed("/a/b", grouping("", 1, ["/a/b"])), false);
+    assert.equal(listed("/a/b/c", grouping("", 2, ["/a", "/a/b"])), false);
+  });
+
+  test("is not matched by a sibling that merely shares a name prefix", () => {
+    assert.equal(listed("/a/bc", grouping("/a", 1, ["/a/b"])), false);
+    assert.equal(listed("/a/because", grouping("/", 2, ["/a/b"])), false);
   });
 
   test("survives trailing and repeated slashes on either side", () => {
-    assert.equal(under("/a//b/c/", ["/a/b/"]), true);
-    assert.equal(under("/a/b/c", ["//a///b"]), true);
+    assert.equal(listed("/a//b/c/", grouping("/", 2, ["/a/b/"])), true);
+    assert.equal(listed("/a/b/c", grouping("//", 2, ["//a///b"])), true);
   });
 
-  test("is listed under a marked root", () => {
-    assert.equal(under("/a/b", ["/"]), true);
+  test("needs only one of several marks", () => {
+    assert.equal(listed("/x/y", grouping("/", 1, ["/a/b", "/x", "/q"])), true);
+  });
+
+  test("is absent when nothing is marked or the session has no cwd", () => {
+    assert.equal(listed("/a/b", grouping("/", 1, [])), false);
+    assert.equal(listed("/a/b", grouping("/", 1, undefined)), false);
+    assert.equal(listed("", grouping("/", 1, ["/"])), false);
+    assert.equal(listed(undefined, grouping("/", 1, ["/"])), false);
   });
 });
 
 describe("isSessionInAdhd", () => {
   test("a session marked on its own is listed with no folder marks at all", () => {
-    assert.equal(isSessionInAdhd(session({ adhd: true, cwd: "/elsewhere" }), []), true);
+    assert.equal(isSessionInAdhd(sessionRow({ adhd: true, cwd: "/elsewhere" }), grouping("/", 1, [])), true);
   });
 
-  test("an unmarked session outside every marked folder is not listed", () => {
-    assert.equal(isSessionInAdhd(session({ cwd: "/other" }), ["/a/b"]), false);
+  test("a session marked on its own is listed with grouping off", () => {
+    assert.equal(isSessionInAdhd(sessionRow({ adhd: true, cwd: "/a/b" }), grouping("", 1, ["/a/b"])), true);
   });
 
   test("only an exact true counts as a session mark", () => {
-    assert.equal(isSessionInAdhd(session({ adhd: undefined, cwd: "/other" }), []), false);
-    assert.equal(isSessionInAdhd(session({ adhd: 1, cwd: "/other" }), []), false);
+    assert.equal(isSessionInAdhd(sessionRow({ adhd: undefined, cwd: "/other" }), grouping("/", 1, [])), false);
+    assert.equal(isSessionInAdhd(sessionRow({ adhd: 1, cwd: "/other" }), grouping("/", 1, [])), false);
   });
 
   test("a missing session is not listed", () => {
-    assert.equal(isSessionInAdhd(null, ["/"]), false);
+    assert.equal(isSessionInAdhd(null, grouping("/", 0, ["/"])), false);
   });
 });
 
 describe("adhdFolderOf", () => {
-  test("names the nearest marked folder, whatever order the marks arrive in", () => {
-    assert.equal(adhdFolderOf("/a/b/c", ["/a", "/a/b"]), "/a/b");
-    assert.equal(adhdFolderOf("/a/b/c", ["/a/b", "/a"]), "/a/b");
+  test("names the innermost marked head, whatever order the marks arrive in", () => {
+    assert.equal(adhdFolderOf("/a/b/c", grouping("/", 2, ["/a", "/a/b"])), "/a/b");
+    assert.equal(adhdFolderOf("/a/b/c", grouping("/", 2, ["/a/b", "/a"])), "/a/b");
   });
 
-  test("names the folder itself when the session sits in it", () => {
-    assert.equal(adhdFolderOf("/a/b", ["/a/b"]), "/a/b");
+  test("names the head as it is drawn, not as the mark was spelled", () => {
+    assert.equal(adhdFolderOf("/a/b/c", grouping("/", 2, ["/a/b/"])), "/a/b");
+  });
+
+  test("falls back to an outer head while the level does not draw the inner one", () => {
+    assert.equal(adhdFolderOf("/a/b/c", grouping("/", 1, ["/a", "/a/b"])), "/a");
+    assert.equal(adhdFolderOf("/a/b/c", grouping("/", 1, ["/a/b"])), null);
   });
 
   test("names nothing for a mark deeper than the session or beside it", () => {
-    assert.equal(adhdFolderOf("/a/b", ["/a/b/c"]), null);
-    assert.equal(adhdFolderOf("/a/bc", ["/a/b"]), null);
+    assert.equal(adhdFolderOf("/a/b", grouping("/", 3, ["/a/b/c"])), null);
+    assert.equal(adhdFolderOf("/a/bc", grouping("/", 2, ["/a/b"])), null);
   });
 
-  test("names nothing without a cwd or a list", () => {
-    assert.equal(adhdFolderOf("", ["/a"]), null);
-    assert.equal(adhdFolderOf("/a", undefined), null);
+  test("names nothing with grouping off, without a cwd, or without a list", () => {
+    assert.equal(adhdFolderOf("/a", grouping("", 1, ["/a"])), null);
+    assert.equal(adhdFolderOf("", grouping("/", 1, ["/a"])), null);
+    assert.equal(adhdFolderOf("/a", grouping("/", 1, undefined)), null);
   });
 });
 
