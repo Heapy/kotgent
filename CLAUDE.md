@@ -21,7 +21,9 @@ the common workflow and links to those guides; implementation invariants belong 
 - Never overlap `./kotlin` invocations, including across worktrees: they share build output. Keep aggregate
   tests serial as well because integration tests share the `kotgent-test` tmux socket.
 - Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
-  automation. They start long-lived processes. `./kotlin test` terminates safely.
+  automation. They start long-lived processes. `./kotlin test` terminates safely. The one exception is
+  `codex app-server` in `CodexAdapterTest`: it runs with an empty temporary `CODEX_HOME`, starts no model
+  turn, and exits when its input closes.
 
 ## Architecture boundaries
 

@@ -187,8 +187,11 @@ Codex hook trust hashes were checked on 2026-09-24 against `hooks/list` from `co
 Codex CLI 0.146.1, 0.150.1, 0.153.0 and 0.156.1; the fixture values come from 0.156.1. The probe runs
 `codex -c '<hooks value>' app-server` over stdio, sends `initialize`, `initialized` and `hooks/list`, and
 expects every `sessionFlags` entry to be `trusted`; it needs no model turn. Keep stdin open until the
-`hooks/list` response arrives, because the server exits on end of input without answering. Repeat it after
-a Codex upgrade, because a changed hash identity sends Kotgent's hooks to Codex's startup review.
+`hooks/list` response arrives, because the server exits on end of input without answering.
+`realCodexIfInstalledTrustsExactlyTheGeneratedHooks` runs this probe against the installed Codex with an
+empty temporary `CODEX_HOME`, so a Codex upgrade that changes the hash identity fails `./kotlin test`
+instead of sending Kotgent's hooks to Codex's startup review. It is skipped where Codex is not installed,
+including CI.
 
 Before release, also launch a session with the operator's custom status line and check its visual output;
 edit the user-scope command and verify the next session picks up the change.

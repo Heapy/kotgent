@@ -4,7 +4,12 @@ import io.kotgent.adapter.LaunchMode
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.daemon.SessionManager
 import io.kotgent.tmux.ProcessResult
+import io.kotgent.tmux.ProcessRunner
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -219,5 +224,44 @@ class CodexAdapterTest {
         val cli = CodexCli()
         val version = cli.detectVersion() ?: return
         assertTrue(version.major > 0 || version.minor > 0, "a real codex reports a non-zero version: $version")
+    }
+
+    @Test
+    fun realCodexIfInstalledTrustsExactlyTheGeneratedHooks() {
+        val cli = CodexCli()
+        cli.detectVersion() ?: return
+        val result = ProcessRunner.run(
+            listOf(
+                "/bin/sh", "-c", HOOKS_LIST_PROBE, "kotgent-codex-probe",
+                cli.binaryName, CodexHookConfig.hooksToml(hookScript),
+            ),
+        )
+        assertTrue(result.isSuccess && result.stdout.isNotBlank(), "codex app-server answered hooks/list: $result")
+
+        val hooks = Json.parseToJsonElement(result.stdout).jsonObject.getValue("result").jsonObject.getValue("data")
+            .jsonArray.flatMap { it.jsonObject.getValue("hooks").jsonArray }
+        val statusByKey = hooks.associate {
+            it.jsonObject.getValue("key").jsonPrimitive.content to it.jsonObject.getValue("trustStatus").jsonPrimitive.content
+        }
+        assertEquals(CodexHookConfig.HOOK_EVENTS.associate { CodexHookConfig.trustKey(it) to "trusted" }, statusByKey)
+    }
+
+    private companion object {
+        /**
+         * An empty `CODEX_HOME` hides the operator's hooks, stored trust and MCP servers. app-server exits at
+         * end of input before answering, so stdin stays open until the answer or a 30-second limit.
+         */
+        val HOOKS_LIST_PROBE: String = $$"""
+            dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/kotgent-codex-probe.XXXXXX") || exit 1
+            trap '/bin/rm -rf "$dir"' EXIT
+            mkdir "$dir/home" && cd "$dir" || exit 1
+            {
+              printf '%s\n' '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"kotgent-test","version":"0"}}}' \
+                '{"method":"initialized"}' '{"id":2,"method":"hooks/list","params":{}}'
+              i=0
+              while [ "$i" -lt 300 ] && ! grep -q '^{"id":2,' out 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+            } | CODEX_HOME="$dir/home" "$1" -c "$2" app-server > out 2> /dev/null
+            grep '^{"id":2,' out
+        """.trimIndent()
     }
 }
