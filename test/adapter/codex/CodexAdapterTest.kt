@@ -1,6 +1,7 @@
 package io.kotgent.adapter.codex
 
 import io.kotgent.adapter.LaunchMode
+import io.kotgent.adapter.LaunchSpec
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.daemon.SessionManager
 import io.kotgent.tmux.ProcessResult
@@ -23,19 +24,26 @@ class CodexAdapterTest {
     private fun adapter(binaryName: String = "codex") =
         CodexAdapter(cwd = "/work/repo", hookScriptPath = hookScript, events = emptyFlow(), binaryName = binaryName)
 
+    private val LaunchSpec.codexCommand: List<String>
+        get() {
+            assertEquals(listOf("/bin/sh", "-c"), command.take(2))
+            assertEquals("kotgent-codex", command[3])
+            return command.drop(4)
+        }
+
 
     @Test
     fun newLaunchInstallsHooksAndPreallocatesNothing() {
         val spec = adapter().buildLaunchSpec(LaunchMode.New)
 
         assertEquals("/work/repo", spec.cwd)
-        assertEquals("codex", spec.command.first())
+        assertEquals("codex", spec.codexCommand.first())
         assertFalse(spec.command.contains(CodexAdapter.RESUME_SUBCOMMAND), "a New launch is not a resume")
         assertNull(spec.preallocatedSessionId, "codex has no --session-id: nothing is preallocated")
 
         assertEquals(
             listOf("-c", CodexHookConfig.hooksToml(hookScript)),
-            spec.command.drop(1),
+            spec.codexCommand.drop(1),
             "hook trust travels in the -c hooks value, never as a flag that trusts every hook",
         )
     }
@@ -45,11 +53,11 @@ class CodexAdapterTest {
         val id = ProviderSessionId("019f8ea0-2548-7871-9835-947ff7623ccf")
         val spec = adapter().buildLaunchSpec(LaunchMode.Resume(id))
 
-        assertEquals(listOf("codex", "resume", id.value), spec.command.take(3), "subcommand + id come first")
+        assertEquals(listOf("codex", "resume", id.value), spec.codexCommand.take(3), "subcommand + id come first")
         assertNull(spec.preallocatedSessionId, "a resume never preallocates (the id already exists)")
         assertEquals(
             listOf("-c", CodexHookConfig.hooksToml(hookScript)),
-            spec.command.drop(3),
+            spec.codexCommand.drop(3),
             "resumed sessions carry the same hooks and trust",
         )
     }
@@ -57,7 +65,7 @@ class CodexAdapterTest {
     @Test
     fun launchUsesTheResolvedBinaryPath() {
         val spec = adapter(binaryName = "/opt/homebrew/bin/codex").buildLaunchSpec(LaunchMode.New)
-        assertEquals("/opt/homebrew/bin/codex", spec.command.first())
+        assertEquals("/opt/homebrew/bin/codex", spec.codexCommand.first())
     }
 
     @Test
