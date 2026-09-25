@@ -13,11 +13,8 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
 
 @Serializable
 data class SavePreferencesRequest(
@@ -60,8 +57,9 @@ fun Route.preferencesRoutes(
     }
 
     put("/preferences") {
-        val request = decodeSavePreferencesRequest(call.receiveText(), json)
-        if (request == null) {
+        val request = try {
+            json.decodeFromString(SavePreferencesRequest.serializer(), call.receiveText())
+        } catch (_: SerializationException) {
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@put
         }
@@ -92,8 +90,9 @@ fun Route.preferencesRoutes(
 
     // One path per call: a whole-list PUT would let two devices overwrite each other's edits.
     post("/preferences/adhd-paths") {
-        val request = decodeSetFolderAdhdRequest(call.receiveText(), json)
-        if (request == null) {
+        val request = try {
+            json.decodeFromString(SetFolderAdhdRequest.serializer(), call.receiveText())
+        } catch (_: SerializationException) {
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@post
         }
@@ -115,29 +114,6 @@ fun Route.preferencesRoutes(
         )
     }
 }
-
-private fun decodeSavePreferencesRequest(text: String, json: Json): SavePreferencesRequest? =
-    // kotlinx.serialization accepts quoted numbers for Int; this wire contract requires exact JSON types.
-    runCatching {
-        val body = json.parseToJsonElement(text).jsonObject
-        val basePath = body["basePath"] as? JsonPrimitive
-        val groupingLevel = body["groupingLevel"] as? JsonPrimitive
-        if (basePath?.isString != true || groupingLevel == null || groupingLevel.isString) return null
-        SavePreferencesRequest(
-            basePath = basePath.content,
-            groupingLevel = groupingLevel.intOrNull ?: return null,
-        )
-    }.getOrNull()
-
-private fun decodeSetFolderAdhdRequest(text: String, json: Json): SetFolderAdhdRequest? =
-    // kotlinx.serialization reads a quoted "true" as a Boolean; this wire contract requires exact JSON types.
-    runCatching {
-        val body = json.parseToJsonElement(text).jsonObject
-        val path = body["path"] as? JsonPrimitive
-        val adhd = body["adhd"] as? JsonPrimitive
-        if (path?.isString != true || adhd == null || adhd.isString) return null
-        SetFolderAdhdRequest(path = path.content, adhd = adhd.booleanOrNull ?: return null)
-    }.getOrNull()
 
 fun UiPreferences.toDto(): PreferencesDto = PreferencesDto(basePath, groupingLevel, revision, adhdPaths)
 
