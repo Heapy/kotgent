@@ -65,13 +65,6 @@ val TASK_STORE_METHODS: Set<String> = setOf(
     "setProjectArchived", "listProjects", "listAllProjects", "project",
 )
 
-/** `subscribe` is absent because it is not a suspending call and so cannot be guarded. */
-val EVENT_STORE_METHODS: Set<String> = setOf(
-    "upsertSession", "updateSessionState", "setArchived", "setModel", "setModelForProvider", "markRead",
-    "setTaskRef", "clearTaskRefIf", "setProjectId", "setName", "setAdhd", "sessionsHoldingTask", "getSession",
-    "listSessions", "append", "read", "projectionOf",
-)
-
 /** Raises the configured failure instead of running the call. */
 class FailingInterceptor(
     val failures: MutableMap<String, Throwable> = mutableMapOf(),
