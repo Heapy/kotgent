@@ -32,6 +32,7 @@ data class SessionUpdate(
     val archived: Boolean = false,
     val model: String? = null,
     val name: String? = null,
+    val adhd: Boolean? = null,
     val rev: Long = 0,
     val taskRef: TaskRef? = null,
     val projectId: ProjectId? = null,
@@ -122,6 +123,12 @@ interface EventStore {
     suspend fun setName(
         sessionId: SessionId,
         name: String,
+    )
+
+    /** Operator-owned ADHD-mode membership; preserves activity ordering. */
+    suspend fun setAdhd(
+        sessionId: SessionId,
+        adhd: Boolean,
     )
 
     suspend fun sessionsHoldingTask(

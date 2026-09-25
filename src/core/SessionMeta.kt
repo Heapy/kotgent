@@ -32,6 +32,8 @@ data class SessionMeta(
     val taskRef: TaskRef? = null,
     /** Upsert must not clear a newer targeted project link written after this snapshot. */
     val projectId: ProjectId? = null,
+    /** Operator-owned: the session is kept visible in ADHD mode. Upsert must not clear it. */
+    val adhd: Boolean = false,
 )
 
 /**

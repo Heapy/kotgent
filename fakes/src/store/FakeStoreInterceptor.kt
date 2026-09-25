@@ -68,7 +68,7 @@ val TASK_STORE_METHODS: Set<String> = setOf(
 /** `subscribe` is absent because it is not a suspending call and so cannot be guarded. */
 val EVENT_STORE_METHODS: Set<String> = setOf(
     "upsertSession", "updateSessionState", "setArchived", "setModel", "setModelForProvider", "markRead",
-    "setTaskRef", "clearTaskRefIf", "setProjectId", "setName", "sessionsHoldingTask", "getSession",
+    "setTaskRef", "clearTaskRefIf", "setProjectId", "setName", "setAdhd", "sessionsHoldingTask", "getSession",
     "listSessions", "append", "read", "projectionOf",
 )
 

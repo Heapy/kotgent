@@ -484,6 +484,11 @@ class LayoutTest {
 
                 val row = page.values(MEASURE_BRAND_ACTIONS)
                 assertEquals(
+                    4,
+                    row.int("buttons"),
+                    "the header row carries the archive, ADHD and notification toggles plus the close button",
+                )
+                assertEquals(
                     1,
                     row.int("rows"),
                     "the header keeps its buttons on one line: ${row.int("buttons")} buttons landed on " +

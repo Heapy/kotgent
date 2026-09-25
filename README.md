@@ -499,6 +499,18 @@ session. Looking at it clears it: the browser posts the cursor it has displayed,
 reload) and **persistent** (restarting the daemon does not resurrect a cleared badge). Reading a session does
 not count as activity, so `kotgent list`'s ordering is unaffected.
 
+**ADHD mode** reduces the sidebar to what you pinned. The pin on a session row marks that session; the
+pin on a folder head marks that directory path, and every session under it is listed while the mode is
+on, including sessions started there later. What is pinned is daemon-wide, so a phone and a laptop
+agree on it; whether a given screen is reduced is that device's own setting and survives a reload. The
+reduction is strict — the "needs attention" section and its count follow it, so a session that wants you
+can be hidden, though notifications still fire for it. The session you have selected keeps its row
+whatever its pin says, and the toggle never hides on the sessions screen. Turning the mode on with nothing
+pinned says so and offers the way back. A session listed through a pinned folder shows a dimmed pin that
+names the folder; clicking it pins the session on its own, so it stays listed after the folder is
+unpinned.
+The Done list ignores the mode entirely.
+
 The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
 `false → true` attention transition or an early weekly quota reset sends a payload-less push. The service
 worker fetches the authenticated `/api/v1/notifications` inbox under a ten-second deadline and shows

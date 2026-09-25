@@ -7,6 +7,7 @@ import com.microsoft.playwright.Route
 import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.regex.Pattern
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
@@ -98,6 +99,11 @@ class SidebarTest {
                 .hasAttribute("aria-label", "New session in /a/b")
             assertThat(folderHead(page, "/d").locator(".group-new"))
                 .hasAttribute("aria-label", "New session in /d")
+            // Hidden until its folder is reachable, so it must not take a tap meant for the folder either.
+            val newInFolder = folderHead(page, "/a/b").locator(".group-new")
+            assertThat(newInFolder).hasCSS("pointer-events", "none")
+            folderHead(page, "/a/b").hover()
+            assertThat(newInFolder).hasCSS("pointer-events", "auto")
 
             assertThat(page.locator("#base-path-note")).hasText("/")
 
@@ -199,12 +205,115 @@ class SidebarTest {
     }
 
     @Test
-    fun theDoneListsRestoreAnswersTheKeyboard() {
-        signedIn(SESSIONS_SCENARIO, "sidebar-restore-keyboard") { _, _, page ->
+    fun markingASessionFromItsRowNeitherSelectsTheRowNorTouchesItsNeighbours() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-mark") { _, _, page ->
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            val mark = rowMark(page, "s-delta")
+            assertThat(mark).hasAttribute("aria-pressed", "false")
+            assertThat(mark).hasAttribute("aria-label", ADD_TO_ADHD)
+            // aria-pressed only announces the state; the pin has to look different as well.
+            assertThat(mark.locator("svg path")).hasAttribute("fill", "none")
+            // Invisible at rest, so it must not take a tap meant for the row either.
+            assertThat(mark).hasCSS("pointer-events", "none")
+            page.locator("#session-list .session-row[data-id='s-delta']").hover()
+            assertThat(mark).hasCSS("pointer-events", "auto")
+
+            mark.click()
+
+            assertThat(mark).hasAttribute("aria-pressed", "true")
+            assertThat(mark).hasAttribute("aria-label", REMOVE_FROM_ADHD)
+            assertThat(mark.locator("svg path")).hasAttribute("fill", "currentColor")
+            assertThat(page.locator("#session-list .session-row.active[data-id='s-delta']")).hasCount(0)
+            assertThat(rowMark(page, "s-alpha")).hasAttribute("aria-pressed", "false")
+
+            mark.click()
+
+            assertThat(mark).hasAttribute("aria-pressed", "false")
+
+            // Enter on the pin bubbles to the row, which must let the pin activate instead of selecting.
+            mark.focus()
+            page.keyboard().press("Enter")
+
+            assertThat(mark).hasAttribute("aria-pressed", "true")
+            assertThat(page.locator("#session-list .session-row.active[data-id='s-delta']")).hasCount(0)
+        }
+    }
+
+    // Both kinds of mark are daemon-wide, so they must outlive the page that set them. A folder mark is
+    // a path, never a write to the sessions under it.
+    @Test
+    fun markingAFolderMarksThePathAndBothKindsOfMarkOutliveAReload() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-folder") { harness, context, page ->
+            clickRowPin(page, "s-delta")
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "true")
+
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+            val mark = folderMark(page, "/a/b")
+            assertThat(mark).hasAttribute("aria-pressed", "false")
+            assertThat(mark).hasAttribute("aria-label", "Add /a/b to ADHD mode")
+
+            clickFolderPin(page, "/a/b")
+
+            assertThat(mark).hasAttribute("aria-pressed", "true")
+            assertThat(mark).hasAttribute("aria-label", "Remove /a/b from ADHD mode")
+            assertThat(rowMark(page, "s-alpha")).hasAttribute("aria-pressed", "false")
+            assertThat(rowMark(page, "s-beta")).hasAttribute("aria-pressed", "false")
+            // Listed through the folder rather than by a mark of their own, and their pins say so.
+            assertThat(rowMark(page, "s-alpha")).hasClass(COVERED)
+            assertThat(rowMark(page, "s-alpha")).hasAttribute("aria-label", Pattern.compile("through /a/b$"))
+            assertThat(rowMark(page, "s-gamma")).not().hasClass(COVERED)
+            assertThat(folderMark(page, "/a")).hasAttribute("aria-pressed", "false")
+
+            page.navigate("${harness.baseUrl}/")
+            assertThat(page.locator("#sidebar")).isVisible()
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "true")
+            assertThat(folderMark(page, "/a")).hasAttribute("aria-pressed", "false")
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "true")
+            assertThat(rowMark(page, "s-alpha")).hasAttribute("aria-pressed", "false")
+
+            // What is marked comes from the daemon; whether this screen is reduced is device state.
+            page.locator("#adhd-toggle").click()
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+
+            page.navigate("${harness.baseUrl}/")
+            assertThat(page.locator("#sidebar")).isVisible()
+
+            assertThat(page.locator("#adhd-toggle")).hasAttribute("aria-pressed", "true")
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+
+            // A second client is served the marks and receives later ones live, without reloading.
+            val second = context.newPage()
+            second.navigate("${harness.baseUrl}/")
+            assertThat(second.locator("#sidebar")).isVisible()
+            assertThat(rowMark(second, "s-delta")).hasAttribute("aria-pressed", "true")
+
+            // The mode is device state, so a second tab of the same browser opens in it.
+            assertThat(second.locator("#adhd-toggle")).hasAttribute("aria-pressed", "true")
+            second.locator("#adhd-toggle").click()
+
+            assertThat(rowMark(second, "s-gamma")).hasAttribute("aria-pressed", "false")
+
+            clickRowPin(second, "s-gamma")
+
+            assertThat(rowMark(second, "s-gamma")).hasAttribute("aria-pressed", "true")
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            assertThat(page.locator("#session-list .session-row[data-id='s-gamma']")).hasCount(1)
+        }
+    }
+
+    @Test
+    fun theDoneListOffersNoMarkingAndItsRestoreAnswersTheKeyboard() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-done") { _, _, page ->
             page.onDialog { it.accept() }
             markDone(page, "s-delta")
             page.locator("#show-done-toggle").click()
+
             assertThat(page.locator("#done-list .session-row[data-id='s-delta']")).hasCount(1)
+            assertThat(page.locator("#done-list .row-adhd")).hasCount(0)
+            assertThat(page.locator("#done-list .group-adhd")).hasCount(0)
 
             // Enter on Restore bubbles to the row, which must let Restore activate instead of selecting.
             page.locator("#done-list .session-row[data-id='s-delta'] .session-restore").focus()
@@ -212,6 +321,154 @@ class SidebarTest {
 
             assertThat(page.locator("#done-list .session-row[data-id='s-delta']")).hasCount(0)
             assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(1)
+        }
+    }
+
+    @Test
+    fun adhdModeShowsOnlyPinnedRowsAndSaysSoWhenNothingIsPinned() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-mode") { _, _, page ->
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            // Select one first: the selected row always survives the reduction, so the notice below
+            // cannot be gated on the list being empty.
+            page.locator("#session-list .session-row[data-id='s-alpha']").click()
+            assertThat(page.locator("#session-list .session-row.active[data-id='s-alpha']")).hasCount(1)
+            val toggle = page.locator("#adhd-toggle")
+            assertThat(toggle).hasAttribute("aria-pressed", "false")
+
+            toggle.click()
+
+            assertThat(toggle).hasAttribute("aria-pressed", "true")
+            assertThat(page.locator("#session-list .session-row")).hasCount(1)
+            assertThat(page.locator("#session-list .session-row[data-id='s-alpha']")).hasCount(1)
+            assertThat(page.locator("#empty-adhd")).isVisible()
+            assertThat(page.locator("#empty-adhd")).containsText("3 session(s)")
+            assertThat(page.locator("#empty-sessions")).hasCount(0)
+            assertThat(page.locator("#sessions-loading")).hasCount(0)
+            // Unlike #show-done-toggle, the way out stays reachable when nothing is pinned.
+            assertThat(toggle).isVisible()
+
+            page.locator("#empty-adhd-show-all").click()
+
+            assertThat(toggle).hasAttribute("aria-pressed", "false")
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            assertThat(page.locator("#empty-adhd")).hasCount(0)
+
+            clickRowPin(page, "s-delta")
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "true")
+            toggle.click()
+
+            assertThat(page.locator("#empty-adhd")).hasCount(0)
+            assertThat(page.locator("#session-list .session-row")).hasCount(2)
+            assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(1)
+            assertThat(page.locator("#session-list .session-row[data-id='s-alpha']")).hasCount(1)
+            // Strict by the operator's choice: the attention section and its count follow the reduction.
+            assertThat(page.locator("#attention-list .session-row")).hasCount(0)
+            assertThat(page.locator("#attention-num")).hasText("0")
+
+            page.locator(".nav-link").filter(Locator.FilterOptions().setHasText("Tasks")).click()
+
+            assertThat(page.locator("#adhd-toggle")).hasCount(0)
+        }
+    }
+
+    @Test
+    fun aPinnedFolderCarriesItsSessionsAndTheSelectedRowSurvivesTheReduction() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-mode-folder") { _, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+            clickFolderPin(page, "/a/b")
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "true")
+            // A covered row can still take a mark of its own, and that one outlives the folder's.
+            assertThat(rowMark(page, "s-alpha")).hasClass(COVERED)
+            clickRowPin(page, "s-alpha")
+            assertThat(rowMark(page, "s-alpha")).hasAttribute("aria-pressed", "true")
+            assertThat(rowMark(page, "s-alpha")).not().hasClass(COVERED)
+            page.locator("#session-list .session-row[data-id='s-delta']").click()
+            assertThat(page.locator("#session-list .session-row.active[data-id='s-delta']")).hasCount(1)
+
+            page.locator("#adhd-toggle").click()
+
+            // assertSidebarTree reads the DOM once, so wait for the reduced list before comparing it.
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+            assertSidebarTree(
+                page,
+                """
+                a [/a] (2)
+                  b [/a/b] (2)
+                    s-alpha
+                    s-beta
+                d [/d] (1)
+                  s-delta
+                """.trimIndent(),
+                "a pinned folder carries every session under it, and the selected row keeps its place",
+            )
+
+            clickFolderPin(page, "/a/b")
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(2)
+            assertSidebarTree(
+                page,
+                """
+                a [/a] (1)
+                  b [/a/b] (1)
+                    s-alpha
+                d [/d] (1)
+                  s-delta
+                """.trimIndent(),
+                "unpinning the folder keeps s-alpha by its own mark and s-delta because it is selected",
+            )
+        }
+    }
+
+    @Test
+    fun theDoneSectionIgnoresAdhdModeEntirely() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-mode-done") { _, _, page ->
+            page.onDialog { it.accept() }
+            markDone(page, "s-delta")
+            page.locator("#show-done-toggle").click()
+            assertThat(page.locator("#done-list .session-row[data-id='s-delta']")).hasCount(1)
+
+            page.locator("#adhd-toggle").click()
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(0)
+            assertThat(page.locator("#show-done-toggle")).isVisible()
+            assertThat(page.locator("#done-list .session-row[data-id='s-delta']")).hasCount(1)
+            assertThat(page.locator("#done-count")).hasText("1")
+        }
+    }
+
+    // A mark whose folder the grouping can no longer draw would keep filtering with nothing to clear it.
+    @Test
+    fun changingTheGroupingLevelUnpinsFoldersItCanNoLongerShow() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-regroup") { _, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+            clickFolderPin(page, "/a/b")
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "true")
+            clickFolderPin(page, "/d")
+            assertThat(folderMark(page, "/d")).hasAttribute("aria-pressed", "true")
+            page.locator("#adhd-toggle").click()
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+
+            configureGrouping(page, basePath = "/", level = 1)
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(1)
+            assertSidebarTree(
+                page,
+                """
+                d [/d] (1)
+                  s-delta
+                """.trimIndent(),
+                "level 1 draws no /a/b folder, so its mark went and its sessions left the reduced list",
+            )
+            assertThat(folderMark(page, "/d")).hasAttribute("aria-pressed", "true")
+
+            page.locator("#adhd-toggle").click()
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "false")
+            assertThat(folderMark(page, "/d")).hasAttribute("aria-pressed", "true")
         }
     }
 
@@ -783,6 +1040,26 @@ private fun awaitFoldedTree(page: Page, deepestFolder: String) {
 
 private fun folderHead(page: Page, path: String): Locator =
     page.locator("#session-list .group-head:has(.group-title[title='$path'])")
+
+private fun rowMark(page: Page, id: String): Locator =
+    page.locator("#session-list .session-row[data-id='$id'] .row-adhd")
+
+private fun folderMark(page: Page, path: String): Locator = folderHead(page, path).locator(".group-adhd")
+
+// An empty pin takes no pointer events until its row is hovered, as a real pointer does before a click.
+private fun clickRowPin(page: Page, id: String) {
+    page.locator("#session-list .session-row[data-id='$id']").hover()
+    rowMark(page, id).click()
+}
+
+private fun clickFolderPin(page: Page, path: String) {
+    folderHead(page, path).hover()
+    folderMark(page, path).click()
+}
+
+private val ADD_TO_ADHD: Pattern = Pattern.compile("^Add .+ to ADHD mode$")
+private val REMOVE_FROM_ADHD: Pattern = Pattern.compile("^Remove .+ from ADHD mode$")
+private val COVERED: Pattern = Pattern.compile("\\bcovered\\b")
 
 private fun doneFolderHead(page: Page, path: String): Locator =
     page.locator("#done-list .group-head:has(.group-title[title='$path'])")

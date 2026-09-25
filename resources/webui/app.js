@@ -43,7 +43,9 @@ import { affectsAttachment, buildCommands } from "./lib/commands.js";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
 import { READY } from "./lib/readiness.js";
 import {
+  loadAdhdMode,
   loadSidebarCollapsed,
+  persistAdhdMode,
   persistSidebarCollapsed,
 } from "./lib/prefs.js";
 import { notifyAttention } from "./lib/notify.js";
@@ -121,6 +123,7 @@ import {
   applyDevicePreferences,
   applyServerPreferences,
   prefs as prefsSignal,
+  prefsReadiness,
   serverPrefs,
 } from "./state/prefs.js";
 import { Board } from "./components/Board.js";
@@ -263,6 +266,7 @@ function App() {
   // Render-body signal reads subscribe this component to the shared stores.
   const sessions = sessionsSignal.value;
   const sessionsReady = sessionsReadiness.status.value.state === READY;
+  const prefsReady = prefsReadiness.status.value.state === READY;
   const tasks = tasksSignal.value;
   const projects = projectsSignal.value;
   // Preserve idle, loading, ready, and failed so the picker can distinguish each outcome.
@@ -281,6 +285,7 @@ function App() {
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(null);
   const [palette, setPalette] = useState(null);
   const [showDone, setShowDone] = useState(false);
+  const [adhdMode, setAdhdMode] = useState(loadAdhdMode);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
   const [hint, setHint] = useState(SELECT_HINT);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -291,6 +296,7 @@ function App() {
   const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
   useEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
+  useEffect(() => { persistAdhdMode(adhdMode); }, [adhdMode]);
   useEffect(() => subscribeToRoute(setRoute), []);
 
   const openTaskEntry = route.screen === SCREEN_TASK ? findTask(route.id) : null;
@@ -1027,6 +1033,46 @@ function App() {
     });
   }, []);
 
+  const markSession = useCallback((sessionId, adhd) => {
+    // runMutation throws the busy refusal before the callback runs, so guard here or the click is a
+    // silent no-op with an unhandled rejection behind it.
+    if (pendingMutation.value) {
+      say(MUTATION_BUSY_MESSAGE, true);
+      return Promise.resolve();
+    }
+    return runMutation("adhd-session", async () => {
+      try {
+        mergeSessionRow(await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
+          method: "PATCH",
+          body: JSON.stringify({ adhd: adhd }),
+        }));
+      } catch (e) {
+        say("Could not change ADHD mode for the session: " + errorMessage(e), true);
+      }
+    });
+  }, []);
+
+  const markFolder = useCallback((path, adhd) => {
+    if (pendingMutation.value) {
+      say(MUTATION_BUSY_MESSAGE, true);
+      return Promise.resolve();
+    }
+    return runMutation("adhd-folder", async () => {
+      try {
+        const saved = await apiRequest("/preferences/adhd-paths", {
+          method: "POST",
+          body: JSON.stringify({ path: path, adhd: adhd }),
+        });
+        // A superseded answer is not a failure: newer daemon state already won and is what we want.
+        if (applyServerPreferences(saved) === PREFS_UNREADABLE) {
+          throw new Error("the daemon answered with an unreadable preferences payload");
+        }
+      } catch (e) {
+        say("Could not change ADHD mode for the folder: " + errorMessage(e), true);
+      }
+    });
+  }, []);
+
   const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
     const selected = activeSessionSignal.value;
     openDialog({
@@ -1157,6 +1203,7 @@ function App() {
   const done = useCallback(() => controlSession("done"), [controlSession]);
   const restore = useCallback((id) => controlSession("undone", id), [controlSession]);
   const toggleShowDone = useCallback(() => setShowDone((shown) => !shown), []);
+  const toggleAdhdMode = useCallback(() => setAdhdMode((on) => !on), []);
   const changePaletteMode = useCallback((mode) => {
     setPalette((current) => current ? { mode: mode } : current);
   }, []);
@@ -1224,6 +1271,7 @@ function App() {
       collapsed=${sidebarCollapsed}
       showDone=${showDone}
       sessionsReady=${sessionsReady}
+      prefsReady=${prefsReady}
       onSelect=${selectSidebarSession}
       onSelectProject=${selectProject}
       onNewSession=${openNewSession}
@@ -1232,6 +1280,10 @@ function App() {
       onRestore=${restore}
       onCloseDrawer=${closeDrawer}
       onToggleShowDone=${toggleShowDone}
+      onMarkSession=${markSession}
+      onMarkFolder=${markFolder}
+      adhdMode=${adhdMode}
+      onToggleAdhdMode=${toggleAdhdMode}
     />
     ${""}
     ${onBoard ? html`

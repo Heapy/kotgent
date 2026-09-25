@@ -2,6 +2,7 @@ import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { UsageStrip } from "./UsageStrip.js";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
+import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import {
@@ -86,6 +87,31 @@ function NotifyIcon({ on }) {
           stroke-linecap="round"
         />`}
     </svg>`;
+}
+
+const ADHD_PIN_HEAD =
+  "M19.25,10,14,4.75a3,3,0,0,0-.5,2.75l-3,3a3.4,3.4,0,0,0-4,0l7,7c.81-1.33,1-2.78,0-4l3-3A2.79,2.79,0,0,0,19.25,10Z";
+
+function AdhdIcon({ on }) {
+  return html`
+    <svg
+      viewBox="0 0 24 24"
+      focusable="false"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d=${ADHD_PIN_HEAD} fill=${on ? "currentColor" : "none"} />
+      <line x1="9.87" y1="14.12" x2="4.75" y2="19.25" />
+    </svg>`;
+}
+
+// The row selects on click, so an inner control must keep its own click from also selecting the row.
+function stopRowActivation(event) {
+  event.stopPropagation();
 }
 
 const DONE_BOX_LID =
@@ -186,8 +212,33 @@ function TaskBadge({ session, tasks }) {
   `;
 }
 
-function SessionRow({ session, tasks, active, onSelect, onRestore }) {
+// A session under a marked folder is listed without its own mark. Its pin says so, instead of offering to
+// add something that is already in, and a click gives it a mark that outlives the folder's.
+function adhdPinState(session, adhdPaths) {
+  const name = displayName(session);
+  if (session.adhd === true) {
+    return {
+      cls: " active",
+      on: true,
+      label: "Remove " + name + " from ADHD mode",
+      title: "In ADHD mode — click to remove",
+    };
+  }
+  const folder = adhdFolderOf(session.cwd, adhdPaths);
+  if (folder !== null) {
+    return {
+      cls: " covered",
+      on: true,
+      label: "Pin " + name + " on its own; it is already in ADHD mode through " + folder,
+      title: "In ADHD mode through " + folder + " — click to pin it on its own",
+    };
+  }
+  return { cls: "", on: false, label: "Add " + name + " to ADHD mode", title: "Add to ADHD mode" };
+}
+
+function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, adhdPaths }) {
   const badge = stateBadge(session.state);
+  const pin = onMark ? adhdPinState(session, adhdPaths) : null;
   const select = () => onSelect(session.id);
   const onKeyDown = (event) => {
     // Enter on an inner button or link bubbles here; cancelling it would select instead of activating it.
@@ -221,6 +272,17 @@ function SessionRow({ session, tasks, active, onSelect, onRestore }) {
         html`<span class="unread-pill" title=${session.unread + " unread event(s)"}>
           ${session.unread}
         </span>`}
+      ${pin && html`
+        <div class="row-actions">
+          <button
+            type="button"
+            class=${"icon-button icon-button-small row-adhd" + pin.cls}
+            aria-pressed=${session.adhd === true ? "true" : "false"}
+            aria-label=${pin.label}
+            title=${pin.title}
+            onClick=${(e) => { stopRowActivation(e); onMark(session.id, session.adhd !== true); }}
+          ><${AdhdIcon} on=${pin.on} /></button>
+        </div>`}
       ${onRestore
         ? html`<button
             type="button"
@@ -239,8 +301,10 @@ function groupNeedsAttention(group) {
 }
 
 function SessionGroup({
-  group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, done = false,
+  group, tasks, activeId, collapsedGroups, onSelect, onToggle, onNewSession, onRestore, onMark,
+  onMarkFolder, adhdPaths, done = false,
 }) {
+  const folderMarked = isPathAdhd(group.path, adhdPaths);
   // The archive tree mirrors the live one, so its folders need collapse keys of their own.
   const collapseKey = (done ? "done:" : "") + group.path;
   const collapsed = collapsedGroups.has(collapseKey);
@@ -262,6 +326,19 @@ function SessionGroup({
           ${hidingAttention &&
             html`<span class="attn-dot" title="A session in this group needs attention"></span>`}
         </button>
+        ${onMarkFolder && group.path &&
+          html`<button
+            type="button"
+            class=${"icon-button icon-button-small group-adhd" + (folderMarked ? " active" : "")}
+            aria-pressed=${folderMarked ? "true" : "false"}
+            aria-label=${folderMarked
+              ? "Remove " + group.path + " from ADHD mode"
+              : "Add " + group.path + " to ADHD mode"}
+            title=${folderMarked
+              ? group.path + " is in ADHD mode — click to remove"
+              : "Add " + group.path + " to ADHD mode"}
+            onClick=${() => onMarkFolder(group.path, !folderMarked)}
+          ><${AdhdIcon} on=${folderMarked} /></button>`}
         ${!done && group.path &&
           html`<button
             type="button"
@@ -277,7 +354,7 @@ function SessionGroup({
             ? html`
               <${SessionRow} key=${entry.session.id} session=${entry.session} tasks=${tasks}
                              active=${entry.session.id === activeId} onSelect=${onSelect}
-                             onRestore=${onRestore} />`
+                             onRestore=${onRestore} onMark=${onMark} adhdPaths=${adhdPaths} />`
             : html`
               <${SessionGroup}
                 key=${entry.group.path}
@@ -289,6 +366,9 @@ function SessionGroup({
                 onToggle=${onToggle}
                 onNewSession=${onNewSession}
                 onRestore=${onRestore}
+                onMark=${onMark}
+                onMarkFolder=${onMarkFolder}
+                adhdPaths=${adhdPaths}
                 done=${done}
               />`))}
         </ul>
@@ -300,9 +380,9 @@ function SessionGroup({
 export function Sidebar({
   screen = SCREEN_SESSIONS,
   sessions, tasks, projects = [], projectId = null, activeId, prefs, status, currentVersion,
-  drawerOpen, collapsed, showDone, sessionsReady,
+  drawerOpen, collapsed, showDone, sessionsReady, prefsReady = false,
   onSelect, onSelectProject, onNewSession, onNewProject, onOpenPrefs, onRestore, onCloseDrawer,
-  onToggleShowDone,
+  onToggleShowDone, onMarkSession, onMarkFolder, adhdMode = false, onToggleAdhdMode,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
@@ -422,7 +502,18 @@ export function Sidebar({
     repairPushRef.current();
   };
   const onTasks = screen === SCREEN_TASKS;
-  const visible = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
+  const live = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
+  // Everything below renders the reduced list; only the empty states read `live`, so a reduced-to-empty
+  // sidebar says why instead of claiming there are no sessions.
+  const visible = useMemo(() => {
+    if (!adhdMode || onTasks) return live;
+    // The selected session keeps its row, or unmarking it strands the terminal with no row to return to.
+    return live.filter((s) => s.id === activeId || isSessionInAdhd(s, prefs.adhdPaths));
+  }, [activeId, adhdMode, live, onTasks, prefs.adhdPaths]);
+  const nothingPinned = useMemo(
+    () => !onTasks && !live.some((s) => isSessionInAdhd(s, prefs.adhdPaths)),
+    [live, onTasks, prefs.adhdPaths],
+  );
   // Every live frame replaces the sessions array, so the archive derivations below key on this
   // signature instead: it moves only when an archived row does. The id length keeps it unambiguous.
   const [doneSessions, doneSignature] = useMemo(() => {
@@ -480,6 +571,19 @@ export function Sidebar({
                 title=${"Done sessions (" + doneSessions.length + ")"}
                 onClick=${onToggleShowDone}
               ><${DoneIcon} /></button>
+            `}
+            ${!onTasks && html`
+              <button
+                id="adhd-toggle"
+                class=${"icon-button icon-button-small adhd-toggle" + (adhdMode ? " active" : "")}
+                type="button"
+                aria-pressed=${adhdMode ? "true" : "false"}
+                aria-label=${adhdMode ? "Leave ADHD mode" : "Enter ADHD mode"}
+                title=${adhdMode
+                  ? "ADHD mode on — click to show every session"
+                  : "ADHD mode off — click to show only pinned sessions and folders"}
+                onClick=${onToggleAdhdMode}
+              ><${AdhdIcon} on=${adhdMode} /></button>
             `}
             <button
               id="notify-toggle"
@@ -552,7 +656,8 @@ export function Sidebar({
           <ul id="attention-list" class="session-list">
             ${attention.map((s) => html`
               <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
-                             active=${s.id === activeId} onSelect=${onSelect} />
+                             active=${s.id === activeId} onSelect=${onSelect}
+                             onMark=${onMarkSession} adhdPaths=${prefs.adhdPaths} />
             `)}
           </ul>
         </section>
@@ -586,24 +691,35 @@ export function Sidebar({
                   onSelect=${onSelect}
                   onToggle=${toggleGroup}
                   onNewSession=${onNewSession}
+                  onMark=${onMarkSession}
+                  onMarkFolder=${onMarkFolder}
+                  adhdPaths=${prefs.adhdPaths}
                 />
               `)
             : visible.map((s) => html`
                 <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
-                               active=${s.id === activeId} onSelect=${onSelect} />
+                               active=${s.id === activeId} onSelect=${onSelect}
+                               onMark=${onMarkSession} adhdPaths=${prefs.adhdPaths} />
               `)}
         </ul>
 
-        ${visible.length === 0 && !sessionsReady && html`
+        ${live.length === 0 && !sessionsReady && html`
           <div id="sessions-loading" class="empty-sessions">
             <p>Loading sessions…</p>
           </div>
         `}
-        ${visible.length === 0 && sessionsReady && html`
+        ${live.length === 0 && sessionsReady && html`
           <div id="empty-sessions" class="empty-sessions">
             <p>No sessions yet. Start one to attach it here.</p>
             <button id="empty-new-session-button" class="button button-primary" type="button"
                     onClick=${() => onNewSession(null)}>Start a session</button>
+          </div>
+        `}
+        ${adhdMode && prefsReady && live.length > 0 && nothingPinned && html`
+          <div id="empty-adhd" class="empty-sessions">
+            <p>No live session is pinned. ADHD mode is hiding ${live.length - visible.length} session(s).</p>
+            <button id="empty-adhd-show-all" class="button button-primary" type="button"
+                    onClick=${onToggleAdhdMode}>Show all</button>
           </div>
         `}
       </section>

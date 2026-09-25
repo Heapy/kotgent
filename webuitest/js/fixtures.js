@@ -17,6 +17,7 @@ export function sessionRow(overrides) {
     model: "opus",
     taskRef: null,
     projectId: "p1",
+    adhd: false,
     updatedAt: 100,
     rev: 2,
     ...overrides,

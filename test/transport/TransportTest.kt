@@ -1459,6 +1459,73 @@ class TransportTest {
     }
 
     @Test
+    fun markingAFolderPublishesTheCanonicalPathAndConsumesARevision() = withServer { ctx ->
+        val response = ctx.postBody(
+            "/preferences/adhd-paths",
+            """{"path":"  //Users///me/dev///  ","adhd":true}""",
+        )
+
+        assertEquals(HttpStatusCode.OK, response.status, "answered ${response.bodyAsText()}")
+        val saved = TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), response.bodyAsText())
+        assertEquals(listOf("/Users/me/dev"), saved.adhdPaths, "the path is canonicalized like basePath")
+        assertEquals(1L, saved.revision, "a folder mark moves the revision clients merge on")
+        assertEquals(saved, ctx.getPreferences(), "GET reads back the persisted value")
+    }
+
+    @Test
+    fun unmarkingAFolderDropsItFromThePublishedPaths() = withServer { ctx ->
+        assertEquals(HttpStatusCode.OK, ctx.postBody("/preferences/adhd-paths", """{"path":"/a","adhd":true}""").status)
+        assertEquals(HttpStatusCode.OK, ctx.postBody("/preferences/adhd-paths", """{"path":"/b","adhd":true}""").status)
+
+        val response = ctx.postBody("/preferences/adhd-paths", """{"path":"/a","adhd":false}""")
+
+        assertEquals(HttpStatusCode.OK, response.status, "answered ${response.bodyAsText()}")
+        val saved = TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), response.bodyAsText())
+        assertEquals(listOf("/b"), saved.adhdPaths, "only the named path is dropped")
+        assertEquals(3L, saved.revision)
+    }
+
+    @Test
+    fun invalidFolderMarkBodiesAre400WithoutMutation() = withServer { ctx ->
+        val before = ctx.getPreferences()
+        val invalidBodies = listOf(
+            "not-json",
+            "{}",
+            """{"path":"relative/path","adhd":true}""",
+            """{"path":"","adhd":true}""",
+            """{"path":"   ","adhd":true}""",
+            """{"path":"/work"}""",
+            """{"adhd":true}""",
+            """{"path":"/work","adhd":"true"}""",
+            """{"path":42,"adhd":true}""",
+            """{"path":"/a\nb","adhd":true}""",
+            """{"path":"/${"a".repeat(4096)}","adhd":true}""",
+        )
+
+        for (body in invalidBodies) {
+            val response = ctx.postBody("/preferences/adhd-paths", body)
+            assertEquals(HttpStatusCode.BadRequest, response.status, "invalid body must be rejected: $body")
+            assertEquals(before, ctx.getPreferences(), "a rejected request cannot mutate or consume a revision")
+        }
+    }
+
+    @Test
+    fun groupingAndFolderMarksTravelTogetherWithoutDisturbingEachOther() = withServer { ctx ->
+        assertEquals(
+            HttpStatusCode.OK,
+            ctx.postBody("/preferences/adhd-paths", """{"path":"/Users/me/dev","adhd":true}""").status,
+        )
+
+        val response = ctx.putPreferences("""{"basePath":"/Users/me","groupingLevel":2}""")
+
+        assertEquals(HttpStatusCode.OK, response.status, "answered ${response.bodyAsText()}")
+        val saved = TRANSPORT_JSON.decodeFromString(PreferencesDto.serializer(), response.bodyAsText())
+        assertEquals(listOf("/Users/me/dev"), saved.adhdPaths, "saving grouping keeps the folder marks")
+        assertEquals("/Users/me", saved.basePath)
+        assertEquals(2, saved.groupingLevel)
+    }
+
+    @Test
     fun preferencesAreReachableThroughThePublishedTunnel() =
         withServer(publicUrl = publicUrl) { ctx ->
             val response = ctx.client.put("http://127.0.0.1:${ctx.port}$API_PREFIX/preferences") {

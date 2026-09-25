@@ -327,10 +327,11 @@ data class SessionUpdateDto(
     val unread: Long,
     val archived: Boolean = false,
     val model: String? = null,
-    // Wire contract: an absent `name` means "keep the value the client already holds", because a
-    // daemon that predates the field omits it; `""` is a deliberate reset to the automatic label.
-    // `model` reads its null the opposite way, as an authoritative clear.
+    // Wire contract: an absent `name` or `adhd` means "keep the value the client already holds",
+    // because a daemon that predates either field omits it; for `name`, `""` is a deliberate reset to
+    // the automatic label. `model` reads its null the opposite way, as an authoritative clear.
     val name: String? = null,
+    val adhd: Boolean? = null,
     val rev: Long = 0,
     val updatedAt: Long = 0,
     val taskRef: String? = null,
@@ -346,6 +347,7 @@ fun SessionUpdate.toDto(): SessionUpdateDto = SessionUpdateDto(
     archived = archived,
     model = model,
     name = name,
+    adhd = adhd,
     rev = rev,
     updatedAt = updatedAt,
     taskRef = taskRef?.value,

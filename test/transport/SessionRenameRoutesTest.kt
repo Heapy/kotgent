@@ -55,10 +55,10 @@ class SessionRenameRoutesTest {
     private val seededAt = 1_700_000_000_000L
 
     @Test
-    fun renamingAnswersTheNewNameAndAHigherRevision() = withRenameServer { env ->
+    fun renamingAnswersTheNewNameAndAHigherRevision() = withPatchServer { env ->
         val before = assertNotNull(env.store.getSession(seeded))
 
-        val resp = env.rename(seeded.value, """{"name":"ship the parser"}""")
+        val resp = env.patchSession(seeded.value, """{"name":"ship the parser"}""")
 
         assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
         val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
@@ -68,8 +68,8 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun renamingLeavesUpdatedAtAlone() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, """{"name":"later"}""")
+    fun renamingLeavesUpdatedAtAlone() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":"later"}""")
 
         assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
         val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
@@ -81,8 +81,8 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun anEmptyNameIsAcceptedAndMeansTheAutomaticLabel() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, """{"name":""}""")
+    fun anEmptyNameIsAcceptedAndMeansTheAutomaticLabel() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":""}""")
 
         assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
         val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
@@ -92,14 +92,14 @@ class SessionRenameRoutesTest {
     // `kotgent list` renders whatever GET /sessions answers, so the renamed row has to reach that list and
     // not only the PATCH response the renaming client already holds.
     @Test
-    fun theSessionListShowsTheRenamedNameAndTheClearedOneFallsBackToTmux() = withRenameServer { env ->
-        assertEquals(HttpStatusCode.OK, env.rename(seeded.value, """{"name":"ship the parser"}""").status)
+    fun theSessionListShowsTheRenamedNameAndTheClearedOneFallsBackToTmux() = withPatchServer { env ->
+        assertEquals(HttpStatusCode.OK, env.patchSession(seeded.value, """{"name":"ship the parser"}""").status)
 
         val listed = assertNotNull(env.sessions().firstOrNull { it.id == seeded.value })
         assertEquals("ship the parser", listed.name)
         assertEquals(seededAt, listed.updatedAt, "the list orders by updatedAt, which a rename does not touch")
 
-        assertEquals(HttpStatusCode.OK, env.rename(seeded.value, """{"name":""}""").status)
+        assertEquals(HttpStatusCode.OK, env.patchSession(seeded.value, """{"name":""}""").status)
 
         val cleared = assertNotNull(env.sessions().firstOrNull { it.id == seeded.value })
         assertEquals("", cleared.name)
@@ -111,24 +111,24 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun renamingAnUnknownSessionIs404() = withRenameServer { env ->
-        val resp = env.rename("s-absent", """{"name":"whatever"}""")
+    fun renamingAnUnknownSessionIs404() = withPatchServer { env ->
+        val resp = env.patchSession("s-absent", """{"name":"whatever"}""")
 
         assertEquals(HttpStatusCode.NotFound, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(resp.bodyAsText().contains("s-absent"), "the refusal names the session it could not find")
     }
 
     @Test
-    fun aMalformedSessionIdIs400() = withRenameServer { env ->
-        val resp = env.rename("%20", """{"name":"whatever"}""")
+    fun aMalformedSessionIdIs400() = withPatchServer { env ->
+        val resp = env.patchSession("%20", """{"name":"whatever"}""")
 
         assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(resp.bodyAsText().contains("malformed"), "the refusal says what was wrong")
     }
 
     @Test
-    fun aBodyCarryingNoFieldIs400AndNamesWhatAPatchMayCarry() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, "{}")
+    fun aBodyCarryingNoFieldIs400AndNamesWhatAPatchMayCarry() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, "{}")
 
         assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(resp.bodyAsText().contains("name"), "the refusal names the field: ${resp.bodyAsText()}")
@@ -136,10 +136,79 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun anOverLongNameIs400AndChangesNothing() = withRenameServer { env ->
+    fun markingAnswersTheFlagAndAHigherRevision() = withPatchServer { env ->
+        val before = assertNotNull(env.store.getSession(seeded))
+        assertEquals(false, before.adhd, "the seeded session starts unmarked")
+
+        val resp = env.patchSession(seeded.value, """{"adhd":true}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertTrue(dto.adhd, "the response carries the new mark")
+        assertTrue(dto.rev > before.rev, "marking advances the revision: ${dto.rev} vs ${before.rev}")
+        assertTrue(assertNotNull(env.store.getSession(seeded)).adhd, "and the store holds it")
+    }
+
+    @Test
+    fun markingLeavesTheNameAndUpdatedAtAlone() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"adhd":true}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("seeded", dto.name, "marking is not a rename")
+        assertEquals(seededAt, dto.updatedAt, "marking is not session activity and must not reorder the list")
+    }
+
+    @Test
+    fun unmarkingClearsTheFlag() = withPatchServer { env ->
+        assertEquals(HttpStatusCode.OK, env.patchSession(seeded.value, """{"adhd":true}""").status)
+
+        val resp = env.patchSession(seeded.value, """{"adhd":false}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals(false, dto.adhd)
+        assertEquals(false, assertNotNull(env.store.getSession(seeded)).adhd)
+    }
+
+    @Test
+    fun onePatchCanCarryBothFields() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":"ship the parser","adhd":true}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("ship the parser", dto.name)
+        assertTrue(dto.adhd, "both fields applied in one request")
+    }
+
+    @Test
+    fun aBodyWhoseFieldsAreAllExplicitlyNullIs400() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":null,"adhd":null}""")
+
+        assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
+        assertTrue(resp.bodyAsText().contains("name"), "the refusal names the fields: ${resp.bodyAsText()}")
+        assertEquals("seeded", assertNotNull(env.store.getSession(seeded)).name, "nothing changed")
+    }
+
+    // TRANSPORT_JSON encodes defaults, so the CLI's rename body now carries "adhd":null. An explicit
+    // null must read as absent, never as a clear.
+    @Test
+    fun anExplicitlyNullAdhdBesideANameRenamesAndKeepsTheMark() = withPatchServer { env ->
+        assertEquals(HttpStatusCode.OK, env.patchSession(seeded.value, """{"adhd":true}""").status)
+
+        val resp = env.patchSession(seeded.value, """{"name":"renamed by the cli","adhd":null}""")
+
+        assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
+        val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
+        assertEquals("renamed by the cli", dto.name)
+        assertTrue(dto.adhd, "an absent-by-null adhd keeps the mark the operator set")
+    }
+
+    @Test
+    fun anOverLongNameIs400AndChangesNothing() = withPatchServer { env ->
         val tooLong = "n".repeat(MAX_SESSION_NAME_LENGTH + 1)
 
-        val resp = env.rename(seeded.value, """{"name":"$tooLong"}""")
+        val resp = env.patchSession(seeded.value, """{"name":"$tooLong"}""")
 
         assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(
@@ -154,8 +223,8 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun aControlCharacterInTheNameIs400AndChangesNothing() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, """{"name":"two\nlines"}""")
+    fun aControlCharacterInTheNameIs400AndChangesNothing() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":"two\nlines"}""")
 
         assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(resp.bodyAsText().contains("control"), "the refusal says why: ${resp.bodyAsText()}")
@@ -167,8 +236,8 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun aBodyThatIsNotJsonIs400RatherThanA500() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, "not json at all")
+    fun aBodyThatIsNotJsonIs400RatherThanA500() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, "not json at all")
 
         assertEquals(HttpStatusCode.BadRequest, resp.status, "answered ${resp.bodyAsText()}")
         assertTrue(resp.bodyAsText().contains("invalid request body"), "the refusal names the body: ${resp.bodyAsText()}")
@@ -176,8 +245,8 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun aWhitespaceOnlyNameIsStoredAsTheEmptyOneSoNoClientShowsABlankLabel() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, """{"name":"   "}""")
+    fun aWhitespaceOnlyNameIsStoredAsTheEmptyOneSoNoClientShowsABlankLabel() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":"   "}""")
 
         assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
         val dto = TRANSPORT_JSON.decodeFromString(SessionDto.serializer(), resp.bodyAsText())
@@ -191,8 +260,8 @@ class SessionRenameRoutesTest {
     }
 
     @Test
-    fun surroundingWhitespaceIsTrimmedSoTheCliAndTheBrowserStoreTheSameName() = withRenameServer { env ->
-        val resp = env.rename(seeded.value, """{"name":"  padded  "}""")
+    fun surroundingWhitespaceIsTrimmedSoTheCliAndTheBrowserStoreTheSameName() = withPatchServer { env ->
+        val resp = env.patchSession(seeded.value, """{"name":"  padded  "}""")
 
         assertEquals(HttpStatusCode.OK, resp.status, "answered ${resp.bodyAsText()}")
         assertEquals("padded", assertNotNull(env.store.getSession(seeded)).name)
@@ -214,7 +283,7 @@ class SessionRenameRoutesTest {
             )
         }
 
-        suspend fun rename(id: String, body: String): HttpResponse =
+        suspend fun patchSession(id: String, body: String): HttpResponse =
             client.patch("http://127.0.0.1:$port$API_PREFIX/sessions/$id") {
                 header(HttpHeaders.Authorization, "Bearer $token")
                 contentType(ContentType.Application.Json)
@@ -222,7 +291,7 @@ class SessionRenameRoutesTest {
             }
     }
 
-    private fun withRenameServer(block: suspend (Env) -> Unit) = runBlocking {
+    private fun withPatchServer(block: suspend (Env) -> Unit) = runBlocking {
         withTimeout(60.seconds) {
             val store = FakeEventStore()
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

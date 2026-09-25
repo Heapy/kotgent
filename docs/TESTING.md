@@ -340,6 +340,11 @@ Real-device release checklist:
   reset and when that reading was seen. Tapping it opens the root view from a closed app and from an
   already open task/session; attention notifications still open their session. Check repeated wakes on
   two devices: reading on one must not consume the other's item.
+- ADHD mode on a phone: the pin on a session row and on a folder head must be reachable by thumb without
+  selecting the row, and both must stay visible, because a touch screen has no hover to reveal them. On a
+  notched phone the header must keep the archive, ADHD and notification toggles plus the close button on
+  one line and clear of the safe-area inset. On a device that reports hover but is touched — an iPad with
+  a trackpad, a touchscreen laptop — the first tap on a row must select it, never pin it.
 - On iOS and Android, long-press a board card's title and linked-session name; neither a text-selection
   menu nor a link callout should appear, while a tap should still open the task or session.
 - Both project dialogs on a phone and a tablet: the swipe handle, the compensated padding, and backdrop

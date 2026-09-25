@@ -7,12 +7,14 @@ export const LEGACY_PREFS_KEY = "kotgent.prefs.v1";
 export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
 export const TERMINAL_UNICODE_KEY = "kotgent.terminalUnicode.v1";
 export const SIDEBAR_COLLAPSED_KEY = "kotgent.sidebarCollapsed.v1";
+export const ADHD_MODE_KEY = "kotgent.adhdMode.v1";
 export const MAX_GROUPING_LEVEL = 4;
 export const TERMINAL_FONT_SIZES = [11, 13, 16];
 export const DEFAULT_PREFS = {
   basePath: "",
   groupingLevel: 1,
   revision: 0,
+  adhdPaths: [],
   terminalFontSize: 13,
   terminalUnicode: DEFAULT_TERMINAL_UNICODE,
 };
@@ -34,6 +36,9 @@ export function sanitizePrefs(raw) {
       ? fontSize
       : DEFAULT_PREFS.terminalFontSize,
     terminalUnicode: isTerminalUnicodeMode(unicode) ? unicode : DEFAULT_PREFS.terminalUnicode,
+    // Seeded before the first server read, so the sidebar's membership rule never sees undefined. Only
+    // the daemon supplies real paths, through sanitizeServerPreferences.
+    adhdPaths: [],
   };
 }
 
@@ -43,12 +48,17 @@ export function sanitizeServerPreferences(raw) {
       raw.groupingLevel < 0 ||
       raw.groupingLevel > MAX_GROUPING_LEVEL) return null;
   if (!Number.isSafeInteger(raw.revision) || raw.revision < 0) return null;
+  // A daemon that predates ADHD mode omits the field; anything else must be a list of strings.
+  const adhdPaths = raw.adhdPaths === undefined ? [] : raw.adhdPaths;
+  if (!Array.isArray(adhdPaths)) return null;
+  if (adhdPaths.some((path) => typeof path !== "string")) return null;
   const basePath = normalizePath(raw.basePath);
   if (basePath.length > 0 && basePath.charAt(0) !== "/") return null;
   return {
     basePath: basePath,
     groupingLevel: raw.groupingLevel,
     revision: raw.revision,
+    adhdPaths: adhdPaths.slice(),
   };
 }
 
@@ -112,5 +122,20 @@ export function loadSidebarCollapsed() {
 export function persistSidebarCollapsed(value) {
   try {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value === true ? "true" : "false");
+  } catch (_) { /* best effort */ }
+}
+
+// Which sessions are marked is daemon-wide; whether this screen is reduced right now is not.
+export function loadAdhdMode() {
+  try {
+    return window.localStorage.getItem(ADHD_MODE_KEY) === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
+export function persistAdhdMode(value) {
+  try {
+    window.localStorage.setItem(ADHD_MODE_KEY, value === true ? "true" : "false");
   } catch (_) { /* best effort */ }
 }

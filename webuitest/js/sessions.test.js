@@ -84,6 +84,34 @@ describe("patchIfNewer", () => {
     assert.equal(merged[0].alive, false, "liveness is derived from the patched state, never carried over");
   });
 
+  test("an absent adhd keeps the mark the row already holds", () => {
+    const list = listOf(sessionRow({ rev: 2, adhd: true }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4 }));
+
+    assert.equal(merged[0].adhd, true, "an older daemon omits the field and must not clear the mark");
+  });
+
+  test("an explicit false clears the mark", () => {
+    const list = listOf(sessionRow({ rev: 2, adhd: true }));
+
+    const merged = patchIfNewer(list, patchFrame({ rev: 4, adhd: false }));
+
+    assert.equal(merged[0].adhd, false);
+  });
+
+  test("an explicit true sets the mark", () => {
+    const list = listOf(sessionRow({ rev: 2, adhd: false }));
+
+    assert.equal(patchIfNewer(list, patchFrame({ rev: 4, adhd: true }))[0].adhd, true);
+  });
+
+  test("an older patch carrying a mark is still discarded", () => {
+    const list = listOf(sessionRow({ rev: 5, adhd: false }));
+
+    assert.strictEqual(patchIfNewer(list, patchFrame({ rev: 4, adhd: true })), list);
+  });
+
   test("null clears a field authoritatively", () => {
     const list = listOf(sessionRow({ rev: 2, taskRef: "local:12", projectId: "p1" }));
 

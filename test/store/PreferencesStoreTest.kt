@@ -97,6 +97,224 @@ class PreferencesStoreTest {
         }
     }
 
+    @Test
+    fun markingAFolderAddsThePathAndBumpsTheSharedRevision() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory()
+
+            val marked = store.setFolderAdhd("/Users/me/dev/api", true)
+
+            assertEquals(listOf("/Users/me/dev/api"), marked.adhdPaths)
+            assertEquals(1L, marked.revision, "a folder mark moves the revision clients merge on")
+            assertEquals(marked, store.preferences.value)
+        }
+    }
+
+    @Test
+    fun unmarkingAFolderDropsThePathAndBumpsTheRevision() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory()
+            val _ = store.setFolderAdhd("/a", true)
+            val _ = store.setFolderAdhd("/b", true)
+
+            val cleared = store.setFolderAdhd("/a", false)
+
+            assertEquals(listOf("/b"), cleared.adhdPaths, "only the named path is dropped")
+            assertEquals(3L, cleared.revision)
+        }
+    }
+
+    @Test
+    fun markingTheSamePathTwiceLeavesOneEntry() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory()
+            val _ = store.setFolderAdhd("/a", true)
+
+            val again = store.setFolderAdhd("/a", true)
+
+            assertEquals(listOf("/a"), again.adhdPaths)
+            assertEquals(2L, again.revision, "a repeated mark still advertises itself to other clients")
+        }
+    }
+
+    @Test
+    fun unmarkingAPathThatWasNeverMarkedIsHarmless() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory()
+
+            val cleared = store.setFolderAdhd("/never", false)
+
+            assertEquals(emptyList(), cleared.adhdPaths)
+            assertEquals(1L, cleared.revision)
+        }
+    }
+
+    @Test
+    fun groupingAndFolderMarksDoNotDisturbEachOther() = runBlocking {
+        withTimeout(20.seconds) {
+            val stores = listOf<PreferencesStore>(SqliteEventStore.inMemory(), FakePreferencesStore())
+            for (store in stores) {
+                val who = store::class.simpleName
+                val _ = store.setFolderAdhd("/Users/me/dev", true)
+
+                val saved = store.savePreferences("/Users/me", 2)
+                assertEquals(listOf("/Users/me/dev"), saved.adhdPaths, "$who: saving grouping keeps the marks")
+
+                val marked = store.setFolderAdhd("/Users/me/other", true)
+                assertEquals("/Users/me", marked.basePath, "$who: marking keeps basePath")
+                assertEquals(2, marked.groupingLevel, "$who: marking keeps groupingLevel")
+            }
+        }
+    }
+
+    @Test
+    fun folderMarksSurviveAStoreRestart() = runBlocking {
+        withTimeout(20.seconds) {
+            val driver = inMemoryDriver(KotgentDatabase.Schema)
+            val first = SqliteEventStore.using(driver)
+            val marked = first.setFolderAdhd("/persisted", true)
+
+            val reopened = SqliteEventStore.using(driver)
+
+            assertEquals(marked, reopened.preferences.value)
+        }
+    }
+
+    @Test
+    fun initCreatesTheFolderSettingsTableOnALegacyDatabase() = runBlocking {
+        withTimeout(20.seconds) {
+            val driver = inMemoryDriver(prePreferencesSchema)
+            val first = SqliteEventStore.using(driver)
+            assertEquals(emptyList(), first.preferences.value.adhdPaths, "a legacy DB reports no marks")
+
+            val marked = first.setFolderAdhd("/legacy", true)
+            assertEquals(listOf("/legacy"), marked.adhdPaths, "…and is writable after the migration")
+
+            val reopened = SqliteEventStore.using(driver)
+            assertEquals(listOf("/legacy"), reopened.preferences.value.adhdPaths)
+        }
+    }
+
+    @Test
+    fun unmarkingAFolderClearsOnlyItsFlagAndKeepsTheRow() = runBlocking {
+        withTimeout(20.seconds) {
+            val driver = inMemoryDriver(KotgentDatabase.Schema)
+            val store = SqliteEventStore.using(driver)
+            val _ = store.setFolderAdhd("/a", true)
+
+            val cleared = store.setFolderAdhd("/a", false)
+
+            assertEquals(emptyList(), cleared.adhdPaths)
+            assertEquals(1L, folderSettingsRows(driver), "the row outlives the flag, so other folder settings would too")
+
+            val marked = store.setFolderAdhd("/a", true)
+
+            assertEquals(listOf("/a"), marked.adhdPaths, "marking again reuses the kept row")
+            assertEquals(1L, folderSettingsRows(driver))
+        }
+    }
+
+    @Test
+    fun loweringTheLevelDropsOnlyTheMarksDeeperThanTheNewLevel() = runBlocking {
+        withTimeout(20.seconds) {
+            for (store in bothStores()) {
+                val who = store::class.simpleName
+                val _ = store.savePreferences("/", 2)
+                for (path in listOf("/", "/a", "/a/b")) {
+                    val _ = store.setFolderAdhd(path, true)
+                }
+
+                val saved = store.savePreferences("/", 1)
+
+                assertEquals(listOf("/", "/a"), saved.adhdPaths, "$who: level 1 draws no /a/b folder")
+            }
+        }
+    }
+
+    @Test
+    fun raisingTheLevelKeepsEveryMark() = runBlocking {
+        withTimeout(20.seconds) {
+            for (store in bothStores()) {
+                val _ = store.savePreferences("/", 1)
+                val _ = store.setFolderAdhd("/a", true)
+
+                val saved = store.savePreferences("/", 3)
+
+                assertEquals(listOf("/a"), saved.adhdPaths, "${store::class.simpleName}")
+            }
+        }
+    }
+
+    @Test
+    fun levelZeroKeepsOnlyAMarkOnTheBaseItself() = runBlocking {
+        withTimeout(20.seconds) {
+            for (store in bothStores()) {
+                val _ = store.savePreferences("/a", 1)
+                val _ = store.setFolderAdhd("/a", true)
+                val _ = store.setFolderAdhd("/a/b", true)
+
+                val saved = store.savePreferences("/a", 0)
+
+                assertEquals(listOf("/a"), saved.adhdPaths, "${store::class.simpleName}: level 0 folds into the base")
+            }
+        }
+    }
+
+    @Test
+    fun turningGroupingOffDropsEveryFolderMark() = runBlocking {
+        withTimeout(20.seconds) {
+            for (store in bothStores()) {
+                val _ = store.savePreferences("/", 2)
+                val _ = store.setFolderAdhd("/a", true)
+                val _ = store.setFolderAdhd("/a/b", true)
+
+                val saved = store.savePreferences("", 1)
+
+                assertEquals(emptyList(), saved.adhdPaths, "${store::class.simpleName}: a flat list draws no folders")
+            }
+        }
+    }
+
+    @Test
+    fun movingTheBaseDropsMarksThatLoseTheirFolderAndKeepsOnesAlreadyOutside() = runBlocking {
+        withTimeout(20.seconds) {
+            for (store in bothStores()) {
+                val _ = store.savePreferences("/a", 2)
+                val _ = store.setFolderAdhd("/a/b", true)
+                val _ = store.setFolderAdhd("/d", true)
+
+                val saved = store.savePreferences("/c", 2)
+
+                assertEquals(
+                    listOf("/d"),
+                    saved.adhdPaths,
+                    "${store::class.simpleName}: /a/b fell outside the base, /d was outside all along",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun survivalComparesWholePathSegments() {
+        assertEquals(false, adhdPathSurvivesGrouping("/a/bc", previousBase = "/", base = "/a/b", level = 4))
+        assertEquals(true, adhdPathSurvivesGrouping("/a/b/c", previousBase = "/", base = "/a/b", level = 1))
+        assertEquals(false, adhdPathSurvivesGrouping("/a/b/c/d", previousBase = "/", base = "/a/b", level = 1))
+        assertEquals(true, adhdPathSurvivesGrouping("/d", previousBase = "/a", base = "/", level = 1))
+    }
+
+    private fun bothStores(): List<PreferencesStore> = listOf(SqliteEventStore.inMemory(), FakePreferencesStore())
+
+    private fun folderSettingsRows(driver: SqlDriver): Long =
+        driver.executeQuery(
+            identifier = null,
+            sql = "SELECT COUNT(*) FROM folder_settings",
+            mapper = { cursor ->
+                cursor.next()
+                QueryResult.Value(checkNotNull(cursor.getLong(0)))
+            },
+            parameters = 0,
+        ).value
+
     private val prePreferencesSchema = object : SqlSchema<QueryResult.Value<Unit>> {
         override val version: Long = 1
 

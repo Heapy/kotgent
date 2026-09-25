@@ -1,6 +1,7 @@
 // Keep revisioned daemon preferences separate from unversioned device-local terminal settings.
 
 import { signal } from "../vendor/signals-core.module.js";
+import { createReadiness } from "../lib/readiness.js";
 import {
   loadPrefs,
   persistTerminalFontSize,
@@ -10,10 +11,15 @@ import {
 
 export const prefs = signal(loadPrefs());
 
+// Until the daemon answers, `adhdPaths` is a placeholder in which "no folder marks" and "marks not here
+// yet" look the same, so anything that reports on marks waits for this.
+export const prefsReadiness = createReadiness();
+
 export const serverPrefs = signal({
   basePath: prefs.value.basePath,
   groupingLevel: prefs.value.groupingLevel,
   revision: prefs.value.revision,
+  adhdPaths: prefs.value.adhdPaths,
 });
 
 // Callers distinguish an unreadable response from one superseded by newer daemon state.
@@ -28,6 +34,7 @@ export function applyServerPreferences(raw) {
   if (next.revision < serverPrefs.value.revision) return PREFS_SUPERSEDED;
   serverPrefs.value = next;
   prefs.value = Object.assign({}, prefs.value, next);
+  prefsReadiness.succeed();
   return PREFS_APPLIED;
 }
 

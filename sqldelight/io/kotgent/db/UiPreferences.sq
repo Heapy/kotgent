@@ -19,3 +19,9 @@ save:
 UPDATE ui_preferences
 SET base_path = ?, grouping_level = ?, revision = revision + 1
 WHERE singleton = 1;
+
+-- Folder settings live in their own table but share this revision, so clients merge one payload.
+bumpRevision:
+UPDATE ui_preferences
+SET revision = revision + 1
+WHERE singleton = 1;

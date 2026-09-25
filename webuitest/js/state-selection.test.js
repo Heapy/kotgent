@@ -327,10 +327,10 @@ describe("state/prefs.js", () => {
     assert.notEqual(PREFS_UNREADABLE, PREFS_SUPERSEDED, "the two refusals are distinguishable");
   });
 
-  test("the daemon's own triple is kept apart from the merged view", () => {
+  test("the daemon's own fields are kept apart from the merged view", () => {
     prefs.value = { ...prefs.value, terminalFontSize: 16 };
     applyServerPreferences(committed);
-    assert.deepEqual(serverPrefs.value, { basePath: "/work", groupingLevel: 2, revision: 5 });
+    assert.deepEqual(serverPrefs.value, { basePath: "/work", groupingLevel: 2, revision: 5, adhdPaths: [] });
   });
 
   test("device preferences change only the device fields", () => {
@@ -343,7 +343,7 @@ describe("state/prefs.js", () => {
     assert.equal(prefs.value.revision, 5);
     assert.deepEqual(
       serverPrefs.value,
-      { basePath: "/work", groupingLevel: 2, revision: 5 },
+      { basePath: "/work", groupingLevel: 2, revision: 5, adhdPaths: [] },
       "a device field must never be echoed back as daemon-committed state",
     );
   });

@@ -55,11 +55,29 @@ class FakePreferencesStore : PreferencesStore {
     ): UiPreferences =
         mutex
             .withLock {
-                UiPreferences(
+                val current = preferences.value
+                current.copy(
                     basePath = basePath,
                     groupingLevel = groupingLevel,
-                    revision = preferences.value.revision + 1,
+                    revision = current.revision + 1,
+                    adhdPaths = current.adhdPaths.filter {
+                        adhdPathSurvivesGrouping(it, current.basePath, basePath, groupingLevel)
+                    },
                 ).also {
+                    preferences.value = it
+                }
+            }
+
+    override suspend fun setFolderAdhd(
+        path: String,
+        adhd: Boolean,
+    ): UiPreferences =
+        mutex
+            .withLock {
+                val current = preferences.value
+                val paths =
+                    if (adhd) (current.adhdPaths + path).distinct().sorted() else current.adhdPaths - path
+                current.copy(adhdPaths = paths, revision = current.revision + 1).also {
                     preferences.value = it
                 }
             }
@@ -143,6 +161,7 @@ class FakeEventStore(
                 archived = m.archived,
                 model = m.model,
                 name = m.name,
+                adhd = m.adhd,
                 rev = m.rev,
                 taskRef = m.taskRef,
                 projectId = m.projectId,
@@ -152,8 +171,8 @@ class FakeEventStore(
 
     override suspend fun upsertSession(meta: SessionMeta): Unit = guarded("upsertSession", meta.id.value) {
         val prior = sessionMetadata[meta.id]
-        // Whole-row writers must not regress read progress or erase the name and links owned by
-        // targeted setters.
+        // Whole-row writers must not regress read progress or erase the name, the mark and the links
+        // owned by targeted setters.
         val merged = if (prior != null) {
             meta.copy(
                 name = prior.name,
@@ -161,6 +180,7 @@ class FakeEventStore(
                 readCursor = Seq(maxOf(prior.readCursor.value, meta.readCursor.value)),
                 taskRef = meta.taskRef ?: prior.taskRef,
                 projectId = meta.projectId ?: prior.projectId,
+                adhd = prior.adhd,
             )
         } else {
             meta
@@ -201,6 +221,12 @@ class FakeEventStore(
     override suspend fun setName(sessionId: SessionId, name: String): Unit = guarded("setName", sessionId.value) {
         val m = sessionMetadata[sessionId] ?: return@guarded
         sessionMetadata[sessionId] = m.copy(name = name, rev = ++revCounter)
+        emitFromMeta(sessionId)
+    }
+
+    override suspend fun setAdhd(sessionId: SessionId, adhd: Boolean): Unit = guarded("setAdhd", sessionId.value) {
+        val m = sessionMetadata[sessionId] ?: return@guarded
+        sessionMetadata[sessionId] = m.copy(adhd = adhd, rev = ++revCounter)
         emitFromMeta(sessionId)
     }
 
@@ -308,6 +334,7 @@ class FakeEventStore(
                     archived = cached?.archived ?: false,
                     model = cached?.model,
                     name = cached?.name,
+                    adhd = cached?.adhd,
                     rev = cached?.rev ?: 0,
                     taskRef = cached?.taskRef,
                     projectId = cached?.projectId,

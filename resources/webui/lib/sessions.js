@@ -138,7 +138,7 @@ export function upsertIfNewer(list, row) {
 }
 
 // Stamp the patch revision and apply nullable fields verbatim; null is an authoritative clear. `name`
-// is the exception: an absent one keeps the value the row already holds.
+// and `adhd` are the exceptions: an absent one keeps the value the row already holds.
 export function patchIfNewer(list, msg) {
   const index = list.findIndex((s) => s.id === msg.sessionId);
   if (index < 0) return list;
@@ -157,6 +157,7 @@ export function patchIfNewer(list, msg) {
     projectId: msg.projectId,
     // See the wire contract on `SessionUpdateDto` in src/transport/EventsWs.kt.
     name: msg.name != null ? msg.name : prev.name,
+    adhd: msg.adhd != null ? msg.adhd : prev.adhd,
     updatedAt: msg.updatedAt || prev.updatedAt,
     rev: msg.rev,
   });

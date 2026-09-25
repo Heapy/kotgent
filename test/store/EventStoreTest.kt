@@ -540,6 +540,90 @@ class EventStoreTest {
     }
 
     @Test
+    fun setAdhdMarksTheSessionAdvancesRevAndIsNotActivity() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 900L })
+            val sid = SessionId("adhd01")
+            store.upsertSession(meta(sid, createdAt = 100L))
+            val before = store.getSession(sid)!!
+            assertEquals(false, before.adhd, "a new session starts unmarked")
+
+            store.setAdhd(sid, true)
+            store.getSession(sid)!!.let { m ->
+                assertTrue(m.adhd, "the operator's mark is stored")
+                assertTrue(m.rev > before.rev, "a targeted mutator advances the revision")
+                assertEquals(before.updatedAt, m.updatedAt, "marking is not activity: updated_at is NOT written")
+                assertEquals(before.createdAt, m.createdAt, "and created_at is untouched")
+            }
+
+            store.setAdhd(sid, false)
+            assertEquals(false, store.getSession(sid)!!.adhd, "setAdhd(false) clears it")
+        }
+    }
+
+    @Test
+    fun aStaleSnapshotUpsertedAfterMarkingDoesNotClearTheMark() = runBlocking {
+        withTimeout(20.seconds) {
+            val stores = listOf<EventStore>(SqliteEventStore.inMemory(now = { 1L }), FakeEventStore(now = { 1L }))
+            for (store in stores) {
+                val sid = SessionId("adhd02")
+                store.upsertSession(meta(sid))
+                val snapshot = store.getSession(sid)!!
+
+                store.setAdhd(sid, true)
+                store.upsertSession(snapshot.copy(state = SessionState.ready))
+
+                store.getSession(sid)!!.let { m ->
+                    assertTrue(m.adhd, "${store::class.simpleName}: the mark outlives the stale row")
+                    assertEquals(
+                        SessionState.ready, m.state,
+                        "${store::class.simpleName}: the rest of the snapshot still applies",
+                    )
+                }
+            }
+        }
+    }
+
+    // An activity frame can supersede setAdhd's own frame before a client drains it, and an absent
+    // `adhd` means "keep", so the frame has to carry the mark or other clients stay on the stale value.
+    @Test
+    fun anAppendAfterMarkingStillCarriesTheMarkOnItsOwnUpdate() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val sid = SessionId("adhd04")
+            store.upsertSession(meta(sid))
+            store.setAdhd(sid, true)
+
+            val seen = CompletableDeferred<Boolean?>()
+            val collector = launch {
+                store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it.adhd) }
+            }
+            yield()
+            val _ = store.append(sid, AgentEvent.TurnStarted, EventSource.hook)
+
+            assertEquals(true, seen.await(), "the activity frame carries the operator's mark")
+            collector.join()
+        }
+    }
+
+    @Test
+    fun theInitMigrationAddsAdhdToAPreExistingTable() = runBlocking {
+        withTimeout(20.seconds) {
+            val driver = inMemoryDriver(preArchivedSchema)
+            val store = SqliteEventStore.using(driver, now = { 1L })
+            val sid = SessionId("adhd03")
+            store.upsertSession(meta(sid))
+            assertEquals(false, store.getSession(sid)!!.adhd, "migrated column defaults to unmarked")
+
+            store.setAdhd(sid, true)
+            assertTrue(store.getSession(sid)!!.adhd, "…and is writable after the migration")
+
+            val reopened = SqliteEventStore.using(driver, now = { 3L })
+            assertTrue(reopened.getSession(sid)!!.adhd, "a second open over the migrated DB still reads it")
+        }
+    }
+
+    @Test
     fun markReadAdvancesTheCursorAndLeavesEverythingElseAlone() = runBlocking {
         withTimeout(20.seconds) {
             val store = SqliteEventStore.inMemory(now = { 500L })

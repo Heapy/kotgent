@@ -48,6 +48,16 @@ the common workflow and links to those guides; implementation invariants belong 
   live session emissions. Task data stays in `SqliteTaskStore`.
 - A session `name` is operator-owned metadata, never identity or event-log state. `upsert` preserves it;
   `setName` advances `rev` without changing activity order.
+- `sessions.adhd` is operator-owned ADHD-mode membership, handled exactly like `name`: `upsert` preserves
+  it, `setAdhd` advances `rev` without changing activity order, and `emitFromRow` reads it off the row.
+  Folder membership lives in `folder_settings`, keyed by absolute path because folders are derived from
+  each session's `cwd` and have no identity. Clearing a mark updates its column and keeps the row, which
+  will carry the folder's other settings.
+  `setFolderAdhd` writes that table and bumps `ui_preferences.revision` in one transaction under the same
+  mutex as `savePreferences`, so clients merge one revisioned payload.
+- Folder marks share `ui_preferences.revision`, which is also `PreferencesDialog`'s remount key, so never
+  put folder-mark controls inside that dialog: each click would reset it. A mark from another device
+  resets an open dialog too; accepted, because one operator does not edit grouping while marking elsewhere.
 - `MAX_SESSION_NAME_LENGTH` and `normalizeSessionName` bound and normalize start, import and rename
   alike. Trim only there. Creation folds blank to `null` (use the tmux name); rename clears to `""`.
 - New session verbs go under the `session` namespace (`kotgent session rename`), symmetric with `task`
@@ -148,11 +158,13 @@ the common workflow and links to those guides; implementation invariants belong 
   `observedAt`. The sidebar ages `receivedAt` against the frame's `serverNow`, then
   uses local monotonic elapsed time. Phone wall-clock skew must not alter freshness. Its expiry timer
   does not poll a provider.
-- `SessionUpdateDto` carries `name`, whose absent-means-keep contract is the opposite of `model`'s
-  authoritative clear. Keep the rationale on the DTO field rather than duplicating it at merge sites.
-- `PatchSessionRequest` takes a single nullable `name` and answers 400 for a body carrying nothing,
-  rather than requiring the field: the shape is deliberately open for the next operator-owned column
-  (`tags`).
+- `SessionUpdateDto` carries `name` and `adhd`, whose absent-means-keep contract is the opposite of
+  `model`'s authoritative clear. Keep the one rationale on those DTO fields rather than duplicating it at
+  merge sites or repeating it per field.
+- `PatchSessionRequest` carries nullable `name` and `adhd` and answers 400 only for a body carrying
+  neither, rather than requiring a field: the shape stays open for the next operator-owned column
+  (`tags`). `TRANSPORT_JSON` encodes defaults, so the CLI's rename body sends `"adhd":null`; an explicit
+  null must read as absent, never as a clear.
 - `runMutation` owns the global mutation lock and holds it through a flow's follow-up read. It publishes
   the holder name but no currency token: late announcements use `announcementHolds`, conditional
   auto-selection uses the selection generation, and component lifetime uses `aliveRef`.
@@ -169,6 +181,19 @@ the common workflow and links to those guides; implementation invariants belong 
   `spellcheck="false"` reaches the boolean IDL setter, which coerces any non-empty string to on. No DOM
   property carries `autoCorrect`, so Preact sets a plain attribute in every engine, while lowercase
   `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.
+- ADHD-mode membership is decided when the list renders: a session is listed when its own flag is set or
+  any ancestor of its `cwd` is marked. Never fan out a folder mark to the sessions under it. The rules
+  live in `resources/webui/lib/adhd.js` and reuse `segmentsUnder`; a second path matcher would drift from
+  the daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. The reduction is
+  strict, including the attention section and its count, but the selected session always keeps a row —
+  `activeId` is the selection, not `attachedId` — and `#adhd-toggle` never hides on the sessions screen.
+  `#empty-adhd` is gated on nothing being pinned, never on an empty list: the selected row always
+  survives, so an empty list is not the state that needs explaining. It also waits for `prefsReadiness`,
+  because until the daemon answers `adhdPaths` is a placeholder. A session listed through a folder mark
+  shows a `covered` pin naming that folder; a click gives it a mark of its own. An empty pin takes no
+  pointer events until its row is hovered or focused, or a first tap on a hybrid device would mark.
+  The Done section is never reduced: `doneGroups` and `flatDoneSessions` key on `doneSignature` and
+  deliberately exclude `doneSessions`, and `#show-done-toggle` hides when its list is empty.
 - `SessionRow` selects only on keys aimed at the row itself. Enter on an inner button or link bubbles to
   it, and cancelling that event would select the row instead of activating the control.
 - The Web UI is dark-only. Mobile terminal, dialog, pointer, safe-area, and push-permission behavior has

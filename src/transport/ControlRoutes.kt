@@ -201,24 +201,27 @@ fun Route.controlRoutes(
             call.respondText("invalid request body", status = HttpStatusCode.BadRequest)
             return@patch
         }
-        if (req.name == null) {
+        if (req.name == null && req.adhd == null) {
             call.respondText(
-                "nothing to change — a patch carries a name",
+                "nothing to change — a patch carries a name or an adhd flag",
                 status = HttpStatusCode.BadRequest,
             )
             return@patch
         }
-        val name = validatedName(req.name, "cannot rename session") ?: return@patch
-        store.setName(id, name)
-        val renamed = store.getSession(id)
-        if (renamed == null) {
+        if (req.name != null) {
+            val name = validatedName(req.name, "cannot rename session") ?: return@patch
+            store.setName(id, name)
+        }
+        if (req.adhd != null) store.setAdhd(id, req.adhd)
+        val patched = store.getSession(id)
+        if (patched == null) {
             call.respondText(
-                "session ${id.value} vanished while it was being renamed",
+                "session ${id.value} vanished while it was being patched",
                 status = HttpStatusCode.InternalServerError,
             )
             return@patch
         }
-        call.respondText(json.encodeToString(SessionDto.serializer(), renamed.toDto()), ContentType.Application.Json)
+        call.respondText(json.encodeToString(SessionDto.serializer(), patched.toDto()), ContentType.Application.Json)
     }
 
     post("/sessions/{id}/input") {
@@ -367,7 +370,7 @@ data class ImportSessionRequest(
 data class MarkReadRequest(val seq: Long)
 
 @Serializable
-data class PatchSessionRequest(val name: String? = null)
+data class PatchSessionRequest(val name: String? = null, val adhd: Boolean? = null)
 
 @Serializable
 data class SessionDto(
@@ -395,6 +398,7 @@ data class SessionDto(
     val rev: Long = 0,
     val taskRef: String? = null,
     val projectId: String? = null,
+    val adhd: Boolean = false,
 )
 
 fun SessionMeta.toDto(): SessionDto = SessionDto(
@@ -421,4 +425,5 @@ fun SessionMeta.toDto(): SessionDto = SessionDto(
     rev = rev,
     taskRef = taskRef?.value,
     projectId = projectId?.value,
+    adhd = adhd,
 )

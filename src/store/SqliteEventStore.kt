@@ -49,6 +49,7 @@ class SqliteEventStore private constructor(
     private val events get() = db.eventsQueries
     private val sessions get() = db.sessionsQueries
     private val preferenceQueries get() = db.uiPreferencesQueries
+    private val folderSettings get() = db.folderSettingsQueries
 
     private val mutex = Mutex()
 
@@ -95,9 +96,13 @@ class SqliteEventStore private constructor(
         if (!driver.hasColumn("sessions", "project_id")) {
             driver.execute(null, "ALTER TABLE sessions ADD COLUMN project_id TEXT", 0)
         }
+        if (!driver.hasColumn("sessions", "adhd")) {
+            driver.execute(null, "ALTER TABLE sessions ADD COLUMN adhd INTEGER NOT NULL DEFAULT 0", 0)
+        }
         revCounter = sessions.maxRev().executeAsOne()
 
         driver.execute(null, CREATE_PREFERENCES_TABLE_IF_NOT_EXISTS, 0)
+        driver.execute(null, CREATE_FOLDER_SETTINGS_TABLE_IF_NOT_EXISTS, 0)
         val _ = preferenceQueries.seedDefaults()
         preferences = MutableStateFlow(readPreferences())
     }
@@ -128,6 +133,7 @@ class SqliteEventStore private constructor(
             rev = ++revCounter,
             task_ref = meta.taskRef?.value,
             project_id = meta.projectId?.value,
+            adhd = meta.adhd.toSqliteFlag(),
         )
         emitFromRow(meta.id)
     }
@@ -192,6 +198,19 @@ class SqliteEventStore private constructor(
         emitFromRow(sessionId)
     }
 
+    override suspend fun setAdhd(
+        sessionId: SessionId,
+        adhd: Boolean,
+    ): Unit = mutex.withLock {
+        val _ = sessions
+            .setAdhd(
+                adhd = adhd.toSqliteFlag(),
+                rev = ++revCounter,
+                id = sessionId.value,
+            )
+        emitFromRow(sessionId)
+    }
+
     override suspend fun setModelForProvider(
         sessionId: SessionId,
         providerSessionId: ProviderSessionId,
@@ -245,7 +264,25 @@ class SqliteEventStore private constructor(
 
     override suspend fun savePreferences(basePath: String, groupingLevel: Int): UiPreferences =
         mutex.withLock {
-            val _ = preferenceQueries.save(basePath, groupingLevel.toLong())
+            val previousBase = preferences.value.basePath
+            db.transaction {
+                val _ = preferenceQueries.save(basePath, groupingLevel.toLong())
+                for (path in folderSettings.selectAdhdPaths().executeAsList()) {
+                    if (!adhdPathSurvivesGrouping(path, previousBase, basePath, groupingLevel)) {
+                        val _ = folderSettings.clearAdhd(path)
+                    }
+                }
+            }
+            readPreferences().also { preferences.value = it }
+        }
+
+    override suspend fun setFolderAdhd(path: String, adhd: Boolean): UiPreferences =
+        mutex.withLock {
+            // The revision must move with the row: a client that sees no new revision keeps stale paths.
+            db.transaction {
+                val _ = if (adhd) folderSettings.markAdhd(path) else folderSettings.clearAdhd(path)
+                val _ = preferenceQueries.bumpRevision()
+            }
             readPreferences().also { preferences.value = it }
         }
 
@@ -293,6 +330,7 @@ class SqliteEventStore private constructor(
                     unread(next.lastSeq.value, readCursor), ts, cachedRow?.archived.isArchived(),
                     model = cachedRow?.model,
                     name = cachedRow?.name,
+                    adhd = cachedRow?.let { it.adhd != 0L },
                     rev = if (cachedRow != null) rev else 0,
                     taskRef = cachedRow?.task_ref?.let(TaskRef::parseOrNull),
                     projectId = cachedRow?.project_id?.let(ProjectId::parseOrNull),
@@ -354,6 +392,7 @@ class SqliteEventStore private constructor(
                 unread(row.last_seq, row.read_cursor), row.updated_at, row.archived.isArchived(),
                 model = row.model,
                 name = row.name,
+                adhd = row.adhd != 0L,
                 rev = row.rev,
                 taskRef = row.task_ref?.let(TaskRef::parseOrNull),
                 projectId = row.project_id?.let(ProjectId::parseOrNull),
@@ -402,16 +441,19 @@ class SqliteEventStore private constructor(
     private fun decodeTags(text: String): List<String> =
         json.decodeFromString(ListSerializer(String.serializer()), text)
 
-    private fun readPreferences(): UiPreferences =
-        preferenceQueries
+    private fun readPreferences(): UiPreferences {
+        val adhdPaths = folderSettings.selectAdhdPaths().executeAsList()
+        return preferenceQueries
             .selectCurrent { basePath, groupingLevel, revision ->
                 UiPreferences(
                     basePath = basePath,
                     groupingLevel = groupingLevel.toInt(),
                     revision = revision,
+                    adhdPaths = adhdPaths,
                 )
             }
             .executeAsOne()
+    }
 
     private fun Sessions.toMeta(): SessionMeta = SessionMeta(
         id = SessionId(id),
@@ -438,6 +480,7 @@ class SqliteEventStore private constructor(
         rev = rev,
         taskRef = task_ref?.let(TaskRef::parseOrNull),
         projectId = project_id?.let(ProjectId::parseOrNull),
+        adhd = adhd != 0L,
     )
 
     companion object {
@@ -447,6 +490,11 @@ class SqliteEventStore private constructor(
                     "base_path TEXT NOT NULL, " +
                     "grouping_level INTEGER NOT NULL, " +
                     "revision INTEGER NOT NULL)"
+
+        const val CREATE_FOLDER_SETTINGS_TABLE_IF_NOT_EXISTS: String =
+            "CREATE TABLE IF NOT EXISTS folder_settings (" +
+                    "path TEXT NOT NULL PRIMARY KEY, " +
+                    "adhd INTEGER NOT NULL DEFAULT 0)"
 
         val DEFAULT_JSON: Json = Json {
             classDiscriminator = "type"
