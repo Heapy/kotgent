@@ -343,8 +343,11 @@ Real-device release checklist:
 - ADHD mode on a phone: the pin on a session row and on a folder head must be reachable by thumb without
   selecting the row, and both must stay visible, because a touch screen has no hover to reveal them. On a
   notched phone the header must keep the archive, ADHD and notification toggles plus the close button on
-  one line and clear of the safe-area inset. On a device that reports hover but is touched — an iPad with
-  a trackpad, a touchscreen laptop — the first tap on a row must select it, never pin it.
+  one line and clear of the safe-area inset. On an iPad with a trackpad, which reports hover but is
+  touched, the first tap on a row must select it, never pin it. Chromium on a touchscreen laptop or
+  Chromebook is a known, accepted exception: a tap sets `:hover` before its click, so a first tap on a
+  row's right edge can pin the row, and one on a folder head's right edge can hit its pin or `+`. One
+  more tap undoes it, so do not fail the check for it.
 - On iOS and Android, long-press a board card's title and linked-session name; neither a text-selection
   menu nor a link callout should appear, while a tap should still open the task or session.
 - Both project dialogs on a phone and a tablet: the swipe handle, the compensated padding, and backdrop

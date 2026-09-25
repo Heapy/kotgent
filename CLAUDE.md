@@ -195,6 +195,8 @@ the common workflow and links to those guides; implementation invariants belong 
   because until the daemon answers `adhdPaths` is a placeholder. A session listed through a folder mark
   shows a `covered` pin naming that folder; a click gives it a mark of its own. An empty pin takes no
   pointer events until its row is hovered or focused, or a first tap on a hybrid device would mark.
+  In Chromium on a touchscreen laptop or Chromebook a tap sets `:hover` before its click, so the first tap
+  can still mark there; that is accepted.
   The Done section is never reduced: `doneGroups` and `flatDoneSessions` key on `doneSignature` and
   deliberately exclude `doneSessions`, and `#show-done-toggle` hides when its list is empty.
 - `SessionRow` selects only on keys aimed at the row itself. Enter on an inner button or link bubbles to
