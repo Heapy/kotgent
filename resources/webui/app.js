@@ -1294,6 +1294,7 @@ function App() {
       onMarkFolder=${markFolder}
       adhdMode=${adhdMode}
       onToggleAdhdMode=${toggleAdhdMode}
+      onAnnounce=${say}
     />
     ${""}
     ${onBoard ? html`

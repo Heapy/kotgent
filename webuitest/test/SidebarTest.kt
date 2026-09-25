@@ -350,6 +350,70 @@ class SidebarTest {
     }
 
     @Test
+    fun unpinningAFocusedPinWhoseRowLeavesTheListHandsFocusToTheAdhdToggle() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-unpin-focus") { _, _, page ->
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+            clickRowPin(page, "s-delta")
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "true")
+            clickFolderPin(page, "/a/b")
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "true")
+            val toggle = page.locator("#adhd-toggle")
+            val status = page.locator("#status-line")
+            toggle.click()
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+
+            rowMark(page, "s-delta").focus()
+            page.keyboard().press("Enter")
+
+            assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(0)
+            assertThat(toggle).isFocused()
+            assertThat(status).hasText("delta removed from ADHD mode and hidden.")
+
+            folderMark(page, "/a/b").focus()
+            page.keyboard().press("Enter")
+
+            assertThat(page.locator("#session-list .session-row")).hasCount(0)
+            assertThat(toggle).isFocused()
+            assertThat(status).hasText("/a/b removed from ADHD mode and hidden.")
+        }
+    }
+
+    @Test
+    fun anUnpinThatKeepsItsRowOrLosesFocusFirstLeavesFocusAlone() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-unpin-stays") { _, _, page ->
+            clickRowPin(page, "s-alpha")
+            clickRowPin(page, "s-delta")
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "true")
+            page.locator("#session-list .session-row[data-id='s-alpha']").click()
+            page.locator("#adhd-toggle").click()
+            assertThat(page.locator("#session-list .session-row")).hasCount(2)
+
+            // The selected row keeps its place, so its pin keeps focus.
+            val selectedPin = rowMark(page, "s-alpha")
+            selectedPin.focus()
+            page.keyboard().press("Enter")
+
+            assertThat(selectedPin).hasAttribute("aria-pressed", "false")
+            assertThat(selectedPin).isFocused()
+
+            // Focus moved on before the answer came back, so it is not the pin's to hand over.
+            val held = AtomicReference<Route?>(null)
+            page.route({ url: String -> url.endsWith("/api/v1/sessions/s-delta") }) { route ->
+                if (route.request().method() != "PATCH" || !held.compareAndSet(null, route)) route.resume()
+            }
+            rowMark(page, "s-delta").focus()
+            page.keyboard().press("Enter")
+            page.waitForCondition { held.get() != null }
+            page.locator("#palette-button").focus()
+            held.get()!!.resume()
+
+            assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(0)
+            assertThat(page.locator("#palette-button")).isFocused()
+        }
+    }
+
+    @Test
     fun theDoneListOffersNoMarkingAndItsRestoreAnswersTheKeyboard() {
         signedIn(SESSIONS_SCENARIO, "sidebar-adhd-done") { _, _, page ->
             page.onDialog { it.accept() }

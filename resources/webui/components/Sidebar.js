@@ -281,7 +281,7 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
             aria-pressed=${session.adhd === true ? "true" : "false"}
             aria-label=${pin.label}
             title=${pin.title}
-            onClick=${(e) => { stopRowActivation(e); onMark(session.id, session.adhd !== true); }}
+            onClick=${(e) => { stopRowActivation(e); onMark(e, session); }}
           ><${AdhdIcon} on=${pin.on} /></button>
         </div>`}
       ${onRestore
@@ -338,7 +338,7 @@ function SessionGroup({
             title=${folderMarked
               ? group.path + " is in ADHD mode — click to remove"
               : "Add " + group.path + " to ADHD mode"}
-            onClick=${() => onMarkFolder(group.path, !folderMarked)}
+            onClick=${(e) => onMarkFolder(e, group.path, !folderMarked)}
           ><${AdhdIcon} on=${folderMarked} /></button>`}
         ${!done && group.path &&
           html`<button
@@ -383,7 +383,7 @@ export function Sidebar({
   sessions, tasks, projects = [], projectId = null, activeId, prefs, status, currentVersion,
   drawerOpen, collapsed, showDone, sessionsReady, prefsStatus = IDLE_STATUS, onRetryPrefs,
   onSelect, onSelectProject, onNewSession, onNewProject, onOpenPrefs, onRestore, onCloseDrawer,
-  onToggleShowDone, onMarkSession, onMarkFolder, adhdMode = false, onToggleAdhdMode,
+  onToggleShowDone, onMarkSession, onMarkFolder, adhdMode = false, onToggleAdhdMode, onAnnounce,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
@@ -394,6 +394,7 @@ export function Sidebar({
   const pushRepairGenerationRef = useRef(null);
   const pushPermissionRef = useRef({ transition: 0, request: null });
   const repairPushRef = useRef(() => {});
+  const adhdToggleRef = useRef(null);
   useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
   const queuePushTransition = useCallback((transition, desired, operation, warning) => {
     // Local generations order this tab; the stored preference orders tabs.
@@ -502,6 +503,25 @@ export function Sidebar({
     Array.from(pushTransitionAbortRef.current).forEach((controller) => controller.abort());
     repairPushRef.current();
   };
+  // An unpin in ADHD mode can hide the row or head holding the focused pin, and focus would fall to the
+  // body. Preact commits the answer in a microtask, so one task later the DOM says whether the pin left.
+  const unpin = (event, name, work) => {
+    const pin = event.currentTarget;
+    const hadFocus = pin === document.activeElement;
+    if (!adhdMode) return work();
+    return Promise.resolve(work()).then(() => setTimeout(() => {
+      if (pin.isConnected) return;
+      onAnnounce(name + " removed from ADHD mode and hidden.");
+      const toggle = adhdToggleRef.current;
+      if (hadFocus && toggle && document.activeElement === document.body) toggle.focus();
+    }, 0));
+  };
+  const markSession = (event, session) => (session.adhd === true
+    ? unpin(event, displayName(session), () => onMarkSession(session.id, false))
+    : onMarkSession(session.id, true));
+  const markFolder = (event, path, adhd) => (adhd
+    ? onMarkFolder(path, true)
+    : unpin(event, path, () => onMarkFolder(path, false)));
   const onTasks = screen === SCREEN_TASKS;
   const prefsReady = prefsStatus.state === READY;
   // Until the daemon answers, `adhdPaths` and the grouping are placeholders, so a reduction would drop
@@ -583,6 +603,7 @@ export function Sidebar({
             ${!onTasks && html`
               <button
                 id="adhd-toggle"
+                ref=${adhdToggleRef}
                 class=${"icon-button icon-button-small adhd-toggle" + (adhdMode ? " active" : "")}
                 type="button"
                 aria-pressed=${adhdMode ? "true" : "false"}
@@ -665,7 +686,7 @@ export function Sidebar({
             ${attention.map((s) => html`
               <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
                              active=${s.id === activeId} onSelect=${onSelect}
-                             onMark=${onMarkSession} prefs=${prefs} />
+                             onMark=${markSession} prefs=${prefs} />
             `)}
           </ul>
         </section>
@@ -699,15 +720,15 @@ export function Sidebar({
                   onSelect=${onSelect}
                   onToggle=${toggleGroup}
                   onNewSession=${onNewSession}
-                  onMark=${onMarkSession}
-                  onMarkFolder=${onMarkFolder}
+                  onMark=${markSession}
+                  onMarkFolder=${markFolder}
                   prefs=${prefs}
                 />
               `)
             : visible.map((s) => html`
                 <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
                                active=${s.id === activeId} onSelect=${onSelect}
-                               onMark=${onMarkSession} prefs=${prefs} />
+                               onMark=${markSession} prefs=${prefs} />
               `)}
         </ul>
 
