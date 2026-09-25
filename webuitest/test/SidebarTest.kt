@@ -305,6 +305,51 @@ class SidebarTest {
     }
 
     @Test
+    fun aPinClickedWhileAnotherActionRunsSaysSoAndSendsNothing() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-busy") { _, _, page ->
+            val status = page.locator("#status-line")
+            val held = AtomicReference<Route?>(null)
+            page.route({ url: String ->
+                url.endsWith("/api/v1/sessions/s-alpha") || url.endsWith("/api/v1/preferences/adhd-paths")
+            }) { route ->
+                if (!held.compareAndSet(null, route)) route.resume()
+            }
+            val refusedWrites = AtomicInteger(0)
+            page.onRequest { request ->
+                val url = request.url()
+                val body = request.postData().orEmpty()
+                if (url.endsWith("/api/v1/sessions/s-delta") || body.contains("\"path\":\"/d\"")) {
+                    refusedWrites.incrementAndGet()
+                }
+            }
+            configureGrouping(page, basePath = "/", level = 2)
+            awaitFoldedTree(page, deepestFolder = "/a/b")
+
+            clickRowPin(page, "s-alpha")
+            page.waitForCondition { held.get() != null }
+            clickFolderPin(page, "/d")
+
+            assertThat(status).hasText(BUSY_LINE)
+            assertThat(folderMark(page, "/d")).hasAttribute("aria-pressed", "false")
+            held.getAndSet(null)!!.resume()
+            assertThat(rowMark(page, "s-alpha")).hasAttribute("aria-pressed", "true")
+
+            // A save says something else, so the next refusal has to be announced afresh.
+            configureGrouping(page, basePath = "/", level = 2)
+            assertThat(status).not().hasText(BUSY_LINE)
+            clickFolderPin(page, "/a/b")
+            page.waitForCondition { held.get() != null }
+            clickRowPin(page, "s-delta")
+
+            assertThat(status).hasText(BUSY_LINE)
+            assertThat(rowMark(page, "s-delta")).hasAttribute("aria-pressed", "false")
+            held.getAndSet(null)!!.resume()
+            assertThat(folderMark(page, "/a/b")).hasAttribute("aria-pressed", "true")
+            assertEquals(0, refusedWrites.get(), "a refused click sends nothing to the daemon")
+        }
+    }
+
+    @Test
     fun theDoneListOffersNoMarkingAndItsRestoreAnswersTheKeyboard() {
         signedIn(SESSIONS_SCENARIO, "sidebar-adhd-done") { _, _, page ->
             page.onDialog { it.accept() }
@@ -945,6 +990,8 @@ private const val DONE_SESSION: String = "s-delta"
 private const val SEED_EPOCH_MILLIS: Long = 1_700_000_000_000L
 
 private const val DISCONNECT_LINE: String = "Daemon connection lost — reconnecting…"
+
+private const val BUSY_LINE: String = "Another action is still in progress — try again in a moment."
 
 private const val READ_DEFINITE: String = "definite"
 private const val READ_UNREACHABLE: String = "unreachable"

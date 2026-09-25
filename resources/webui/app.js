@@ -262,6 +262,22 @@ function projectFailureSentence(error) {
   return "Could not load projects: " + errorMessage(error);
 }
 
+// runMutation throws the busy refusal before the work runs, and a click handler drops the promise, so an
+// unguarded click would be a silent no-op with an unhandled rejection behind it.
+function runClickMutation(name, failure, work) {
+  if (pendingMutation.value) {
+    say(MUTATION_BUSY_MESSAGE, true);
+    return Promise.resolve();
+  }
+  return runMutation(name, async () => {
+    try {
+      await work();
+    } catch (e) {
+      say(failure + errorMessage(e), true);
+    }
+  });
+}
+
 function App() {
   // Render-body signal reads subscribe this component to the shared stores.
   const sessions = sessionsSignal.value;
@@ -1035,45 +1051,31 @@ function App() {
     });
   }, []);
 
-  const markSession = useCallback((sessionId, adhd) => {
-    // runMutation throws the busy refusal before the callback runs, so guard here or the click is a
-    // silent no-op with an unhandled rejection behind it.
-    if (pendingMutation.value) {
-      say(MUTATION_BUSY_MESSAGE, true);
-      return Promise.resolve();
-    }
-    return runMutation("adhd-session", async () => {
-      try {
-        mergeSessionRow(await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
-          method: "PATCH",
-          body: JSON.stringify({ adhd: adhd }),
-        }));
-      } catch (e) {
-        say("Could not change ADHD mode for the session: " + errorMessage(e), true);
-      }
-    });
-  }, []);
+  const markSession = useCallback((sessionId, adhd) => runClickMutation(
+    "adhd-session",
+    "Could not change ADHD mode for the session: ",
+    async () => {
+      mergeSessionRow(await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
+        method: "PATCH",
+        body: JSON.stringify({ adhd: adhd }),
+      }));
+    },
+  ), []);
 
-  const markFolder = useCallback((path, adhd) => {
-    if (pendingMutation.value) {
-      say(MUTATION_BUSY_MESSAGE, true);
-      return Promise.resolve();
-    }
-    return runMutation("adhd-folder", async () => {
-      try {
-        const saved = await apiRequest("/preferences/adhd-paths", {
-          method: "POST",
-          body: JSON.stringify({ path: path, adhd: adhd }),
-        });
-        // A superseded answer is not a failure: newer daemon state already won and is what we want.
-        if (applyServerPreferences(saved) === PREFS_UNREADABLE) {
-          throw new Error("the daemon answered with an unreadable preferences payload");
-        }
-      } catch (e) {
-        say("Could not change ADHD mode for the folder: " + errorMessage(e), true);
+  const markFolder = useCallback((path, adhd) => runClickMutation(
+    "adhd-folder",
+    "Could not change ADHD mode for the folder: ",
+    async () => {
+      const saved = await apiRequest("/preferences/adhd-paths", {
+        method: "POST",
+        body: JSON.stringify({ path: path, adhd: adhd }),
+      });
+      // A superseded answer is not a failure: newer daemon state already won and is what we want.
+      if (applyServerPreferences(saved) === PREFS_UNREADABLE) {
+        throw new Error("the daemon answered with an unreadable preferences payload");
       }
-    });
-  }, []);
+    },
+  ), []);
 
   const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
     const selected = activeSessionSignal.value;
