@@ -71,6 +71,10 @@ fun Route.preferencesRoutes(
             call.respondText("basePath must be empty or absolute", status = HttpStatusCode.BadRequest)
             return@put
         }
+        if (!isPlausibleFolderPath(basePath)) {
+            call.respondText("basePath must be $FOLDER_PATH_RULE", status = HttpStatusCode.BadRequest)
+            return@put
+        }
         if (request.groupingLevel !in MIN_GROUPING_LEVEL..MAX_GROUPING_LEVEL) {
             call.respondText(
                 "groupingLevel must be between $MIN_GROUPING_LEVEL and $MAX_GROUPING_LEVEL",

@@ -1450,6 +1450,8 @@ class TransportTest {
             """{"basePath":"/work","groupingLevel":-1}""",
             """{"basePath":"/work","groupingLevel":5}""",
             """{"basePath":"/work","groupingLevel":"2"}""",
+            """{"basePath":"/a\nb","groupingLevel":1}""",
+            """{"basePath":"${pathOverHostLimit()}","groupingLevel":1}""",
         )
 
         for (body in invalidBodies) {
