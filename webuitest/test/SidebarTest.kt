@@ -527,6 +527,82 @@ class SidebarTest {
     }
 
     @Test
+    fun adhdModeWaitsForPreferencesBeforeReducingAndThenListsEveryCoveredRow() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-prefs-loading", PREFERENCES_OVER_HTTP_ONLY) { _, _, page ->
+            pinFolder(page, "/a")
+            page.locator("#adhd-toggle").click()
+            val held = holdPreferencesRead(page)
+
+            page.reload()
+
+            page.waitForCondition { held.get() != null }
+            assertThat(page.locator("#adhd-loading")).isVisible()
+            assertThat(page.locator("#session-list .session-row")).hasCount(0)
+            assertThat(page.locator("#attention-count")).hasCount(0)
+            assertThat(page.locator("#attention-section")).hasCount(0)
+            assertThat(page.locator("#empty-adhd")).hasCount(0)
+
+            held.get()!!.resume()
+
+            assertThat(page.locator("#adhd-loading")).hasCount(0)
+            assertThat(page.locator("#session-list .session-row")).hasCount(3)
+            assertSidebarTree(
+                page,
+                """
+                a [/a] (3)
+                  b [/a/b] (2)
+                    s-alpha
+                    s-beta
+                  c [/a/c] (1)
+                    s-gamma
+                """.trimIndent(),
+                "once preferences are known, every row under the pinned head is listed",
+            )
+            assertThat(page.locator("#attention-num")).hasText("1")
+        }
+    }
+
+    @Test
+    fun anInitialPreferencesFailureStaysVisibleBesideTheSelectedRowUntilARetryLoadsThem() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-adhd-prefs-failed", PREFERENCES_OVER_HTTP_ONLY) { _, _, page ->
+            pinFolder(page, "/a")
+            page.locator("#session-list .session-row[data-id='s-delta']").click()
+            page.locator("#adhd-toggle").click()
+            val selected = page.locator("#session-list .session-row.active[data-id='s-delta']")
+            assertThat(selected).hasCount(1)
+            val held = holdPreferencesRead(page)
+
+            page.reload()
+
+            page.waitForCondition { held.get() != null }
+            assertThat(page.locator("#adhd-loading")).isVisible()
+            assertThat(page.locator("#session-list .session-row")).hasCount(1)
+            assertThat(selected).hasCount(1)
+            assertThat(page.locator("#attention-count")).hasCount(0)
+
+            held.get()!!.fulfill(
+                Route.FulfillOptions()
+                    .setStatus(503)
+                    .setContentType("text/plain")
+                    .setBody("preferences are resting"),
+            )
+
+            assertThat(page.locator("#adhd-failed")).containsText("Could not load preferences")
+            assertThat(page.locator("#adhd-loading")).hasCount(0)
+            assertThat(page.locator("#session-list .session-row")).hasCount(1)
+            assertThat(selected).hasCount(1)
+            assertThat(page.locator("#attention-count")).hasCount(0)
+
+            page.locator("#adhd-retry").click()
+
+            assertThat(page.locator("#adhd-failed")).hasCount(0)
+            assertThat(page.locator("#session-list .session-row")).hasCount(4)
+            assertThat(selected).hasCount(1)
+            assertThat(page.locator("#attention-num")).hasText("1")
+        }
+    }
+
+    @Test
     fun theSidebarFooterCarriesTheVersionTheDaemonItselfReports() {
         signedIn(SESSIONS_SCENARIO, "sidebar-version") { harness, context, page ->
             val reported = versionReportedByTheDaemon(context, harness.baseUrl)
@@ -1043,6 +1119,39 @@ private val FETCH_RECORDER_SCRIPT: String = """
       };
     })()
 """.trimIndent()
+
+// Drops the socket's preferences frames, so only the HTTP read, which a test can hold or fail, makes them
+// known. Installed before FRAME_RECORDER, which reads the gate when the events socket is built.
+private val PREFERENCES_FRAME_DROP: String = """
+    (() => {
+      window.__kotgentFrameGate = {
+        hold: (event) => {
+          if (event.data.indexOf('"type":"preferences_update"') < 0) return false;
+          event.stopImmediatePropagation();
+          return true;
+        },
+        arm: () => {},
+      };
+    })();
+""".trimIndent()
+
+private val PREFERENCES_OVER_HTTP_ONLY: List<String> = listOf(PREFERENCES_FRAME_DROP, FRAME_RECORDER)
+
+/** Holds the next preferences read; any later one passes through. */
+private fun holdPreferencesRead(page: Page): AtomicReference<Route?> {
+    val held = AtomicReference<Route?>(null)
+    page.route({ url: String -> url.endsWith("/api/v1/preferences") }) { route ->
+        if (route.request().method() != "GET" || !held.compareAndSet(null, route)) route.resume()
+    }
+    return held
+}
+
+private fun pinFolder(page: Page, path: String) {
+    configureGrouping(page, basePath = "/", level = 2)
+    awaitFoldedTree(page, deepestFolder = "/a/b")
+    clickFolderPin(page, path)
+    assertThat(folderMark(page, path)).hasAttribute("aria-pressed", "true")
+}
 
 private fun signedIn(
     scenario: String,

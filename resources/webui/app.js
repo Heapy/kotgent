@@ -258,6 +258,23 @@ const reloadProjectsQueue = createSerialRefresh({
     : projectFailureSentence(error), true),
 });
 
+// Revision ordering prevents this GET from rolling back a concurrent save or WS update.
+function loadPreferences() {
+  const token = prefsReadiness.begin();
+  return apiRequest("/preferences")
+    .then((value) => {
+      if (applyServerPreferences(value) === PREFS_UNREADABLE) {
+        throw new Error("the daemon answered with an unreadable preferences payload");
+      }
+    })
+    .catch((e) => {
+      // apiRequest is already leaving for the sign-in page; a sentence nobody reads adds nothing.
+      if (isUnauthenticated(e)) return;
+      const sentence = "Could not load preferences: " + errorMessage(e);
+      if (prefsReadiness.fail(token, sentence)) say(sentence, true);
+    });
+}
+
 function projectFailureSentence(error) {
   return "Could not load projects: " + errorMessage(error);
 }
@@ -282,7 +299,7 @@ function App() {
   // Render-body signal reads subscribe this component to the shared stores.
   const sessions = sessionsSignal.value;
   const sessionsReady = sessionsReadiness.status.value.state === READY;
-  const prefsReady = prefsReadiness.status.value.state === READY;
+  const prefsStatus = prefsReadiness.status.value;
   const tasks = tasksSignal.value;
   const projects = projectsSignal.value;
   // Preserve idle, loading, ready, and failed so the picker can distinguish each outcome.
@@ -696,18 +713,9 @@ function App() {
   const fetchSessionRowRef = useRef(fetchSessionRow);
   fetchSessionRowRef.current = fetchSessionRow;
 
-  // Revision ordering prevents this initial GET from rolling back a concurrent save or WS update.
   useEffect(() => {
-    let stopped = false;
-    apiRequest("/preferences")
-      .then((value) => { if (!stopped) applyServerPreferences(value); })
-      .catch((e) => {
-        if (stopped) return;
-        // apiRequest is already leaving for the sign-in page; a sentence nobody reads adds nothing.
-        if (isUnauthenticated(e)) return;
-        say("Could not load preferences: " + errorMessage(e), true);
-      });
-    return () => { stopped = true; };
+    prefsReadiness.setLoader(loadPreferences);
+    loadPreferences();
   }, []);
 
   useEffect(() => {
@@ -1272,7 +1280,8 @@ function App() {
       collapsed=${sidebarCollapsed}
       showDone=${showDone}
       sessionsReady=${sessionsReady}
-      prefsReady=${prefsReady}
+      prefsStatus=${prefsStatus}
+      onRetryPrefs=${prefsReadiness.retry}
       onSelect=${selectSidebarSession}
       onSelectProject=${selectProject}
       onNewSession=${openNewSession}

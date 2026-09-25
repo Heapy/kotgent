@@ -4,6 +4,7 @@ import { UsageStrip } from "./UsageStrip.js";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.js";
 import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
+import { FAILED, IDLE_STATUS, READY } from "../lib/readiness.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import {
   PUSH_REPAIR_SIGNAL_KEY,
@@ -380,7 +381,7 @@ function SessionGroup({
 export function Sidebar({
   screen = SCREEN_SESSIONS,
   sessions, tasks, projects = [], projectId = null, activeId, prefs, status, currentVersion,
-  drawerOpen, collapsed, showDone, sessionsReady, prefsReady = false,
+  drawerOpen, collapsed, showDone, sessionsReady, prefsStatus = IDLE_STATUS, onRetryPrefs,
   onSelect, onSelectProject, onNewSession, onNewProject, onOpenPrefs, onRestore, onCloseDrawer,
   onToggleShowDone, onMarkSession, onMarkFolder, adhdMode = false, onToggleAdhdMode,
 }) {
@@ -502,14 +503,18 @@ export function Sidebar({
     repairPushRef.current();
   };
   const onTasks = screen === SCREEN_TASKS;
+  const prefsReady = prefsStatus.state === READY;
+  // Until the daemon answers, `adhdPaths` and the grouping are placeholders, so a reduction would drop
+  // folder-covered rows and undercount attention.
+  const awaitingPins = adhdMode && !onTasks && !prefsReady;
   const live = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
   // Everything below renders the reduced list; only the empty states read `live`, so a reduced-to-empty
   // sidebar says why instead of claiming there are no sessions.
   const visible = useMemo(() => {
     if (!adhdMode || onTasks) return live;
     // The selected session keeps its row, or unmarking it strands the terminal with no row to return to.
-    return live.filter((s) => s.id === activeId || isSessionInAdhd(s, prefs));
-  }, [activeId, adhdMode, live, onTasks, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel]);
+    return live.filter((s) => s.id === activeId || (prefsReady && isSessionInAdhd(s, prefs)));
+  }, [activeId, adhdMode, live, onTasks, prefsReady, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel]);
   const nothingPinned = useMemo(
     () => !onTasks && !live.some((s) => isSessionInAdhd(s, prefs)),
     [live, onTasks, prefs.adhdPaths, prefs.basePath, prefs.groupingLevel],
@@ -526,7 +531,10 @@ export function Sidebar({
     }
     return [done, signature];
   }, [sessions]);
-  const attention = useMemo(() => visible.filter((s) => isNeedsAttention(s.state)), [visible]);
+  const attention = useMemo(
+    () => (awaitingPins ? [] : visible.filter((s) => isNeedsAttention(s.state))),
+    [awaitingPins, visible],
+  );
   const grouped = groupingEnabled(prefs);
   const liveGroups = useMemo(
     () => grouped && !onTasks
@@ -609,7 +617,7 @@ export function Sidebar({
       </header>
 
       <div id="sidebar-scroll">
-        ${!onTasks && html`
+        ${!onTasks && !awaitingPins && html`
           <div
             id="attention-count"
             class=${"attn-count" + (attention.length > 0 ? " active" : "")}
@@ -713,6 +721,18 @@ export function Sidebar({
             <p>No sessions yet. Start one to attach it here.</p>
             <button id="empty-new-session-button" class="button button-primary" type="button"
                     onClick=${() => onNewSession(null)}>Start a session</button>
+          </div>
+        `}
+        ${awaitingPins && live.length > 0 && prefsStatus.state !== FAILED && html`
+          <div id="adhd-loading" class="empty-sessions">
+            <p>Loading pinned sessions…</p>
+          </div>
+        `}
+        ${awaitingPins && live.length > 0 && prefsStatus.state === FAILED && html`
+          <div id="adhd-failed" class="empty-sessions">
+            <p>${prefsStatus.error}</p>
+            <p>ADHD mode cannot tell what is pinned until preferences load.</p>
+            <button id="adhd-retry" class="button" type="button" onClick=${onRetryPrefs}>Try again</button>
           </div>
         `}
         ${adhdMode && prefsReady && live.length > 0 && nothingPinned && html`
