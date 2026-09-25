@@ -850,11 +850,11 @@ function App() {
         say("Could not rename the session: " + errorMessage(e), true);
         return;
       }
-      mergeSessionRow(renamed);
+      applySessionRow(renamed);
       closeDialogFrom(submittedDialog);
       say("Renamed to " + displayName(renamed) + ".");
     });
-  }, []);
+  }, [applySessionRow]);
 
   // Import and optional resume are serialized as one action. HTTP rows merge by revision, targeted
   // GETs decide attachment from fresh state, and generation guards prevent late auto-selection.
@@ -935,10 +935,7 @@ function App() {
           "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
           { method: "POST" },
         );
-        if (updated && updated.id) {
-          mergeSessionRow(updated);
-          dispatchReattach(sessionStateChanged(updated.id, updated.state));
-        }
+        if (updated && updated.id) applySessionRow(updated);
         if (action === "stop" || action === "done") {
           if (s.id === activeSessionId.value) setAttachedId(null);
           setHint(action === "done"
@@ -960,7 +957,7 @@ function App() {
     } catch (e) {
       say(capitalize(action) + " failed: " + errorMessage(e), true);
     }
-  }, [dispatchReattach]);
+  }, [applySessionRow, dispatchReattach]);
 
   // Local attach/detach must not race actions that can rewrite attachment state.
   const attach = useCallback(() => {
@@ -1055,12 +1052,12 @@ function App() {
     "adhd-session",
     "Could not change ADHD mode for the session: ",
     async () => {
-      mergeSessionRow(await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
+      applySessionRow(await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
         method: "PATCH",
         body: JSON.stringify({ adhd: adhd }),
       }));
     },
-  ), []);
+  ), [applySessionRow]);
 
   const markFolder = useCallback((path, adhd) => runClickMutation(
     "adhd-folder",

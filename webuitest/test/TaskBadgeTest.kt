@@ -194,11 +194,6 @@ class TaskBadgeTest {
     private fun Page.sameDocument(): Boolean =
         evaluate("() => window.__kotgentSameDocument === true") as Boolean
 
-    private fun Page.notificationTags(): List<String> {
-        val raw = evaluate("() => (window.__kotgentNotifications || []).map((n) => n.tag)") as List<*>
-        return raw.map { it?.toString().orEmpty() }
-    }
-
     private fun Page.postStatus(path: String, body: String): Int {
         val status = evaluate(
             """
@@ -233,23 +228,5 @@ class TaskBadgeTest {
 
         const val SESSION_UPDATE = "\"type\":\"session_update\""
         const val TASK_UPDATE = "\"type\":\"task_update\""
-
-        val NOTIFICATION_RECORDER = """
-            (() => {
-              const seen = [];
-              window.__kotgentNotifications = seen;
-              const Recording = function (title, options) {
-                seen.push({
-                  title: title,
-                  tag: (options && options.tag) || "",
-                  body: (options && options.body) || "",
-                });
-              };
-              Recording.permission = "granted";
-              Recording.requestPermission = () => Promise.resolve("granted");
-              window.Notification = Recording;
-              try { window.localStorage.setItem("kotgent.notifications.v1", "1"); } catch (e) { }
-            })();
-        """.trimIndent()
     }
 }

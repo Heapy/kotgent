@@ -440,6 +440,29 @@ val FRAME_RECORDER: String = """
     })();
 """.trimIndent()
 
+val NOTIFICATION_RECORDER: String = """
+    (() => {
+      const seen = [];
+      window.__kotgentNotifications = seen;
+      const Recording = function (title, options) {
+        seen.push({
+          title: title,
+          tag: (options && options.tag) || "",
+          body: (options && options.body) || "",
+        });
+      };
+      Recording.permission = "granted";
+      Recording.requestPermission = () => Promise.resolve("granted");
+      window.Notification = Recording;
+      try { window.localStorage.setItem("kotgent.notifications.v1", "1"); } catch (e) { }
+    })();
+""".trimIndent()
+
+fun Page.notificationTags(): List<String> {
+    val raw = evaluate("() => (window.__kotgentNotifications || []).map((n) => n.tag)") as List<*>
+    return raw.map { it?.toString().orEmpty() }
+}
+
 /**
  * Records frames *and* holds the first `tasks_snapshot` until the test releases it, which is how a page
  * can be driven while the task list is still unloaded. Both scripts are installed here because the order

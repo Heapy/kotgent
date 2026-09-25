@@ -109,6 +109,64 @@ class SessionRevMergeTest {
         }
     }
 
+    // The socket can lag behind HTTP: a pin's answer may be the first sight of a revision that also moved
+    // the session into attention, and the frames that follow at that revision are stale.
+    @Test
+    fun anHttpRowThatFirstShowsAttentionRingsOnceAndItsLateFramesRingNothing() {
+        Harness(ATTENTION_SCENARIO).use { harness ->
+            onChromium { browser ->
+                browser.fineContext().use { context ->
+                    context.traced("session-rev-merge-attention") {
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        val page = context.newPage()
+                        page.addInitScript(NOTIFICATION_RECORDER)
+                        page.addInitScript(SESSION_FRAME_GATE)
+                        page.addInitScript(FRAME_RECORDER)
+
+                        page.navigate("${harness.baseUrl}/")
+                        val row = page.locator("#session-list .session-row[data-id='$QUIET']")
+                        val pin = row.locator(".row-adhd")
+                        assertThat(row.locator(".badge")).hasText(READY)
+                        assertThat(page.locator("#attention-num")).hasText("0")
+
+                        page.evaluate("() => window.__kotgentHoldSessionFrames()")
+                        harness.send("emit $QUIET $NEWER_STATE")
+                        page.waitForCondition { heldSessionFrames(page) >= 1 }
+                        row.hover()
+                        pin.click()
+
+                        assertThat(pin).hasAttribute("aria-pressed", "true")
+                        assertThat(page.locator("#attention-num")).hasText("1")
+                        assertEquals(
+                            listOf("kotgent-attn-$QUIET"),
+                            page.notificationTags(),
+                            "the HTTP answer was the first sight of the false → true edge, so it rang",
+                        )
+
+                        page.evaluate("() => window.__kotgentReleaseSessionFrames()")
+                        page.waitForCondition { heldSessionFrames(page) == 0 && sawAdhdFrame(page) }
+
+                        assertEquals(
+                            listOf("kotgent-attn-$QUIET"),
+                            page.notificationTags(),
+                            "the frames at those revisions arrived stale and rang nothing more",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun heldSessionFrames(page: Page): Int =
+        (page.evaluate("() => window.__kotgentHeldSessionFrames()") as Number).toInt()
+
+    private fun sawAdhdFrame(page: Page): Boolean = page.evaluate(
+        """
+        () => (window.__kotgentFrames || []).some((f) =>
+          f.indexOf('"sessionId":"$QUIET"') >= 0 && f.indexOf('"adhd":true') >= 0)
+        """.trimIndent(),
+    ) as Boolean
+
     private fun interruptFromPalette(page: Page) {
         page.keyboard().press(PALETTE_OPENER)
         assertThat(page.locator("#command-palette")).isVisible()
@@ -132,8 +190,40 @@ class SessionRevMergeTest {
         const val NEWER_LABEL = "needs approval"
 
         const val INTERRUPT_DONE = "Interrupt completed"
+
+        const val QUIET = "s-quiet"
     }
 }
+
+// Holds session frames once armed, so an HTTP answer can reach the page before them. Installed before
+// FRAME_RECORDER, which reads the gate when the events socket is constructed.
+private val SESSION_FRAME_GATE: String = """
+    (() => {
+      const held = [];
+      let holding = false;
+      window.__kotgentHeldSessionFrames = () => held.length;
+      window.__kotgentHoldSessionFrames = () => { holding = true; };
+      window.__kotgentReleaseSessionFrames = () => {};
+      window.__kotgentFrameGate = {
+        hold: (event) => {
+          if (!holding) return false;
+          const data = event.data;
+          if (data.indexOf('"type":"session_update"') < 0 && data.indexOf('"type":"session_row"') < 0) return false;
+          event.stopImmediatePropagation();
+          held.push(data);
+          return true;
+        },
+        arm: (socket) => {
+          window.__kotgentReleaseSessionFrames = () => {
+            holding = false;
+            for (const data of held.splice(0)) {
+              socket.dispatchEvent(new MessageEvent("message", { data }));
+            }
+          };
+        },
+      };
+    })();
+""".trimIndent()
 
 // The newest session_update the page actually received, put back on the socket that delivered it.
 private val REDELIVER_LAST_UPDATE: String = """
