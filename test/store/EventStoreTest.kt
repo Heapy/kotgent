@@ -517,6 +517,34 @@ class EventStoreTest {
     }
 
     @Test
+    fun setCliVersionRewritesTheVersionAdvancesRevAndIsNotActivity() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 900L })
+            val sid = SessionId("cliv01")
+            store.upsertSession(meta(sid, createdAt = 100L).copy(cliVersion = "0.156.0"))
+            val before = store.getSession(sid)!!
+            val seen = CompletableDeferred<Long>()
+            val collector = launch {
+                store.sessionUpdates.take(1).toList().firstOrNull()?.let { seen.complete(it.rev) }
+            }
+            yield()
+
+            store.setCliVersion(sid, "0.157.1")
+            store.getSession(sid)!!.let { m ->
+                assertEquals("0.157.1", m.cliVersion, "the row records the version the new launch runs")
+                assertTrue(m.rev > before.rev, "a targeted mutator advances the revision")
+                assertEquals(m.rev, seen.await(), "and publishes the row at that revision")
+                assertEquals(before.updatedAt, m.updatedAt, "a version rewrite is not activity: updated_at is NOT written")
+                assertEquals(before.createdAt, m.createdAt, "and created_at is untouched")
+            }
+            collector.join()
+
+            store.setCliVersion(sid, null)
+            assertNull(store.getSession(sid)!!.cliVersion, "null clears an unknown version")
+        }
+    }
+
+    @Test
     fun aStaleSnapshotUpsertedAfterARenameDoesNotRestoreTheOldName() = runBlocking {
         withTimeout(20.seconds) {
             val stores = listOf<EventStore>(SqliteEventStore.inMemory(now = { 1L }), FakeEventStore(now = { 1L }))

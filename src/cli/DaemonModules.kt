@@ -186,8 +186,8 @@ internal class AgentModule(
      * writes the source-of-truth store directly, so adapters must not re-emit those events.
      */
     val builders by bean<Map<String, (cwd: String) -> AgentAdapter>> {
-        // Probe every CLI here rather than inside a builder: a version detected on first launch would
-        // report the CLI the operator installed later, not the one the daemon started against.
+        // Detected once at daemon start: ClaudeCli.supportsSessionId needs it before any launch, and it
+        // is the launch spec's fallback when SessionManager's per-launch probe answers nothing.
         val claude = claudeVersion.value
         val sessionIdSupported = ClaudeCli.supportsSessionId(claude)
         val codex = codexVersion.value
@@ -307,6 +307,13 @@ internal class SessionModule(
                             delay(MODEL_CAPTURE_INTERVAL_MILLIS.milliseconds)
                         }
                     }
+                }
+            },
+            probeCliVersion = { agentKind, cliPath ->
+                if (agentKind == CODEX_AGENT_KIND) {
+                    CodexCli(binaryName = cliPath ?: agents.codexCli.value.binaryName).detectVersion()?.toString()
+                } else {
+                    null
                 }
             },
             taskStore = storage.taskStore.value,

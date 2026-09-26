@@ -78,6 +78,12 @@ interface EventStore {
         model: String?,
     )
 
+    /** The CLI version the current launch runs; advances rev and preserves activity ordering. */
+    suspend fun setCliVersion(
+        sessionId: SessionId,
+        cliVersion: String?,
+    )
+
     /** Atomically writes only while the row still holds the provider id used for the model lookup. */
     suspend fun setModelForProvider(
         sessionId: SessionId,

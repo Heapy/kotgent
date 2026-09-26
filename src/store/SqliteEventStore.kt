@@ -185,6 +185,19 @@ class SqliteEventStore private constructor(
         emitFromRow(sessionId)
     }
 
+    override suspend fun setCliVersion(
+        sessionId: SessionId,
+        cliVersion: String?,
+    ): Unit = mutex.withLock {
+        val _ = sessions
+            .setCliVersion(
+                cli_version = cliVersion,
+                rev = ++revCounter,
+                id = sessionId.value,
+            )
+        emitFromRow(sessionId)
+    }
+
     override suspend fun setName(
         sessionId: SessionId,
         name: String,

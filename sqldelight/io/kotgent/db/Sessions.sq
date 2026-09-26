@@ -99,6 +99,11 @@ UPDATE sessions
 SET adhd = ?, rev = ?
 WHERE id = ?;
 
+setCliVersion:
+UPDATE sessions
+SET cli_version = ?, rev = ?
+WHERE id = ?;
+
 -- Atomic id check prevents a slow model scan from writing past a provider-id rebind.
 setModelForProvider:
 UPDATE sessions

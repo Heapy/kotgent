@@ -215,6 +215,13 @@ class FakeEventStore(
         emitFromMeta(sessionId)
     }
 
+    override suspend fun setCliVersion(sessionId: SessionId, cliVersion: String?): Unit =
+        guarded("setCliVersion", sessionId.value) {
+            val m = sessionMetadata[sessionId] ?: return@guarded
+            sessionMetadata[sessionId] = m.copy(cliVersion = cliVersion, rev = ++revCounter)
+            emitFromMeta(sessionId)
+        }
+
     override suspend fun setName(sessionId: SessionId, name: String): Unit = guarded("setName", sessionId.value) {
         val m = sessionMetadata[sessionId] ?: return@guarded
         sessionMetadata[sessionId] = m.copy(name = name, rev = ++revCounter)

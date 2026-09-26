@@ -166,6 +166,7 @@ class SessionManager(
     private val supportedAgentKinds: Set<String>,
     private val discoverProviderId: suspend (SessionMeta) -> ProviderSessionId? = { null },
     private val captureModelInBackground: (SessionMeta) -> Unit = {},
+    private val probeCliVersion: (agentKind: String, cliPath: String?) -> String? = { _, _ -> null },
     private val newSessionId: () -> SessionId = { SessionId(randomShortId()) },
     private val now: () -> Long = ::daemonEpochMillis,
     private val cols: Int = DEFAULT_COLS,
@@ -240,7 +241,8 @@ class SessionManager(
                     tags = tags,
                     agent = agentKind,
                     providerSessionId = spec.preallocatedSessionId,
-                    cliVersion = spec.cliVersion,
+                    // spec.cliVersion was detected at daemon start; the pane runs whatever the path resolves to now.
+                    cliVersion = probeCliVersion(agentKind, spec.cliPath) ?: spec.cliVersion,
                     cliPath = spec.cliPath,
                     cwd = cwd,
                     tmuxSession = tmuxSession,
@@ -413,12 +415,15 @@ class SessionManager(
             // Emit the unarchive after state so connected clients receive one final visible row.
             if (meta.archived) store.setArchived(sessionId, false, ts)
             registry.register(paneId, sessionId)
+            val cliVersion = probeCliVersion(meta.agent, spec.cliPath)
+            if (cliVersion != null) store.setCliVersion(sessionId, cliVersion)
             val revived = meta.copy(
                 paneId = paneId,
                 state = next.state,
                 stateSource = EventSource.user,
                 archived = false,
                 updatedAt = ts,
+                cliVersion = cliVersion ?: meta.cliVersion,
             )
             captureModelInBackground(revived)
             return@withControlLock revived

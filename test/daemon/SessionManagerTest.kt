@@ -3,6 +3,7 @@ package io.kotgent.daemon
 import io.kotgent.adapter.AgentAdapter
 import io.kotgent.adapter.LaunchMode
 import io.kotgent.adapter.LaunchSpec
+import io.kotgent.adapter.codex.CodexAdapter
 import io.kotgent.adapter.shell.ShellAdapter
 import io.kotgent.core.AgentEvent
 import io.kotgent.core.EventSource
@@ -98,6 +99,37 @@ class SessionManagerTest {
             ProviderIdCapture(store, this),
             vendorProbe, importLocator, importableAgentKinds(builders.keys),
             newSessionId = { SessionId("shell999") },
+            now = now,
+        )
+    }
+
+    private fun CoroutineScope.codexManager(
+        store: EventStore,
+        tmux: TmuxControl,
+        registry: PaneRegistry = PaneRegistry(),
+        vendorProbe: VendorStoreProbe = importProbe,
+        probeCliVersion: (String, String?) -> String? = { _, _ -> null },
+        newSessionId: () -> SessionId = { SessionId("codex999") },
+        now: () -> Long = { 2_000L },
+    ): SessionManager {
+        val builders = mapOf<String, (String) -> AgentAdapter>(
+            CODEX_AGENT_KIND to { cwd ->
+                CodexAdapter(
+                    cwd = cwd,
+                    hookScriptPath = "/tmp/hooks.sh",
+                    events = emptyFlow(),
+                    binaryName = "/opt/codex",
+                    cliVersion = "0.156.0",
+                    cliPath = "/opt/codex",
+                )
+            },
+        )
+        return SessionManager(
+            tmux, store, registry, agentFactoryOf(builders),
+            ProviderIdCapture(store, this, maxAttempts = 1, retryDelayMillis = 1),
+            vendorProbe, importLocator, importableAgentKinds(builders.keys),
+            probeCliVersion = probeCliVersion,
+            newSessionId = newSessionId,
             now = now,
         )
     }
@@ -577,6 +609,84 @@ class SessionManagerTest {
             val _ = mgr.start("claude", "/tmp/work")
 
             assertNull(store.getSession(SessionId("sess10"))!!.cliVersion, "no version in spec -> null, no crash")
+        }
+    }
+
+    @Test
+    fun startRecordsTheProbedCliVersionInsteadOfTheDaemonStartCache() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val probed = mutableListOf<Pair<String, String?>>()
+            val mgr = codexManager(
+                store, FakeTmux(),
+                probeCliVersion = { agent, path -> probed += agent to path; "0.157.1" },
+                newSessionId = { SessionId("cliv01") },
+            )
+
+            val started = mgr.start("codex", "/tmp/work")
+
+            assertEquals("0.157.1", started.cliVersion, "the returned row carries the probed version")
+            assertEquals(
+                "0.157.1", store.getSession(SessionId("cliv01"))!!.cliVersion,
+                "the row records the version the pane runs, not the daemon-start cache",
+            )
+            assertEquals(listOf<Pair<String, String?>>("codex" to "/opt/codex"), probed, "the probe targets the launched binary")
+        }
+    }
+
+    @Test
+    fun resumeRecordsTheCliVersionTheNewIncarnationRuns() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7")
+            val mgr = codexManager(
+                store, tmux,
+                vendorProbe = liveTranscriptProbe,
+                probeCliVersion = { _, _ -> "0.157.1" },
+            )
+            store.upsertSession(
+                meta("cliv02", SessionState.resumable, providerId = provider)
+                    .copy(agent = CODEX_AGENT_KIND, cliVersion = "0.156.0"),
+            )
+            val before = store.getSession(SessionId("cliv02"))!!
+
+            val revived = mgr.resume(SessionId("cliv02"))
+
+            assertEquals("0.157.1", revived.cliVersion, "the returned row carries the probed version")
+            val row = store.getSession(SessionId("cliv02"))!!
+            assertEquals("0.157.1", row.cliVersion, "resume rewrites the version with what it launched")
+            assertTrue(row.rev > before.rev, "the rewrite is a revisioned row change")
+            assertEquals(SessionState.ready, row.state)
+            assertTrue(tmux.newSessionCommands.single().second.contains("'resume' '${provider.value}'"))
+        }
+    }
+
+    @Test
+    fun aFailedProbeKeepsTheVersionTheRowAlreadyHas() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa8")
+            val mgr = codexManager(
+                store, FakeTmux(),
+                vendorProbe = liveTranscriptProbe,
+                probeCliVersion = { _, _ -> null },
+                newSessionId = { SessionId("cliv03") },
+            )
+
+            val _ = mgr.start("codex", "/tmp/work")
+            assertEquals(
+                "0.156.0", store.getSession(SessionId("cliv03"))!!.cliVersion,
+                "no probe answer at start: the launch spec's daemon-start version stays",
+            )
+
+            store.upsertSession(
+                meta("cliv04", SessionState.resumable, providerId = provider)
+                    .copy(agent = CODEX_AGENT_KIND, cliVersion = "0.150.0"),
+            )
+            val revived = mgr.resume(SessionId("cliv04"))
+            assertEquals("0.150.0", revived.cliVersion, "no probe answer at resume: the recorded version stays")
+            assertEquals("0.150.0", store.getSession(SessionId("cliv04"))!!.cliVersion)
         }
     }
 
