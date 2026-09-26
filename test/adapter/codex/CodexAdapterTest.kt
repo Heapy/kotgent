@@ -98,7 +98,7 @@ class CodexAdapterTest {
         assertTrue(script.startsWith("#!/bin/sh"), "it is a shell script")
         assertEquals("/hooks/codex", CodexHookConfig.LEGACY_INGRESS_PATH)
         assertTrue(script.contains("http://127.0.0.1:7777/api/v1/hooks/codex?event="))
-        assertTrue(script.contains("\"\$1\""), "the event name comes from the first argument")
+        assertTrue(script.contains("?event='\"\$1\""), "the event name is the first argument, appended to the ingress URL")
         assertTrue(script.contains("-H '@/home/u/.kotgent/codex-hook-header'"))
         assertTrue(script.contains("X-Kotgent-Tmux-Pane: \$TMUX_PANE"))
         assertTrue(script.contains("--data-binary @-"), "the hook payload is forwarded from stdin unchanged")
