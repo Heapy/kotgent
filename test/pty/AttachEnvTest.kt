@@ -1,6 +1,8 @@
 package io.kotgent.pty
 
 import io.kotgent.sys.DEFAULT_UTF8_LOCALE
+import io.kotgent.host.HostOs
+import io.kotgent.host.hostOs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -48,7 +50,8 @@ class AttachEnvTest {
             val env = terminalAttachEnv(lang = null, home = null, path = blank)
             assertEquals(ATTACH_FALLBACK_PATH, env["PATH"], "a blank PATH (<$blank>) falls back to the floor")
         }
-        assertTrue("/opt/homebrew/bin" in ATTACH_FALLBACK_PATH && "/usr/bin" in ATTACH_FALLBACK_PATH)
+        assertTrue("/usr/bin" in ATTACH_FALLBACK_PATH)
+        assertTrue((if (hostOs == HostOs.LINUX) "/usr/local/bin" else "/opt/homebrew/bin") in ATTACH_FALLBACK_PATH)
     }
 
     @Test

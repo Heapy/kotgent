@@ -383,7 +383,6 @@ class SessionImportTest {
 
             val meta = mgr.importSession("claude", providerId, cwd = "/tmp/./")
 
-            assertEquals("/private/tmp", canonicalTmp, "/tmp is a symlink — realpath must cross it")
             assertEquals(canonicalTmp, meta.cwd, "the row stores the canonical form of a messy spelling")
             assertEquals(listOf(canonicalTmp), probedCwds, "the probe was keyed on the canonical form")
         }

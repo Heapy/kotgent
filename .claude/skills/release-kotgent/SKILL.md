@@ -14,7 +14,7 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 - Release `Heapy/kotgent` from `main`; keep Kotgent and `Heapy/homebrew-tap` linear.
 - Store the version in `version.txt`; name the tag and Release `v<version>`.
 - Never merge, force-push, move a tag, or replace an existing release.
-- Build only `macosArm64`; require exactly the archive and matching `.sha256` asset named by `.github/workflows/release.yml`.
+- Require `macosArm64`, `linuxX64`, and `linuxArm64` gates, including execution on real Linux ARM64. Require three archives and three matching `.sha256` assets, using the names from `scripts/package-native.sh`.
 - Verify the published archive before updating `Formula/kotgent.rb`.
 - Preserve the caller's worktree. Stage only explicit release files in isolated temporary checkouts.
 - A pushed tag alone is not completion.
@@ -33,11 +33,11 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 3. Create a unique temporary root and detached worktree:
 
    ```sh
-   mktemp -d /private/tmp/kotgent-release-v<version>.XXXXXX
+   mktemp -d "${TMPDIR:-/tmp}/kotgent-release-v<version>.XXXXXX"
    git worktree add --detach <temp-root>/kotgent origin/main
    ```
 
-   The directory must be named `kotgent`. The root module takes its name from the checkout directory, so in a differently named one `./kotlin build -m kotgent` fails outright with `Unable to resolve module by name 'kotgent'`, and the link output's directory and filename follow that name too.
+   Name the directory `kotgent` to keep documented root-module test task names valid. Executables are linked by the fixed `kotgent-macos` and `kotgent-linux` launcher modules.
 
    Perform all Kotgent edits, builds, commits, and tagging there. Use `--repo Heapy/kotgent` for repository-scoped `gh release` and `gh run` commands.
 
@@ -52,19 +52,20 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
    kotgent install
    ```
 
-   Explain that reinstalling the launchd plist is required because it stores a version-qualified Cellar path.
+   Explain that reinstalling the launchd plist is required because it stores a version-qualified Cellar path. For Linux upgrades, verify and unpack the matching archive, preserve its adjacent resources, update the executable symlink, and rerun `kotgent install` to refresh the systemd unit.
 
-3. Run in order:
+3. Use `target=macosArm64` and `app=kotgent-macos` on macOS ARM64, or `target=linuxX64` and `app=kotgent-linux` on Ubuntu 22.04 x64. Linux ARM64 has no compiler host; its release is cross-compiled and run by CI. Run in order:
 
    ```sh
    git diff --check
-   KOTGENT_RELEASE_BUILD=true ./kotlin build -v release -p macosArm64 -m kotgent
-   ./kotlin do releaseKexePath && "$(cat build/kexe-path)" --version
-   ./kotlin build
-   ./kotlin test
+   ./kotlin build -p "$target" -p jvm
+   ./kotlin test -p "$target" -p jvm
+   KOTGENT_RELEASE_BUILD=true ./kotlin build -v release -p "$target" -m "$app"
+   scripts/package-native.sh "$target"
+   scripts/smoke-package.sh build/packages/kotgent-<version>-<host-suffix>.tar.gz
    ```
 
-   Require exactly `kotgent <version>` and zero failures. Never run `./kotlin run`.
+   Use `macos-arm64` or `linux-x64` as `<host-suffix>`. Require exactly `kotgent <version>` and zero failures. Never run `./kotlin run` or install the candidate daemon.
 
    Ask the build for the binary instead of hard-coding a link path — `release.yml` locates the artifact it packages the same way. `releaseKexePath` only reports the last build and cannot trigger or order after one, so it must follow the release build; its machine-readable answer is the `build/kexe-path` record, not its log output.
 
@@ -80,7 +81,7 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
    git log --oneline origin/main..HEAD                   # release commit only
    ```
 
-4. Push `HEAD:main` without force. Find the `CI` run whose `headSha` is the release commit and wait for success. Read the verdict from `gh run view <id> --repo Heapy/kotgent --json status,conclusion` — `gh run watch` prints unrelated Homebrew tap-trust noise and may end without stating one. On failure, read [references/ci-failure-policy.md](references/ci-failure-policy.md); do not tag without the approval required there.
+4. Push `HEAD:main` without force. Find the `CI` run whose `headSha` is the release commit and wait for every platform job, including the real ARM64 runtime job, to succeed. Read the verdict from `gh run view <id> --repo Heapy/kotgent --json status,conclusion` — `gh run watch` prints unrelated Homebrew tap-trust noise and may end without stating one. On failure, read [references/ci-failure-policy.md](references/ci-failure-policy.md); do not tag without the approval required there.
 
 ## 4. Publish and verify
 
@@ -94,22 +95,14 @@ Ask for a missing version. Normalize an optional leading `v`; accept only stable
 
 3. Find the `Release` workflow run for the same `headSha` and wait for success, reading its conclusion the same way as the `CI` run.
 4. Verify the workflow-created Release targets `v<version>`, is neither draft nor prerelease, and has exactly the expected archive and checksum assets. Publish the prepared notes under the title `Kotgent <version> — <headline>`, reusing the tag message's headline, then verify it again.
-5. Download into a new explicit temporary directory and run:
+5. Download all six assets into a new explicit temporary directory. For each suffix (`macos-arm64`, `linux-x64`, `linux-arm64`), verify its checksum with `shasum -a 256 -c` or `sha256sum -c`, independently record the archive's SHA-256, and inspect its tar contents. Require `kotgent` and `resources/webui` under the matching version/target directory.
 
-   ```sh
-   shasum -a 256 -c kotgent-<version>-macos-arm64.tar.gz.sha256
-   shasum -a 256 kotgent-<version>-macos-arm64.tar.gz
-   tar -tzf kotgent-<version>-macos-arm64.tar.gz
-   tar -xzf kotgent-<version>-macos-arm64.tar.gz
-   ./kotgent-<version>-macos-arm64/kotgent --version
-   ```
-
-   Require checksum `OK`; record the independently computed SHA-256; require `kotgent` and `resources/webui` in the archive; require exactly `kotgent <version>`.
+   Run `scripts/smoke-package.sh <download-dir>/kotgent-<version>-<host-suffix>.tar.gz` for the native host archive. Require checksum `OK` and exactly `kotgent <version>`. Confirm that Release reused the successful CI gates and their tested artifacts for the other architectures; never execute a foreign-architecture binary directly.
 
 ## 5. Update the Homebrew tap
 
 1. Clone `git@github.com:Heapy/homebrew-tap.git` into another unique temporary root and read tap-local instructions.
-2. Change only the formula's version, release URL/filename, verified SHA-256, and expected test version. Report anything else that has gone stale — `desc`, for instance, still names only Claude and Codex — rather than editing it here.
+2. Keep the tap's existing platform scope; Linux distribution uses release archives. Change only the formula's version, macOS release URL/filename, verified macOS SHA-256, and expected test version. Report anything else that has gone stale — `desc`, for instance, still names only Claude and Codex — rather than editing it here.
 3. Run tap-prescribed gates and at least:
 
    ```sh

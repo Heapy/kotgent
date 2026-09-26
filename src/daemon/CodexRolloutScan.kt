@@ -2,22 +2,19 @@ package io.kotgent.daemon
 
 import io.kotgent.adapter.extractModel
 import io.kotgent.adapter.codex.extractCodexRateLimits
+import io.kotgent.host.fileTimes
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.core.UsageObservation
 import io.kotgent.core.isCanonicalUuid
 import io.kotgent.store.EventStore
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import platform.posix.getenv
-import platform.posix.stat
 
 
 private const val UUID_LENGTH = 36
@@ -141,11 +138,7 @@ class CodexRolloutScan(
         return out
     }
 
-    private fun mtimeMillis(path: String): Long? = memScoped {
-        val st = alloc<stat>()
-        if (stat(path, st.ptr) != 0) return@memScoped null
-        st.st_mtimespec.tv_sec * 1000L + st.st_mtimespec.tv_nsec / 1_000_000L
-    }
+    private fun mtimeMillis(path: String): Long? = fileTimes(path)?.modifiedMillis
 
     companion object {
         const val HEAD_BYTES: Int = 8 * 1024

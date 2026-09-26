@@ -21,7 +21,7 @@ restarting the daemon—must not discard the work.
 
 ## Product principles
 
-- **Local first.** The daemon, credentials, session metadata, and backlog live on the user's Mac. Remote
+- **Local first.** The daemon, credentials, session metadata, and backlog live on the user's Mac or Linux host. Remote
   access is an explicit, secure tunnel to that machine, not a hosted kotgent account or a second source of truth.
 - **Clients are interchangeable and disposable.** Agent and shell processes live in `tmux`; closing the
   IDE, browser, or PWA only detaches a viewer. The daemon coordinates them but does not make their lifetime
@@ -55,7 +55,7 @@ restarting the daemon—must not discard the work.
   cloud scheduler.
 - The service worker is network-only: without the local daemon there is no useful offline application state.
 - Shell sessions provide a remotely reachable login shell, not a durable conversation or provider import.
-- Usage meters assume one account per provider on the Mac and show only available percentage windows.
+- Usage meters assume one account per provider on the host and show only available percentage windows.
   The [agent guides](../README.md#agents) describe provider-specific evidence and accepted limitations.
 - Additional provider meters, a usage CLI/REST read, Prometheus export, and a reset-journal UI remain
   outside the current scope.

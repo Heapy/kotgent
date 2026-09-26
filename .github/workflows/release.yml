@@ -5,46 +5,30 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: macos-26
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
-
-      - name: Cache the Kotlin toolchain
-        uses: actions/cache@v6
+      - name: Verify release version
+        run: test "$GITHUB_REF_NAME" = "v$(tr -d '\r\n' < version.txt)"
+      - uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.kotlin
-            .kotlin
-          key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'project.yaml', 'module.yaml') }}
-          restore-keys: kotlin-toolchain-${{ runner.os }}-
-
-      - name: Build release binary
-        env:
-          # Release artifacts report VERSION without the source-build Git suffix.
-          KOTGENT_RELEASE_BUILD: "true"
-        run: ./kotlin build -v release -p macosArm64 -m kotgent
-
-      - name: Package
-        id: package
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          stage="kotgent-${version}-macos-arm64"
-          mkdir -p "$stage/resources"
-          ./kotlin do releaseKexePath
-          cp "$(cat build/kexe-path)" "$stage/kotgent"
-          chmod +x "$stage/kotgent"
-          cp -R resources/webui "$stage/resources/webui"
-          tar -czf "${stage}.tar.gz" "$stage"
-          shasum -a 256 "${stage}.tar.gz" | tee "${stage}.tar.gz.sha256"
-          echo "tarball=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
-
-      - name: Publish release
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+      - name: Publish verified archives
         uses: softprops/action-gh-release@v3
         with:
+          fail_on_unmatched_files: true
           files: |
-            ${{ steps.package.outputs.tarball }}
-            ${{ steps.package.outputs.tarball }}.sha256
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256

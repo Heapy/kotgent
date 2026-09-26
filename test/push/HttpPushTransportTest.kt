@@ -17,7 +17,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.time.Duration.Companion.seconds
 
-class DarwinPushTransportTest {
+class HttpPushTransportTest {
 
     @Test
     fun postSendsTheSuppliedHeadersWithAnEmptyBodyAndReturnsTheStatus() = runBlocking {
@@ -49,7 +49,7 @@ class DarwinPushTransportTest {
                     respond(content = "", status = HttpStatusCode.Gone)
                 },
             )
-            val transport = DarwinPushTransport(client)
+            val transport = HttpPushTransport(client)
             try {
                 assertEquals(HttpStatusCode.Gone.value, transport.post(endpoint, headers))
             } finally {

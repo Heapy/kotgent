@@ -135,7 +135,7 @@ val USAGE: String = """
       token rotate                   re-mint the master token (old key stops authenticating)
       config get                     print the persisted config (public URL)
       config set public-url <url>    set the public URL published behind the tunnel
-      install | uninstall           (un)install the launchd LaunchAgent
+      install | uninstall           (un)install the per-user daemon service
       --version                      print version
       --help                         print this help
 """.trimIndent()

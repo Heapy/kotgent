@@ -588,3 +588,34 @@ A behavior change is ready when:
 - user data has a tested upgrade and recovery path.
 
 The suite should make internal change inexpensive while making externally visible breakage difficult to ship.
+
+## Native platform matrix
+
+The full native/JVM/browser/JavaScript suite runs on macOS ARM64 and Ubuntu 22.04 x64, with explicit
+`-p macosArm64 -p jvm` or `-p linuxX64 -p jvm` selectors on build and test. ARM64 Linux has no native
+compiler host: CI cross-compiles its application, harness and native test binaries on x64, then executes
+them on `ubuntu-22.04-arm`. Native suites include the real PTY, SQLite, transport, provider and signing
+boundaries; browser journeys run on macOS and Linux x64. No Linux runtime assertion is replaced by a
+successful cross-compilation.
+
+Kotlin's bundled QEMU 5.1 is useful for optional smoke checks, but cannot validate spawn error reporting:
+it [emulates `vfork` using `fork`](https://github.com/qemu/qemu/blob/v5.1.0/linux-user/syscall.c), so the
+child cannot return an exec failure through glibc's shared memory. A standalone C `posix_spawn` probe
+reproduces success plus child exit 127 for a missing executable under that emulator, where native Linux
+returns `ENOENT`. Keep `PtyTest.spawningANonexistentCommandThrows` enabled on the real ARM64 runner.
+
+Linux tests require tmux, Perl, OpenSSL, Python 3, systemd-analyze, SQLite and libcurl. The TLS fixture
+uses an ephemeral loopback HTTPS server and a disposable certificate to prove successful delivery,
+certificate rejection and request deadlines. It never contacts a push provider or modifies system trust.
+
+`systemdcheck-linux` renders the production service unit for `scripts/test-systemd.sh`. That separate CI
+check uses a bounded shell helper, a uniquely named user unit and an isolated tmux socket. It verifies
+literal paths containing spaces, quotes, percent and dollar characters, restart/crash recovery, and live
+session survival after stop. It requires an available user manager and fails when that prerequisite is
+missing; it does not operate the real daemon. Installer tests additionally cover environment capture,
+atomic private files, reinstall/uninstall and recoverable command failures.
+
+Release archives are built and smoke-tested in CI; release publication reuses those verified artifacts
+only after every platform gate passes. Smoke tests verify checksums, executable permissions, version/help
+outside the checkout, bundled resources and Linux shared-library resolution. No release test runs a real
+provider or the operator's long-lived daemon.

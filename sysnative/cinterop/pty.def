@@ -1,19 +1,70 @@
-# Toolchain auto-discovers cinterop/*.def. These macOS symbols resolve through libSystem.
+# Platform details stay in C: libc's opaque spawn types and stat layouts differ across targets.
 
 package = io.kotgent.cinterop.pty
-headers = util.h sys/ioctl.h termios.h spawn.h
+headers = sys/ioctl.h termios.h
+compilerOpts.linux = -D_GNU_SOURCE
+linkerOpts.linux = -lutil -ldl
 
 ---
 
+#ifdef __APPLE__
 #include <util.h>
+#include <mach-o/dyld.h>
+#else
+#include <pty.h>
+#include <dlfcn.h>
+#endif
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <spawn.h>
-#include <mach-o/dyld.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 #include <stdint.h>
+
+// Kotlin/Native ships older glibc headers. This ABI flag has been stable since glibc 2.26;
+// Linux releases require glibc 2.35+ and resolve the newer close-from action at runtime.
+#ifndef POSIX_SPAWN_SETSID
+#define POSIX_SPAWN_SETSID 0x80
+#endif
+
+static int kotgent_spawn_pty(int *child, const char *pts_path, char *const argv[], char *const envp[],
+                             int *actions_cleanup, int *attr_cleanup) {
+    *actions_cleanup = 0;
+    *attr_cleanup = 0;
+    posix_spawn_file_actions_t actions;
+    int rc = posix_spawn_file_actions_init(&actions);
+    if (rc) return rc;
+    // O_NOCTTY keeps the same explicit SIGWINCH contract on both hosts.
+    rc = posix_spawn_file_actions_addopen(&actions, 0, pts_path, O_RDWR | O_NOCTTY, 0);
+    if (!rc) rc = posix_spawn_file_actions_adddup2(&actions, 0, 1);
+    if (!rc) rc = posix_spawn_file_actions_adddup2(&actions, 0, 2);
+    short flags = POSIX_SPAWN_SETSID;
+#ifdef __APPLE__
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#else
+    typedef int (*closefrom_fn)(posix_spawn_file_actions_t *, int);
+    closefrom_fn closefrom_action = (closefrom_fn)dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addclosefrom_np");
+    if (!rc) rc = closefrom_action ? closefrom_action(&actions, 3) : ENOSYS;
+#endif
+    if (rc) {
+        *actions_cleanup = posix_spawn_file_actions_destroy(&actions);
+        return rc;
+    }
+    posix_spawnattr_t attr;
+    rc = posix_spawnattr_init(&attr);
+    if (!rc) {
+        rc = posix_spawnattr_setflags(&attr, flags);
+        if (!rc) rc = posix_spawn(child, argv[0], &actions, &attr, argv, envp);
+        *attr_cleanup = posix_spawnattr_destroy(&attr);
+    }
+    *actions_cleanup = posix_spawn_file_actions_destroy(&actions);
+    return rc;
+}
 
 // cinterop does not surface util.h's openpty declaration, so expose it from the compiled body.
 static int kotgent_openpty(int *amaster, int *aslave) {
@@ -69,15 +120,35 @@ static int kotgent_get_winsize(int fd, unsigned short *rows, unsigned short *col
     return 0;
 }
 
-// _NSGetExecutablePath is outside the header scan; canonicalize its result for launchd ProgramArguments.
+// Canonical executable location is also the anchor for the installed Web UI resource tree.
 static int kotgent_executable_path(char *buf, unsigned int buflen) {
     char raw[PATH_MAX];
+#ifdef __APPLE__
     uint32_t size = (uint32_t)sizeof(raw);
     if (_NSGetExecutablePath(raw, &size) != 0) return -1;
+#else
+    ssize_t size = readlink("/proc/self/exe", raw, sizeof(raw));
+    if (size < 0 || size >= (ssize_t)sizeof(raw)) return -1;
+    raw[size] = '\0';
+#endif
     char resolved[PATH_MAX];
     const char *src = realpath(raw, resolved) ? resolved : raw;
     size_t n = strlen(src);
     if (n + 1 > (size_t)buflen) return -1;
     memcpy(buf, src, n + 1);
+    return 0;
+}
+
+static int kotgent_file_times(const char *path, int64_t *modified, int64_t *birth) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+#ifdef __APPLE__
+    *modified = (int64_t)st.st_mtimespec.tv_sec * 1000 + st.st_mtimespec.tv_nsec / 1000000;
+    *birth = (int64_t)st.st_birthtimespec.tv_sec * 1000 + st.st_birthtimespec.tv_nsec / 1000000;
+#else
+    *modified = (int64_t)st.st_mtim.tv_sec * 1000 + st.st_mtim.tv_nsec / 1000000;
+    // stat(2) has no creation time on Linux. ctime is a metadata change, not a birth time.
+    *birth = 0;
+#endif
     return 0;
 }

@@ -1,0 +1,11 @@
+# Link against Ubuntu 22.04's glibc 2.35 and GCC 11 runtime, matching the system SQLite library.
+# Kotlin's older bundled libc cannot satisfy SQLite's versioned symbols.
+# Keep these paths in sync with scripts/install-linux-build-deps.sh.
+settings@linuxX64:
+  kotlin:
+    freeCompilerArgs:
+      - -Xoverride-konan-properties=targetSysRoot.linux_x64=/;libGcc.linux_x64=usr/lib/gcc/x86_64-linux-gnu/11;crtFilesLocation.linux_x64=usr/lib/x86_64-linux-gnu;abiSpecificLibraries.linux_x64=usr/lib/x86_64-linux-gnu lib/x86_64-linux-gnu
+settings@linuxArm64:
+  kotlin:
+    freeCompilerArgs:
+      - -Xoverride-konan-properties=targetSysRoot.linux_arm64=/;libGcc.linux_arm64=usr/lib/gcc/aarch64-linux-gnu/11;crtFilesLocation.linux_arm64=usr/lib/aarch64-linux-gnu;abiSpecificLibraries.linux_arm64=usr/lib/aarch64-linux-gnu lib/aarch64-linux-gnu

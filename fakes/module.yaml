@@ -4,7 +4,7 @@
 # no friend access, so declarations in `src/` must be public.
 product:
   type: kmp/lib
-  platforms: [macosArm64]
+  platforms: [macosArm64, linuxX64, linuxArm64]
 
 dependencies:
   - ..

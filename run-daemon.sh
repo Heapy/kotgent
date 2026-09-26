@@ -49,7 +49,12 @@ trap cleanup EXIT
 build_binary() {
     next_kexe_path=
 
-    ./kotlin build || return
+    case "$(uname -s)/$(uname -m)" in
+        Darwin/arm64) export KOTGENT_TARGET_PLATFORM=macosArm64; local module=kotgent-macos ;;
+        Linux/x86_64) export KOTGENT_TARGET_PLATFORM=linuxX64; local module=kotgent-linux ;;
+        *) printf 'unsupported build host; use a release archive on Linux ARM64\n' >&2; return 1 ;;
+    esac
+    ./kotlin build -p "$KOTGENT_TARGET_PLATFORM" -m "$module" || return
     ./kotlin "do" kexePath || return
 
     if [[ ! -s build/kexe-path ]]; then

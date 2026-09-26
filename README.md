@@ -9,13 +9,13 @@
 `tmux` and supervising those sessions from a terminal, a desktop browser, or an installed PWA.
 
 It is for developers who want long-running coding work to continue after the IDE or browser closes, and
-who want to move between Mac, iPad, and iPhone without moving the process itself. Kotgent provides:
+who want to move between a desktop, tablet, and phone without moving the process itself. Kotgent provides:
 
 - durable agent processes in an isolated `tmux` server;
 - one live session list and terminal shared by every client;
 - attention notifications when an agent needs a human response, plus early weekly quota-reset notices;
 - shared Claude and Codex usage meters in the sidebar;
-- restart-safe session state and a project task backlog stored locally on the Mac.
+- restart-safe session state and a project task backlog stored locally on the host.
 
 Kotgent does not replace a provider's conversation storage. Claude, Codex, and Junie still own their
 transcripts and resume behavior; kotgent records enough state to reconnect the right process and client.
@@ -34,6 +34,7 @@ immortal:
 
 - [What kotgent is](#what-kotgent-is)
 - [Install with Homebrew](#install-with-homebrew)
+- [Install on Linux](#install-on-linux)
 - [Cloudflare Tunnel](#cloudflare-tunnel)
 - [Install the PWA in Safari](#install-the-pwa-in-safari)
 - [Architecture](#architecture)
@@ -81,6 +82,39 @@ binary's real (version-qualified) Cellar path, which a new release invalidates.
 
 To build from source instead, see [Build & test](#build--test).
 
+## Install on Linux
+
+Linux x64 and ARM64 releases support glibc 2.35 or newer, with Ubuntu 22.04 as the tested baseline.
+Download the matching `linux-x64` or `linux-arm64` archive and its `.sha256` file from
+[GitHub Releases](https://github.com/Heapy/kotgent/releases). Alpine/musl is not supported.
+
+On Ubuntu, install runtime dependencies:
+
+```shell
+sudo apt-get install tmux curl libcurl4 libsqlite3-0 perl openssl ca-certificates
+```
+
+Verify the checksum with `sha256sum -c <archive>.sha256`, then extract the archive into a permanent
+location. Keep `kotgent` and its adjacent `resources/webui` directory together; symlink the executable
+into a directory on your PATH. Run from your normal login shell:
+
+```shell
+kotgent install
+kotgent start shell
+kotgent web
+```
+
+`install` writes `kotgent.service` under `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, captures your
+PATH and UTF-8 locale, and enables and starts the service. Re-run it after upgrading or moving the
+executable. Restart with `systemctl --user restart kotgent.service`; inspect logs with
+`journalctl --user -u kotgent.service`. Stopping, restarting, or uninstalling the service preserves
+existing tmux sessions.
+
+For an unattended server, optionally enable the user manager after logout with
+`loginctl enable-linger "$USER"`. Installation does not change lingering. Without a systemd user
+manager, run `kotgent daemon` in the foreground. On a headless host, use `kotgent web --print`;
+opening a desktop browser otherwise requires `xdg-open` from the `xdg-utils` package.
+
 ## Cloudflare Tunnel
 
 Remote browser and PWA access is optional. The native daemon deliberately binds only to
@@ -88,7 +122,7 @@ Remote browser and PWA access is optional. The native daemon deliberately binds 
 [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/) with a
 [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/setup/secure-private-apps/private-web-app/)
 policy in front of it. This boundary matters: the Web UI exposes a terminal that can run arbitrary
-commands on the Mac.
+commands on the host.
 
 1. Put a domain on Cloudflare and install [`cloudflared`](https://developers.cloudflare.com/tunnel/downloads/)
    on the Mac:
@@ -97,8 +131,8 @@ commands on the Mac.
    brew install cloudflared
    ```
 
-2. In **Cloudflare Dashboard → Networking → Tunnels**, create a named tunnel. Use the macOS connector
-   command shown by the dashboard so `cloudflared` runs as a service, then add one **Published
+2. In **Cloudflare Dashboard → Networking → Tunnels**, create a named tunnel. Use the connector
+   command for your host OS shown by the dashboard so `cloudflared` runs as a service, then add one **Published
    application** route:
 
    | Setting | Value |
@@ -114,7 +148,10 @@ commands on the Mac.
 
    ```shell
    kotgent config set public-url https://kotgent.example.com
+   # macOS:
    launchctl kickstart -k "gui/$(id -u)/io.kotgent.daemon"
+   # Linux:
+   systemctl --user restart kotgent.service
    ```
 
 Use your own hostname in both places. A stable named tunnel is required; a temporary `trycloudflare.com`
@@ -127,7 +164,7 @@ Access policy before installing the PWA.
 
 Open Kotgent in Safari before installing it:
 
-- on the host Mac, use `http://127.0.0.1:27508/auth`;
+- on the host, use `http://127.0.0.1:27508/auth`;
 - on another Mac, an iPad, or an iPhone, use `https://kotgent.example.com/auth` and complete Cloudflare
   Access first.
 
@@ -153,7 +190,7 @@ Kotgent from its Home Screen icon. See [Apple's iPad guide](https://support.appl
 
 After launching the installed app, complete Cloudflare Access again if prompted. Generate a fresh,
 single-use kotgent code with `kotgent web`, or with the phone button in an already signed-in desktop Web
-UI opened on the host Mac, and type that code into the installed app. On iPhone and iPad, server-sent Web
+UI opened on the host, and type that code into the installed app. On iPhone and iPad, server-sent Web
 Push requires iOS or iPadOS 16.4 or later and notifications must be enabled from the installed app.
 
 ## Architecture
@@ -181,7 +218,7 @@ session is fanned out to every terminal client.
 | `store/`, `task/` | SQLite session/usage history, notification inbox, and project backlog. |
 | `transport/` | Ktor REST, WebSocket, authentication, and static PWA endpoints. |
 | `push/` | Attention tracking, early-reset inbox projection, subscriptions, VAPID signing, and Web Push delivery. |
-| `launchd/` | Per-user daemon installation and environment capture. |
+| `service/`, platform `launchd/` and `systemd/` | Per-user daemon installation and environment capture. |
 
 State is local and restart-safe; remote access publishes only the authenticated browser surface. See
 [docs/INTENT.md](docs/INTENT.md) for product boundaries, [CLAUDE.md](CLAUDE.md) for architecture
@@ -189,8 +226,8 @@ invariants, and [docs/TESTING.md](docs/TESTING.md) for the verification strategy
 
 ## Requirements
 
-- **macOS on Apple Silicon (arm64).** The build targets `macosArm64` and links against macOS system
-  libraries; there is no other supported target.
+- **macOS on Apple Silicon, or Linux x64/ARM64 with glibc 2.35+.** Targets are `macosArm64`,
+  `linuxX64`, and `linuxArm64`. Linux service installation uses a systemd user manager.
 - **Source builds only: JetBrains Kotlin Toolchain** — invoked through the bundled `./kotlin` wrapper
   committed in the repo.
   You do **not** need a separate install or Gradle; the wrapper provisions the toolchain (0.12.2) on
@@ -222,10 +259,9 @@ invariants, and [docs/TESTING.md](docs/TESTING.md) for the verification strategy
   fanned out to many viewers, "is the terminal focused" has no single answer. Developed against tmux 3.7b.
 - **An agent CLI**, installed and available on the login shell's `PATH` when you run `kotgent install`.
   Only the agent you want to use is required; a plain shell needs no additional CLI. See [Agents](#agents).
-- **`/usr/bin/openssl` and NSURLSession (Web Push only).** kotgent lazily uses macOS's system
-  `/usr/bin/openssl` to generate and sign its VAPID P-256 credential; outbound HTTPS delivery uses
-  the Darwin HTTP client backed by NSURLSession and the system trust store. Both are macOS runtime
-  facilities, not packages to install. If VAPID setup fails, the daemon and in-tab notifications keep
+- **`/usr/bin/openssl` and a platform HTTPS engine (Web Push).** kotgent lazily uses
+  `/usr/bin/openssl` to generate and sign its VAPID P-256 credential. HTTPS uses Darwin/NSURLSession on
+  macOS and libcurl on Linux, with certificate verification against the system trust store. If VAPID setup fails, the daemon and in-tab notifications keep
   working; only server-sent push is unavailable.
 
 ## Agents
@@ -243,15 +279,16 @@ configuration, session status, usage meters, and known limitations.
 ## Build & test
 
 ```shell
-./kotlin build      # compile the macosArm64 app (+ the sysnative cinterop, + SQLDelight codegen)
-./kotlin do kexePath # print the debug app's absolute .kexe path (releaseKexePath for the release one)
-./kotlin test       # run the test suite
+# macOS (use linuxX64 instead of macosArm64 on an x64 Linux build host):
+./kotlin build -p macosArm64 -p jvm
+./kotlin do kexePath
+./kotlin test -p macosArm64 -p jvm
 ```
 
-`./kotlin test` runs every tier and the suite has no skips: the native suite (`test/`), the browser tier
+`./kotlin test -p <host-target> -p jvm` runs every tier: the native suite (`test/`), the browser tier
 (`webuitest/`, a real Chromium driven through Playwright), the browser-independent JavaScript tier
-(`webuitest/js/` under `node --test`, spawned by `WebUiLogicTest`), 7 JVM tests for the build-info
-plugin, the 11 real-PTY tests under `test/pty/` and the 2 harness self-checks in `webuicheck/test/`. The
+(`webuitest/js/` under `node --test`, spawned by `WebUiLogicTest`), JVM tests for the build-info
+plugin, real-PTY tests under `test/pty/` and harness self-checks in `webuicheck/test/`. The
 two module tasks — `:kotgent:testMacosArm64Debug` and `:webuitest:testJvm` — are the fast local loops;
 neither replaces the aggregate. **The counts are deliberately not written here**: they move with every
 change, and the run itself is the only source of truth that cannot go stale (`AGENTS.md` carries the
@@ -264,18 +301,18 @@ rather than passing quietly. See [Status & limitations](#status--limitations) fo
 binary at all.
 
 **The first `test` run downloads browsers, and needs the network for it.** Playwright provisions its
-browser bundle into `~/Library/Caches/ms-playwright` — measured at about **1.1 GB**, because
+browser bundle into `~/Library/Caches/ms-playwright` on macOS or `~/.cache/ms-playwright` on Linux, because
 `Playwright.create()` installs Chromium, the headless shell, ffmpeg, Firefox and WebKit as one set even
-though every test here asks for Chromium and nothing else. There is deliberately no npm anywhere in this
-repository: the Node driver ships inside the Maven artifact, so there is no `package.json`, no
-`node_modules` and no `npx playwright install` step to run. CI caches that directory under a key that
-spells the Playwright version out literally, so bumping `playwright` in `gradle/libs.versions.toml` means
-bumping the key in `.github/workflows/ci.yml` in the same commit — otherwise every CI run re-downloads a
-bundle it can never save.
+though every test here asks for Chromium. The Java artifact supplies its Node driver, so local tests
+need no npm project or frontend build. CI uses the matching, pinned Playwright CLI through `npm exec`
+to install Chromium only, then disables Java's automatic browser download. It caches browsers under
+an OS/architecture/version key. When changing `playwright` in `gradle/libs.versions.toml`, update both
+the CLI version and cache key in `.github/workflows/ci.yml`.
 
-The produced binary lands under `build/` (the `macos/app` output). Its directory and filename include
-the checkout/worktree name, so use `./kotlin do kexePath` after `build` instead of hard-coding either
-(`releaseKexePath` for a `-v release` build); `kotgent` below refers to that binary. The command reads
+Shared runtime and tests stay in the root library; thin `kotgent-macos` and `kotgent-linux` modules link
+executables under `build/`. Use `./kotlin do kexePath` after a host build (`releaseKexePath` for a release
+build). For a cross build set `KOTGENT_TARGET_PLATFORM=linuxArm64` on the path command. Unsupported or
+missing targets fail instead of selecting another architecture's binary. `kotgent` below refers to that binary. The command reads
 what `build` left behind rather than triggering it — the toolchain has no way for a plugin task to
 depend on the native link — so run it after a successful `build`, or it fails saying so.
 
@@ -285,13 +322,13 @@ lines, and silenced by `--log-level` before the surrounding noise is. The file f
 along with everything else, and a failed lookup deletes it rather than leaving a stale answer behind.
 
 ```shell
-./kotlin build
+./kotlin build -p macosArm64 -p jvm # use linuxX64 on Linux
 ./kotlin do kexePath
 kexe=$(cat build/kexe-path)
 ```
 
 To install the current checkout as the `kotgent` on your `PATH`, stage its binary and Web UI together,
-and restart the launchd agent, use the repository's installer (with `~/.local/bin` on your `PATH`):
+and restart the daemon service, use the repository's installer (with `~/.local/bin` on your `PATH`):
 
 ```shell
 ./install-local.sh
@@ -299,13 +336,25 @@ and restart the launchd agent, use the repository's installer (with `~/.local/bi
 
 Pass `--no-daemon` when you want to stage the source build without replacing the running daemon.
 
+Linux source builds use Ubuntu 22.04 and need `libsqlite3-dev`, `libstdc++-11-dev`, and
+`zlib1g-dev` in addition to the runtime dependencies. The build links against Ubuntu’s glibc
+and GCC 11 runtime libraries; this fixes the release baseline at glibc 2.35. Native Linux tests also use
+Python 3 and `systemd-analyze`; the browser tier needs Chromium's system libraries. CI lists those
+packages explicitly.
+
+Kotlin/Native cannot run its compiler on a Linux ARM64 host. On a disposable Ubuntu 22.04 x64 build
+machine, `scripts/install-linux-build-deps.sh linuxArm64` installs multiarch dependencies (and adjusts
+APT sources), then `./kotlin build -p linuxArm64` cross-compiles. Run the resulting executables on ARM64.
+`scripts/bundle-arm64-checks.sh` packages native test binaries for that runner. macOS source builds
+remain native. Run Kotlin invocations and aggregate tests serially.
+
 ## The CLI
 
 ```text
 kotgent <command> [args]
 
-  daemon [--port N]              run the control-plane server (default port 27508; the launchd entry point)
-  install | uninstall           (un)install the launchd LaunchAgent (io.kotgent.daemon)
+  daemon [--port N]              run the control-plane server (default port 27508; the service entry point)
+  install | uninstall           (un)install the per-user launchd or systemd service
   start <agent> [cwd]           start a session (agent: 'claude' | 'codex' | 'junie' | 'shell'; cwd defaults to the current dir)
              [--name N] [--tag T] [--task R]
   import <agent> <session-id>   register a session started outside kotgent, then resume it
@@ -346,15 +395,13 @@ kotgent <command> [args]
 - **`daemon`** binds `127.0.0.1:27508` by default (`27508` = `0x6b74` = ASCII "kt"). Override the
   daemon's listen port with `--port`. The `$KOTGENT_PORT` environment variable does **not** change the
   daemon's port — it tells the CLI *client* (`list`/`start`/`stop`/`attach`/…) which port to reach a
-  running daemon on. This is the process launchd runs on login.
-- **`install` / `uninstall`** write `~/Library/LaunchAgents/io.kotgent.daemon.plist`
-  (`RunAtLoad` + `KeepAlive`, so the daemon comes up on login and is restarted if it dies) and
-  `launchctl bootstrap` / `bootout` it. `install` also **snapshots your shell's `PATH` and `LANG`** into
-  the plist: launchd starts the daemon with a minimal env and *no* locale, so the snapshot is what lets the
-  daemon and the agents it spawns find `claude`/`codex`/`junie` and render a UTF-8 TUI. Re-run it from a full shell
-  whenever either goes stale. An agent that can't be resolved on the daemon's `PATH` fails fast with a
-  clear error pointing at `kotgent install`, not a silent attach failure. The plist also sets the
-  daemon's soft open-file limit to 1024 for viewers, attached sessions and hook bursts.
+  running daemon on. This is the process the per-user service runs on login.
+- **`install` / `uninstall`** manage a per-user service: a LaunchAgent on macOS or a systemd user
+  unit on Linux. The service starts on login and restarts after a crash. `install` **snapshots your
+  shell's `PATH` and `LANG`**, so the daemon can find `claude`/`codex`/`junie` and render a UTF-8 TUI.
+  Re-run it from a full shell whenever either goes stale. An agent missing from the daemon's `PATH`
+  fails with an error pointing at `kotgent install`. Both service definitions set the soft open-file
+  limit to 1024 for viewers, attached sessions and hook bursts.
 - **`start`** creates a `tmux` session `kt-<id>`, launches the requested agent or login shell in it, and
   records the session.
 - **`import`** brings a conversation you started outside kotgent under its control, with its history
@@ -490,7 +537,7 @@ bar to see the percentage used, current time, time remaining, reset time and las
 windows stay hidden. A provider line dims when its newest observation is more than ten minutes old.
 
 Kotgent captures existing provider output without polling and assumes one account per provider on this
-Mac. Observation time describes capture activity and does not guarantee a fresh provider lookup. The
+host. Observation time describes capture activity and does not guarantee a fresh provider lookup. The
 [agent guides](#agents) explain each provider's available windows, capture timing and reset limitations.
 
 A session row also carries an **unread pill** — how many events have arrived since you last looked at that
@@ -529,7 +576,7 @@ session's terminal on the right, with Interrupt / Detach / Stop / Done controls.
 
 ## Troubleshooting
 
-Most real-world breakage traces back to the daemon's launchd environment, which is minimal by design — so
+Most real-world breakage traces back to the daemon's service environment, which is minimal by design — so
 the first question is almost always "does the plist still match my shell?".
 
 - **`start` fails with `agent '…' not found on the daemon's PATH`.** The daemon's `PATH` is a
@@ -575,20 +622,21 @@ the first question is almost always "does the plist still match my shell?".
   bound to the VAPID public key it was created with. Toggle notifications off and on in each installed
   browser/PWA to register a fresh subscription with the daemon. The key at
   `~/.kotgent/vapid.pem` should remain mode `0600`.
-- **Inspecting the daemon itself.** It is a normal LaunchAgent: `launchctl print gui/$UID/io.kotgent.daemon`
-  shows its state, and the plist at `~/Library/LaunchAgents/io.kotgent.daemon.plist` shows the exact `PATH`
-  and `LANG` that were snapshotted.
+- **Inspecting the daemon itself.** On macOS, `launchctl print gui/$UID/io.kotgent.daemon` shows
+  its state; `~/Library/LaunchAgents/io.kotgent.daemon.plist` holds the captured environment. On Linux,
+  use `systemctl --user status kotgent`, `systemctl --user cat kotgent`, and
+  `journalctl --user -u kotgent -f`.
 
 ### Uninstall
 
 ```shell
-kotgent uninstall                  # bootout + remove the LaunchAgent plist
+kotgent uninstall                  # stop and remove the per-user service
 tmux -L kotgent kill-server        # stop every agent still living in tmux
 rm -rf ~/.kotgent                  # token, config/hooks, SQLite data/subscriptions, VAPID private key
 brew uninstall kotgent             # if installed from the tap
 ```
 
-`kotgent uninstall` only removes the launchd entry — the agents in `tmux` and the state under `~/.kotgent`
+`kotgent uninstall` only removes the service entry — the agents in `tmux` and the state under `~/.kotgent`
 outlive it by design, so drop them explicitly if you mean to.
 
 ## How a session stays available
@@ -625,7 +673,7 @@ Kotgent is deliberately focused. The current product boundary is:
   can sign in through a **cloudflared** tunnel + Cloudflare Access. The CLI and hooks keep using the master
   token; `kotgent token rotate` invalidates every cookie at once.
 - The full `start → Detach → browser → continue → needs-attention` path, session reconciliation on daemon
-  restart, provider-id capture, and launchd install.
+  restart, provider-id capture, and per-user service install.
 - **Session metadata & lifecycle polish.** Each session shows its agent CLI version and, best-effort, the
   model it is running; its name is an editable label (`kotgent session rename`, or the palette's rename
   dialog) that reaches every open client live and falls back to the automatic one when cleared; **Done**
@@ -675,7 +723,7 @@ tests under `test/pty/`, one `@Test` each:
 2. `resize` (`TIOCSWINSZ`) succeeds,
 3. the child's exit code is captured,
 4. spawning a nonexistent command throws,
-5. the spawned child inherits **only** its tty (the `POSIX_SPAWN_CLOEXEC_DEFAULT` guarantee — an
+5. the spawned child inherits **only** its tty (Darwin CLOEXEC-default / Linux close-from spawn actions — an
    inherited listening socket would keep the port bound after the daemon dies),
 6. `prepareClose` unblocks a full master write,
 7. `close` stops the reader **before** releasing the master descriptor (a freed fd number can be reused
@@ -719,7 +767,8 @@ Issues and pull requests are welcome. A few things worth knowing before you open
 - **Read [CLAUDE.md](CLAUDE.md) first** if you are touching the build, native code, or the event model. It
   documents the invariants (host-free core, single-upstream `tmux` fan-out, the event-sourcing rules) and
   the toolchain gotchas that are expensive to rediscover.
-- **The target is `macosArm64` only.** CI runs on Apple-silicon macOS runners with `tmux` installed.
+- **All three native targets are release gates.** macOS and Linux x64 run the full suite. Linux ARM64
+  is cross-compiled on x64 and runs native suites and service checks on a real ARM64 runner.
 
 ## License
 

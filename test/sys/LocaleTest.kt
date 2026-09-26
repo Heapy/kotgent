@@ -1,5 +1,7 @@
 package io.kotgent.sys
 
+import io.kotgent.host.HostOs
+import io.kotgent.host.hostOs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -36,7 +38,7 @@ class LocaleTest {
 
     @Test
     fun theDefaultIsItselfAUtf8LocaleAndStable() {
-        assertEquals("en_US.UTF-8", DEFAULT_UTF8_LOCALE, "always present on macOS, unlike glibc's C.UTF-8")
+        assertEquals(if (hostOs == HostOs.LINUX) "C.UTF-8" else "en_US.UTF-8", DEFAULT_UTF8_LOCALE)
         assertEquals(DEFAULT_UTF8_LOCALE, utf8LocaleOrDefault(DEFAULT_UTF8_LOCALE), "the default is a fixed point")
     }
 }

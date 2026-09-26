@@ -1,6 +1,7 @@
 package io.kotgent.launchd
 
 import io.kotgent.sys.utf8LocaleOrDefault
+import io.kotgent.service.DaemonService
 import io.kotgent.tmux.ProcessResult
 import io.kotgent.tmux.ProcessRunner
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -58,12 +59,14 @@ class LaunchdInstaller(
     private val uid: UInt = currentUid(),
     private val pathProvider: () -> String? = ::currentPath,
     private val langProvider: () -> String? = ::currentLang,
-) {
+) : DaemonService {
+    override val description: String = "launchd agent"
+    override val definitionPath: String get() = plistPath
     val plistPath: String get() = "${launchAgentsDir.trimEnd('/')}/$label.plist"
 
     private val domainTarget: String get() = "gui/$uid"
 
-    fun install(binaryPath: String): String {
+    override fun install(binaryPath: String): String {
         mkdirs(launchAgentsDir)
         mkdirs(logDir)
         writeFile(
@@ -89,7 +92,7 @@ class LaunchdInstaller(
         return plistPath
     }
 
-    fun uninstall() {
+    override fun uninstall() {
         val _ = runner(listOf("launchctl", "bootout", domainTarget, plistPath))
         unlink(plistPath)
     }

@@ -12,8 +12,8 @@ kotgent start shell /path/to/project
 kotgent resume <kotgent-session-id>
 ```
 
-Kotgent selects the login shell from `$SHELL`, then the user's passwd entry, with `/bin/zsh` as the
-fallback. It launches the shell with `-l` in the selected working directory.
+Kotgent selects the login shell from `$SHELL`, then the user's passwd entry, with `/bin/zsh` on macOS
+or `/bin/sh` on Linux as the fallback. It launches the shell with `-l` in the selected working directory.
 
 Closing a terminal or browser detaches that viewer and leaves the shell running. Stop ends the process.
 **Resume starts a new login shell in the same working directory.** It does not restore jobs, environment

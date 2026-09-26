@@ -1,0 +1,7 @@
+product:
+  type: linux/app
+  platforms: [linuxX64, linuxArm64]
+apply:
+  - //native-executable.module-template.yaml
+dependencies:
+  - //

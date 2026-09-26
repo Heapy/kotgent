@@ -1,5 +1,8 @@
 package io.kotgent.sys
 
+import io.kotgent.host.HostOs
+import io.kotgent.host.hostOs
+
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.toKString
@@ -9,7 +12,7 @@ import platform.posix.getenv
 import platform.posix.getpwuid
 import platform.posix.getuid
 
-const val DEFAULT_LOGIN_SHELL: String = "/bin/zsh"
+val DEFAULT_LOGIN_SHELL: String = if (hostOs == HostOs.LINUX) "/bin/sh" else "/bin/zsh"
 
 /**
  * Candidates must be absolute because tmux changes cwd before exec, and executable so a stale SHELL

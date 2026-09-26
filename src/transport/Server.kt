@@ -253,7 +253,7 @@ class KotgentServer(
         @OptIn(ExperimentalForeignApi::class)
         internal fun resolveWebUiDir(dir: String): String {
             if (dir.startsWith("/")) return dir
-            // launchd starts with cwd `/`; anchor installed assets to the executable hierarchy.
+            // Services can start outside the checkout; anchor assets to the executable hierarchy.
             val exe = NativeExe.path() ?: return dir
             var d: String = exe.substringBeforeLast('/', missingDelimiterValue = "")
             while (d.isNotEmpty()) {

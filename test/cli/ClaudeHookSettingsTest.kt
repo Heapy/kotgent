@@ -50,7 +50,9 @@ class ClaudeHookSettingsTest {
                 assertEquals("{}\n\n", executeStatusLine(path, input), "the next launch carries the edited command")
                 assertEquals("X-Kotgent-Hook-Token: new-token\n", readFileTextOrNull("$directory/claude-hook-header"))
                 for (privatePath in listOf(path, "$directory/claude-hook-header")) {
-                    val mode = ProcessRunner.run(listOf("/usr/bin/stat", "-f", "%Lp", privatePath))
+                    val mode = ProcessRunner.run(listOf(
+                        "/usr/bin/perl", "-e", "printf '%o', (stat(shift))[2] & 0777", privatePath,
+                    ))
                     assertEquals(0, mode.exitCode, mode.stderr)
                     assertEquals("600", mode.stdout.trim())
                 }

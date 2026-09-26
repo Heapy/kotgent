@@ -8,12 +8,10 @@ tasks:
   printDebugKexePath:
     action: !io.kotgent.buildinfo.printKexePath
       outputDir: ${taskOutputDir}
-      moduleName: ${module.name}
       buildType: Debug
   printReleaseKexePath:
     action: !io.kotgent.buildinfo.printKexePath
       outputDir: ${taskOutputDir}
-      moduleName: ${module.name}
       buildType: Release
 
 generated:

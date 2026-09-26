@@ -1,21 +1,9 @@
 package io.kotgent.pty
 
-import io.kotgent.cinterop.pty.POSIX_SPAWN_CLOEXEC_DEFAULT
-import io.kotgent.cinterop.pty.POSIX_SPAWN_SETSID
+import io.kotgent.cinterop.pty.kotgent_spawn_pty
 import io.kotgent.cinterop.pty.kotgent_openpty
 import io.kotgent.cinterop.pty.kotgent_ptsname
 import io.kotgent.cinterop.pty.kotgent_set_winsize
-import io.kotgent.cinterop.pty.posix_spawn
-import io.kotgent.cinterop.pty.posix_spawn_file_actions_addclose
-import io.kotgent.cinterop.pty.posix_spawn_file_actions_adddup2
-import io.kotgent.cinterop.pty.posix_spawn_file_actions_addopen
-import io.kotgent.cinterop.pty.posix_spawn_file_actions_destroy
-import io.kotgent.cinterop.pty.posix_spawn_file_actions_init
-import io.kotgent.cinterop.pty.posix_spawn_file_actions_tVar
-import io.kotgent.cinterop.pty.posix_spawnattr_destroy
-import io.kotgent.cinterop.pty.posix_spawnattr_init
-import io.kotgent.cinterop.pty.posix_spawnattr_setflags
-import io.kotgent.cinterop.pty.posix_spawnattr_tVar
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -49,14 +37,20 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration.Companion.microseconds
 import kotlin.time.TimeSource
 import platform.posix.EINTR
-import platform.posix.O_RDWR
+import platform.posix.EAGAIN
+import platform.posix.EWOULDBLOCK
+import platform.posix.F_GETFL
+import platform.posix.F_SETFL
+import platform.posix.O_NONBLOCK
 import platform.posix.POLLIN
+import platform.posix.POLLOUT
 import platform.posix.SIGKILL
 import platform.posix.SIGTERM
 import platform.posix.SIGWINCH
 import platform.posix.WNOHANG
 import platform.posix.errno
 import platform.posix.fflush
+import platform.posix.fcntl
 import platform.posix.fputs
 import platform.posix.getenv
 import platform.posix.kill
@@ -97,6 +91,7 @@ class Pty private constructor(
     private lateinit var readerJob: Job
 
     private val closeClaimed = AtomicInt(0)
+    private val writesClosing = AtomicInt(0)
     private val closeCompletion = CompletableDeferred<Int>()
     private val closeTraceOrigin = TimeSource.Monotonic.markNow()
     private var reaped = false
@@ -133,7 +128,7 @@ class Pty private constructor(
                         val n = posixRead(masterFd, buf, bufSize.convert())
                         when {
                             n < 0 -> {
-                                if (errno == EINTR) continue
+                                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue
                                 break
                             }
                             n == 0L -> break
@@ -200,11 +195,28 @@ class Pty private constructor(
         bytes.usePinned { pinned ->
             var offset = 0
             while (offset < bytes.size) {
+                if (writesClosing.load() != 0) throw PtyException("write to pty failed: pty is closing")
                 val n = posixWrite(masterFd, pinned.addressOf(offset), (bytes.size - offset).convert())
                 if (n < 0) {
                     if (errno == EINTR) continue
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        // Linux can leave a blocking write asleep even after the last slave closes.
+                        // Bound each wait so prepareClose can stop a writer before fd ownership ends.
+                        memScoped {
+                            val fd = alloc<pollfd>()
+                            fd.fd = masterFd
+                            fd.events = POLLOUT.convert()
+                            fd.revents = 0
+                            val rc = poll(fd.ptr, 1.convert(), 100)
+                            if (rc < 0 && errno != EINTR) {
+                                throw PtyException("poll pty write failed: ${errnoMessage(errno)}")
+                            }
+                        }
+                        continue
+                    }
                     throw PtyException("write to pty failed: ${errnoMessage(errno)}")
                 }
+                if (n == 0L) throw PtyException("write to pty made no progress")
                 offset += n.toInt()
             }
         }
@@ -290,6 +302,7 @@ class Pty private constructor(
 
     /** Reaps the child without releasing the master, unblocking writers before their fd ownership ends. */
     fun prepareClose() {
+        writesClosing.store(1)
         if (closeClaimed.load() != 0 || reaped) return
         terminateAndReapChild()
     }
@@ -313,6 +326,7 @@ class Pty private constructor(
     // Wake and join the reader before freeing the descriptor number; a stale reader could otherwise
     // consume bytes from a new session that reused it. Concurrent callers await the single CAS winner.
     fun close(): Int {
+        writesClosing.store(1)
         if (!closeClaimed.compareAndSet(0, 1)) {
             traceClose("close-waiter-start", "completion=${closeCompletion.isCompleted}")
             val result = runBlocking { closeCompletion.await() }
@@ -381,6 +395,13 @@ class Pty private constructor(
                 val master = masterVar.value
                 val slave = slaveVar.value
 
+                val flags = fcntl(master, F_GETFL)
+                if (flags < 0 || fcntl(master, F_SETFL, flags or O_NONBLOCK) < 0) {
+                    val code = errno
+                    posixClose(master); posixClose(slave)
+                    throw PtyException("set pty nonblocking failed: ${errnoMessage(code)}")
+                }
+
                 kotgent_set_winsize(master, rows.toUShort(), cols.toUShort())
 
                 val ptsBuf = allocArray<ByteVar>(PTS_PATH_CAP)
@@ -390,46 +411,6 @@ class Pty private constructor(
                     throw PtyException("ptsname failed: ${errnoMessage(errno)}")
                 }
                 val ptsPath = ptsBuf.toKString()
-
-                // The child must open the pts path itself for tmux attach; merely duping the inherited
-                // slave fails on macOS. The file-action open still does not acquire a controlling tty.
-                val fileActions = alloc<posix_spawn_file_actions_tVar>()
-                val faInit = posix_spawn_file_actions_init(fileActions.ptr)
-                if (faInit != 0) {
-                    posixClose(master); posixClose(slave)
-                    throw PtyException("posix_spawn_file_actions_init failed: ${errnoMessage(faInit)} (code=$faInit)")
-                }
-                var faRc = posix_spawn_file_actions_addopen(fileActions.ptr, 0, ptsPath, O_RDWR, 0.convert())
-                if (faRc == 0) faRc = posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 1)
-                if (faRc == 0) faRc = posix_spawn_file_actions_adddup2(fileActions.ptr, 0, 2)
-                if (faRc == 0) faRc = posix_spawn_file_actions_addclose(fileActions.ptr, slave)
-                if (faRc == 0) faRc = posix_spawn_file_actions_addclose(fileActions.ptr, master)
-                if (faRc != 0) {
-                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr))
-                    posixClose(master); posixClose(slave)
-                    throw PtyException(
-                        "posix_spawn_file_actions setup failed: ${errnoMessage(faRc)} (code=$faRc)$cleanup",
-                    )
-                }
-
-                val attr = alloc<posix_spawnattr_tVar>()
-                val attrInit = posix_spawnattr_init(attr.ptr)
-                if (attrInit != 0) {
-                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr))
-                    posixClose(master); posixClose(slave)
-                    throw PtyException("posix_spawnattr_init failed: ${errnoMessage(attrInit)} (code=$attrInit)$cleanup")
-                }
-                // CLOEXEC_DEFAULT atomically prevents daemon sockets and all unnamed fds leaking to agents.
-                val spawnFlags = POSIX_SPAWN_SETSID or POSIX_SPAWN_CLOEXEC_DEFAULT
-                val setFlags = posix_spawnattr_setflags(attr.ptr, spawnFlags.toShort())
-                if (setFlags != 0) {
-                    val cleanup = cleanupNote(FILE_ACTIONS_DESTROY, posix_spawn_file_actions_destroy(fileActions.ptr)) +
-                        cleanupNote(ATTR_DESTROY, posix_spawnattr_destroy(attr.ptr))
-                    posixClose(master); posixClose(slave)
-                    throw PtyException(
-                        "posix_spawnattr_setflags failed: ${errnoMessage(setFlags)} (code=$setFlags)$cleanup",
-                    )
-                }
 
                 val argv = allocArray<CPointerVar<ByteVar>>(command.size + 1)
                 command.forEachIndexed { i, arg -> argv[i] = arg.cstr.getPointer(scope) }
@@ -441,18 +422,11 @@ class Pty private constructor(
                 envp[envEntries.size] = null
 
                 val pidVar = alloc<IntVar>()
-                val rc = posix_spawn(
-                    pidVar.ptr,
-                    command[0],
-                    fileActions.ptr,
-                    attr.ptr,
-                    argv,
-                    envp,
-                )
-
-                // Preserve destroy failures without masking an earlier setup/spawn error.
-                val faDestroy = posix_spawn_file_actions_destroy(fileActions.ptr)
-                val attrDestroy = posix_spawnattr_destroy(attr.ptr)
+                val faCleanup = alloc<IntVar>()
+                val attrCleanup = alloc<IntVar>()
+                val rc = kotgent_spawn_pty(pidVar.ptr, ptsPath, argv, envp, faCleanup.ptr, attrCleanup.ptr)
+                val faDestroy = faCleanup.value
+                val attrDestroy = attrCleanup.value
                 posixClose(slave)
 
                 if (rc != 0) {

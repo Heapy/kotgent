@@ -11,7 +11,7 @@
 #   ~/.local/bin/kotgent -> ../kotgent/libexec/kotgent
 #
 # `~/.local/bin` precedes `/opt/homebrew/bin` on PATH, so the symlink wins the
-# `kotgent` command. `install` rewrites the launchd plist to the staged binary and
+# `kotgent` command. `install` rewrites the service definition to the staged binary and
 # restarts the daemon.
 #
 # Revert to the released build:
@@ -39,11 +39,20 @@ for arg in "$@"; do
 done
 
 printf '==> building release binary\n'
-./kotlin build -v release -p macosArm64 -m kotgent
+case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64) target=macosArm64; module=kotgent-macos ;;
+    Linux/x86_64) target=linuxX64; module=kotgent-linux ;;
+    Linux/aarch64|Linux/arm64)
+        printf 'Kotlin/Native cannot build on Linux ARM64; install the Linux ARM64 release archive or cross-compile on x64.\n' >&2
+        exit 1 ;;
+    *) printf 'unsupported build host\n' >&2; exit 1 ;;
+esac
+export KOTGENT_TARGET_PLATFORM="$target"
+./kotlin build -v release -p "$target" -m "$module"
 
 # releaseKexePath reports the last build, so it must follow it and no other
 # ./kotlin invocation may run in between.
-./kotlin do releaseKexePath >/dev/null
+./kotlin 'do' releaseKexePath >/dev/null
 kexe=$(cat build/kexe-path)
 [[ -x "$kexe" ]] || { printf 'install-local.sh: no binary at %s\n' "$kexe" >&2; exit 1; }
 
@@ -67,10 +76,10 @@ ln -sfn "$libexec/kotgent" "$bin_dir/kotgent"
 printf '==> %s -> %s\n' "$bin_dir/kotgent" "$libexec/kotgent"
 
 if [[ $skip_install -eq 1 ]]; then
-    printf '==> launchd agent left alone (--no-daemon); the daemon still runs the old binary\n'
+    printf '==> daemon service left alone (--no-daemon); the daemon still runs the old binary\n'
     exit 0
 fi
 
-# Run the staged path directly so the plist records it, whatever argv[0] resolution does.
-printf '==> reinstalling the launchd agent (this restarts the daemon)\n'
+# Run the staged path directly so the service records it, whatever argv[0] resolution does.
+printf '==> reinstalling the daemon service (this restarts the daemon)\n'
 "$libexec/kotgent" install

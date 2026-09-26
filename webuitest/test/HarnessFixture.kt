@@ -515,11 +515,17 @@ fun dispatchTouch(cdp: CDPSession, type: String, x: Double?, y: Double?) {
     cdp.send("Input.dispatchTouchEvent", params)
 }
 
-// Duplicated in native WebUiCheckTest because constants cannot cross the native/JVM module boundary.
-private val HARNESS_BINARIES = listOf(
-    "build/tasks/_webuicheck_linkMacosArm64Debug/webuicheck.kexe",
-    "build/tasks/_webuicheck_linkMacosArm64Release/webuicheck.kexe",
-)
+internal fun harnessBinaries(os: String, arch: String): List<String> {
+    val [module, target] = when {
+        os == "Mac OS X" && arch in setOf("aarch64", "arm64") -> "webuicheck-macos" to "MacosArm64"
+        os == "Linux" && arch in setOf("amd64", "x86_64") -> "webuicheck-linux" to "LinuxX64"
+        os == "Linux" && arch in setOf("aarch64", "arm64") -> "webuicheck-linux" to "LinuxArm64"
+        else -> error("unsupported browser harness host: $os/$arch")
+    }
+    return listOf("Debug", "Release").map { variant ->
+        "build/tasks/_${module}_link$target$variant/$module.kexe"
+    }
+}
 
 private const val WEB_UI_RELATIVE = "resources/webui"
 private const val TEST_RESULTS_RELATIVE = "webuitest/test-results"
@@ -588,7 +594,10 @@ private fun codeSourceDirectory(): Path? = runCatching {
 }.getOrNull()
 
 private fun harnessBinary(): Path {
-    val candidates = HARNESS_BINARIES.map { repoRoot.resolve(it) }
+    val explicit = System.getenv("KOTGENT_WEBUICHECK_BINARY")?.takeIf(String::isNotBlank)
+    val candidates = (explicit?.let(::listOf)
+        ?: harnessBinaries(System.getProperty("os.name"), System.getProperty("os.arch")))
+        .map { repoRoot.resolve(it) }
     return candidates.firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) }
         ?: fail(
             "the webuicheck binary is missing (looked for ${candidates.joinToString()}). " +

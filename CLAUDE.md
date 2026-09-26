@@ -12,7 +12,8 @@ the common workflow and links to those guides; implementation invariants belong 
 
 - This is a Kotlin/Native project built with Kotlin Toolchain 0.12.2. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
-- Run `./kotlin build` before `./kotlin test`: the `webuitest` browser tier executes the `webuicheck`
+- Run `./kotlin build -p <host-target> -p jvm` before `./kotlin test -p <host-target> -p jvm`
+  (`macosArm64` on macOS, `linuxX64` on Linux): the `webuitest` browser tier executes the `webuicheck`
   binary, and no test task builds it. Every other tier runs from `./kotlin test` alone.
 - Run `node --check <file>` for every changed JavaScript module. The Web UI deliberately has no npm
   build; browser behavior is tested in `webuitest`.
@@ -20,10 +21,20 @@ the common workflow and links to those guides; implementation invariants belong 
   `node --test 'webuitest/js/**/*.test.js'`; see [docs/TESTING.md](docs/TESTING.md) for the runner contract.
 - Never overlap `./kotlin` invocations, including across worktrees: they share build output. Keep aggregate
   tests serial as well because integration tests share the `kotgent-test` tmux socket.
-- Do not run `kotgent daemon`, `./kotlin run -m kotgent`, `launchctl`, or real agent commands in
+- Do not run `kotgent daemon`, `./kotlin run -m kotgent-macos` or `-m kotgent-linux`, `launchctl`, or real agent commands in
   automation. They start long-lived processes. `./kotlin test` terminates safely. The one exception is
   `codex app-server` in `CodexAdapterTest`: it runs with an empty temporary `CODEX_HOME`, starts no model
   turn, and exits when its input closes.
+
+- The root and `webuicheck` are shared libraries; `apps/` holds per-OS executable launchers.
+  Linux ARM64 is cross-compiled on x64 and tested by executing transferred test binaries on ARM64.
+- Linux requires glibc 2.35+, libcurl and SQLite. The Linux build template selects Ubuntu 22.04
+  multiarch glibc and GCC 11 libraries to match SQLite. Ktor bundles curl/OpenSSL static libraries.
+  The spawn shim resolves glibc's close-from action dynamically because Kotlin's bundled headers
+  predate it; never replace it with a racy descriptor sweep or fork-without-exec.
+- Linux systemd units use `KillMode=process`: restarting/removing the daemon must preserve tmux sessions.
+  The isolated `scripts/test-systemd.sh` helper is allowed in CI; it never starts the product daemon or
+  a real provider. Never use the operator's `kotgent.service` for automated service checks.
 
 ## Architecture boundaries
 
@@ -50,7 +61,8 @@ the common workflow and links to those guides; implementation invariants belong 
   real-PTY checks are ordinary tests under `test/pty/`; platform-independent behavior still needs an
   interface and fake.
 - Every spawned child must inherit stdio and no unrelated file descriptors. Preserve the CLOEXEC handling
-  in both process-launch paths.
+  in both process-launch paths. PTY master writes stay nonblocking with bounded polls: Linux does not
+  reliably wake a blocked writer when its slave closes. `prepareClose` stops writes before fd ownership ends.
 - `SqliteEventStore` is the only writer of `sessions`; it owns the monotonic `sessions.rev` sequence and
   live session emissions. Task data stays in `SqliteTaskStore`.
 - A session `name` is operator-owned metadata, never identity or event-log state. `upsert` preserves it;

@@ -31,7 +31,7 @@ import io.kotgent.daemon.importableAgentKinds
 import io.kotgent.daemon.productionSessionLocator
 import io.kotgent.daemon.requireAbsoluteBinary
 import io.kotgent.db.KotgentDatabase
-import io.kotgent.push.DarwinPushTransport
+import io.kotgent.push.HttpPushTransport
 import io.kotgent.push.OpensslVapidSigner
 import io.kotgent.push.PushNotifier
 import io.kotgent.push.PushSender
@@ -350,7 +350,7 @@ internal class PushModule(
 
     val tokens by bean { VapidTokenCache(subject = vapidSubject(publicUrl), sign = signer.value::sign) }
 
-    val transport by bean { DarwinPushTransport() }
+    val transport by bean { HttpPushTransport() }
 
     val sender by bean {
         PushSender(
@@ -363,7 +363,7 @@ internal class PushModule(
 
     /**
      * Subscription storage failure disables push; later startup failures propagate after closing the
-     * already-created Darwin transport. VAPID key and signer errors remain deferred until first use.
+     * already-created HTTPS transport. VAPID key and signer errors remain deferred until first use.
      */
     suspend fun start(scope: CoroutineScope, events: EventStore): DaemonPush? {
         val store = try {

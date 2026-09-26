@@ -3,7 +3,7 @@ package io.kotgent.adapter.claude
 import io.kotgent.core.USAGE_HEARTBEAT_MILLIS
 import io.kotgent.core.USAGE_RETENTION_MILLIS
 
-/** macOS ships the Perl core modules used here; no jq or user-installed runtime is needed. */
+/** Uses Perl core modules: provided by macOS and the Linux perl package. */
 internal object ClaudeStatusLineScript {
     fun command(
         port: Int,
@@ -99,9 +99,15 @@ internal object ClaudeStatusLineScript {
                 my $hash = sha256_hex($json->encode($payload->{rate_limits}));
                 my $boot = $test_boot;
                 if (!length($boot)) {
-                    open my $boot_file, '-|', '/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid' or die "read boot identity\n";
-                    $boot = <$boot_file>;
-                    close $boot_file or die "read boot identity\n";
+                    if ($^O eq 'linux') {
+                        open my $boot_file, '<', '/proc/sys/kernel/random/boot_id' or die "read boot identity\n";
+                        $boot = <$boot_file>;
+                        close $boot_file or die "read boot identity\n";
+                    } else {
+                        open my $boot_file, '-|', '/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid' or die "read boot identity\n";
+                        $boot = <$boot_file>;
+                        close $boot_file or die "read boot identity\n";
+                    }
                     chomp $boot if defined $boot;
                 }
                 die "invalid boot identity\n" unless defined($boot) && $boot =~ /\A[A-Za-z0-9._-]{1,128}\z/;

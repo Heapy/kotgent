@@ -1,6 +1,8 @@
 package io.kotgent.cli
 
 import io.kotgent.core.PaneId
+import io.kotgent.host.HostOs
+import io.kotgent.host.hostOs
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import platform.posix.getenv
@@ -35,6 +37,7 @@ object TmuxSelf {
     private val PRIVATE_FIRMLINKS: List<String> = listOf("/tmp", "/var")
 
     private fun foldPrivatePrefix(path: String): String {
+        if (hostOs != HostOs.MACOS) return path
         if (!path.startsWith(PRIVATE_PREFIX)) return path
         val rest = path.removePrefix(PRIVATE_PREFIX)
         return if (PRIVATE_FIRMLINKS.any { rest == it || rest.startsWith("$it/") }) rest else path

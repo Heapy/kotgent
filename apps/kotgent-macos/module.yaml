@@ -1,0 +1,7 @@
+product:
+  type: macos/app
+  platforms: [macosArm64]
+apply:
+  - //native-executable.module-template.yaml
+dependencies:
+  - //

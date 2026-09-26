@@ -1,18 +1,15 @@
 package io.kotgent.daemon
 
 import io.kotgent.adapter.extractDominantModel
+import io.kotgent.host.fileTimes
 import io.kotgent.core.ProviderSessionId
 import io.kotgent.core.SessionMeta
 import io.kotgent.store.EventStore
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import platform.posix.F_OK
 import platform.posix.access
 import platform.posix.getenv
-import platform.posix.stat
 
 
 private const val SESSION_PREFIX = "session-"
@@ -104,12 +101,7 @@ class JunieSessionScan(private val junieDir: String = defaultJunieDir()) {
     private fun providerId(name: String): ProviderSessionId? =
         runCatching { ProviderSessionId(name) }.getOrNull()
 
-    private fun birthMillis(path: String): Long? = memScoped {
-        val st = alloc<stat>()
-        if (stat(path, st.ptr) != 0) return@memScoped null
-        val birth = st.st_birthtimespec.tv_sec * 1000L + st.st_birthtimespec.tv_nsec / 1_000_000L
-        if (birth > 0L) birth else st.st_mtimespec.tv_sec * 1000L + st.st_mtimespec.tv_nsec / 1_000_000L
-    }
+    private fun birthMillis(path: String): Long? = fileTimes(path)?.birthOrModifiedMillis
 
     companion object {
         const val INDEX_TAIL_BYTES: Int = 1024 * 1024

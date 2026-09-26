@@ -184,7 +184,9 @@ class Tmux(
     private fun fields(vararg specs: String): String = specs.joinToString(FS)
 
     companion object {
-        private const val FS = "\t"
+        // tmux 3.2a replaces literal control characters (including tabs) with underscores.
+        // Session names generated here and the remaining numeric fields cannot contain '|'.
+        private const val FS = "|"
 
         private const val PANE_IN_MODE = "#{pane_in_mode}"
 

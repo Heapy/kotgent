@@ -1,6 +1,9 @@
 product:
-  type: macos/app
-  platforms: [macosArm64]
+  type: kmp/lib
+  platforms: [macosArm64, linuxX64, linuxArm64]
+
+apply:
+  - //linux-libraries.module-template.yaml
 
 plugins:
   build-info: enabled
@@ -14,9 +17,13 @@ dependencies:
   - $libs.ktor.server.websockets
   - $libs.ktor.client.cio
   - $libs.ktor.client.websockets
-  # Native CIO has no TLS support; Web Push uses Darwin/NSURLSession.
-  - $libs.ktor.client.darwin
   - $libs.sqldelight.native.driver
+
+dependencies@macos:
+  - $libs.ktor.client.darwin
+
+dependencies@linux:
+  - $libs.ktor.client.curl
 
 test-dependencies:
   - ./fakes
@@ -34,5 +41,3 @@ settings:
       - -lsqlite3
       - -Xreturn-value-checker=full
       - -Xname-based-destructuring=complete
-  native:
-    entryPoint: io.kotgent.main

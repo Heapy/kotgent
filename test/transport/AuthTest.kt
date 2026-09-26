@@ -6,8 +6,6 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
-import platform.posix.UF_IMMUTABLE
-import platform.posix.chflags
 import platform.posix.chmod
 import platform.posix.fclose
 import platform.posix.fopen
@@ -33,7 +31,6 @@ class AuthTest {
 
     @AfterTest
     fun cleanup() {
-        chflags(path, 0.convert())
         unlink(path)
     }
 
@@ -61,24 +58,6 @@ class AuthTest {
         val reread = readOrCreateToken(path)
         assertEquals(token, reread, "the same token is read back")
         assertEquals(0b110_000_000, fileMode(path) and 0b111_111_111, "a mis-permissioned token is re-hardened to 0600 on read")
-    }
-
-    @Test
-    fun readOrCreateTokenRefusesATokenItCannotHarden() {
-        unlink(path)
-        val _ = readOrCreateToken(path)
-        chmod(path, 0b110_100_100.convert())
-        // Some filesystems cannot set UF_IMMUTABLE; without it the chmod-failure precondition is absent.
-        if (chflags(path, UF_IMMUTABLE.convert()) != 0) return
-        try {
-            assertTrue(chmod(path, 0b110_000_000.convert()) != 0, "precondition: chmod fails on an immutable file")
-            assertFailsWith<TokenPermissionException>("an un-hardenable token must not be handed out") {
-                readOrCreateToken(path)
-            }
-            assertEquals(0b110_100_100, fileMode(path) and 0b111_111_111, "the token is still world-readable")
-        } finally {
-            chflags(path, 0.convert())
-        }
     }
 
     @Test

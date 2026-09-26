@@ -1,6 +1,8 @@
 package io.kotgent.cli
 
 import io.kotgent.core.PaneId
+import io.kotgent.host.HostOs
+import io.kotgent.host.hostOs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -68,7 +70,7 @@ class TmuxSelfTest {
             env("TMUX" to "/private/tmp/tmux-501/kotgent,4242,0", "TMUX_PANE" to "%2"),
             uid,
         )
-        assertEquals(PaneId("%2"), pane)
+        assertEquals(if (hostOs == HostOs.MACOS) PaneId("%2") else null, pane)
     }
 
     @Test
@@ -81,7 +83,7 @@ class TmuxSelfTest {
             ),
             uid,
         )
-        assertEquals(PaneId("%11"), pane)
+        assertEquals(if (hostOs == HostOs.MACOS) PaneId("%11") else null, pane)
     }
 
     @Test

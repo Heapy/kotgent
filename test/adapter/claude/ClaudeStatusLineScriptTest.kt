@@ -26,6 +26,13 @@ class ClaudeStatusLineScriptTest {
     private val firstPayload = """{"session_id":"session-a","rate_limits":{"five_hour":{"used_percentage":20,"resets_at":1800003600},"seven_day":{"used_percentage":70,"resets_at":1800604800}}}"""
     private val changedPayload = firstPayload.replace("\"used_percentage\":70", "\"used_percentage\":5")
 
+    @Test
+    fun captureUsesTheRealHostBootIdentityWhenNoTestOverrideIsSupplied() = test { f ->
+        assertEquals(0, f.run(firstPayload, micros, boot = "").exitCode)
+        val request = f.awaitRequests(1).single()
+        assertTrue(request.isNotEmpty(), "capture must reach curl with the host's real boot identity")
+    }
+
     private class Fixture {
         val directory: String = ProcessRunner.run(listOf("/usr/bin/mktemp", "-d", "/tmp/kotgent-status-script-XXXXXX"))
             .also { assertEquals(0, it.exitCode, it.stderr) }.stdout.trim()

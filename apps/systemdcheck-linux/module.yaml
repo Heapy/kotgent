@@ -1,0 +1,8 @@
+# Bounded service-fixture writer for Linux CI. Never starts the product daemon.
+product:
+  type: linux/app
+  platforms: [linuxX64, linuxArm64]
+apply:
+  - //native-executable.module-template.yaml
+dependencies:
+  - //

@@ -23,6 +23,7 @@ import platform.posix.getpid
 import platform.posix.mkdir
 import platform.posix.rmdir
 import platform.posix.unlink
+import platform.posix.symlink
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -127,7 +128,12 @@ class ImportWiringTest {
             val base = makeBase()
             val claudeDir = makeDir("$base/.claude")
             val id = uuid('c')
-            placeClaudeTranscript(claudeDir, encodeClaudeProjectDir("/private/tmp"), id, recordedCwd = "/tmp")
+            val target = makeDir("$base/project")
+            val alias = "$base/project-link"
+            assertEquals(0, symlink(target, alias))
+            files += alias
+            val canonical = canonicalPath(target)!!
+            placeClaudeTranscript(claudeDir, encodeClaudeProjectDir(canonical), id, recordedCwd = alias)
             val probe = productionProbe(base, claudeDir = claudeDir)
             val locator = productionLocator(base, claudeDir = claudeDir)
             val store = SqliteEventStore.inMemory(now = { 42L })
@@ -135,7 +141,7 @@ class ImportWiringTest {
 
             val meta = mgr.importSession(CLAUDE_AGENT_KIND, id)
 
-            assertEquals("/private/tmp", meta.cwd, "the row stores the canonical spelling, not the symlinked one")
+            assertEquals(canonical, meta.cwd, "the row stores the canonical spelling, not the symlinked one")
             assertEquals(SessionState.resumable, meta.state)
             val _ = Reconciler(FakeTmux(), store, probe, PaneRegistry(), now = { 43L }).reconcile()
             assertEquals(SessionState.resumable, store.getSession(SessionId("wire0001"))!!.state)

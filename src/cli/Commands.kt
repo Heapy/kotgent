@@ -8,8 +8,9 @@ import io.kotgent.daemon.VendorStoreProbe
 import io.kotgent.daemon.defaultClaudeDir
 import io.kotgent.daemon.productionVendorStoreProbe
 import io.kotgent.exe.NativeExe
-import io.kotgent.launchd.DAEMON_LABEL
-import io.kotgent.launchd.LaunchdInstaller
+import io.kotgent.service.daemonService
+import io.kotgent.service.restartDaemonCommand
+import io.kotgent.sys.browserOpenCommand
 import io.kotgent.push.UsageResetNotifier
 import io.kotgent.sys.installShutdownSignals
 import io.kotgent.sys.pendingShutdownSignal
@@ -103,7 +104,7 @@ object Commands {
         runWebCommand(
             print = print,
             issueTicket = api::issueTicket,
-            open = { url -> ProcessRunner.run(listOf("open", url)).exitCode },
+            open = { url -> ProcessRunner.run(browserOpenCommand(url)).exitCode },
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -154,7 +155,7 @@ object Commands {
         return try {
             writeConfig(path, updated)
             println("public-url = ${updated.normalized().publicUrl}")
-            eprintln("restart the daemon to apply: launchctl kickstart -k gui/\$(id -u)/$DAEMON_LABEL")
+            eprintln("restart the daemon to apply: $restartDaemonCommand")
             0
         } catch (e: ConfigException) {
             eprintln("config set: ${e.message}")
@@ -162,16 +163,17 @@ object Commands {
         }
     }
 
-    /** Installs the current absolute binary as a launchd-owned daemon rather than running it in-process. */
+    /** Installs the current absolute binary as a service-managed daemon rather than running it in-process. */
     fun install(): Int {
         val binaryPath = NativeExe.path() ?: run {
             eprintln("install: cannot resolve the kotgent binary path")
             return 1
         }
         return try {
-            val plistPath = LaunchdInstaller().install(binaryPath)
-            println("installed launchd agent → $plistPath")
-            println("  runs: $binaryPath daemon   (RunAtLoad + KeepAlive)")
+            val installer = daemonService()
+            val path = installer.install(binaryPath)
+            println("installed ${installer.description} → $path")
+            println("  runs: $binaryPath daemon")
             0
         } catch (e: Throwable) {
             eprintln("install failed: ${e.message}")
@@ -180,9 +182,9 @@ object Commands {
     }
 
     fun uninstall(): Int = try {
-        val installer = LaunchdInstaller()
+        val installer = daemonService()
         installer.uninstall()
-        println("uninstalled launchd agent (${installer.plistPath})")
+        println("uninstalled ${installer.description} (${installer.definitionPath})")
         0
     } catch (e: Throwable) {
         eprintln("uninstall failed: ${e.message}")

@@ -2,8 +2,11 @@
 # It may use only an ephemeral loopback port and scenario PTYs; tokens, tmux, stores, uploads,
 # directory completion, and project-file writes must remain in memory.
 product:
-  type: macos/app
-  platforms: [macosArm64]
+  type: kmp/lib
+  platforms: [macosArm64, linuxX64, linuxArm64]
+
+apply:
+  - //linux-libraries.module-template.yaml
 
 dependencies:
   - ..
@@ -22,5 +25,3 @@ settings:
       - -lsqlite3
       - -Xreturn-value-checker=full
       - -Xname-based-destructuring=complete
-  native:
-    entryPoint: io.kotgent.webuicheck.main

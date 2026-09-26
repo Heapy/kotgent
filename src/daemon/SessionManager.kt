@@ -120,7 +120,7 @@ class TranscriptNotFoundException(
     val cwd: String,
 ) : RuntimeException(
     "no live $agentKind transcript found for session '${providerSessionId.value}' under '$cwd' — " +
-        "path spelling is already canonicalized (/tmp is probed as /private/tmp), so if the session " +
+        "path spelling is already canonicalized through the filesystem, so if the session " +
         "was launched in a genuinely different directory, pass that one with --cwd; " +
         "an archived codex session is out of `codex resume`'s reach and cannot be imported",
 )

@@ -1,6 +1,7 @@
 package io.kotgent.launchd
 
 import io.kotgent.sys.DEFAULT_UTF8_LOCALE
+import io.kotgent.sys.mergedExecutablePath
 
 const val DAEMON_LABEL: String = "io.kotgent.daemon"
 
@@ -14,14 +15,7 @@ const val DAEMON_DEFAULT_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sb
  * Captured absolute entries come first; defaults fill missing entries. Relative and empty segments are
  * rejected because a daemon PATH must not depend on its cwd.
  */
-fun mergedDaemonPath(captured: String?): String {
-    val capturedEntries = (captured ?: "").split(':').filter { it.startsWith("/") }
-    if (capturedEntries.isEmpty()) return DAEMON_DEFAULT_PATH
-    val merged = LinkedHashSet<String>()
-    merged.addAll(capturedEntries)
-    merged.addAll(DAEMON_DEFAULT_PATH.split(':'))
-    return merged.joinToString(":")
-}
+fun mergedDaemonPath(captured: String?): String = mergedExecutablePath(captured, DAEMON_DEFAULT_PATH)
 
 /** Crash-loop floor for the KeepAlive job. */
 const val DAEMON_THROTTLE_INTERVAL: Int = 10

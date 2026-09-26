@@ -1,5 +1,6 @@
 package io.kotgent.pty
 
+import io.kotgent.sys.DEFAULT_EXECUTABLE_PATH
 import io.kotgent.sys.utf8LocaleOrDefault
 import io.kotgent.tmux.TMUX_CONFIG_ISOLATION
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -35,7 +36,7 @@ typealias PtyFactory = (command: List<String>, env: Map<String, String>) -> PtyH
  */
 const val ATTACH_TERM: String = "xterm-256color"
 
-const val ATTACH_FALLBACK_PATH: String = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+val ATTACH_FALLBACK_PATH: String = DEFAULT_EXECUTABLE_PATH
 
 /**
  * `-u` independently forces UTF-8 even if the requested locale is unavailable. Isolation and socket

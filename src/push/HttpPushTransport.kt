@@ -1,16 +1,15 @@
 package io.kotgent.push
 
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.darwin.Darwin
+import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 
 /**
- * Push HTTPS uses NSURLSession because Ktor CIO has no TLS on Kotlin/Native. Darwin also supplies the
- * system trust store. Finite timeouts prevent one silent service from wedging notification delivery.
+ * Push uses the platform HTTPS engine and its trust store. Finite timeouts bound notification delivery.
  */
-class DarwinPushTransport(
+class HttpPushTransport(
     private val client: HttpClient = defaultPushHttpClient(),
 ) : PushTransport, AutoCloseable {
 
@@ -24,11 +23,15 @@ class DarwinPushTransport(
     override fun close(): Unit = client.close()
 }
 
-fun defaultPushHttpClient(): HttpClient = HttpClient(Darwin) {
+expect fun platformPushHttpClient(configure: HttpClientConfig<*>.() -> Unit): HttpClient
+
+fun defaultPushHttpClient(): HttpClient = platformPushHttpClient { configurePushTimeouts() }
+
+internal fun HttpClientConfig<*>.configurePushTimeouts(requestMillis: Long = PUSH_REQUEST_TIMEOUT_MS) {
     install(HttpTimeout) {
         connectTimeoutMillis = PUSH_CONNECT_TIMEOUT_MS
-        requestTimeoutMillis = PUSH_REQUEST_TIMEOUT_MS
-        socketTimeoutMillis = PUSH_REQUEST_TIMEOUT_MS
+        requestTimeoutMillis = requestMillis
+        socketTimeoutMillis = requestMillis
     }
 }
 

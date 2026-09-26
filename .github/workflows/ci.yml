@@ -5,53 +5,161 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   build-test:
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            platform: macosArm64
+            app: kotgent-macos
+          - runner: ubuntu-22.04
+            platform: linuxX64
+            app: kotgent-linux
+          - runner: ubuntu-22.04
+            platform: linuxArm64
+            app: kotgent-linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install tmux (real-PTY integration checks)
-        run: brew install tmux
-
+      - name: Install native dependencies
+        run: |
+          if [ '${{ runner.os }}' = macOS ]; then
+            brew install tmux
+          else
+            scripts/install-linux-build-deps.sh '${{ matrix.platform }}'
+          fi
       - name: Install Node
         uses: actions/setup-node@v7
         with:
           node-version: 24
-
-      # This key does not hash nested module.yaml files.
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6
         with:
           path: |
             ~/.kotlin
             .kotlin
-          key: kotlin-toolchain-${{ runner.os }}-${{ hashFiles('kotlin', 'project.yaml', 'module.yaml') }}
-          restore-keys: kotlin-toolchain-${{ runner.os }}-
-
-      # Keep this literal in sync with gradle/libs.versions.toml; restore-keys would retain obsolete bundles.
+            ~/.konan
+            ~/.cache/JetBrains/Kotlin
+            ~/Library/Caches/JetBrains/Kotlin
+          key: kotlin-${{ runner.os }}-${{ matrix.platform }}-${{ hashFiles('kotlin', 'project.yaml', '**/module.yaml', '*.module-template.yaml', 'gradle/libs.versions.toml') }}
+          restore-keys: kotlin-${{ runner.os }}-${{ matrix.platform }}-
+      # Keep this literal in sync with gradle/libs.versions.toml.
       - name: Cache the Playwright browsers
+        if: matrix.platform != 'linuxArm64'
         uses: actions/cache@v6
         with:
-          path: ~/Library/Caches/ms-playwright
-          key: playwright-${{ runner.os }}-1.62.0
-
-      # The browser tier executes the webuicheck binary, which no test task builds.
+          path: |
+            ~/Library/Caches/ms-playwright
+            ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-1.62.0
+      - name: Install Chromium runtime dependencies
+        if: matrix.platform == 'linuxX64'
+        run: |
+          sudo apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 fonts-liberation
+      - name: Install the pinned Chromium bundle
+        if: matrix.platform != 'linuxArm64'
+        # Match the Java Playwright version; this creates no npm project or repository dependencies.
+        run: npm exec --yes --package=playwright@1.62.0 -- playwright install chromium
+      # Build first: browser tests execute the separately linked webuicheck binary.
       - name: Build
-        run: ./kotlin build
-
-      - name: Test
-        run: ./kotlin test
-
-      # Preserve the original test failure if no browser diagnostics were produced.
-      - name: Upload Playwright failure diagnostics
+        run: ./kotlin build -p '${{ matrix.platform }}' -p jvm
+      - name: Test on the compiler host
+        if: matrix.platform != 'linuxArm64'
+        env:
+          # The suite uses Chromium only; do not auto-download unused Firefox/WebKit bundles.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: ./kotlin test -p '${{ matrix.platform }}' -p jvm
+      - name: Test systemd lifecycle with a disposable helper
+        if: matrix.platform == 'linuxX64'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          scripts/test-systemd.sh build/tasks/_systemdcheck-linux_linkLinuxX64Debug/systemdcheck-linux.kexe
+      # Kotlin/Native has no Linux ARM64 compiler host. Link here and execute on real ARM64 below.
+      - name: Bundle ARM64 test executables
+        if: matrix.platform == 'linuxArm64'
+        run: scripts/bundle-arm64-checks.sh
+      - name: Upload ARM64 checks
+        if: matrix.platform == 'linuxArm64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: arm64-checks
+          path: build/arm64-checks/
+          retention-days: 7
+      - name: Build release
+        env:
+          KOTGENT_RELEASE_BUILD: 'true'
+        run: ./kotlin build -v release -p '${{ matrix.platform }}' -m '${{ matrix.app }}'
+      - name: Package release
+        run: scripts/package-native.sh '${{ matrix.platform }}'
+      - name: Smoke-test release archive
+        if: matrix.platform != 'linuxArm64'
+        run: scripts/smoke-package.sh build/packages/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-${{ matrix.platform }}
+          path: build/packages/*.tar.gz*
+          retention-days: 7
+      - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: playwright-failures
+          name: failures-${{ matrix.platform }}
           path: |
             test-results/
             webuitest/test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  test-arm64:
+    needs: build-test
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install runtime test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux curl perl openssl libcurl4 libsqlite3-0 ca-certificates python3 systemd dbus-user-session
+      - uses: actions/download-artifact@v8
+        with:
+          name: arm64-checks
+          path: build/arm64-checks
+      - uses: actions/download-artifact@v8
+        with:
+          name: package-linuxArm64
+          path: build/packages
+      - name: Execute native suites and harness self-checks
+        run: |
+          chmod +x build/arm64-checks/*.kexe build/arm64-checks/tests/*.kexe
+          for binary in build/arm64-checks/tests/*.kexe; do
+            timeout 600 "$binary"
+          done
+      - name: Test systemd lifecycle with a disposable helper
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          scripts/test-systemd.sh build/arm64-checks/systemdcheck.kexe
+      - name: Smoke-test release archive on ARM64
+        run: scripts/smoke-package.sh build/packages/*.tar.gz
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: failures-arm64-runtime
+          path: test-results/
+          if-no-files-found: ignore

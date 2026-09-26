@@ -1,7 +1,7 @@
 # Owns native POSIX/cinterop bindings.
 product:
   type: kmp/lib
-  platforms: [macosArm64]
+  platforms: [macosArm64, linuxX64, linuxArm64]
 
 dependencies:
   # Pty.output exposes Channel, so consumers need this dependency exported.
