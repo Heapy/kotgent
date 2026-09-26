@@ -308,6 +308,7 @@ class MobileFeaturesTest {
             SpecialKey("Down arrow", listOf(0x1b, 0x5b, 0x42), "^[[B"),
             SpecialKey("Left arrow", listOf(0x1b, 0x5b, 0x44), "^[[D"),
             SpecialKey("Right arrow", listOf(0x1b, 0x5b, 0x43), "^[[C"),
+            SpecialKey("Shift Left arrow", listOf(0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x44), "^[[1;2D"),
             SpecialKey("Tab", listOf(0x09), null),
             SpecialKey("Control C", listOf(0x03), "^C"),
         )

@@ -791,7 +791,8 @@ textarea:focus-visible {
   flex: 0 0 auto;
   align-items: center;
   gap: 4px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 5px 6px;
   background: var(--panel);
   border-top: 1px solid var(--border);

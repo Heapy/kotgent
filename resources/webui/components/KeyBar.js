@@ -8,6 +8,7 @@ const NAVIGATION_KEYS = [
   { label: "↓", name: "Down arrow", bytes: [0x1b, 0x5b, 0x42] },
   { label: "←", name: "Left arrow", bytes: [0x1b, 0x5b, 0x44] },
   { label: "→", name: "Right arrow", bytes: [0x1b, 0x5b, 0x43] },
+  { label: "⇧←", name: "Shift Left arrow", bytes: [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x44], wide: true },
 ];
 
 const CONTROL_KEYS = [
