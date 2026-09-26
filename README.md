@@ -527,8 +527,8 @@ two links to the same session cannot overwrite each other. Reads that are not pa
 board, the project list, the terminal — are never blocked by it.
 
 The sidebar footer identifies the running daemon: local source builds show the release version plus their
-embedded short Git hash (for example `0.9.0+81c37fe`), while published Homebrew builds show the release
-version alone (`0.9.0`).
+embedded short Git hash (for example `0.10.0+81c37fe`), while published Homebrew builds show the release
+version alone (`0.10.0`).
 
 The usage strip stays pinned above that footer while sessions and projects scroll. Available quota windows
 appear as **progress bars showing usage**, shared across sessions, with a current-time marker relative to
