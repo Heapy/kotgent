@@ -1,5 +1,10 @@
 package io.kotgent.buildinfo
 
+import java.nio.file.Files
+import java.nio.file.attribute.FileTime
+import kotlin.io.path.getLastModifiedTime
+import kotlin.io.path.readText
+import kotlin.io.path.setLastModifiedTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -27,6 +32,25 @@ class GenerateTest {
         assertTrue(source.contains("""VERSION: String = "1.2.3""""))
         assertTrue(source.contains("""BUILD_GIT_HASH: String = "deadbee""""))
         assertTrue(source.contains("BUILD_IS_RELEASE: Boolean = false"))
+    }
+
+    @Test
+    fun unchangedSourceLeavesTheFileUntouched() {
+        val dir = Files.createTempDirectory("build-info-generate")
+        try {
+            val file = dir.resolve("io/kotgent/GeneratedBuildInfo.kt")
+            writeBuildInfo(dir, "first")
+            val stamp = FileTime.fromMillis(0)
+            file.setLastModifiedTime(stamp)
+
+            writeBuildInfo(dir, "first")
+            assertEquals(stamp, file.getLastModifiedTime())
+
+            writeBuildInfo(dir, "second")
+            assertEquals("second", file.readText())
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
     }
 
     @Test

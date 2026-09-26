@@ -16,14 +16,20 @@ fun generateBuildInfo(
     val version = readVersion(versionFile)
     val releaseBuild = releaseBuildFrom(System.getenv(RELEASE_BUILD_ENV))
     val gitHash = if (releaseBuild) "" else readGitHash(versionFile.parent)
+    writeBuildInfo(generatedSourceDir, generatedBuildInfoSource(version, gitHash, releaseBuild))
+}
 
+// The toolchain's up-to-date check compares size and mtime, so rewriting identical content would
+// recompile and relink every dependent module.
+internal fun writeBuildInfo(generatedSourceDir: Path, source: String) {
     val outputRoot = generatedSourceDir.toFile()
-    outputRoot.deleteRecursively()
     val outputFile = outputRoot.resolve("io/kotgent/GeneratedBuildInfo.kt")
+    if (outputFile.isFile && outputFile.readText() == source) return
+    outputRoot.deleteRecursively()
     check(outputFile.parentFile.mkdirs() || outputFile.parentFile.isDirectory) {
         "cannot create generated build-info directory: ${outputFile.parent}"
     }
-    outputFile.writeText(generatedBuildInfoSource(version, gitHash, releaseBuild))
+    outputFile.writeText(source)
 }
 
 private const val RELEASE_BUILD_ENV: String = "KOTGENT_RELEASE_BUILD"
