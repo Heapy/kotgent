@@ -73,6 +73,25 @@ html, body {
 /* WebKit 254868/264218: installed-PWA dvh omits safe areas. */
 #app.installed-app { height: 100vh; }
 
+#ios-status-bar-surface { display: none; }
+@supports (-webkit-touch-callout: none) {
+  /* iOS 27 blurs the header unless WebKit finds a fixed top edge. Its color sampler
+     needs more than 10px; clipping to empty text keeps the surface unpainted.
+     Requires an opaque status bar: black-translucent disables the color extension.
+     See https://zenn.dev/uakihir0/articles/260920-ios27-pwa-blur */
+  #app.installed-app + #ios-status-bar-surface {
+    display: block;
+    position: fixed;
+    inset: 0 0 auto;
+    height: 11px;
+    z-index: 2147483647;
+    pointer-events: none;
+    background-color: var(--bg);
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+}
+
 #sidebar {
   width: 320px;
   min-width: 240px;

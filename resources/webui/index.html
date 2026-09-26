@@ -11,7 +11,8 @@
   <link rel="icon" href="/icons/logo.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <!-- Keep content below the status bar so WebKit can suppress its iOS 27 scroll-edge blur. -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <meta name="apple-mobile-web-app-title" content="Kotgent" />
   <meta name="color-scheme" content="dark" />
   <meta name="theme-color" content="#14171c" />
@@ -40,6 +41,7 @@
 </head>
 <body>
   <div id="app" data-webui-marker="kotgent-webui"></div>
+  <div id="ios-status-bar-surface" aria-hidden="true"></div>
 
   <!-- xterm globals must exist before app.js loads. -->
   <script src="/_v/__REV__/vendor/xterm.js"></script>

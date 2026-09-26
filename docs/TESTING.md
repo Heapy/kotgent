@@ -329,6 +329,15 @@ notification permission prompts.
 
 Real-device release checklist:
 
+- On iOS 27, cold-launch the installed PWA and check that the terminal title, status badge and
+  header buttons stay sharp below the status bar. When changing `apple-mobile-web-app-status-bar-style`,
+  check both an existing Home Screen installation and one removed and re-added from a freshly loaded
+  Safari page: iOS may retain the old installation's status-bar mode across page reloads and daemon
+  updates. Re-enable push after reinstallation if needed; server-side sessions and tasks remain intact.
+  Repeat after opening/closing the drawer and a
+  dialog, switching to the board, rotating, and showing/hiding the keyboard. The status-bar surface
+  must not paint a strip, intercept taps, add top spacing or obscure the last terminal row. Repeat
+  on an older iOS version and in a normal Safari tab; desktop WebKit cannot prove the native blur.
 - Tap a usage bar in the installed phone PWA: its current/reset/observation times and remaining duration
   must be readable inside the sidebar; tapping outside dismisses the tooltip. Return from a suspended app
   and check that the time marker refreshes with the resumed clock and incoming usage snapshot.
