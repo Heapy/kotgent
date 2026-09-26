@@ -103,36 +103,50 @@ class SessionManagerTest {
         )
     }
 
+    private fun codexAdapter(cwd: String) = CodexAdapter(
+        cwd = cwd,
+        hookScriptPath = "/tmp/hooks.sh",
+        events = emptyFlow(),
+        binaryName = "/opt/codex",
+        cliVersion = "0.156.0",
+        cliPath = "/opt/codex",
+    )
+
+    private fun codexLaunchCommand(mode: LaunchMode): String =
+        SessionManager.shellCommand(codexAdapter("/tmp").buildLaunchSpec(mode).command)
+
     private fun CoroutineScope.codexManager(
         store: EventStore,
         tmux: TmuxControl,
         registry: PaneRegistry = PaneRegistry(),
         vendorProbe: VendorStoreProbe = importProbe,
         probeCliVersion: (String, String?) -> String? = { _, _ -> null },
+        discoverProviderId: suspend (SessionMeta) -> ProviderSessionId? = { null },
+        captureModelInBackground: (SessionMeta) -> Unit = {},
         newSessionId: () -> SessionId = { SessionId("codex999") },
         now: () -> Long = { 2_000L },
     ): SessionManager {
-        val builders = mapOf<String, (String) -> AgentAdapter>(
-            CODEX_AGENT_KIND to { cwd ->
-                CodexAdapter(
-                    cwd = cwd,
-                    hookScriptPath = "/tmp/hooks.sh",
-                    events = emptyFlow(),
-                    binaryName = "/opt/codex",
-                    cliVersion = "0.156.0",
-                    cliPath = "/opt/codex",
-                )
-            },
-        )
+        val builders = mapOf<String, (String) -> AgentAdapter>(CODEX_AGENT_KIND to ::codexAdapter)
         return SessionManager(
             tmux, store, registry, agentFactoryOf(builders),
             ProviderIdCapture(store, this, maxAttempts = 1, retryDelayMillis = 1),
             vendorProbe, importLocator, importableAgentKinds(builders.keys),
+            discoverProviderId = discoverProviderId,
+            captureModelInBackground = captureModelInBackground,
             probeCliVersion = probeCliVersion,
             newSessionId = newSessionId,
             now = now,
         )
     }
+
+    private fun codexRow(
+        idV: String,
+        state: SessionState,
+        source: EventSource,
+        pane: PaneId,
+        providerId: ProviderSessionId? = null,
+        cliVersion: String? = "0.156.0",
+    ) = meta(idV, state, providerId, pane).copy(agent = CODEX_AGENT_KIND, stateSource = source, cliVersion = cliVersion)
 
     private fun makeClosedSessionTestDirectory(): String {
         val tmp = (getenv("TMPDIR")?.toKString() ?: "/tmp").trimEnd('/')
@@ -548,6 +562,245 @@ class SessionManagerTest {
                 row.providerSessionId,
                 "the liveness write cannot restore the stale provisional provider id",
             )
+        }
+    }
+
+    @Test
+    fun aCodexPaneClosedBeforeAnyHookUnderANewerCliIsRelaunchedWithTheSameArguments() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd01")
+            val oldPane = PaneId("%501")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = FakeTmux()
+            val discovered = mutableListOf<SessionMeta>()
+            val captured = CompletableDeferred<SessionMeta>()
+            val mgr = codexManager(
+                store, tmux, registry,
+                probeCliVersion = { _, _ -> "0.157.1" },
+                discoverProviderId = { m -> discovered += m; null },
+                captureModelInBackground = { m -> captured.complete(m) },
+                now = { 5_000L },
+            )
+            store.upsertSession(codexRow(id.value, SessionState.running, EventSource.system, oldPane))
+            registry.register(oldPane, id)
+
+            mgr.onTmuxSessionClosed(id)
+
+            assertEquals(
+                listOf(id.value to codexLaunchCommand(LaunchMode.New)), tmux.newSessionCommands,
+                "the launch is repeated under the same tmux session with the same argv",
+            )
+            val newPane = tmux.listPanes().single { it.session == "kt-${id.value}" && !it.dead }.paneId
+            val row = store.getSession(id)!!
+            assertEquals(SessionState.running, row.state)
+            assertEquals(EventSource.system, row.stateSource, "a relaunch is the daemon's own write, like start")
+            assertEquals(newPane, row.paneId, "the row follows the new pane")
+            assertEquals("0.157.1", row.cliVersion, "the row records the version the new pane runs")
+            assertEquals(5_000L, row.updatedAt, "a relaunch is activity")
+            assertEquals(id, registry.lookup(newPane), "hooks from the new pane route to the session")
+            assertNull(registry.lookup(oldPane), "the dead pane is forgotten")
+            assertEquals(newPane, captured.await().paneId, "model capture restarts for the new incarnation")
+            repeat(5) { yield() }
+            assertEquals(listOf(newPane), discovered.map { it.paneId }, "a New launch re-arms the rollout id discovery")
+        }
+    }
+
+    @Test
+    fun aResumedCodexPaneClosedBeforeAnyHookUnderANewerCliIsRelaunchedAsAResume() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd02")
+            val oldPane = PaneId("%502")
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab2")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            var discoveries = 0
+            val mgr = codexManager(
+                store, tmux,
+                vendorProbe = VendorStoreProbe { _, _, _ -> error("a relaunch trusts the transcript the launch had") },
+                probeCliVersion = { _, _ -> "0.157.1" },
+                discoverProviderId = { discoveries++; null },
+            )
+            // What resume() leaves behind: ready, written by the operator's control action.
+            store.upsertSession(codexRow(id.value, SessionState.ready, EventSource.user, oldPane, provider))
+
+            mgr.onTmuxSessionClosed(id)
+
+            assertEquals(listOf(id.value to codexLaunchCommand(LaunchMode.Resume(provider))), tmux.newSessionCommands)
+            val row = store.getSession(id)!!
+            assertEquals(SessionState.running, row.state)
+            assertEquals("0.157.1", row.cliVersion)
+            repeat(5) { yield() }
+            assertEquals(0, discoveries, "a bound id is kept: no discovery for a resume relaunch")
+        }
+    }
+
+    @Test
+    fun aCodexPaneClosedUnderTheSameCliVersionIsClassifiedAsBefore() = runBlocking {
+        withTimeout(20.seconds) {
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab3")
+            for ([withId, expected] in listOf(false to SessionState.lost, true to SessionState.resumable)) {
+                val id = SessionId("upd03")
+                val pane = PaneId("%503")
+                val store = SqliteEventStore.inMemory(now = { 1L })
+                val registry = PaneRegistry()
+                val tmux = FakeTmux()
+                val mgr = codexManager(
+                    store, tmux, registry,
+                    vendorProbe = liveTranscriptProbe,
+                    probeCliVersion = { _, _ -> "0.156.0" },
+                )
+                store.upsertSession(
+                    codexRow(id.value, SessionState.running, EventSource.system, pane, provider.takeIf { withId }),
+                )
+                registry.register(pane, id)
+
+                mgr.onTmuxSessionClosed(id)
+
+                assertTrue(tmux.newSessionCommands.isEmpty(), "an unchanged version is not an update exit")
+                val row = store.getSession(id)!!
+                assertEquals(expected, row.state)
+                assertEquals(EventSource.liveness, row.stateSource)
+                assertNull(registry.lookup(pane))
+            }
+        }
+    }
+
+    @Test
+    fun aCodexRowLastWrittenByAHookIsClassifiedNotRelaunched() = runBlocking {
+        withTimeout(20.seconds) {
+            val provider = ProviderSessionId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab4")
+            for (state in listOf(SessionState.ready, SessionState.needs_approval, SessionState.running)) {
+                val id = SessionId("upd04")
+                val store = SqliteEventStore.inMemory(now = { 1L })
+                val tmux = FakeTmux()
+                val mgr = codexManager(
+                    store, tmux,
+                    vendorProbe = liveTranscriptProbe,
+                    probeCliVersion = { _, _ -> error("a hook-written row is never probed") },
+                )
+                store.upsertSession(codexRow(id.value, state, EventSource.hook, PaneId("%504"), provider))
+
+                mgr.onTmuxSessionClosed(id)
+
+                assertTrue(tmux.newSessionCommands.isEmpty(), "$state from a hook means the conversation existed")
+                assertEquals(SessionState.resumable, store.getSession(id)!!.state)
+            }
+        }
+    }
+
+    @Test
+    fun aDeadCodexRowIsNeverRelaunched() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd05")
+            val pane = PaneId("%505")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val mgr = codexManager(
+                store, tmux,
+                probeCliVersion = { _, _ -> error("a dead row is never probed") },
+                now = { error("no state write expected") },
+            )
+            // What SessionEnd and Stop leave behind.
+            store.upsertSession(codexRow(id.value, SessionState.stopped, EventSource.user, pane))
+            val committed = store.getSession(id)!!
+
+            mgr.onTmuxSessionClosed(id)
+
+            assertTrue(tmux.newSessionCommands.isEmpty())
+            assertEquals(committed, store.getSession(id))
+        }
+    }
+
+    @Test
+    fun aCodexRelaunchNeedsBothVersionsToBeKnown() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd06")
+            val pane = PaneId("%506")
+            for ([launched, installed] in listOf("0.156.0" to null, null to "0.157.1")) {
+                val store = SqliteEventStore.inMemory(now = { 1L })
+                val tmux = FakeTmux()
+                val mgr = codexManager(
+                    store, tmux,
+                    probeCliVersion = { _, _ -> installed },
+                )
+                store.upsertSession(
+                    codexRow(id.value, SessionState.running, EventSource.system, pane, cliVersion = launched),
+                )
+
+                mgr.onTmuxSessionClosed(id)
+
+                assertTrue(tmux.newSessionCommands.isEmpty(), "launched=$launched installed=$installed")
+                assertEquals(SessionState.lost, store.getSession(id)!!.state)
+            }
+        }
+    }
+
+    @Test
+    fun otherAgentsAreNeverRelaunchedAfterAVersionChange() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd07")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val mgr = codexManager(
+                store, tmux,
+                probeCliVersion = { _, _ -> error("only codex is probed") },
+            )
+            store.upsertSession(
+                codexRow(id.value, SessionState.running, EventSource.system, PaneId("%507")).copy(agent = CLAUDE_AGENT_KIND),
+            )
+
+            mgr.onTmuxSessionClosed(id)
+
+            assertTrue(tmux.newSessionCommands.isEmpty())
+            assertEquals(SessionState.lost, store.getSession(id)!!.state)
+        }
+    }
+
+    @Test
+    fun aLateCloseTriggerForALiveCodexPaneDoesNotRelaunch() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd08")
+            val pane = PaneId("%508")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux(listOf(TmuxPane("kt-${id.value}", pane, 4242, false, 120, 40)))
+            val mgr = codexManager(
+                store, tmux,
+                probeCliVersion = { _, _ -> error("a live pane is never probed") },
+                now = { error("no state write expected") },
+            )
+            store.upsertSession(codexRow(id.value, SessionState.running, EventSource.system, pane))
+            val committed = store.getSession(id)!!
+
+            mgr.onTmuxSessionClosed(id)
+
+            assertTrue(tmux.newSessionCommands.isEmpty())
+            assertEquals(committed, store.getSession(id))
+        }
+    }
+
+    @Test
+    fun aFailedCodexRelaunchFallsBackToClassification() = runBlocking {
+        withTimeout(20.seconds) {
+            val id = SessionId("upd09")
+            val pane = PaneId("%509")
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val registry = PaneRegistry()
+            val tmux = ObservingTmux(failAfterCreate = true)
+            val mgr = codexManager(
+                store, tmux, registry,
+                probeCliVersion = { _, _ -> "0.157.1" },
+            )
+            store.upsertSession(codexRow(id.value, SessionState.running, EventSource.system, pane))
+            registry.register(pane, id)
+
+            mgr.onTmuxSessionClosed(id)
+
+            val row = store.getSession(id)!!
+            assertEquals(SessionState.lost, row.state, "the row is classified as it was before relaunches existed")
+            assertEquals(EventSource.liveness, row.stateSource)
+            assertEquals("0.156.0", row.cliVersion, "a launch that did not happen records no version")
+            assertNull(registry.lookup(pane))
         }
     }
 

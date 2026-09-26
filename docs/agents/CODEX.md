@@ -23,6 +23,14 @@ Codex does not preallocate a session id through this integration. Kotgent captur
 `SessionStart` or the rollout file, so it may not be available immediately. Resume passes the saved id
 to `codex resume` and requires the provider record to remain available.
 
+The startup update prompt remains available. When you accept it, Codex installs the update and exits
+before the conversation starts. Kotgent then opens a new terminal for the same session and launches
+Codex again with the same arguments and any resume id. The Web UI reconnects to the new terminal by
+itself; a CLI `kotgent attach` ends and must be run again. Normal quits, failed updates, and exits after
+a conversation started do not restart. If Kotgent's hooks were left untrusted on the **Hooks need
+review** screen, a quit after an update installed elsewhere can restart Codex once; quit again.
+The sidebar shows the CLI version each Codex session was launched with.
+
 ## Import an existing conversation
 
 Find the provider session id in the `codex resume` picker or in the trailing UUID of a rollout filename:

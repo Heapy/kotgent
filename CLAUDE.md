@@ -37,6 +37,13 @@ the common workflow and links to those guides; implementation invariants belong 
   only at provider boundaries where the provider guarantees one.
 - Codex trusts Kotgent's hooks per handler through `hooks.state` hashes in the same `-c 'hooks={…}'`
   value. Never pass `--dangerously-bypass-hook-trust`: it also trusts every user, project and plugin hook.
+- Codex's accepted startup update installs the CLI and exits 0 before any session hook; every other way
+  out of the prompt continues into the session. `SessionManager.onTmuxSessionClosed` repeats the launch
+  under the same session when the closed row is still alive with a state the daemon wrote itself rather
+  than a hook (no `SessionEnd`, no Stop, no turn) and the probed CLI version differs from the one recorded
+  at launch. That row state is the only signal: no marker file and no shell wrapper around Codex, which
+  must stay the pane's session leader. Every Codex launch (start, resume, relaunch) probes and records the
+  version it runs through `setCliVersion`, which advances `rev` without changing activity order.
 - The daemon owns one upstream `tmux attach` per session and fans it out to subscribers. Runtime identity
   comes from the live pane id, never an inherited environment variable.
 - Keep raw POSIX/cinterop in `sysnative`. Toolchain 0.12 links custom cinterop into test binaries, so

@@ -437,6 +437,7 @@ class SessionManager(
         // The hook is only a trigger; tmux/vendor state is authoritative under the same lock as resume.
         val meta = store.getSession(sessionId) ?: return@withControlLock
         val paneAlive = isPaneAlive(meta.tmuxSession)
+        if (!paneAlive && relaunchAfterUpdate(meta)) return@withControlLock
         val stopIntent = meta.state == SessionState.stopped
         val transcriptExists =
             meta.providerSessionId?.let { vendorProbe.hasTranscript(meta.agent, meta.cwd, it) } ?: false
@@ -448,6 +449,53 @@ class SessionManager(
 
     private fun isPaneAlive(tmuxSession: String): Boolean =
         tmux.listPanes().any { it.session == tmuxSession && !it.dead }
+
+    // Codex's accepted startup update installs the CLI and exits 0 before any session hook; every other way
+    // out of that prompt continues into the session. So a closed pane whose row is still alive with a state
+    // the daemon wrote itself (launch, resume, interrupt, reconciliation) rather than a hook, and whose CLI
+    // is now a different version, saw the update exit: SessionEnd (Exited(0) -> stopped) and Stop (stopped
+    // before kill-session) would both have left a dead state behind.
+    private suspend fun relaunchAfterUpdate(meta: SessionMeta): Boolean {
+        if (meta.agent != CODEX_AGENT_KIND || !meta.state.isAlive || meta.stateSource == EventSource.hook) {
+            return false
+        }
+        val launched = meta.cliVersion ?: return false
+        val providerId = meta.providerSessionId
+        val mode = if (providerId == null) LaunchMode.New else LaunchMode.Resume(providerId)
+        val spec = runCatching { agentFactory.create(meta.agent, meta.cwd).buildLaunchSpec(mode) }
+            .getOrElse { return relaunchSkipped(meta, it) }
+        val installed = probeCliVersion(meta.agent, spec.cliPath) ?: return false
+        if (installed == launched) return false
+        val paneId = runCatching { tmux.newSession(meta.id.value, meta.cwd, shellCommand(spec.command), cols, rows) }
+            .getOrElse { return relaunchSkipped(meta, it) }
+        val ts = now()
+        // A store failure past this point leaves the new pane running instead of killing it: the kill would
+        // fire this hook again, and the next daemon start re-adopts the pane by its tmux session name.
+        store.updateSessionState(meta.id, SessionState.running, EventSource.system, paneId, ts)
+        store.setCliVersion(meta.id, installed)
+        meta.paneId?.let { registry.unregister(it) }
+        registry.register(paneId, meta.id)
+        val relaunched = meta.copy(
+            paneId = paneId,
+            state = SessionState.running,
+            stateSource = EventSource.system,
+            cliVersion = installed,
+            updatedAt = ts,
+        )
+        // Keyed on the id, not `mode is LaunchMode.New`: Kotlin 2.4 evaluated that check true for a Resume here.
+        if (providerId == null) {
+            val _ = idCapture.captureInBackground(meta.id) {
+                store.projectionOf(meta.id).providerSessionId ?: discoverProviderId(relaunched)
+            }
+        }
+        captureModelInBackground(relaunched)
+        return true
+    }
+
+    private fun relaunchSkipped(meta: SessionMeta, failure: Throwable): Boolean {
+        eprintln("warning: codex session '${meta.id.value}' was not relaunched after its CLI update: $failure")
+        return false
+    }
 
     suspend fun importSession(
         agentKind: String,
