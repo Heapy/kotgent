@@ -31,7 +31,7 @@ class CodexAdapter(
             add(CodexHookConfig.hooksToml(hookScriptPath))
         }
         return LaunchSpec(
-            command = CodexStartup.wrap(command),
+            command = command,
             env = env,
             cwd = cwd,
             preallocatedSessionId = null,
