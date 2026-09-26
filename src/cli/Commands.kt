@@ -10,6 +10,8 @@ import io.kotgent.daemon.productionVendorStoreProbe
 import io.kotgent.exe.NativeExe
 import io.kotgent.service.daemonService
 import io.kotgent.service.restartDaemonCommand
+import io.kotgent.sys.DisplayDetector
+import io.kotgent.sys.browserDisplayDetector
 import io.kotgent.sys.browserOpenCommand
 import io.kotgent.push.UsageResetNotifier
 import io.kotgent.sys.installShutdownSignals
@@ -104,7 +106,8 @@ object Commands {
         runWebCommand(
             print = print,
             issueTicket = api::issueTicket,
-            open = { url -> ProcessRunner.run(browserOpenCommand(url)).exitCode },
+            display = browserDisplayDetector(::processEnv),
+            open ={ url -> ProcessRunner.run(browserOpenCommand(url)).exitCode },
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -441,6 +444,7 @@ fun groupLoginCode(code: String): String {
 suspend fun runWebCommand(
     print: Boolean,
     issueTicket: suspend () -> TicketResponse,
+    display: DisplayDetector,
     open: (String) -> Int,
     stdout: (String) -> Unit,
     stderr: (String) -> Unit,
@@ -453,12 +457,17 @@ suspend fun runWebCommand(
     }
 
     val formUrl = ticket.localUrl.substringBefore('#')
-    val exitCode = open(formUrl)
-    if (exitCode == 0) {
-        stdout("opening the kotgent sign-in form in your browser…")
-    } else {
-        stderr("could not launch a browser (open exited $exitCode); open this form yourself:")
+    if (!display.hasDisplay()) {
+        stderr("no graphical display to launch a browser on; open this form yourself:")
         stdout(formUrl)
+    } else {
+        val exitCode = open(formUrl)
+        if (exitCode == 0) {
+            stdout("opening the kotgent sign-in form in your browser…")
+        } else {
+            stderr("could not launch a browser (open exited $exitCode); open this form yourself:")
+            stdout(formUrl)
+        }
     }
     stdout(renderSignInCode(ticket))
     return 0

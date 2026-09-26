@@ -567,6 +567,7 @@ class CliTest {
         val exit = runWebCommand(
             print = true,
             issueTicket = { ticket },
+            display = { true },
             open = { opened += it; 0 },
             stdout = stdout::add,
             stderr = stderr::add,
@@ -588,6 +589,7 @@ class CliTest {
         val exit = runWebCommand(
             print = false,
             issueTicket = { ticket },
+            display = { true },
             open = { opened += it; 0 },
             stdout = stdout::add,
             stderr = stderr::add,
@@ -609,6 +611,7 @@ class CliTest {
         val exit = runWebCommand(
             print = false,
             issueTicket = { ticket },
+            display = { true },
             open = { 7 },
             stdout = stdout::add,
             stderr = stderr::add,
@@ -618,6 +621,29 @@ class CliTest {
         assertEquals("http://127.0.0.1:27508/auth", stdout.first(), "fallback cannot consume the code")
         assertTrue(stdout.last().contains("A1B2 C3D4"))
         assertTrue(stderr.single().contains("open exited 7"))
+    }
+
+    @Test
+    fun webWithoutADisplayPrintsTheFormInsteadOfLaunchingATerminalBrowser() = runBlocking {
+        val ticket = webTicket()
+        val stdout = mutableListOf<String>()
+        val stderr = mutableListOf<String>()
+        val opened = mutableListOf<String>()
+
+        val exit = runWebCommand(
+            print = false,
+            issueTicket = { ticket },
+            display = { false },
+            open = { opened += it; 0 },
+            stdout = stdout::add,
+            stderr = stderr::add,
+        )
+
+        assertEquals(0, exit)
+        assertTrue(opened.isEmpty(), "no opener runs without a display")
+        assertEquals("http://127.0.0.1:27508/auth", stdout.first(), "the printed form cannot consume the code")
+        assertTrue(stdout.last().contains("A1B2 C3D4"))
+        assertTrue(stderr.single().contains("no graphical display"))
     }
 
 
