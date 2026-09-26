@@ -500,7 +500,7 @@ reload) and **persistent** (restarting the daemon does not resurrect a cleared b
 not count as activity, so `kotgent list`'s ordering is unaffected.
 
 **ADHD mode** reduces the sidebar to what you pinned. The pin on a session row marks that session; the pin
-on a folder head marks that directory path, and every session shown under that head is listed while the
+on a group header marks that directory path, and every session shown under that header is listed while the
 mode is on, including sessions started there later. A pinned folder that the current grouping does not
 draw stays pinned but has no effect until it is drawn again. What is pinned is daemon-wide, so a phone and
 a laptop agree on it; whether a given screen is reduced is that device's own setting and survives a

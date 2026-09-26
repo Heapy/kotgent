@@ -1443,10 +1443,10 @@ export function HelpDialog({ onClose }) {
               browser, and one keeps its dot while it hides a session that needs attention.
             </p>
             <p>
-              ADHD mode, the pin button in the sidebar header, lists only the sessions you pinned and
-              the sessions shown under a group header you pinned. That includes "Needs attention" and
-              its count, so a session blocked on you can be hidden there, though its notifications
-              still fire.
+              ADHD mode, the pin button in the sidebar header, lists only the sessions you pinned, the
+              sessions shown under a group header you pinned, and the session you have selected. That
+              includes "Needs attention" and its count, so a session blocked on you can be hidden there,
+              though its notifications still fire.
             </p>
           </section>
 
