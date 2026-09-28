@@ -832,7 +832,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null, cliVersion = "2.1.218", cliPath = "/usr/local/bin/claude"),
-                ProviderIdCapture(store, this),
+                ProviderIdCapture(store, this, maxAttempts = 1, retryDelayMillis = 1),
                 importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("sess09") },
                 now = { 1L },
@@ -853,7 +853,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
-                ProviderIdCapture(store, this),
+                ProviderIdCapture(store, this, maxAttempts = 1, retryDelayMillis = 1),
                 importProbe, importLocator, importKinds,
                 newSessionId = { SessionId("sess10") },
                 now = { 1L },
@@ -951,7 +951,7 @@ class SessionManagerTest {
             val mgr = SessionManager(
                 FakeTmux(), store, PaneRegistry(),
                 StubAgentFactory(cat, preallocated = null),
-                ProviderIdCapture(store, this),
+                ProviderIdCapture(store, this, maxAttempts = 1, retryDelayMillis = 1),
                 importProbe, importLocator, importKinds,
                 captureModelInBackground = { meta -> captured.complete(meta) },
                 newSessionId = { SessionId("mdl01") },
