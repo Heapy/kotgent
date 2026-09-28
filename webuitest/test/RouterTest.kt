@@ -1,7 +1,6 @@
 package io.kotgent.webuitest
 
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.WaitUntilState
 import java.util.regex.Pattern
@@ -128,13 +127,11 @@ class RouterTest {
 
     private fun routerTest(name: String, block: (String, Page) -> Unit) {
         Harness(DEEP_LINK_SCENARIO).use { harness ->
-            Playwright.create().use { playwright ->
-                touchChromium(playwright).use { browser ->
-                    browser.fineContext(width = 1280, height = 900).use { context ->
-                        context.traced(name) {
-                            context.loginWithTicket(harness.ticket, harness.baseUrl)
-                            block(harness.baseUrl, context.newPage())
-                        }
+            onChromium { browser ->
+                browser.fineContext(width = 1280, height = 900).use { context ->
+                    context.traced(name) {
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        block(harness.baseUrl, context.newPage())
                     }
                 }
             }

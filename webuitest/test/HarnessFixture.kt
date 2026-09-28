@@ -309,16 +309,64 @@ val ACTIVE_OPTION: Pattern = Pattern.compile("\\bactive\\b")
 const val BOOT_TIMEOUT_MS: Double = 15_000.0
 
 // Chromium preserves the active pointer id across emulated touch events; synthetic DOM events do not.
-fun touchChromium(pw: Playwright): Browser =
+private fun touchChromium(pw: Playwright): Browser =
     pw.chromium().launch(
         BrowserType.LaunchOptions()
             .setHeadless(System.getenv(HEADED_ENV) == null)
             .setArgs(listOf("--touch-events=enabled")),
     )
 
+private class ThreadChromium(val playwright: Playwright, val browser: Browser)
+
+// Playwright objects belong to the thread that created them, so each worker thread keeps one driver and
+// one browser for the whole run instead of paying a driver start and a Chromium launch per test.
+private object ChromiumPool {
+    private val perThread = ThreadLocal<ThreadChromium>()
+
+    private val all = mutableListOf<ThreadChromium>()
+
+    init {
+        Runtime.getRuntime().addShutdownHook(Thread { closeAll() })
+    }
+
+    fun current(): Browser {
+        perThread.get()?.let { held ->
+            if (held.browser.isConnected) return held.browser
+            forget(held)
+        }
+        val playwright = Playwright.create()
+        val held = ThreadChromium(playwright, touchChromium(playwright))
+        synchronized(all) { all += held }
+        perThread.set(held)
+        return held.browser
+    }
+
+    private fun forget(held: ThreadChromium) {
+        perThread.remove()
+        synchronized(all) { all -= held }
+        val _ = runCatching { held.playwright.close() }
+    }
+
+    private fun closeAll() {
+        val held = synchronized(all) { all.toList().also { all.clear() } }
+        for (chromium in held) {
+            val _ = runCatching { chromium.playwright.close() }
+        }
+    }
+}
+
 fun onChromium(block: (Browser) -> Unit) {
-    Playwright.create().use { pw ->
-        touchChromium(pw).use { browser -> block(browser) }
+    val browser = ChromiumPool.current()
+    val before = browser.contexts().toSet()
+    try {
+        block(browser)
+    } finally {
+        // The browser outlives the test, so a context the block left open would leak into the next one.
+        for (context in browser.contexts()) {
+            if (context !in before) {
+                val _ = runCatching { context.close() }
+            }
+        }
     }
 }
 
