@@ -2,7 +2,6 @@ package io.kotgent.webuitest
 
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
-import com.microsoft.playwright.Playwright
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import com.microsoft.playwright.options.AriaRole
 import java.util.regex.Pattern
@@ -279,16 +278,14 @@ class CommandPaletteTest {
 
     private fun onThePaletteScreen(trace: String, block: (Harness, Page) -> Unit) {
         Harness(SESSIONS_SCENARIO).use { harness ->
-            Playwright.create().use { pw ->
-                touchChromium(pw).use { browser ->
-                    browser.newContext().use { context ->
-                        context.traced(trace) {
-                            context.loginWithTicket(harness.ticket, harness.baseUrl)
-                            val page = context.newPage()
-                            page.navigate("${harness.baseUrl}/")
-                            assertThat(page.locator("#sidebar")).isVisible()
-                            block(harness, page)
-                        }
+            onChromium { browser ->
+                browser.newContext().use { context ->
+                    context.traced(trace) {
+                        context.loginWithTicket(harness.ticket, harness.baseUrl)
+                        val page = context.newPage()
+                        page.navigate("${harness.baseUrl}/")
+                        assertThat(page.locator("#sidebar")).isVisible()
+                        block(harness, page)
                     }
                 }
             }
