@@ -127,7 +127,7 @@ class SessionRevMergeTest {
                         val row = page.locator("#session-list .session-row[data-id='$QUIET']")
                         val pin = row.locator(".row-adhd")
                         assertThat(row.locator(".badge")).hasText(READY)
-                        assertThat(page.locator("#attention-num")).hasText("0")
+                        assertThat(page.locator("#attention-section")).hasCount(0)
 
                         page.evaluate("() => window.__kotgentHoldSessionFrames()")
                         harness.send("emit $QUIET $NEWER_STATE")

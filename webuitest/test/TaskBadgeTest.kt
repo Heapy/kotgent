@@ -102,7 +102,7 @@ class TaskBadgeTest {
         browse(ATTENTION_SCENARIO, "badge-state-emit") { harness, page ->
             val row = page.locator("$SESSION_LIST li[data-id='s-quiet']")
             assertThat(row).hasCount(1)
-            assertThat(page.locator("#attention-num")).hasText("0")
+            assertThat(page.locator("#attention-section")).hasCount(0)
             assertThat(row.locator(".badge")).hasText("ready")
 
             harness.send("emit s-quiet needs_approval")
@@ -111,7 +111,6 @@ class TaskBadgeTest {
             assertThat(page.locator("#attention-num")).hasText("1")
             assertThat(page.locator("#attention-list li[data-id='s-quiet']")).hasCount(1)
             assertThat(row.locator(".badge")).hasText("needs approval")
-            assertThat(row.locator(".attn-dot")).hasCount(1)
             assertTrue(page.sameDocument(), "a state change is a patch; the shell is never reloaded for one")
         }
 
@@ -120,7 +119,7 @@ class TaskBadgeTest {
         browse(ATTENTION_SCENARIO, "badge-notify-edge", extraInit = NOTIFICATION_RECORDER) { harness, page ->
             val row = page.locator("$SESSION_LIST li[data-id='s-quiet']")
             assertThat(row).hasCount(1)
-            assertThat(page.locator("#attention-num")).hasText("0")
+            assertThat(page.locator("#attention-section")).hasCount(0)
             assertEquals(
                 emptyList<String>(),
                 page.notificationTags(),

@@ -206,9 +206,10 @@ the common workflow and links to those guides; implementation invariants belong 
   and the rules live in `resources/webui/lib/adhd.js`. With grouping off, folder marks cover nothing. A
   mark with no drawn head is inert and is never deleted by a grouping change; it acts again once its head
   is drawn. Marks are compared through `normalizePath`; a second path matcher would drift from the
-  daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. The reduction is
-  strict, including the attention section and its count, but the selected session always keeps a row —
-  `activeId` is the selection, not `attachedId` — and `#adhd-toggle` never hides on the sessions screen.
+  daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. A reduced screen hides
+  the attention section and its count altogether, pinned sessions included; the selected session always
+  keeps a row — `activeId` is the selection, not `attachedId` — and `#adhd-toggle` never hides on the
+  sessions screen.
   `#empty-adhd` is gated on nothing being pinned, never on an empty list: the selected row always
   survives, so an empty list is not the state that needs explaining. It also waits for `prefsReadiness`,
   because until the daemon answers `adhdPaths` is a placeholder. A session listed through a folder mark

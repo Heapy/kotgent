@@ -71,6 +71,32 @@ class SidebarTest {
     }
 
     @Test
+    fun theAttentionSectionCollapsesToItsCountAndStaysCollapsedAcrossAReload() {
+        signedIn(SESSIONS_SCENARIO, "sidebar-attention-collapse") { _, _, page ->
+            val toggle = page.locator("#attention-toggle")
+            assertThat(toggle).hasAttribute("aria-expanded", "true")
+            assertThat(page.locator("#attention-list .session-row[data-id='s-gamma']")).hasCount(1)
+
+            toggle.click()
+
+            assertThat(toggle).hasAttribute("aria-expanded", "false")
+            assertThat(page.locator("#attention-list")).hasCount(0)
+            assertThat(page.locator("#attention-num")).hasText("1")
+            assertThat(page.locator("#session-list .session-row[data-id='s-gamma']")).hasCount(1)
+
+            page.reload()
+
+            assertThat(toggle).hasAttribute("aria-expanded", "false")
+            assertThat(page.locator("#attention-list")).hasCount(0)
+
+            toggle.click()
+
+            assertThat(toggle).hasAttribute("aria-expanded", "true")
+            assertThat(page.locator("#attention-list .session-row[data-id='s-gamma']")).hasCount(1)
+        }
+    }
+
+    @Test
     fun aBasePathFoldsTheRowsIntoTheDirectoryTreeTheirCwdsDescribe() {
         signedIn(SESSIONS_SCENARIO, "sidebar-tree") { _, _, page ->
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
@@ -469,9 +495,7 @@ class SidebarTest {
             assertThat(page.locator("#session-list .session-row")).hasCount(2)
             assertThat(page.locator("#session-list .session-row[data-id='s-delta']")).hasCount(1)
             assertThat(page.locator("#session-list .session-row[data-id='s-alpha']")).hasCount(1)
-            // Strict by the operator's choice: the attention section and its count follow the reduction.
-            assertThat(page.locator("#attention-list .session-row")).hasCount(0)
-            assertThat(page.locator("#attention-num")).hasText("0")
+            assertThat(page.locator("#attention-section")).hasCount(0)
 
             page.locator(".nav-link").filter(Locator.FilterOptions().setHasText("Tasks")).click()
 
@@ -601,7 +625,6 @@ class SidebarTest {
             page.waitForCondition { held.get() != null }
             assertThat(page.locator("#adhd-loading")).isVisible()
             assertThat(page.locator("#session-list .session-row")).hasCount(0)
-            assertThat(page.locator("#attention-count")).hasCount(0)
             assertThat(page.locator("#attention-section")).hasCount(0)
             assertThat(page.locator("#empty-adhd")).hasCount(0)
 
@@ -621,7 +644,8 @@ class SidebarTest {
                 """.trimIndent(),
                 "once preferences are known, every row under the pinned head is listed",
             )
-            assertThat(page.locator("#attention-num")).hasText("1")
+            assertThat(page.locator("#session-list .session-row[data-id='s-gamma'] .badge")).hasText("needs approval")
+            assertThat(page.locator("#attention-section")).hasCount(0)
         }
     }
 
@@ -641,7 +665,7 @@ class SidebarTest {
             assertThat(page.locator("#adhd-loading")).isVisible()
             assertThat(page.locator("#session-list .session-row")).hasCount(1)
             assertThat(selected).hasCount(1)
-            assertThat(page.locator("#attention-count")).hasCount(0)
+            assertThat(page.locator("#attention-section")).hasCount(0)
 
             held.get()!!.fulfill(
                 Route.FulfillOptions()
@@ -654,14 +678,14 @@ class SidebarTest {
             assertThat(page.locator("#adhd-loading")).hasCount(0)
             assertThat(page.locator("#session-list .session-row")).hasCount(1)
             assertThat(selected).hasCount(1)
-            assertThat(page.locator("#attention-count")).hasCount(0)
+            assertThat(page.locator("#attention-section")).hasCount(0)
 
             page.locator("#adhd-retry").click()
 
             assertThat(page.locator("#adhd-failed")).hasCount(0)
             assertThat(page.locator("#session-list .session-row")).hasCount(4)
             assertThat(selected).hasCount(1)
-            assertThat(page.locator("#attention-num")).hasText("1")
+            assertThat(page.locator("#attention-section")).hasCount(0)
         }
     }
 

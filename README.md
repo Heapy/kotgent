@@ -500,7 +500,8 @@ older clients, just as `/hooks/*` remains an alias for hook scripts generated be
 `/api/v1/hooks/*`; newly generated scripts and all bundled clients use the versioned paths.
 
 The UI shows the session list with live state badges and a "Needs attention" queue (fed by the events
-WebSocket), and renders a session's terminal with `xterm.js` over the terminal WebSocket (byte rendering,
+WebSocket; its header collapses the queue to a count, remembered per device), and renders a session's
+terminal with `xterm.js` over the terminal WebSocket (byte rendering,
 keyboard input, resize). Its installable PWA layout adds a mobile sidebar drawer, safe-area handling,
 terminal sizing from `visualViewport`, and a phone-only row for Esc, Tab, Shift-Tab, arrows, Ctrl, and
 Ctrl-C. Terminal taps focus the software keyboard without Safari zooming the helper textarea, and a
@@ -554,12 +555,12 @@ on a group header marks that directory path, and every session shown under that 
 mode is on, including sessions started there later. A pinned folder that the current grouping does not
 draw stays pinned but has no effect until it is drawn again. What is pinned is daemon-wide, so a phone and
 a laptop agree on it; whether a given screen is reduced is that device's own setting and survives a
-reload. The reduction is strict — the "needs attention" section and its count follow it, so a session that
-wants you can be hidden, though notifications still fire for it. The session you have selected keeps its
-row whatever its pin says, and the toggle never hides on the sessions screen. Turning the mode on with
-nothing pinned says so and offers the way back. A session listed through a pinned folder shows a dimmed
-pin that names the folder; clicking it pins the session on its own, so it stays listed after the folder is
-unpinned.
+reload. The mode hides the "needs attention" section altogether, even for pinned sessions; a pinned
+session still shows its state on its own row, and notifications still fire. The session you have selected
+keeps its row whatever its pin says, and the toggle never hides on the sessions screen. Turning the mode
+on with nothing pinned says so and offers the way back. A session listed through a pinned folder shows a
+dimmed pin that names the folder; clicking it pins the session on its own, so it stays listed after the
+folder is unpinned.
 The Done list ignores the mode entirely.
 
 The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A

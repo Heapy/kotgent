@@ -1435,18 +1435,18 @@ export function HelpDialog({ onClose }) {
           <section class="help-section">
             <h3>The sidebar</h3>
             <p>
-              "Needs attention" counts the sessions blocked on you and repeats them at the top so nothing
-              is missed, except what ADHD mode hides. The blue pill is the number of events appended since
+              "Needs attention" repeats the sessions blocked on you at the top so nothing is missed; click
+              its header to collapse it to their count. The blue pill is the number of events appended since
               you last read the session, and the badge is its current state. With a base path set in Preferences, rows are grouped
               by working directory; anything outside that base path is grouped under its own path at the
-              end. Click a group's header to collapse it — the collapsed groups are remembered in this
-              browser, and one keeps its dot while it hides a session that needs attention.
+              end. Click a group's header to collapse it — collapsed groups and "Needs attention" are
+              remembered in this browser, and a group keeps its dot while it hides a session that needs
+              attention.
             </p>
             <p>
               ADHD mode, the pin button in the sidebar header, lists only the sessions you pinned, the
-              sessions shown under a group header you pinned, and the session you have selected. That
-              includes "Needs attention" and its count, so a session blocked on you can be hidden there,
-              though its notifications still fire.
+              sessions shown under a group header you pinned, and the session you have selected. It hides
+              "Needs attention" altogether, even for pinned sessions, though their notifications still fire.
             </p>
           </section>
 

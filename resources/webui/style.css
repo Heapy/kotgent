@@ -242,22 +242,6 @@ textarea:focus-visible {
   color: var(--text);
 }
 
-.attn-count {
-  font-size: 12px;
-  color: var(--muted);
-}
-.attn-count.active {
-  color: var(--attn);
-  font-weight: 600;
-}
-.attn-count.active #attention-num {
-  background: var(--attn);
-  color: #fff;
-  border-radius: 10px;
-  padding: 0 7px;
-  margin-right: 2px;
-}
-
 .section-title {
   display: flex;
   align-items: baseline;
@@ -270,6 +254,47 @@ textarea:focus-visible {
   margin: 16px var(--list-inset) 7px;
 }
 .section-title.attn { color: var(--attn); }
+
+#attention-section {
+  border: 1px solid color-mix(in srgb, var(--attn) 45%, transparent);
+  border-radius: 14px;
+  margin: 12px var(--list-inset) 0;
+  padding: 0 3px 3px;
+}
+#attention-section .section-title { margin: 10px 11px 4px; }
+#attention-section.collapsed .section-title { margin-bottom: 7px; }
+#attention-list .session-row { margin-inline: 0; }
+.section-toggle {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  letter-spacing: inherit;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  text-transform: inherit;
+}
+.section-toggle:hover .group-chevron { color: var(--text); }
+.section-toggle:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.attn-num {
+  background: var(--attn-bg);
+  border-radius: 9px;
+  color: var(--attn);
+  font-size: 10px;
+  letter-spacing: 0;
+  line-height: 16px;
+  margin-left: auto;
+  padding: 0 6px;
+}
 
 .base-note {
   background: none;
@@ -532,7 +557,6 @@ textarea:focus-visible {
   box-shadow: 0 0 0 3px var(--attn-bg);
   margin-inline: 2px;
 }
-.session-row > .attn-dot { margin-top: calc((var(--row-lead) - 9px) / 2); }
 
 .unread-pill {
   flex: 0 0 auto;

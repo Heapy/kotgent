@@ -33,6 +33,9 @@ const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
 const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
 
+// Stored in the persisted folder-collapse set beside its directory and `done:` keys, which cannot equal it.
+const ATTENTION_COLLAPSE_KEY = "section:attention";
+
 /** Preserve real links; route only plain clicks in-app. */
 function NavSwitch({ screen, sessionsPath }) {
   const links = [
@@ -261,8 +264,6 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
       onClick=${select}
       onKeyDown=${onKeyDown}
     >
-      ${isNeedsAttention(session.state) &&
-        html`<span class="attn-dot" title="Needs attention"></span>`}
       <div class="session-main">
         <div class="session-name">${displayName(session)}</div>
         <div class="session-sub">${sessionSubline(session)}</div>
@@ -524,7 +525,7 @@ export function Sidebar({
   const onTasks = screen === SCREEN_TASKS;
   const prefsReady = prefsStatus.state === READY;
   // Until the daemon answers, `adhdPaths` and the grouping are placeholders, so a reduction would drop
-  // folder-covered rows and undercount attention.
+  // folder-covered rows.
   const awaitingPins = adhdMode && !onTasks && !prefsReady;
   const live = useMemo(() => sessions.filter((s) => !s.archived), [sessions]);
   // Everything below renders the reduced list; only the empty states read `live`, so a reduced-to-empty
@@ -551,9 +552,10 @@ export function Sidebar({
     return [done, signature];
   }, [sessions]);
   const attention = useMemo(
-    () => (awaitingPins ? [] : visible.filter((s) => isNeedsAttention(s.state))),
-    [awaitingPins, visible],
+    () => (adhdMode ? [] : visible.filter((s) => isNeedsAttention(s.state))),
+    [adhdMode, visible],
   );
+  const attentionCollapsed = collapsedGroups.has(ATTENTION_COLLAPSE_KEY);
   const grouped = groupingEnabled(prefs);
   const liveGroups = useMemo(
     () => grouped && !onTasks
@@ -637,15 +639,6 @@ export function Sidebar({
       </header>
 
       <div id="sidebar-scroll">
-        ${!onTasks && !awaitingPins && html`
-          <div
-            id="attention-count"
-            class=${"attn-count" + (attention.length > 0 ? " active" : "")}
-            title="Sessions needing attention"
-          >
-            <span id="attention-num">${attention.length}</span> need attention
-          </div>`}
-
         ${onTasks && html`
           <section id="projects-section">
             <h2 class="section-title">
@@ -679,15 +672,30 @@ export function Sidebar({
         `}
 
       ${!onTasks && attention.length > 0 && html`
-        <section id="attention-section">
-          <h2 class="section-title attn">Needs attention</h2>
-          <ul id="attention-list" class="session-list">
-            ${attention.map((s) => html`
-              <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
-                             active=${s.id === activeId} onSelect=${onSelect}
-                             onMark=${markSession} prefs=${prefs} />
-            `)}
-          </ul>
+        <section id="attention-section" class=${attentionCollapsed ? "collapsed" : ""}>
+          <h2 class="section-title attn">
+            <button
+              id="attention-toggle"
+              class="section-toggle"
+              type="button"
+              aria-expanded=${attentionCollapsed ? "false" : "true"}
+              title=${attentionCollapsed ? "Show sessions needing attention" : "Hide sessions needing attention"}
+              onClick=${() => toggleGroup(ATTENTION_COLLAPSE_KEY)}
+            >
+              <span class="group-chevron" aria-hidden="true">${attentionCollapsed ? "▸" : "▾"}</span>
+              <span>Needs attention</span>
+              <span id="attention-num" class="attn-num">${attention.length}</span>
+            </button>
+          </h2>
+          ${!attentionCollapsed && html`
+            <ul id="attention-list" class="session-list">
+              ${attention.map((s) => html`
+                <${SessionRow} key=${s.id} session=${s} tasks=${tasks}
+                               active=${s.id === activeId} onSelect=${onSelect}
+                               onMark=${markSession} prefs=${prefs} />
+              `)}
+            </ul>
+          `}
         </section>
       `}
 

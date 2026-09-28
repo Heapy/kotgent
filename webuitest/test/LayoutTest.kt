@@ -776,9 +776,8 @@ private fun exercisePinnedSidebar(harness: Harness, page: Page, mobile: Boolean)
         waitForDrawer(page, open = true)
     }
 
-    assertThat(page.locator("#sidebar-head #attention-count")).hasCount(0)
-    assertThat(page.locator("#sidebar-scroll > #attention-count")).hasCount(1)
-    assertPinnedSidebarScroll(page, "#attention-count", if (mobile) "the sessions drawer" else "the sessions sidebar")
+    assertThat(page.locator("#sidebar-scroll > #all-section")).hasCount(1)
+    assertPinnedSidebarScroll(page, "#all-section", if (mobile) "the sessions drawer" else "the sessions sidebar")
 
     val tasks = page.locator(".nav-switch a:text-is('Tasks')")
     assertThat(tasks).isVisible()
