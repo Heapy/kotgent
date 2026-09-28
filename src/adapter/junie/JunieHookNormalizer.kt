@@ -10,8 +10,9 @@ import kotlinx.serialization.json.contentOrNull
 
 /**
  * Normalizes Junie hooks. `StopFailure` completes the turn because Junie's TUI has returned to idle.
- * `SessionStart` usually lacks an id; when present, Junie's non-UUID id uses ProviderSessionId's safe
- * charset. `SessionEnd` has no status and is treated as a normal exit.
+ * Junie 26.9.22 and 26.10.5 send `session_id` on `SessionStart`, including after `/new` and `/history`.
+ * Junie's non-UUID id uses ProviderSessionId's safe charset. `SessionEnd` has no status and is treated as a normal
+ * exit.
  */
 object JunieHookNormalizer {
     private const val FIELD_TOOL_NAME = "tool_name"

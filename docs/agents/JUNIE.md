@@ -17,8 +17,15 @@ kotgent resume <kotgent-session-id>
 ```
 
 Kotgent discovers the provider id after launch from Junie's session directory; it does not preallocate
-one. Resume uses `junie --resume --session-id <provider-session-id>`. The sidebar records the CLI version
-and discovers the model from Junie's saved events on a best-effort basis.
+one. Two Junie sessions started in the same project directory within the same second can be bound to
+each other's conversation. Resume uses `junie --resume --session-id <provider-session-id>`.
+
+The sidebar records the CLI version and discovers the model from Junie's saved events on a best-effort
+basis. When Junie installs an update while it launches, the recorded version is the one from before the
+update.
+
+When you switch chats inside Junie with `/new` or `/history`, the Kotgent session follows the switch, and
+resume opens the chat you used last. Verified with Junie 26.9.22 and 26.10.5.
 
 ## Import an existing conversation
 

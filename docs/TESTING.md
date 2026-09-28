@@ -183,6 +183,17 @@ project/local status commands, and a long turn through the assembled feature wer
 Cursor and Junie quota capture were not probed. These findings are version-specific evidence, not
 provider timing or compatibility guarantees.
 
+A live Junie check on 2026-09-28 started on Junie 26.9.22, which updated itself to 26.10.5 on the first
+resume. It confirmed launch and attach, the provider id bound by `SessionStart` at launch, running and
+ready transitions, rebinding after `/new` (26.9.22) and `/history` (26.10.5), and resume reopening the
+last chat used. A `PermissionRequest` produced `needs_approval` while Junie's own dialog stayed
+unanswered; the operator's answer ran the command, and the next tool call cleared the state. The hook's
+exit-1 fall-through warning reached only Junie's log file, not the TUI. Not exercised live: the trust
+prompt in an unseen project, `StopFailure`, the push notification, a daemon restart reconciling a dead
+session to `resumable`, import without `--cwd`, and starting from the Web UI's Junie card. The recorded
+model was `gpt-4.1-mini-2025-04-14` while the TUI showed "Junie Mix", so whether model capture picks the
+primary model rather than a helper is unconfirmed.
+
 Codex hook trust hashes were checked on 2026-09-24 against `hooks/list` from `codex app-server` for
 Codex CLI 0.146.1, 0.150.1, 0.153.0 and 0.156.1; the fixture values come from 0.156.1. The probe runs
 `codex -c '<hooks value>' app-server` over stdio, sends `initialize`, `initialized` and `hooks/list`, and
