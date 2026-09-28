@@ -503,7 +503,7 @@ older clients, just as `/hooks/*` remains an alias for hook scripts generated be
 `/api/v1/hooks/*`; newly generated scripts and all bundled clients use the versioned paths.
 
 The UI shows the session list with live state badges and a "Needs attention" queue (fed by the events
-WebSocket; its header collapses the queue to a count, remembered per device), and renders a session's
+WebSocket; its header collapses the queue to a count, remembered per browser), and renders a session's
 terminal with `xterm.js` over the terminal WebSocket (byte rendering,
 keyboard input, resize). Its installable PWA layout adds a mobile sidebar drawer, safe-area handling,
 terminal sizing from `visualViewport`, and a phone-only row for Esc, Tab, Shift-Tab, arrows, Ctrl, and
@@ -557,7 +557,7 @@ not count as activity, so `kotgent list`'s ordering is unaffected.
 on a group header marks that directory path, and every session shown under that header is listed while the
 mode is on, including sessions started there later. A pinned folder that the current grouping does not
 draw stays pinned but has no effect until it is drawn again. What is pinned is daemon-wide, so a phone and
-a laptop agree on it; whether a given screen is reduced is that device's own setting and survives a
+a laptop agree on it; whether a given screen is reduced is that browser's own setting and survives a
 reload. The mode hides the "needs attention" section altogether, even for pinned sessions; a pinned
 session still shows its state on its own row, and notifications still fire. The session you have selected
 keeps its row whatever its pin says, and the toggle never hides on the sessions screen. Turning the mode
@@ -566,7 +566,7 @@ dimmed pin that names the folder; clicking it pins the session on its own, so it
 folder is unpinned.
 The Done list ignores the mode entirely.
 
-The per-device notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
+The per-browser notifications toggle registers `/sw.js` and the browser's Web Push subscription. A
 `false → true` attention transition or an early weekly quota reset sends a payload-less push. The service
 worker fetches the authenticated `/api/v1/notifications` inbox under a ten-second deadline and shows
 current session-attention items plus reset notices from the past hour. Attention notices open or focus
@@ -684,7 +684,7 @@ Kotgent is deliberately focused. The current product boundary is:
 - **Session metadata & lifecycle polish.** Each session shows its agent CLI version and, best-effort, the
   model it is running; its name is an editable label (`kotgent session rename`, or the palette's rename
   dialog) that reaches every open client live and falls back to the automatic one when cleared; **Done**
-  stops an agent and archives it off the sidebar (restorable, history kept); and an opt-in, per-device
+  stops an agent and archives it off the sidebar (restorable, history kept); and an opt-in, per-browser
   **notification toggle** registers server-sent Web Push for attention edges and early weekly quota
   resets, with live-tab fallback for attention only.
 - **Shared usage meters.** The sidebar keeps available Claude and Codex usage bars visible, with expected
