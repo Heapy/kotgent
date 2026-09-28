@@ -8,6 +8,7 @@ export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
 export const TERMINAL_UNICODE_KEY = "kotgent.terminalUnicode.v1";
 export const SIDEBAR_COLLAPSED_KEY = "kotgent.sidebarCollapsed.v1";
 export const ADHD_MODE_KEY = "kotgent.adhdMode.v1";
+export const ATTENTION_COLLAPSED_KEY = "kotgent.attentionCollapsed.v1";
 export const MAX_GROUPING_LEVEL = 4;
 export const TERMINAL_FONT_SIZES = [11, 13, 16];
 export const DEFAULT_PREFS = {
@@ -137,5 +138,19 @@ export function loadAdhdMode() {
 export function persistAdhdMode(value) {
   try {
     window.localStorage.setItem(ADHD_MODE_KEY, value === true ? "true" : "false");
+  } catch (_) { /* best effort */ }
+}
+
+export function loadAttentionCollapsed() {
+  try {
+    return window.localStorage.getItem(ATTENTION_COLLAPSED_KEY) === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
+export function persistAttentionCollapsed(value) {
+  try {
+    window.localStorage.setItem(ATTENTION_COLLAPSED_KEY, value === true ? "true" : "false");
   } catch (_) { /* best effort */ }
 }

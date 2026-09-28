@@ -1,15 +1,18 @@
-// Preference sanitizing and the device-local ADHD-mode flag from resources/webui/lib/prefs.js. The
-// rules decide what a daemon response is allowed to publish and what a reload restores, and neither
-// touches the DOM or the network.
+// Preference sanitizing and the device-local ADHD-mode and attention-collapse flags from
+// resources/webui/lib/prefs.js. The rules decide what a daemon response is allowed to publish and what a
+// reload restores, and neither touches the DOM or the network.
 
 import { afterEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
   ADHD_MODE_KEY,
+  ATTENTION_COLLAPSED_KEY,
   DEFAULT_PREFS,
   loadAdhdMode,
+  loadAttentionCollapsed,
   persistAdhdMode,
+  persistAttentionCollapsed,
   sanitizePrefs,
   sanitizeServerPreferences,
 } from "../../resources/webui/lib/prefs.js";
@@ -128,5 +131,54 @@ describe("the ADHD-mode flag", () => {
 
   test("it reads as off where there is no window at all", () => {
     assert.equal(loadAdhdMode(), false);
+  });
+});
+
+describe("the attention-collapse flag", () => {
+  test("it is expanded until something stores it", () => {
+    withStorage(memoryStorage());
+
+    assert.equal(loadAttentionCollapsed(), false);
+  });
+
+  test("it round-trips through storage under its own key", () => {
+    const storage = memoryStorage();
+    withStorage(storage);
+
+    persistAttentionCollapsed(true);
+
+    assert.equal(storage.getItem(ATTENTION_COLLAPSED_KEY), "true");
+    assert.equal(loadAttentionCollapsed(), true);
+
+    persistAttentionCollapsed(false);
+
+    assert.equal(loadAttentionCollapsed(), false);
+  });
+
+  test("only an exact true is stored as collapsed", () => {
+    const storage = memoryStorage();
+    withStorage(storage);
+
+    persistAttentionCollapsed("yes");
+
+    assert.equal(loadAttentionCollapsed(), false, "a truthy non-boolean must not collapse the section");
+  });
+
+  test("a private window that blocks storage reads as expanded instead of throwing", () => {
+    withStorage({
+      getItem: () => {
+        throw new Error("storage is blocked");
+      },
+      setItem: () => {
+        throw new Error("storage is blocked");
+      },
+    });
+
+    assert.equal(loadAttentionCollapsed(), false);
+    assert.doesNotThrow(() => persistAttentionCollapsed(true));
+  });
+
+  test("it reads as expanded where there is no window at all", () => {
+    assert.equal(loadAttentionCollapsed(), false);
   });
 });

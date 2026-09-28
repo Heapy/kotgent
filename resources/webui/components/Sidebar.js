@@ -3,7 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks"
 import { UsageStrip } from "./UsageStrip.js";
 import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
 import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.js";
-import { groupingEnabled, loadCollapsedGroups, persistCollapsedGroups } from "../lib/prefs.js";
+import {
+  groupingEnabled,
+  loadAttentionCollapsed,
+  loadCollapsedGroups,
+  persistAttentionCollapsed,
+  persistCollapsedGroups,
+} from "../lib/prefs.js";
 import { FAILED, IDLE_STATUS, READY } from "../lib/readiness.js";
 import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
 import {
@@ -32,9 +38,6 @@ import {
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 
 const TASKS_PATH = routePath({ screen: SCREEN_TASKS, id: null });
-
-// Stored in the persisted folder-collapse set beside its directory and `done:` keys, which cannot equal it.
-const ATTENTION_COLLAPSE_KEY = "section:attention";
 
 /** Preserve real links; route only plain clicks in-app. */
 function NavSwitch({ screen, sessionsPath }) {
@@ -386,6 +389,7 @@ export function Sidebar({
   onToggleShowDone, onMarkSession, onMarkFolder, adhdMode = false, onToggleAdhdMode, onAnnounce,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
+  const [attentionCollapsed, setAttentionCollapsed] = useState(loadAttentionCollapsed);
   const [notifyOn, setNotifyOn] = useState(notifyEnabled());
   const notifyOnRef = useRef(notifyOn);
   const pushTransitionRef = useRef(Promise.resolve());
@@ -396,6 +400,7 @@ export function Sidebar({
   const repairPushRef = useRef(() => {});
   const adhdToggleRef = useRef(null);
   useEffect(() => { persistCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
+  useEffect(() => { persistAttentionCollapsed(attentionCollapsed); }, [attentionCollapsed]);
   const queuePushTransition = useCallback((transition, desired, operation, warning) => {
     // Local generations order this tab; the stored preference orders tabs.
     const isGenerationCurrent = () =>
@@ -555,7 +560,6 @@ export function Sidebar({
     () => (adhdMode ? [] : visible.filter((s) => isNeedsAttention(s.state))),
     [adhdMode, visible],
   );
-  const attentionCollapsed = collapsedGroups.has(ATTENTION_COLLAPSE_KEY);
   const grouped = groupingEnabled(prefs);
   const liveGroups = useMemo(
     () => grouped && !onTasks
@@ -680,7 +684,7 @@ export function Sidebar({
               type="button"
               aria-expanded=${attentionCollapsed ? "false" : "true"}
               title=${attentionCollapsed ? "Show sessions needing attention" : "Hide sessions needing attention"}
-              onClick=${() => toggleGroup(ATTENTION_COLLAPSE_KEY)}
+              onClick=${() => setAttentionCollapsed((c) => !c)}
             >
               <span class="group-chevron" aria-hidden="true">${attentionCollapsed ? "▸" : "▾"}</span>
               <span>Needs attention</span>

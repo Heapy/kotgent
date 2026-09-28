@@ -83,6 +83,7 @@ class SidebarTest {
             assertThat(page.locator("#attention-list")).hasCount(0)
             assertThat(page.locator("#attention-num")).hasText("1")
             assertThat(page.locator("#session-list .session-row[data-id='s-gamma']")).hasCount(1)
+            page.waitForFunction("() => localStorage.getItem('kotgent.attentionCollapsed.v1') === 'true'")
 
             page.reload()
 
