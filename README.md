@@ -335,7 +335,10 @@ and restart the daemon service, use the repository's installer (with `~/.local/b
 ./install-local.sh
 ```
 
-Pass `--no-daemon` when you want to stage the source build without replacing the running daemon.
+Pass `--no-daemon` when you want to stage the source build without replacing the running daemon. Pass
+`--webui-only` after a JavaScript, CSS or HTML change: it replaces only the installed Web UI files, with
+no build and no daemon restart, and a browser reload picks them up. It needs a full install first, and
+the installed binary must already serve every API the new Web UI calls.
 
 Linux source builds use Ubuntu 22.04 and need `libsqlite3-dev`, `libstdc++-11-dev`, and
 `zlib1g-dev` in addition to the runtime dependencies. The build links against Ubuntu’s glibc

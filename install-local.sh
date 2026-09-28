@@ -14,6 +14,10 @@
 # `kotgent` command. `install` rewrites the service definition to the staged binary and
 # restarts the daemon.
 #
+# `--webui-only` replaces just the installed Web UI tree, with no build and no restart. The daemon reads
+# assets from disk per request, so a browser reload picks them up. Use it only when the installed binary
+# already serves the API that the new Web UI calls.
+#
 # Revert to the released build:
 #   rm -f ~/.local/bin/kotgent && rm -rf ~/.local/kotgent && /opt/homebrew/bin/kotgent install
 
@@ -27,16 +31,36 @@ bin_dir="${KOTGENT_LOCAL_BIN:-$HOME/.local/bin}"
 libexec="$prefix/libexec"
 
 skip_install=0
+webui_only=0
 for arg in "$@"; do
     case "$arg" in
         --no-daemon) skip_install=1 ;;
+        --webui-only) webui_only=1 ;;
         *)
             printf 'install-local.sh: unknown option %s\n' "$arg" >&2
-            printf 'usage: ./install-local.sh [--no-daemon]\n' >&2
+            printf 'usage: ./install-local.sh [--no-daemon | --webui-only]\n' >&2
             exit 2
             ;;
     esac
 done
+
+if [[ $webui_only -eq 1 ]]; then
+    webui="$libexec/resources/webui"
+    [[ -x "$libexec/kotgent" ]] || {
+        printf 'install-local.sh: nothing installed at %s; run ./install-local.sh first\n' "$libexec" >&2
+        exit 1
+    }
+    printf '==> replacing %s\n' "$webui"
+    # Swap a complete copy in by rename: index.html digests the tree it is served from, and a request
+    # during an in-place copy would pin a half-updated tree under an immutable revision URL.
+    rm -rf "$webui.new" "$webui.old"
+    cp -R resources/webui "$webui.new"
+    [[ -e "$webui" ]] && mv "$webui" "$webui.old"
+    mv "$webui.new" "$webui"
+    rm -rf "$webui.old"
+    printf '==> reload the browser to pick it up; the daemon keeps running\n'
+    exit 0
+fi
 
 printf '==> building release binary\n'
 case "$(uname -s)/$(uname -m)" in
