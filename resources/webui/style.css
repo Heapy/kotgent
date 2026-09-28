@@ -261,8 +261,8 @@ textarea:focus-visible {
   margin: 12px var(--list-inset) 0;
   padding: 0 3px 3px;
 }
-#attention-section .section-title { margin: 10px 11px 4px; }
-#attention-section.collapsed .section-title { margin-bottom: 7px; }
+#attention-section .section-title { margin: 6px 11px 0; }
+#attention-section.collapsed .section-title { margin-bottom: 3px; }
 #attention-list .session-row { margin-inline: 0; }
 .attn-num {
   background: var(--attn-bg);
@@ -347,6 +347,7 @@ textarea:focus-visible {
 .section-toggle {
   gap: 6px;
   letter-spacing: inherit;
+  min-height: 24px;
   text-transform: inherit;
 }
 .group-title {
