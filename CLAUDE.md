@@ -142,6 +142,9 @@ the common workflow and links to those guides; implementation invariants belong 
 - Drain `incoming` in every WebSocket handler, including handlers that only send frames.
 - The service worker remains a classic, network-only worker at `/sw.js`; do not add module imports or an
   offline shell. Root shell and worker responses must revalidate.
+- A `/_v/<rev>/` asset is cached as immutable only when `<rev>` is the last served shell's revision and
+  the served bytes match the digest that revision recorded for the path; anything else revalidates. The
+  installer's directory swap does not provide this guarantee.
 - `resources/webui/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
 - Keep terminal reattachment decisions in `resources/webui/lib/reattach.js`; `app.js` supplies current

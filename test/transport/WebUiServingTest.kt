@@ -279,6 +279,11 @@ class WebUiServingTest {
         )
         val stale = ctx.get("/_v/0123456789ab/app.js")
         assertEquals(HttpStatusCode.OK, stale.status, "an older revision's URL still serves its asset")
+        assertEquals(
+            "no-cache",
+            stale.headers[HttpHeaders.CacheControl],
+            "a well-formed revision the tree no longer has must revalidate",
+        )
 
         val bogus = ctx.get("/_v/${WEBUI_REV_PLACEHOLDER}/app.js")
         assertEquals(HttpStatusCode.OK, bogus.status, "a malformed revision still serves the asset")
@@ -303,6 +308,52 @@ class WebUiServingTest {
         assertFalse(isRevToken("__REV__"), "the placeholder is not a revision")
         assertFalse(isRevToken("0123456789AB"), "a revision is lowercase hex")
         assertFalse(isRevToken("0123456789abc"), "a revision is exactly $WEBUI_REV_LENGTH characters")
+    }
+
+    @Test
+    fun aRevisionedAssetIsPinnedOnlyWithTheBytesItsRevisionRecorded() {
+        val dir = makeTempDir()
+        try {
+            writeFile("$dir/index.html", "<script type=\"module\" src=\"/_v/$WEBUI_REV_PLACEHOLDER/a.js\"></script>")
+            writeFile("$dir/a.js", "export const a = 1;\n")
+            writeFile("$dir/b.js", "export const b = 1;\n")
+            val expected = webUiRevision(dir)
+            withServer(webUiDir = dir) { ctx ->
+                assertEquals(
+                    "no-cache",
+                    ctx.get("/_v/$expected/b.js").headers[HttpHeaders.CacheControl],
+                    "before any shell is served no revision is known, so nothing is pinned",
+                )
+
+                val rev = revisionOf(ctx.get("/").bodyAsText())
+                assertEquals(expected, rev, "the shell carries the tree's revision")
+                assertEquals(
+                    IMMUTABLE_CACHE_CONTROL,
+                    ctx.get("/_v/$rev/b.js").headers[HttpHeaders.CacheControl],
+                    "an asset whose bytes match the shell's revision is pinned",
+                )
+
+                writeFile("$dir/a.js", "export const a = 2;\n")
+                val changed = ctx.get("/_v/$rev/a.js")
+                assertEquals(HttpStatusCode.OK, changed.status, "a file changed under the shell is still served")
+                assertEquals("export const a = 2;\n", changed.bodyAsText(), "the current bytes are served")
+                assertEquals(
+                    "no-cache",
+                    changed.headers[HttpHeaders.CacheControl],
+                    "bytes the shell's revision never had must not be pinned under it",
+                )
+                assertEquals(
+                    IMMUTABLE_CACHE_CONTROL,
+                    ctx.get("/_v/$rev/b.js").headers[HttpHeaders.CacheControl],
+                    "an unchanged file stays pinned under the same revision",
+                )
+            }
+        } finally {
+            unlink("$dir/index.html")
+            unlink("$dir/a.js")
+            unlink("$dir/b.js")
+            rmdir(dir)
+        }
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -438,7 +489,7 @@ class WebUiServingTest {
             client.get("http://127.0.0.1:$port$path", block)
     }
 
-    private fun withServer(block: suspend (Ctx) -> Unit) = runBlocking {
+    private fun withServer(webUiDir: String = locateWebUiDir(), block: suspend (Ctx) -> Unit) = runBlocking {
         withTimeout(40.seconds) {
             val eventStore = FakeEventStore()
             val preferencesStore = FakePreferencesStore()
@@ -467,7 +518,7 @@ class WebUiServingTest {
                 tokens = TokenHolder(token),
                 terminalBridgeFactory = { _, _ -> error("terminal bridge is not used in the serving test") },
                 currentVersion = currentVersion,
-                webUiDir = locateWebUiDir(),
+                webUiDir = webUiDir,
                 port = 0,
             ).start()
             val client = HttpClient(CIO)

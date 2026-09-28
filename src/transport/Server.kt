@@ -46,6 +46,8 @@ import kotlinx.serialization.json.Json
 import platform.posix.F_OK
 import platform.posix.access
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Clock
 
@@ -271,16 +273,23 @@ class KotgentServer(
 class ServerBindException(message: String, cause: Throwable?) :
     RuntimeException("failed to bind the kotgent server: $message", cause)
 
+@OptIn(ExperimentalAtomicApi::class)
 fun Route.staticWebUi(dir: String?) {
     if (dir == null) return
-    get("/") { serveStaticFile(dir, "index.html") }
+    val lastShell = AtomicReference<WebUiSnapshot?>(null)
+    get("/") { serveStaticFile(dir, "index.html", lastShell) }
     get("/{path...}") {
         val rel = call.parameters.getAll("path").orEmpty().joinToString("/")
-        serveStaticFile(dir, rel.ifBlank { "index.html" })
+        serveStaticFile(dir, rel.ifBlank { "index.html" }, lastShell)
     }
 }
 
-private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: String, rel: String) {
+@OptIn(ExperimentalAtomicApi::class)
+private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
+    dir: String,
+    rel: String,
+    lastShell: AtomicReference<WebUiSnapshot?>,
+) {
     // Strip the cache prefix before traversal validation so `_v/<rev>/../../…` cannot bypass it.
     val [rev, stripped] = stripRevPrefix(rel)
     if (stripped.contains("..") || stripped.startsWith("/")) {
@@ -295,11 +304,14 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(dir: S
         return
     }
     val body = if (path == "index.html") {
-        bytes.decodeToString().replace(WEBUI_REV_PLACEHOLDER, webUiRevision(dir)).encodeToByteArray()
+        val snapshot = webUiSnapshot(dir)
+        lastShell.store(snapshot)
+        bytes.decodeToString().replace(WEBUI_REV_PLACEHOLDER, snapshot.revision).encodeToByteArray()
     } else {
         bytes
     }
-    val immutable = rev != null && isRevToken(rev) && !neverImmutable(path)
+    val immutable = rev != null && isRevToken(rev) && !neverImmutable(path) &&
+        lastShell.load()?.recorded(rev, path, bytes) == true
     call.response.headers.append(
         HttpHeaders.CacheControl,
         if (immutable) IMMUTABLE_CACHE_CONTROL else "no-cache",

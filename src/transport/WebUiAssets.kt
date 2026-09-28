@@ -16,17 +16,26 @@ private const val MAX_WALK_DEPTH: Int = 8
 
 const val IMMUTABLE_CACHE_CONTROL: String = "max-age=31536000, immutable"
 
-fun webUiRevision(dir: String): String {
-    val lines = ArrayList<String>()
-    collectFileDigests(dir, rel = "", depth = 0, out = lines)
-    if (lines.isEmpty()) {
-        return hex(sha256(readFileBytesOrNull("$dir/index.html") ?: ByteArray(0))).take(WEBUI_REV_LENGTH)
-    }
-    lines.sort()
-    return hex(sha256(lines.joinToString(separator = "").encodeToByteArray())).take(WEBUI_REV_LENGTH)
+class WebUiSnapshot(val revision: String, private val fileDigests: Map<String, String>) {
+    fun recorded(rev: String, path: String, bytes: ByteArray): Boolean =
+        rev == revision && fileDigests[path]?.let { it == hex(sha256(bytes)) } == true
 }
 
-private fun collectFileDigests(root: String, rel: String, depth: Int, out: MutableList<String>) {
+fun webUiSnapshot(dir: String): WebUiSnapshot {
+    val digests = HashMap<String, String>()
+    collectFileDigests(dir, rel = "", depth = 0, out = digests)
+    if (digests.isEmpty()) {
+        val fallback = hex(sha256(readFileBytesOrNull("$dir/index.html") ?: ByteArray(0))).take(WEBUI_REV_LENGTH)
+        return WebUiSnapshot(fallback, emptyMap())
+    }
+    val lines = digests.map { "${it.key} ${it.value}\n" }.sorted()
+    val revision = hex(sha256(lines.joinToString(separator = "").encodeToByteArray())).take(WEBUI_REV_LENGTH)
+    return WebUiSnapshot(revision, digests)
+}
+
+fun webUiRevision(dir: String): String = webUiSnapshot(dir).revision
+
+private fun collectFileDigests(root: String, rel: String, depth: Int, out: MutableMap<String, String>) {
     // Bound traversal against symlink cycles; the shipped asset tree is much shallower.
     if (depth > MAX_WALK_DEPTH) return
     val dir = if (rel.isEmpty()) root else "$root/$rel"
@@ -37,13 +46,13 @@ private fun collectFileDigests(root: String, rel: String, depth: Int, out: Mutab
             collectFileDigests(root, childRel, depth + 1, out)
         } else {
             val bytes = readFileBytesOrNull(childAbs) ?: continue
-            out.add("$childRel ${hex(sha256(bytes))}\n")
+            out[childRel] = hex(sha256(bytes))
         }
     }
 }
 
 fun stripRevPrefix(rel: String): Pair<String?, String> {
-    // Old revisions remain servable across a shell/assets update race; only caching validates token shape.
+    // Old revisions remain servable across a shell/assets update race; only caching checks the bytes against them.
     val marker = "$WEBUI_REV_PREFIX/"
     if (!rel.startsWith(marker)) return null to rel
     val afterPrefix = rel.substring(marker.length)
@@ -52,7 +61,6 @@ fun stripRevPrefix(rel: String): Pair<String?, String> {
     return afterPrefix.substring(0, slash) to afterPrefix.substring(slash + 1)
 }
 
-// Prevent a failed `__REV__` substitution from making one permanently immutable stale URL.
 fun isRevToken(value: String): Boolean =
     value.length == WEBUI_REV_LENGTH && value.all { it in '0'..'9' || it in 'a'..'f' }
 
