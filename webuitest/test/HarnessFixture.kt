@@ -67,9 +67,8 @@ class Harness(scenario: String) : AutoCloseable {
     val baseUrl: String
 
     init {
-        configurePlaywrightDefaults()
         // A cold Playwright download can outlive the harness watchdog, so install before spawning it.
-        installBrowserBundleOnce()
+        preparePlaywrightOnce()
         val binary = harnessBinary()
         val webUiDir = repoRoot.resolve(WEB_UI_RELATIVE).toAbsolutePath().normalize()
         if (!Files.isDirectory(webUiDir)) {
@@ -549,19 +548,19 @@ private const val WATCHDOG_MILLIS = 300_000L
 
 private const val ASSERTION_TIMEOUT_MILLIS = 15_000.0
 
-private val playwrightConfigured = AtomicBoolean(false)
+private val playwrightSetup = Any()
 
-private fun configurePlaywrightDefaults() {
-    if (playwrightConfigured.compareAndSet(false, true)) {
+private var playwrightReady = false
+
+// Serialized rather than flagged: a flag alone lets a second worker thread launch Chromium while the
+// first is still installing the bundle, and assert with the default timeout before it was raised.
+private fun preparePlaywrightOnce() {
+    synchronized(playwrightSetup) {
+        if (playwrightReady) return
         PlaywrightAssertions.setDefaultAssertionTimeout(ASSERTION_TIMEOUT_MILLIS)
+        Playwright.create().close()
+        playwrightReady = true
     }
-}
-
-private val browserBundleInstalled = AtomicBoolean(false)
-
-private fun installBrowserBundleOnce() {
-    if (!browserBundleInstalled.compareAndSet(false, true)) return
-    Playwright.create().close()
 }
 
 // JVM test working directories are not fixed by the toolchain.

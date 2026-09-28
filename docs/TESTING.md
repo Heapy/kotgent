@@ -569,8 +569,10 @@ Two mechanics of the current gate are worth stating, because both are easy to ge
 tier drives `webuicheck`, a separate executable that no test task links, so `./kotlin build` must run before
 `./kotlin test`; a missing binary is designed to fail loudly rather than skip. And the tiers already run
 concurrently, so the browser tier's cost to the gate is the difference between it and the native suite
-rather than its own duration. Per-module test tasks remain the
-fast local loop, and neither replaces the aggregate.
+rather than its own duration. Inside the browser tier, `webuitest/testResources/junit-platform.properties`
+runs test classes four at a time while the methods of one class share a thread: every test owns its own
+`webuicheck` process, port, ticket and Chromium, and Playwright objects belong to the thread that created
+them. Per-module test tasks remain the fast local loop, and neither replaces the aggregate.
 
 ## Definition of done for a behavior change
 
