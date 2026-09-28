@@ -17,6 +17,7 @@ import io.kotgent.push.UsageResetNotifier
 import io.kotgent.sys.installShutdownSignals
 import io.kotgent.sys.pendingShutdownSignal
 import io.kotgent.sys.shutdownSignalName
+import io.kotgent.tmux.ProcessException
 import io.kotgent.tmux.ProcessRunner
 import io.kotgent.tmux.TmuxHookConfig
 import io.kotgent.transport.KotgentServer
@@ -107,7 +108,7 @@ object Commands {
             print = print,
             issueTicket = api::issueTicket,
             display = browserDisplayDetector(::processEnv),
-            open ={ url -> ProcessRunner.run(browserOpenCommand(url)).exitCode },
+            open = { url -> ProcessRunner.run(browserOpenCommand(url)).exitCode },
             stdout = ::println,
             stderr = ::eprintln,
         )
@@ -440,6 +441,7 @@ fun groupLoginCode(code: String): String {
 
 /**
  * Normal mode opens only the credential-free form; [print] intentionally emits the credentialed URL.
+ * The form and code print before [open] runs because xdg-open waits for a browser it starts in the foreground.
  */
 suspend fun runWebCommand(
     print: Boolean,
@@ -457,19 +459,23 @@ suspend fun runWebCommand(
     }
 
     val formUrl = ticket.localUrl.substringBefore('#')
-    if (!display.hasDisplay()) {
-        stderr("no graphical display to launch a browser on; open this form yourself:")
-        stdout(formUrl)
-    } else {
-        val exitCode = open(formUrl)
-        if (exitCode == 0) {
-            stdout("opening the kotgent sign-in form in your browser…")
-        } else {
-            stderr("could not launch a browser (open exited $exitCode); open this form yourself:")
-            stdout(formUrl)
-        }
-    }
+    stdout("sign-in form: $formUrl")
+    ticket.publicUrl?.let { stdout("          or: ${it.substringBefore('#')}") }
     stdout(renderSignInCode(ticket))
+    if (!display.hasDisplay()) {
+        stderr("no graphical display or BROWSER to launch a browser with; open the form above yourself.")
+        return 0
+    }
+
+    stdout("opening the kotgent sign-in form in your browser…")
+    val failure = try {
+        val exitCode = open(formUrl)
+        if (exitCode == 0) return 0
+        "open exited $exitCode"
+    } catch (e: ProcessException) {
+        e.message
+    }
+    stderr("could not launch a browser ($failure); open the form above yourself.")
     return 0
 }
 

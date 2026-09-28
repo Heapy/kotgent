@@ -112,9 +112,9 @@ existing tmux sessions.
 
 For an unattended server, optionally enable the user manager after logout with
 `loginctl enable-linger "$USER"`. Installation does not change lingering. Without a systemd user
-manager, run `kotgent daemon` in the foreground. `kotgent web` launches a browser through `xdg-open`
-from the `xdg-utils` package only when `DISPLAY`, `WAYLAND_DISPLAY` or `BROWSER` is set; on a headless
-host it prints the sign-in form URL and code instead.
+manager, run `kotgent daemon` in the foreground. `kotgent web` prints the sign-in form URL and code, then
+launches a browser through `xdg-open` from the `xdg-utils` package when `DISPLAY`, `WAYLAND_DISPLAY` or
+`BROWSER` is set.
 
 ## Cloudflare Tunnel
 
@@ -484,12 +484,13 @@ kotgent web --print    # print a credentialed login URL for scripting or copying
 ```
 
 No master token is copied into a URL. `kotgent web` issues one **single-use, 8-character Crockford
-Base32 code** (40 bits, held in memory for five minutes), opens the bare
-`http://127.0.0.1:<port>/auth` form, and prints the still-valid code. Type it into that browser or an
-already-installed PWA. On Linux without `DISPLAY`, `WAYLAND_DISPLAY` or `BROWSER`, it prints the form URL
-instead of launching a browser: `xdg-open` would otherwise fall back to a terminal browser that hangs. The
-exchange is protected by a daemon-wide rolling budget of ten failed attempts per minute in addition to
-the short lifetime and single-use rule.
+Base32 code** (40 bits, held in memory for five minutes). It prints the bare
+`http://127.0.0.1:<port>/auth` form URL, the public `/auth` form URL when `public-url` is set, and the
+still-valid code, and then opens the local form in a browser. Type the code into that form or an
+already-installed PWA. On Linux without `DISPLAY`, `WAYLAND_DISPLAY` or `BROWSER`, it launches no browser:
+`xdg-open` would otherwise fall back to a terminal browser that hangs. The exchange is protected by a
+daemon-wide rolling budget of ten failed attempts per minute in addition to the short lifetime and
+single-use rule.
 
 `kotgent web --print` is the non-interactive form: stdout contains exactly
 `http://127.0.0.1:<port>/auth#ticket=…`, while the equivalent grouped code and human hint go to stderr,

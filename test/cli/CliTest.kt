@@ -6,6 +6,7 @@ import io.kotgent.daemon.CODEX_AGENT_KIND
 import io.kotgent.daemon.DuplicateImportException
 import io.kotgent.daemon.JUNIE_AGENT_KIND
 import io.kotgent.daemon.SHELL_AGENT_KIND
+import io.kotgent.tmux.ProcessException
 import io.kotgent.transport.API_PREFIX
 import io.kotgent.transport.AUTH_PAGE_PATH
 import io.kotgent.transport.AUTH_ROTATE_PATH
@@ -597,9 +598,57 @@ class CliTest {
 
         assertEquals(0, exit)
         assertEquals(listOf("http://127.0.0.1:27508/auth"), opened, "normal mode opens no ticket fragment")
-        assertTrue(stdout.any { "opening" in it })
-        assertTrue(stdout.any { "A1B2 C3D4" in it }, "the still-valid code is printed")
+        assertEquals(webFormLines(ticket) + WEB_OPENING, stdout)
         assertTrue(stderr.isEmpty())
+    }
+
+    @Test
+    fun webPrintsTheFormAndCodeBeforeTheOpenerCanWaitOnTheBrowser() = runBlocking {
+        val ticket = webTicket()
+        val stdout = mutableListOf<String>()
+        var printedBeforeOpen = emptyList<String>()
+
+        runWebCommand(
+            print = false,
+            issueTicket = { ticket },
+            display = { true },
+            open = { printedBeforeOpen = stdout.toList(); 0 },
+            stdout = stdout::add,
+            stderr = {},
+        )
+
+        assertEquals(webFormLines(ticket) + WEB_OPENING, printedBeforeOpen)
+    }
+
+    @Test
+    fun webPrintsThePublicFormOnlyWhenConfiguredAndNeverTheTicketFragment() = runBlocking {
+        val withPublic = mutableListOf<String>()
+        val localOnly = mutableListOf<String>()
+        val localTicket = webTicket().copy(publicUrl = null)
+
+        runWebCommand(
+            print = false,
+            issueTicket = { webTicket() },
+            display = { false },
+            open = { 0 },
+            stdout = withPublic::add,
+            stderr = {},
+        )
+        runWebCommand(
+            print = false,
+            issueTicket = { localTicket },
+            display = { false },
+            open = { 0 },
+            stdout = localOnly::add,
+            stderr = {},
+        )
+
+        assertEquals(
+            listOf("sign-in form: http://127.0.0.1:27508/auth", "          or: https://kotgent.example.com/auth"),
+            withPublic.take(2),
+        )
+        assertTrue(withPublic.none { "#ticket" in it }, "normal mode stays credential-free")
+        assertEquals(listOf("sign-in form: http://127.0.0.1:27508/auth", renderSignInCode(localTicket)), localOnly)
     }
 
     @Test
@@ -618,9 +667,34 @@ class CliTest {
         )
 
         assertEquals(0, exit)
-        assertEquals("http://127.0.0.1:27508/auth", stdout.first(), "fallback cannot consume the code")
-        assertTrue(stdout.last().contains("A1B2 C3D4"))
-        assertTrue(stderr.single().contains("open exited 7"))
+        assertEquals(webFormLines(ticket) + WEB_OPENING, stdout)
+        assertEquals(listOf("could not launch a browser (open exited 7); open the form above yourself."), stderr)
+    }
+
+    @Test
+    fun webOpenerThatCannotStartIsAFailedLaunchNotAnUnreachableDaemon() = runBlocking {
+        val ticket = webTicket()
+        val stdout = mutableListOf<String>()
+        val stderr = mutableListOf<String>()
+
+        val exit = runWebCommand(
+            print = false,
+            issueTicket = { ticket },
+            display = { true },
+            open = { throw ProcessException("mkstemp failed for '/nope/kotgent-proc-1-XXXXXX' (errno=2)") },
+            stdout = stdout::add,
+            stderr = stderr::add,
+        )
+
+        assertEquals(0, exit)
+        assertEquals(webFormLines(ticket) + WEB_OPENING, stdout)
+        assertEquals(
+            listOf(
+                "could not launch a browser (mkstemp failed for '/nope/kotgent-proc-1-XXXXXX' (errno=2)); " +
+                    "open the form above yourself.",
+            ),
+            stderr,
+        )
     }
 
     @Test
@@ -641,9 +715,11 @@ class CliTest {
 
         assertEquals(0, exit)
         assertTrue(opened.isEmpty(), "no opener runs without a display")
-        assertEquals("http://127.0.0.1:27508/auth", stdout.first(), "the printed form cannot consume the code")
-        assertTrue(stdout.last().contains("A1B2 C3D4"))
-        assertTrue(stderr.single().contains("no graphical display"))
+        assertEquals(webFormLines(ticket), stdout, "no line claims a browser is opening")
+        assertEquals(
+            listOf("no graphical display or BROWSER to launch a browser with; open the form above yourself."),
+            stderr,
+        )
     }
 
 
@@ -1049,6 +1125,12 @@ class CliTest {
         expiresAt = 42,
     )
 
+    private fun webFormLines(ticket: TicketResponse) = listOf(
+        "sign-in form: http://127.0.0.1:27508/auth",
+        "          or: https://kotgent.example.com/auth",
+        renderSignInCode(ticket),
+    )
+
     private class FakeTty(private val size: WinSize = WinSize(80, 24)) : LocalTty {
         val events = mutableListOf<String>()
         override fun enterRaw() { events.add("enter") }
@@ -1058,5 +1140,6 @@ class CliTest {
 
     private companion object {
         const val PROVIDER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        const val WEB_OPENING = "opening the kotgent sign-in form in your browser…"
     }
 }
