@@ -23,11 +23,22 @@ class DisplayDetectorTest {
     }
 
     @Test
-    fun linuxLaunchesABrowserOnlyUnderAnXServerOrWayland() {
+    fun aBrowserChoiceNeedsANonEmptyBrowserVariable() {
+        assertTrue(BrowserVariableDetector(env("BROWSER" to "/usr/local/bin/code-browser")).hasDisplay())
+        assertFalse(BrowserVariableDetector(env("BROWSER" to "")).hasDisplay())
+        assertFalse(BrowserVariableDetector(env("DISPLAY" to ":0")).hasDisplay())
+    }
+
+    @Test
+    fun linuxLaunchesABrowserOnlyUnderAnXServerWaylandOrABrowserChoice() {
         assertFalse(browserDisplayDetector(env(), HostOs.LINUX).hasDisplay())
-        assertFalse(browserDisplayDetector(env("DISPLAY" to "", "WAYLAND_DISPLAY" to ""), HostOs.LINUX).hasDisplay())
+        assertFalse(
+            browserDisplayDetector(env("DISPLAY" to "", "WAYLAND_DISPLAY" to "", "BROWSER" to ""), HostOs.LINUX)
+                .hasDisplay(),
+        )
         assertTrue(browserDisplayDetector(env("DISPLAY" to ":0"), HostOs.LINUX).hasDisplay())
         assertTrue(browserDisplayDetector(env("WAYLAND_DISPLAY" to "wayland-0"), HostOs.LINUX).hasDisplay())
+        assertTrue(browserDisplayDetector(env("BROWSER" to "wslview"), HostOs.LINUX).hasDisplay())
     }
 
     @Test
