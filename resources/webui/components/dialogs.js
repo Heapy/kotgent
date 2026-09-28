@@ -1412,7 +1412,7 @@ export function HelpDialog({ onClose }) {
             <h3>States</h3>
             <dl class="help-list">
               ${STATES.map(([label, cls, description]) => html`
-                <dt key=${label}><span class=${"badge " + cls}>${label}</span></dt>
+                <dt key=${label}><span class=${"pill badge " + cls}>${label}</span></dt>
                 <dd key=${label + "-d"}>${description}</dd>
               `)}
             </dl>

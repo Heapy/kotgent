@@ -164,7 +164,7 @@ function ProjectRow({ project, open, active, onSelect }) {
         <div class="project-sub">${project.path || ""}</div>
       </div>
       ${open > 0 &&
-        html`<span class="project-count" title=${open + " open task(s)"}>${open}</span>`}
+        html`<span class="pill project-count" title=${open + " open task(s)"}>${open}</span>`}
     </li>
   `;
 }
@@ -273,7 +273,7 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
         <${TaskBadge} session=${session} tasks=${tasks} />
       </div>
       ${session.unread > 0 &&
-        html`<span class="unread-pill" title=${session.unread + " unread event(s)"}>
+        html`<span class="pill unread-pill" title=${session.unread + " unread event(s)"}>
           ${session.unread}
         </span>`}
       ${pin && html`
@@ -294,9 +294,13 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
             title="Bring this session back to the sidebar"
             onClick=${(e) => { e.stopPropagation(); onRestore(session.id); }}
           >Restore</button>`
-        : html`<span class=${"badge " + badge.cls}>${badge.label}</span>`}
+        : html`<span class=${"pill badge " + badge.cls}>${badge.label}</span>`}
     </li>
   `;
+}
+
+function Chevron({ collapsed }) {
+  return html`<span class="group-chevron" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>`;
 }
 
 function groupNeedsAttention(group) {
@@ -324,7 +328,7 @@ function SessionGroup({
           title=${(collapsed ? "Expand " : "Collapse ") + (group.path || group.label)}
           onClick=${() => onToggle(collapseKey)}
         >
-          <span class="group-chevron" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>
+          <${Chevron} collapsed=${collapsed} />
           <span class="group-title" title=${group.path || group.label}>${group.label}</span>
           <span class="group-count">${group.sessionCount}</span>
           ${hidingAttention &&
@@ -680,15 +684,15 @@ export function Sidebar({
           <h2 class="section-title attn">
             <button
               id="attention-toggle"
-              class="section-toggle"
+              class="group-toggle section-toggle"
               type="button"
               aria-expanded=${attentionCollapsed ? "false" : "true"}
               title=${attentionCollapsed ? "Show sessions needing attention" : "Hide sessions needing attention"}
               onClick=${() => setAttentionCollapsed((c) => !c)}
             >
-              <span class="group-chevron" aria-hidden="true">${attentionCollapsed ? "▸" : "▾"}</span>
+              <${Chevron} collapsed=${attentionCollapsed} />
               <span>Needs attention</span>
-              <span id="attention-num" class="attn-num">${attention.length}</span>
+              <span id="attention-num" class="pill attn-num">${attention.length}</span>
             </button>
           </h2>
           ${!attentionCollapsed && html`

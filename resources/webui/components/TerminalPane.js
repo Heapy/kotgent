@@ -533,7 +533,7 @@ export function TerminalPane({
         >${sidebarCollapsed ? "›" : "‹"}</button>
         <div class="terminal-identity">
           <span id="terminal-title">${session ? displayName(session) : "No session selected"}</span>
-          <span id="terminal-state" class=${badge ? "badge " + badge.cls : "badge"}>
+          <span id="terminal-state" class=${badge ? "pill badge " + badge.cls : "pill badge"}>
             ${badge ? badge.label : ""}
           </span>
           <${HeaderTaskBadge} session=${session} tasks=${tasks} />
