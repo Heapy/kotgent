@@ -4,7 +4,6 @@ import com.microsoft.playwright.BrowserContext
 import com.microsoft.playwright.Locator
 import com.microsoft.playwright.Page
 import com.microsoft.playwright.Route
-import com.microsoft.playwright.assertions.LocatorAssertions
 import com.microsoft.playwright.assertions.PlaywrightAssertions.assertThat
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.regex.Pattern
@@ -867,7 +866,12 @@ class SidebarTest {
 
     @Test
     fun theUnreadBadgeIsTheDaemonsNumberAndALostMarkReadHealsItself() {
-        signedIn(ATTENTION_SCENARIO, "sidebar-unread") { harness, _, page ->
+        signedIn(
+            ATTENTION_SCENARIO,
+            "sidebar-unread",
+            initScripts = listOf(FRAME_RECORDER, FETCH_RECORDER_SCRIPT),
+            fakeClock = true,
+        ) { harness, _, page ->
             val attempts = AtomicInteger()
             val bodies = CopyOnWriteArrayList<String>()
             val answer = AtomicReference(READ_DEFINITE)
@@ -886,7 +890,7 @@ class SidebarTest {
             )
 
             assertThat(pill).hasText("3")
-            page.waitForTimeout(RETRY_WINDOW_MILLIS)
+            page.clock().runFor(RETRY_WINDOW_MILLIS)
             assertEquals(
                 1,
                 attempts.get(),
@@ -897,12 +901,15 @@ class SidebarTest {
             harness.send("emit $UNREAD_SESSION ready")
             page.waitForCondition { attempts.get() >= 2 }
             val beforeWindow = attempts.get()
-            page.waitForTimeout(RETRY_WINDOW_MILLIS)
+            repeat(2) { retry ->
+                page.clock().runFor(RETRY_WINDOW_MILLIS)
+                page.waitForCondition { attempts.get() > beforeWindow + retry }
+            }
             val retries = attempts.get() - beforeWindow
             assertTrue(
                 retries >= 2,
-                "an unreachable daemon is transient, so the loop keeps trying: expected at least 2 retries " +
-                    "in ${RETRY_WINDOW_MILLIS.toLong()}ms, saw $retries",
+                "an unreachable daemon is transient, so the loop keeps trying: expected a retry within " +
+                    "${RETRY_WINDOW_MILLIS}ms twice over, saw $retries",
             )
             assertThat(pill).hasText("3")
             assertEquals(
@@ -911,19 +918,24 @@ class SidebarTest {
                 "every retry re-sends the newest seq",
             )
 
-            val beforeBurst = attempts.get()
+            val fetchesBefore = readFetches(page, UNREAD_SESSION)
+            val revBefore = newestRevNaming(page, UNREAD_SESSION)
             repeat(TRIGGER_BURST) { i ->
                 harness.send("emit $UNREAD_SESSION ${if (i % 2 == 0) "running" else "ready"}")
             }
-            page.waitForTimeout(BURST_WINDOW_MILLIS)
-            val burst = attempts.get() - beforeBurst
+            // Each emit advances the row's revision by one, and frames may coalesce under a burst with the
+            // newest winning, so the last emit is known by its revision. The page records a fetch as it is
+            // issued, so once that frame is in, the count is final.
+            page.waitForCondition { newestRevNaming(page, UNREAD_SESSION) >= revBefore + TRIGGER_BURST }
+            val burst = readFetches(page, UNREAD_SESSION) - fetchesBefore
             assertTrue(
                 burst <= 1,
-                "$TRIGGER_BURST session_update frames inside ${BURST_WINDOW_MILLIS.toLong()}ms produced " +
-                    "$burst requests — one per trigger rather than one in flight per session",
+                "$TRIGGER_BURST session_update frames produced $burst requests — one per trigger rather " +
+                    "than one in flight per session",
             )
 
             answer.set(READ_ACCEPTED)
+            page.clock().runFor(RETRY_WINDOW_MILLIS)
             assertThat(pill).hasCount(0)
             assertThat(row).hasCount(1)
         }
@@ -1014,6 +1026,7 @@ class SidebarTest {
             SESSIONS_SCENARIO,
             "sidebar-outage",
             initScripts = listOf(SOCKET_FAULT_SCRIPT),
+            fakeClock = true,
         ) { harness, _, page ->
             val status = page.locator("#status-line")
             assertThat(status).hasText("4 session(s).")
@@ -1028,7 +1041,12 @@ class SidebarTest {
             runLeaderCommand(page, "Copy tmux command")
             val operatorLine = awaitStatusOtherThan(page, DISCONNECT_LINE)
 
-            page.waitForCondition { eventsSocketCount(page) >= socketsBefore + 3 }
+            // Each reconnect waits out its backoff timer first; one jump past the cap fires exactly one.
+            repeat(3) { attempt ->
+                page.clock().runFor(RECONNECT_BACKOFF_CAP_MILLIS)
+                page.waitForCondition { eventsSocketCount(page) >= socketsBefore + attempt + 1 }
+                page.waitForCondition { newestEventsSocketClosed(page) }
+            }
             assertEquals(
                 operatorLine,
                 statusText(page),
@@ -1037,9 +1055,8 @@ class SidebarTest {
 
             setEventsFault(page, EVENTS_HEALTHY)
             harness.send("emit s-beta needs_approval")
-            // Repeated failures back off up to 30 seconds before the next connection's snapshot.
-            assertThat(page.locator("#attention-list .session-row[data-id='s-beta']"))
-                .hasCount(1, LocatorAssertions.HasCountOptions().setTimeout(40_000.0))
+            page.clock().runFor(RECONNECT_BACKOFF_CAP_MILLIS)
+            assertThat(page.locator("#attention-list .session-row[data-id='s-beta']")).hasCount(1)
             assertEquals(
                 operatorLine,
                 statusText(page),
@@ -1137,10 +1154,12 @@ private const val READ_DEFINITE: String = "definite"
 private const val READ_UNREACHABLE: String = "unreachable"
 private const val READ_ACCEPTED: String = "accepted"
 
-private const val RETRY_WINDOW_MILLIS: Double = 6_000.0
+// Fake-clock jumps. Each must exceed the app's own timer, READ_RETRY_DELAY_MS in app.js and maxRetryMs in
+// lib/resync.js, so that one jump fires exactly the one timer that is pending.
+private const val RETRY_WINDOW_MILLIS: Long = 6_000L
+private const val RECONNECT_BACKOFF_CAP_MILLIS: Long = 30_000L
 
 private const val TRIGGER_BURST: Int = 6
-private const val BURST_WINDOW_MILLIS: Double = 900.0
 
 private const val EVENTS_HEALTHY: String = ""
 private const val EVENTS_THROWN: String = "throw"
@@ -1221,6 +1240,7 @@ private fun signedIn(
     scenario: String,
     trace: String,
     initScripts: List<String> = emptyList(),
+    fakeClock: Boolean = false,
     block: (Harness, BrowserContext, Page) -> Unit,
 ) {
     Harness(scenario).use { harness ->
@@ -1231,6 +1251,8 @@ private fun signedIn(
                 context.traced(trace) {
                     context.loginWithTicket(harness.ticket, harness.baseUrl)
                     val page = context.newPage()
+                    // Installed before navigation, so every timer the app arms can be jumped with runFor.
+                    if (fakeClock) page.clock().install()
                     page.navigate("${harness.baseUrl}/")
                     assertThat(page.locator("#sidebar")).isVisible()
                     block(harness, context, page)
@@ -1351,6 +1373,41 @@ private fun closeNewestEventsSocket(page: Page) {
         }
         """.trimIndent(),
     )
+}
+
+// CLOSED is observed from a later task than the close event, so the app has already scheduled its retry.
+private fun newestEventsSocketClosed(page: Page): Boolean {
+    val closed = page.evaluate(
+        """
+        () => {
+          const list = window.__kotgentSockets.filter((s) => s.url.indexOf("/events") >= 0);
+          const socket = list[list.length - 1];
+          return !!socket && socket.readyState === 3;
+        }
+        """.trimIndent(),
+    )
+    return closed as Boolean
+}
+
+private fun newestRevNaming(page: Page, id: String): Long {
+    val rev = page.evaluate(
+        """
+        (needle) => (window.__kotgentFrames || [])
+          .filter((f) => f.indexOf(needle) >= 0)
+          .map((f) => { const m = /"rev":(\d+)/.exec(f); return m ? Number(m[1]) : 0; })
+          .reduce((a, b) => Math.max(a, b), 0)
+        """.trimIndent(),
+        "\"$id\"",
+    )
+    return (rev as Number).toLong()
+}
+
+private fun readFetches(page: Page, id: String): Int {
+    val count = page.evaluate(
+        "(suffix) => (window.__kotgentFetches || []).filter((u) => u.endsWith(suffix)).length",
+        "/sessions/$id/read",
+    )
+    return (count as Number).toInt()
 }
 
 private fun recordedFetches(page: Page): List<String> {
