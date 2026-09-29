@@ -4,26 +4,26 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.js";
-import { basename, normalizePath, segmentsUnder } from "../lib/paths.js";
-import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.js";
-import { FAILED, IDLE_STATUS, READY, combineReadiness } from "../lib/readiness.js";
+import { AGENT_CHOICES, FIRST_AVAILABLE_AGENT } from "../lib/agents.ts";
+import { basename, normalizePath, segmentsUnder } from "../lib/paths.ts";
+import { MAX_GROUPING_LEVEL, TERMINAL_FONT_SIZES, sanitizePrefs } from "../lib/prefs.ts";
+import { FAILED, IDLE_STATUS, READY, combineReadiness } from "../lib/readiness.ts";
 import {
   displayName,
   normalizeTaskQuery,
   sessionTaskLinkDisabledReason,
   taskMatchesQuery,
-} from "../lib/sessions.js";
-import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.js";
-import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.js";
+} from "../lib/sessions.ts";
+import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.ts";
+import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.ts";
 import {
   compareTasksByBoardOrder,
   fetchProjects,
   isOpenTaskState,
   taskStateLabel,
   taskStateRank,
-} from "../lib/tasks.js";
-import { qrSvg } from "../lib/qr.js";
+} from "../lib/tasks.ts";
+import { qrSvg } from "../lib/qr.ts";
 import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.js";
 import { useTypeahead } from "./Typeahead.js";
 

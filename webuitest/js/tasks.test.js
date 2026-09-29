@@ -15,7 +15,7 @@ import {
   taskStateLabel,
   taskStateRank,
   upsertTaskIfNewer,
-} from "../../webui/src/lib/tasks.js";
+} from "../../webui/src/lib/tasks.ts";
 import { listOf, taskRow } from "./fixtures.js";
 
 describe("upsertTaskIfNewer", () => {

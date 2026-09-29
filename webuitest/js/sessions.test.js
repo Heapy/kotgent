@@ -11,7 +11,7 @@ import {
   patchIfNewer,
   tmuxAttachCommand,
   upsertIfNewer,
-} from "../../webui/src/lib/sessions.js";
+} from "../../webui/src/lib/sessions.ts";
 import { listOf, patchFrame, sessionRow } from "./fixtures.js";
 
 describe("upsertIfNewer", () => {

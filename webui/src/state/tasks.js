@@ -1,13 +1,13 @@
 // This module is the sole owner of live task state; lib/tasks.js owns revision arithmetic.
 
 import { computed, signal } from "@preact/signals-core";
-import { READY, createReadiness } from "../lib/readiness.js";
+import { READY, createReadiness } from "../lib/readiness.ts";
 import {
   applyTasksSnapshot,
   patchTaskIfNewer,
   removeTask,
   upsertTaskIfNewer,
-} from "../lib/tasks.js";
+} from "../lib/tasks.ts";
 
 export const tasks = signal([]);
 

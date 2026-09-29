@@ -3,9 +3,9 @@
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { errorMessage } from "../lib/api.js";
-import { SCREEN_TASKS, navigate, routePath, sessionPath, taskPath } from "../lib/router.js";
-import { displayName, stateBadge } from "../lib/sessions.js";
+import { errorMessage } from "../lib/api.ts";
+import { SCREEN_TASKS, navigate, routePath, sessionPath, taskPath } from "../lib/router.ts";
+import { displayName, stateBadge } from "../lib/sessions.ts";
 import {
   TASK_STATES,
   deleteTask,
@@ -13,7 +13,7 @@ import {
   fetchTaskDetail,
   patchTask,
   taskStateLabel,
-} from "../lib/tasks.js";
+} from "../lib/tasks.ts";
 
 const ACTIVITY_FALLBACK = {
   created: "created the task",

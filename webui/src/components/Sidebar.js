@@ -1,24 +1,24 @@
 import { html } from "htm/preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { UsageStrip } from "./UsageStrip.js";
-import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.js";
-import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.js";
+import { groupEntries, groupSessions, orderGroupsByRecentChange } from "../lib/paths.ts";
+import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../lib/adhd.ts";
 import {
   groupingEnabled,
   loadAttentionCollapsed,
   loadCollapsedGroups,
   persistAttentionCollapsed,
   persistCollapsedGroups,
-} from "../lib/prefs.js";
-import { FAILED, IDLE_STATUS, READY } from "../lib/readiness.js";
-import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.js";
+} from "../lib/prefs.ts";
+import { FAILED, IDLE_STATUS, READY } from "../lib/readiness.ts";
+import { ensurePermission, isEnabled as notifyEnabled, setEnabled as setNotifyEnabled } from "../lib/notify.ts";
 import {
   PUSH_REPAIR_SIGNAL_KEY,
   refreshActive as refreshPush,
   subscribe as pushSubscribe,
   syncWorkerPushPreference,
   unsubscribe as pushUnsubscribe,
-} from "../lib/push.js";
+} from "../lib/push.ts";
 import {
   byRecentChange,
   displayName,
@@ -26,14 +26,14 @@ import {
   sessionSubline,
   stateBadge,
   taskBadge,
-} from "../lib/sessions.js";
+} from "../lib/sessions.ts";
 import {
   SCREEN_SESSIONS,
   SCREEN_TASKS,
   navigate,
   routePath,
   taskPath,
-} from "../lib/router.js";
+} from "../lib/router.ts";
 
 const PUSH_TRANSITION_TIMEOUT_MS = 10_000;
 

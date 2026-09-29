@@ -15,8 +15,8 @@ import {
   isDefiniteAnswer,
   isUnauthenticated,
   wsUrl,
-} from "./lib/api.js";
-import { writeClipboard } from "./lib/clipboard.js";
+} from "./lib/api.ts";
+import { writeClipboard } from "./lib/clipboard.ts";
 import {
   ABORT_PROBE,
   ATTACH,
@@ -38,21 +38,21 @@ import {
   snapshotApplied,
   terminalClosed,
   timerFired,
-} from "./lib/reattach.js";
-import { createSerialRefresh } from "./lib/refresh.js";
-import { createEventsConnection } from "./lib/events.js";
-import { watchRefreshSources } from "./lib/resume.js";
-import { affectsAttachment, buildCommands } from "./lib/commands.js";
-import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.js";
-import { READY } from "./lib/readiness.js";
+} from "./lib/reattach.ts";
+import { createSerialRefresh } from "./lib/refresh.ts";
+import { createEventsConnection } from "./lib/events.ts";
+import { watchRefreshSources } from "./lib/resume.ts";
+import { affectsAttachment, buildCommands } from "./lib/commands.ts";
+import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.ts";
+import { READY } from "./lib/readiness.ts";
 import { claimStaleBuildReload, isStaleBuild, sessionStorageOrNull } from "./lib/stale-build.js";
 import {
   loadAdhdMode,
   loadSidebarCollapsed,
   persistAdhdMode,
   persistSidebarCollapsed,
-} from "./lib/prefs.js";
-import { notifyAttention } from "./lib/notify.js";
+} from "./lib/prefs.ts";
+import { notifyAttention } from "./lib/notify.ts";
 import {
   capitalize,
   displayName,
@@ -62,7 +62,7 @@ import {
   sessionTaskLinkSubmitBlocked,
   stateBadge,
   tmuxAttachCommand,
-} from "./lib/sessions.js";
+} from "./lib/sessions.ts";
 import {
   SCREEN_SESSIONS,
   SCREEN_TASK,
@@ -73,13 +73,13 @@ import {
   sessionPath,
   subscribeToRoute,
   taskPath,
-} from "./lib/router.js";
+} from "./lib/router.ts";
 import {
   deleteProject,
   fetchProjects,
   linkTask,
   restoreProject,
-} from "./lib/tasks.js";
+} from "./lib/tasks.ts";
 import {
   findSession,
   mergeSessionPatch,

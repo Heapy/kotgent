@@ -3,8 +3,8 @@
 
 import { html } from "htm/preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
-import { apiRequest } from "../lib/api.js";
-import { normalizePath } from "../lib/paths.js";
+import { apiRequest } from "../lib/api.ts";
+import { normalizePath } from "../lib/paths.ts";
 import { useTypeahead } from "./Typeahead.js";
 
 /** Long enough that walking a path with the arrow keys does not read a directory per keystroke. */

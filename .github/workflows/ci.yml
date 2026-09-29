@@ -45,6 +45,7 @@ jobs:
       - name: Build the Web UI
         run: |
           npm ci --prefix webui
+          npm run typecheck --prefix webui
           npm run build --prefix webui
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6

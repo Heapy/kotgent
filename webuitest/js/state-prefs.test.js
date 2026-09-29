@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { READY } from "../../webui/src/lib/readiness.js";
+import { READY } from "../../webui/src/lib/readiness.ts";
 import {
   PREFS_APPLIED,
   PREFS_SUPERSEDED,

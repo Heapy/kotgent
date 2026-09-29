@@ -1,6 +1,6 @@
 import { html } from "htm/preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { filterCommands } from "../lib/commands.js";
+import { filterCommands } from "../lib/commands.ts";
 import { Dialog } from "./dialogs.js";
 import { useTypeahead } from "./Typeahead.js";
 

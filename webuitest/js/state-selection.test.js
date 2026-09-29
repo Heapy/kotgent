@@ -5,7 +5,7 @@ import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
-import { DEFAULT_PREFS } from "../../webui/src/lib/prefs.js";
+import { DEFAULT_PREFS } from "../../webui/src/lib/prefs.ts";
 import { mergeSessionRow, replaceSessions } from "../../webui/src/state/sessions.js";
 import {
   activeSession,

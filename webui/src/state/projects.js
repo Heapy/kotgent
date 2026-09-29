@@ -2,7 +2,7 @@
 // verbatim here.
 
 import { computed, signal } from "@preact/signals-core";
-import { READY, createReadiness } from "../lib/readiness.js";
+import { READY, createReadiness } from "../lib/readiness.ts";
 
 export const projects = signal([]);
 

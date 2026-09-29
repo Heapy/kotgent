@@ -1,5 +1,5 @@
 import { batch, signal } from "@preact/signals-core";
-import { applyUsageSnapshot, atUsageReceipt, upsertUsageIfNewer } from "../lib/usage.js";
+import { applyUsageSnapshot, atUsageReceipt, upsertUsageIfNewer } from "../lib/usage.ts";
 
 export const usage = signal([]);
 export const usageClockOffset = signal(null);

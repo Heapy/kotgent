@@ -1,4 +1,4 @@
-export async function writeClipboard(text) {
+export async function writeClipboard(text: string) {
   if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);

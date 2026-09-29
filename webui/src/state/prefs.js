@@ -1,13 +1,13 @@
 // Keep revisioned daemon preferences separate from unversioned device-local terminal settings.
 
 import { signal } from "@preact/signals-core";
-import { createReadiness } from "../lib/readiness.js";
+import { createReadiness } from "../lib/readiness.ts";
 import {
   loadPrefs,
   persistTerminalFontSize,
   persistTerminalUnicode,
   sanitizeServerPreferences,
-} from "../lib/prefs.js";
+} from "../lib/prefs.ts";
 
 export const prefs = signal(loadPrefs());
 

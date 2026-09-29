@@ -5,7 +5,7 @@ import { describe, test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { effect } from "../../webui/node_modules/@preact/signals-core/dist/signals-core.mjs";
-import { IDLE, READY } from "../../webui/src/lib/readiness.js";
+import { IDLE, READY } from "../../webui/src/lib/readiness.ts";
 import {
   findSession,
   mergeSessionPatch,

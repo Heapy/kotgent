@@ -9,32 +9,36 @@ export const LOADING = "loading";
 export const READY = "ready";
 export const FAILED = "failed";
 
-export const IDLE_STATUS = Object.freeze({ state: IDLE, error: null });
+export interface ReadinessStatus {
+  state: typeof IDLE | typeof LOADING | typeof READY | typeof FAILED;
+  error: string | null;
+}
+
+export const IDLE_STATUS: ReadinessStatus = Object.freeze({ state: IDLE, error: null });
 
 // Shown when a request fails with nothing quotable — a rejection with no message, or none at all.
 export const UNKNOWN_FAILURE = "The request failed.";
 
-function failureSentence(error) {
-  const text = typeof error === "string"
-    ? error
-    : (error && typeof error.message === "string" ? error.message : "");
+function failureSentence(error: unknown) {
+  const message: unknown = typeof error === "string" ? error : error && Reflect.get(Object(error), "message");
+  const text = typeof message === "string" ? message : "";
   return text.trim() !== "" ? text : UNKNOWN_FAILURE;
 }
 
 export function createReadiness() {
-  const status = signal(IDLE_STATUS);
+  const status = signal<ReadinessStatus>(IDLE_STATUS);
   let generation = 0;
-  let load = null;
+  let load: (() => unknown) | null = null;
 
   // Writing an identical status would re-render every subscriber for no news; refreshes are frequent.
-  function publish(state, error) {
+  function publish(state: ReadinessStatus["state"], error: string | null) {
     const current = status.value;
     if (current.state === state && current.error === error) return false;
     status.value = { state: state, error: error };
     return true;
   }
 
-  function superseded(token) {
+  function superseded(token: number | undefined) {
     return token !== undefined && token !== generation;
   }
 
@@ -45,14 +49,14 @@ export function createReadiness() {
     return token;
   }
 
-  function succeed(token) {
+  function succeed(token?: number) {
     if (superseded(token)) return false;
     if (token === undefined) generation += 1;
     publish(READY, null);
     return true;
   }
 
-  function fail(token, error) {
+  function fail(token: number | undefined, error?: unknown) {
     if (superseded(token)) return false;
     if (token === undefined) generation += 1;
     if (status.value.state === READY) return false;
@@ -65,7 +69,7 @@ export function createReadiness() {
     status.value = IDLE_STATUS;
   }
 
-  function setLoader(fn) {
+  function setLoader(fn: (() => unknown) | null | undefined) {
     load = fn || null;
   }
 
@@ -86,12 +90,12 @@ export function createReadiness() {
 }
 
 // Failure dominates combined state; otherwise every source must be ready.
-export function combineReadiness(...statuses) {
+export function combineReadiness(...statuses: (ReadinessStatus | null | undefined)[]): ReadinessStatus {
   let loading = false;
   let ready = statuses.length > 0;
   for (const status of statuses) {
     const state = status ? status.state : IDLE;
-    if (state === FAILED) return { state: FAILED, error: failureSentence(status.error) };
+    if (state === FAILED) return { state: FAILED, error: failureSentence(status!.error) };
     if (state === LOADING) loading = true;
     if (state !== READY) ready = false;
   }

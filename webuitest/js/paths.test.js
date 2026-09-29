@@ -9,7 +9,7 @@ import {
   groupSessions,
   headChain,
   orderGroupsByRecentChange,
-} from "../../webui/src/lib/paths.js";
+} from "../../webui/src/lib/paths.ts";
 import { sessionRow } from "./fixtures.js";
 
 const at = (id, cwd, updatedAt) => sessionRow({ id: id, cwd: cwd, updatedAt: updatedAt });

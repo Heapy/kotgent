@@ -3,9 +3,9 @@
 
 import { html } from "htm/preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
-import { errorMessage } from "../lib/api.js";
-import { joinPath, normalizePath } from "../lib/paths.js";
-import { navigate, sessionPath, taskPath } from "../lib/router.js";
+import { errorMessage } from "../lib/api.ts";
+import { joinPath, normalizePath } from "../lib/paths.ts";
+import { navigate, sessionPath, taskPath } from "../lib/router.ts";
 import {
   TASK_STATES,
   compareTasksByBoardOrder,
@@ -14,7 +14,7 @@ import {
   moveTask,
   patchTask,
   taskStateLabel,
-} from "../lib/tasks.js";
+} from "../lib/tasks.ts";
 import { Dialog } from "./dialogs.js";
 import { PathSuggestions, usePathSuggestions } from "./PathSuggestions.js";
 import { TaskCard } from "./TaskCard.js";

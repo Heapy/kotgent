@@ -1,5 +1,7 @@
 // In-tab notifications stand down while Web Push is active to avoid duplicate banners.
 
+import type { Session } from "./sessions.ts";
+
 const KEY = "kotgent.notifications.v1";
 const PUSH_KEY = "kotgent.push.v1";
 
@@ -15,7 +17,7 @@ export function isEnabled() {
   }
 }
 
-export function setEnabled(on) {
+export function setEnabled(on: boolean) {
   try {
     window.localStorage.setItem(KEY, on ? "1" : "0");
   } catch (_) { /* best effort */ }
@@ -29,7 +31,7 @@ export function isPushActive() {
   }
 }
 
-export function setPushActive(on) {
+export function setPushActive(on: boolean) {
   try {
     window.localStorage.setItem(PUSH_KEY, on ? "1" : "0");
   } catch (_) { /* best effort */ }
@@ -46,7 +48,7 @@ export async function ensurePermission() {
   }
 }
 
-export function notifyAttention(session) {
+export function notifyAttention(session: Pick<Session, "id" | "name" | "tmuxSession"> | null | undefined) {
   if (!isEnabled() || !supported() || Notification.permission !== "granted") return;
   if (isPushActive()) return;
   const name = (session && (session.name || session.tmuxSession || session.id)) || "A session";

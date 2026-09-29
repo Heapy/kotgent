@@ -1,6 +1,6 @@
 import { html } from "htm/preact";
-import { sessionPath, taskPath } from "../lib/router.js";
-import { displayName, stateBadge } from "../lib/sessions.js";
+import { sessionPath, taskPath } from "../lib/router.ts";
+import { displayName, stateBadge } from "../lib/sessions.ts";
 
 /** Modified clicks belong to the browser (new tab / new window / download), never to the router. */
 function isPlainClick(event) {

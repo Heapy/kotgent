@@ -13,7 +13,7 @@ import {
   UNKNOWN_FAILURE,
   combineReadiness,
   createReadiness,
-} from "../../webui/src/lib/readiness.js";
+} from "../../webui/src/lib/readiness.ts";
 import { deferred } from "./fixtures.js";
 
 describe("createReadiness", () => {

@@ -12,7 +12,7 @@ the common workflow and links to those guides; implementation invariants belong 
 
 - This is a Kotlin/Native project built with Kotlin Toolchain 0.12.2. Use the project-local `./kotlin`
   wrapper and the `/kortex:kotlin-toolchain` skill.
-- Run `npm ci --prefix webui`, `npm run build --prefix webui`,
+- Run `npm ci --prefix webui`, `npm run typecheck --prefix webui`, `npm run build --prefix webui`,
   `./kotlin build -p <host-target> -p jvm`, then `./kotlin test -p <host-target> -p jvm` in that order
   (`macosArm64` on macOS, `linuxX64` on Linux): the `webuitest` browser tier executes the `webuicheck`
   binary, and no test task builds it.
@@ -148,20 +148,20 @@ the common workflow and links to those guides; implementation invariants belong 
 - On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running
   one. A `sessionStorage` slot holding the last `running → served` reload refuses the same pair again;
   previous builds' assets are deliberately not kept.
-- `webui/src/lib/router.js` is the only owner of browser history. `app.js` owns global shortcuts
+- `webui/src/lib/router.ts` is the only owner of browser history. `app.js` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
-- Keep terminal reattachment decisions in `webui/src/lib/reattach.js`; `app.js` supplies current
+- Keep terminal reattachment decisions in `webui/src/lib/reattach.ts`; `app.js` supplies current
   environment and performs declared effects. Preserve the distinction between hidden and cancelled, do
   not spend a grant before a candidate exists, and keep probe guards ordered. A hidden page holds a
   resolved probe; among pending mutations only the control actions `affectsAttachment` names do. A
   candidate whose row is not alive is retired: stop cancels before the POST, and the pane dies before the
   answer, so the close lands after the cancel.
-- Use `webui/src/lib/refresh.js` for unversioned sources such as projects. Reads are serial and a
+- Use `webui/src/lib/refresh.ts` for unversioned sources such as projects. Reads are serial and a
   response overtaken by a later request is discarded. Each read owns its readiness token. A port that
   throws must still answer its waiters; a failing `read` or `succeed` is a failed read and never stops
   the pump.
-- Event-stream recovery goes through `webui/src/lib/resync.js`: one coordinator per source batches
-  requests, serializes resynchronization and owns retries. Beside it, `resume.js` emits requests; `events.js`
+- Event-stream recovery goes through `webui/src/lib/resync.ts`: one coordinator per source batches
+  requests, serializes resynchronization and owns retries. Beside it, `resume.ts` emits requests; `events.ts`
   applies frames through state writers and completes after all three snapshots. Retired socket callbacks
   cannot publish. Wall-clock discontinuities request server time; they never supply usage time or freshness.
 - Session, task, project, usage, selection, dialog, status, and preference state lives in signals under
@@ -192,10 +192,10 @@ the common workflow and links to those guides; implementation invariants belong 
 - `runMutation` owns the global mutation lock and holds it through a flow's follow-up read. It publishes
   the holder name but no currency token: late announcements use `announcementHolds`, conditional
   auto-selection uses the selection generation, and component lifetime uses `aliveRef`.
-- `webui/src/lib/readiness.js` answers `idle | loading | ready | failed` with `retry()`, and is
+- `webui/src/lib/readiness.ts` answers `idle | loading | ready | failed` with `retry()`, and is
   sticky at `ready`; a failed revalidation keeps usable rows, while an initial failure stays visible.
 - One typeahead-listbox primitive answers the command palette, both directory-path pickers and the
-  session/task link picker. Keep rules framework-free in `lib/typeahead.js`, bind them in
+  session/task link picker. Keep rules framework-free in `lib/typeahead.ts`, bind them in
   `components/Typeahead.js`, compare rows by key, and share path-picker behavior through
   `components/PathSuggestions.js`.
 - Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
@@ -207,8 +207,8 @@ the common workflow and links to those guides; implementation invariants belong 
   `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.
 - ADHD-mode membership is decided when the list renders: a session is listed when its own flag is set or
   a folder head drawn above it is marked. Never fan out a folder mark to the sessions under it. The heads
-  come from `headChain` in `webui/src/lib/paths.js`, which shares one head rule with `groupSessions`,
-  and the rules live in `webui/src/lib/adhd.js`. With grouping off, folder marks cover nothing. A
+  come from `headChain` in `webui/src/lib/paths.ts`, which shares one head rule with `groupSessions`,
+  and the rules live in `webui/src/lib/adhd.ts`. With grouping off, folder marks cover nothing. A
   mark with no drawn head is inert and is never deleted by a grouping change; it acts again once its head
   is drawn. Marks are compared through `normalizePath`; a second path matcher would drift from the
   daemon's `normalizePreferencePath`. Whether a screen is reduced is device-local. A reduced screen hides

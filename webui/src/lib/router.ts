@@ -11,11 +11,16 @@ export const SCREEN_TASK = "task";
 
 export const SCREEN_SESSIONS = "sessions";
 
-function segmentsOf(pathname) {
+export interface Route {
+  screen: typeof SCREEN_TASKS | typeof SCREEN_TASK | typeof SCREEN_SESSIONS;
+  id: string | null;
+}
+
+function segmentsOf(pathname: unknown) {
   return String(pathname || "").split("/").filter((segment) => segment.length > 0);
 }
 
-function decodeSegment(value) {
+function decodeSegment(value: string) {
   try {
     return decodeURIComponent(value);
   } catch (_) {
@@ -23,7 +28,7 @@ function decodeSegment(value) {
   }
 }
 
-function deepLinkId(search) {
+function deepLinkId(search?: string | null) {
   try {
     const id = new URLSearchParams(search || "").get(DEEP_LINK_PARAM);
     return id || null;
@@ -33,21 +38,21 @@ function deepLinkId(search) {
 }
 
 // A path id wins over a stale notification query parameter.
-export function parseRoute(pathname, search) {
+export function parseRoute(pathname: unknown, search?: string | null): Route {
   const segments = segmentsOf(pathname);
   if (segments.length === 1 && segments[0] === SCREEN_TASKS) {
     return { screen: SCREEN_TASKS, id: null };
   }
   if (segments.length === 2 && segments[0] === SCREEN_TASKS) {
-    return { screen: SCREEN_TASK, id: decodeSegment(segments[1]) };
+    return { screen: SCREEN_TASK, id: decodeSegment(segments[1]!) };
   }
   if (segments.length === 2 && segments[0] === "s") {
-    return { screen: SCREEN_SESSIONS, id: decodeSegment(segments[1]) };
+    return { screen: SCREEN_SESSIONS, id: decodeSegment(segments[1]!) };
   }
   return { screen: SCREEN_SESSIONS, id: deepLinkId(search) };
 }
 
-export function routePath(route) {
+export function routePath(route: Route | null | undefined) {
   const screen = route ? route.screen : null;
   const id = route && route.id ? String(route.id) : null;
   if (screen === SCREEN_TASKS) return "/tasks";
@@ -56,15 +61,15 @@ export function routePath(route) {
   return "/";
 }
 
-export function taskPath(ref) {
+export function taskPath(ref: string) {
   return "/tasks/" + encodeURIComponent(ref);
 }
 
-export function sessionPath(id) {
+export function sessionPath(id: string) {
   return "/s/" + encodeURIComponent(id);
 }
 
-const routeHandlers = new Set();
+const routeHandlers = new Set<(route: Route) => void>();
 let popstateInstalled = false;
 
 function emitRoute() {
@@ -77,7 +82,7 @@ function emitRoute() {
   }
 }
 
-export function navigate(path) {
+export function navigate(path: unknown) {
   const target = typeof path === "string" && path.length > 0 ? path : "/";
   try {
     if (target === window.location.pathname + window.location.search) return;
@@ -91,7 +96,7 @@ export function navigate(path) {
   emitRoute();
 }
 
-export function subscribeToRoute(handler) {
+export function subscribeToRoute(handler: (route: Route) => void) {
   routeHandlers.add(handler);
   if (!popstateInstalled) {
     popstateInstalled = true;

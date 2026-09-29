@@ -1,5 +1,7 @@
 // The sole command and mnemonic registry; session actions are omitted on the task-board screen.
 
+import type { Session } from "./sessions.ts";
+
 import {
   displayName,
   isAliveState,
@@ -7,18 +9,51 @@ import {
   isNeedsAttention,
   sessionTaskLinkDisabledReason,
   stateBadge,
-} from "./sessions.js";
+} from "./sessions.ts";
 
-function disabledWhenNoSession(session) {
+export type CommandActions = Record<
+  "interrupt" | "resume" | "attach" | "detach" | "stop" | "done" | "rename" | "copyTmux"
+  | "uploadFiles" | "linkSessionTask" | "openSessionTask" | "newSession" | "importSession"
+  | "freeTerminal" | "openSessions" | "openBoard" | "newTask" | "newProject" | "deleteProject"
+  | "restoreProject" | "toggleShowDone" | "help" | "phone" | "preferences", () => unknown
+> & { selectSession: (id: string) => unknown };
+
+export interface CommandItem {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  group: string;
+  disabled: string | null;
+  needsAttention?: boolean;
+  sessionId?: string;
+}
+
+export interface Command extends CommandItem {
+  hint: string | null;
+  chord: string | null;
+  run: () => unknown;
+}
+
+export interface CommandContext {
+  sessions?: readonly Session[];
+  activeSession?: Session | null;
+  attachedId?: string | null;
+  pendingAction?: string | null;
+  onBoard?: boolean;
+  projectId?: string | null;
+  actions: CommandActions;
+}
+
+function disabledWhenNoSession(session: Session | null | undefined) {
   return session ? null : "no session is selected";
 }
 
-function disabledWhenNotAlive(session) {
+function disabledWhenNotAlive(session: Session | null | undefined) {
   if (!session) return "no session is selected";
   return isAliveState(session.state) ? null : "the selected session is not running";
 }
 
-function disabledWhenAlive(session) {
+function disabledWhenAlive(session: Session | null | undefined) {
   if (!session) return "no session is selected";
   if (isAliveState(session.state)) return "the selected session is already running";
   return isLostState(session.state)
@@ -26,35 +61,35 @@ function disabledWhenAlive(session) {
     : null;
 }
 
-function disabledWhenNoProject(projectId) {
+function disabledWhenNoProject(projectId: string | null) {
   return projectId ? null : "no project is selected";
 }
 
-function disabledWhenNoSessionTask(session) {
+function disabledWhenNoSessionTask(session: Session | null | undefined) {
   if (!session) return "no session is selected";
   return session.taskRef ? null : "the selected session is not linked to a task";
 }
 
 // Control requests serialize globally; local attach/detach conflicts only with actions that rewrite attachment.
-function disabledWhilePending(pendingAction) {
+function disabledWhilePending(pendingAction: string | null | undefined) {
   return pendingAction ? "another action is still in progress" : null;
 }
 
-export function affectsAttachment(pendingAction) {
+export function affectsAttachment(pendingAction: string | null | undefined) {
   return pendingAction === "stop" || pendingAction === "done" ||
     pendingAction === "resume" || pendingAction === "import";
 }
 
-function disabledWhileAttachmentPending(pendingAction) {
+function disabledWhileAttachmentPending(pendingAction: string | null | undefined) {
   return affectsAttachment(pendingAction) ? "another action is still in progress" : null;
 }
 
-function sessionSubtitle(session) {
+function sessionSubtitle(session: Session) {
   const tags = Array.isArray(session.tags) ? session.tags : [];
   return [session.agent, session.cwd, ...tags].filter(Boolean).join(" · ");
 }
 
-function sessionRows(sessions, actions) {
+function sessionRows(sessions: readonly Session[], actions: CommandActions): Command[] {
   return sessions.map((session) => ({
     id: "sessions.open." + session.id,
     group: "sessions",
@@ -69,7 +104,7 @@ function sessionRows(sessions, actions) {
   }));
 }
 
-function sessionCommands(activeSession, attachedId, pendingAction, actions) {
+function sessionCommands(activeSession: Session | null, attachedId: string | null, pendingAction: string | null, actions: CommandActions): Command[] {
   const alive = !!activeSession && isAliveState(activeSession.state);
   const attached = !!activeSession && activeSession.id === attachedId;
   const tmuxAvailable = alive && !!activeSession.tmuxSession;
@@ -184,8 +219,8 @@ const SESSION_VIEW_ONLY = new Set([
 ]);
 
 // `o` means “the other screen”; leader mnemonics are first-match-wins and must remain unique.
-function generalCommands(onBoard, projectId, actions) {
-  const commands = [
+function generalCommands(onBoard: boolean, projectId: string | null, actions: CommandActions): Command[] {
+  const commands: Command[] = [
     {
       id: "general.new", group: "general", chord: "n",
       title: "New session",
@@ -301,7 +336,7 @@ function generalCommands(onBoard, projectId, actions) {
 export function buildCommands({
   sessions = [], activeSession = null, attachedId = null, pendingAction = null,
   onBoard = false, projectId = null, actions,
-}) {
+}: CommandContext): Command[] {
   return [
     ...sessionRows(sessions, actions),
     ...(onBoard ? [] : sessionCommands(activeSession, attachedId, pendingAction, actions)),
@@ -309,11 +344,11 @@ export function buildCommands({
   ];
 }
 
-// Case folding here is locale-independent for the same reason lib/sessions.js states over
+// Case folding here is locale-independent for the same reason lib/sessions.ts states over
 // `normalizeTaskQuery`: `toLocaleLowerCase()` maps an uppercase "I" to a dotless "ı" under a tr/az
 // browser locale while leaving a typed "i" dotted, so "Index the API" stopped answering to "index" for
 // exactly the operators whose locale the palette never anticipated.
-function matchOf(item, query) {
+function matchOf(item: CommandItem, query: string) {
   const haystack = (item.title + " " + (item.subtitle || "")).toLowerCase();
   const index = haystack.indexOf(query);
   if (index < 0) return null;
@@ -321,10 +356,10 @@ function matchOf(item, query) {
   return { wordStart: wordStart, index: index };
 }
 
-function rankedMatches(items, query) {
+function rankedMatches<T extends CommandItem>(items: readonly T[], query: string) {
   return items
     .map((item, order) => ({ item: item, order: order, match: matchOf(item, query) }))
-    .filter((entry) => entry.match !== null)
+    .filter((entry): entry is typeof entry & { match: NonNullable<typeof entry.match> } => entry.match !== null)
     .sort((left, right) => {
       if (left.match.wordStart !== right.match.wordStart) return left.match.wordStart ? -1 : 1;
       if (left.match.index !== right.match.index) return left.match.index - right.match.index;
@@ -333,7 +368,7 @@ function rankedMatches(items, query) {
     .map((entry) => entry.item);
 }
 
-export function filterCommands(items, query) {
+export function filterCommands<T extends CommandItem>(items: readonly T[], query: string | null | undefined) {
   const normalized = (query || "").trim().toLowerCase();
   if (normalized.length > 0) {
     const matches = rankedMatches(items, normalized);
@@ -341,7 +376,7 @@ export function filterCommands(items, query) {
       .concat(matches.filter((item) => !!item.disabled));
   }
 
-  const seenSessions = new Set();
+  const seenSessions = new Set<string | undefined>();
   const sessionItems = items.filter((item) => item.group === "sessions");
   const orderedSessions = sessionItems.filter((item) => item.needsAttention)
     .concat(sessionItems.filter((item) => !item.needsAttention))

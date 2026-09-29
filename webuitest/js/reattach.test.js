@@ -25,7 +25,7 @@ import {
   snapshotApplied,
   terminalClosed,
   timerFired,
-} from "../../webui/src/lib/reattach.js";
+} from "../../webui/src/lib/reattach.ts";
 import { sessionRow } from "./fixtures.js";
 
 const VISIBLE = Object.freeze({ visible: true, activeSessionId: "s1", pending: null });

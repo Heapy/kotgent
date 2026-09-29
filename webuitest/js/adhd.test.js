@@ -4,7 +4,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../../webui/src/lib/adhd.js";
+import { adhdFolderOf, isPathAdhd, isSessionInAdhd } from "../../webui/src/lib/adhd.ts";
 import { sessionRow } from "./fixtures.js";
 
 const grouping = (basePath, groupingLevel, adhdPaths) => ({ basePath, groupingLevel, adhdPaths });

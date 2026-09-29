@@ -7,9 +7,9 @@ import { signal } from "@preact/signals-core";
 
 export const MUTATION_BUSY_MESSAGE = "Another action is still in progress — try again in a moment.";
 
-export const pendingMutation = signal(null);
+export const pendingMutation = signal<string | null>(null);
 
-export async function runMutation(name, fn) {
+export async function runMutation<T>(name: string, fn: () => T | PromiseLike<T>): Promise<T> {
   if (pendingMutation.value !== null) throw new Error(MUTATION_BUSY_MESSAGE);
   pendingMutation.value = name;
   try {

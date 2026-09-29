@@ -15,7 +15,7 @@ import {
   persistAttentionCollapsed,
   sanitizePrefs,
   sanitizeServerPreferences,
-} from "../../webui/src/lib/prefs.js";
+} from "../../webui/src/lib/prefs.ts";
 
 const server = (overrides) => Object.assign({ basePath: "/work", groupingLevel: 1, revision: 3 }, overrides);
 

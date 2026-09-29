@@ -1,7 +1,24 @@
 // Grouping is daemon-wide; terminal rendering and shell state remain device-local.
 
-import { normalizePath } from "./paths.js";
-import { DEFAULT_TERMINAL_UNICODE, isTerminalUnicodeMode } from "./unicode.js";
+import { normalizePath } from "./paths.ts";
+import type { TerminalUnicodeModeValue } from "./unicode.ts";
+import { DEFAULT_TERMINAL_UNICODE, isTerminalUnicodeMode } from "./unicode.ts";
+
+export interface ServerPreferences {
+  basePath: string;
+  groupingLevel: number;
+  revision: number;
+  adhdPaths: string[];
+}
+
+export interface Preferences extends ServerPreferences {
+  terminalFontSize: number;
+  terminalUnicode: TerminalUnicodeModeValue;
+}
+
+function preferenceField(raw: unknown, key: string): unknown {
+  return raw && Reflect.get(Object(raw), key);
+}
 
 export const LEGACY_PREFS_KEY = "kotgent.prefs.v1";
 export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
@@ -11,7 +28,7 @@ export const ADHD_MODE_KEY = "kotgent.adhdMode.v1";
 export const ATTENTION_COLLAPSED_KEY = "kotgent.attentionCollapsed.v1";
 export const MAX_GROUPING_LEVEL = 4;
 export const TERMINAL_FONT_SIZES = [11, 13, 16];
-export const DEFAULT_PREFS = {
+export const DEFAULT_PREFS: Preferences = {
   basePath: "",
   groupingLevel: 1,
   revision: 0,
@@ -20,13 +37,13 @@ export const DEFAULT_PREFS = {
   terminalUnicode: DEFAULT_TERMINAL_UNICODE,
 };
 
-export function sanitizePrefs(raw) {
-  const level = Number.parseInt(raw && raw.groupingLevel, 10);
-  const revision = Number(raw && raw.revision);
-  const fontSize = Number.parseInt(raw && raw.terminalFontSize, 10);
-  const unicode = raw && raw.terminalUnicode;
+export function sanitizePrefs(raw: unknown): Preferences {
+  const level = Number.parseInt(String(preferenceField(raw, "groupingLevel")), 10);
+  const revision = Number(preferenceField(raw, "revision"));
+  const fontSize = Number.parseInt(String(preferenceField(raw, "terminalFontSize")), 10);
+  const unicode = preferenceField(raw, "terminalUnicode");
   return {
-    basePath: normalizePath(raw && raw.basePath),
+    basePath: normalizePath(preferenceField(raw, "basePath")),
     groupingLevel: Number.isFinite(level)
       ? Math.min(MAX_GROUPING_LEVEL, Math.max(0, level))
       : DEFAULT_PREFS.groupingLevel,
@@ -43,16 +60,16 @@ export function sanitizePrefs(raw) {
   };
 }
 
-export function sanitizeServerPreferences(raw) {
-  if (!raw || typeof raw.basePath !== "string") return null;
-  if (!Number.isInteger(raw.groupingLevel) ||
+export function sanitizeServerPreferences(raw: unknown): ServerPreferences | null {
+  if (!raw || typeof raw !== "object" || !("basePath" in raw) || typeof raw.basePath !== "string") return null;
+  if (!("groupingLevel" in raw) || typeof raw.groupingLevel !== "number" || !Number.isInteger(raw.groupingLevel) ||
       raw.groupingLevel < 0 ||
       raw.groupingLevel > MAX_GROUPING_LEVEL) return null;
-  if (!Number.isSafeInteger(raw.revision) || raw.revision < 0) return null;
+  if (!("revision" in raw) || typeof raw.revision !== "number" || !Number.isSafeInteger(raw.revision) || raw.revision < 0) return null;
   // A daemon that predates ADHD mode omits the field; anything else must be a list of strings.
-  const adhdPaths = raw.adhdPaths === undefined ? [] : raw.adhdPaths;
+  const adhdPaths: unknown = !("adhdPaths" in raw) || raw.adhdPaths === undefined ? [] : raw.adhdPaths;
   if (!Array.isArray(adhdPaths)) return null;
-  if (adhdPaths.some((path) => typeof path !== "string")) return null;
+  if (!adhdPaths.every((path: unknown): path is string => typeof path === "string")) return null;
   const basePath = normalizePath(raw.basePath);
   if (basePath.length > 0 && basePath.charAt(0) !== "/") return null;
   return {
@@ -64,8 +81,8 @@ export function sanitizeServerPreferences(raw) {
 }
 
 export function loadPrefs() {
-  let terminalFontSize = DEFAULT_PREFS.terminalFontSize;
-  let terminalUnicode = DEFAULT_PREFS.terminalUnicode;
+  let terminalFontSize: unknown = DEFAULT_PREFS.terminalFontSize;
+  let terminalUnicode: unknown = DEFAULT_PREFS.terminalUnicode;
   try {
     window.localStorage.removeItem(LEGACY_PREFS_KEY);
     terminalFontSize = window.localStorage.getItem(TERMINAL_FONT_SIZE_KEY);
@@ -75,38 +92,38 @@ export function loadPrefs() {
   return sanitizePrefs({ terminalFontSize: terminalFontSize, terminalUnicode: terminalUnicode });
 }
 
-export function persistTerminalFontSize(value) {
+export function persistTerminalFontSize(value: unknown) {
   const fontSize = sanitizePrefs({ terminalFontSize: value }).terminalFontSize;
   try {
     window.localStorage.setItem(TERMINAL_FONT_SIZE_KEY, String(fontSize));
   } catch (_) { /* best effort */ }
 }
 
-export function persistTerminalUnicode(value) {
+export function persistTerminalUnicode(value: unknown) {
   const unicode = sanitizePrefs({ terminalUnicode: value }).terminalUnicode;
   try {
     window.localStorage.setItem(TERMINAL_UNICODE_KEY, unicode);
   } catch (_) { /* best effort */ }
 }
 
-export function groupingEnabled(prefs) {
+export function groupingEnabled(prefs: Pick<Preferences, "basePath">) {
   return prefs.basePath.length > 0;
 }
 
 // Keep collapsed paths outside the preferences object so saving preferences cannot reset them.
 export const COLLAPSED_GROUPS_KEY = "kotgent.collapsedGroups.v1";
 
-export function loadCollapsedGroups() {
+export function loadCollapsedGroups(): Set<string> {
   try {
     const raw = window.localStorage.getItem(COLLAPSED_GROUPS_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(list) ? list.filter((p) => typeof p === "string") : []);
+    const list: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.filter((p: unknown): p is string => typeof p === "string") : []);
   } catch (_) {
-    return new Set();
+    return new Set<string>();
   }
 }
 
-export function persistCollapsedGroups(paths) {
+export function persistCollapsedGroups(paths: Iterable<string>) {
   try {
     window.localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Array.from(paths)));
   } catch (_) { /* best effort */ }
@@ -120,7 +137,7 @@ export function loadSidebarCollapsed() {
   }
 }
 
-export function persistSidebarCollapsed(value) {
+export function persistSidebarCollapsed(value: unknown) {
   try {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value === true ? "true" : "false");
   } catch (_) { /* best effort */ }
@@ -135,7 +152,7 @@ export function loadAdhdMode() {
   }
 }
 
-export function persistAdhdMode(value) {
+export function persistAdhdMode(value: unknown) {
   try {
     window.localStorage.setItem(ADHD_MODE_KEY, value === true ? "true" : "false");
   } catch (_) { /* best effort */ }
@@ -149,7 +166,7 @@ export function loadAttentionCollapsed() {
   }
 }
 
-export function persistAttentionCollapsed(value) {
+export function persistAttentionCollapsed(value: unknown) {
   try {
     window.localStorage.setItem(ATTENTION_COLLAPSED_KEY, value === true ? "true" : "false");
   } catch (_) { /* best effort */ }

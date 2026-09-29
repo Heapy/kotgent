@@ -4,10 +4,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { html } from "htm/preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { resizeFrame, wsUrl } from "../lib/api.js";
-import { displayName, stateBadge, taskBadge } from "../lib/sessions.js";
-import { navigate, taskPath } from "../lib/router.js";
-import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.js";
+import { resizeFrame, wsUrl } from "../lib/api.ts";
+import { displayName, stateBadge, taskBadge } from "../lib/sessions.ts";
+import { navigate, taskPath } from "../lib/router.ts";
+import { installTerminalUnicode, loadTerminalUnicode } from "../lib/unicode.ts";
 import { KeyBar } from "./KeyBar.js";
 
 function debounce(fn, ms) {

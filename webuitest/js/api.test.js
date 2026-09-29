@@ -10,7 +10,7 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { apiRequest, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.js";
+import { apiRequest, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.ts";
 
 const realFetch = globalThis.fetch;
 

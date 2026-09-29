@@ -1,8 +1,10 @@
 // Pure decision machine for terminal reattachment; app.js performs its timer, probe, attachment, and hint
 // effects. Hidden pages retain candidates, grants wait for a candidate, and generations reject late work.
 
-import { affectsAttachment } from "./commands.js";
-import { isAliveState } from "./sessions.js";
+import type { Session } from "./sessions.ts";
+
+import { affectsAttachment } from "./commands.ts";
+import { isAliveState } from "./sessions.ts";
 
 export const SCHEDULE = "schedule";
 export const CANCEL_TIMER = "cancelTimer";
@@ -24,48 +26,83 @@ const TIMER_FIRED = "timerFired";
 const PROBE_RESOLVED = "probeResolved";
 const PROBE_FAILED = "probeFailed";
 
-export function initialReattachState() {
+export interface ReattachState {
+  candidate: string | null;
+  granted: boolean;
+  timer: number | null;
+  probe: { id: string; gen: number } | null;
+  gen: number;
+}
+
+export interface ReattachEnvironment {
+  visible: boolean;
+  activeSessionId: string | null;
+  pending: string | null;
+}
+
+export type ReattachEvent =
+  | { type: typeof GRANT | typeof GRANT_AND_SCHEDULE | typeof CANCEL | typeof HIDDEN }
+  | { type: typeof TERMINAL_CLOSED; id: string; state: string | null }
+  | { type: typeof SNAPSHOT_APPLIED; liveIds: ReadonlySet<string> }
+  | { type: typeof SESSION_STATE_CHANGED; id: string; state: string }
+  | { type: typeof TIMER_FIRED; gen: number }
+  | { type: typeof PROBE_RESOLVED; gen: number; row: Pick<Session, "state"> | null }
+  | { type: typeof PROBE_FAILED; gen: number; definite: boolean };
+
+export type ReattachEffect =
+  | { kind: typeof SCHEDULE | typeof CANCEL_TIMER | typeof ABORT_PROBE; gen: number }
+  | { kind: typeof PROBE; id: string; gen: number }
+  | { kind: typeof ATTACH; id: string }
+  | { kind: typeof HINT_DEAD; state: string | null }
+  | { kind: typeof HINT_DETACHED | typeof HINT_CLEAR };
+
+export interface ReattachStep {
+  state: Readonly<ReattachState>;
+  effects: ReattachEffect[];
+}
+
+export function initialReattachState(): Readonly<ReattachState> {
   return Object.freeze({ candidate: null, granted: false, timer: null, probe: null, gen: 0 });
 }
 
-export const grant = () => ({ type: GRANT });
-export const grantAndSchedule = () => ({ type: GRANT_AND_SCHEDULE });
-export const terminalClosed = (id, state = null) => ({ type: TERMINAL_CLOSED, id: id, state: state });
-export const cancel = () => ({ type: CANCEL });
-export const snapshotApplied = (liveIds) => ({ type: SNAPSHOT_APPLIED, liveIds: liveIds });
-export const sessionStateChanged = (id, state) => ({ type: SESSION_STATE_CHANGED, id: id, state: state });
-export const hidden = () => ({ type: HIDDEN });
-export const timerFired = (gen) => ({ type: TIMER_FIRED, gen: gen });
-export const probeResolved = (gen, row) => ({ type: PROBE_RESOLVED, gen: gen, row: row });
-export const probeFailed = (gen, outcome) => ({
+export const grant = (): ReattachEvent => ({ type: GRANT });
+export const grantAndSchedule = (): ReattachEvent => ({ type: GRANT_AND_SCHEDULE });
+export const terminalClosed = (id: string, state: string | null = null): ReattachEvent => ({ type: TERMINAL_CLOSED, id: id, state: state });
+export const cancel = (): ReattachEvent => ({ type: CANCEL });
+export const snapshotApplied = (liveIds: ReadonlySet<string>): ReattachEvent => ({ type: SNAPSHOT_APPLIED, liveIds: liveIds });
+export const sessionStateChanged = (id: string, state: string): ReattachEvent => ({ type: SESSION_STATE_CHANGED, id: id, state: state });
+export const hidden = (): ReattachEvent => ({ type: HIDDEN });
+export const timerFired = (gen: number): ReattachEvent => ({ type: TIMER_FIRED, gen: gen });
+export const probeResolved = (gen: number, row: Pick<Session, "state"> | null): ReattachEvent => ({ type: PROBE_RESOLVED, gen: gen, row: row });
+export const probeFailed = (gen: number, outcome?: { definite?: boolean } | null): ReattachEvent => ({
   type: PROBE_FAILED,
   gen: gen,
   definite: !!(outcome && outcome.definite),
 });
 
-function next(state, changes, effects = []) {
+function next(state: Readonly<ReattachState>, changes: Partial<ReattachState>, effects: ReattachEffect[] = []): ReattachStep {
   return { state: Object.freeze({ ...state, ...changes }), effects: effects };
 }
 
-function unchanged(state) {
+function unchanged(state: Readonly<ReattachState>): ReattachStep {
   return { state: state, effects: [] };
 }
 
 /** Arm the zero-delay timer only while visible, granted, and not already armed. */
-function schedule(state, env) {
+function schedule(state: Readonly<ReattachState>, env: ReattachEnvironment): ReattachStep {
   if (!env.visible || !state.granted || state.timer !== null) return unchanged(state);
   const gen = state.gen + 1;
   return next(state, { gen: gen, timer: gen }, [{ kind: SCHEDULE, gen: gen }]);
 }
 
-function stop(state, changes) {
-  const effects = [];
+function stop(state: Readonly<ReattachState>, changes: Partial<ReattachState>): ReattachStep {
+  const effects: ReattachEffect[] = [];
   if (state.timer !== null) effects.push({ kind: CANCEL_TIMER, gen: state.timer });
   if (state.probe !== null) effects.push({ kind: ABORT_PROBE, gen: state.probe.gen });
   return next(state, { timer: null, probe: null, ...changes }, effects);
 }
 
-export function reduceReattach(state, event, env) {
+export function reduceReattach(state: Readonly<ReattachState>, event: ReattachEvent, env: ReattachEnvironment): ReattachStep {
   switch (event.type) {
     case GRANT:
       return next(state, { granted: true });
@@ -100,7 +137,7 @@ export function reduceReattach(state, event, env) {
       // Do not spend a grant without a visible candidate.
       if (!cleared.candidate || !env.visible) return { state: cleared, effects: [] };
       const gen = cleared.gen + 1;
-      const effects = [];
+      const effects: ReattachEffect[] = [];
       if (cleared.probe !== null) effects.push({ kind: ABORT_PROBE, gen: cleared.probe.gen });
       effects.push({ kind: PROBE, id: cleared.candidate, gen: gen });
       return next(cleared, { granted: false, gen: gen, probe: { id: cleared.candidate, gen: gen } }, effects);
@@ -133,7 +170,7 @@ export function reduceReattach(state, event, env) {
       const settled = Object.freeze({ ...state, probe: null });
       // Definite failures retire the candidate; transient ones leave it for the next recovery grant.
       const changes = event.definite ? { candidate: null } : {};
-      const effects = env.activeSessionId === probe.id ? [{ kind: HINT_DETACHED }] : [];
+      const effects: ReattachEffect[] = env.activeSessionId === probe.id ? [{ kind: HINT_DETACHED }] : [];
       return next(settled, changes, effects);
     }
 

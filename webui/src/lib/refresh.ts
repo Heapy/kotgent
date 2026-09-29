@@ -1,12 +1,25 @@
 // Serialize reads of an unversioned source. A response overtaken by a later request is discarded; each
 // read owns one readiness token, and failure reporting is requested per waiter.
 
-export function createSerialRefresh({ read, begin, succeed, fail, report }) {
-  const queue = { requested: 0, settled: 0, running: false, waiters: [] };
+export interface SerialRefreshPorts<T, Token> {
+  read: () => T | PromiseLike<T>;
+  begin: () => Token;
+  succeed: (rows: T | null) => unknown;
+  fail: (token: Token, error: unknown) => unknown;
+  report: (error: unknown) => unknown;
+}
+
+export function createSerialRefresh<T, Token>({ read, begin, succeed, fail, report }: SerialRefreshPorts<T, Token>) {
+  const queue: {
+    requested: number;
+    settled: number;
+    running: boolean;
+    waiters: { request: number; reportFailure: boolean; resolve: (rows: T | null) => void }[];
+  } = { requested: 0, settled: 0, running: false, waiters: [] };
 
   return function refresh(reportFailure = true) {
     const request = ++queue.requested;
-    const result = new Promise((resolve) => {
+    const result = new Promise<T | null>((resolve) => {
       queue.waiters.push({ request: request, reportFailure: reportFailure, resolve: resolve });
     });
     if (queue.running) return result;
@@ -17,8 +30,8 @@ export function createSerialRefresh({ read, begin, succeed, fail, report }) {
         while (queue.settled < queue.requested) {
           const reading = queue.requested;
           const token = begin();
-          let rows = null;
-          let failure = null;
+          let rows: T | null = null;
+          let failure: unknown = null;
           try {
             rows = await read();
           } catch (e) {

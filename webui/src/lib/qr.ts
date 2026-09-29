@@ -1,10 +1,10 @@
 // Keep QR output black-on-white; dark-inverted codes fail on some phone scanners.
 
-import { QrCode } from "./qrcode.js";
+import { QrCode } from "./qrcode.ts";
 
-export function qrSvg(text, options) {
+export function qrSvg(text: unknown, options?: { border?: number; ecl?: string } | null) {
   const opts = options || {};
-  const border = Number.isFinite(opts.border) ? Math.max(0, Math.floor(opts.border)) : 4;
+  const border = Number.isFinite(opts.border) ? Math.max(0, Math.floor(opts.border!)) : 4;
   const qr = QrCode.encodeText(String(text), eccLevel(opts.ecl));
   const dim = qr.size + border * 2;
 
@@ -24,7 +24,7 @@ export function qrSvg(text, options) {
     "</svg>";
 }
 
-function eccLevel(name) {
+function eccLevel(name: string | null | undefined) {
   switch (String(name || "M").toUpperCase()) {
     case "L": return QrCode.Ecc.LOW;
     case "Q": return QrCode.Ecc.QUARTILE;

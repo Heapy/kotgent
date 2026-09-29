@@ -8,8 +8,8 @@ import {
   MUTATION_BUSY_MESSAGE,
   pendingMutation,
   runMutation,
-} from "../../webui/src/lib/mutation.js";
-import { buildCommands } from "../../webui/src/lib/commands.js";
+} from "../../webui/src/lib/mutation.ts";
+import { buildCommands } from "../../webui/src/lib/commands.ts";
 import { deferred } from "./fixtures.js";
 
 async function settle(promise) {

@@ -13,7 +13,7 @@ import {
   resolveActiveKey,
   stepActiveKey,
   typeaheadIntent,
-} from "../lib/typeahead.js";
+} from "../lib/typeahead.ts";
 
 /**
  * @param keys navigable option keys in display order; an empty list yields keyboard control.

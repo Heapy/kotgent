@@ -1,14 +1,26 @@
 // Wall time detects a discontinuity, but never supplies the displayed time or usage freshness.
+import type { RefreshRequest, RefreshTimers, TimerHandle } from "./resync.ts";
+
+export interface RefreshSourcesOptions extends RefreshTimers {
+  request: (request: RefreshRequest) => void;
+  window: Pick<Window, "addEventListener" | "removeEventListener">;
+  document: Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">;
+  wallNow?: () => number;
+  monotonicNow?: () => number;
+  intervalMs?: number;
+  gapMs?: number;
+}
+
 export function watchRefreshSources({
   request, window, document, wallNow = () => Date.now(), monotonicNow = () => performance.now(),
-  schedule = setTimeout, cancel = clearTimeout, intervalMs = 10_000, gapMs = 5000,
-}) {
+  schedule = setTimeout, cancel = (timer) => clearTimeout(timer ?? undefined), intervalMs = 10_000, gapMs = 5000,
+}: RefreshSourcesOptions) {
   let wall = wallNow();
   let mono = monotonicNow();
   let away = document.visibilityState !== "visible";
   let gap = false;
   let stopped = false;
-  let timer = null;
+  let timer: TimerHandle | null = null;
 
   function sample() {
     const nextWall = wallNow();
@@ -31,7 +43,7 @@ export function watchRefreshSources({
     if (document.visibilityState === "visible") refreshAfterReturn();
     else markAway();
   };
-  const pageshow = (event) => {
+  const pageshow = (event: PageTransitionEvent) => {
     if (event.persisted) away = true;
     refreshAfterReturn();
   };
