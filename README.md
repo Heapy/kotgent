@@ -85,8 +85,8 @@ To build from source instead, see [Build & test](#build--test).
 ## Install on Linux
 
 Linux x64 and ARM64 releases support glibc 2.35 or newer, with Ubuntu 22.04 as the tested baseline.
-Download the matching `linux-x64` or `linux-arm64` archive and its `.sha256` file from
-[GitHub Releases](https://github.com/Heapy/kotgent/releases). Alpine/musl is not supported.
+Releases are published on [GitHub Releases](https://github.com/Heapy/kotgent/releases). Alpine/musl is
+not supported.
 
 On Ubuntu, install runtime dependencies:
 
@@ -94,9 +94,26 @@ On Ubuntu, install runtime dependencies:
 sudo apt-get install tmux curl libcurl4 libsqlite3-0 perl openssl ca-certificates
 ```
 
-Verify the checksum with `sha256sum -c <archive>.sha256`, then extract the archive into a permanent
-location. Keep `kotgent` and its adjacent `resources/webui` directory together; symlink the executable
-into a directory on your PATH. Run from your normal login shell:
+Download, verify and unpack a release, then link it onto your PATH. Set `version` to the release and
+`arch` to `linux-x64` or `linux-arm64`:
+
+```shell
+version=0.10.0 arch=linux-x64
+name="kotgent-$version-$arch"
+base="https://github.com/Heapy/kotgent/releases/download/v$version"
+cd "$(mktemp -d)"
+curl -fLO "$base/$name.tar.gz"
+curl -fLO "$base/$name.tar.gz.sha256"
+sha256sum -c "$name.tar.gz.sha256"
+mkdir -p ~/.local/opt ~/.local/bin
+tar -xzf "$name.tar.gz" -C ~/.local/opt
+ln -sfn ~/.local/opt/"$name"/kotgent ~/.local/bin/kotgent
+```
+
+The daemon finds the Web UI next to the executable's real path, so link `kotgent`, never copy it: a copy
+without its adjacent `resources/webui` directory serves the sign-in form but answers `not found` for the
+Web UI. `~/.local/bin` must be on your PATH; the default Debian and Ubuntu `~/.profile` adds it when the
+directory exists at login. Run from your normal login shell:
 
 ```shell
 kotgent install
@@ -109,6 +126,10 @@ PATH and UTF-8 locale, and enables and starts the service. Re-run it after upgra
 executable. Restart with `systemctl --user restart kotgent.service`; inspect logs with
 `journalctl --user -u kotgent.service`. Stopping, restarting, or uninstalling the service preserves
 existing tmux sessions.
+
+To upgrade, run the same download block with the new `version`, then `kotgent install` again. The service
+records the executable's real, versioned path, so it keeps running the old release until then. Remove the
+old `~/.local/opt/kotgent-<version>-<arch>` directory only after that.
 
 For an unattended server, optionally enable the user manager after logout with
 `loginctl enable-linger "$USER"`. Installation does not change lingering. Without a systemd user
