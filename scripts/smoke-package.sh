@@ -31,6 +31,27 @@ assets="$stage/$name/resources/webui/assets"
     printf 'missing or empty Web UI assets directory: %s\n' "$assets" >&2
     exit 1
 }
+entry=$(sed -nE 's/.*<script[^>]*src="(\/assets\/[^"]+\.js)".*/\1/p' "$stage/$name/resources/webui/index.html")
+[[ -n "$entry" ]] || {
+    printf 'missing Web UI entry script\n' >&2
+    exit 1
+}
+[[ -s "$stage/$name/resources/webui$entry" ]] || {
+    printf 'missing or empty Web UI entry script: %s\n' "$entry" >&2
+    exit 1
+}
+while IFS= read -r -d '' asset; do
+    for suffix in .br .gz; do
+        [[ -s "$asset$suffix" ]] || {
+            printf 'missing or empty compressed Web UI asset: %s\n' "$asset$suffix" >&2
+            exit 1
+        }
+    done
+    if ! gzip -t "$asset.gz"; then
+        printf 'corrupt compressed Web UI asset: %s\n' "$asset.gz" >&2
+        exit 1
+    fi
+done < <(find "$assets" -type f \( -name '*.js' -o -name '*.css' \) -print0)
 cd "$stage"
 actual_version=$("$binary" --version)
 [[ "$actual_version" == "kotgent $version" ]] || {

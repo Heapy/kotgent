@@ -144,8 +144,11 @@ the common workflow and links to those guides; implementation invariants belong 
 - Service-worker sources may import shared modules; the built `/sw.js` remains a classic, root-scoped,
   network-only IIFE with no offline shell. Root shell and worker responses must revalidate.
 - Content-hashed files under `assets/` are cached as immutable: changed bytes have a different URL.
-  Source maps revalidate because their names follow the chunk, not their own bytes; all other static
-  files revalidate too.
+  Precompressed `.br`/`.gz` siblings are chosen by `Accept-Encoding`; compressed and identity responses
+  carry `Vary: Accept-Encoding`. If no representation including identity is acceptable, return 406 with
+  `Vary` and no `immutable`; direct sibling URLs are 404. Watch builds do not precompress. Source maps
+  stay uncompressed and revalidate because their names follow the chunk, not their own bytes; all other
+  static files revalidate too.
 - On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running
   one. A `sessionStorage` slot holding the last `running → served` reload refuses the same pair again;
   previous builds' assets are deliberately not kept. An old shell requesting its entry after the directory

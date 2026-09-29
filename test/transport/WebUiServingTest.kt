@@ -56,6 +56,8 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -237,6 +239,16 @@ class WebUiServingTest {
         assertTrue(files.any { it.endsWith(".map") }, "the build produces source maps")
         val hashedName = Regex(""".+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+""")
         for (path in files.filter { it.startsWith("/assets/") || it.endsWith(".map") }) {
+            if (path.endsWith(".br") || path.endsWith(".gz")) {
+                val original = path.dropLast(3)
+                assertTrue(original in files, "$path belongs to an emitted original")
+                assertTrue(hashedName.matches(original.substringAfterLast('/')), "$path belongs to a hashed original")
+                val response = ctx.get(path) { header(HttpHeaders.AcceptEncoding, "br, gzip") }
+                assertEquals(HttpStatusCode.NotFound, response.status, "$path is an internal representation")
+                assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), path)
+                assertNull(response.headers[HttpHeaders.Vary], path)
+                continue
+            }
             val isMap = path.endsWith(".map")
             if (!isMap) {
                 assertTrue(
@@ -251,6 +263,124 @@ class WebUiServingTest {
                 response.headers[HttpHeaders.CacheControl],
                 "GET $path uses the cache policy for its built path",
             )
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    @Test
+    fun negotiatesPrecompressedAssetsAndKeepsTheirOriginalMetadata() {
+        val dir = makeTempDir()
+        val files = mapOf(
+            "index.html" to "<!doctype html>\n",
+            "sw.js" to "self.addEventListener('fetch', () => {});\n",
+            "assets/app-abcdefgh.js" to "export const app = 1;\n",
+            "assets/app-abcdefgh.js.br" to "brotli script bytes\u0000",
+            "assets/app-abcdefgh.js.gz" to "gzip script bytes\u0000",
+            "assets/app-abcdefgh.css" to "body { color: white; }\n",
+            "assets/app-abcdefgh.css.br" to "brotli stylesheet bytes\u0000",
+            "assets/app-abcdefgh.css.gz" to "gzip stylesheet bytes\u0000",
+            "assets/partial-abcdefgh.js" to "export const partial = 2;\n",
+            "assets/partial-abcdefgh.js.gz" to "gzip only bytes\u0000",
+            "assets/plain-abcdefgh.js" to "export const plain = 3;\n",
+            "assets/app-abcdefgh.js.map" to "{}\n",
+            "assets/app-abcdefgh.js.map.br" to "brotli map bytes\u0000",
+            "assets/app-abcdefgh.js.map.gz" to "gzip map bytes\u0000",
+        )
+        data class Case(val file: String, val header: String?, val coding: String?)
+        val cases = listOf(
+            Case("app-abcdefgh.js", "br, gzip", "br"),
+            Case("app-abcdefgh.js", "gzip", "gzip"),
+            Case("app-abcdefgh.js", "br;q=0, gzip", "gzip"),
+            Case("app-abcdefgh.js", "identity", null),
+            Case("app-abcdefgh.js", null, null),
+            Case("app-abcdefgh.js", "", null),
+            Case("app-abcdefgh.js", "*;q=0, identity;q=0.5", null),
+            Case("app-abcdefgh.js", "*;q=0, gzip;q=0.5", "gzip"),
+            Case("app-abcdefgh.js", "x-gzip", "gzip"),
+            Case("app-abcdefgh.js", "br;q=0, br, gzip", "gzip"),
+            Case("app-abcdefgh.css", "br, gzip", "br"),
+            Case("app-abcdefgh.css", "gzip", "gzip"),
+            Case("app-abcdefgh.css", "identity", null),
+            Case("partial-abcdefgh.js", "br, gzip", "gzip"),
+            Case("partial-abcdefgh.js", "identity;q=0, br, gzip;q=0.5", "gzip"),
+            Case("partial-abcdefgh.js", "br", null),
+            Case("plain-abcdefgh.js", "br, gzip", null),
+            Case("app-abcdefgh.js.map", "br, gzip", null),
+        )
+        try {
+            assertEquals(0, mkdir("$dir/assets", MODE_0700.convert()))
+            for ([path, body] in files) writeFile("$dir/$path", body)
+            withServer(webUiDir = dir) { ctx ->
+                for (case in cases) {
+                    val response = ctx.get("/assets/${case.file}") {
+                        case.header?.let { header(HttpHeaders.AcceptEncoding, it) }
+                    }
+                    val label = "${case.file} with Accept-Encoding: ${case.header}"
+                    val suffix = when (case.coding) {
+                        "br" -> ".br"
+                        "gzip" -> ".gz"
+                        else -> ""
+                    }
+                    assertEquals(HttpStatusCode.OK, response.status, label)
+                    val expectedBytes = files.getValue("assets/${case.file}$suffix").encodeToByteArray()
+                    assertContentEquals(
+                        expectedBytes,
+                        response.readRawBytes(),
+                        label,
+                    )
+                    assertEquals(expectedBytes.size.toString(), response.headers[HttpHeaders.ContentLength], label)
+                    assertEquals(case.coding, response.headers[HttpHeaders.ContentEncoding], label)
+                    assertEquals(
+                        when {
+                            case.file.endsWith(".js") -> "text/javascript"
+                            case.file.endsWith(".css") -> "text/css"
+                            else -> "application/octet-stream"
+                        },
+                        response.headers[HttpHeaders.ContentType],
+                        label,
+                    )
+                    val isMap = case.file.endsWith(".map")
+                    assertEquals(
+                        if (isMap) "no-cache" else IMMUTABLE_CACHE_CONTROL,
+                        response.headers[HttpHeaders.CacheControl],
+                        label,
+                    )
+                    assertEquals(
+                        if (isMap) null else HttpHeaders.AcceptEncoding,
+                        response.headers[HttpHeaders.Vary],
+                        label,
+                    )
+                }
+                val rejected = listOf(
+                    "/assets/app-abcdefgh.js" to "*;q=0",
+                    "/assets/app-abcdefgh.js" to "br;q=0, gzip;q=0, identity;q=0",
+                    "/assets/partial-abcdefgh.js" to "br, identity;q=0",
+                    "/assets/partial-abcdefgh.js" to "x-gzip;q=0, *, identity;q=0",
+                    "/assets/plain-abcdefgh.js" to "br, gzip, identity;q=0",
+                    "/assets/app-abcdefgh.js.map" to "br, gzip, identity;q=0",
+                    "/index.html" to "identity;q=0",
+                    "/sw.js" to "*;q=0",
+                )
+                for ([path, acceptEncoding] in rejected) {
+                    val response = ctx.get(path) { header(HttpHeaders.AcceptEncoding, acceptEncoding) }
+                    val label = "$path with Accept-Encoding: $acceptEncoding"
+                    assertEquals(HttpStatusCode.NotAcceptable, response.status, label)
+                    assertEquals(HttpHeaders.AcceptEncoding, response.headers[HttpHeaders.Vary], label)
+                    assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), label)
+                    assertNull(response.headers[HttpHeaders.ContentEncoding], label)
+                    assertEquals("not acceptable", response.bodyAsText(), label)
+                }
+                for (file in files.keys.filter { it.endsWith(".br") || it.endsWith(".gz") }) {
+                    val response = ctx.get("/$file") { header(HttpHeaders.AcceptEncoding, "br, gzip") }
+                    assertEquals(HttpStatusCode.NotFound, response.status, file)
+                    assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), file)
+                    assertNull(response.headers[HttpHeaders.Vary], file)
+                }
+            }
+        } finally {
+            for (path in files.keys) unlink("$dir/$path")
+            rmdir("$dir/assets")
+            rmdir(dir)
         }
     }
 
@@ -296,12 +426,24 @@ class WebUiServingTest {
                 assertEquals("bad path", traversal.bodyAsText())
 
                 for (path in listOf(
+                    "/index.html%00", "/sw.js%00/anything", "/icons/logo.svg%00",
+                    "/assets/x-abcdefgh.js%00", "/assets/nested/chunk-89abcdef.js%00.gz",
+                    "/tasks/%00", "/missing%00file",
+                )) {
+                    val response = ctx.get(path)
+                    assertEquals(HttpStatusCode.Forbidden, response.status, "GET $path contains a NUL")
+                    assertEquals("bad path", response.bodyAsText(), path)
+                }
+
+                for (path in listOf(
                     "/_v/0123456789ab/app.js", "/_v/0123456789ab/assets/x-abcdefgh.js",
                     "/assets/tasks", "/assets/does-not-exist.js",
                 )) {
                     val response = ctx.get(path)
                     assertEquals(HttpStatusCode.NotFound, response.status, "GET $path names no file")
                     assertEquals("not found", response.bodyAsText(), path)
+                    assertFalse(response.headers[HttpHeaders.CacheControl].orEmpty().contains("immutable"), path)
+                    assertNull(response.headers[HttpHeaders.Vary], path)
                 }
             }
         } finally {

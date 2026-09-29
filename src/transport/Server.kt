@@ -284,8 +284,12 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
     dir: String,
     rel: String,
 ) {
-    if (rel.contains("..") || rel.startsWith("/")) {
+    if (rel.contains("..") || rel.startsWith("/") || '\u0000' in rel) {
         call.respondText("bad path", status = HttpStatusCode.Forbidden)
+        return
+    }
+    if (rel.startsWith(HASHED_ASSETS_DIR) && (rel.endsWith(".br") || rel.endsWith(".gz"))) {
+        call.respondText("not found", status = HttpStatusCode.NotFound)
         return
     }
     val direct = readFileBytesOrNull("$dir/$rel")
@@ -296,11 +300,38 @@ private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
         return
     }
     val immutable = path.startsWith(HASHED_ASSETS_DIR) && !path.endsWith(".map")
+    if (immutable) {
+        call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
+    }
+    val acceptEncoding = call.request.headers.getAll(HttpHeaders.AcceptEncoding)?.joinToString(",")
+    val available = if (immutable) mutableSetOf("br", "gzip") else mutableSetOf()
+    var representation: ByteArray = bytes
+    while (true) {
+        when (val selection = negotiateContentEncoding(acceptEncoding, available)) {
+            ContentEncodingSelection.Identity -> break
+            ContentEncodingSelection.NotAcceptable -> {
+                if (!immutable) call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
+                call.respondText("not acceptable", status = HttpStatusCode.NotAcceptable)
+                return
+            }
+            is ContentEncodingSelection.Encoded -> {
+                val coding = selection.coding
+                val extension = if (coding == "br") "br" else "gz"
+                val compressed = readFileBytesOrNull("$dir/$path.$extension")
+                if (compressed != null) {
+                    call.response.headers.append(HttpHeaders.ContentEncoding, coding)
+                    representation = compressed
+                    break
+                }
+                val _ = available.remove(coding)
+            }
+        }
+    }
     call.response.headers.append(
         HttpHeaders.CacheControl,
         if (immutable) IMMUTABLE_CACHE_CONTROL else "no-cache",
     )
-    call.respondBytes(bytes, contentTypeFor(path))
+    call.respondBytes(representation, contentTypeFor(path))
 }
 
 private fun contentTypeFor(path: String): ContentType = when (path.substringAfterLast('.', "")) {

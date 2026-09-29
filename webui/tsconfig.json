@@ -32,8 +32,7 @@
     "allowJs": false
   },
   "include": [
-    "src/**/*",
-    "vite.config.ts"
+    "src/**/*"
   ],
   "exclude": [
     "src/sw.ts"

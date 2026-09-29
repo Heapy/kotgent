@@ -542,12 +542,20 @@ class MobileFeaturesTest {
 
     private fun assertUnicodeWidth(page: Page, label: String, expectedCells: Double) {
         // U+1F9D1 takes one cell with the built-in widths and two with Unicode 11.
-        val probe = "$label A🧑B"
-        assertEquals(true, page.evaluate(FOCUS_XTERM_TEXTAREA))
-        page.keyboard().insertText(probe)
-        val row = page.locator("$TERMINAL_ROWS > div")
-            .filter(com.microsoft.playwright.Locator.FilterOptions().setHasText(probe))
+        // Widths are fixed when text is written, so retype the probe while the addon loads.
+        var attempt = 0
+        var probe = ""
+        var typedAt = 0L
         page.waitForCondition {
+            if (probe.isEmpty() || System.nanoTime() - typedAt > UNICODE_RETYPE_NANOS) {
+                assertEquals(true, page.evaluate(FOCUS_XTERM_TEXTAREA))
+                if (probe.isNotEmpty()) page.keyboard().press("Enter")
+                probe = "$label-${attempt++} A🧑B"
+                page.keyboard().insertText(probe)
+                typedAt = System.nanoTime()
+            }
+            val row = page.locator("$TERMINAL_ROWS > div")
+                .filter(com.microsoft.playwright.Locator.FilterOptions().setHasText(probe))
             val cells = row.evaluateAll(
                 """
                 (rows, probe) => {
@@ -562,6 +570,7 @@ class MobileFeaturesTest {
             ) as? Number
             cells != null && abs(cells.toDouble() - expectedCells) < 0.15
         }
+        assertEquals(true, page.evaluate(FOCUS_XTERM_TEXTAREA))
         page.keyboard().press("Enter")
     }
 
@@ -584,6 +593,7 @@ class MobileFeaturesTest {
         const val UNICODE_11_MODE = "11"
         const val UNICODE_GRAPHEMES_MODE = "15-graphemes"
         const val UNICODE_ADDON_MARKER = "addon-unicode"
+        const val UNICODE_RETYPE_NANOS = 500_000_000L
         val UNICODE_11_CHUNK = Regex("/assets/addon-unicode11-[A-Za-z0-9_-]+\\.js$")
         val UNICODE_GRAPHEMES_CHUNK = Regex("/assets/addon-unicode-graphemes-[A-Za-z0-9_-]+\\.js$")
 

@@ -412,10 +412,15 @@ Real-device release checklist:
 ### Static assets and source checks
 
 Static-serving tests verify externally observable facts: reachability, bytes, media types, cache headers,
-path safety, and precedence over API routes. Every reference in the built shell must resolve to a served
-file, and every non-map file under `assets/` must have a content-hashed name and be served immutable.
-Source maps revalidate because their names follow the chunk, not their own bytes; the shell, service
-worker, manifest, icons, and all other static files must revalidate too.
+content-encoding negotiation, path safety, and precedence over API routes. Every reference in the built
+shell must resolve to a served file, and every public non-map file under `assets/` must have a
+content-hashed name and be served immutable.
+Precompressed `.br`/`.gz` siblings must decompress to their originals; negotiation preserves the original
+media type and cache policy and adds `Vary: Accept-Encoding` even for identity responses. No acceptable
+representation including identity means 406 with `Vary` and no `immutable`. Direct sibling URLs are 404;
+watch builds do not precompress. Chromium Resource Timing must prove JS and CSS were decoded. Source
+maps stay uncompressed and revalidate because their names follow the chunk, not their own bytes; the
+shell, service worker, manifest, icons, and all other static files must revalidate too.
 
 Assertions that scan production Kotlin, TypeScript/TSX, JavaScript, HTML, or CSS with `contains`,
 `indexOf`, or regular expressions do not prove execution and do not count as coverage. They pass around
