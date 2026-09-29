@@ -67,6 +67,7 @@ import {
   SCREEN_SESSIONS,
   SCREEN_TASK,
   SCREEN_TASKS,
+  clearDeepLink,
   navigate,
   parseRoute,
   routePath,
@@ -194,15 +195,6 @@ function deepLinkSessionId() {
   } catch (_) {
     return null;
   }
-}
-
-function clearDeepLink() {
-  try {
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has(DEEP_LINK_PARAM)) return;
-    url.searchParams.delete(DEEP_LINK_PARAM);
-    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
-  } catch (_) { /* Leaving the parameter is harmless when the History API is unavailable. */ }
 }
 
 function deadHint(state: string | null) {

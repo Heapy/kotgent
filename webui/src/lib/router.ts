@@ -74,6 +74,15 @@ export function sessionPath(id: string) {
 const routeHandlers = new Set<(route: Route) => void>();
 let popstateInstalled = false;
 
+export function clearDeepLink() {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(DEEP_LINK_PARAM)) return;
+    url.searchParams.delete(DEEP_LINK_PARAM);
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+  } catch (_) { /* Leaving the parameter is harmless when the History API is unavailable. */ }
+}
+
 function emitRoute() {
   const route = parseRoute(window.location.pathname, window.location.search);
   // Handlers may unsubscribe while this loop runs.
