@@ -1393,7 +1393,8 @@ const STATES: [string, string, string][] = [
     "or lost as soon as it looks at the agent's own store."],
   ["lost", "badge-lost",
     "Dead and unrecoverable: the pane is gone and the agent no longer keeps the conversation — Claude " +
-    "deletes a transcript 30 days after its last turn. Resume is refused; start a new session."],
+    "deletes a transcript 30 days after its last turn. A stopped session whose transcript is gone turns lost " +
+    "at the next daemon start or refused Resume. Resume is refused; start a new session."],
   ["resumable", "badge-resumable", "Dead, but the conversation transcript survives — Resume can revive it."],
 ];
 
@@ -1416,8 +1417,8 @@ const CONTROLS: [string, string][] = [
     "Sends Ctrl-C to the pane and marks the session ready, clearing any pending approval. Use it for a " +
     "turn that is stuck or running away. The agent stays alive."],
   ["Stop",
-    "Kills the tmux session, so the agent process ends and the state becomes stopped. The conversation " +
-    "transcript is kept, so this is reversible with Resume."],
+    "Kills the tmux session, so the agent process ends and the state becomes stopped. Resume revives it " +
+    "for as long as the agent keeps the conversation transcript."],
   ["Resume",
     "Relaunches the agent against the saved transcript in a fresh tmux session and puts it back to " +
     "ready. It is refused while the provider's session id has not been captured yet — that id is what " +

@@ -401,6 +401,10 @@ class SessionManager(
         val spec = adapter.buildLaunchSpec(LaunchMode.Resume(providerId))
         // Check after agent resolution to preserve its errors, and before opening a terminal that cannot resume.
         if (!vendorProbe.hasTranscript(meta.agent, meta.cwd, providerId)) {
+            // A provider deletes a transcript without any signal to the daemon, so this refusal is where it shows.
+            if (meta.state != SessionState.lost && !isPaneAlive(meta.tmuxSession)) {
+                persistDerivedState(meta, SessionState.lost, EventSource.liveness)
+            }
             throw TranscriptGoneException(meta.agent, providerId, meta.cwd)
         }
         val deadState = if (meta.state.isDead) meta.state else SessionState.crashed

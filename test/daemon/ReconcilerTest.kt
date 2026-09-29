@@ -48,7 +48,7 @@ class ReconcilerTest {
         assertEquals(SessionState.running, Reconciler.classify(true, SessionState.crashed, false, false), "alive corrects a stale dead state up to running")
 
         assertEquals(SessionState.stopped, Reconciler.classify(false, SessionState.running, stopIntent = true, transcriptExists = true))
-        assertEquals(SessionState.stopped, Reconciler.classify(false, SessionState.running, stopIntent = true, transcriptExists = false))
+        assertEquals(SessionState.lost, Reconciler.classify(false, SessionState.stopped, stopIntent = true, transcriptExists = false), "a stop cannot be resumed once the transcript is gone")
 
         assertEquals(SessionState.resumable, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = true))
         assertEquals(SessionState.lost, Reconciler.classify(false, SessionState.running, stopIntent = false, transcriptExists = false))

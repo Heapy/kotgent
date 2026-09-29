@@ -146,9 +146,9 @@ class Reconciler(
             transcriptExists: Boolean,
         ): SessionState = when {
             paneAlive -> if (currentState.isAlive) currentState else SessionState.running
+            !transcriptExists -> SessionState.lost
             stopIntent -> SessionState.stopped
-            transcriptExists -> SessionState.resumable
-            else -> SessionState.lost
+            else -> SessionState.resumable
         }
     }
 }

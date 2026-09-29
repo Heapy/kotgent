@@ -698,11 +698,17 @@ class SessionManagerTest {
             val tmux = FakeTmux()
             val mgr = codexManager(
                 store, tmux,
+                vendorProbe = liveTranscriptProbe,
                 probeCliVersion = { _, _ -> error("a dead row is never probed") },
                 now = { error("no state write expected") },
             )
             // What SessionEnd and Stop leave behind.
-            store.upsertSession(codexRow(id.value, SessionState.stopped, EventSource.user, pane))
+            store.upsertSession(
+                codexRow(
+                    id.value, SessionState.stopped, EventSource.user, pane,
+                    providerId = ProviderSessionId("55555555-5555-4555-8555-555555555555"),
+                ),
+            )
             val committed = store.getSession(id)!!
 
             mgr.onTmuxSessionClosed(id)
@@ -1410,17 +1416,42 @@ class SessionManagerTest {
                 importProbe, importLocator, importKinds,
                 now = { 7L },
             )
-            store.upsertSession(meta("lost01", SessionState.lost, providerId = provider, paneId = PaneId("%1")))
+            store.upsertSession(meta("lost01", SessionState.stopped, providerId = provider, paneId = PaneId("%1")))
 
             val ex = assertFailsWith<TranscriptGoneException> { mgr.resume(SessionId("lost01")) }
 
             assertEquals(provider, ex.providerSessionId)
             assertTrue(tmux.newSessionCommands.isEmpty(), "a pane the provider would reject is never opened")
-            assertEquals(
-                SessionState.lost, store.getSession(SessionId("lost01"))!!.state,
-                "the refused resume leaves the stored row unchanged",
-            )
+            val row = store.getSession(SessionId("lost01"))!!
+            assertEquals(SessionState.lost, row.state, "the refusal records that the stopped session is gone for good")
+            assertEquals(EventSource.liveness, row.stateSource)
             assertNull(registry.lookup(PaneId("%1")), "and registers no pane")
+        }
+    }
+
+    @Test
+    fun aRefusedResumeLeavesARowWithALivePaneAlone() = runBlocking {
+        withTimeout(20.seconds) {
+            val store = SqliteEventStore.inMemory(now = { 1L })
+            val tmux = FakeTmux()
+            val pane = tmux.seedPane("live01")
+            val mgr = SessionManager(
+                tmux, store, PaneRegistry(),
+                StubAgentFactory(cat, preallocated = null),
+                ProviderIdCapture(store, this),
+                importProbe, importLocator, importKinds,
+                now = { 7L },
+            )
+            store.upsertSession(
+                meta("live01", SessionState.stopped, providerId = ProviderSessionId("ffffffff-ffff-4fff-8fff-ffffffffffff"), paneId = pane),
+            )
+
+            assertFailsWith<TranscriptGoneException> { mgr.resume(SessionId("live01")) }
+
+            assertEquals(
+                SessionState.stopped, store.getSession(SessionId("live01"))!!.state,
+                "a session whose pane still runs is not lost",
+            )
         }
     }
 
