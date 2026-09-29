@@ -11,7 +11,32 @@ permissions:
   contents: read
 
 jobs:
+  # One build serves every platform, so all release archives carry the same Web UI bytes.
+  webui:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build the Web UI
+        run: |
+          npm ci --prefix webui
+          npm run typecheck --prefix webui
+          npm run build --prefix webui
+      - uses: actions/upload-artifact@v7
+        with:
+          name: webui
+          path: resources/webui/
+          if-no-files-found: error
+          retention-days: 7
+
   build-test:
+    needs: webui
     strategy:
       fail-fast: false
       matrix:
@@ -36,17 +61,21 @@ jobs:
           else
             scripts/install-linux-build-deps.sh '${{ matrix.platform }}'
           fi
+      - uses: actions/download-artifact@v8
+        with:
+          name: webui
+          path: resources/webui
+      # The Node test tier and the browser-test probe bundle resolve packages from webui/node_modules.
       - name: Install Node
+        if: matrix.platform != 'linuxArm64'
         uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: webui/package-lock.json
-      - name: Build the Web UI
-        run: |
-          npm ci --prefix webui
-          npm run typecheck --prefix webui
-          npm run build --prefix webui
+      - name: Install Web UI test dependencies
+        if: matrix.platform != 'linuxArm64'
+        run: npm ci --prefix webui
       - name: Cache the Kotlin toolchain
         uses: actions/cache@v6
         with:
@@ -143,11 +172,10 @@ jobs:
         with:
           name: arm64-checks
           path: build/arm64-checks
-      - name: Restore the built Web UI
-        run: |
-          mkdir -p resources
-          rm -rf resources/webui
-          cp -R build/arm64-checks/resources/webui resources/webui
+      - uses: actions/download-artifact@v8
+        with:
+          name: webui
+          path: resources/webui
       - uses: actions/download-artifact@v8
         with:
           name: package-linuxArm64

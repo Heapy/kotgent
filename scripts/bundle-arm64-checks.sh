@@ -3,13 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 root_module=$(basename "$PWD")
 stage=build/arm64-checks
-[[ -s resources/webui/index.html ]] || {
-    printf 'missing Web UI build; run npm ci and npm run build in webui/\n' >&2
-    exit 1
-}
-mkdir -p "$stage/tests" "$stage/resources"
-rm -rf "$stage/resources/webui"
-cp -R resources/webui "$stage/resources/webui"
+mkdir -p "$stage/tests"
 for module in "$root_module" sysnative webuicheck; do
     ./kotlin task ":$module:linkLinuxArm64TestDebug"
     cp "build/tasks/_${module}_linkLinuxArm64TestDebug/${module}_test.kexe" "$stage/tests/$module.kexe"
