@@ -598,7 +598,8 @@ export function TerminalPane({
 
 /** Preserve real-link behavior while routing plain task-badge clicks in-app. */
 function HeaderTaskBadge({ session, tasks }: HeaderTaskBadgeProps) {
-  const task = session ? taskBadge(session, tasks) : null;
+  if (!session) return null;
+  const task = taskBadge(session, tasks);
   if (!task) return null;
   const open: JSX.MouseEventHandler<HTMLAnchorElement> = (event) => {
     event.stopPropagation();
@@ -614,7 +615,7 @@ function HeaderTaskBadge({ session, tasks }: HeaderTaskBadgeProps) {
       title={task.tooltip}
       onClick={open}
     >
-      <span class="task-session-dot" data-state={session!.state}></span>{task.label}
+      <span class="task-session-dot" data-state={session.state}></span>{task.label}
     </a>
   );
 }

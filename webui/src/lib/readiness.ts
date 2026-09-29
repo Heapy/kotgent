@@ -3,6 +3,7 @@
 // snapshots are authoritative.
 
 import { signal } from "@preact/signals-core";
+import type { ReadonlySignal } from "@preact/signals-core";
 
 export const IDLE = "idle";
 export const LOADING = "loading";
@@ -25,7 +26,17 @@ function failureSentence(error: unknown) {
   return text.trim() !== "" ? text : UNKNOWN_FAILURE;
 }
 
-export function createReadiness() {
+export interface Readiness {
+  status: ReadonlySignal<ReadinessStatus>;
+  begin: () => number;
+  succeed: (token?: number) => boolean;
+  fail: (token: number | undefined, error?: unknown) => boolean;
+  reset: () => void;
+  setLoader: (fn: (() => unknown) | null | undefined) => void;
+  retry: () => Promise<unknown>;
+}
+
+export function createReadiness(): Readiness {
   const status = signal<ReadinessStatus>(IDLE_STATUS);
   let generation = 0;
   let load: (() => unknown) | null = null;
@@ -95,7 +106,7 @@ export function combineReadiness(...statuses: (ReadinessStatus | null | undefine
   let ready = statuses.length > 0;
   for (const status of statuses) {
     const state = status ? status.state : IDLE;
-    if (state === FAILED) return { state: FAILED, error: failureSentence(status!.error) };
+    if (status && state === FAILED) return { state: FAILED, error: failureSentence(status.error) };
     if (state === LOADING) loading = true;
     if (state !== READY) ready = false;
   }

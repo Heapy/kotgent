@@ -18,10 +18,10 @@ export function adhdFolderOf(cwd: string | null | undefined, prefs: Preferences)
 
 // Whether this exact folder carries a mark, which is what its button shows. A folder under a marked
 // ancestor is listed by the rule below but is not itself marked.
-export function isPathAdhd(path: unknown, paths: unknown) {
+export function isPathAdhd(path: string | null | undefined, paths: readonly (string | null | undefined)[] | null | undefined) {
   if (!path || !Array.isArray(paths)) return false;
   const target = normalizePath(path);
-  return paths.some((marked: unknown) => normalizePath(marked) === target);
+  return paths.some((marked: string | null | undefined) => normalizePath(marked) === target);
 }
 
 export function isSessionInAdhd(session: Session | null | undefined, prefs: Preferences) {

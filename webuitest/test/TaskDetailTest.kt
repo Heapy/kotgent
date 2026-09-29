@@ -142,7 +142,7 @@ class TaskDetailTest {
         onTheTaskDetail("dependency-refused") { harness, page ->
             page.openFocusTask(harness.baseUrl)
 
-            // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+            // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
             assertThat(page.locator("#task-detail-dep-input")).hasAttribute("spellcheck", "false")
             page.locator("#task-detail-dep-input").fill("local:999")
             page.locator("#task-detail-dep-add").click()

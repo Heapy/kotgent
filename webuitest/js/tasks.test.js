@@ -1,4 +1,4 @@
-// Pure rules from webui/src/lib/tasks.js: the board's revision merges and its state vocabulary.
+// Pure rules from webui/src/lib/tasks.ts: the board's revision merges and its state vocabulary.
 // The module imports apiRequest, but only calls it inside request functions, so importing it here never
 // reaches window or fetch. Nothing exercised below performs I/O.
 
@@ -139,7 +139,7 @@ describe("removeTask", () => {
 
 describe("applyTasksSnapshot", () => {
   // The snapshot is the whole list and reads nothing of the one it replaces, which is what makes a row
-  // deleted during an outage unable to reappear. Its caller is state/tasks.js's replaceTasks.
+  // deleted during an outage unable to reappear. Its caller is state/tasks.ts's replaceTasks.
   test("a snapshot becomes the list, and only the rows it carries", () => {
     const rows = [taskRow({ ref: "local:a" })];
 

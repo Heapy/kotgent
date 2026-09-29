@@ -19,7 +19,7 @@ export type EventsFrame =
 
 export interface EventsConnectionOptions extends RefreshTimers {
   url: () => string;
-  onFrame: (frame: object) => void;
+  onFrame: (frame: EventsFrame) => void;
   onReady: (status: { recovered: boolean }) => void;
   onFailure: (error: unknown) => void;
   createSocket?: (url: string) => Pick<WebSocket, "onopen" | "onmessage" | "onclose" | "onerror" | "close">;
@@ -43,7 +43,7 @@ export function createEventsConnection({
       };
       socket.onmessage = (event: MessageEvent<unknown>) => {
         if (!isCurrent()) return;
-        let msg: unknown;
+        let msg: EventsFrame | string | number | boolean | null;
         try { msg = JSON.parse(String(event.data)); } catch (_) { return; }
         if (!msg || typeof msg !== "object") return;
         try {

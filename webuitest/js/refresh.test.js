@@ -22,7 +22,7 @@ function harness(applyRows = null) {
       calls.begin += 1;
       return "token-" + (++tokens);
     },
-    // The real port (state/projects.js) writes the rows before anything downstream can throw, so a
+    // The real port (state/projects.ts) writes the rows before anything downstream can throw, so a
     // store that throws is recorded as having applied them.
     succeed: (rows) => {
       calls.succeed.push(rows);

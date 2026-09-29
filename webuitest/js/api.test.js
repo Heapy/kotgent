@@ -1,4 +1,4 @@
-// The one place a 401 is answered (webui/src/lib/api.js).
+// The one place a 401 is answered (webui/src/lib/api.ts).
 //
 // Thirty call sites reach the daemon through apiRequest and none of them can be trusted to recognise an
 // expired cookie on their own: the reattach probe asked only `isDefiniteAnswer`, which is true for any
@@ -10,7 +10,8 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { apiRequest, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.ts";
+import { apiRequest, errorMessage, isUnauthenticated, setSignOutHandler } from "../../webui/src/lib/api.ts";
+import { fetchProjects, fetchTasks } from "../../webui/src/lib/tasks.ts";
 
 const realFetch = globalThis.fetch;
 
@@ -63,6 +64,28 @@ describe("an expired session cookie", () => {
 });
 
 describe("every other outcome", () => {
+  test("success bodies retain their parsed value, raw text, or empty-body null", async () => {
+    for (const [body, expected] of [
+      ["plain text", "plain text"], ["", null], ["null", null], ["false", false], ["0", 0],
+      ['"a JSON string"', "a JSON string"], ['{"extra":true}', { extra: true }],
+    ]) {
+      respondWith(200, body);
+      assert.deepEqual(await apiRequest("/example"), expected);
+    }
+  });
+
+  test("list reads retain their existing falsy fallback without filtering success payloads", async () => {
+    for (const read of [fetchTasks, fetchProjects]) {
+      for (const [body, expected] of [
+        ["", []], ["false", []], ["0", []], ["plain text", "plain text"],
+        ['{"projects":[]}', { projects: [] }], ['[{"extra":true}]', [{ extra: true }]],
+      ]) {
+        respondWith(200, body);
+        assert.deepEqual(await read(), expected);
+      }
+    }
+  });
+
   test("a 404 is a real answer about the resource, not about the operator", async () => {
     respondWith(404, "no such session");
     const error = await failureOf("/sessions/gone");
@@ -82,4 +105,15 @@ describe("every other outcome", () => {
     assert.deepEqual(await apiRequest("/sessions/s1"), { id: "s1" });
     assert.equal(signOuts, 0);
   });
+});
+
+test("error messages preserve the selected value's text and the falsy-message fallback", () => {
+  for (const [error, expected] of [
+    [new Error("offline"), "offline"], ["offline", "offline"], [null, "null"], [undefined, "undefined"],
+    [{ message: 42 }, "42"], [{ message: { toString: () => "details" } }, "details"],
+    [{ message: "", toString: () => "fallback" }, "fallback"],
+    [{ message: 0, toString: () => "fallback" }, "fallback"],
+  ]) {
+    assert.equal(errorMessage(error), expected);
+  }
 });

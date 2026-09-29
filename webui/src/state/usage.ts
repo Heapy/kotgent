@@ -1,6 +1,6 @@
 import { batch, signal } from "@preact/signals-core";
 import type { ReadonlySignal } from "@preact/signals-core";
-import { applyUsageSnapshot, atUsageReceipt, upsertUsageIfNewer } from "../lib/usage.ts";
+import { applyUsageSnapshot, atUsageReceipt, isFiniteNumber, upsertUsageIfNewer } from "../lib/usage.ts";
 import type { ReceivedUsageWindow, UsageWindow } from "../lib/usage.ts";
 
 const usageState = signal<readonly ReceivedUsageWindow[]>([]);
@@ -10,7 +10,7 @@ export const usageClockOffset: ReadonlySignal<number | null> = usageClockOffsetS
 
 function publishUsage(windows: readonly ReceivedUsageWindow[], serverNow: unknown, clientReceivedAt: number) {
   batch(() => {
-    usageClockOffsetState.value = typeof serverNow === "number" && Number.isFinite(serverNow) && Number.isFinite(clientReceivedAt)
+    usageClockOffsetState.value = isFiniteNumber(serverNow) && Number.isFinite(clientReceivedAt)
       ? serverNow - clientReceivedAt : null;
     usageState.value = windows;
   });

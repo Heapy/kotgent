@@ -3,6 +3,7 @@
 
 import type { ComponentChildren, JSX } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import type { ApiResponse } from "../lib/api.ts";
 import { errorMessage } from "../lib/api.ts";
 import { SCREEN_TASKS, navigate, routePath, sessionPath, taskPath } from "../lib/router.ts";
 import { displayName, stateBadge } from "../lib/sessions.ts";
@@ -97,7 +98,8 @@ export function TaskDetail({
   onStartSession,
   onAnnounce,
 }: TaskDetailProps) {
-  const [detail, setDetail] = useState<TaskDetailData | null>(null);
+  const [response, setDetail] = useState<ApiResponse<TaskDetailData>>(null);
+  const detail = typeof response === "object" ? response : null;
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -111,22 +113,22 @@ export function TaskDetail({
   const onTaskRemovedRef = useRef(onTaskRemoved);
   onTaskRemovedRef.current = onTaskRemoved;
 
-  const publishRow = useCallback((row: Task | null | undefined) => {
-    if (row && row.ref && onTaskRowRef.current) onTaskRowRef.current(row);
+  const publishRow = useCallback((row: ApiResponse<Task> | undefined) => {
+    if (row && typeof row === "object" && row.ref && onTaskRowRef.current) onTaskRowRef.current(row);
   }, []);
 
   const load = useCallback(async () => {
     const generation = ++generationRef.current;
     try {
-      const next = await fetchTaskDetail(taskRef) as TaskDetailData | null;
+      const next = await fetchTaskDetail(taskRef);
       if (generationRef.current !== generation) return;
       setDetail(next);
       setLoadError(null);
-      publishRow(next && next.task);
+      publishRow(next && typeof next === "object" ? next.task : null);
     } catch (e) {
       if (generationRef.current !== generation) return;
       setDetail(null);
-      setLoadError(errorMessage(e) as string);
+      setLoadError(errorMessage(e));
     }
   }, [taskRef, publishRow]);
 
@@ -201,7 +203,7 @@ export function TaskDetail({
     if (bodyDraft !== (entry.body || "")) patch.body = bodyDraft;
     if (!("title" in patch) && !("body" in patch)) return;
     run("Could not save " + taskRef, async () => {
-      const saved = await patchTask(taskRef, patch) as Task | null;
+      const saved = await patchTask(taskRef, patch);
       publishRow(saved);
       onAnnounce("Saved " + taskRef + ".");
     });
@@ -217,7 +219,7 @@ export function TaskDetail({
     const next = (event.target as HTMLSelectElement).value;
     if (!entry || next === entry.state) return;
     run("Could not move " + taskRef, async () => {
-      const moved = await patchTask(taskRef, { state: next }) as Task | null;
+      const moved = await patchTask(taskRef, { state: next });
       publishRow(moved);
       onAnnounce(taskRef + " → " + taskStateLabel(next) + ".");
     });
@@ -228,7 +230,7 @@ export function TaskDetail({
     const on = depDraft.trim();
     if (!on) return;
     run("Could not add the dependency", async () => {
-      const edited = await editTaskDependency(taskRef, "add", on) as Task | null;
+      const edited = await editTaskDependency(taskRef, "add", on);
       publishRow(edited);
       setDepDraft("");
       onAnnounce(taskRef + " now depends on " + on + ".");
@@ -237,7 +239,7 @@ export function TaskDetail({
 
   const removeDependency = (on: string) => {
     run("Could not remove the dependency", async () => {
-      const edited = await editTaskDependency(taskRef, "remove", on) as Task | null;
+      const edited = await editTaskDependency(taskRef, "remove", on);
       publishRow(edited);
       onAnnounce(taskRef + " no longer depends on " + on + ".");
     });
@@ -293,7 +295,7 @@ export function TaskDetail({
   }
 
   // Dependencies, activity, and project path require the detail response, not just a live row.
-  if (!detail || !entry) {
+  if (!response || !entry) {
     return (
       <section class="task-detail" aria-label={"Task " + taskRef}>
         {head(<h2 id="task-detail-title">{taskRef}</h2>)}
@@ -308,7 +310,7 @@ export function TaskDetail({
         <div id="task-detail-ident">
           <h2 id="task-detail-title">{taskRef}</h2>
           <p id="task-detail-project" class="field-hint">
-            {detail.projectName || entry.project}{detail.projectPath ? " · " + detail.projectPath : ""}
+            {detail?.projectName || entry.project}{detail?.projectPath ? " · " + detail.projectPath : ""}
           </p>
         </div>,
         <div id="task-detail-tools">

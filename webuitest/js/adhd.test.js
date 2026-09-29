@@ -1,4 +1,4 @@
-// ADHD-mode membership from webui/src/lib/adhd.js. The rule decides which sessions the sidebar
+// ADHD-mode membership from webui/src/lib/adhd.ts. The rule decides which sessions the sidebar
 // lists while the mode is on, and it touches neither the DOM nor the network, so it is proven here.
 
 import { describe, test } from "node:test";

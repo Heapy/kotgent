@@ -12,6 +12,9 @@ export interface ApiError extends Error {
   unauthenticated?: boolean;
 }
 
+// JSON object types describe the daemon contract; primitive JSON, raw text and empty-body null stay possible.
+export type ApiResponse<T> = T | string | number | boolean | null;
+
 function errorField(error: unknown, key: string): unknown {
   return error && Reflect.get(Object(error), key);
 }
@@ -49,8 +52,8 @@ export function resizeFrame(cols: number, rows: number) {
   return JSON.stringify({ type: "resize", cols: cols, rows: rows });
 }
 
-export function errorMessage(error: unknown) {
-  return errorField(error, "message") ? errorField(error, "message") : String(error);
+export function errorMessage(error: unknown): string {
+  return errorField(error, "message") ? String(errorField(error, "message")) : String(error);
 }
 
 function requestTimeoutError() {
@@ -63,7 +66,7 @@ function requestTimeoutError() {
   return error;
 }
 
-export async function apiRequest(path: string, options?: ApiRequestOptions): Promise<unknown> {
+export async function apiRequest<T = unknown>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>> {
   const opts: ApiRequestOptions = Object.assign({ credentials: "same-origin" } satisfies ApiRequestOptions, options || {});
   opts.headers = Object.assign({}, opts.headers || {});
   // Let the browser choose multipart/binary headers for non-string bodies.
@@ -87,7 +90,7 @@ export async function apiRequest(path: string, options?: ApiRequestOptions): Pro
     resp = await fetch(apiPath(path), opts as RequestInit);
     text = await resp.text();
   } catch (error) {
-    if (timeoutSignal && requestSignal!.aborted && requestSignal!.reason === timeoutSignal.reason) {
+    if (timeoutSignal && requestSignal && requestSignal.aborted && requestSignal.reason === timeoutSignal.reason) {
       throw requestTimeoutError();
     }
     throw error;

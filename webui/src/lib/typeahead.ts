@@ -24,16 +24,16 @@ export function resolveActiveKey<K>(keys: readonly K[] | null | undefined, chose
   const list = keys || [];
   if (list.length === 0) return null;
   if (chosen && chosen.token === token && list.indexOf(chosen.key) >= 0) return chosen.key;
-  return autoFirst ? list[0]! : null;
+  return autoFirst ? list[0] as K : null;
 }
 
 /** Arrow movement, wrapping. An active key the list has dropped navigates as if nothing were active. */
-export function stepActiveKey<K>(keys: readonly (K | null)[] | null | undefined, activeKey: K | null, delta: number) {
-  const list = keys || [];
+export function stepActiveKey<K>(keys: readonly K[] | null | undefined, activeKey: K | null, delta: 1 | -1): K | null {
+  const list: readonly (K | null)[] = keys || [];
   if (list.length === 0) return null;
   const at = list.indexOf(activeKey);
-  if (at < 0) return delta > 0 ? list[0]! : list[list.length - 1]!;
-  return list[(at + delta + list.length) % list.length];
+  if (at < 0) return (delta > 0 ? list[0] : list[list.length - 1]) as K;
+  return list[(at + delta + list.length) % list.length] as K;
 }
 
 /**

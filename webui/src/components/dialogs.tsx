@@ -15,6 +15,7 @@ import {
   taskMatchesQuery,
 } from "../lib/sessions.ts";
 import { TERMINAL_UNICODE_MODES, terminalUnicodeMode } from "../lib/unicode.ts";
+import type { ApiResponse } from "../lib/api.ts";
 import { AUTH_TICKET_PATH, apiRequest, errorMessage } from "../lib/api.ts";
 import {
   compareTasksByBoardOrder,
@@ -345,7 +346,7 @@ export function NewSessionDialog({
       }
     } catch (e) {
       // Import errors are already user-facing; start failures retain their contextual prefix.
-      setError(mode === "import" ? errorMessage(e) as string : "Could not start session: " + errorMessage(e));
+      setError(mode === "import" ? errorMessage(e) : "Could not start session: " + errorMessage(e));
       setBusy(false);
     }
   };
@@ -773,10 +774,10 @@ export function RestoreProjectDialog({ onRestore, onClose }: RestoreProjectDialo
     try {
       const rows = await fetchProjects(true);
       if (!aliveRef.current) return;
-      setState({ status: "ready", projects: Array.isArray(rows) ? rows as Project[] : [] });
+      setState({ status: "ready", projects: Array.isArray(rows) ? rows : [] });
     } catch (e) {
       if (!aliveRef.current) return;
-      setState({ status: "error", message: errorMessage(e) as string });
+      setState({ status: "error", message: errorMessage(e) });
     }
   }, []);
 
@@ -874,7 +875,7 @@ function linkSessionChanged(initial: Session | null | undefined, current: Sessio
 }
 
 export interface LinkTaskDialogProps {
-  initialSession: Session;
+  initialSession: Session | null;
   session: Session | null | undefined;
   tasks?: readonly Task[];
   tasksStatus?: ReadinessStatus;
@@ -940,7 +941,7 @@ export function LinkTaskDialog({
 
   // The callback captures `typeahead`, which is read only after both declarations complete.
   const choose = async (task: Task | undefined) => {
-    if (!task || busyTask.peek() !== null || listLocked) return;
+    if (!task || busyTask.peek() !== null || listLocked || !initialSession) return;
     setError(null);
     typeahead.activate(task.ref);
     busyTask.value = task.ref;
@@ -1104,13 +1105,13 @@ function groupingPreview(draft: Preferences, sessions: readonly Session[]) {
   const base = normalizePath(draft.basePath);
   const baseLabel = basename(base) || base;
   const sample = sessions.find((s) => segmentsUnder(draft.basePath, s.cwd) !== null);
-  if (!sample) {
+  const segments = sample ? segmentsUnder(base, sample.cwd) : null;
+  if (!sample || !segments) {
     const placeholders = Array.from({ length: draft.groupingLevel }, (_, i) => "<dir" + (i + 1) + ">");
     return placeholders.length > 0
       ? "Tree below " + base + ": " + placeholders.join(" › ")
       : base + " → " + baseLabel + " (one folder for all sessions below the base)";
   }
-  const segments = segmentsUnder(base, sample.cwd)!;
   const visible = segments.slice(0, draft.groupingLevel);
   const branch = visible.length > 0 ? visible.join(" › ") : baseLabel;
   const bucketed = segments.length > visible.length ? " (deeper folders stay here)" : "";
@@ -1253,7 +1254,7 @@ interface AuthTicket {
 
 type PhoneState =
   | { status: "loading" }
-  | { status: "ready"; ticket: AuthTicket | null }
+  | { status: "ready"; ticket: ApiResponse<AuthTicket> }
   | { status: "error"; message: string };
 
 /* The QR contains the credential-free install URL so Safari cannot spend the installed PWA's ticket. */
@@ -1263,10 +1264,10 @@ export function PhoneDialog({ onClose }: PhoneDialogProps) {
   const issue = useCallback(async () => {
     setState({ status: "loading" });
     try {
-      const ticket = await apiRequest(AUTH_TICKET_PATH, { method: "POST" }) as AuthTicket | null;
+      const ticket = await apiRequest<AuthTicket>(AUTH_TICKET_PATH, { method: "POST" });
       setState({ status: "ready", ticket: ticket });
     } catch (e) {
-      setState({ status: "error", message: errorMessage(e) as string });
+      setState({ status: "error", message: errorMessage(e) });
     }
   }, []);
 
@@ -1315,7 +1316,7 @@ function phoneBody(state: PhoneState, issue: () => Promise<void>, onClose: () =>
     ];
   }
 
-  const ticket = state.ticket || {};
+  const ticket = typeof state.ticket === "object" && state.ticket ? state.ticket : {};
   if (!ticket.publicUrl) return phoneSetup(onClose);
   const publicInstallUrl = installUrl(ticket.publicUrl);
 

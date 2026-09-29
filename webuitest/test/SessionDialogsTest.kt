@@ -176,7 +176,7 @@ class SessionDialogsTest {
 
                         val cwd = page.locator("#session-cwd")
                         val options = page.locator("#session-cwd-options li")
-                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+                        // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
                         assertThat(cwd).hasAttribute("spellcheck", "false")
                         cwd.fill("/a/")
 
@@ -347,7 +347,7 @@ class SessionDialogsTest {
                         assertThat(page.locator("#session-agent-cursor")).isDisabled()
 
                         assertThat(page.locator("#session-provider-id")).isVisible()
-                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+                        // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
                         assertThat(page.locator("#session-provider-id"))
                             .hasAttribute("spellcheck", "false")
                         assertEquals(
@@ -485,7 +485,7 @@ class SessionDialogsTest {
 
                         val basePath = page.locator("#prefs-base-path")
                         assertThat(basePath).isVisible()
-                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+                        // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
                         assertThat(basePath).hasAttribute("spellcheck", "false")
                         assertThat(basePath).hasValue("")
                         val preview = page.locator("#prefs-grouping-preview")
@@ -661,7 +661,7 @@ class SessionDialogsTest {
                         openRename(page)
 
                         val field = page.locator("#rename-session-name")
-                        // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+                        // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
                         assertThat(field).hasAttribute("spellcheck", "false")
                         // Served DOM again: only the source's `autoCorrect` spelling survives (CLAUDE.md).
                         assertThat(field).hasAttribute("autocorrect", "off")

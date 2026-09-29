@@ -25,9 +25,8 @@ interface GroupNode<T> {
   children: Map<string, GroupNode<T>>;
 }
 
-export function normalizePath(path: unknown) {
+export function normalizePath(path: string | null | undefined) {
   const value = path || "";
-  if (typeof value !== "string") throw new TypeError("path.trim is not a function");
   const trimmed = value.trim().replace(/\/{2,}/g, "/");
   return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 }
@@ -159,7 +158,7 @@ export function groupSessions<T extends GroupableSession>(list: readonly T[], ba
       }
       siblings = node.children;
     }
-    node!.sessions.push(s);
+    if (node) node.sessions.push(s);
   }
 
   return sortedNodes(tops[BASE])

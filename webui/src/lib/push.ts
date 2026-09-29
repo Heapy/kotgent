@@ -2,18 +2,16 @@
 
 import { apiRequest } from "./api.ts";
 import { SUBSCRIBE_URL, UNSUBSCRIBE_URL } from "./api-paths.ts";
+import { PUSH_PREFERENCE_MESSAGE } from "./push-messages.ts";
 import { ensurePermission, isEnabled as notifyEnabled, setPushActive } from "./notify.ts";
 
 export { SUBSCRIBE_URL, UNSUBSCRIBE_URL };
+export { PUSH_PREFERENCE_MESSAGE };
 
 export interface PushTransition {
   isCurrent: () => boolean;
   repairLatest: () => void;
   signal?: AbortSignal | undefined;
-}
-
-export interface VapidKeyResponse {
-  key: string;
 }
 
 export const SW_URL = "/sw.js";
@@ -22,7 +20,6 @@ export const VAPID_KEY_URL = "/push/vapid-key";
 
 const ENDPOINT_KEY = "kotgent.push.endpoint.v1";
 const PUSH_PREFERENCE_ACK_TIMEOUT_MS = 2_000;
-export const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 export const PUSH_REPAIR_SIGNAL_KEY = "kotgent.push.repair.v1";
 let endpointMemory: string | null | undefined = null;
 let activeRegistrationMemory: ServiceWorkerRegistration | null = null;

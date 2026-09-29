@@ -99,13 +99,13 @@ export function sessionTaskLinkSubmitBlocked({
   pendingAction?: string | null;
   activeSessionId: string | null;
   sessionId: string;
-  expectedProjectId: string;
+  expectedProjectId: string | null;
   projects: readonly Project[] | null | undefined;
   task: Task | null | undefined;
 }) {
-  if (sessionTaskLinkDisabledReason(session, pendingAction)) return true;
+  if (sessionTaskLinkDisabledReason(session, pendingAction) || !session) return true;
   if (activeSessionId !== sessionId) return true;
-  if (session!.projectId !== expectedProjectId) return true;
+  if (session.projectId !== expectedProjectId) return true;
   if (!(projects || []).some((project) => project.id === expectedProjectId)) return true;
   if (!task || task.project !== expectedProjectId) return true;
   return !isOpenTaskState(task.state);

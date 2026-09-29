@@ -1,4 +1,4 @@
-// Revision merge rules from webui/src/lib/sessions.js. These decide which observation a browser
+// Revision merge rules from webui/src/lib/sessions.ts. These decide which observation a browser
 // keeps when an HTTP response and a WebSocket frame describe the same session, so they are proven here
 // rather than in the browser tier: nothing in them touches the DOM, the network, or a timer.
 

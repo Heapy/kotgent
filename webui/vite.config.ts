@@ -29,6 +29,7 @@ function classicServiceWorker(entry: string): Plugin {
         build: {
           outDir: config.build.outDir,
           emptyOutDir: false,
+          sourcemap: config.build.sourcemap,
           lib: { entry, formats: ["iife"], name: "kotgentSw", fileName: () => "sw.js" },
         },
       });

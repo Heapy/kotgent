@@ -1,4 +1,4 @@
-// Sidebar grouping from webui/src/lib/paths.js. ADHD membership reads the same heads, so the tree
+// Sidebar grouping from webui/src/lib/paths.ts. ADHD membership reads the same heads, so the tree
 // groupSessions draws is pinned here case by case.
 
 import { describe, test } from "node:test";

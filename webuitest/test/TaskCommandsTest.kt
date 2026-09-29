@@ -244,7 +244,7 @@ class TaskCommandsTest {
             assertThat(page).hasURL(Pattern.compile("/tasks$"))
             assertThat(page.locator("#new-project-dialog")).isVisible()
             assertThat(page.locator("#new-project-path")).isVisible()
-            // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+            // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
             assertThat(page.locator("#new-project-path")).hasAttribute("spellcheck", "false")
             assertThat(page.locator("#new-task-dialog")).hasCount(0)
         }
@@ -376,7 +376,7 @@ class TaskCommandsTest {
             ).hasText("Blocked")
 
             val query = page.locator("#link-task-query")
-            // Served DOM, not source: only `spellcheck=${false}` turns it off (CLAUDE.md).
+            // Served DOM, not source: only `spellcheck={false}` turns it off (CLAUDE.md).
             assertThat(query).hasAttribute("spellcheck", "false")
             query.fill("local:4")
             assertThat(options).hasCount(1)

@@ -1,5 +1,5 @@
 // Preference sanitizing and the device-local ADHD-mode and attention-collapse flags from
-// webui/src/lib/prefs.js. The rules decide what a daemon response is allowed to publish and what a
+// webui/src/lib/prefs.ts. The rules decide what a daemon response is allowed to publish and what a
 // reload restores, and neither touches the DOM or the network.
 
 import { afterEach, describe, test } from "node:test";

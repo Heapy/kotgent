@@ -16,9 +16,9 @@ export interface Preferences extends ServerPreferences {
   terminalUnicode: TerminalUnicodeModeValue;
 }
 
-function preferenceField(raw: unknown, key: string): unknown {
-  return raw && Reflect.get(Object(raw), key);
-}
+export type PreferenceDraft = Partial<Record<keyof Preferences, unknown>> & {
+  basePath?: string | null | undefined;
+};
 
 export const LEGACY_PREFS_KEY = "kotgent.prefs.v1";
 export const TERMINAL_FONT_SIZE_KEY = "kotgent.terminalFontSize.v1";
@@ -37,13 +37,13 @@ export const DEFAULT_PREFS: Preferences = {
   terminalUnicode: DEFAULT_TERMINAL_UNICODE,
 };
 
-export function sanitizePrefs(raw: unknown): Preferences {
-  const level = Number.parseInt(String(preferenceField(raw, "groupingLevel")), 10);
-  const revision = Number(preferenceField(raw, "revision"));
-  const fontSize = Number.parseInt(String(preferenceField(raw, "terminalFontSize")), 10);
-  const unicode = preferenceField(raw, "terminalUnicode");
+export function sanitizePrefs(raw: PreferenceDraft | null | undefined): Preferences {
+  const level = Number.parseInt(String(raw && raw.groupingLevel), 10);
+  const revision = Number(raw && raw.revision);
+  const fontSize = Number.parseInt(String(raw && raw.terminalFontSize), 10);
+  const unicode = raw && raw.terminalUnicode;
   return {
-    basePath: normalizePath(preferenceField(raw, "basePath")),
+    basePath: normalizePath(raw && raw.basePath),
     groupingLevel: Number.isFinite(level)
       ? Math.min(MAX_GROUPING_LEVEL, Math.max(0, level))
       : DEFAULT_PREFS.groupingLevel,

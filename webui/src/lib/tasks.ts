@@ -162,15 +162,15 @@ export function removeTask<T extends { ref: string }>(list: readonly T[], ref: s
 
 export async function fetchTasks(projectId?: string | null) {
   const query = projectId ? "?project=" + encodeURIComponent(projectId) : "";
-  return (await apiRequest("/tasks" + query)) || [];
+  return (await apiRequest<Task[]>("/tasks" + query)) || [];
 }
 
 export async function fetchTaskDetail(ref: string) {
-  return apiRequest(taskPath(ref));
+  return apiRequest<TaskDetail>(taskPath(ref));
 }
 
 export async function createTask(projectId: string | null, title: string, body?: string) {
-  return apiRequest("/tasks", jsonBody("POST", {
+  return apiRequest<Task>("/tasks", jsonBody("POST", {
     project: projectId || null,
     title: title,
     body: body || "",
@@ -178,11 +178,11 @@ export async function createTask(projectId: string | null, title: string, body?:
 }
 
 export async function patchTask(ref: string, patch?: TaskPatch | null) {
-  return apiRequest(taskPath(ref), jsonBody("PATCH", patch || {}));
+  return apiRequest<Task>(taskPath(ref), jsonBody("PATCH", patch || {}));
 }
 
 export async function moveTask(ref: string, target?: TaskMove | null) {
-  return apiRequest(taskPath(ref, "/move"), jsonBody("POST", target || {}));
+  return apiRequest<Task>(taskPath(ref, "/move"), jsonBody("POST", target || {}));
 }
 
 export async function linkTask(ref: string, sessionId: string) {
@@ -190,7 +190,7 @@ export async function linkTask(ref: string, sessionId: string) {
 }
 
 export async function editTaskDependency(ref: string, action: "add" | "remove", on: string) {
-  return apiRequest(taskPath(ref, "/deps"), jsonBody("POST", { action: action, on: on }));
+  return apiRequest<Task>(taskPath(ref, "/deps"), jsonBody("POST", { action: action, on: on }));
 }
 
 export async function commentOnTask(ref: string, text: string) {
@@ -202,11 +202,11 @@ export async function deleteTask(ref: string) {
 }
 
 export async function fetchProjects(archived = false) {
-  return (await apiRequest("/projects" + (archived ? "?archived=true" : ""))) || [];
+  return (await apiRequest<Project[] | { projects?: Project[] }>("/projects" + (archived ? "?archived=true" : ""))) || [];
 }
 
 export async function createProject(path: string, name?: string | null) {
-  return apiRequest("/projects", jsonBody("POST", { path: path, name: name || null }));
+  return apiRequest<Project>("/projects", jsonBody("POST", { path: path, name: name || null }));
 }
 
 function projectPath(id: string, suffix?: string) {
@@ -215,9 +215,9 @@ function projectPath(id: string, suffix?: string) {
 
 // Deletion only tombstones the project; tasks, links, and filesystem state survive.
 export async function deleteProject(id: string) {
-  return apiRequest(projectPath(id), { method: "DELETE" });
+  return apiRequest<Project>(projectPath(id), { method: "DELETE" });
 }
 
 export async function restoreProject(id: string) {
-  return apiRequest(projectPath(id, "/restore"), { method: "POST" });
+  return apiRequest<Project>(projectPath(id, "/restore"), { method: "POST" });
 }

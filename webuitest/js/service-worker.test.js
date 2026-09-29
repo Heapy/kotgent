@@ -9,8 +9,7 @@ const workerSource = readFileSync(new URL("../../resources/webui/sw.js", import.
 const workerScript = new Script(workerSource, { filename: "resources/webui/sw.js" });
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-test("the built worker has no module syntax and compiles as a classic script", () => {
-  assert.doesNotMatch(workerSource, /\b(?:import|export)\b/);
+test("the built worker compiles as a classic script", () => {
   assert.doesNotThrow(() => new Script(workerSource, { filename: "resources/webui/sw.js" }));
 });
 

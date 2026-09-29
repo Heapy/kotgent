@@ -3,9 +3,8 @@
  * failed fetch still shows a generic banner because the subscription promises user-visible delivery.
  */
 
-/* eslint-env serviceworker */
-
 import { apiPath, NOTIFICATIONS_URL, SUBSCRIBE_URL, UNSUBSCRIBE_URL } from "./lib/api-paths.ts";
+import { DEEP_LINK_PARAM, PUSH_PREFERENCE_MESSAGE } from "./lib/push-messages.ts";
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -51,7 +50,6 @@ interface NotificationData {
 
 const TITLE = "Kotgent — needs attention";
 const NOTIFICATIONS_TIMEOUT_MS = 10_000;
-const PUSH_PREFERENCE_MESSAGE = "push-notification-preference";
 const PUSH_PREFERENCE_CACHE = "kotgent-push-preference-v1";
 const PUSH_PREFERENCE_URL = "/.kotgent-push-preference";
 const GENERIC_TAG = "kotgent-attention";
@@ -284,5 +282,5 @@ async function openNotification(data: NotificationData) {
     if ("focus" in client) return client.focus();
     return undefined;
   }
-  return self.clients.openWindow(sessionId ? "/?session=" + encodeURIComponent(sessionId) : "/");
+  return self.clients.openWindow(sessionId ? "/?" + DEEP_LINK_PARAM + "=" + encodeURIComponent(sessionId) : "/");
 }

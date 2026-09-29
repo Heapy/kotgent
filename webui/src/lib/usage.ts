@@ -13,7 +13,7 @@ export interface ReceivedUsageWindow extends UsageWindow {
   staleAt: number;
 }
 
-function isFiniteNumber(value: unknown): value is number {
+export function isFiniteNumber(value: unknown): value is number {
   return Number.isFinite(value);
 }
 

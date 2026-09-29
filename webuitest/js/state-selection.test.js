@@ -59,10 +59,11 @@ beforeEach(() => {
     basePath: DEFAULT_PREFS.basePath,
     groupingLevel: DEFAULT_PREFS.groupingLevel,
     revision: DEFAULT_PREFS.revision,
+    adhdPaths: [],
   };
 });
 
-describe("state/selection.js", () => {
+describe("state/selection.ts", () => {
   test("selecting moves the selection and advances the generation", () => {
     assert.equal(selectionGeneration.value, 0);
     selectSessionId("a");
@@ -189,7 +190,7 @@ describe("state/selection.js", () => {
   });
 });
 
-describe("state/dialog.js", () => {
+describe("state/dialog.ts", () => {
   test("opening publishes the descriptor and closing clears it", () => {
     const form = { kind: "prefs" };
     openDialog(form);
@@ -229,7 +230,7 @@ describe("state/dialog.js", () => {
   });
 });
 
-describe("state/status.js", () => {
+describe("state/status.ts", () => {
   test("the initial sentence is empty and is not an error", () => {
     assert.deepEqual(status.value, { text: "", error: false });
   });
@@ -282,7 +283,7 @@ describe("state/status.js", () => {
   });
 });
 
-describe("state/prefs.js", () => {
+describe("state/prefs.ts", () => {
   const committed = { basePath: "/work", groupingLevel: 2, revision: 5 };
 
   test("a newer revision applies and merges over the device fields", () => {

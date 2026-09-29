@@ -340,7 +340,7 @@ function adhdPinState(session: Session, prefs: Preferences) {
 
 function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs }: SessionRowProps) {
   const badge = stateBadge(session.state);
-  const pin = onMark ? adhdPinState(session, prefs!) : null;
+  const pin = onMark && prefs ? adhdPinState(session, prefs) : null;
   const select = () => onSelect(session.id);
   const onKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLLIElement>) => {
     // Enter on an inner button or link bubbles here; cancelling it would select instead of activating it.
@@ -380,7 +380,7 @@ function SessionRow({ session, tasks, active, onSelect, onRestore, onMark, prefs
             aria-pressed={session.adhd === true ? "true" : "false"}
             aria-label={pin.label}
             title={pin.title}
-            onClick={(e) => { stopRowActivation(e); onMark!(e, session); }}
+            onClick={(e) => { stopRowActivation(e); onMark?.(e, session); }}
           ><AdhdIcon on={pin.on} /></button>
         </div>)}
       {onRestore
@@ -449,7 +449,7 @@ function SessionGroup({
             class="icon-button icon-button-small group-new"
             title={"New session in " + group.path}
             aria-label={"New session in " + group.path}
-            onClick={() => onNewSession!(group.path)}
+            onClick={() => onNewSession?.(group.path)}
           >+</button>)}
       </div>
       {!collapsed && (

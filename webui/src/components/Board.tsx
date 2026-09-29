@@ -3,6 +3,7 @@
 
 import type { JSX } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import type { ApiResponse } from "../lib/api.ts";
 import { errorMessage } from "../lib/api.ts";
 import { joinPath, normalizePath } from "../lib/paths.ts";
 import { navigate, sessionPath, taskPath } from "../lib/router.ts";
@@ -34,7 +35,7 @@ interface BoardProps {
   drawerOpen?: boolean;
   sidebarCollapsed?: boolean;
   onTaskRow?: (row: Task) => void;
-  onProjectCreated?: (project: Project | null) => void | Promise<void>;
+  onProjectCreated?: (project: ApiResponse<Project>) => void | Promise<void>;
   onToggleDrawer: JSX.MouseEventHandler<HTMLButtonElement>;
   onToggleSidebar: JSX.MouseEventHandler<HTMLButtonElement>;
   onOpenPalette: (mode: "leader") => void;
@@ -344,8 +345,8 @@ export function Board({
     if (onAnnounce) onAnnounce(text, error);
   }, [onAnnounce]);
 
-  const publishRow = useCallback((row: Task | null) => {
-    if (row && row.ref && onTaskRow) onTaskRow(row);
+  const publishRow = useCallback((row: ApiResponse<Task>) => {
+    if (row && typeof row === "object" && row.ref && onTaskRow) onTaskRow(row);
   }, [onTaskRow]);
 
   const routeId = route && route.id;
@@ -416,8 +417,8 @@ export function Board({
     if (!plan) return;
     try {
       // State must land before position is resolved in the destination column.
-      if (plan.state) publishRow(await patchTask(ref, { state: plan.state }) as Task | null);
-      if (plan.move) publishRow(await moveTask(ref, plan.move) as Task | null);
+      if (plan.state) publishRow(await patchTask(ref, { state: plan.state }));
+      if (plan.move) publishRow(await moveTask(ref, plan.move));
     } catch (e) {
       say("Could not move " + ref + ": " + errorMessage(e), true);
     }
@@ -427,7 +428,7 @@ export function Board({
     const submittedForm = formRef.current;
     let created;
     try {
-      created = await createTask(shownProjectId, title, body) as Task | null;
+      created = await createTask(shownProjectId, title, body);
       publishRow(created);
     } catch (e) {
       // A dismissed or replaced form cannot display the outcome of its still-running request.
@@ -436,14 +437,14 @@ export function Board({
       return;
     }
     setForm((current) => current === submittedForm ? null : current);
-    say("Created " + ((created && created.ref) || "the task") + ".");
+    say("Created " + ((created && typeof created === "object" && created.ref) || "the task") + ".");
   }, [shownProjectId, publishRow, say]);
 
   const submitProject = useCallback(async (path: string, name: string | null) => {
     const submittedForm = formRef.current;
     let created;
     try {
-      created = await createProject(path, name) as Project | null;
+      created = await createProject(path, name);
       if (onProjectCreated) await onProjectCreated(created);
     } catch (e) {
       // A dismissed or replaced form cannot display the outcome of its still-running request.
@@ -452,7 +453,7 @@ export function Board({
       return;
     }
     setForm((current) => current === submittedForm ? null : current);
-    say("Project " + ((created && created.name) || path) + " is ready.");
+    say("Project " + ((created && typeof created === "object" && created.name) || path) + " is ready.");
   }, [onProjectCreated, say]);
 
   const gestureRef = useRef<DragGesture | null>(null);
@@ -503,7 +504,7 @@ export function Board({
     if (gesture.frameRequest !== null || typeof requestAnimationFrame !== "function") return;
     const gestureId = gesture.id;
     gesture.frameRequest = requestAnimationFrame((timestamp) => {
-      frameTickRef.current!(gestureId, timestamp);
+      frameTickRef.current?.(gestureId, timestamp);
     });
   }, []);
 
@@ -512,7 +513,7 @@ export function Board({
     if (!gesture || gesture.id !== gestureId || gesture.aborted) return;
     gesture.frameRequest = null;
     if (!gesture.element || !gesture.element.isConnected) {
-      abortGestureRef.current!(gesture);
+      abortGestureRef.current?.(gesture);
       return;
     }
 
@@ -533,10 +534,10 @@ export function Board({
     scheduleGestureFrame(gesture);
   };
 
-  useEffect(() => () => abortGestureRef.current!(), []);
+  useEffect(() => () => abortGestureRef.current?.(), []);
 
   useEffect(() => {
-    abortGestureRef.current!();
+    abortGestureRef.current?.();
   }, [sidebarCollapsed]);
 
   const dragPointerDown = useCallback((event: JSX.TargetedPointerEvent<HTMLDivElement>, entry: Task) => {
@@ -586,13 +587,14 @@ export function Board({
         height: rect.height,
       };
       gesture.lostPointerCapture = (lost) => {
-        if (lost.pointerId === gesture.pointerId) abortGestureRef.current!(gesture);
+        if (lost.pointerId === gesture.pointerId) abortGestureRef.current?.(gesture);
       };
       document.addEventListener("lostpointercapture", gesture.lostPointerCapture, true);
       scheduleGestureFrame(gesture);
     }
     if (event.cancelable) event.preventDefault();
-    const cardRect = gesture.cardRect!;
+    const cardRect = gesture.cardRect;
+    if (!cardRect) return;
     setDragPreview({
       ref: gesture.ref,
       left: cardRect.left,
@@ -788,7 +790,7 @@ function NewTaskForm({ project, onCreate, onClose }: NewTaskFormProps) {
     try {
       await onCreate(trimmed, body);
     } catch (e) {
-      setError(errorMessage(e) as string);
+      setError(errorMessage(e));
       setBusy(false);
     }
   };
@@ -832,7 +834,7 @@ function NewTaskForm({ project, onCreate, onClose }: NewTaskFormProps) {
 }
 
 /** Match directory completion's lexical base join; this is not a containment check. */
-export function resolveProjectPath(typed: unknown, basePath: unknown) {
+export function resolveProjectPath(typed: unknown, basePath: string | null | undefined) {
   const input = String(typed || "").trim();
   if (input.charAt(0) === "/") return normalizePath(input);
   const base = normalizePath(basePath);
@@ -870,7 +872,7 @@ function NewProjectForm({ basePath = "", onCreate, onClose }: NewProjectFormProp
     try {
       await onCreate(typed, name.trim() || null);
     } catch (e) {
-      setError(errorMessage(e) as string);
+      setError(errorMessage(e));
       setBusy(false);
     }
   };

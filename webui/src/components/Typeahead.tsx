@@ -1,4 +1,4 @@
-/* Binds the rules in lib/typeahead.js to one component instance. Handlers re-derive from the latest
+/* Binds the rules in lib/typeahead.ts to one component instance. Handlers re-derive from the latest
  * choice, navigation scrolls immediately, and pointer or focus activation stays passive. */
 
 import { useRef } from "preact/hooks";
@@ -99,8 +99,7 @@ export function useTypeahead<K>({
 
   const navigate = (delta: 1 | -1) => {
     const from = resolveActiveKey(list, chosen.peek(), rule);
-    // Unit steps wrap within a nonempty list; only an empty list returns null.
-    const next = stepActiveKey(list, from, delta) as K | null;
+    const next = stepActiveKey(list, from, delta);
     if (next === null) return;
     chosen.value = chooseKey(next, token);
     reveal(next);

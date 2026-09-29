@@ -178,7 +178,7 @@ describe("probeResolved, in guard order", () => {
     const moved = run(first.state, [terminalClosed("s2")]);
     const settled = reduceReattach(moved.state, probeResolved(first.state.probe.gen, sessionRow()), VISIBLE);
     const step = reduceReattach(settled.state, cancel(), VISIBLE);
-    assert.deepEqual(step.effects, [], "app.js released that generation when the answer arrived");
+    assert.deepEqual(step.effects, [], "app.tsx released that generation when the answer arrived");
   });
 
   test("C: hidden keeps the candidate and attaches nothing", () => {
@@ -311,7 +311,7 @@ describe("probeFailed", () => {
     const moved = run(first.state, [terminalClosed("s2")]);
     const settled = reduceReattach(moved.state, probeFailed(first.state.probe.gen, { definite: true }), VISIBLE);
     const step = reduceReattach(settled.state, cancel(), VISIBLE);
-    assert.deepEqual(step.effects, [], "app.js released that generation when the failure arrived");
+    assert.deepEqual(step.effects, [], "app.tsx released that generation when the failure arrived");
   });
 });
 

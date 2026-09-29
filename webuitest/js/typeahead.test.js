@@ -71,6 +71,13 @@ describe("resolveActiveKey", () => {
 });
 
 describe("stepActiveKey", () => {
+  test("null keys remain null when a nonempty list selects or steps to them", () => {
+    assert.equal(resolveActiveKey([null, "one"], null), null);
+    assert.equal(stepActiveKey([null, "one"], "missing", 1), null);
+    assert.equal(stepActiveKey(["one", null], "missing", -1), null);
+    assert.equal(stepActiveKey(["one", null], "one", 1), null);
+  });
+
   test("an empty list cannot be navigated", () => {
     assert.equal(stepActiveKey([], null, 1), null);
     assert.equal(stepActiveKey(null, null, -1), null);

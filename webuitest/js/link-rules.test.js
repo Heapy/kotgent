@@ -71,7 +71,7 @@ describe("sessionTaskLinkDisabledReason", () => {
     );
   });
 
-  test("the pending argument defaults to absent, as linkSessionChanged in dialogs.js calls it", () => {
+  test("the pending argument defaults to absent, as linkSessionChanged in dialogs.tsx calls it", () => {
     assert.equal(sessionTaskLinkDisabledReason(sessionRow({})), null);
   });
 });

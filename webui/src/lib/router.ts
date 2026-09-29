@@ -1,9 +1,11 @@
 /*
- * The client and WebUiAssets.kt share an exact route grammar. The classic service worker separately
- * mirrors DEEP_LINK_PARAM. Parsing stays total so a malformed percent escape cannot blank the app.
+ * The client and WebUiAssets.kt share an exact route grammar. Parsing stays total so a malformed
+ * percent escape cannot blank the app.
  */
 
-export const DEEP_LINK_PARAM = "session";
+import { DEEP_LINK_PARAM } from "./push-messages.ts";
+
+export { DEEP_LINK_PARAM };
 
 export const SCREEN_TASKS = "tasks";
 
