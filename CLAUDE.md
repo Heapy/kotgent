@@ -143,11 +143,13 @@ the common workflow and links to those guides; implementation invariants belong 
 - Drain `incoming` in every WebSocket handler, including handlers that only send frames.
 - Service-worker sources may import shared modules; the built `/sw.js` remains a classic, root-scoped,
   network-only IIFE with no offline shell. Root shell and worker responses must revalidate.
-- Files under `assets/` are cached as immutable; all other static files revalidate. Content-hashed names
-  make immutability safe: changed bytes have a different URL.
+- Content-hashed files under `assets/` are cached as immutable: changed bytes have a different URL.
+  Source maps revalidate because their names follow the chunk, not their own bytes; all other static
+  files revalidate too.
 - On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running
   one. A `sessionStorage` slot holding the last `running → served` reload refuses the same pair again;
-  previous builds' assets are deliberately not kept.
+  previous builds' assets are deliberately not kept. An old shell requesting its entry after the directory
+  swap is not covered, because the event fires only for lazy imports.
 - `webui/src/lib/router.ts` is the only owner of browser history. `app.tsx` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
 - Keep terminal reattachment decisions in `webui/src/lib/reattach.ts`; `app.tsx` supplies current

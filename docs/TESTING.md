@@ -233,36 +233,37 @@ Web testing should be divided by what must actually execute.
 ### Browser-independent JavaScript
 
 Pure modules and explicit state machines should run under a lightweight JavaScript test runner without a
-browser or build step. This layer should cover routing, data merges, command matching, path handling, retry
+browser. This layer should cover routing, data merges, command matching, path handling, retry
 classification, preference transitions, notification decisions, and reconnect scheduling.
 
 Timers, visibility, network results, and storage events should enter through controlled inputs. Tests should
 advance virtual time and inspect declared effects instead of sleeping or depending on wall time.
 
-This layer runs under Node's built-in runner, `node --test`. Its tests live in `webuitest/js/`, deliberately
-outside `resources/webui/`: `webUiRevision` digests every file under that tree, so a test placed there would
-be served to browsers and would churn the asset revision. They import the shipped modules by relative path,
-so nothing is copied, transpiled, or bundled. The runner therefore adds one system prerequisite — a `node`
-on `PATH` — and no build step, no package manager, and no `node_modules`. These stay plain ES modules,
-served exactly as they are written, and that property is worth more than any convenience a bundler would buy.
+This layer runs under Node's built-in runner, `node --test`. Its JavaScript tests live in `webuitest/js/`
+and import the TypeScript sources in `webui/src/` directly through Node's type stripping, so those modules
+must use erasable-only syntax. Packages resolve from `webui/node_modules`, making `npm ci --prefix webui`
+a prerequisite. Tests stay outside the served build in `resources/webui/`. The service-worker tests
+execute the built `resources/webui/sw.js` in a Node VM, so the full tier also requires
+`npm run build --prefix webui`.
 
 `WebUiLogicTest` in `webuitest` spawns the runner, so the aggregate suite covers this tier; the direct loop
 is `node --test 'webuitest/js/**/*.test.js'` from the repository root. The prerequisite is **Node v24 or
-newer**, the same floor `README.md` and `webuitest/module.yaml` state. Name the files through a pattern
+newer**, the same floor `README.md` and `webuitest/module.yaml` state. Name the files through a quoted pattern
 rather than by their directory: Node treats every positional argument as a glob, and a bare directory matches
 only itself and then fails to load as a module. A pattern that matches nothing exits zero, so the wrapper
-fails on an empty run and on a missing `node`, both of which are prerequisites rather than reasons to skip.
-The wrapper also passes `--test-timeout`: Node's runner has no per-test timeout of its own, so a promise
+fails on an empty run, a missing `node`, or missing dependencies rather than skipping. It passes
+`--test-reporter=tap` and `--test-timeout=30000`: Node's runner has no default per-test timeout, so a promise
 that never settles would hang `./kotlin test` rather than fail it. A test cut off that way is reported as
-*cancelled* rather than failed, so the cancelled count is asserted alongside the failure count.
+*cancelled* rather than failed, so the cancelled count is asserted alongside the failure count. A separate
+120-second process timeout bounds a hung runner or module import.
 
-`lib/reattach.js` models terminal reconnect scheduling as state, events, current environment, and declared
-effects. `lib/refresh.js` serializes reads of unversioned sources through explicit ports. Their transition
+`lib/reattach.ts` models terminal reconnect scheduling as state, events, current environment, and declared
+effects. `lib/refresh.ts` serializes reads of unversioned sources through explicit ports. Their transition
 and ordering rules belong in this tier; real sockets, daemon restart, and background-tab behavior remain
 browser tests.
 
 A module belongs here only when importing it touches no browser global and every specifier resolves under
-Node. Browser-only import-map dependencies stay in the browser tier.
+Node. DOM-dependent modules and TSX components stay in the browser tier.
 
 ### Components and DOM behavior
 
@@ -302,7 +303,13 @@ The browser suite should cover a small set of high-value journeys:
 the real server over shared doubles, serves a real PTY running a deterministic shell snippet, and accepts
 scenario commands over standard input. Assertions belong in `webuitest`, never in fixture scenarios. Each
 test uses an ephemeral port, signs in through the real single-use form, and leaves no state outside the
-checkout. Playwright supplies its own Node runtime, so this tier needs no package manager or build step.
+checkout. The fixture serves Vite's output in `resources/webui/`; run `npm run build --prefix webui` before
+`./kotlin build`, which links the fixture binary before `./kotlin test`. Playwright supplies its own Node
+driver.
+
+Browser tests that need a module-level probe use `routeWebUiProbe` in `webuitest/test/HarnessFixture.kt`.
+It builds an entry from `webuitest/probes/` with Vite at test time and serves the bundle through Playwright
+routing. Probe code never enters `resources/webui/` or the shipped build.
 
 The usage fixture adds a real in-memory SQLite store and a `usage` scenario command. `UsageStripTest`
 proves snapshots, live updates, durations, listener restart snapshots and stale-heartbeat behavior. It also
@@ -404,19 +411,24 @@ Real-device release checklist:
 ### Static assets and source checks
 
 Static-serving tests verify externally observable facts: reachability, bytes, media types, cache headers,
-revision addresses, path safety, and precedence over API routes.
+path safety, and precedence over API routes. Every reference in the built shell must resolve to a served
+file, and every non-map file under `assets/` must have a content-hashed name and be served immutable.
+Source maps revalidate because their names follow the chunk, not their own bytes; the shell, service
+worker, manifest, icons, and all other static files must revalidate too.
 
-Assertions that scan production Kotlin, JavaScript, HTML, or CSS with `contains`, `indexOf`, or regular
-expressions do not prove execution and do not count as coverage. They pass around unreachable or broken
-code and fail after a safe refactor. Do not add one. Prove behavior with an integration test that
-exercises it, and prove pure, tangled logic with a unit test of the module that owns it. When a
-requirement is architectural, prefer a parser, linter, module-graph check, or compiler-enforced boundary.
+Assertions that scan production Kotlin, TypeScript/TSX, JavaScript, HTML, or CSS with `contains`,
+`indexOf`, or regular expressions do not prove execution and do not count as coverage. They pass around
+unreachable or broken code and fail after a safe refactor. Do not add one. Prove behavior with an
+integration test that exercises it, and prove pure, tangled logic with a unit test of the module that owns
+it. When a requirement is architectural, prefer a parser, linter, module-graph check, or compiler-enforced
+boundary.
 
-The scans that once lived in `test/transport/WebUiServingTest.kt` are gone; the invariants they watched
-(one reactive graph, one owner of history and of the shared lists, the service worker's hand-written API
-prefix and deep-link parameter, the name caps mirrored from the daemon, dialog padding, the board's class
-vocabulary) are backlog tasks for behavior tests. The one text check that stays reads `index.html`: the PWA
-install surface is a real-device journey Chromium cannot prove.
+`webuitest/js/module-graph.test.js` checks that state modules and Preact signals resolve the same
+signals-core file. The service worker imports shared API paths from `webui/src/lib/api-paths.ts`; Vite
+builds `webui/src/sw.ts` as a classic IIFE at `/sw.js`, and Node VM tests execute that output, including
+notification deep links. Behavioral coverage for history and shared-list ownership, name caps mirrored
+from the daemon, dialog padding, and the board's class vocabulary remains backlog work. The PWA install
+metadata is checked in `index.html`: installation is a real-device journey Chromium cannot prove.
 
 ## CLI
 
@@ -456,7 +468,7 @@ Compatibility tests should explicitly cover the promises made across these bound
 - configuration and private-file permissions;
 - long-lived hook scripts;
 - CLI-to-daemon HTTP protocol;
-- browser shell, service worker, and revisioned assets;
+- browser shell, service worker, and content-hashed assets;
 - provider on-disk formats;
 - packaged launch configuration.
 
@@ -577,13 +589,15 @@ Machine-global integration resources must be serialized or namespaced. Independe
 should remain parallelizable.
 
 Two mechanics of the current gate are worth stating, because both are easy to get backwards. The browser
-tier drives `webuicheck`, a separate executable that no test task links, so `./kotlin build` must run before
-`./kotlin test`; a missing binary is designed to fail loudly rather than skip. And the tiers already run
-concurrently, so the browser tier's cost to the gate is the difference between it and the native suite
-rather than its own duration. Inside the browser tier, `webuitest/testResources/junit-platform.properties`
-runs test classes four at a time while the methods of one class share a thread: every test owns its own
-`webuicheck` process, port, ticket and Chromium, and Playwright objects belong to the thread that created
-them. Per-module test tasks remain the fast local loop, and neither replaces the aggregate.
+tier serves the Vite build and drives `webuicheck`, a separate executable that no test task links, so run
+`npm ci --prefix webui`, `npm run typecheck --prefix webui`, `npm run build --prefix webui`,
+`./kotlin build`, then `./kotlin test`; missing build output or a missing binary fails loudly rather than
+skipping. The tiers already run concurrently, so the browser tier's cost to the gate is the difference
+between it and the native suite rather than its own duration. Inside the browser tier,
+`webuitest/testResources/junit-platform.properties` runs test classes four at a time while the methods of
+one class share a thread: every test owns its own `webuicheck` process, port, ticket and Chromium, and
+Playwright objects belong to the thread that created them. Per-module test tasks remain the fast local
+loop, and neither replaces the aggregate.
 
 ## Definition of done for a behavior change
 

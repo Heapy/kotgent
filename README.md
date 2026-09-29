@@ -256,11 +256,10 @@ invariants, and [docs/TESTING.md](docs/TESTING.md) for the verification strategy
   first run. A JDK is required for the toolchain, for the build-time SQLDelight codegen plugin, and for
   the JVM-side browser tier (`webuitest`), whose first run additionally downloads Playwright's browser
   bundle — see [Build & test](#build--test).
-- **`node` (v24 or newer), for `./kotlin test` only.** The browser-independent Web UI tier runs under
-  Node's built-in runner (`node --test`) over the shipped ES modules themselves. It is a **test**
-  prerequisite, never a runtime or build one: kotgent itself needs no Node, and there is still no
-  `package.json`, no bundler and no `node_modules` anywhere in this repository. A missing `node` reddens
-  that tier by name rather than skipping it.
+- **Source builds and tests: Node v24 or newer and npm.** Vite builds the Web UI from the npm project in
+  `webui/`, and Node's built-in runner (`node --test`) tests its TypeScript sources through type stripping.
+  Run `npm ci --prefix webui` to install the pinned dependencies. A missing `node` or missing dependencies
+  fails the test tier rather than skipping it. An installed kotgent needs neither Node nor npm.
 - **`tmux`** — sessions live on a dedicated server socket (`tmux -L kotgent`), isolated from your normal
   `tmux` **and from your `~/.tmux.conf`**: kotgent passes `-f /dev/null` on every invocation, so none of
   your config is loaded into an agent's pane — not your prefix key, bindings, plugins, `status-format` or
@@ -302,10 +301,21 @@ configuration, session status, usage meters, and known limitations.
 
 ```shell
 # macOS (use linuxX64 instead of macosArm64 on an x64 Linux build host):
+npm ci --prefix webui
+npm run typecheck --prefix webui
+npm run build --prefix webui
 ./kotlin build -p macosArm64 -p jvm
 ./kotlin do kexePath
 ./kotlin test -p macosArm64 -p jvm
 ```
+
+The Web UI sources are strict TypeScript/TSX in `webui/`. Vite writes the served files to the gitignored
+`resources/webui/`; it strips types, so `typecheck` is a separate gate. Content hashes give changed assets
+new URLs and make cache invalidation automatic: hashed files under `assets/` are immutable; source maps
+revalidate because their names follow the chunk, not their own bytes. All other static files revalidate,
+and the daemon needs no asset revision bookkeeping. The build uses Vite 8's default browser target,
+**Baseline widely available**. CI's `webui` job type-checks and builds this tree once, and the platform
+jobs download it.
 
 `./kotlin test -p <host-target> -p jvm` runs every tier: the native suite (`test/`), the browser tier
 (`webuitest/`, a real Chromium driven through Playwright), the browser-independent JavaScript tier
@@ -317,16 +327,16 @@ change, and the run itself is the only source of truth that cannot go stale (`AG
 current baseline for the one purpose a number serves — noticing that a change moved it by more than it
 meant to).
 
-Run `build` before `test`, for one fixture binary. `./kotlin test` never links a main binary, and every
-browser test execs `webuicheck`, so a missing `webuicheck` reddens the whole browser tier — explicitly,
-rather than passing quietly. See [Status & limitations](#status--limitations) for why it is a separate
-binary at all.
+Build the Web UI before `./kotlin build`, then run `./kotlin test`. The test task never links a main
+binary, and every browser test execs `webuicheck`, so a missing `webuicheck` reddens the whole browser tier
+— explicitly, rather than passing quietly. See [Status & limitations](#status--limitations) for why it
+is a separate binary at all.
 
 **The first `test` run downloads browsers, and needs the network for it.** Playwright provisions its
 browser bundle into `~/Library/Caches/ms-playwright` on macOS or `~/.cache/ms-playwright` on Linux, because
 `Playwright.create()` installs Chromium, the headless shell, ffmpeg, Firefox and WebKit as one set even
-though every test here asks for Chromium. The Java artifact supplies its Node driver, so local tests
-need no npm project or frontend build. CI uses the matching, pinned Playwright CLI through `npm exec`
+though every test here asks for Chromium. The Java artifact supplies its Node driver; the served Web UI
+requires the Vite build above. CI uses the matching, pinned Playwright CLI through `npm exec`
 to install Chromium only, then disables Java's automatic browser download. It caches browsers under
 an OS/architecture/version key. When changing `playwright` in `gradle/libs.versions.toml`, update both
 the CLI version and cache key in `.github/workflows/ci.yml`.
@@ -344,6 +354,7 @@ lines, and silenced by `--log-level` before the surrounding noise is. The file f
 along with everything else, and a failed lookup deletes it rather than leaving a stale answer behind.
 
 ```shell
+npm run build --prefix webui
 ./kotlin build -p macosArm64 -p jvm # use linuxX64 on Linux
 ./kotlin do kexePath
 kexe=$(cat build/kexe-path)
@@ -357,9 +368,13 @@ and restart the daemon service, use the repository's installer (with `~/.local/b
 ```
 
 Pass `--no-daemon` when you want to stage the source build without replacing the running daemon. Pass
-`--webui-only` after a JavaScript, CSS or HTML change: it replaces only the installed Web UI files, with
-no build and no daemon restart, and a browser reload picks them up. It needs a full install first, and
-the installed binary must already serve every API the new Web UI calls.
+`--webui-only` after a TypeScript, TSX, CSS or HTML change: it rebuilds `webui/` before replacing the
+installed Web UI files, without restarting the daemon, and a browser reload picks them up. It needs a
+full install first, and the installed binary must already serve every API the new Web UI calls.
+
+For Web UI work, run `npm run watch --prefix webui` while a daemon serves the checkout's
+`resources/webui/`, then reload the browser after a completed build. `run-daemon.sh` installs the Web UI
+dependencies and builds it before starting the checkout's daemon; run the watcher in a separate terminal.
 
 Linux source builds use Ubuntu 22.04 and need `libsqlite3-dev`, `libstdc++-11-dev`, and
 `zlib1g-dev` in addition to the runtime dependencies. The build links against Ubuntu’s glibc
@@ -370,7 +385,9 @@ packages explicitly.
 Kotlin/Native cannot run its compiler on a Linux ARM64 host. On a disposable Ubuntu 22.04 x64 build
 machine, `scripts/install-linux-build-deps.sh linuxArm64` installs multiarch dependencies (and adjusts
 APT sources), then `./kotlin build -p linuxArm64` cross-compiles. Run the resulting executables on ARM64.
-`scripts/bundle-arm64-checks.sh` packages native test binaries for that runner. macOS source builds
+`scripts/bundle-arm64-checks.sh` packages native test binaries for that runner; the serving tests among
+them read the built Web UI from `resources/webui` in the checkout they run in, so copy that directory
+there as well (CI downloads the `webui` artifact into it). macOS source builds
 remain native. Run Kotlin invocations and aggregate tests serially.
 
 ## The CLI
@@ -726,9 +743,9 @@ Kotgent is deliberately focused. The current product boundary is:
   login form, and leaves nothing behind outside the checkout.
 - **A browser-independent JavaScript tier.** The pure Web UI rules — revision merges, link eligibility,
   typeahead selection, readiness transitions — are proven under Node's own `node --test`, in
-  `webuitest/js/`, against the shipped modules by relative import. It cost the promised nothing: no build
-  step, no package manager, no `node_modules`, and no copy of the code under test. `WebUiLogicTest`
-  spawns the runner, so `./kotlin test` remains the single gate.
+  `webuitest/js/`. The tests import TypeScript sources from `webui/src/` directly through Node's type
+  stripping and resolve packages from `webui/node_modules`. The service-worker tests execute the built
+  `resources/webui/sw.js`. `WebUiLogicTest` spawns the runner as part of `./kotlin test`.
 
 **Backlog (not built yet):**
 
@@ -736,13 +753,12 @@ Kotgent is deliberately focused. The current product boundary is:
 - Structured mobile actions such as native approve/deny buttons outside the agent's terminal. Approvals
   remain interactive TUI operations today.
 - A **diff viewer** and snapshots.
-- **More of the Web UI's pure rules proven without a browser.** `lib/commands.js`, `lib/paths.js` and
-  `lib/unicode.js` already import cleanly under Node and are only partly covered by the tier in
-  `webuitest/js/`; `lib/qr.js` stays in the browser tier for as long as it is the one `lib/` module with
-  a bare specifier (`"qrcode"`), which only the import map resolves.
-- **Decomposing the remaining `app.js` flows.** Roughly sixty `useCallback` flows still live in one
-  module. Moving state into `state/` and async coordination into `lib/mutation.js` was deliberately kept
-  separate from splitting the component itself, which is still open and still not urgent.
+- **More of the Web UI's pure rules proven without a browser.** `lib/commands.ts`, `lib/paths.ts` and
+  `lib/unicode.ts` import cleanly under Node and are only partly covered by the tier in
+  `webuitest/js/`; `lib/qr.ts` imports the local `lib/qrcode.ts` and can also be tested in this tier.
+- **Decomposing the remaining `app.tsx` flows.** Roughly sixty `useCallback` flows still live in one
+  module. State lives in `state/` and async coordination in `lib/mutation.ts`; splitting the component
+  itself is still open and still not urgent.
 
 **The real-PTY tests.** Kotlin Toolchain 0.12 links our own cinterop into test binaries
 ([KT-78062](https://youtrack.jetbrains.com/issue/KT-78062) is fixed), so these 11 assertions are ordinary
@@ -776,21 +792,21 @@ where the behavior is platform-independent.
 
 Issues and pull requests are welcome. A few things worth knowing before you open one:
 
-- **The build is the JetBrains Kotlin Toolchain, not Gradle.** Use the committed `./kotlin` wrapper; there
-  is no `build.gradle`. Dependencies and module wiring live in `module.yaml` / `project.yaml`.
+- **The native build is the JetBrains Kotlin Toolchain, not Gradle.** Use the committed `./kotlin`
+  wrapper; there is no `build.gradle`. Dependencies and module wiring live in `module.yaml` / `project.yaml`.
 - **Keep `./kotlin build` and `./kotlin test` green**, and run `build` before `test` (see
   [Build & test](#build--test)). New tests are expected to come with the change; the suite has no skips and
   should stay that way.
 - **Web UI changes go through four tiers, and which tier a claim belongs to is decided by whether a
   running page could answer it.** Anything a browser is not needed for — data merges, matching, state
   transitions and the other pure rules — belongs in `webuitest/js/`, which runs under `node --test`
-  against the shipped modules themselves; that is the cheapest tier and the one to reach for first.
-  `test/transport/WebUiServingTest.kt` keeps what only an address can
-  prove — URLs, media types, caching headers, content revisions, path safety — plus the registry every
-  newly served ES module must be added to. Anything a Chromium can answer belongs in `webuitest/`, as
-  executed behaviour against the real server; it is no longer true that browser behaviour is verified by
-  hand. Changed modules must still pass `node --check <file>` — this stays a no-build Preact app — and
-  what remains manual is only what desktop automation cannot faithfully reproduce: installed-PWA
+  against the TypeScript sources; that is the cheapest tier and the one to reach for first.
+  `test/transport/WebUiServingTest.kt` keeps what only an address can prove — URLs, media types, caching
+  headers and path safety — and checks that the built shell's references resolve and non-map `assets/`
+  files have content-hashed names. Anything a Chromium can answer belongs in `webuitest/`, as executed behaviour
+  against the real server. Changed `webui/src` modules must pass `npm run typecheck --prefix webui` and
+  `npm run build --prefix webui`; use `node --check <file>` for changed `webuitest/js` files. What remains
+  manual is only what desktop automation cannot faithfully reproduce: installed-PWA
   lifecycle, safe areas, software-keyboard geometry, touch physics and notification prompts. The full
   strategy is [docs/TESTING.md](docs/TESTING.md).
 - **Read [CLAUDE.md](CLAUDE.md) first** if you are touching the build, native code, or the event model. It
