@@ -1179,8 +1179,8 @@ private const val READ_DEFINITE: String = "definite"
 private const val READ_UNREACHABLE: String = "unreachable"
 private const val READ_ACCEPTED: String = "accepted"
 
-// Fake-clock jumps. Each must exceed the app's own timer, READ_RETRY_DELAY_MS in app.js and maxRetryMs in
-// lib/resync.js, so that one jump fires exactly the one timer that is pending.
+// Fake-clock jumps. Each must exceed the app's own timer, READ_RETRY_DELAY_MS in app.tsx and maxRetryMs in
+// lib/resync.ts, so that one jump fires exactly the one timer that is pending.
 private const val RETRY_WINDOW_MILLIS: Long = 6_000L
 private const val RECONNECT_BACKOFF_CAP_MILLIS: Long = 30_000L
 

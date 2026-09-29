@@ -1,4 +1,4 @@
-// Pure decision machine for terminal reattachment; app.js performs its timer, probe, attachment, and hint
+// Pure decision machine for terminal reattachment; app.tsx performs its timer, probe, attachment, and hint
 // effects. Hidden pages retain candidates, grants wait for a candidate, and generations reject late work.
 
 import type { Session } from "./sessions.ts";

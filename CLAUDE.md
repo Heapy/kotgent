@@ -148,9 +148,9 @@ the common workflow and links to those guides; implementation invariants belong 
 - On `vite:preloadError`, refetch the shell and reload only when its entry module differs from the running
   one. A `sessionStorage` slot holding the last `running → served` reload refuses the same pair again;
   previous builds' assets are deliberately not kept.
-- `webui/src/lib/router.ts` is the only owner of browser history. `app.js` owns global shortcuts
+- `webui/src/lib/router.ts` is the only owner of browser history. `app.tsx` owns global shortcuts
   and screen selection; avoid parallel sources of truth in components.
-- Keep terminal reattachment decisions in `webui/src/lib/reattach.ts`; `app.js` supplies current
+- Keep terminal reattachment decisions in `webui/src/lib/reattach.ts`; `app.tsx` supplies current
   environment and performs declared effects. Preserve the distinction between hidden and cancelled, do
   not spend a grant before a candidate exists, and keep probe guards ordered. A hidden page holds a
   resolved probe; among pending mutations only the control actions `affectsAttachment` names do. A
@@ -169,7 +169,7 @@ the common workflow and links to those guides; implementation invariants belong 
 - State modules import `@preact/signals-core` directly and must share one reactive graph with
   `@preact/signals`. The `overrides` pin in `webui/package.json` and
   `webuitest/js/module-graph.test.js` guard that single-copy invariant.
-- Reading `.value` in a render body is what subscribes a component to a signal. `app.js`'s bare
+- Reading `.value` in a render body is what subscribes a component to a signal. `app.tsx`'s bare
   `import "@preact/signals"` installs the required Preact hooks and is load-bearing.
 - Only an application-level singleton may hold a bare `computed()`. Anything a component can mount more
   than once must derive with `useComputed`/`useSignal` from `@preact/signals`.
@@ -200,8 +200,9 @@ the common workflow and links to those guides; implementation invariants belong 
   `components/PathSuggestions.tsx`.
 - Fold case for matching with `toLowerCase()`, never `toLocaleLowerCase()`. A tr/az browser folds an
   uppercase `I` differently. Keep `webuitest/js/turkish-fold.js` coverage for every matching rule.
-- In htm templates use `spellcheck=${false}`, `autoCorrect="off"`, and `autocapitalize="off"`; served-DOM
-  tests protect these spellings. `spellCheck=${false}` fails Preact's property test and sets nothing;
+- In TSX use `spellcheck={false}`, `autoCorrect="off"`, and `autocapitalize="off"` without casts; served-DOM
+  tests require `spellcheck="false"`, `autocorrect="off"`, and `autocapitalize="off"`.
+  `spellCheck={false}` fails Preact's property test and sets nothing;
   `spellcheck="false"` reaches the boolean IDL setter, which coerces any non-empty string to on. No DOM
   property carries `autoCorrect`, so Preact sets a plain attribute in every engine, while lowercase
   `autocorrect="off"` hits Safari's boolean IDL and turns autocorrect on.

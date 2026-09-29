@@ -1,6 +1,6 @@
 export const STALE_BUILD_RELOAD_KEY = "kotgent.staleBuildReload.v1";
 
-export function isStaleBuild(servedEntrySrc, runningEntryUrl, origin) {
+export function isStaleBuild(servedEntrySrc: string | null | undefined, runningEntryUrl: string, origin: string) {
   if (!servedEntrySrc?.trim()) return false;
   try {
     return new URL(servedEntrySrc, origin).href !== runningEntryUrl;
@@ -9,7 +9,11 @@ export function isStaleBuild(servedEntrySrc, runningEntryUrl, origin) {
   }
 }
 
-export function claimStaleBuildReload(storage, runningEntryUrl, servedEntryUrl) {
+export function claimStaleBuildReload(
+  storage: Pick<Storage, "getItem" | "setItem"> | null,
+  runningEntryUrl: string,
+  servedEntryUrl: string,
+) {
   if (!storage) return false;
   try {
     const pair = JSON.stringify([runningEntryUrl, servedEntryUrl]);

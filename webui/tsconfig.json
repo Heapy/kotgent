@@ -29,8 +29,7 @@
       "vite/client"
     ],
     "skipLibCheck": true,
-    "allowJs": true,
-    "checkJs": false
+    "allowJs": false
   },
   "include": [
     "src/**/*",

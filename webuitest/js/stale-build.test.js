@@ -6,7 +6,7 @@ import {
   claimStaleBuildReload,
   isStaleBuild,
   sessionStorageOrNull,
-} from "../../webui/src/lib/stale-build.js";
+} from "../../webui/src/lib/stale-build.ts";
 
 const ORIGIN = "https://kotgent.example";
 const FIRST_BUILD = "https://kotgent.example/assets/index-first.js";
@@ -35,7 +35,7 @@ test("importing the module does not read the browser window", async () => {
     },
   });
 
-  await import("../../webui/src/lib/stale-build.js?node-import");
+  await import("../../webui/src/lib/stale-build.ts?node-import");
 
   assert.equal(reads, 0);
 });

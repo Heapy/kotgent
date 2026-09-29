@@ -3,7 +3,6 @@ import "./style.css";
 
 import { render } from "preact";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { html } from "htm/preact";
 // Importing the adapter installs Preact's options hooks, which is what makes a signal read in a render
 // body subscribe the component that read it. Without this import `.value` still answers correctly and
 // the tree simply never re-renders again, so the import is load-bearing even with nothing named here.
@@ -45,7 +44,7 @@ import { watchRefreshSources } from "./lib/resume.ts";
 import { affectsAttachment, buildCommands } from "./lib/commands.ts";
 import { MUTATION_BUSY_MESSAGE, pendingMutation, runMutation } from "./lib/mutation.ts";
 import { READY } from "./lib/readiness.ts";
-import { claimStaleBuildReload, isStaleBuild, sessionStorageOrNull } from "./lib/stale-build.js";
+import { claimStaleBuildReload, isStaleBuild, sessionStorageOrNull } from "./lib/stale-build.ts";
 import {
   loadAdhdMode,
   loadSidebarCollapsed,
@@ -147,6 +146,23 @@ import {
   UploadFilesDialog,
 } from "./components/dialogs.tsx";
 
+import type { EventsFrame } from "./lib/events.ts";
+import type { Preferences } from "./lib/prefs.ts";
+import type { ReattachEvent, ReattachState } from "./lib/reattach.ts";
+import type { Session, SessionUpdate } from "./lib/sessions.ts";
+import type { Project } from "./lib/tasks.ts";
+import type { CommandPaletteProps } from "./components/CommandPalette.tsx";
+import type { TerminalPaneProps } from "./components/TerminalPane.tsx";
+import type { ImportSessionRequest, StartSessionRequest } from "./components/dialogs.tsx";
+
+interface ReadPoster {
+  seq: number;
+  inFlight: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+type PaletteMode = NonNullable<CommandPaletteProps["mode"]>;
+
 let staleBuildCheckInFlight = false;
 window.addEventListener("vite:preloadError", async () => {
   if (staleBuildCheckInFlight) return;
@@ -157,7 +173,8 @@ window.addEventListener("vite:preloadError", async () => {
     const shell = new DOMParser().parseFromString(await response.text(), "text/html");
     const entrySrc = shell.querySelector('script[type="module"][src]')?.getAttribute("src");
     if (!isStaleBuild(entrySrc, import.meta.url, location.origin)) return;
-    const servedEntryUrl = new URL(entrySrc, location.origin).href;
+    // A stale build has a nonempty, parseable entry src.
+    const servedEntryUrl = new URL(entrySrc!, location.origin).href;
     if (claimStaleBuildReload(sessionStorageOrNull(), import.meta.url, servedEntryUrl)) {
       location.reload();
     }
@@ -190,7 +207,7 @@ function clearDeepLink() {
   } catch (_) { /* Leaving the parameter is harmless when the History API is unavailable. */ }
 }
 
-function deadHint(state) {
+function deadHint(state: string | null) {
   if (state === "resumable") return "This session can be resumed.";
   if (state === "lost") {
     return "This session is lost: the agent no longer keeps its conversation, so it cannot be resumed. " +
@@ -200,12 +217,12 @@ function deadHint(state) {
 }
 
 // Per-session retry state prevents one session's mark from superseding another's.
-const readPosters = new Map();
+const readPosters = new Map<string, ReadPoster>();
 
 const READ_RETRY_DELAY_MS = 2000;
 
 // Snapshot pruning bounds retry timers for long-lived pages.
-function pruneReadPosters(ids) {
+function pruneReadPosters(ids: ReadonlySet<string>) {
   for (const [id, poster] of readPosters) {
     if (ids.has(id)) continue;
     if (poster.timer !== null) clearTimeout(poster.timer);
@@ -215,7 +232,7 @@ function pruneReadPosters(ids) {
 
 // Coalesce to the newest seq and retry transport failures; the daemon remains the unread authority.
 // Definite HTTP failures are terminal because retrying cannot change their outcome.
-function postRead(id, seq) {
+function postRead(id: string, seq: number) {
   let poster = readPosters.get(id);
   if (!poster) {
     poster = { seq: 0, inFlight: false, timer: null };
@@ -225,7 +242,7 @@ function postRead(id, seq) {
   deliverRead(id, poster);
 }
 
-function deliverRead(id, poster) {
+function deliverRead(id: string, poster: ReadPoster) {
   if (poster.inFlight || poster.timer !== null) return;
   poster.inFlight = true;
   const attempted = poster.seq;
@@ -252,7 +269,7 @@ let sessionViewOnScreen = true;
 
 // Imperative triggers can retry a failed POST even when unread and seq do not change.
 // Archived rows remain selectable and therefore follow the same read contract.
-function markReadIfViewing(id, unread, lastSeq) {
+function markReadIfViewing(id: string | null, unread: number, lastSeq: number) {
   if (!id || !(unread > 0)) return;
   // Visibility is intentionally looser than focus, which browser chrome and devtools can own.
   if (document.visibilityState !== "visible") return;
@@ -260,7 +277,7 @@ function markReadIfViewing(id, unread, lastSeq) {
   postRead(id, lastSeq);
 }
 
-function detachedHint(session) {
+function detachedHint(session: Session | null) {
   return session
     ? "Detached from " + displayName(session) + ". The agent keeps running."
     : "Terminal detached.";
@@ -268,8 +285,8 @@ function detachedHint(session) {
 
 // Project rows lack revisions and event frames, so ordered reads replace the entire list.
 const reloadProjectsQueue = createSerialRefresh({
-  read: async () => {
-    const response = await fetchProjects();
+  read: async (): Promise<Project[]> => {
+    const response = await fetchProjects() as Project[] | { projects?: Project[] };
     if (Array.isArray(response)) return response;
     return response && Array.isArray(response.projects) ? response.projects : [];
   },
@@ -299,13 +316,13 @@ function loadPreferences() {
     });
 }
 
-function projectFailureSentence(error) {
+function projectFailureSentence(error: unknown) {
   return "Could not load projects: " + errorMessage(error);
 }
 
 // runMutation throws the busy refusal before the work runs, and a click handler drops the promise, so an
 // unguarded click would be a silent no-op with an unhandled rejection behind it.
-function runClickMutation(name, failure, work) {
+function runClickMutation(name: string, failure: string, work: () => Promise<void>) {
   if (pendingMutation.value) {
     say(MUTATION_BUSY_MESSAGE, true);
     return Promise.resolve();
@@ -335,22 +352,22 @@ function App() {
   const dialog = dialogSignal.value;
   const status = statusSignal.value;
   const prefs = prefsSignal.value;
-  const [projectId, setProjectId] = useState(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname, window.location.search));
   const [currentVersion, setCurrentVersion] = useState("");
-  const [attachedId, setAttachedId] = useState(null);
-  const [terminalFocusRequest, setTerminalFocusRequest] = useState(null);
-  const [palette, setPalette] = useState(null);
+  const [attachedId, setAttachedId] = useState<string | null>(null);
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState<TerminalPaneProps["focusRequest"]>(null);
+  const [palette, setPalette] = useState<{ mode: PaletteMode } | null>(null);
   const [showDone, setShowDone] = useState(false);
   const [adhdMode, setAdhdMode] = useState(loadAdhdMode);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
-  const [hint, setHint] = useState(SELECT_HINT);
+  const [hint, setHint] = useState<string | null>(SELECT_HINT);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const onBoard = route.screen === SCREEN_TASKS || route.screen === SCREEN_TASK;
   sessionViewOnScreen = !onBoard;
 
-  const openPalette = useCallback((mode = "leader") => setPalette({ mode: mode }), []);
+  const openPalette = useCallback((mode: PaletteMode = "leader") => setPalette({ mode: mode }), []);
   const closePalette = useCallback(() => setPalette(null), []);
   // A passive effect runs after paint, so a reload right after a toggle could drop the write.
   useLayoutEffect(() => { persistSidebarCollapsed(sidebarCollapsed); }, [sidebarCollapsed]);
@@ -365,15 +382,15 @@ function App() {
   const disconnectAnnouncedRef = useRef(false);
   // lib/reattach.js owns decisions; these refs hold machine state and the one timer and one probe it
   // can have in flight, each stamped with the generation that armed it.
-  const reattachRef = useRef(null);
+  const reattachRef = useRef<Readonly<ReattachState> | null>(null);
   if (reattachRef.current === null) reattachRef.current = initialReattachState();
-  const reattachTimerRef = useRef(null);
-  const reattachProbeRef = useRef(null);
+  const reattachTimerRef = useRef<{ gen: number; handle: ReturnType<typeof setTimeout> } | null>(null);
+  const reattachProbeRef = useRef<{ gen: number; controller: AbortController } | null>(null);
   const projectRefreshStartedRef = useRef(false);
 
   // Capture before xterm/forms; KeyboardEvent.code keeps the shortcut physical across layouts.
   useEffect(() => {
-    const handler = (event) => {
+    const handler = (event: KeyboardEvent) => {
       const opensPalette =
         (event.metaKey && event.code === "KeyK") ||
         (event.ctrlKey && event.shiftKey && event.code === "KeyK");
@@ -395,8 +412,9 @@ function App() {
   }, []);
 
   // Stable dispatcher: read the world, reduce, store, then perform effects.
-  const dispatchReattach = useCallback(function dispatch(event) {
-    const step = reduceReattach(reattachRef.current, event, {
+  const dispatchReattach = useCallback(function dispatch(event: ReattachEvent) {
+    // The ref is initialized during render before this dispatcher can run.
+    const step = reduceReattach(reattachRef.current!, event, {
       visible: document.visibilityState === "visible",
       activeSessionId: activeSessionId.value,
       pending: pendingMutation.value,
@@ -438,7 +456,7 @@ function App() {
             .then(
               (row) => {
                 settle();
-                dispatch(probeResolved(effect.gen, row));
+                dispatch(probeResolved(effect.gen, row as Session | null));
               },
               (err) => {
                 settle();
@@ -518,15 +536,15 @@ function App() {
   useEffect(() => {
     if (projects.length === 0) return;
     setProjectId((current) =>
-      current && projects.some((project) => project.id === current) ? current : projects[0].id);
+      current && projects.some((project) => project.id === current) ? current : projects[0]!.id);
   }, [projects]);
 
-  const selectProject = useCallback((id) => {
+  const selectProject = useCallback((id: string) => {
     setProjectId(id);
     setDrawerOpen(false);
   }, []);
 
-  const projectCreated = useCallback(async (created) => {
+  const projectCreated = useCallback(async (created: Project | null) => {
     const rows = await reloadProjects();
     const label = (created && created.name) || "the project";
     if (created && created.archived === true) {
@@ -545,9 +563,9 @@ function App() {
 
   // Project mutations have no event frame, so refresh the live list explicitly. The refresh is this
   // mutation's own follow-up read and runs inside the lock, like the link's badge re-read.
-  const applyProjectArchive = useCallback((id, archived) => {
+  const applyProjectArchive = useCallback((id: string, archived: boolean) => {
     const submittedDialog = dialogSignal.value;
-    const reportFailure = (e) => {
+    const reportFailure = (e: unknown) => {
       // A dismissed dialog cannot own errors from its still-running request.
       if (dialogSignal.value === submittedDialog) throw e;
       say((archived ? "Could not delete the project: " : "Could not restore the project: ") +
@@ -556,7 +574,7 @@ function App() {
     return runMutation(archived ? "delete-project" : "restore-project", async () => {
       let changed;
       try {
-        changed = archived ? await deleteProject(id) : await restoreProject(id);
+        changed = (archived ? await deleteProject(id) : await restoreProject(id)) as Project | null;
       } catch (e) {
         reportFailure(e);
         return;
@@ -594,14 +612,14 @@ function App() {
     });
   }, [reloadProjects]);
 
-  const removeProject = useCallback((id) => applyProjectArchive(id, true), [applyProjectArchive]);
-  const bringBackProject = useCallback((id) => applyProjectArchive(id, false), [applyProjectArchive]);
+  const removeProject = useCallback((id: string) => applyProjectArchive(id, true), [applyProjectArchive]);
+  const bringBackProject = useCallback((id: string) => applyProjectArchive(id, false), [applyProjectArchive]);
 
   // Treat stale IDs absent from the live project list as no selection.
   const selectedProject = findProject(projectId);
   const selectedProjectId = selectedProject ? selectedProject.id : null;
 
-  const showSession = useCallback((session) => {
+  const showSession = useCallback((session: Session) => {
     selectSessionId(session.id);
     dispatchReattach(cancelReattachEvent());
     setDrawerOpen(false);
@@ -619,12 +637,12 @@ function App() {
     markReadIfViewing(session.id, session.unread, session.lastSeq);
   }, [dispatchReattach]);
 
-  const selectSession = useCallback((id) => {
+  const selectSession = useCallback((id: string) => {
     const session = findSession(id);
     if (session) showSession(session);
   }, [showSession]);
 
-  const selectSidebarSession = useCallback((id) => {
+  const selectSidebarSession = useCallback((id: string) => {
     selectSession(id);
     setTerminalFocusRequest({ sessionId: id });
   }, [selectSession]);
@@ -641,7 +659,7 @@ function App() {
   }, [routeSessionId, sessions, activeId, showSession]);
 
   // Apply a task route's project once per ref so later manual project selection remains authoritative.
-  const appliedTaskProjectRef = useRef(null);
+  const appliedTaskProjectRef = useRef<string | null>(null);
   const openTaskRef = route.screen === SCREEN_TASK ? route.id : null;
   useEffect(() => {
     if (!openTaskRef) { appliedTaskProjectRef.current = null; return; }
@@ -662,7 +680,7 @@ function App() {
     if (s) markReadIfViewing(s.id, s.unread, s.lastSeq);
   }, [onBoard]);
 
-  const applySessionsSnapshot = useCallback((rows) => {
+  const applySessionsSnapshot = useCallback((rows: readonly Session[]) => {
     // Reconnect snapshots are authoritative, including deletions, and are also the only attention
     // transition carrier for changes made while the socket was down.
     const { previous, first } = replaceSessions(rows);
@@ -694,7 +712,7 @@ function App() {
     if (first && sessionViewOnScreen) say(rows.length + " session(s).");
   }, [dispatchReattach, showSession]);
 
-  const applySessionRow = useCallback((row) => {
+  const applySessionRow = useCallback((row: Session) => {
     const { changed, previous, winner } = mergeSessionRow(row);
     if (winner) dispatchReattach(sessionStateChanged(winner.id, winner.state));
     if (changed && previous && !previous.needsAttention && row.needsAttention) {
@@ -712,13 +730,14 @@ function App() {
     return winner;
   }, [showSession]);
 
-  const applySessionPatch = useCallback((msg) => {
+  const applySessionPatch = useCallback((msg: SessionUpdate) => {
     const { changed, previous, winner } = mergeSessionPatch(msg);
     // A patch for a row this page has never seen carries too little to publish, so there is nothing to
     // poke a read against either.
     if (!winner) return;
     dispatchReattach(sessionStateChanged(winner.id, winner.state));
-    if (changed && !previous.needsAttention && msg.needsAttention) notifyAttention(previous);
+    // A patch can have a winner only if the store already held its previous row.
+    if (changed && !previous!.needsAttention && msg.needsAttention) notifyAttention(previous!);
     // Even a stale patch retries a stalled mark-read POST without rewriting the signal.
     if (winner.id === activeSessionId.value) {
       markReadIfViewing(winner.id, winner.unread, winner.lastSeq);
@@ -726,9 +745,9 @@ function App() {
   }, []);
 
   // Targeted GETs return the revision winner; null is reserved for an unavailable read.
-  const fetchSessionRow = useCallback(async (id) => {
+  const fetchSessionRow = useCallback(async (id: string) => {
     try {
-      const row = await apiRequest("/sessions/" + encodeURIComponent(id));
+      const row = await apiRequest("/sessions/" + encodeURIComponent(id)) as Session | null;
       if (row && row.id) {
         return applySessionRow(row);
       }
@@ -746,7 +765,8 @@ function App() {
   useEffect(() => {
     let stopped = false;
     apiRequest("/version")
-      .then((info) => {
+      .then((value) => {
+        const info = value as { version?: unknown } | null;
         if (!stopped && info && typeof info.version === "string") {
           setCurrentVersion(info.version);
         }
@@ -756,7 +776,7 @@ function App() {
   }, []);
 
   // Dispatch through a ref to keep one socket while reconnect snapshots restore the baseline.
-  const onSessionsFrame = useCallback((msg) => {
+  const onSessionsFrame = useCallback((msg: EventsFrame) => {
     if (msg.type === "sessions_snapshot") applySessionsSnapshot(msg.sessions);
     else if (msg.type === "session_row") applySessionRow(msg.session);
     else if (msg.type === "session_update") applySessionPatch(msg);
@@ -773,7 +793,8 @@ function App() {
   useEffect(() => {
     const connection = createEventsConnection({
       url: () => wsUrl("/events"),
-      onFrame: (msg) => {
+      onFrame: (frame) => {
+        const msg = frame as EventsFrame;
         if (msg.type === "preferences_update") {
           applyServerPreferences(msg);
           return;
@@ -812,7 +833,7 @@ function App() {
   // The service worker sends a session id when a notification focuses an existing page.
   useLayoutEffect(() => {
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return undefined;
-    const onMessage = (event) => {
+    const onMessage = (event: MessageEvent<{ type?: string; sessionId?: string } | null>) => {
       const msg = event.data;
       if (!msg || msg.type !== "select-session" || !msg.sessionId) return;
       if (findSession(msg.sessionId)) {
@@ -843,7 +864,7 @@ function App() {
     };
   }, [dispatchReattach]);
 
-  const startSession = useCallback((body) => {
+  const startSession = useCallback((body: StartSessionRequest) => {
     const submittedDialog = dialogSignal.value;
     // Auto-select only if no selection event occurred during the request. Selection generation is not
     // run currency: the operator can navigate away and back while this one mutation stays current.
@@ -854,7 +875,7 @@ function App() {
         created = await apiRequest("/sessions", {
           method: "POST",
           body: JSON.stringify(body),
-        });
+        }) as Session;
       } catch (e) {
         // Late failures surface globally if the submitting form has unmounted.
         if (dialogSignal.value === submittedDialog) throw e;
@@ -868,7 +889,7 @@ function App() {
     });
   }, [showSession]);
 
-  const renameSession = useCallback((sessionId, name) => {
+  const renameSession = useCallback((sessionId: string, name: string) => {
     const submittedDialog = dialogSignal.value;
     return runMutation("rename", async () => {
       let renamed;
@@ -876,7 +897,7 @@ function App() {
         renamed = await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
           method: "PATCH",
           body: JSON.stringify({ name: name }),
-        });
+        }) as Session;
       } catch (e) {
         // Late failures surface globally if the submitting form has unmounted.
         if (dialogSignal.value === submittedDialog) throw e;
@@ -892,7 +913,7 @@ function App() {
   // Import and optional resume are serialized as one action. HTTP rows merge by revision, targeted
   // GETs decide attachment from fresh state, and generation guards prevent late auto-selection.
   // Registration success closes the dialog even when its follow-up resume fails.
-  const importSession = useCallback((body, registerOnly) => {
+  const importSession = useCallback((body: ImportSessionRequest, registerOnly: boolean) => {
     const submittedDialog = dialogSignal.value;
     const selectionUnmoved = markSelection();
     return runMutation("import", async () => {
@@ -901,10 +922,10 @@ function App() {
         created = await apiRequest("/sessions/import", {
           method: "POST",
           body: JSON.stringify(body),
-        });
+        }) as Session;
       } catch (e) {
         if (dialogSignal.value === submittedDialog) throw e;
-        say(errorMessage(e), true);
+        say(errorMessage(e) as string, true);
         return;
       }
       // Fetch after commit; fall back to the committed 201 row if the read is unavailable. Both this
@@ -922,7 +943,7 @@ function App() {
         const resumedDto = await apiRequest(
           "/sessions/" + encodeURIComponent(created.id) + "/resume",
           { method: "POST" },
-        );
+        ) as Session | null;
         // Re-read after resume so an immediate exit cannot attach using stale live state.
         const freshRow = await fetchSessionRow(created.id);
         // The resume DTO is the best fallback; the pre-resume row would suppress attachment.
@@ -938,7 +959,7 @@ function App() {
     });
   }, [fetchSessionRow, showSession]);
 
-  const controlSession = useCallback(async (action, id) => {
+  const controlSession = useCallback(async (action: "interrupt" | "resume" | "stop" | "done" | "undone", id?: string) => {
     const s = findSession(id || activeSessionId.value);
     if (!s) return;
     // Refuse before the confirmation, not after: a stop that cannot be sent must not first ask the
@@ -967,7 +988,7 @@ function App() {
         const updated = await apiRequest(
           "/sessions/" + encodeURIComponent(s.id) + "/" + encodeURIComponent(action),
           { method: "POST" },
-        );
+        ) as Session | null;
         if (updated && updated.id) applySessionRow(updated);
         if (action === "stop" || action === "done") {
           if (s.id === activeSessionId.value) setAttachedId(null);
@@ -1034,7 +1055,7 @@ function App() {
     }
   }, []);
 
-  const onTerminalClosed = useCallback((id) => {
+  const onTerminalClosed = useCallback((id: string) => {
     const s = findSession(id);
     dispatchReattach(terminalClosed(id, s ? s.state : null));
     setAttachedId((current) => (current === id ? null : current));
@@ -1043,7 +1064,7 @@ function App() {
 
   // Dialogs can close or remount while saving, so component-local busy state cannot serialize PUTs.
   // The shared mutation lock outlives any one dialog instance, so it can.
-  const savePreferences = useCallback((next) => {
+  const savePreferences = useCallback((next: Preferences) => {
     const submittedDialog = dialogSignal.value;
     // Form revision distinguishes a remounted PreferencesDialog when routing late failures.
     const revisionAtSubmit = prefsSignal.value.revision;
@@ -1081,18 +1102,18 @@ function App() {
     });
   }, []);
 
-  const markSession = useCallback((sessionId, adhd) => runClickMutation(
+  const markSession = useCallback((sessionId: string, adhd: boolean) => runClickMutation(
     "adhd-session",
     "Could not change ADHD mode for the session: ",
     async () => {
       applySessionRow(await apiRequest("/sessions/" + encodeURIComponent(sessionId), {
         method: "PATCH",
         body: JSON.stringify({ adhd: adhd }),
-      }));
+      }) as Session);
     },
   ), [applySessionRow]);
 
-  const markFolder = useCallback((path, adhd) => runClickMutation(
+  const markFolder = useCallback((path: string, adhd: boolean) => runClickMutation(
     "adhd-folder",
     "Could not change ADHD mode for the folder: ",
     async () => {
@@ -1107,7 +1128,7 @@ function App() {
     },
   ), []);
 
-  const openNewSession = useCallback((cwd, initialMode = "start", initialAgent = "", taskRef = null) => {
+  const openNewSession = useCallback((cwd: string | null, initialMode: "start" | "import" = "start", initialAgent = "", taskRef: string | null = null) => {
     const selected = activeSessionSignal.value;
     openDialog({
       kind: "new",
@@ -1123,7 +1144,7 @@ function App() {
     [openNewSession],
   );
   const startSessionForTask = useCallback(
-    (cwd, taskRef) => openNewSession(cwd, "start", "", taskRef),
+    (cwd: string | null, taskRef: string) => openNewSession(cwd, "start", "", taskRef),
     [openNewSession],
   );
 
@@ -1156,7 +1177,7 @@ function App() {
     if (selected && selected.taskRef) navigate(taskPath(selected.taskRef));
   }, []);
 
-  const linkSessionToTask = useCallback(async (sessionId, ref, expectedProjectId) => {
+  const linkSessionToTask = useCallback(async (sessionId: string, ref: string, expectedProjectId: string | null) => {
     const selected = findSession(sessionId);
     // The shared pre-POST re-check, not the picker's availability guard: the operator has already chosen
     // a task, and every input may have moved underneath the open dialog while they were choosing.
@@ -1165,7 +1186,8 @@ function App() {
       pendingAction: pendingMutation.value,
       activeSessionId: activeSessionId.value,
       sessionId: sessionId,
-      expectedProjectId: expectedProjectId,
+      // The picker only enables submission for a session with a project.
+      expectedProjectId: expectedProjectId!,
       projects: projectsSignal.value,
       task: findTask(ref),
     })) {
@@ -1173,9 +1195,10 @@ function App() {
     }
 
     const submittedDialog = dialogSignal.value;
-    const label = displayName(selected);
+    // The shared submit guard rejects a missing session.
+    const label = displayName(selected!);
     return runMutation("link-task", async () => {
-      let failure = null;
+      let failure: unknown = null;
       try {
         await linkTask(ref, sessionId);
       } catch (e) {
@@ -1197,7 +1220,7 @@ function App() {
       // Preserve newer feedback, such as an events-socket warning.
       if (!announcementHolds(refreshing)) return;
       const winner = findSession(sessionId) || fresh;
-      const outcome = sessionTaskLinkOutcome({ label: label, ref: ref, fresh: fresh, winner: winner });
+      const outcome = sessionTaskLinkOutcome({ label: label, ref: ref, fresh: Boolean(fresh), winner: winner });
       say(outcome.text, outcome.error);
     });
   }, [fetchSessionRow]);
@@ -1224,7 +1247,8 @@ function App() {
       say("Linking a task is no longer available: " + disabled + ".", true);
       return;
     }
-    openDialog({ kind: "link-task", session: selected });
+    // A missing session always has a disabled reason.
+    openDialog({ kind: "link-task", session: selected! });
   }, []);
   const openDeleteProject = useCallback(() => {
     if (selectedProject) openDialog({ kind: "delete-project", project: selectedProject });
@@ -1235,10 +1259,10 @@ function App() {
   const resume = useCallback(() => controlSession("resume"), [controlSession]);
   const stop = useCallback(() => controlSession("stop"), [controlSession]);
   const done = useCallback(() => controlSession("done"), [controlSession]);
-  const restore = useCallback((id) => controlSession("undone", id), [controlSession]);
+  const restore = useCallback((id: string) => controlSession("undone", id), [controlSession]);
   const toggleShowDone = useCallback(() => setShowDone((shown) => !shown), []);
   const toggleAdhdMode = useCallback(() => setAdhdMode((on) => !on), []);
-  const changePaletteMode = useCallback((mode) => {
+  const changePaletteMode = useCallback((mode: PaletteMode) => {
     setPalette((current) => current ? { mode: mode } : current);
   }, []);
 
@@ -1278,132 +1302,136 @@ function App() {
     },
   });
 
-  return html`
-    ${palette && html`
-      <${CommandPalette}
-        commands=${commands}
-        mode=${palette.mode}
-        onModeChange=${changePaletteMode}
-        onClose=${closePalette}
-      />`}
-    ${""}
-    ${drawerOpen && html`
-      <button type="button" class="drawer-scrim" aria-label="Close the sidebar"
-              onClick=${closeDrawer}></button>`}
-    ${""}
-    <${Sidebar}
-      screen=${onBoard ? SCREEN_TASKS : SCREEN_SESSIONS}
-      sessions=${sessions}
-      tasks=${tasks}
-      projects=${projects}
-      projectId=${projectId}
-      activeId=${activeId}
-      prefs=${prefs}
-      status=${status}
-      currentVersion=${currentVersion}
-      drawerOpen=${drawerOpen}
-      collapsed=${sidebarCollapsed}
-      showDone=${showDone}
-      sessionsReady=${sessionsReady}
-      prefsStatus=${prefsStatus}
-      onRetryPrefs=${prefsReadiness.retry}
-      onSelect=${selectSidebarSession}
-      onSelectProject=${selectProject}
-      onNewSession=${openNewSession}
-      onNewProject=${newProject}
-      onOpenPrefs=${openPrefs}
-      onRestore=${restore}
-      onCloseDrawer=${closeDrawer}
-      onToggleShowDone=${toggleShowDone}
-      onMarkSession=${markSession}
-      onMarkFolder=${markFolder}
-      adhdMode=${adhdMode}
-      onToggleAdhdMode=${toggleAdhdMode}
-      onAnnounce=${say}
-    />
-    ${""}
-    ${onBoard ? html`
-      <${Board}
-        tasks=${tasks}
-        sessions=${sessions}
-        route=${route}
-        projects=${projects}
-        projectId=${selectedProjectId}
-        basePath=${prefs.basePath}
-        newTaskRequest=${newTaskRequest}
-        newProjectRequest=${newProjectRequest}
-        drawerOpen=${drawerOpen}
-        sidebarCollapsed=${sidebarCollapsed}
-        onTaskRow=${mergeTaskRow}
-        onProjectCreated=${projectCreated}
-        onToggleDrawer=${toggleDrawer}
-        onToggleSidebar=${toggleSidebar}
-        onOpenPalette=${openPalette}
-        onAnnounce=${say}
+  return (
+    <>
+      {palette && (
+        <CommandPalette
+          commands={commands}
+          mode={palette.mode}
+          onModeChange={changePaletteMode}
+          onClose={closePalette}
+        />)}
+      {""}
+      {drawerOpen && (
+        <button type="button" class="drawer-scrim" aria-label="Close the sidebar"
+                onClick={closeDrawer}></button>)}
+      {""}
+      <Sidebar
+        screen={onBoard ? SCREEN_TASKS : SCREEN_SESSIONS}
+        sessions={sessions}
+        tasks={tasks}
+        projects={projects}
+        projectId={projectId}
+        activeId={activeId}
+        prefs={prefs}
+        status={status}
+        currentVersion={currentVersion}
+        drawerOpen={drawerOpen}
+        collapsed={sidebarCollapsed}
+        showDone={showDone}
+        sessionsReady={sessionsReady}
+        prefsStatus={prefsStatus}
+        onRetryPrefs={prefsReadiness.retry}
+        onSelect={selectSidebarSession}
+        onSelectProject={selectProject}
+        onNewSession={openNewSession}
+        onNewProject={newProject}
+        onOpenPrefs={openPrefs}
+        onRestore={restore}
+        onCloseDrawer={closeDrawer}
+        onToggleShowDone={toggleShowDone}
+        onMarkSession={markSession}
+        onMarkFolder={markFolder}
+        adhdMode={adhdMode}
+        onToggleAdhdMode={toggleAdhdMode}
+        onAnnounce={say}
       />
-      ${route.screen === SCREEN_TASK && html`
-        <${TaskDetail} taskRef=${route.id} entry=${openTaskEntry} sessions=${sessions}
-                       onTaskRow=${mergeTaskRow} onTaskRemoved=${dropTask}
-                       onStartSession=${startSessionForTask} onAnnounce=${say} />`}
-      <p id="board-status" class=${"status-line board-status" + (status.error ? " error" : "")}
-         role="status" aria-live="polite">${status.text}</p>
-    ` : html`
-      <${TerminalPane}
-        session=${activeSession}
-        tasks=${tasks}
-        attachedId=${attachedId}
-        focusRequest=${terminalFocusRequest}
-        terminalFontSize=${prefs.terminalFontSize}
-        terminalUnicode=${prefs.terminalUnicode}
-        hint=${hint}
-        drawerOpen=${drawerOpen}
-        sidebarCollapsed=${sidebarCollapsed}
-        onToggleDrawer=${toggleDrawer}
-        onToggleSidebar=${toggleSidebar}
-        onOpenPalette=${openPalette}
-        onTerminalClosed=${onTerminalClosed}
-      />
-    `}
-    ${dialog && dialog.kind === "new" && html`
-      <${NewSessionDialog} initialCwd=${dialog.cwd} initialMode=${dialog.initialMode}
-                           initialAgent=${dialog.initialAgent}
-                           initialTaskRef=${dialog.taskRef}
-                           basePath=${prefs.basePath}
-                           onStart=${startSession} onImport=${importSession} onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "upload" && html`
-      <${UploadFilesDialog} session=${dialog.session} onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "rename" && html`
-      <${RenameSessionDialog} session=${dialog.session} onRename=${renameSession}
-                              onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "link-task" && html`
-      <${LinkTaskDialog} initialSession=${dialog.session} session=${activeSession}
-                         tasks=${tasks} tasksStatus=${taskListStatus}
-                         projectsStatus=${projectListStatus}
-                         projectActive=${isLiveProject(dialog.session.projectId)}
-                         onRetryProjects=${projectsReadiness.retry}
-                         onLink=${linkSessionToTask} onClose=${closeDialog} />`}
-    ${/* Remount on server revision so an open draft cannot overwrite newer committed values. */ ""}
-    ${dialog && dialog.kind === "prefs" && html`
-      <${PreferencesDialog} key=${prefs.revision} prefs=${prefs} sessions=${sessions}
-                            onSave=${savePreferences} onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "delete-project" && html`
-      <${DeleteProjectDialog} project=${dialog.project}
-                              taskCount=${taskListStatus.state === READY
-                                ? tasks.filter((task) => task.project === dialog.project.id).length
-                                : null}
-                              onDelete=${removeProject} onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "restore-project" && html`
-      <${RestoreProjectDialog} onRestore=${bringBackProject} onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "help" && html`<${HelpDialog} onClose=${closeDialog} />`}
-    ${dialog && dialog.kind === "phone" && html`<${PhoneDialog} onClose=${closeDialog} />`}
-  `;
+      {""}
+      {onBoard ? (<>
+        <Board
+          tasks={tasks}
+          sessions={sessions}
+          route={route}
+          projects={projects}
+          projectId={selectedProjectId}
+          basePath={prefs.basePath}
+          newTaskRequest={newTaskRequest}
+          newProjectRequest={newProjectRequest}
+          drawerOpen={drawerOpen}
+          sidebarCollapsed={sidebarCollapsed}
+          onTaskRow={mergeTaskRow}
+          onProjectCreated={projectCreated}
+          onToggleDrawer={toggleDrawer}
+          onToggleSidebar={toggleSidebar}
+          onOpenPalette={openPalette}
+          onAnnounce={say}
+        />
+        {route.screen === SCREEN_TASK && (
+          // The router only produces SCREEN_TASK for a path with a decoded task id.
+          <TaskDetail taskRef={route.id!} entry={openTaskEntry} sessions={sessions}
+                         onTaskRow={mergeTaskRow} onTaskRemoved={dropTask}
+                         onStartSession={startSessionForTask} onAnnounce={say} />)}
+        <p id="board-status" class={"status-line board-status" + (status.error ? " error" : "")}
+           role="status" aria-live="polite">{status.text}</p>
+      </>) : (
+        <TerminalPane
+          session={activeSession}
+          tasks={tasks}
+          attachedId={attachedId}
+          focusRequest={terminalFocusRequest}
+          terminalFontSize={prefs.terminalFontSize}
+          terminalUnicode={prefs.terminalUnicode}
+          hint={hint}
+          drawerOpen={drawerOpen}
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleDrawer={toggleDrawer}
+          onToggleSidebar={toggleSidebar}
+          onOpenPalette={openPalette}
+          onTerminalClosed={onTerminalClosed}
+        />
+      )}
+      {dialog && dialog.kind === "new" && (
+        <NewSessionDialog initialCwd={dialog.cwd} initialMode={dialog.initialMode}
+                             initialAgent={dialog.initialAgent}
+                             initialTaskRef={dialog.taskRef}
+                             basePath={prefs.basePath}
+                             onStart={startSession} onImport={importSession} onClose={closeDialog} />)}
+      {dialog && dialog.kind === "upload" && (
+        <UploadFilesDialog session={dialog.session} onClose={closeDialog} />)}
+      {dialog && dialog.kind === "rename" && (
+        <RenameSessionDialog session={dialog.session} onRename={renameSession}
+                                onClose={closeDialog} />)}
+      {dialog && dialog.kind === "link-task" && (
+        <LinkTaskDialog initialSession={dialog.session} session={activeSession}
+                           tasks={tasks} tasksStatus={taskListStatus}
+                           projectsStatus={projectListStatus}
+                           projectActive={isLiveProject(dialog.session.projectId)}
+                           onRetryProjects={projectsReadiness.retry}
+                           onLink={linkSessionToTask} onClose={closeDialog} />)}
+      {/* Remount on server revision so an open draft cannot overwrite newer committed values. */ ""}
+      {dialog && dialog.kind === "prefs" && (
+        <PreferencesDialog key={prefs.revision} prefs={prefs} sessions={sessions}
+                              onSave={savePreferences} onClose={closeDialog} />)}
+      {dialog && dialog.kind === "delete-project" && (
+        <DeleteProjectDialog project={dialog.project}
+                                taskCount={taskListStatus.state === READY
+                                  ? tasks.filter((task) => task.project === dialog.project.id).length
+                                  : null}
+                                onDelete={removeProject} onClose={closeDialog} />)}
+      {dialog && dialog.kind === "restore-project" && (
+        <RestoreProjectDialog onRestore={bringBackProject} onClose={closeDialog} />)}
+      {dialog && dialog.kind === "help" && (<HelpDialog onClose={closeDialog} />)}
+      {dialog && dialog.kind === "phone" && (<PhoneDialog onClose={closeDialog} />)}
+    </>
+  );
 }
 
+// The served shell provides #app before loading this module.
+const appRoot = document.getElementById("app")!;
 // WebKit/iOS may report installed mode as fullscreen or only through navigator.standalone.
-const appRoot = document.getElementById("app");
 const installedApp =
   window.matchMedia("(display-mode: standalone)").matches ||
   window.matchMedia("(display-mode: fullscreen)").matches ||
-  window.navigator.standalone === true;
+  (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
 appRoot.classList.toggle("installed-app", installedApp);
-render(html`<${App} />`, appRoot);
+render(<App />, appRoot);
