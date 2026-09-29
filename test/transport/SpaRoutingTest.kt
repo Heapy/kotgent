@@ -82,9 +82,9 @@ class SpaRoutingTest {
     }
 
     @Test
-    fun theGrammarNeverMatchesARevisionedAssetPath() {
-        assertFalse(isSpaRoute("_v/7c41f9ab30d2/tasks"), "a revisioned path is never a UI route")
-        assertFalse(isSpaRoute("_v/7c41f9ab30d2/app.js"), "the ordinary revisioned asset")
+    fun theGrammarNeverMatchesAnAssetsPath() {
+        assertFalse(isSpaRoute("assets/tasks"), "an assets path is never a UI route")
+        assertFalse(isSpaRoute("assets/app-7c41f9ab.js"), "the ordinary hashed asset")
     }
 
 
@@ -148,16 +148,15 @@ class SpaRoutingTest {
     }
 
     @Test
-    fun theRoutesChangeNothingAboutRevisionedCachingOrTheStableUrls() = withServer { ctx ->
-        val path = shellReferences(ctx.get("/").bodyAsText()).first { it.endsWith(".js") }
-        val rev = webUiRevision(locateSpaWebUiDir())
+    fun theRoutesChangeNothingAboutAssetCachingOrTheStableUrls() = withServer { ctx ->
+        val path = shellReferences(ctx.get("/").bodyAsText()).first { it.startsWith("/assets/") && it.endsWith(".js") }
 
-        val asset = ctx.get("/_v/$rev$path")
+        val asset = ctx.get(path)
         assertEquals(HttpStatusCode.OK, asset.status)
         assertEquals(
             IMMUTABLE_CACHE_CONTROL,
             asset.headers[HttpHeaders.CacheControl],
-            "a revisioned asset is still immutable",
+            "a hashed asset is immutable",
         )
 
         val worker = ctx.get("/sw.js")
@@ -167,15 +166,17 @@ class SpaRoutingTest {
 
         val manifest = ctx.get("/manifest.webmanifest")
         assertEquals(HttpStatusCode.OK, manifest.status)
+        assertEquals("no-cache", manifest.headers[HttpHeaders.CacheControl])
         assertContentTypeContains(manifest, "manifest+json")
 
         val icon = ctx.get("/icons/logo.svg")
         assertEquals(HttpStatusCode.OK, icon.status, "the icons stay reachable at their stable address")
+        assertEquals("no-cache", icon.headers[HttpHeaders.CacheControl])
     }
 
     @Test
     fun theTraversalGuardStillOutranksTheGrammar() = withServer { ctx ->
-        for (path in listOf("/tasks/../../etc/passwd", "/_v/abc/../../etc/passwd", "/s/../style.css")) {
+        for (path in listOf("/tasks/../../etc/passwd", "/assets/../../etc/passwd", "/s/../style.css")) {
             val resp = ctx.get(path)
             assertEquals(HttpStatusCode.Forbidden, resp.status, "$path is refused before anything reads a file")
             assertEquals("bad path", resp.bodyAsText().trim())

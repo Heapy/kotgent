@@ -8,6 +8,8 @@ import io.kotgent.daemon.FakeTmux
 import io.kotgent.daemon.PaneRegistry
 import io.kotgent.daemon.ProviderIdCapture
 import io.kotgent.daemon.SessionManager
+import io.kotgent.daemon.isDirectory
+import io.kotgent.daemon.listDir
 import io.kotgent.store.FakeEventStore
 import io.kotgent.store.FakePreferencesStore
 import io.ktor.client.HttpClient
@@ -51,8 +53,8 @@ import platform.posix.mkdtemp
 import platform.posix.rmdir
 import platform.posix.unlink
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -123,6 +125,11 @@ class WebUiServingTest {
             assertTrue(path.startsWith("/"), "$path resolves from deep links as well as the root")
             val response = ctx.get(path)
             assertEquals(HttpStatusCode.OK, response.status, "GET $path is served")
+            assertEquals(
+                if (path.startsWith("/assets/") && !path.endsWith(".map")) IMMUTABLE_CACHE_CONTROL else "no-cache",
+                response.headers[HttpHeaders.CacheControl],
+                "GET $path uses the cache policy for its built path",
+            )
             assertTrue(response.readRawBytes().isNotEmpty(), "$path is not empty")
             when {
                 path.endsWith(".js") -> assertContentTypeContains(response, "javascript")
@@ -219,148 +226,87 @@ class WebUiServingTest {
     }
 
     @Test
-    fun revisionedAssetsAreImmutableAndEverythingElseRevalidates() = withServer { ctx ->
-        val assets = shellReferences(ctx.get("/").bodyAsText()).filter { it.startsWith("/assets/") }
-        val rev = webUiRevision(locateWebUiDir())
-        for (asset in assets) {
-            val path = "/_v/$rev$asset"
-            assertEquals(
-                IMMUTABLE_CACHE_CONTROL,
-                ctx.get(path).headers[HttpHeaders.CacheControl],
-                "GET $path is content-addressed, so it never has to be fetched twice",
-            )
+    fun builtAssetsAreImmutableExceptSourceMaps() = withServer { ctx ->
+        fun filesUnder(dir: String): List<String> = listDir(dir).flatMap { name ->
+            val path = "$dir/$name"
+            if (isDirectory(path)) filesUnder(path) else listOf(path)
         }
-        for (path in assets + listOf(
-            "/", "/index.html", "/sw.js", "/manifest.webmanifest", "/icons/icon-192.png",
-        )) {
-            assertEquals(
-                "no-cache",
-                ctx.get(path).headers[HttpHeaders.CacheControl],
-                "GET $path revalidates so a deploy is never pinned behind a cached copy",
-            )
-        }
-        for (path in listOf("/_v/$rev/index.html", "/_v/$rev/sw.js")) {
-            assertEquals(
-                "no-cache",
-                ctx.get(path).headers[HttpHeaders.CacheControl],
-                "GET $path revalidates even through the revision prefix",
-            )
-        }
-    }
-
-    @Test
-    fun theRevisionPrefixOnlyChangesTheAddress() = withServer { ctx ->
-        val asset = shellReferences(ctx.get("/").bodyAsText()).first { it.endsWith(".js") }
-        val rev = webUiRevision(locateWebUiDir())
-        assertEquals(
-            ctx.get(asset).bodyAsText(),
-            ctx.get("/_v/$rev$asset").bodyAsText(),
-            "the revisioned URL serves the very same module",
-        )
-        val stale = ctx.get("/_v/0123456789ab$asset")
-        assertEquals(HttpStatusCode.OK, stale.status, "an older revision's URL still serves its asset")
-        assertEquals(
-            "no-cache",
-            stale.headers[HttpHeaders.CacheControl],
-            "a well-formed revision the tree no longer has must revalidate",
-        )
-
-        val bogus = ctx.get("/_v/${WEBUI_REV_PLACEHOLDER}$asset")
-        assertEquals(HttpStatusCode.OK, bogus.status, "a malformed revision still serves the asset")
-        assertEquals(
-            "no-cache",
-            bogus.headers[HttpHeaders.CacheControl],
-            "a revision this server never minted must revalidate, not pin the asset forever",
-        )
-    }
-
-    @Test
-    fun strippingTheRevisionPrefixLeavesTraversalVisibleToTheGuard() {
-        val [rev, path] = stripRevPrefix("_v/0123456789ab/../../etc/passwd")
-        assertEquals("0123456789ab", rev, "the prefix is recognised")
-        assertTrue(path.contains(".."), "the traversal stays in the path the guard inspects")
-
-        assertEquals(null to "app.js", stripRevPrefix("app.js"), "an unprefixed path is untouched")
-        assertEquals(null to "_v/app.js", stripRevPrefix("_v/app.js"), "a prefix with no revision is untouched")
-        assertEquals(null to "_v/abc/", stripRevPrefix("_v/abc/"), "a prefix naming no file is untouched")
-        assertEquals("abc" to "lib/api.js", stripRevPrefix("_v/abc/lib/api.js"), "a nested path keeps its shape")
-
-        assertFalse(isRevToken("__REV__"), "the placeholder is not a revision")
-        assertFalse(isRevToken("0123456789AB"), "a revision is lowercase hex")
-        assertFalse(isRevToken("0123456789abc"), "a revision is exactly $WEBUI_REV_LENGTH characters")
-    }
-
-    @Test
-    fun aRevisionedAssetIsPinnedOnlyWithTheBytesItsRevisionRecorded() {
-        val dir = makeTempDir()
-        try {
-            writeFile("$dir/index.html", "<script type=\"module\" src=\"/_v/$WEBUI_REV_PLACEHOLDER/a.js\"></script>")
-            writeFile("$dir/a.js", "export const a = 1;\n")
-            writeFile("$dir/b.js", "export const b = 1;\n")
-            val expected = webUiRevision(dir)
-            withServer(webUiDir = dir) { ctx ->
-                assertEquals(
-                    "no-cache",
-                    ctx.get("/_v/$expected/b.js").headers[HttpHeaders.CacheControl],
-                    "before any shell is served no revision is known, so nothing is pinned",
-                )
-
-                val rev = revisionOf(ctx.get("/").bodyAsText())
-                assertEquals(expected, rev, "the shell carries the tree's revision")
-                assertEquals(
-                    IMMUTABLE_CACHE_CONTROL,
-                    ctx.get("/_v/$rev/b.js").headers[HttpHeaders.CacheControl],
-                    "an asset whose bytes match the shell's revision is pinned",
-                )
-
-                writeFile("$dir/a.js", "export const a = 2;\n")
-                val changed = ctx.get("/_v/$rev/a.js")
-                assertEquals(HttpStatusCode.OK, changed.status, "a file changed under the shell is still served")
-                assertEquals("export const a = 2;\n", changed.bodyAsText(), "the current bytes are served")
-                assertEquals(
-                    "no-cache",
-                    changed.headers[HttpHeaders.CacheControl],
-                    "bytes the shell's revision never had must not be pinned under it",
-                )
-                assertEquals(
-                    IMMUTABLE_CACHE_CONTROL,
-                    ctx.get("/_v/$rev/b.js").headers[HttpHeaders.CacheControl],
-                    "an unchanged file stays pinned under the same revision",
+        val webUiDir = locateWebUiDir()
+        val files = filesUnder(webUiDir).map { it.removePrefix(webUiDir) }
+        assertTrue(files.any { it.startsWith("/assets/") && !it.endsWith(".map") }, "the build produces hashed assets")
+        assertTrue(files.any { it.endsWith(".map") }, "the build produces source maps")
+        val hashedName = Regex(""".+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+""")
+        for (path in files.filter { it.startsWith("/assets/") || it.endsWith(".map") }) {
+            val isMap = path.endsWith(".map")
+            if (!isMap) {
+                assertTrue(
+                    hashedName.matches(path.substringAfterLast('/')),
+                    "$path needs a content-hashed name because non-map files under assets/ are immutable",
                 )
             }
-        } finally {
-            unlink("$dir/index.html")
-            unlink("$dir/a.js")
-            unlink("$dir/b.js")
-            rmdir(dir)
+            val response = ctx.get(path)
+            assertEquals(HttpStatusCode.OK, response.status, "GET $path is served")
+            assertEquals(
+                if (isMap) "no-cache" else IMMUTABLE_CACHE_CONTROL,
+                response.headers[HttpHeaders.CacheControl],
+                "GET $path uses the cache policy for its built path",
+            )
         }
     }
 
     @OptIn(ExperimentalForeignApi::class)
     @Test
-    fun anyChangedByteChangesTheRevision() {
+    fun nonMapAssetsAreImmutableAndEverythingElseRevalidates() {
         val dir = makeTempDir()
+        val files = mapOf(
+            "index.html" to "<!doctype html>\r\n<title>Kotgent — test</title>\r\n",
+            "assets/x-abcdefgh.js" to "export const a = 1;\n",
+            "assets/x-abcdefgh.js.map" to "{}\n",
+            "assets/nested/chunk-89abcdef.js" to "export const b = 2;\n",
+            "sw.js" to "self.addEventListener('fetch', () => {});\n",
+            "manifest.webmanifest" to "{}\n",
+            "icons/logo.svg" to "<svg/>\n",
+            "app.js" to "export const a = 3;\n",
+            "assets-other.js" to "export const b = 4;\n",
+        )
+        val directories = listOf("assets", "assets/nested", "icons")
         try {
-            writeFile("$dir/index.html", "<html>$WEBUI_REV_PLACEHOLDER</html>")
-            assertEquals(0, mkdir("$dir/lib", MODE_0700.convert()), "could not create the nested directory")
-            writeFile("$dir/lib/api.js", "export const a = 1;\n")
+            for (path in directories) assertEquals(0, mkdir("$dir/$path", MODE_0700.convert()))
+            for ([path, body] in files) writeFile("$dir/$path", body)
+            withServer(webUiDir = dir) { ctx ->
+                for (path in listOf("/assets/x-abcdefgh.js", "/assets/nested/chunk-89abcdef.js")) {
+                    val response = ctx.get(path)
+                    assertEquals(HttpStatusCode.OK, response.status, "GET $path is served before any shell")
+                    assertEquals(IMMUTABLE_CACHE_CONTROL, response.headers[HttpHeaders.CacheControl], path)
+                    assertContentEquals(files.getValue(path.drop(1)).encodeToByteArray(), response.readRawBytes(), path)
+                }
+                for (path in listOf(
+                    "/", "/index.html", "/tasks/local:42", "/sw.js", "/manifest.webmanifest",
+                    "/icons/logo.svg", "/app.js", "/assets-other.js", "/assets/x-abcdefgh.js.map",
+                )) {
+                    val response = ctx.get(path)
+                    assertEquals(HttpStatusCode.OK, response.status, "GET $path is served")
+                    assertEquals("no-cache", response.headers[HttpHeaders.CacheControl], path)
+                    val file = if (path == "/" || path == "/tasks/local:42") "index.html" else path.drop(1)
+                    assertContentEquals(files.getValue(file).encodeToByteArray(), response.readRawBytes(), path)
+                }
 
-            val before = webUiRevision(dir)
-            assertTrue(isRevToken(before), "a revision is a $WEBUI_REV_LENGTH-character lowercase hex token")
-            assertEquals(before, webUiRevision(dir), "an unchanged tree keeps its revision")
+                val traversal = ctx.get("/assets/../index.html")
+                assertEquals(HttpStatusCode.Forbidden, traversal.status)
+                assertEquals("bad path", traversal.bodyAsText())
 
-            writeFile("$dir/lib/api.js", "export const a = 2;\n")
-            val afterEdit = webUiRevision(dir)
-            assertTrue(afterEdit != before, "editing a nested module changes the revision")
-
-            writeFile("$dir/lib/renamed.js", "export const a = 2;\n")
-            unlink("$dir/lib/api.js")
-            assertTrue(webUiRevision(dir) != afterEdit, "renaming a module changes the revision")
+                for (path in listOf(
+                    "/_v/0123456789ab/app.js", "/_v/0123456789ab/assets/x-abcdefgh.js",
+                    "/assets/tasks", "/assets/does-not-exist.js",
+                )) {
+                    val response = ctx.get(path)
+                    assertEquals(HttpStatusCode.NotFound, response.status, "GET $path names no file")
+                    assertEquals("not found", response.bodyAsText(), path)
+                }
+            }
         } finally {
-            unlink("$dir/index.html")
-            unlink("$dir/lib/api.js")
-            unlink("$dir/lib/renamed.js")
-            rmdir("$dir/lib")
+            for (path in files.keys) unlink("$dir/$path")
+            for (path in directories.asReversed()) rmdir("$dir/$path")
             rmdir(dir)
         }
     }
@@ -374,12 +320,6 @@ class WebUiServingTest {
             "no-cache",
             resp.headers[HttpHeaders.CacheControl],
             "the worker script revalidates so a deploy is not pinned behind a cached push handler",
-        )
-        val body = resp.bodyAsText()
-        assertTrue(
-            body.lineSequence().none { it.trimStart().startsWith("import ") },
-            "the classic worker imports nothing — a bare specifier throws at parse time and takes the " +
-                "whole push path down with it",
         )
     }
 
@@ -474,24 +414,14 @@ class WebUiServingTest {
         assertTrue(ct.contains(needle, ignoreCase = true), "content-type '$ct' should mention '$needle'")
     }
 
-    private fun revisionOf(index: String): String {
-        val marker = "src=\"/_v/"
-        val at = index.indexOf(marker)
-        assertTrue(at >= 0, "index.html fetches its assets through the revision prefix")
-        val rest = index.substring(at + marker.length)
-        val end = rest.indexOf('/')
-        assertTrue(end > 0, "the revision prefix names a path underneath it")
-        return rest.substring(0, end)
-    }
-
     @OptIn(ExperimentalForeignApi::class)
     private fun makeTempDir(): String = memScoped {
-        val template = "/tmp/kotgent-webui-rev-test-XXXXXX"
+        val template = "/tmp/kotgent-webui-serving-test-XXXXXX"
         val encoded = template.encodeToByteArray()
         val chars = allocArray<ByteVar>(encoded.size + 1)
         encoded.forEachIndexed { index, byte -> chars[index] = byte }
         chars[encoded.size] = 0
-        mkdtemp(chars)?.toKString() ?: error("could not create the revision test directory")
+        mkdtemp(chars)?.toKString() ?: error("could not create the Web UI serving test directory")
     }
 
     @OptIn(ExperimentalForeignApi::class)

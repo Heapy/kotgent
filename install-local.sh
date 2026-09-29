@@ -108,8 +108,8 @@ rm -rf "$libexec.new" "$libexec.old"
 mkdir -p "$libexec.new/resources"
 cp "$kexe" "$libexec.new/kotgent"
 chmod +x "$libexec.new/kotgent"
-# Copy, never symlink: webUiRevision digests this tree, and a copy that drifts
-# under a running daemon would serve assets the revision no longer matches.
+# Copy, never symlink: checkout edits through a symlink could change the tree a running
+# daemon serves under unchanged hashed names that browsers cache as immutable.
 cp -R resources/webui "$libexec.new/resources/webui"
 
 mkdir -p "$prefix" "$bin_dir"

@@ -46,8 +46,6 @@ import kotlinx.serialization.json.Json
 import platform.posix.F_OK
 import platform.posix.access
 import kotlin.concurrent.Volatile
-import kotlin.concurrent.atomics.AtomicReference
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Clock
 
@@ -273,50 +271,36 @@ class KotgentServer(
 class ServerBindException(message: String, cause: Throwable?) :
     RuntimeException("failed to bind the kotgent server: $message", cause)
 
-@OptIn(ExperimentalAtomicApi::class)
 fun Route.staticWebUi(dir: String?) {
     if (dir == null) return
-    val lastShell = AtomicReference<WebUiSnapshot?>(null)
-    get("/") { serveStaticFile(dir, "index.html", lastShell) }
+    get("/") { serveStaticFile(dir, "index.html") }
     get("/{path...}") {
         val rel = call.parameters.getAll("path").orEmpty().joinToString("/")
-        serveStaticFile(dir, rel.ifBlank { "index.html" }, lastShell)
+        serveStaticFile(dir, rel.ifBlank { "index.html" })
     }
 }
 
-@OptIn(ExperimentalAtomicApi::class)
 private suspend fun io.ktor.server.routing.RoutingContext.serveStaticFile(
     dir: String,
     rel: String,
-    lastShell: AtomicReference<WebUiSnapshot?>,
 ) {
-    // Strip the cache prefix before traversal validation so `_v/<rev>/../../…` cannot bypass it.
-    val [rev, stripped] = stripRevPrefix(rel)
-    if (stripped.contains("..") || stripped.startsWith("/")) {
+    if (rel.contains("..") || rel.startsWith("/")) {
         call.respondText("bad path", status = HttpStatusCode.Forbidden)
         return
     }
-    val direct = readFileBytesOrNull("$dir/$stripped")
-    val path = if (direct == null && isSpaRoute(rel)) "index.html" else stripped
-    val bytes = direct ?: if (path != stripped) readFileBytesOrNull("$dir/$path") else null
+    val direct = readFileBytesOrNull("$dir/$rel")
+    val path = if (direct == null && isSpaRoute(rel)) "index.html" else rel
+    val bytes = direct ?: if (path != rel) readFileBytesOrNull("$dir/$path") else null
     if (bytes == null) {
         call.respondText("not found", status = HttpStatusCode.NotFound)
         return
     }
-    val body = if (path == "index.html") {
-        val snapshot = webUiSnapshot(dir)
-        lastShell.store(snapshot)
-        bytes.decodeToString().replace(WEBUI_REV_PLACEHOLDER, snapshot.revision).encodeToByteArray()
-    } else {
-        bytes
-    }
-    val immutable = rev != null && isRevToken(rev) && !neverImmutable(path) &&
-        lastShell.load()?.recorded(rev, path, bytes) == true
+    val immutable = path.startsWith(HASHED_ASSETS_DIR) && !path.endsWith(".map")
     call.response.headers.append(
         HttpHeaders.CacheControl,
         if (immutable) IMMUTABLE_CACHE_CONTROL else "no-cache",
     )
-    call.respondBytes(body, contentTypeFor(path))
+    call.respondBytes(bytes, contentTypeFor(path))
 }
 
 private fun contentTypeFor(path: String): ContentType = when (path.substringAfterLast('.', "")) {

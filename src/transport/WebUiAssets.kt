@@ -1,68 +1,8 @@
 package io.kotgent.transport
 
-import io.kotgent.crypto.hex
-import io.kotgent.crypto.sha256
-import io.kotgent.daemon.isDirectory
-import io.kotgent.daemon.listDir
-
-
-const val WEBUI_REV_PLACEHOLDER: String = "__REV__"
-
-const val WEBUI_REV_PREFIX: String = "_v"
-
-const val WEBUI_REV_LENGTH: Int = 12
-
-private const val MAX_WALK_DEPTH: Int = 8
+const val HASHED_ASSETS_DIR: String = "assets/"
 
 const val IMMUTABLE_CACHE_CONTROL: String = "max-age=31536000, immutable"
-
-class WebUiSnapshot(val revision: String, private val fileDigests: Map<String, String>) {
-    fun recorded(rev: String, path: String, bytes: ByteArray): Boolean =
-        rev == revision && fileDigests[path]?.let { it == hex(sha256(bytes)) } == true
-}
-
-fun webUiSnapshot(dir: String): WebUiSnapshot {
-    val digests = HashMap<String, String>()
-    collectFileDigests(dir, rel = "", depth = 0, out = digests)
-    if (digests.isEmpty()) {
-        val fallback = hex(sha256(readFileBytesOrNull("$dir/index.html") ?: ByteArray(0))).take(WEBUI_REV_LENGTH)
-        return WebUiSnapshot(fallback, emptyMap())
-    }
-    val lines = digests.map { "${it.key} ${it.value}\n" }.sorted()
-    val revision = hex(sha256(lines.joinToString(separator = "").encodeToByteArray())).take(WEBUI_REV_LENGTH)
-    return WebUiSnapshot(revision, digests)
-}
-
-fun webUiRevision(dir: String): String = webUiSnapshot(dir).revision
-
-private fun collectFileDigests(root: String, rel: String, depth: Int, out: MutableMap<String, String>) {
-    // Bound traversal against symlink cycles; the shipped asset tree is much shallower.
-    if (depth > MAX_WALK_DEPTH) return
-    val dir = if (rel.isEmpty()) root else "$root/$rel"
-    for (name in listDir(dir)) {
-        val childRel = if (rel.isEmpty()) name else "$rel/$name"
-        val childAbs = "$root/$childRel"
-        if (isDirectory(childAbs)) {
-            collectFileDigests(root, childRel, depth + 1, out)
-        } else {
-            val bytes = readFileBytesOrNull(childAbs) ?: continue
-            out[childRel] = hex(sha256(bytes))
-        }
-    }
-}
-
-fun stripRevPrefix(rel: String): Pair<String?, String> {
-    // Old revisions remain servable across a shell/assets update race; only caching checks the bytes against them.
-    val marker = "$WEBUI_REV_PREFIX/"
-    if (!rel.startsWith(marker)) return null to rel
-    val afterPrefix = rel.substring(marker.length)
-    val slash = afterPrefix.indexOf('/')
-    if (slash <= 0 || slash == afterPrefix.length - 1) return null to rel
-    return afterPrefix.substring(0, slash) to afterPrefix.substring(slash + 1)
-}
-
-fun isRevToken(value: String): Boolean =
-    value.length == WEBUI_REV_LENGTH && value.all { it in '0'..'9' || it in 'a'..'f' }
 
 fun isSpaRoute(rel: String): Boolean {
     // Exact segment grammar keeps mistyped/deep asset paths as 404s instead of silent SPA shells.
@@ -78,6 +18,3 @@ fun isSpaRoute(rel: String): Boolean {
 private const val SPA_TASKS_SEGMENT: String = "tasks"
 
 private const val SPA_SESSION_SEGMENT: String = "s"
-
-// Both fixed entry-point URLs must revalidate; the worker also needs its root path for scope.
-fun neverImmutable(path: String): Boolean = path == "index.html" || path == "sw.js"
